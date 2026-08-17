@@ -2444,8 +2444,21 @@ class Filter:
             and self._routing_controls(self.model_transport(slug))
         }
 
-        if hash_unchanged and not missing_filters:
+        undeliverable_slugs = {
+            slug
+            for slug in all_models
+            if not self._routing_controls(self.model_transport(slug))
+        }
+        stale_active = {
+            slug
+            for slug in undeliverable_slugs
+            if getattr(existing_filters.get(slug), "is_active", False)
+        }
+
+        if hash_unchanged and not missing_filters and not stale_active:
             for slug in all_models:
+                if slug in undeliverable_slugs:
+                    continue
                 existing = existing_filters.get(slug)
                 if existing:
                     existing_id = getattr(existing, "id", "")

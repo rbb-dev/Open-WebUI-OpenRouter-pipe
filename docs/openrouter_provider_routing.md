@@ -85,9 +85,7 @@ model's own format can carry:
 | dedicated image (models that return pictures and no text) | `ORDER`, `ONLY`, `IGNORE`, `SORT`, `SORT_PARTITION`, `ALLOW_FALLBACKS` | `order`, `only`, `ignore`, `sort`, `allow_fallbacks` |
 | video | none — no filter is installed, and an existing one is deactivated | none |
 
-The control list and the field each one writes come from one table, and the adapters strip
-anything their format does not define regardless, so a setting can never be drawn for a
-field that would be dropped.
+You are never shown a setting the model's request format cannot carry.
 
 On chat completions every filter carries the full set below at each visibility level:
 

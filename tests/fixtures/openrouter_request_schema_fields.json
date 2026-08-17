@@ -43,7 +43,8 @@
       "size"
     ],
     "required": [
-      "model"
+      "model",
+      "prompt"
     ],
     "schema": "VideoGenerationRequest"
   }

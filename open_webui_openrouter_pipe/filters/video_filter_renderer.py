@@ -380,18 +380,28 @@ class Filter:
     def _json_object(value: Any) -> dict[str, Any]:
         if not isinstance(value, str) or not value.strip():
             return {{}}
-        parsed = json.loads(value)
+        try:
+            parsed = json.loads(value, parse_float=_json_number, parse_constant=_json_constant)
+        except ValueError as exc:
+            raise VideoFilterInputError(
+                f"Provider options JSON is not valid JSON: {{exc}}"
+            ) from exc
         if not isinstance(parsed, dict):
-            raise Exception("Video provider options JSON must be an object keyed by provider slug.")
+            raise VideoFilterInputError(
+                "Video provider options JSON must be an object keyed by provider slug."
+            )
         return parsed
 
     @staticmethod
     def _json_array(value: Any, label: str) -> list[Any]:
         if not isinstance(value, str) or not value.strip():
             return []
-        parsed = json.loads(value)
+        try:
+            parsed = json.loads(value, parse_float=_json_number, parse_constant=_json_constant)
+        except ValueError as exc:
+            raise VideoFilterInputError(f"{{label}} is not valid JSON: {{exc}}") from exc
         if not isinstance(parsed, list):
-            raise Exception(f"{{label}} must be a JSON array.")
+            raise VideoFilterInputError(f"{{label}} must be a JSON array.")
         return parsed
 
     def inlet(
@@ -1172,7 +1182,7 @@ def _render_frame_block(spec: VideoFilterSpec) -> str:
 
     image_select_block = ""
     if has_frames:
-        supported_literal = repr(set(spec.frame_types))
+        supported_literal = "{" + ", ".join(repr(f) for f in spec.frame_types) + "}"
         if has_first_last:
             image_select_block = f'''            supported_frames = {supported_literal}
             selected: list[tuple[dict[str, Any], str]] = []

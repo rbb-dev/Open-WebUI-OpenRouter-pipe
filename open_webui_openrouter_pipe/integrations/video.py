@@ -45,6 +45,7 @@ from .provider_options import (
     VIDEO_PROVIDER_KEYS,
     carrier_slug,
     merge_provider_options,
+    options_key,
     requested_provider_block,
     requested_provider_options,
     restrict_provider_block,
@@ -1981,7 +1982,9 @@ class VideoGenerationAdapter:
             entry = cached.get(model_id) if isinstance(cached, dict) else None
             providers = entry.get("providers") if isinstance(entry, dict) else None
             if isinstance(providers, list):
-                candidates.extend(p for p in providers if isinstance(p, str) and p)
+                candidates.extend(
+                    dict.fromkeys(key for p in providers if (key := options_key(p)))
+                )
 
         if not candidates:
             self.logger.log(

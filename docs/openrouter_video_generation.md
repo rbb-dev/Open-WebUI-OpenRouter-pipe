@@ -153,7 +153,7 @@ See [Configuration valves](#configuration-valves-admin) for the full list of vid
 | Model id | Display name | Best for | Audio | Seed | Frames | What drives the cost |
 |----------|--------------|----------|:----:|:----:|:------:|-----------|
 | `google/veo-3.1` | Google: Veo 3.1 | Flagship hero shots; best prompt adherence; native synchronised audio with ~120ms lip-sync; up to 4K. | ✅ | ✅ | first + last | Per second; more with audio, more again at 4K |
-| `google/veo-3.1-fast` | Google: Veo 3.1 Fast | Drafting/iteration of Veo 3.1 quality at ~60% lower cost; A/B-testing concepts; image-to-video. | ✅ | ✅ | first + last | Per second; more with audio, more again at 4K |
+| `google/veo-3.1-fast` | Google: Veo 3.1 Fast | Drafting/iteration of Veo 3.1 quality at roughly a third to a half the cost; A/B-testing concepts; image-to-video. | ✅ | ✅ | first + last | Per second; more with audio, more again at 4K |
 | `google/veo-3.1-lite` | Google: Veo 3.1 Lite | Cheapest Veo tier; high-volume / batch / consumer-app integrations; same speed as Fast at a lower rate per second. | ✅ | ✅ | first + last | Per second; more with audio, more at 1080p |
 | `kwaivgi/kling-video-o1` | Kling: Video O1 | Cinematic film-grade clips, character/identity consistency, physics-aware human motion. No deterministic seed. | ✅ | ❌ | first + last | Per second, one flat rate |
 | `kwaivgi/kling-v3.0-pro` | Kling: Video v3.0 Pro | Premium tier of Kling v3.0 — higher visual quality and motion fidelity than Standard; granular 3–15s clips; first/last-frame anchoring. New `cfg_scale` knob. No deterministic seed. | ✅ | ❌ | first + last | Per second; more with audio |
@@ -162,11 +162,11 @@ See [Configuration valves](#configuration-valves-admin) for the full list of vid
 | `minimax/hailuo-3` | MiniMax: H3 | Lightweight open-weights model for instruction-guided edits and controlled content; the one that renders legible text and brand marks. 2K only. | ✅ | ❌ | first + last | Per second, plus a charge per reference image |
 | `alibaba/wan-2.7` | Alibaba: Wan 2.7 | Multimodal reference control (up to 5 ref videos + image grids), lip-sync across languages, FLF2V. Tuned for character-led narrative. | ✅ | ✅ | first + last | Per second, one flat rate |
 | `alibaba/wan-2.6` | Alibaba: Wan 2.6 | Cheaper Wan tier with multi-shot storyboarding, 24fps, dialogue + lip-sync, shot_type cinematography. **First-frame only.** | ✅ | ✅ | first only | Per second; varies by mode and resolution |
-| `bytedance/seedance-1-5-pro` | ByteDance: Seedance 1.5 Pro | First Dual-Branch DiT with native unified video+audio, multilingual lip-sync, widest size matrix (21 dimensions). | ✅ | ✅ | first + last | Per video token; more with audio |
+| `bytedance/seedance-1-5-pro` | ByteDance: Seedance 1.5 Pro | First Dual-Branch DiT with native unified video+audio, multilingual lip-sync, 21 exact pixel sizes. | ✅ | ✅ | first + last | Per video token; more with audio |
 | `bytedance/seedance-2.0` | ByteDance: Seedance 2.0 | Universal Reference (text + 9 images + 3 video/audio), best character consistency for branded/series content. | ✅ | ✅ | first + last | Per video token; varies by resolution and video input |
 | `bytedance/seedance-2.0-fast` | ByteDance: Seedance 2.0 Fast | Speed-optimised Seedance 2.0; cheaper per token; 480p/720p only; ideal for drafts and bulk pipelines. | ✅ | ✅ | first + last | Per video token; less with video input |
-| `bytedance/seedance-2.5` | ByteDance: Seedance 2.5 | Longest single take in the catalogue at 30s; long-form storytelling, reference-driven generation, editing and extending existing clips. 480p/720p. | ✅ | ✅ | first + last | Per video token; less with video input, and a separate rate without audio |
-| `openai/sora-2-pro` | OpenAI: Sora 2 Pro | Physics-accurate motion + world-state persistence across multi-shot sequences. Longest clips (up to 20s). **Text-only — no frame images.** | ✅ | ❌ | none | Per second; more at 1080p |
+| `bytedance/seedance-2.5` | ByteDance: Seedance 2.5 | Longest single take in the catalogue at 30s; long-form storytelling, reference-driven generation, editing and extending existing clips. 480p/720p. | ✅ | ✅ | first + last | Per video token; less with video input |
+| `openai/sora-2-pro` | OpenAI: Sora 2 Pro | Physics-accurate motion + world-state persistence across multi-shot sequences. 20s clips. **Text-only — no frame images.** | ✅ | ❌ | none | Per second; more at 1080p |
 | `x-ai/grok-imagine-video` | xAI: Grok Imagine Video | Fast iteration with per-second duration control (any integer 1–15s, 24fps); 7 aspect ratios; image-to-video via first frame. | — | — | first only | Per second by resolution, plus a flat charge per supplied image |
 | `x-ai/grok-imagine-video-1.5` | SpaceXAI: Grok Imagine Video 1.5 | Same per-second granularity and seven framings, now up to 1080p, so drafting cheap and finishing sharp is one control change. No provider parameters at all. | — | — | first only | Per second by resolution, plus a flat charge per supplied image |
 | `black-forest-labs/flux-3-video` | Black Forest Labs: FLUX.3 Video | Keyframe-driven shots with opening and closing stills, and continuation of an existing clip so long sequences can be built a segment at a time. Up to 20s at 1080p. | ✅ | ❌ | first + last | Per second by resolution; a higher rate again for continuing an existing clip |
@@ -250,7 +250,9 @@ overall preference and prompt-following accuracy.
 The speed-and-cost-optimised tier of Veo 3.1, generating 4-, 6-, or
 8-second clips up to 4K with native synchronised audio at roughly 2× the
 speed and a fraction of the price of full Veo 3.1. Editor blind tests put
-quality within ~1–8% of the full tier while costs run ~60% lower, making
+quality within ~1–8% of the full tier while every published rate is lower —
+by 70% with audio, 50% at 4K with audio, 50% without audio and 38% at 4K
+without — making
 it the workhorse choice for drafting, A/B-testing creative concepts,
 batch ad and social content, and image-to-video work where dialogue and
 SFX must land in sync.
@@ -581,7 +583,7 @@ land on the correct frame and lip-sync stays tight. Its standout
 differentiator is world-state persistence across multi-shot sequences —
 characters, props, and spatial relationships stay consistent across
 cuts, enabling cohesive short-form storytelling. In this catalog it
-also offers the longest clips of any video model, up to 20 seconds at
+also offers 20-second clips — second only to Seedance 2.5's 30s — at
 full 1080p.
 
 **Tips & pitfalls**
@@ -967,7 +969,7 @@ is also the spec for what you can change per-message.
 | Duration | Literal | 4–15 (Fast/2.0); 4–12 (1.5 Pro) | Token-priced. |
 | Aspect ratio | Literal | 1:1, 3:4, 9:16, 4:3, 16:9, 21:9, 9:21 (+ 9:21 on 1.5 Pro) | Widest aspect coverage. |
 | Resolution | Literal | 480p, 720p (Fast); 480p, 720p, 1080p (2.0, 1.5 Pro) | |
-| Size | Literal | 13 (Fast); 19 (2.0); 21 (1.5 Pro) | The most flexible canvas options of any catalog model. |
+| Size | Literal | 13 (2.0 Fast); 25 (2.0); 21 (1.5 Pro); 12 (2.5) | 2.0 publishes the most exact pixel sizes of any catalog model. |
 | Frames | Literal | auto / none / first_only / first_last | |
 | Audio (`generate_audio`) | Literal | model_default / on / off | Native audio in same pass as video. |
 | Seed | int | 0 / 32-bit int | |
@@ -981,7 +983,7 @@ is also the spec for what you can change per-message.
 
 | Knob | Type | Values | Notes |
 |------|------|--------|-------|
-| Duration | Literal | 4, 8, 12, 16, 20 | **Up to 20s — longest in catalog.** |
+| Duration | Literal | 4, 8, 12, 16, 20 | 20s clips; only Seedance 2.5 goes longer. |
 | Aspect ratio | Literal | 16:9, 9:16 | No square / cinematic widescreen. |
 | Resolution | Literal | 720p, 1080p | 720p is the cheaper per-second tier. |
 | Size | Literal | 4 dimensions | |
@@ -997,7 +999,7 @@ is also the spec for what you can change per-message.
 | Knob | Type | Values | Notes |
 |------|------|--------|-------|
 | Duration | Literal | 1–15 (any integer) | 1-second granularity, shared with the 1.5 tier. Cost scales per second. |
-| Aspect ratio | Literal | 16:9, 9:16, 1:1, 4:3, 3:4, 3:2, 2:3 | Widest landscape/portrait/square/photo coverage in catalog. |
+| Aspect ratio | Literal | 16:9, 9:16, 1:1, 4:3, 3:4, 3:2, 2:3 | Seven framings; Aleph 2 publishes these plus 21:9. |
 | Resolution | Literal | 480p, 720p | Resolution drives the per-second SKU; 480p is the cheaper of the two. |
 | Size | Literal | 14 dimensions | e.g. 854×480, 1280×720, 720×1280, 480×480. |
 | Frames | Literal | first only | Image-to-video via first frame; no last frame. |
@@ -1051,7 +1053,7 @@ is also the spec for what you can change per-message.
 | Resolution | Literal | 480p, 720p | |
 | Size | Literal | 12 dimensions | e.g. 1280×720, 960×960, 720×1280, 1470×630. |
 | Frames | Literal | first only, first + last | |
-| Audio | Literal | model default / on / off | A separate per-token rate is published for output without audio. |
+| Audio | Literal | model default / on / off | The published per-token rate is the same with or without audio. |
 | Seed | int | 0 = model default | |
 | Watermark | Literal | model default / on / off | Provider branding overlay. |
 | `req_key` | str | free text | Provider-side request identifier. |
@@ -1204,12 +1206,10 @@ overrides them. Specifically:
 ### Routing (where each valve lands in the OpenRouter request body)
 
 - **Top-level** request fields (`duration`, `aspect_ratio`,
-  `resolution`, `size`, `seed`, `generate_audio`, `negative_prompt`,
-  `frame_images`, `input_references`): set directly in the
-  `/videos` POST body. The adapter's
-  `_select_passthrough_key` ([video.py](../open_webui_openrouter_pipe/integrations/video.py#L732))
-  decides this from the model's `allowed_passthrough_parameters` plus
-  hardcoded core fields.
+  `resolution`, `size`, `seed`, `generate_audio`, `frame_images`,
+  `input_references`): set directly in the `/videos` POST body.
+  `negative_prompt` is not one of them — it travels as a provider
+  setting, as the table above shows.
 - **Provider passthrough** fields (everything else —
   `personGeneration`, `watermark`, etc.): go under
   `provider.options.<slug>`, keyed by the provider slug the catalog
@@ -1759,69 +1759,4 @@ visibly leaked because there's no newline before it.
 
 ---
 
-## Architecture overview
-
-Roughly, in order of who-calls-who:
-
-```
-pipe()
-  └─ orchestrator dispatches to VideoGenerationAdapter.generate() if model.features has "video_generation"
-        ├─ help short-circuit (prompt == "help" → render_video_help)
-        ├─ resume check (read message → scan for [videojob:...] marker)
-        ├─ acquire user slot + global semaphore
-        ├─ submit job via VideoGenClient.submit() (returns job_id)
-        ├─ emit pending content via OWUI socket 'message' event
-        │      (routed to Chats.upsert_message_to_chat_by_id_and_message_id —
-        │       persists the [videojob:<id>] marker BEFORE the bg task starts)
-        ├─ spawn _run_lifecycle_after_submit() as bg asyncio.Task
-        │     ├─ poll with backoff until terminal status
-        │     ├─ download generated video (streaming, bounded)
-        │     ├─ MIME-sniff against VIDEO_OUTPUT_MIME_ALLOWLIST
-        │     ├─ stream-upload to OWUI storage (per-backend: Local/S3/GCS/Azure)
-        │     ├─ insert Files row + link to chat
-        │     ├─ build success content (markers + <video> + footer)
-        │     └─ return VideoLifecycleResult — does NOT emit
-        ├─ outer awaits bg task with asyncio.shield (survives client disconnect)
-        ├─ outer emits status footer + chat:completion (the SOLE emit)
-        └─ outer returns content string
-              └─ functions.py wraps as SSE chunk, OWUI middleware accumulates,
-                 stream finalizer upserts to message DB (one write).
-```
-
-Key invariant: **exactly one `_emit_completion` per `(chat_id,
-message_id)`**. The bg task does the work and returns the result;
-the outer (or waiter for de-duped re-entries) is the sole emitter. This
-prevents the duplicate-content / leaked-marker bug class.
-
-Key files:
-
-- [`integrations/video.py`](../open_webui_openrouter_pipe/integrations/video.py)
-  — `VideoGenerationAdapter` (entry point, lifecycle, emit).
-- [`integrations/video_client.py`](../open_webui_openrouter_pipe/integrations/video_client.py)
-  — HTTP client for `/videos/*` endpoints.
-- [`integrations/video_catalog.py`](../open_webui_openrouter_pipe/integrations/video_catalog.py)
-  — fetches `/videos/models` and registers them in
-  `OpenRouterModelRegistry`.
-- [`integrations/video_help.py`](../open_webui_openrouter_pipe/integrations/video_help.py)
-  — per-model help blurbs + live pricing renderer.
-- [`integrations/video_types.py`](../open_webui_openrouter_pipe/integrations/video_types.py)
-  — `VideoLifecycleResult`, `DownloadedVideo` dataclasses.
-- [`filters/video_filter_renderer.py`](../open_webui_openrouter_pipe/filters/video_filter_renderer.py)
-  — generates the per-model OWUI filter source code.
-- [`filters/filter_manager.py`](../open_webui_openrouter_pipe/filters/filter_manager.py)
-  — installs filter rows in OWUI Functions table.
-- [`storage/video_persistence.py`](../open_webui_openrouter_pipe/storage/video_persistence.py)
-  — thin resume-path helper that reads the persisted chat message to
-  detect prior `videojob` markers. The upload/storage/link path lives
-  in [`storage/multimodal.py`](../open_webui_openrouter_pipe/storage/multimodal.py)
-  via `_download_remote_url_streaming` + `_upload_to_owui_storage_from_path`
-  + `_try_link_file_to_chat`, reused by both image-gen and video-gen.
-- [`models/registry.py`](../open_webui_openrouter_pipe/models/registry.py)
-  — `register_video_models()` merges video models into the chat catalog.
-- [`models/catalog_manager.py`](../open_webui_openrouter_pipe/models/catalog_manager.py)
-  — metadata sync that attaches and defaults filters.
-- [`core/config.py`](../open_webui_openrouter_pipe/core/config.py)
-  — Valve definitions.
-
----
-
+For how this is put together inside the pipe, see [the developer guide](developer_guide_and_architecture.md).

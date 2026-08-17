@@ -266,17 +266,13 @@ handles differently:
 
 ### Pure-image-only
 
-These models output ONLY images, no text. The orchestrator injects
-`modalities: ["image"]` into the request body. Examples: all 7 Sourceful
+These models answer with a picture and no text. Examples: all 4 Sourceful
 Riverflow variants, all 4 FLUX.2 variants, ByteDance Seedream 4.5.
 
-- **Catalog source**: discovered via `/api/v1/models?output_modalities=image`
-  in [`integrations/image_catalog.py`](../open_webui_openrouter_pipe/integrations/image_catalog.py).
-- **Registration**: registered into the shared model registry via
-  `OpenRouterModelRegistry.register_image_models()` ([`models/registry.py`](../open_webui_openrouter_pipe/models/registry.py))
-  with `features = {"image_output", "image_gen_tool"}`. Stale-norm
-  cleanup runs on every refresh — if a model is dropped from the
-  catalog it disappears from the dropdown on next sync.
+- **Where they come from**: OpenRouter's own list of models that output
+  pictures. The list is re-read on every catalog refresh, so a model
+  OpenRouter withdraws disappears from the picker on the next sync, and
+  one it adds appears without anything being configured.
 - **Multimodal dedupe**: if a model has `text` in `output_modalities`,
   `register_image_models` skips it (those stay in the chat catalog).
 - **Master-disable cleanup**: setting
@@ -289,51 +285,12 @@ Riverflow variants, all 4 FLUX.2 variants, ByteDance Seedream 4.5.
 Models with both `text` AND `image` in `output_modalities` — GPT-5
 Image variants, Gemini Image variants. These already appear in the
 chat catalog via the standard `/api/v1/models` endpoint and are NOT
-re-registered as image-only. The orchestrator injects
-`modalities: ["image", "text"]` to ensure both modalities are emitted.
+re-registered as image-only. They answer with both a picture and text.
 
 - **Settings**: these models get their own settings row too, built from
   what they publish, exactly like the image-only ones.
 - **`openrouter/auto`**: this auto-router is treated as multimodal
   (universal input modalities). Lives in the chat catalog.
-
-### `_inject_image_modalities()` (orchestrator)
-
-The body modification happens at [`requests/orchestrator.py`](../open_webui_openrouter_pipe/requests/orchestrator.py)
-in `_inject_image_modalities()`:
-
-```python
-def _inject_image_modalities(body, *, logger=None):
-    if not isinstance(body, dict):
-        return
-    raw_model = body.get("model")
-    if not isinstance(raw_model, str) or not raw_model:
-        return
-    if "modalities" in body:  # respect explicit user setting
-        return
-    spec = OpenRouterModelRegistry.spec(raw_model)
-    if not isinstance(spec, dict):
-        return
-    arch = spec.get("architecture") or {}
-    out_mods = arch.get("output_modalities") or []
-    if "image" not in out_mods:
-        return
-    if "text" in out_mods:
-        body["modalities"] = ["image", "text"]
-    else:
-        body["modalities"] = ["image"]
-```
-
-Key behavior:
-
-- **No-op on non-image models.** No injection if `output_modalities`
-  doesn't contain `image`.
-- **Respects user override.** If `body.modalities` is already set
-  (manual config or older filter), the orchestrator leaves it alone.
-- **Pure-image gets `["image"]`** to suppress text output.
-- **Multimodal gets `["image", "text"]`** to allow both.
-
----
 
 ## Per-model deep dive
 
@@ -504,34 +461,6 @@ job at completion.
   plus the 2.5 extras (scoring_prompt, scoring_rubric,
   background_mode, background_hex_color).
 - Supports reasoning effort low/medium/high (xhigh is Pro-only).
-
-### Sourceful: Riverflow V2 Max (Preview)
-
-> **id**: `sourceful/riverflow-v2-max-preview` · **pure-image-only**
-
-Preview release of the highest-tier Riverflow variant. Higher fidelity
-than Pro but preview status means specs may shift. Pure-image-only
-output.
-
-- Preview — quality and pricing may change without notice.
-
-### Sourceful: Riverflow V2 Standard (Preview)
-
-> **id**: `sourceful/riverflow-v2-standard-preview` · **pure-image-only**
-
-Standard preview release of Riverflow V2 — entry-tier quality and
-pricing. Pure-image-only.
-
-- Preview status — specs may change.
-
-### Sourceful: Riverflow V2 Fast (Preview)
-
-> **id**: `sourceful/riverflow-v2-fast-preview` · **pure-image-only**
-
-Preview release of the fastest Riverflow tier. Pure-image-only with
-reduced quality versus Pro/Standard at lower cost.
-
-- Preview — pricing/quality may shift.
 
 ### Black Forest Labs: FLUX.2 Pro
 
@@ -911,11 +840,11 @@ Recraft's typography champion — the only AI image model that can render long-f
 
 ## Tips & pitfalls
 - PURE-image-only — does NOT output text in chat.
-- ONLY Recraft variant with `style` and `text_layout`. V4 / V4 Pro lack both.
+- Every Recraft variant takes `style` and `text_layout`; V3 is the one tuned for long-form text, so it holds full sentences and paragraphs where the others hold short lines.
 - For text rendering: put exact wording in quotes in your prompt AND use `text_layout` for precise placement (V3-exclusive feature).
 - Style names: see https://www.recraft.ai/docs/api-reference/styles. Vector styles NOT supported via OpenRouter.
 - text_layout: array of {text, bbox} where bbox is 4 [x,y] corners in 0-1 coords (order: TL, TR, BR, BL).
-- If you need newer composition / cleaner geometry → V4 / V4 Pro (but lose text_layout + style).
+- If you need newer composition or cleaner geometry, V4 and V4.1 offer the same three settings with a different look.
 
 ## Cost
 
@@ -973,23 +902,10 @@ that emit only images take the dedicated image adapter instead, described
 above; both end at the same persisted file URL and the same markdown. The
 chat pipeline:
 
-1. **OpenRouter response** comes back with `message.images = [{"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}]`.
-2. [`api/gateway/chat_completions_adapter.py`](../open_webui_openrouter_pipe/api/gateway/chat_completions_adapter.py)
-   parses `message.images` and emits an `image_generation_call` item.
-3. [`streaming/streaming_core.py`](../open_webui_openrouter_pipe/streaming/streaming_core.py)
-   `_materialize_image_entry()` recursively resolves dicts (`url`,
-   `image_url`, `imageUrl`, `content_url`), decodes base64 fields
-   (`b64_json`, `b64`, `base64`, `data`, `image_base64`, `imageB64`),
-   validates size against `BASE64_MAX_SIZE_MB`, persists via
-   `_persist_generated_image`, returns `/api/v1/files/{stored}/content`.
-4. [`streaming/streaming_core.py`](../open_webui_openrouter_pipe/streaming/streaming_core.py)
-   `_collect_image_output_urls()` resolves entries to a list of file
-   URLs.
-5. [`streaming/streaming_core.py`](../open_webui_openrouter_pipe/streaming/streaming_core.py)
-   `_render_image_markdown()` produces `![alt](url)` markdown that
-   OWUI renders inline.
-6. The renderer at [`streaming/streaming_core.py`](../open_webui_openrouter_pipe/streaming/streaming_core.py)
-   emits status, dedupes, and handles the final write.
+A picture that arrives on the chat route is saved to Open WebUI's file
+store and shown inline, exactly as one from a dedicated image model is.
+Both end at the same stored file and the same message. Anything larger
+than `BASE64_MAX_SIZE_MB` is rejected rather than stored.
 
 The rendered message looks like:
 
@@ -1065,17 +981,8 @@ If the user sees the OR Web Tools filter toggle on an image-output
 model (e.g. Sourceful Riverflow), and enabling it causes a 404, the
 capability gate may not be working. The pipe explicitly excludes
 image-output and video-generation models from Web Tools attach via
-the `web_tools_supported` check in
-[`models/catalog_manager.py`](../open_webui_openrouter_pipe/models/catalog_manager.py):
-
-```python
-web_tools_supported = bool(
-    web_tools_filter_function_id
-    and (valves.AUTO_ATTACH_WEB_TOOLS_FILTER or valves.AUTO_DEFAULT_WEB_TOOLS_FILTER)
-    and not pipe_capabilities.get("image_output")
-    and not pipe_capabilities.get("video_generation")
-)
-```
+a model that answers with a picture or a clip is never given the Web
+Tools filter, whatever the attach valves are set to.
 
 If a model is mis-detected, check its `architecture.output_modalities`
 in the OpenRouter catalog — only models with `image` (and not `text`,
@@ -1173,140 +1080,7 @@ Check:
   broken file reference.
 - The pipe has filesystem write access to its temp dir and OWUI
   storage (Local/S3/GCS/Azure) is healthy.
-- Check the pipe logs for `_persist_generated_image` errors.
-
-### Body validation error: `image_config` rejected at `CompletionsBody.model_validate`
-
-If you see a Pydantic validation error mentioning `image_config`, the
-type may have regressed. The field is `Optional[Dict[str, Any]]` per
-this feature — see [`api/transforms.py`](../open_webui_openrouter_pipe/api/transforms.py).
-If anyone changes it back to a scalar type, dict writes from the
-filters will fail validation.
-
----
-
-## Architecture overview
-
-Roughly, in order of who-calls-who:
-
-```
-pipes()
-  ├─ ensure chat catalog loaded (existing)
-  ├─ ensure video catalog loaded (existing)
-  └─ if ENABLE_OPENROUTER_IMAGE_GENERATION:
-        ensure_image_catalog_loaded()
-          ├─ TTL-gated fetch (cache_seconds = MODEL_CATALOG_REFRESH_SECONDS)
-          ├─ /api/v1/models?output_modalities=image via OpenRouterImageClient
-          ├─ register_image_models()
-          │     ├─ skip multimodal (text in output_modalities)
-          │     ├─ stale-norm cleanup (drop models removed from catalog)
-          │     ├─ atomic publish (4 dict assignments, no await)
-          │     └─ features = {"image_output", "image_gen_tool"}
-          └─ if disabled: register_image_models([]) + reset_image_fetch_timestamp()
-
-  └─ if AUTO_INSTALL_IMAGE_FILTERS:
-        ensure_openrouter_image_filter_function_ids(available_models)
-          ├─ one filter per image model, from its published contract
-          ├─ a model with no readable contract gets none
-          ├─ each install in own try/except — partial failures isolated
-          └─ retire filters left over from the fixed-variant design
-
-  └─ catalog_manager._update_or_insert_model_with_metadata()
-        ├─ pipe_capabilities.image_output gate
-        ├─ web_tools_supported = ... and not image_output
-        ├─ _apply_list_filter_ids(meta_dict)       — writes filterIds
-        └─ _apply_list_default_filter_ids(meta_dict) — writes defaultFilterIds
-
-pipe(body, ...)
-  └─ orchestrator._inject_image_modalities(body)
-        ├─ no-op if model not in registry or no image in output_modalities
-        ├─ pure-image: body["modalities"] = ["image"]
-        └─ multimodal: body["modalities"] = ["image", "text"]
-
-  └─ filter inlet (run by OWUI before pipe receives body)
-        ├─ model gate: every id form OWUI produces, and no other model
-        ├─ merge the chosen values into body.image_config, per key
-        └─ JSON-typed values parsed only when they open a container
-
-  └─ multimodal model (emits image and text)
-  │     └─ image_config validated against the same endpoint record its
-  │        filter was built from, then sent as one block
-  │     └─ chat-completions request → response with message.images[0]
-  │     └─ chat_completions_adapter parses message.images
-  │     └─ streaming_core materialises the entry → persists → file URL
-  │     └─ streaming_core renders "![alt](file_url)"
-  └─ image-only model
-        └─ dedicated image request → response with inline base64
-        └─ image adapter validates knobs against the model's endpoint record
-        └─ image adapter persists each image → file URL
-        └─ image adapter renders "![alt](file_url)"
-  └─ OWUI renders inline image
-```
-
-Both branches emit the same `![alt](file_url)` markdown, which is what keeps
-iterative editing working: the next request re-parses that markdown back into
-an input image.
-
-Key invariant: **both branches render the same markdown**. Multimodal
-models keep the streaming path that has always handled them.
-
-Both branches also read the same contract. A multimodal model never
-reaches the dedicated image request, but it still gets a filter built
-from its published endpoint record, so its `image_config` is put through
-that record on the way out: a value outside the published domain is
-withheld and reported rather than sent, and a key no record names is
-withheld too. Chat completions has one field for image settings and a
-closed provider block — its `ProviderPreferences` defines no `options` —
-so a provider setting the record does name stays inside `image_config`,
-which is where OpenRouter documents the provider-specific block to be.
-A model whose contract is not in hand is left exactly as it arrived; a
-read that failed is not a contract that shrank.
-
-Key files:
-
-- [`integrations/image_catalog.py`](../open_webui_openrouter_pipe/integrations/image_catalog.py)
-  — TTL-gated catalog fetch + master-disable cleanup.
-- [`integrations/image_client.py`](../open_webui_openrouter_pipe/integrations/image_client.py)
-  — HTTP client for the image model catalog, the per-model endpoint record
-  that publishes which knobs a model accepts, and image generation itself.
-- [`integrations/image.py`](../open_webui_openrouter_pipe/integrations/image.py)
-  — the adapter for image-only models: gates each requested knob against the
-  model's published contract, reports the ones it withheld, persists the
-  returned images and renders the markdown.
-- [`integrations/provider_options.py`](../open_webui_openrouter_pipe/integrations/provider_options.py)
-  — the single reader of a request's provider block, the per-transport set of
-  provider keys OpenRouter documents, and the choice of which provider slug
-  carries a value that cannot be duplicated across providers.
-- [`integrations/image_help.py`](../open_webui_openrouter_pipe/integrations/image_help.py)
-  — `_IMAGE_PER_MODEL_HELP_DATA` (per-model prose), `render_image_help()`
-  (control list read from the model's endpoint record).
-- [`filters/image_filter_renderer.py`](../open_webui_openrouter_pipe/filters/image_filter_renderer.py)
-  — `build_image_model_filter_spec()` turns a model's endpoint record into
-  its knob set; `render_image_model_filter_source()` renders one filter
-  module from that spec.
-- [`filters/filter_manager.py::ensure_openrouter_image_filter_function_ids`](../open_webui_openrouter_pipe/filters/filter_manager.py)
-  — installs filter rows in OWUI Functions table; returns
-  per-model filter id mapping.
-- [`models/catalog_manager.py`](../open_webui_openrouter_pipe/models/catalog_manager.py)
-  — `_apply_list_filter_ids`, `_apply_list_default_filter_ids`,
-  `pipe_capabilities.image_output` gate, capability-gated
-  `web_tools_supported` exclusion.
-- [`models/registry.py::register_image_models`](../open_webui_openrouter_pipe/models/registry.py)
-  — atomic registry merge with stale-norm cleanup; multimodal dedupe.
-- [`requests/orchestrator.py::_inject_image_modalities`](../open_webui_openrouter_pipe/requests/orchestrator.py)
-  — body modalities injection.
-- [`api/transforms.py`](../open_webui_openrouter_pipe/api/transforms.py)
-  — Pydantic `image_config: Optional[Dict[str, Any]]` field type fix.
-- [`core/config.py`](../open_webui_openrouter_pipe/core/config.py)
-  — 4 new valves + filter marker constant.
-
-**Files NOT touched** (pre-existing, reused as-is):
-
-- `chat_completions_adapter.py` — `message.images` parser.
-- `streaming/streaming_core.py` — image materialization, file
-  persistence, markdown rendering.
-- `storage/multimodal.py` — `_persist_generated_image` and friends.
-- The legacy `openrouter_image_gen` filter (OpenAI Responses-tool wiring).
+- Check the pipe logs for storage errors.
 
 ---
 

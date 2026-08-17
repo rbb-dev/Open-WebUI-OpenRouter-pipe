@@ -47,6 +47,12 @@ _RECORDED_CONTRACTS = sorted(
     (Path(__file__).parent / "fixtures").glob("openrouter_image_endpoints_*.json")
 )
 
+assert len(_RECORDED_CONTRACTS) > 30, (
+    f"only {len(_RECORDED_CONTRACTS)} recorded contracts found; the fleet-wide sweeps "
+    "below parametrise over this list, and an empty one collects no nodes and SKIPS "
+    "rather than failing. Fails at collection so the drift cannot pass as a green run."
+)
+
 _RECRAFT = {
     "provider_slug": "recraft",
     "allowed_passthrough_parameters": ["style", "controls"],
@@ -220,7 +226,15 @@ def test_the_split_of_top_level_names_is_a_partition():
     from open_webui_openrouter_pipe.integrations.image_types import CONTRACT_GATED_PARAMS
 
     assert set(CONTRACT_GATED_PARAMS) | set(SCHEMA_ONLY_PARAMS) == set(TOP_LEVEL_PARAMS)
-    assert not set(CONTRACT_GATED_PARAMS) & set(SCHEMA_ONLY_PARAMS)
+
+    # Anchored outside the partition. `CONTRACT_GATED_PARAMS` is *defined* as
+    # TOP_LEVEL minus SCHEMA_ONLY, so asserting the two do not intersect is true for
+    # every possible value of either and catches no mis-partition at all.
+    recorded = json.loads(
+        (Path(__file__).parent / "fixtures" / "openrouter_request_schema_fields.json").read_text()
+    )["image"]["properties"]
+    assert set(SCHEMA_ONLY_PARAMS) <= set(TOP_LEVEL_PARAMS)
+    assert set(TOP_LEVEL_PARAMS) <= set(recorded), sorted(set(TOP_LEVEL_PARAMS) - set(recorded))
 
 
 @pytest.mark.parametrize("record", [_RECRAFT, _OPENAI])

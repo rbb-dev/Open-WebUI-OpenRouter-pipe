@@ -3677,7 +3677,20 @@ def test_the_server_tool_filter_offers_exactly_what_the_model_publishes(slug, mo
     )
 
     offered = dict(spec.enums)
-    for parameter, values in offered.items():
+    published = {
+        name
+        for record in records
+        for name, descriptor in (record.get("supported_parameters") or {}).items()
+        if isinstance(descriptor, dict)
+        and descriptor.get("type") == "enum"
+        and (descriptor.get("values") or [])
+    }
+    assert published, (
+        f"{model_id} publishes no choice list at all, so this node asserts nothing"
+    )
+
+    for parameter in sorted(published | set(offered)):
+        values = offered.get(parameter, ())
         union = _published_union(records, parameter)
         assert set(values) <= set(union), (
             f"{model_id} is offered {sorted(set(values) - set(union))!r} for {parameter}, "
@@ -3700,12 +3713,22 @@ def test_the_server_tool_filter_offers_exactly_what_the_model_publishes(slug, mo
         f"{model_id} is offered the 0.5K tier, which no recorded contract publishes -- "
         "the published spelling is 512"
     )
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        IMAGE_GEN_TOOL_PARAMS,
+    )
+
     drawn = set(module.Filter.UserValves.model_fields)
-    for parameter in ("aspect_ratio", "resolution", "quality", "background", "output_format"):
-        assert (f"IMAGE_{parameter.upper()}" in drawn) == bool(offered.get(parameter)), (
-            f"{model_id} publishes {parameter}={bool(offered.get(parameter))!r} and the "
-            f"panel drew {(f'IMAGE_{parameter.upper()}' in drawn)!r}"
+    for parameter in IMAGE_GEN_TOOL_PARAMS:
+        assert f"IMAGE_{parameter.upper()}" in drawn, (
+            f"{model_id}: OpenRouter's server-tool parameter table documents {parameter}, "
+            "so this panel must carry it. The per-model images contract describes a "
+            "different endpoint and does not decide which controls the server tool draws."
         )
+    assert ("IMAGE_RESOLUTION" in drawn) == bool(offered.get("resolution")), (
+        f"{model_id} publishes resolution={bool(offered.get('resolution'))!r} and the panel "
+        f"drew {('IMAGE_RESOLUTION' in drawn)!r}; the tier control is the one that does "
+        "track this model's own published values"
+    )
 
 
 @pytest.mark.parametrize("candidate", ["resolution", "size", "image_size"])
@@ -3907,9 +3930,14 @@ async def test_the_installed_filter_is_built_for_the_model_its_own_valve_names(
         for record in records
         for name in (record.get("supported_parameters") or {})
     }
-    assert ("IMAGE_ASPECT_RATIO" in fields) == ("aspect_ratio" in published), (
-        f"{stored} publishes aspect_ratio={('aspect_ratio' in published)!r} and the "
-        f"panel drew {'IMAGE_ASPECT_RATIO' in fields!r}"
+    assert "IMAGE_ASPECT_RATIO" in fields, (
+        f"{stored}: aspect_ratio is in OpenRouter's server-tool parameter table, so this "
+        "panel carries it whatever the per-model images contract says -- that contract "
+        "describes a different endpoint"
+    )
+    assert ("IMAGE_RESOLUTION" in fields) == ("resolution" in published), (
+        f"{stored} publishes resolution={('resolution' in published)!r} and the panel drew "
+        f"{'IMAGE_RESOLUTION' in fields!r}; the tier control tracks the model's own values"
     )
     assert stored in captured["desired_meta"]["description"], (
         "the admin list shows one line per filter; it must name the model this one draws with"

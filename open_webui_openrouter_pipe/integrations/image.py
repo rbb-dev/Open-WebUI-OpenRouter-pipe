@@ -192,17 +192,89 @@ class ImageGenerationAdapter:
         return value, ""
 
     @staticmethod
+    def _reachable_records(
+        records: list[dict[str, Any]], requested: dict[str, Any] | None
+    ) -> list[dict[str, Any]]:
+        """The records this request could still be routed to.
+
+        A pin narrows it: validating against a provider the operator excluded would
+        accept a value the one that actually serves rejects.
+        """
+        keyed = [
+            (options_key(slug), record)
+            for record in records
+            if isinstance(slug := record.get("provider_slug"), str) and options_key(slug)
+        ]
+        chosen = carrier_slug(bare_pins(requested or {}), [key for key, _ in keyed])
+        if not chosen:
+            return [record for _key, record in keyed]
+        return [record for key, record in keyed if key == chosen]
+
+    @staticmethod
+    def _union_declared(records: list[dict[str, Any]]) -> dict[str, Any] | None:
+        merged: dict[str, Any] = {}
+        for record in records:
+            supported = record.get("supported_parameters")
+            if not isinstance(supported, dict):
+                continue
+            for name, descriptor in supported.items():
+                if not isinstance(descriptor, dict):
+                    continue
+                current = merged.get(name)
+                if current is None:
+                    merged[name] = dict(descriptor)
+                    continue
+                if descriptor.get("type") == "enum" and current.get("type") == "enum":
+                    values = list(current.get("values") or [])
+                    for value in descriptor.get("values") or []:
+                        if value not in values:
+                            values.append(value)
+                    current["values"] = values
+                low, high = descriptor.get("min"), descriptor.get("max")
+                if isinstance(low, (int, float)) and isinstance(current.get("min"), (int, float)):
+                    current["min"] = min(current["min"], low)
+                if isinstance(high, (int, float)) and isinstance(current.get("max"), (int, float)):
+                    current["max"] = max(current["max"], high)
+        return merged or None
+
+    @staticmethod
+    def _records_accepting(records: list[dict[str, Any]], chosen: dict[str, Any]) -> list[str]:
+        keep: list[str] = []
+        for record in records:
+            supported = record.get("supported_parameters")
+            declared = supported if isinstance(supported, dict) else {}
+            slug = record.get("provider_slug")
+            if not isinstance(slug, str) or not slug:
+                continue
+            ok = True
+            for name, value in chosen.items():
+                if name not in declared:
+                    continue
+                fitted, _note = ImageGenerationAdapter._fit_descriptor(declared.get(name), value)
+                if fitted is None:
+                    ok = False
+                    break
+            if ok:
+                keep.append(slug)
+        return keep
+
+    @staticmethod
     def _split_image_config(
         body: dict[str, Any],
         *,
         allowed_passthrough: tuple[str, ...] | frozenset[str],
         record: dict[str, Any] | None,
+        records: list[dict[str, Any]] | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any], list[_Note]]:
         raw = body.get("image_config") if isinstance(body, dict) else None
         if not isinstance(raw, dict):
             return {}, {}, []
         supported = (record or {}).get("supported_parameters")
-        declared = supported if isinstance(supported, dict) else None
+        declared = (
+            ImageGenerationAdapter._union_declared(records)
+            if records
+            else (supported if isinstance(supported, dict) else None)
+        )
         top_level: dict[str, Any] = {}
         provider: dict[str, Any] = {}
         notes: list[_Note] = []
@@ -241,7 +313,10 @@ class ImageGenerationAdapter:
                     f"{shown} was ignored because {name} was set explicitly",
                 )
                 continue
-            if name in _SCHEMA_ONLY_PARAMS:
+            if name in _SCHEMA_ONLY_PARAMS and (declared is None or name not in declared):
+                # Free text only while nothing publishes a domain for it. The renderer
+                # draws a typed control the moment a model does publish one, and sending
+                # it unchecked here would accept a value that control could never offer.
                 top_level[name] = value
                 continue
             if name in _TOP_LEVEL_PARAMS:
@@ -835,8 +910,13 @@ class ImageGenerationAdapter:
             for item in ((record or {}).get("allowed_passthrough_parameters") or [])
             if isinstance(item, str)
         )
+        cached = self._endpoint_cache.get(api_model_id)
+        records = list(cached[1]) if cached else []
+        reachable_records = (
+            self._reachable_records(records, requested_provider) if record is not None else []
+        )
         top_level, provider_params, notes = self._split_image_config(
-            body, allowed_passthrough=allowed, record=record
+            body, allowed_passthrough=allowed, record=record, records=reachable_records
         )
 
         payload: dict[str, Any] = {"model": api_model_id, "prompt": prompt}
@@ -848,8 +928,6 @@ class ImageGenerationAdapter:
         if refs:
             payload["input_references"] = refs
 
-        cached = self._endpoint_cache.get(api_model_id)
-        records = list(cached[1]) if cached else []
         carriers = self._option_carriers(records)
         if provider_params and not carriers:
             names = summarise_names(sorted(provider_params), _PROVIDER_KEY_REPORT_LIMIT)
@@ -890,6 +968,10 @@ class ImageGenerationAdapter:
                 api_model_id,
                 names,
             )
+        reachable = self._records_accepting(reachable_records, top_level)
+        if reachable and len(reachable) < len(reachable_records) and "only" not in provider:
+            provider["only"] = sorted(reachable)
+
         if provider:
             payload["provider"] = provider
 
@@ -897,7 +979,13 @@ class ImageGenerationAdapter:
             notes, api_model_id=api_model_id, event_emitter=event_emitter
         )
 
-        if self._every_endpoint_publishes_streaming(records):
+        requested = payload.get("n")
+        single = not (
+            isinstance(requested, int)
+            and not isinstance(requested, bool)
+            and requested > 1
+        )
+        if single and self._every_endpoint_publishes_streaming(records):
             payload["stream"] = True
 
         if event_emitter:
@@ -915,11 +1003,13 @@ class ImageGenerationAdapter:
         )
 
         outcome["usage"] = result.usage
-        outcome["costed"] = True
-        await self._record_cost(
-            valves, result.usage, user=user, metadata=metadata, user_obj=user_obj,
-            api_model_id=api_model_id,
+        await asyncio.shield(
+            self._record_cost(
+                valves, result.usage, user=user, metadata=metadata, user_obj=user_obj,
+                api_model_id=api_model_id,
+            )
         )
+        outcome["costed"] = True
 
         snippets: list[str] = []
         unsaved = 0

@@ -40,7 +40,7 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         ],
     },
     "google/gemini-2.5-flash-image": {
-        "display_name": "Google: Gemini 2.5 Flash Image",
+        "display_name": "Google: Nano Banana (Gemini 2.5 Flash Image)",
         "best_known_for": (
             "Google's standard Gemini multimodal text+image model. Best for "
             "prompt-following tasks with cinematic composition and natural-"
@@ -52,7 +52,7 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         ],
     },
     "google/gemini-3-pro-image-preview": {
-        "display_name": "Google: Gemini 3 Pro Image (Preview)",
+        "display_name": "Google: Nano Banana Pro (Gemini 3 Pro Image Preview)",
         "best_known_for": (
             "Premium tier of Gemini 3 with native image output. Highest "
             "fidelity Gemini image model OpenRouter exposes; best for hero "
@@ -64,7 +64,7 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         ],
     },
     "google/gemini-3.1-flash-image-preview": {
-        "display_name": "Google: Gemini 3.1 Flash Image (Preview)",
+        "display_name": "Google: Nano Banana 2 (Gemini 3.1 Flash Image Preview)",
         "best_known_for": (
             "Cost-optimized Gemini 3.1 with native image output AND unique "
             "extended knobs: 4 extra aspect ratios (1:4, 4:1, 1:8, 8:1) for "
@@ -156,7 +156,8 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "best_known_for": (
             "OpenAI's image model on their dedicated Images API. Accurate text "
             "rendering, transparent backgrounds, and editing with up to sixteen "
-            "reference images — the widest reference support of any model here."
+            "reference images — the highest limit published here, matched by the other "
+            "OpenAI image models and well above the rest."
         ),
         "tips_and_pitfalls": [
             "Transparent backgrounds come from the background setting, not from asking for them in the prompt.",
@@ -179,8 +180,8 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "best_known_for": (
             "OpenAI's newest image model, on the dedicated Images API. "
             "High-fidelity generation and editing, and the current default choice "
-            "among the OpenAI image models unless you need GPT Image 1's "
-            "sixteen-reference editing specifically."
+            "among the OpenAI image models. GPT Image 1 remains worth choosing for its "
+            "particular look; both take up to sixteen reference images."
         ),
         "tips_and_pitfalls": [
             "Answers only on the image endpoint — it is not available as a chat model.",
@@ -299,37 +300,6 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Use Fast for iteration and high-volume production; switch to V2.5 Pro for quality-sensitive finals.",
         ],
     },
-    "sourceful/riverflow-v2-max-preview": {
-        "display_name": "Sourceful: Riverflow V2 Max (Preview)",
-        "best_known_for": (
-            "Preview release of the highest-tier Riverflow variant. Higher "
-            "fidelity than Pro but preview status means specs may shift. "
-            "Pure-image-only output."
-        ),
-        "tips_and_pitfalls": [
-            "Preview — quality and pricing may change without notice.",
-        ],
-    },
-    "sourceful/riverflow-v2-standard-preview": {
-        "display_name": "Sourceful: Riverflow V2 Standard (Preview)",
-        "best_known_for": (
-            "Standard preview release of Riverflow V2 — entry-tier quality "
-            "and pricing. Pure-image-only."
-        ),
-        "tips_and_pitfalls": [
-            "Preview status — specs may change.",
-        ],
-    },
-    "sourceful/riverflow-v2-fast-preview": {
-        "display_name": "Sourceful: Riverflow V2 Fast (Preview)",
-        "best_known_for": (
-            "Preview release of the fastest Riverflow tier. Pure-image-only "
-            "with reduced quality versus Pro/Standard at lower cost."
-        ),
-        "tips_and_pitfalls": [
-            "Preview — pricing/quality may shift.",
-        ],
-    },
     "black-forest-labs/flux.2-pro": {
         "display_name": "Black Forest Labs: FLUX.2 Pro",
         "best_known_for": (
@@ -388,7 +358,7 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         ),
         "tips_and_pitfalls": [
             "PURE-image-only — does NOT output text.",
-            "Supports temperature/top_p (unusual for image models) — useful for varied outputs from same prompt.",
+            "Publishes a Seed control and up to 10 images per request — the pair to reach for when you want several varied takes on one prompt.",
         ],
     },
     "recraft/recraft-v3": {
@@ -405,11 +375,11 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         ),
         "tips_and_pitfalls": [
             "PURE-image-only — does NOT output text in chat.",
-            "ONLY Recraft variant with `style` and `text_layout`. V4 / V4 Pro lack both.",
+            "Every Recraft variant takes `style` and `text_layout`; V3 is the one tuned for long-form text, so it holds full sentences and paragraphs where the others hold short lines.",
             "For text rendering: put exact wording in quotes in your prompt AND use `text_layout` for precise placement (V3-exclusive feature).",
             "Style names: see https://www.recraft.ai/docs/api-reference/styles. Vector styles NOT supported via OpenRouter.",
             "text_layout: array of {text, bbox} where bbox is 4 [x,y] corners in 0-1 coords (order: TL, TR, BR, BL).",
-            "If you need newer composition / cleaner geometry → V4 / V4 Pro (but lose text_layout + style).",
+            "If you need newer composition or cleaner geometry, V4 and V4.1 offer the same three settings with a different look.",
         ],
     },
     "recraft/recraft-v4": {
@@ -426,7 +396,7 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         ),
         "tips_and_pitfalls": [
             "PURE-image-only.",
-            "Does NOT support `style` or `text_layout` — those are V3 ONLY. For long-form text or precise placement use V3.",
+            "Takes `style`, `controls` and `text_layout` like every Recraft variant. For long-form text — full sentences and paragraphs — V3 is still the stronger choice.",
             "Image-to-image: only one input image supported.",
             "V4 limitations (per Recraft): photorealistic human faces and hands can be unreliable; not the right tool for editorial portraiture.",
             "Use V4 for fast iteration and social/web assets; switch to V4 Pro for print-ready finals at 2K.",
@@ -584,13 +554,14 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         ],
     },
     "x-ai/grok-imagine-image-quality": {
-        "display_name": "xAI: Grok Imagine Image Quality",
+        "display_name": "SpaceXAI: Grok Imagine Image Quality",
         "best_known_for": (
             "xAI's fast, high-fidelity image generation and editing model. "
             "Accepts text prompts and optional reference images; produces "
             "photorealistic outputs at 1K or 2K. Best for photoreal scenes, "
-            "compositional control, and workflows that need Grok-only tall "
-            "phone-screen aspect ratios (9:19.5, 9:20, 1:2, 2:1) or an `auto` "
+            "compositional control, and workflows that need tall phone-screen aspect "
+            "ratios (9:19.5, 9:20 — Seedream 4.5 is the only other model offering "
+            "them) or an `auto` "
             "ratio that lets the model pick frame shape from prompt."
         ),
         "tips_and_pitfalls": [
@@ -810,10 +781,10 @@ def render_image_help(
 
     from ..filters.image_filter_renderer import (
         _SCHEMA_ONLY_CAVEAT,
-        ALWAYS_ON_CONTROLS,
         IMAGE_KNOB_TITLES,
         _image_shared_by_some,
         _published_records,
+        always_on_controls,
         build_image_model_filter_spec,
     )
 
@@ -835,7 +806,9 @@ def render_image_help(
             )
         return "\n".join(lines) + "\n"
 
-    for _name, _annotation, _default, title, description in ALWAYS_ON_CONTROLS:
+    for _name, _annotation, _default, title, description in always_on_controls(
+        getattr(spec, 'dedicated_image_api', True)
+    ):
         lines.append(f"- **{title}** — {description}".replace("  ", " "))
     also_offered = dict(spec.narrowed)
     for name, values in spec.enums:

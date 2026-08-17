@@ -391,9 +391,6 @@ def test_the_four_stream_events_are_keyed_by_their_exact_discriminator():
         "image_generation.completed",
         "error",
     }
-    assert not any(
-        name.startswith("image_generation.") for name in _IMAGE_STREAM_HANDLERS if name == "error"
-    )
 
 
 def _sse(*events: dict[str, Any]) -> str:

@@ -281,6 +281,12 @@ def media_capability_defaults(valves: Any, pipe_capabilities: dict[str, bool]) -
     return defaults
 
 
+def media_builtin_tool_defaults(capability_defaults: dict[str, Any]) -> dict[str, Any]:
+    if capability_defaults.get("file_context") is not False:
+        return {}
+    return {"files": False}
+
+
 def needs_frontend_catalog(valves: Any, provider_routing_enabled: bool) -> bool:
     """Whether any enabled feature reads something only the frontend catalog carries.
 
@@ -2048,6 +2054,18 @@ class ModelCatalogManager:
                 if merged_caps != existing_caps:
                     meta_dict["capabilities"] = merged_caps
                     meta_updated = True
+
+                builtin_tool_defaults = media_builtin_tool_defaults(merged_caps)
+                if builtin_tool_defaults:
+                    existing_builtin = meta_dict.get("builtinTools")
+                    merged_builtin: dict[str, Any] = (
+                        dict(existing_builtin) if isinstance(existing_builtin, dict) else {}
+                    )
+                    for key, value in builtin_tool_defaults.items():
+                        merged_builtin.setdefault(key, value)
+                    if merged_builtin != existing_builtin:
+                        meta_dict["builtinTools"] = merged_builtin
+                        meta_updated = True
 
             if (
                 update_images and profile_image_url

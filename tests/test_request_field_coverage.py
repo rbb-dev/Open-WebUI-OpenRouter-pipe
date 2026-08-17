@@ -76,12 +76,18 @@ def test_every_gap_carries_a_reason_long_enough_to_be_one(kind, gaps):
         assert len(reason.split()) >= 12, f"{kind}.{field}: {reason!r}"
 
 
-@pytest.mark.parametrize(("kind", "required"), [("image", "prompt"), ("video", "model")])
-def test_a_required_field_is_never_listed_as_a_gap(kind, required):
-    """A field the format demands cannot be one this deployment declines to send."""
+@pytest.mark.parametrize("kind", ["image", "video"])
+def test_a_required_field_is_never_listed_as_a_gap(kind):
+    """A field the format demands cannot be one this deployment declines to send.
+
+    Every recorded required field is checked, not one named here: naming one made the
+    test a constant that a constant in the recording satisfied, and the video recording
+    was missing `prompt` for exactly as long as nobody compared the two.
+    """
     gaps = IMAGE_FIELD_GAPS if kind == "image" else VIDEO_FIELD_GAPS
-    assert required in RECORDED[kind]["required"]
-    assert required not in gaps
+    required = RECORDED[kind]["required"]
+    assert required, f"{kind} records no required fields, so this gate asserts nothing"
+    assert not (set(required) & set(gaps)), sorted(set(required) & set(gaps))
 
 
 def test_the_video_adapter_reads_the_partition_rather_than_a_copy_of_it():

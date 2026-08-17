@@ -84,6 +84,7 @@ class ImageModelFilterSpec:
     marker: str
     dotted_id: str = ""
     contract_read: bool = False
+    dedicated_image_api: bool = True
     published_anything: bool = False
     """Whether any record published a renderable setting, before agreement was applied.
 
@@ -320,6 +321,7 @@ def build_image_model_filter_spec(
         marker=f"{_OPENROUTER_IMAGE_FILTER_MARKER}:{canonical}",
         dotted_id=sanitize_model_id(canonical.lstrip("~")).casefold(),
         contract_read=endpoint_record is not None,
+        dedicated_image_api=not _answers_on_the_chat_route(image_model),
         published_anything=any(
             isinstance((record.get("supported_parameters") or {}), dict)
             and any(
@@ -432,14 +434,38 @@ ALWAYS_ON_CONTROLS: tuple[tuple[str, str, str, str, str], ...] = (
     ),
 )
 
-_ALWAYS_ON_VALVES = tuple(
-    f"{name}: {annotation} = Field(\n"
-    f"            default={default},\n"
-    f'            title="{title}",\n'
-    f'            description="{description}",\n'
-    "        )"
-    for name, annotation, default, title, description in ALWAYS_ON_CONTROLS
-)
+def _answers_on_the_chat_route(image_model: Any) -> bool:
+    if not isinstance(image_model, dict):
+        return False
+    modalities = (image_model.get("architecture") or {}).get("output_modalities")
+    if not isinstance(modalities, list):
+        return False
+    return "image" in modalities and "text" in modalities
+
+
+_IMAGE_API_ONLY_CONTROLS = frozenset({"IMAGE_REFERENCE_MODE", "IMAGE_REFERENCE_URLS"})
+
+
+def always_on_controls(dedicated_image_api: bool) -> tuple[tuple[str, str, str, str, str], ...]:
+    if dedicated_image_api:
+        return ALWAYS_ON_CONTROLS
+    return tuple(c for c in ALWAYS_ON_CONTROLS if c[0] not in _IMAGE_API_ONLY_CONTROLS)
+
+
+def _always_on_valves(dedicated_image_api: bool) -> tuple[str, ...]:
+    return tuple(
+        f"{name}: {annotation} = Field(\n"
+        f"            default={default},\n"
+        f"            title={title!r},\n"
+        f"            description={description!r},\n"
+        "        )"
+        for name, annotation, default, title, description in always_on_controls(
+            dedicated_image_api
+        )
+    )
+
+
+_ALWAYS_ON_VALVES = _always_on_valves(True)
 
 ALWAYS_ON_VALVE_NAMES = frozenset(name for name, *_rest in ALWAYS_ON_CONTROLS)
 
@@ -452,8 +478,10 @@ def _image_shared_by_some(values: tuple[Any, ...]) -> str:
     )
 
 
-def _render_image_always_on_valves() -> str:
-    return "\n".join(_image_field(block) for block in _ALWAYS_ON_VALVES)
+def _render_image_always_on_valves(dedicated_image_api: bool = True) -> str:
+    return "\n".join(
+        _image_field(block) for block in _always_on_valves(dedicated_image_api)
+    )
 
 
 def _render_image_model_user_valves(spec: ImageModelFilterSpec) -> str:
@@ -477,8 +505,8 @@ def _render_image_model_user_valves(spec: ImageModelFilterSpec) -> str:
             _image_field(
                 f"{_valve_name(name)}: Literal[{literals}] = Field(\n"
                 '            default="",\n'
-                f'            title="{title}",\n'
-                f'            description="{description} Empty uses the model default.{caveat}",\n'
+                f"            title={title!r},\n"
+                f"            description={f'{description} Empty uses the model default.{caveat}'!r},\n"
                 "        )"
             )
         )
@@ -488,8 +516,8 @@ def _render_image_model_user_valves(spec: ImageModelFilterSpec) -> str:
             _image_field(
                 f"{_valve_name(name)}: str = Field(\n"
                 '            default="",\n'
-                f'            title="{title}",\n'
-                f'            description="{description} {_SCHEMA_ONLY_CAVEAT}",\n'
+                f"            title={title!r},\n"
+                f"            description={f'{description} {_SCHEMA_ONLY_CAVEAT}'!r},\n"
                 "        )"
             )
         )
@@ -501,9 +529,8 @@ def _render_image_model_user_valves(spec: ImageModelFilterSpec) -> str:
                 "            default=None,\n"
                 f"            ge={low},\n"
                 f"            le={high},\n"
-                f'            title="{title}",\n'
-                f'            description="{description} This model accepts {low} to {high}. '
-                'Leave it empty to use the model default.",\n'
+                f"            title={title!r},\n"
+                f"            description={f'{description} This model accepts {low} to {high}. Leave it empty to use the model default.'!r},\n"
                 "        )"
             )
         )
@@ -513,9 +540,8 @@ def _render_image_model_user_valves(spec: ImageModelFilterSpec) -> str:
             _image_field(
                 f"{_valve_name(name)}: int | None = Field(\n"
                 "            default=None,\n"
-                f'            title="{title}",\n'
-                f'            description="{description} Leave it empty to use the model '
-                'default.",\n'
+                f"            title={title!r},\n"
+                f"            description={f'{description} Leave it empty to use the model default.'!r},\n"
                 "        )"
             )
         )
@@ -681,7 +707,7 @@ class Filter:
     class UserValves(BaseModel):
 {_KEEP_WHAT_STILL_FITS}
 
-{_render_image_always_on_valves()}
+{_render_image_always_on_valves(spec.dedicated_image_api)}
 {_render_image_model_user_valves(spec)}
 
     def __init__(self) -> None:
@@ -700,7 +726,7 @@ class Filter:
         if not isinstance(raw, str) or not raw.strip():
             return {{}}
         try:
-            parsed = json.loads(raw)
+            parsed = json.loads(raw, parse_float=_json_number, parse_constant=_json_constant)
         except ValueError as exc:
             raise ImageFilterInputError(f"{{field}} is not valid JSON: {{exc}}") from exc
         if not isinstance(parsed, dict):
@@ -719,7 +745,7 @@ class Filter:
         if not isinstance(raw, str) or not raw.strip():
             return []
         try:
-            parsed = json.loads(raw)
+            parsed = json.loads(raw, parse_float=_json_number, parse_constant=_json_constant)
         except ValueError as exc:
             raise ImageFilterInputError(f"{{field}} is not valid JSON: {{exc}}") from exc
         if not isinstance(parsed, list):
@@ -842,13 +868,61 @@ class Filter:
 '''
 
 
-IMAGE_GEN_TOOL_TIER_KEY_CANDIDATES: tuple[str, ...] = ("resolution", "size", "image_size")
+IMAGE_GEN_TOOL_TIER_KEY_CANDIDATES: tuple[str, ...] = ("size", "resolution", "image_size")
 
 IMAGE_GEN_TOOL_TIER_KEY: str = IMAGE_GEN_TOOL_TIER_KEY_CANDIDATES[0]
+
+IMAGE_GEN_TOOL_PARAMS: tuple[str, ...] = (
+    "quality",
+    "size",
+    "aspect_ratio",
+    "background",
+    "output_format",
+    "output_compression",
+    "moderation",
+)
+
+IMAGE_GEN_TOOL_FALLBACK_VALUES: dict[str, tuple[str, ...]] = {
+    "output_format": ("png", "jpeg", "webp"),
+    "background": ("transparent", "opaque"),
+}
 
 
 def image_gen_tool_wire_keys() -> dict[str, str]:
     return {"resolution": IMAGE_GEN_TOOL_TIER_KEY}
+
+
+def build_image_gen_tool_spec(spec: ImageModelFilterSpec) -> ImageModelFilterSpec:
+    published = dict(spec.enums)
+    tiers = published.get("resolution", ())
+    enums: list[tuple[str, tuple[Any, ...]]] = []
+    ranges: list[tuple[str, int, int]] = []
+    schema_only: list[str] = []
+    published_ranges = {name: (low, high) for name, low, high in spec.ranges}
+    for name in IMAGE_GEN_TOOL_PARAMS:
+        if name == "size":
+            if tiers:
+                enums.append(("resolution", tiers))
+            schema_only.append("size")
+            continue
+        if name in published:
+            enums.append((name, published[name]))
+        elif name in published_ranges:
+            low, high = published_ranges[name]
+            ranges.append((name, low, high))
+        elif name in IMAGE_GEN_TOOL_FALLBACK_VALUES:
+            enums.append((name, IMAGE_GEN_TOOL_FALLBACK_VALUES[name]))
+        else:
+            schema_only.append(name)
+    return replace(
+        spec,
+        enums=tuple(enums),
+        ranges=tuple(ranges),
+        supported=(),
+        schema_only=tuple(schema_only),
+        narrowed=(),
+        passthrough=(),
+    )
 
 
 def image_gen_model_note(spec: ImageModelFilterSpec, *, catalog_match: bool) -> str:
@@ -868,12 +942,12 @@ def image_gen_model_note(spec: ImageModelFilterSpec, *, catalog_match: bool) -> 
         if spec.published_anything:
             return (
                 f"{opening} The companies serving {named} accept different settings, so "
-                "none can be offered without knowing which one will take the request. It "
-                "draws with its own defaults."
+                "only the ones every model carries are offered. It draws with its own "
+                "defaults for the rest."
             )
         return (
-            f"{opening} {named} publishes no adjustable settings, so it draws with its "
-            "own defaults."
+            f"{opening} {named} publishes no settings of its own, so only the ones every "
+            "model carries are offered and it draws with its own defaults."
         )
     return (
         f"{opening} The settings offered to users are the ones {named} publishes; "
@@ -887,7 +961,7 @@ def render_image_gen_filter_source(
     catalog_match: bool,
     selected_model: str = "",
 ) -> str:
-    tool_spec = replace(spec, passthrough=())
+    tool_spec = build_image_gen_tool_spec(spec)
     moderation_values, moderation_meaning = PASSTHROUGH_ENUMS["moderation"]
     model_id = scrub_surrogates(
         selected_model.strip() or spec.model_id or _OPENROUTER_IMAGE_GEN_FILTER_DEFAULT_MODEL

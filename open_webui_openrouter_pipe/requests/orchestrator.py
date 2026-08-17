@@ -32,9 +32,14 @@ from ..core.fusion_defaults import find_fusion_entry, resolve_fusion_run
 from ..core.logging_system import SessionLogger
 from ..core.timing_logger import timed
 from ..core.utils import _select_best_effort_fallback
+from ..core.warn_latch import warn_level
 from ..filters.fusion_filter_renderer import is_fusion_model
 from ..integrations.image_help import render_image_help
-from ..integrations.provider_options import requested_provider_block
+from ..integrations.provider_options import (
+    CHAT_PROVIDER_KEYS,
+    requested_provider_block,
+    restrict_provider_block,
+)
 from ..models.registry import ModelFamily, OpenRouterModelRegistry
 from ..storage.owui_files import get_file_by_id, infer_file_mime_type
 from ..storage.users import get_user_by_id
@@ -127,6 +132,9 @@ def _fusion_plugin_injection(
         if isinstance(entry, dict) and entry.get("id") == "fusion":
             return None
     return [*items, {"id": "fusion"}]
+
+
+_warned_chat_provider_keys: set[str] = set()
 
 
 _FUSION_PARITY_DIALS = (
@@ -661,7 +669,21 @@ class RequestOrchestrator:
                         merged_provider = {**existing_provider, **filter_provider}
                     else:
                         merged_provider = filter_provider
-                    responses_body.provider = merged_provider
+                    merged_provider, unsupported = restrict_provider_block(
+                        merged_provider, CHAT_PROVIDER_KEYS
+                    )
+                    responses_body.provider = merged_provider or None
+                    if unsupported:
+                        self.logger.log(
+                            warn_level(
+                                _warned_chat_provider_keys,
+                                f"{responses_body.model}:unsupported",
+                            ),
+                            "Provider preferences the chat request format does not define "
+                            "were not sent for %r: %s.",
+                            responses_body.model,
+                            ", ".join(unsupported),
+                        )
                     self.logger.debug("Injected provider routing from filter: %s", filter_provider)
 
         normalized_model_id = ModelFamily.base_model(responses_body.model)

@@ -257,8 +257,8 @@ the six OpenAI image models that name it.
 
 Where a model is served by several providers whose published choices differ, the
 values only some of them accept are still offered, marked on the control; the
-adapter fits the chosen value to whichever record serves the request and reports
-it if that provider does not accept it. Measured across all forty recorded
+pipe fits the chosen value to whichever company serves the request and tells you
+if that company does not accept it. Measured across all forty recorded
 models this affects one value: `4K` for `resolution` on
 `google/gemini-3-pro-image`.
 

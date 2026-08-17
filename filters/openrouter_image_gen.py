@@ -72,10 +72,40 @@ class Filter:
                 kept[name] = data[name]
             return kept
 
+        IMAGE_BACKGROUND: Literal['', 'transparent', 'opaque'] = Field(
+                    default="",
+                    title='Background',
+                    description='Background treatment. Empty uses the model default.',
+                )
+        IMAGE_OUTPUT_FORMAT: Literal['', 'png', 'jpeg', 'webp'] = Field(
+                    default="",
+                    title='Output format',
+                    description='Container the image comes back in. Empty uses the model default.',
+                )
+        IMAGE_QUALITY: str = Field(
+                    default="",
+                    title='Quality',
+                    description='Rendering quality tier. This model publishes no list of what it accepts here, so the value goes out as typed and the company running it decides. Empty leaves it unset.',
+                )
         IMAGE_SIZE: str = Field(
                     default="",
-                    title="Output size",
-                    description="Exact pixel dimensions, where the model takes them rather than a tier. This model publishes no list of what it accepts here, so the value goes out as typed and the company running it decides. Empty leaves it unset.",
+                    title='Output size',
+                    description='Exact pixel dimensions, where the model takes them rather than a tier. This model publishes no list of what it accepts here, so the value goes out as typed and the company running it decides. Empty leaves it unset.',
+                )
+        IMAGE_ASPECT_RATIO: str = Field(
+                    default="",
+                    title='Aspect ratio',
+                    description='Frame shape. This model publishes no list of what it accepts here, so the value goes out as typed and the company running it decides. Empty leaves it unset.',
+                )
+        IMAGE_OUTPUT_COMPRESSION: str = Field(
+                    default="",
+                    title='Output compression',
+                    description='Compression level, where the format allows one. This model publishes no list of what it accepts here, so the value goes out as typed and the company running it decides. Empty leaves it unset.',
+                )
+        IMAGE_MODERATION: str = Field(
+                    default="",
+                    title='moderation',
+                    description=' This model publishes no list of what it accepts here, so the value goes out as typed and the company running it decides. Empty leaves it unset.',
                 )
 
     def __init__(self) -> None:
@@ -112,9 +142,27 @@ class Filter:
         params: dict[str, Any] = {"model": self.valves.IMAGE_GENERATION_MODEL}
         if self.valves.IMAGE_GENERATION_MODERATION != 'auto':
             params["moderation"] = self.valves.IMAGE_GENERATION_MODERATION
+        value = user_valves.IMAGE_BACKGROUND
+        if value != "":
+            params['background'] = value
+        value = user_valves.IMAGE_OUTPUT_FORMAT
+        if value != "":
+            params['output_format'] = value
+        wanted = (user_valves.IMAGE_QUALITY or "").strip()
+        if wanted:
+            params['quality'] = wanted
         wanted = (user_valves.IMAGE_SIZE or "").strip()
         if wanted:
             params['size'] = wanted
+        wanted = (user_valves.IMAGE_ASPECT_RATIO or "").strip()
+        if wanted:
+            params['aspect_ratio'] = wanted
+        wanted = (user_valves.IMAGE_OUTPUT_COMPRESSION or "").strip()
+        if wanted:
+            params['output_compression'] = wanted
+        wanted = (user_valves.IMAGE_MODERATION or "").strip()
+        if wanted:
+            params['moderation'] = wanted
 
         if isinstance(__metadata__, dict):
             prev_pipe_meta = __metadata__.get('openrouter_pipe')

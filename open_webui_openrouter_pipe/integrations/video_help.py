@@ -12,18 +12,16 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "best_known_for": (
             "Black Forest Labs' FLUX.3 Video, a text- and image-to-video model built around "
             "controlled, keyframe-driven shots. You can hand it an opening still, a closing still, "
-            "or both, and it fills in the motion between them — and it will continue an existing "
-            "clip rather than only starting a new one, so a long sequence can be built a segment at "
-            "a time instead of being asked for in one go. Clips run 5 to 20 seconds at 720p or "
+            "or both, and it fills in the motion between them. Clips run 5 to 20 seconds at 720p or "
             "1080p, across six framings from ultrawide 21:9 through to vertical 9:16, and it "
             "generates audio with the picture. There is no seed, so two runs of the same prompt "
             "will differ."
         ),
         "tips_and_pitfalls": [
             "Anchor both ends when you know where the shot should finish — a closing frame is what separates this from a model you can only point at a starting still.",
-            "Build long sequences as a chain of continuations rather than one very long request; each segment stays sharper and you can stop and redirect between them.",
+            "Build a long sequence a segment at a time: generate a shot, then use its closing still as the next shot's opening frame. Each segment stays sharper than one very long request, and you can stop and redirect between them.",
             "There is no seed here, so an idea you like cannot be re-rolled exactly — save the clip you want before iterating on the prompt.",
-            "Continuing an existing clip is charged at its own rate, higher than generating fresh footage; check the cost list below before planning a long chain.",
+            "OpenRouter publishes a higher rate for continuing an existing clip, but this model takes no clip as input here, so every request is charged at the fresh-footage rate in the cost list below.",
             "Audio is generated alongside the picture, so it is worth describing the sound you want rather than leaving it to chance.",
         ],
         "knob_descriptions": {
@@ -174,8 +172,8 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Aspect ratio": "Seven framings: 16:9, 9:16, 1:1, 4:3, 3:4, and the photographic 3:2 and 2:3.",
             "Resolution": "480p, 720p, or 1080p — the control that most changes what a second costs.",
             "Frames": "Whether a supplied still opens the shot: none for pure text-to-video, or first_only to animate from it.",
-            "Audio": "Whether a soundtrack is generated with the picture.",
-            "Seed": "Fixes the random draw so the same prompt and seed reproduce the same clip.",
+            "Audio": "Asks for a soundtrack with the picture. Nothing is published about whether this model obliges, so leaving it alone keeps the model's own behaviour.",
+            "Seed": "Asks for a fixed random draw so a prompt can be re-run. Nothing is published about whether this model honours one, so treat a repeat as likely rather than guaranteed.",
             "Provider options JSON": "Raw parameters for anything the controls above do not cover.",
         },
     },
@@ -609,7 +607,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Duration": "Sets clip length from 4–12 seconds; cost scales linearly and quality/continuity degrade past ~8s, so iterate short and only extend after motion looks right.",
             "Aspect ratio": "Picks one of seven framings (1:1, 3:4, 9:16, 9:21, 4:3, 16:9, 21:9) and should match your input image orientation to avoid awkward crops or stretched motion.",
             "Resolution": "Chooses 480p (fast previews), 720p (balanced), or native 1080p (final delivery); 1.5 Pro does not offer 2K, unlike Seedance 2.0.",
-            "Size": "Selects from 21 exact pixel dimensions — the widest size matrix of any video model on OpenRouter — so you can hit platform-specific targets without post-crop.",
+            "Size": "Selects from 21 exact pixel dimensions, so you can hit platform-specific targets without post-crop.",
             "Frames": "Accepts a first_frame to lock identity/lighting and an optional last_frame to steer the ending, enabling match cuts and multi-shot continuity when you chain clips.",
             "Audio": "Turns on the dual-branch joint generation so lip-sync and physics SFX are produced in the same pass; it is billed at the higher with-audio rate, so disable when you don't need sound.",
             "Seed": "Fixes the random initialisation for reproducible outputs — essential when iterating on prompt wording without re-rolling the whole scene.",
