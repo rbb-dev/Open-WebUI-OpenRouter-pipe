@@ -21,6 +21,221 @@ logger = logging.getLogger(__name__)
 
 _LITERAL_VALUE_RE = re.compile(r"^[a-zA-Z0-9:._ -]{1,64}$")
 
+_CONTROL_ENUM = "enum"
+_CONTROL_TOGGLE = "toggle"
+_CONTROL_NUMBER = "number"
+_CONTROL_TEXT = "text"
+
+_CLOSED_DOMAIN_CONTROLS: frozenset[str] = frozenset(
+    {_CONTROL_ENUM, _CONTROL_TOGGLE, _CONTROL_NUMBER}
+)
+
+_UNCONFIRMED_DOMAIN = "unconfirmed: no vendor page publishes a domain for this parameter"
+
+_TOGGLE_VALUES: tuple[str, ...] = ("model_default", "on", "off")
+
+_VEO_GEMINI_API = "https://ai.google.dev/gemini-api/docs/veo"
+_VEO_VERTEX_TEXT_TO_VIDEO = (
+    "https://docs.cloud.google.com/vertex-ai/generative-ai/docs/video/generate-videos-from-text"
+)
+_VEO_VERTEX_PROMPT_REWRITER = (
+    "https://docs.cloud.google.com/vertex-ai/generative-ai/docs/video/turn-the-prompt-rewriter-off"
+)
+_MINIMAX_TEXT_TO_VIDEO = "https://platform.minimax.io/docs/api-reference/video-generation-t2v"
+_WAN_DASHSCOPE_TEXT_TO_VIDEO = (
+    "https://www.alibabacloud.com/help/en/model-studio/text-to-video-api-reference"
+)
+_WAN_FAL_2_6_IMAGE_TO_VIDEO = "https://fal.ai/models/wan/v2.6/image-to-video/api"
+_SEEDANCE_ARK_TASKS = "https://www.volcengine.com/docs/82379/1520757"
+_KLING_LEGACY_IMAGE_TO_VIDEO = (
+    "https://app.klingai.com/cn/dev/document-api/api/video/3-0-omni/image-to-video/legacy"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _PassthroughControl:
+
+    param: str
+    field: str
+    title: str
+    description: str
+    kind: str
+    choices: tuple[tuple[str, str], ...] = ()
+    minimum: float = 0.0
+    maximum: float = 0.0
+    source: str = ""
+
+
+_PASSTHROUGH_CONTROLS: tuple[_PassthroughControl, ...] = (
+    _PassthroughControl(
+        param="personGeneration",
+        field="VIDEO_PERSON_GENERATION",
+        title="Person generation",
+        description=(
+            "Veo policy for human subjects: allow_all, allow_adult, dont_allow (Gemini API "
+            "spelling), disallow (Vertex AI spelling), or model default."
+        ),
+        kind=_CONTROL_ENUM,
+        choices=(
+            ("allow_all", _VEO_GEMINI_API),
+            ("allow_adult", _VEO_GEMINI_API),
+            ("dont_allow", _VEO_GEMINI_API),
+            ("disallow", _VEO_VERTEX_TEXT_TO_VIDEO),
+        ),
+    ),
+    _PassthroughControl(
+        param="conditioningScale",
+        field="VIDEO_CONDITIONING_SCALE",
+        title="Conditioning scale",
+        description="Strength of frame/reference conditioning (0 leaves the model default).",
+        kind=_CONTROL_NUMBER,
+        minimum=0.0,
+        maximum=1.0,
+        source=_UNCONFIRMED_DOMAIN,
+    ),
+    _PassthroughControl(
+        param="cfg_scale",
+        field="VIDEO_CFG_SCALE",
+        title="CFG scale",
+        description=(
+            "Classifier-free guidance strength (0 leaves the provider default; higher values "
+            "bias toward stricter prompt adherence)."
+        ),
+        kind=_CONTROL_NUMBER,
+        minimum=0.0,
+        maximum=1.0,
+        source=_KLING_LEGACY_IMAGE_TO_VIDEO,
+    ),
+    _PassthroughControl(
+        param="enhancePrompt",
+        field="VIDEO_ENHANCE_PROMPT",
+        title="Enhance prompt",
+        description="Veo prompt-rewriter for richer scenes (on/off/model default).",
+        kind=_CONTROL_TOGGLE,
+        source=_VEO_VERTEX_PROMPT_REWRITER,
+    ),
+    _PassthroughControl(
+        param="prompt_optimizer",
+        field="VIDEO_PROMPT_OPTIMIZER",
+        title="Prompt optimizer",
+        description="Provider-side prompt rewriter (on/off/model default).",
+        kind=_CONTROL_TOGGLE,
+        source=_MINIMAX_TEXT_TO_VIDEO,
+    ),
+    _PassthroughControl(
+        param="fast_pretreatment",
+        field="VIDEO_FAST_PRETREATMENT",
+        title="Fast pretreatment",
+        description="Hailuo fast input preprocessing (on/off/model default).",
+        kind=_CONTROL_TOGGLE,
+        source=_MINIMAX_TEXT_TO_VIDEO,
+    ),
+    _PassthroughControl(
+        param="prompt_extend",
+        field="VIDEO_PROMPT_EXTEND",
+        title="Prompt extend",
+        description="Wan prompt-extension toggle (on/off/model default).",
+        kind=_CONTROL_TOGGLE,
+        source=_WAN_DASHSCOPE_TEXT_TO_VIDEO,
+    ),
+    _PassthroughControl(
+        param="ratio",
+        field="VIDEO_RATIO",
+        title="Ratio",
+        description="Wan-specific ratio passthrough; leave blank to use model default.",
+        kind=_CONTROL_TEXT,
+    ),
+    _PassthroughControl(
+        param="enable_prompt_expansion",
+        field="VIDEO_ENABLE_PROMPT_EXPANSION",
+        title="Enable prompt expansion",
+        description="Wan 2.6 prompt expansion toggle (on/off/model default).",
+        kind=_CONTROL_TOGGLE,
+        source=_WAN_FAL_2_6_IMAGE_TO_VIDEO,
+    ),
+    _PassthroughControl(
+        param="shot_type",
+        field="VIDEO_SHOT_TYPE",
+        title="Shot type",
+        description="Wan camera/composition shot type passthrough; blank = model default.",
+        kind=_CONTROL_TEXT,
+    ),
+    _PassthroughControl(
+        param="watermark",
+        field="VIDEO_WATERMARK",
+        title="Watermark",
+        description="Seedance watermark toggle (on/off/model default).",
+        kind=_CONTROL_TOGGLE,
+        source=_SEEDANCE_ARK_TASKS,
+    ),
+    _PassthroughControl(
+        param="req_key",
+        field="VIDEO_REQ_KEY",
+        title="Request key",
+        description="Seedance provider req_key passthrough; blank = model default.",
+        kind=_CONTROL_TEXT,
+    ),
+    _PassthroughControl(
+        param="quality",
+        field="VIDEO_QUALITY",
+        title="Quality",
+        description=(
+            "Sora quality passthrough; OpenAI's video API publishes no quality values, so "
+            "send only one your provider accepts. Blank = model default."
+        ),
+        kind=_CONTROL_TEXT,
+    ),
+    _PassthroughControl(
+        param="style",
+        field="VIDEO_STYLE",
+        title="Style",
+        description="Sora style passthrough; blank = model default.",
+        kind=_CONTROL_TEXT,
+    ),
+)
+
+
+def _is_citation(source: str) -> bool:
+    return source == _UNCONFIRMED_DOMAIN or source.startswith("https://")
+
+
+def _validate_passthrough_controls(controls: tuple[_PassthroughControl, ...]) -> None:
+    seen: set[str] = set()
+    for control in controls:
+        if control.param in seen:
+            raise ValueError(f"{control.param!r} is declared twice in the passthrough table")
+        seen.add(control.param)
+        if control.kind not in _CLOSED_DOMAIN_CONTROLS:
+            if control.choices or control.source:
+                raise ValueError(
+                    f"{control.param!r} renders as free text, which asserts nothing about its "
+                    "values, so it must carry no citation"
+                )
+            continue
+        if control.kind == _CONTROL_ENUM:
+            if not control.choices:
+                raise ValueError(f"{control.param!r} declares an enum with no values")
+            cited = tuple(source for _, source in control.choices)
+        else:
+            if control.choices:
+                raise ValueError(f"{control.param!r} may not declare enum values")
+            cited = (control.source,)
+        for source in cited:
+            if not _is_citation(source):
+                raise ValueError(
+                    f"{control.param!r} renders a closed value domain, so it must name the "
+                    f"document that domain was read from; got {source!r}"
+                )
+
+
+_validate_passthrough_controls(_PASSTHROUGH_CONTROLS)
+
+_UNCONFIRMED_PASSTHROUGH_DOMAINS: frozenset[str] = frozenset(
+    control.param
+    for control in _PASSTHROUGH_CONTROLS
+    if _UNCONFIRMED_DOMAIN in (control.source, *(source for _, source in control.choices))
+)
+
 _HANDLED_PASSTHROUGH_PARAMS: frozenset[str] = frozenset({
     "negative_prompt",
     "negativePrompt",
@@ -29,23 +244,9 @@ _HANDLED_PASSTHROUGH_PARAMS: frozenset[str] = frozenset({
     "videos",
     "images",
     "last_image",
-    "personGeneration",
-    "conditioningScale",
-    "cfg_scale",
-    "enhancePrompt",
-    "prompt_optimizer",
-    "fast_pretreatment",
-    "prompt_extend",
-    "ratio",
-    "enable_prompt_expansion",
-    "shot_type",
-    "watermark",
-    "req_key",
-    "quality",
-    "style",
     "aspectRatio",
     "size",
-})
+}) | frozenset(control.param for control in _PASSTHROUGH_CONTROLS)
 
 
 @dataclass(frozen=True, slots=True)
@@ -647,150 +848,9 @@ def _render_purpose_built_fields(spec: VideoFilterSpec) -> list[str]:
                 "        )"
             )
         )
-    if "personGeneration" in spec.allowed_params:
-        fields.append(
-            _field_block(
-                'VIDEO_PERSON_GENERATION: Literal["", "allow_all", "allow_adult", "dont_allow"] = Field(\n'
-                '            default="",\n'
-                '            title="Person generation",\n'
-                '            description="Veo policy for human subjects: allow_all, allow_adult, dont_allow, or model default.",\n'
-                "        )"
-            )
-        )
-    if "conditioningScale" in spec.allowed_params:
-        fields.append(
-            _field_block(
-                "VIDEO_CONDITIONING_SCALE: float = Field(\n"
-                "            default=0.0,\n"
-                "            ge=0.0,\n"
-                "            le=1.0,\n"
-                '            title="Conditioning scale",\n'
-                '            description="Strength of frame/reference conditioning (0 leaves the model default).",\n'
-                "        )"
-            )
-        )
-    if "cfg_scale" in spec.allowed_params:
-        fields.append(
-            _field_block(
-                "VIDEO_CFG_SCALE: float = Field(\n"
-                "            default=0.0,\n"
-                "            ge=0.0,\n"
-                "            le=1.0,\n"
-                '            title="CFG scale",\n'
-                '            description="Classifier-free guidance strength (0 leaves the provider default; higher values bias toward stricter prompt adherence).",\n'
-                "        )"
-            )
-        )
-    if "enhancePrompt" in spec.allowed_params:
-        fields.append(
-            _field_block(
-                'VIDEO_ENHANCE_PROMPT: Literal["model_default", "on", "off"] = Field(\n'
-                '            default="model_default",\n'
-                '            title="Enhance prompt",\n'
-                '            description="Veo prompt-rewriter for richer scenes (on/off/model default).",\n'
-                "        )"
-            )
-        )
-    if "prompt_optimizer" in spec.allowed_params:
-        fields.append(
-            _field_block(
-                'VIDEO_PROMPT_OPTIMIZER: Literal["model_default", "on", "off"] = Field(\n'
-                '            default="model_default",\n'
-                '            title="Prompt optimizer",\n'
-                '            description="Provider-side prompt rewriter (on/off/model default).",\n'
-                "        )"
-            )
-        )
-    if "fast_pretreatment" in spec.allowed_params:
-        fields.append(
-            _field_block(
-                'VIDEO_FAST_PRETREATMENT: Literal["model_default", "on", "off"] = Field(\n'
-                '            default="model_default",\n'
-                '            title="Fast pretreatment",\n'
-                '            description="Hailuo fast input preprocessing (on/off/model default).",\n'
-                "        )"
-            )
-        )
-    if "prompt_extend" in spec.allowed_params:
-        fields.append(
-            _field_block(
-                'VIDEO_PROMPT_EXTEND: Literal["model_default", "on", "off"] = Field(\n'
-                '            default="model_default",\n'
-                '            title="Prompt extend",\n'
-                '            description="Wan prompt-extension toggle (on/off/model default).",\n'
-                "        )"
-            )
-        )
-    if "ratio" in spec.allowed_params:
-        fields.append(
-            _field_block(
-                'VIDEO_RATIO: str = Field(\n'
-                '            default="",\n'
-                '            title="Ratio",\n'
-                '            description="Wan-specific ratio passthrough; leave blank to use model default.",\n'
-                "        )"
-            )
-        )
-    if "enable_prompt_expansion" in spec.allowed_params:
-        fields.append(
-            _field_block(
-                'VIDEO_ENABLE_PROMPT_EXPANSION: Literal["model_default", "on", "off"] = Field(\n'
-                '            default="model_default",\n'
-                '            title="Enable prompt expansion",\n'
-                '            description="Wan 2.6 prompt expansion toggle (on/off/model default).",\n'
-                "        )"
-            )
-        )
-    if "shot_type" in spec.allowed_params:
-        fields.append(
-            _field_block(
-                'VIDEO_SHOT_TYPE: str = Field(\n'
-                '            default="",\n'
-                '            title="Shot type",\n'
-                '            description="Wan camera/composition shot type passthrough; blank = model default.",\n'
-                "        )"
-            )
-        )
-    if "watermark" in spec.allowed_params:
-        fields.append(
-            _field_block(
-                'VIDEO_WATERMARK: Literal["model_default", "on", "off"] = Field(\n'
-                '            default="model_default",\n'
-                '            title="Watermark",\n'
-                '            description="Seedance watermark toggle (on/off/model default).",\n'
-                "        )"
-            )
-        )
-    if "req_key" in spec.allowed_params:
-        fields.append(
-            _field_block(
-                'VIDEO_REQ_KEY: str = Field(\n'
-                '            default="",\n'
-                '            title="Request key",\n'
-                '            description="Seedance provider req_key passthrough; blank = model default.",\n'
-                "        )"
-            )
-        )
-    if "quality" in spec.allowed_params:
-        fields.append(
-            _field_block(
-                'VIDEO_QUALITY: Literal["", "standard", "hd"] = Field(\n'
-                '            default="",\n'
-                '            title="Quality",\n'
-                '            description="Sora quality preset (standard, hd, or model default).",\n'
-                "        )"
-            )
-        )
-    if "style" in spec.allowed_params:
-        fields.append(
-            _field_block(
-                'VIDEO_STYLE: str = Field(\n'
-                '            default="",\n'
-                '            title="Style",\n'
-                '            description="Sora style passthrough; blank = model default.",\n'
-                "        )"
-            )
-        )
+    for control in _PASSTHROUGH_CONTROLS:
+        if control.param in spec.allowed_params:
+            fields.append(_control_field_block(control))
 
     if spec.intent_classifier_admin_enabled:
         fields.append(
@@ -1028,138 +1088,9 @@ def _render_param_lines(spec: VideoFilterSpec) -> str:
                 '            params["last_image"] = last_image_url.strip()',
             ]
         )
-    if "personGeneration" in spec.allowed_params:
-        lines.extend(
-            [
-                '        person_generation = getattr(user_valves, "VIDEO_PERSON_GENERATION", "")',
-                "        if isinstance(person_generation, str) and person_generation.strip():",
-                '            params["personGeneration"] = person_generation.strip()',
-            ]
-        )
-    if "conditioningScale" in spec.allowed_params:
-        lines.extend(
-            [
-                '        conditioning_scale_raw = getattr(user_valves, "VIDEO_CONDITIONING_SCALE", 0.0)',
-                "        try:",
-                "            conditioning_scale = float(conditioning_scale_raw)",
-                "        except (TypeError, ValueError):",
-                "            conditioning_scale = 0.0",
-                "        if conditioning_scale > 0.0:",
-                '            params["conditioningScale"] = conditioning_scale',
-            ]
-        )
-    if "cfg_scale" in spec.allowed_params:
-        lines.extend(
-            [
-                '        cfg_scale_raw = getattr(user_valves, "VIDEO_CFG_SCALE", 0.0)',
-                "        try:",
-                "            cfg_scale = float(cfg_scale_raw)",
-                "        except (TypeError, ValueError):",
-                "            cfg_scale = 0.0",
-                "        if cfg_scale > 0.0:",
-                '            params["cfg_scale"] = cfg_scale',
-            ]
-        )
-    if "enhancePrompt" in spec.allowed_params:
-        lines.extend(
-            [
-                '        enhance_prompt_toggle = getattr(user_valves, "VIDEO_ENHANCE_PROMPT", "model_default")',
-                '        if enhance_prompt_toggle == "on":',
-                '            params["enhancePrompt"] = True',
-                '        elif enhance_prompt_toggle == "off":',
-                '            params["enhancePrompt"] = False',
-            ]
-        )
-    if "prompt_optimizer" in spec.allowed_params:
-        lines.extend(
-            [
-                '        prompt_optimizer_toggle = getattr(user_valves, "VIDEO_PROMPT_OPTIMIZER", "model_default")',
-                '        if prompt_optimizer_toggle == "on":',
-                '            params["prompt_optimizer"] = True',
-                '        elif prompt_optimizer_toggle == "off":',
-                '            params["prompt_optimizer"] = False',
-            ]
-        )
-    if "fast_pretreatment" in spec.allowed_params:
-        lines.extend(
-            [
-                '        fast_pretreatment_toggle = getattr(user_valves, "VIDEO_FAST_PRETREATMENT", "model_default")',
-                '        if fast_pretreatment_toggle == "on":',
-                '            params["fast_pretreatment"] = True',
-                '        elif fast_pretreatment_toggle == "off":',
-                '            params["fast_pretreatment"] = False',
-            ]
-        )
-    if "prompt_extend" in spec.allowed_params:
-        lines.extend(
-            [
-                '        prompt_extend_toggle = getattr(user_valves, "VIDEO_PROMPT_EXTEND", "model_default")',
-                '        if prompt_extend_toggle == "on":',
-                '            params["prompt_extend"] = True',
-                '        elif prompt_extend_toggle == "off":',
-                '            params["prompt_extend"] = False',
-            ]
-        )
-    if "ratio" in spec.allowed_params:
-        lines.extend(
-            [
-                '        ratio_value = getattr(user_valves, "VIDEO_RATIO", "")',
-                "        if isinstance(ratio_value, str) and ratio_value.strip():",
-                '            params["ratio"] = ratio_value.strip()',
-            ]
-        )
-    if "enable_prompt_expansion" in spec.allowed_params:
-        lines.extend(
-            [
-                '        prompt_expansion_toggle = getattr(user_valves, "VIDEO_ENABLE_PROMPT_EXPANSION", "model_default")',
-                '        if prompt_expansion_toggle == "on":',
-                '            params["enable_prompt_expansion"] = True',
-                '        elif prompt_expansion_toggle == "off":',
-                '            params["enable_prompt_expansion"] = False',
-            ]
-        )
-    if "shot_type" in spec.allowed_params:
-        lines.extend(
-            [
-                '        shot_type_value = getattr(user_valves, "VIDEO_SHOT_TYPE", "")',
-                "        if isinstance(shot_type_value, str) and shot_type_value.strip():",
-                '            params["shot_type"] = shot_type_value.strip()',
-            ]
-        )
-    if "watermark" in spec.allowed_params:
-        lines.extend(
-            [
-                '        watermark_toggle = getattr(user_valves, "VIDEO_WATERMARK", "model_default")',
-                '        if watermark_toggle == "on":',
-                '            params["watermark"] = True',
-                '        elif watermark_toggle == "off":',
-                '            params["watermark"] = False',
-            ]
-        )
-    if "req_key" in spec.allowed_params:
-        lines.extend(
-            [
-                '        req_key_value = getattr(user_valves, "VIDEO_REQ_KEY", "")',
-                "        if isinstance(req_key_value, str) and req_key_value.strip():",
-                '            params["req_key"] = req_key_value.strip()',
-            ]
-        )
-    if "quality" in spec.allowed_params:
-        lines.extend(
-            [
-                '        quality_value = getattr(user_valves, "VIDEO_QUALITY", "")',
-                "        if isinstance(quality_value, str) and quality_value.strip():",
-                '            params["quality"] = quality_value.strip()',
-            ]
-        )
-    if "style" in spec.allowed_params:
-        lines.extend(
-            [
-                '        style_value = getattr(user_valves, "VIDEO_STYLE", "")',
-                "        if isinstance(style_value, str) and style_value.strip():",
-                '            params["style"] = style_value.strip()',
-            ]
-        )
+    for control in _PASSTHROUGH_CONTROLS:
+        if control.param in spec.allowed_params:
+            lines.extend(_control_param_lines(control))
     for name in _unhandled_params(spec):
         lines.extend([
             f'        raw_value = getattr(user_valves, "VIDEO_{name.upper()}", "")',
@@ -1309,8 +1240,67 @@ def _field_block(text: str) -> str:
     return "\n".join(f"        {line}" if line else "" for line in text.splitlines())
 
 
+def _control_field_block(control: _PassthroughControl) -> str:
+    if control.kind == _CONTROL_ENUM:
+        values = ("", *(value for value, _ in control.choices))
+        annotation = f"Literal[{_quoted_union(values)}]"
+        head = '            default="",\n'
+    elif control.kind == _CONTROL_TOGGLE:
+        annotation = f"Literal[{_quoted_union(_TOGGLE_VALUES)}]"
+        head = '            default="model_default",\n'
+    elif control.kind == _CONTROL_NUMBER:
+        annotation = "float"
+        head = (
+            "            default=0.0,\n"
+            f"            ge={control.minimum},\n"
+            f"            le={control.maximum},\n"
+        )
+    else:
+        annotation = "str"
+        head = '            default="",\n'
+    return _field_block(
+        f"{control.field}: {annotation} = Field(\n"
+        f"{head}"
+        f"            title={json.dumps(control.title)},\n"
+        f"            description={json.dumps(control.description)},\n"
+        "        )"
+    )
+
+
+def _control_param_lines(control: _PassthroughControl) -> list[str]:
+    local = control.field.removeprefix("VIDEO_").lower()
+    key = json.dumps(control.param)
+    if control.kind == _CONTROL_TOGGLE:
+        return [
+            f'        {local}_toggle = getattr(user_valves, "{control.field}", "model_default")',
+            f'        if {local}_toggle == "on":',
+            f"            params[{key}] = True",
+            f'        elif {local}_toggle == "off":',
+            f"            params[{key}] = False",
+        ]
+    if control.kind == _CONTROL_NUMBER:
+        return [
+            f'        {local}_raw = getattr(user_valves, "{control.field}", 0.0)',
+            "        try:",
+            f"            {local} = float({local}_raw)",
+            "        except (TypeError, ValueError):",
+            f"            {local} = 0.0",
+            f"        if {local} > 0.0:",
+            f"            params[{key}] = {local}",
+        ]
+    return [
+        f'        {local} = getattr(user_valves, "{control.field}", "")',
+        f"        if isinstance({local}, str) and {local}.strip():",
+        f"            params[{key}] = {local}.strip()",
+    ]
+
+
 def _literal_union(values: tuple[str, ...]) -> str:
     return ", ".join(repr(value) for value in values)
+
+
+def _quoted_union(values: tuple[str, ...]) -> str:
+    return ", ".join(json.dumps(value) for value in values)
 
 
 def _safe_literal_tuple(value: Any) -> tuple[str, ...]:

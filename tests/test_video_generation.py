@@ -1623,6 +1623,37 @@ def test_the_documented_video_model_table_lists_exactly_the_catalogued_models():
     )
 
 
+def test_the_docs_name_the_controls_every_video_filter_carries():
+    """The four intent controls are on every filter and in no per-model table.
+
+    Both documents are written for someone reading a label off their own screen, so both
+    have to spell the label. Neither did: the video document described its parameter table
+    as the spec for what you can change per-message while four controls sat outside it,
+    and the classifier document named only the field names, which a user never sees. The
+    expected names are read out of `_KNOB_GATE` rather than typed here, so renaming a
+    control reddens this instead of quietly stranding whoever goes looking for it.
+    """
+    from open_webui_openrouter_pipe.integrations.video_help import (
+        _INTENT_ADMIN_GATE,
+        _KNOB_GATE,
+    )
+
+    titles = [knob for knob, gate in _KNOB_GATE.items() if gate == _INTENT_ADMIN_GATE]
+    assert titles, "no always-on control is gated on the classifier, so this checks nothing"
+
+    docs = Path(__file__).parent.parent / "docs"
+    missing = [
+        f"{name}: {title!r}"
+        for name in ("openrouter_video_generation.md", "openrouter_video_intent_classifier.md")
+        for title in titles
+        if f"`{title}`" not in (docs / name).read_text()
+    ]
+    assert not missing, (
+        "a control on every video filter that no document names by the label the user "
+        "sees:\n  " + "\n  ".join(missing)
+    )
+
+
 def test_the_documented_deep_dives_cover_exactly_the_catalogued_models():
     """The deep dives say in writing that they are what `help` renders, so they owe the
     same list. Every catalogued model has curated help, so anything short of all of them
@@ -1716,6 +1747,7 @@ def test_video_passthrough_naming_consistency_across_renderer_help_and_catalog()
         "seed_top_level",
         "generate_audio_top_level",
         "negative_prompt_or_camelcase",
+        "intent_classifier_admin",
     }
     knob_gate_passthrough_only = knob_gate_passthrough_values - top_level_markers
     offered = set(_HANDLED_PASSTHROUGH_PARAMS)
@@ -2254,6 +2286,140 @@ def test_video_filter_does_not_expose_cfg_scale_for_kling_video_o1():
     source = render_video_filter_source(model_id="kwaivgi/kling-video-o1", video_model=o1)
     assert "VIDEO_CFG_SCALE" not in source
     assert 'params["cfg_scale"]' not in source
+
+
+def test_every_closed_passthrough_domain_names_the_document_it_was_read_from():
+    """OpenRouter publishes passthrough NAMES only; a closed domain came from elsewhere.
+
+    The gate is exercised by handing it a blanked copy of each closed-domain control
+    rather than by observing that the real table does not trip it. A gate that never
+    fires proves nothing about whether it can.
+    """
+    from dataclasses import replace
+
+    from open_webui_openrouter_pipe.filters.video_filter_renderer import (
+        _CLOSED_DOMAIN_CONTROLS,
+        _CONTROL_ENUM,
+        _PASSTHROUGH_CONTROLS,
+        _UNCONFIRMED_DOMAIN,
+        _validate_passthrough_controls,
+    )
+
+    closed = 0
+    for control in _PASSTHROUGH_CONTROLS:
+        if control.kind not in _CLOSED_DOMAIN_CONTROLS:
+            assert not control.choices and not control.source, (
+                f"{control.param} renders as free text, so it asserts nothing about the "
+                "provider's values and must not carry a citation"
+            )
+            continue
+        closed += 1
+        if control.kind == _CONTROL_ENUM:
+            cited = tuple(source for _, source in control.choices)
+            blanked = replace(control, choices=tuple((v, "") for v, _ in control.choices))
+        else:
+            cited = (control.source,)
+            blanked = replace(control, source="")
+        assert cited, f"{control.param} declares a closed domain with nothing behind it"
+        for source in cited:
+            assert source == _UNCONFIRMED_DOMAIN or source.startswith("https://"), (
+                f"{control.param} renders a closed value domain sourced from {source!r}, "
+                "which is neither a document nor a declared gap"
+            )
+        with pytest.raises(ValueError):
+            _validate_passthrough_controls((blanked,))
+
+    assert closed >= 8, f"only {closed} closed domains scanned; the table lost its contents"
+
+
+def test_the_only_uncited_passthrough_domain_is_the_one_on_the_record():
+    """A tripwire, not a description: growing this set is a decision, not an edit.
+
+    `conditioningScale` is rendered with bounds no vendor page states -- Google
+    documents the parameter nowhere. It is kept rather than downgraded to free text,
+    and the missing source is recorded here so a second one has to be argued for.
+    """
+    from open_webui_openrouter_pipe.filters.video_filter_renderer import (
+        _UNCONFIRMED_PASSTHROUGH_DOMAINS,
+    )
+
+    assert _UNCONFIRMED_PASSTHROUGH_DOMAINS == {"conditioningScale"}, (
+        "a passthrough control renders a closed domain no vendor document publishes; "
+        "either cite the page it came from or render it as free text"
+    )
+
+
+def test_no_video_control_narrows_what_may_be_sent_outside_the_cited_table():
+    """Read out of the rendered filter, so a Literal typed into the renderer by hand trips.
+
+    Walking the table alone would leave the bypass open: the defect guarded against is a
+    hand-written dropdown, and a hand-written dropdown is invisible to a table walk.
+    """
+    import re as _re
+
+    from open_webui_openrouter_pipe.filters.video_filter_renderer import _PASSTHROUGH_CONTROLS
+
+    published_contract = {
+        "VIDEO_DURATION",
+        "VIDEO_ASPECT_RATIO",
+        "VIDEO_RESOLUTION",
+        "VIDEO_SIZE",
+        "VIDEO_FRAME_MODE",
+        "VIDEO_GENERATE_AUDIO",
+        "VIDEO_SEED",
+        "VIDEO_INTENT_ENABLED",
+        "VIDEO_INTENT_MAX_CLARIFICATIONS",
+        "VIDEO_INTENT_FRAME_EXTRACTION_INDEX",
+        "VIDEO_INTENT_CONFIRM_MODE",
+    }
+    cited = {control.field for control in _PASSTHROUGH_CONTROLS}
+
+    unsourced: list[str] = []
+    scanned = 0
+    for model_id, model in VIDEO_BY_ID.items():
+        source = render_video_filter_source(model_id=model_id, video_model=model)
+        for name, body in _re.findall(
+            r"^        (VIDEO_[A-Z0-9_]+): (.*?)^                \)$", source, _re.M | _re.S
+        ):
+            scanned += 1
+            narrowed = "Literal[" in body.split("\n")[0] or "\n                    ge=" in body
+            if narrowed and name not in published_contract and name not in cited:
+                unsourced.append(f"{model_id}: {name}")
+
+    assert scanned > 100, f"only {scanned} fields scanned; the regex stopped matching"
+    assert not unsourced, (
+        "these controls restrict what the user may send without an entry in the cited "
+        "passthrough table:\n  " + "\n  ".join(unsourced)
+    )
+
+
+def test_a_published_passthrough_name_outside_the_table_renders_as_free_text():
+    """The fall-through the other published names already take."""
+    model = {
+        "id": "vendor/model",
+        "name": "Vendor: Model",
+        "allowed_passthrough_parameters": ["safety_tolerance", "watermark"],
+    }
+    source = render_video_filter_source(model_id="vendor/model", video_model=model)
+
+    assert "VIDEO_SAFETY_TOLERANCE: str = Field(" in source
+    assert "VIDEO_SAFETY_TOLERANCE: Literal[" not in source
+    assert 'VIDEO_WATERMARK: Literal["model_default", "on", "off"] = Field(' in source
+
+
+def test_sora_quality_is_not_offered_as_the_dall_e_3_image_enum():
+    """`standard`/`hd` are the DALL-E 3 IMAGE quality subset, not a Sora video domain.
+
+    `POST /v1/videos` documents five fields -- prompt, input_reference, model, seconds,
+    size -- and no quality. Offering two values OpenAI publishes only for a different
+    endpoint made every other value the provider might take unselectable.
+    """
+    sora = VIDEO_BY_ID["openai/sora-2-pro"]
+    source = render_video_filter_source(model_id="openai/sora-2-pro", video_model=sora)
+
+    assert "VIDEO_QUALITY: str = Field(" in source
+    assert '"standard"' not in source and '"hd"' not in source
+    assert 'params["quality"] = quality.strip()' in source
 
 
 def test_video_help_includes_cfg_scale_for_kling_v3_only():

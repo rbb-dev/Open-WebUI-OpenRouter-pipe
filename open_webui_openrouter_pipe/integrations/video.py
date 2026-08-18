@@ -161,7 +161,11 @@ class VideoGenerationAdapter:
         video_spec = OpenRouterModelRegistry.spec(normalized_model_id)
         video_model = video_spec.get("video_model") if isinstance(video_spec, dict) else {}
         if asks_for_help(self._extract_user_prompt(body)):
-            content = render_video_help(api_model_id, video_model if isinstance(video_model, dict) else None)
+            content = render_video_help(
+                api_model_id,
+                video_model if isinstance(video_model, dict) else None,
+                admin_valves=valves,
+            )
             await self._emit_completion(event_emitter, content)
             return content
 

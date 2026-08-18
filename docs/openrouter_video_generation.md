@@ -858,7 +858,22 @@ you need to pin the exact 1.0 generation behaviour.
 This section enumerates exactly which filter knobs each model exposes,
 based on the OpenRouter catalog at the time of writing.
 The chat-filter UI auto-hides knobs the model does not support, so this table
-is also the spec for what you can change per-message.
+is also the spec for the **model-specific** knobs you can change per-message.
+
+Four further controls are on every video filter and are in none of these
+tables, because they are pipe behaviour rather than anything a model
+publishes:
+
+- `Reuse previous videos`
+- `Clarifying question limit`
+- `Which frame to use from previous video`
+- `Show what was reused`
+
+`Reuse previous videos` is on by default, and is what makes a follow-up like
+"make it black" edit the clip you just got instead of starting an unrelated
+new one. Their defaults and ranges are in
+[Video Intent Classifier](openrouter_video_intent_classifier.md); when an
+admin turns `VIDEO_INTENT_ENABLED` off, all four disappear from the filter.
 
 ### Google: Veo 3.1 / Veo 3.1 Fast / Veo 3.1 Lite
 
@@ -872,8 +887,8 @@ is also the spec for what you can change per-message.
 | Negative prompt | str | free text | Routed via `negativePrompt` passthrough. |
 | Audio (`generate_audio`) | Literal | model_default / on / off | Off cuts price ~50% but loses signature joint-diffusion soundtrack. |
 | Seed | int | 0 = model default; otherwise 32-bit integer | Same prompt + seed yields a near-identical clip. |
-| Person generation | Literal | "" / allow_all / allow_adult / dont_allow | Safety gate. EU/UK/CH/MENA only allow `allow_adult`. |
-| Conditioning scale | float | 0.0 = default; 0.0–1.0 | Bias toward reference images vs text prompt. |
+| Person generation | Literal | "" / allow_all / allow_adult / dont_allow / disallow | Safety gate. `dont_allow` is the Gemini API spelling, `disallow` the Vertex AI one. EU/UK/CH/MENA only allow `allow_adult`. |
+| Conditioning scale | float | 0.0 = default; 0.0–1.0 | Bounds and behaviour are unsourced — Google documents no `conditioningScale` on any Veo surface. |
 | Enhance prompt | Literal | model_default / on / off | Auto-rewrite prompt (officially Veo 2 only on Vertex; provider may ignore). |
 | Provider options JSON | str | raw JSON object keyed by provider slug | Escape hatch — see [Provider passthrough](#provider-passthrough). |
 
@@ -1172,7 +1187,7 @@ when the corresponding string appears in the model's
 
 | Identifier | Type | Default | Maps to API field | Gate | Exposed on |
 |------------|------|---------|-------------------|------|------------|
-| `VIDEO_PERSON_GENERATION` | `Literal["", "allow_all", "allow_adult", "dont_allow"]` | `""` | passthrough `personGeneration` | `"personGeneration"` allowed | Veo trio |
+| `VIDEO_PERSON_GENERATION` | `Literal["", "allow_all", "allow_adult", "dont_allow", "disallow"]` | `""` | passthrough `personGeneration` | `"personGeneration"` allowed | Veo trio |
 | `VIDEO_CONDITIONING_SCALE` | `float` (`ge=0.0`, `le=1.0`) | `0.0` | passthrough `conditioningScale` | `"conditioningScale"` allowed | Veo trio |
 | `VIDEO_CFG_SCALE` | `float` (`ge=0.0`, `le=1.0`) | `0.0` | passthrough `cfg_scale` | `"cfg_scale"` allowed | Kling v3.0 (Pro, Standard) |
 | `VIDEO_ENHANCE_PROMPT` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `enhancePrompt` (boolean) | `"enhancePrompt"` allowed | Veo trio |
@@ -1184,7 +1199,7 @@ when the corresponding string appears in the model's
 | `VIDEO_SHOT_TYPE` | `str` | `""` | passthrough `shot_type` | `"shot_type"` allowed | Wan 2.6 |
 | `VIDEO_WATERMARK` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `watermark` (boolean) | `"watermark"` allowed | Seedance trio |
 | `VIDEO_REQ_KEY` | `str` | `""` | passthrough `req_key` | `"req_key"` allowed | Seedance trio |
-| `VIDEO_QUALITY` | `Literal["", "standard", "hd"]` | `""` | passthrough `quality` | `"quality"` allowed | Sora 2 Pro |
+| `VIDEO_QUALITY` | `str` | `""` | passthrough `quality` | `"quality"` allowed | Sora 2 Pro |
 | `VIDEO_STYLE` | `str` | `""` | passthrough `style` | `"style"` allowed | Sora 2 Pro |
 
 ### Conventions for "skip when default"
@@ -1232,7 +1247,9 @@ Tools`, etc.
 
 When you open the filter's settings icon, you see the per-model knobs
 listed in the [Per-model parameter reference](#per-model-parameter-reference)
-above. Behaviour rules:
+above, followed by the four reuse-of-previous-video controls documented in
+[Video Intent Classifier](openrouter_video_intent_classifier.md). Behaviour
+rules:
 
 - A knob set to its **default value** (empty string `""`, `0`, or
   `model_default`) is **NOT sent** to OpenRouter. The model's own default
@@ -1284,8 +1301,10 @@ generation job and returns the model's help blurb directly:
   use cases, position vs siblings).
 - **Output capabilities**: live durations, aspect ratios, resolutions,
   frame controls, audio, seed — read from the live catalog.
-- **Knobs in this filter**: every UserValve the model exposes, with a
-  one-sentence description tailored to this model.
+- **Knobs in this filter**: every UserValve on this model's filter — the
+  model's own knobs, each with a one-sentence description tailored to it,
+  then the four reuse-of-previous-video controls, which read the same on
+  every model because they are pipe behaviour.
 - **Tips & pitfalls**: 3–4 practical bullets — what works, what fails,
   prompt patterns.
 - **Cost** (live): every published rate as a readable bullet (e.g. `per

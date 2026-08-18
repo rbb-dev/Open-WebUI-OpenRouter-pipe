@@ -105,6 +105,27 @@ def reduced_ratio(value: Any) -> tuple[int, int] | None:
     return width // common, height // common
 
 
+def supersede_size_conflicts(params: dict[str, Any]) -> list[tuple[str, Any, str]]:
+    size = params.get("size")
+    if size is None:
+        return []
+    pixels = pixel_size(size)
+    if pixels is None:
+        resolution = params.get("resolution")
+        if resolution is None or str(resolution).strip().casefold() == str(size).strip().casefold():
+            return []
+        return [("resolution", params.pop("resolution"), "sets the same thing")]
+    dropped: list[tuple[str, Any, str]] = []
+    if "resolution" in params:
+        dropped.append(
+            ("resolution", params.pop("resolution"), "already fixes the output dimensions")
+        )
+    ratio = reduced_ratio(params.get("aspect_ratio"))
+    if ratio is not None and ratio != reduced_ratio(f"{pixels[0]}:{pixels[1]}"):
+        dropped.append(("aspect_ratio", params.pop("aspect_ratio"), "is not that shape"))
+    return dropped
+
+
 class ImageGenerationError(RuntimeError):
     """A generation the pipe could not turn into an image.
 

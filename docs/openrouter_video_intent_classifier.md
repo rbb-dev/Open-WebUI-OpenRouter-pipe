@@ -117,12 +117,16 @@ All admin-scoped on the global `Valves` model. User-tunable per-chat versions of
 
 When admin `VIDEO_INTENT_ENABLED=True`, each video model's companion filter exposes four UserValves so individual users can override the admin defaults for their own chats. They appear in the OWUI filter settings panel alongside the existing video knobs (`VIDEO_DURATION`, `VIDEO_ASPECT_RATIO`, etc.).
 
-| User valve | Effect |
-|---|---|
-| `VIDEO_INTENT_ENABLED` | Per-user opt-out. When off, this user's video chats bypass the classifier even though it's on globally. |
-| `VIDEO_INTENT_MAX_CLARIFICATIONS` | Override the cap on consecutive clarifying questions for this user. |
-| `VIDEO_INTENT_FRAME_EXTRACTION_INDEX` | Pick which frame the user prefers when the request is ambiguous about first vs last. |
-| `VIDEO_INTENT_CONFIRM_MODE` | Control when the disclosure footer appears for this user (always / on reference / on low confidence / never). |
+| User valve | Shown as | Effect |
+|---|---|---|
+| `VIDEO_INTENT_ENABLED` | `Reuse previous videos` | Per-user opt-out. When off, this user's video chats bypass the classifier even though it's on globally. |
+| `VIDEO_INTENT_MAX_CLARIFICATIONS` | `Clarifying question limit` | Override the cap on consecutive clarifying questions for this user. |
+| `VIDEO_INTENT_FRAME_EXTRACTION_INDEX` | `Which frame to use from previous video` | Pick which frame the user prefers when the request is ambiguous about first vs last. |
+| `VIDEO_INTENT_CONFIRM_MODE` | `Show what was reused` | Control when the disclosure footer appears for this user (always / on reference / on low confidence / never). |
+
+"Shown as" is the label above the control in the filter settings panel and the
+name the model's `help` panel lists it under; the field name is what the
+generated filter source calls it.
 
 When admin `VIDEO_INTENT_ENABLED=False`, the four user fields do not appear in the filter UI at all — the next time the pipe rebuilds filters (i.e. on the next `pipes()` refresh) the filter source is regenerated without them.
 

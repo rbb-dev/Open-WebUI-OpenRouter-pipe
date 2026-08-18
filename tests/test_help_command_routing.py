@@ -445,3 +445,102 @@ def test_every_knob_help_names_is_a_control_the_panel_draws_under_that_name():
                 mismatched.append(f"{model_id}: help names {knob!r}, the panel does not")
 
     assert not mismatched, "\n".join(mismatched)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("intent_enabled", [True, False])
+async def test_the_panel_the_help_command_returns_reads_the_admin_intent_valve(intent_enabled):
+    """The valve has to reach the panel through the command, not just through the helper.
+
+    The four intent controls are on the filter only while the admin keeps the classifier
+    on, so the panel can only agree with the filter if the same valves reach both. The
+    parity checks above call the renderer directly and would stay green if the `help`
+    command stopped passing them, leaving a panel that advertises four controls the
+    filter no longer draws.
+    """
+    model_id = "openai/sora-2-pro"
+    pipe = Pipe()
+    pipe.valves.API_KEY = EncryptedStr("test-api-key")
+    pipe.valves.VIDEO_INTENT_ENABLED = intent_enabled
+    adapter = pipe._ensure_video_generation_adapter()
+    cast(Any, adapter)._persistence = _MemoryPersistence()
+
+    try:
+        result = await adapter.generate(
+            body={"messages": _messages(None, "help")},
+            responses_body=SimpleNamespace(provider={}),
+            valves=pipe.valves,
+            session=object(),
+            event_emitter=None,
+            metadata={"chat_id": "chat-1", "message_id": "msg-1", "user_id": "user-1"},
+            user={"id": "user-1"},
+            request=None,
+            user_obj={"id": "user-1"},
+            normalized_model_id=model_id.replace("/", "."),
+            api_model_id=model_id,
+        )
+    finally:
+        await pipe.close()
+
+    from open_webui_openrouter_pipe.integrations.video_help import _INTENT_KNOB_DESCRIPTIONS
+
+    assert _INTENT_KNOB_DESCRIPTIONS, "no intent control to look for, so this checks nothing"
+    named = [knob for knob in _INTENT_KNOB_DESCRIPTIONS if f"- `{knob}`:" in result]
+    expected = list(_INTENT_KNOB_DESCRIPTIONS) if intent_enabled else []
+    assert named == expected, (
+        f"VIDEO_INTENT_ENABLED={intent_enabled} draws "
+        f"{'the intent controls' if intent_enabled else 'no intent control'} on the "
+        f"filter, and the panel names {named}"
+    )
+
+
+def _intent_admin_valves(enabled: bool) -> SimpleNamespace:
+    return SimpleNamespace(
+        VIDEO_INTENT_ENABLED=enabled,
+        VIDEO_INTENT_MAX_CLARIFICATIONS=1,
+        VIDEO_INTENT_FRAME_EXTRACTION_INDEX="last",
+        VIDEO_INTENT_CONFIRM_MODE="on_reference",
+    )
+
+
+@pytest.mark.parametrize("intent_enabled", [True, False])
+def test_help_lists_every_control_on_that_models_filter_and_no_others(intent_enabled):
+    """The other direction of the same property, and it was wrong on every model.
+
+    ``test_every_knob_help_names_is_a_control_the_panel_draws_under_that_name`` catches
+    help naming a control that is not there. This catches a control that is there and is
+    not named: all twenty-two filters drew `Reuse previous videos`, `Clarifying question
+    limit`, `Which frame to use from previous video` and `Show what was reused`, and no
+    panel mentioned any of them -- including the one that is on by default and decides
+    whether "make it black" edits the clip you just got or starts an unrelated new one.
+
+    Both sides are rendered from one admin valves object, and both admin states are run,
+    because the four come off the filter entirely when an admin turns the classifier off.
+    A panel that listed them unconditionally would pass the first state and fail this one.
+    Equality is against that model's own rendered source, never a union: `runway/aleph-2`
+    publishes no duration and no resolution, and must not be asked to list either.
+    """
+    from open_webui_openrouter_pipe.filters.video_filter_renderer import (
+        render_video_filter_source,
+    )
+
+    curated = [model_id for model_id in VIDEO_BY_ID if model_id in VIDEO_HELP_BY_MODEL]
+    assert curated, "the curated route draws the knob list; nothing to check without it"
+
+    valves = _intent_admin_valves(intent_enabled)
+    mismatched: list[str] = []
+    for model_id in curated:
+        model = VIDEO_BY_ID[model_id]
+        source = render_video_filter_source(
+            model_id=model_id, video_model=model, admin_valves=valves
+        )
+        drawn = set(re.findall(r"""^\s+title=(?:"([^"]+)"|'([^']+)'),$""", source, re.M))
+        titles = {name for pair in drawn for name in pair if name}
+        listed = set(re.findall(r"^- `([^`]+)`:", render_video_help(model_id, model, admin_valves=valves), re.M))
+        if titles != listed:
+            mismatched.append(
+                f"{model_id}: on the filter but not in the panel {sorted(titles - listed)}; "
+                f"in the panel but not on the filter {sorted(listed - titles)}"
+            )
+
+    assert not mismatched, "\n".join(mismatched)

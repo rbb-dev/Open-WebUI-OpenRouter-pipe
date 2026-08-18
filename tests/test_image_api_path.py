@@ -3646,7 +3646,7 @@ def test_one_request_cannot_generate_unbounded_notes(junk_keys, advertised):
         "also be a pipe-local constant: deriving it from the reply's advertised passthrough "
         f"list lets an upstream widen it. advertised={advertised}, got {len(notes)}"
     )
-    assert any("further image_config key" in note.text for note in notes), (
+    assert any("further setting(s) were not sent" in note.text for note in notes), (
         "the remainder must still be reported as a count, not silently dropped"
     )
 

@@ -3785,6 +3785,57 @@ def test_the_shipped_tier_key_is_one_of_the_recorded_candidates():
     assert renderer.IMAGE_GEN_TOOL_TIER_KEY in renderer.IMAGE_GEN_TOOL_TIER_KEY_CANDIDATES
 
 
+@pytest.mark.parametrize(("ratio", "ratio_survives"), [("16:9", False), ("1:1", True)])
+def test_the_emitted_tool_call_never_carries_a_ratio_the_pixel_size_contradicts(
+    ratio, ratio_survives
+):
+    """One size box, two ratios, opposite outcomes.
+
+    "An explicit pixel size is authoritative: a mismatched `resolution` or `aspect_ratio`
+    alongside it is rejected with a 400", and the server tool passes "all parameters except
+    `model` ... directly to the underlying image generation API" -- so a contradicting pair
+    does not cost the user the ratio, it costs them the whole tool call. ``1024x1024`` *is*
+    1:1, so dropping the ratio there would take away a setting the API accepts: both
+    directions have to hold, and one input pair proving both is what rules out an
+    unconditional drop and an unconditional keep at the same time.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        build_image_model_filter_spec,
+    )
+    from open_webui_openrouter_pipe.requests.orchestrator import _build_server_tool_entries
+
+    model_id = "google/gemini-3.1-flash-image"
+    spec = build_image_model_filter_spec(
+        model_id,
+        {"id": model_id, "name": "Gemini"},
+        _recorded_endpoint("google_gemini-3.1-flash-image"),
+    )
+    assert ratio in dict(spec.enums)["aspect_ratio"], (
+        f"{model_id} does not publish {ratio}, so the panel never drew it and this case "
+        "would pass on a value the user could not have chosen"
+    )
+    module = _image_gen_module(spec, name=f"image_gen_size_ratio_{ratio.replace(':', '_')}")
+
+    metadata: dict = {}
+    module.Filter().inlet(
+        {},
+        metadata,
+        {"valves": module.Filter.UserValves(IMAGE_SIZE="1024x1024", IMAGE_ASPECT_RATIO=ratio)},
+    )
+    entries = _build_server_tool_entries(metadata["openrouter_pipe"]["server_tools"])
+    emitted = [e for e in entries if e["type"] == "openrouter:image_generation"]
+    assert len(emitted) == 1, f"one panel must produce one tool entry; got {entries!r}"
+    parameters = emitted[0]["parameters"]
+
+    assert parameters["size"] == "1024x1024", (
+        f"the box the user filled in is the authoritative one; got {parameters!r}"
+    )
+    assert parameters.get("aspect_ratio") == (ratio if ratio_survives else None), (
+        f"{ratio} alongside 1024x1024 must be "
+        f"{'sent' if ratio_survives else 'dropped'}; got {parameters!r}"
+    )
+
+
 def _note_cases():
     from open_webui_openrouter_pipe.filters.image_filter_renderer import (
         build_image_model_filter_spec,

@@ -98,8 +98,12 @@ _SERVER_TOOL_TYPE_OVERRIDES = {
     "chat_search_models": "openrouter:experimental__search_models",
 }
 
+_IMAGE_GENERATION_TOOL_TYPE = "openrouter:image_generation"
+
 
 def _build_server_tool_entries(server_tools: dict[str, Any]) -> list[dict[str, Any]]:
+    from ..integrations.image_types import supersede_size_conflicts
+
     entries: list[dict[str, Any]] = []
     for tool_key, tool_value in server_tools.items():
         if not isinstance(tool_key, str) or not tool_key.strip():
@@ -110,6 +114,8 @@ def _build_server_tool_entries(server_tools: dict[str, Any]) -> list[dict[str, A
             entry: dict[str, Any] = {"type": tool_type}
             if isinstance(tool_params, dict) and tool_params:
                 cleaned_params = {k: v for k, v in tool_params.items() if v is not None and v != ""}
+                if tool_type == _IMAGE_GENERATION_TOOL_TYPE:
+                    supersede_size_conflicts(cleaned_params)
                 if cleaned_params:
                     entry["parameters"] = cleaned_params
             entries.append(entry)

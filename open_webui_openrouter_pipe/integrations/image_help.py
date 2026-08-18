@@ -35,7 +35,7 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Improved prompt adherence and visual fidelity over GPT-5 Image."
         ),
         "tips_and_pitfalls": [
-            "Successor to GPT-5 Image — same modalities + image_config schema, improved quality.",
+            "Successor to GPT-5 Image — it still answers with both text and pictures in one turn, at better quality.",
             "Use for production deliverables that need the latest OpenAI image model.",
         ],
     },
@@ -85,7 +85,7 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         ),
         "tips_and_pitfalls": [
             "Auto-routing — exact model used varies; check the response metadata for routed model id.",
-            "Universal input modalities (text + image + audio + file + video) — flexible request shape.",
+            "Takes text, images, audio, files and video alongside the prompt, so almost anything you attach can go with it.",
         ],
     },
     "qwen/qwen-image-3": {
@@ -428,13 +428,13 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "SVG markup instead of raster pixels. Same design taste as V4 Pro, "
             "scaled to ~2K equivalent detail. Best for logos, icons, infographics, "
             "and any asset that needs to be scaled or edited downstream in vector "
-            "tools (Illustrator, Figma, Inkscape). Output is true `<svg>` markup "
-            "embedded in a `data:image/svg+xml;base64,...` URL."
+            "tools (Illustrator, Figma, Inkscape). Output is true `<svg>` markup, "
+            "which those tools open and edit directly."
         ),
         "tips_and_pitfalls": [
             "Output is SVG, not PNG/JPEG — scales infinitely without quality loss.",
             "Prefer simple, graphic prompts (logos, icons, flat illustrations) over photoreal subjects; SVG cannot represent photographic detail.",
-            "OpenRouter returns the SVG inline as base64; OWUI renders it natively in the chat — no rasterisation on our side.",
+            "The SVG arrives complete and Open WebUI draws it in the chat at full sharpness, whatever size you view it at.",
             "Same human-subject limitations as V4 Pro.",
         ],
     },
@@ -450,7 +450,7 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "tips_and_pitfalls": [
             "Output is SVG, not PNG/JPEG — scales infinitely without quality loss.",
             "Prefer simple, graphic prompts (logos, icons, flat illustrations) over photoreal subjects; SVG cannot represent photographic detail.",
-            "OpenRouter returns the SVG inline as base64; OWUI renders it natively in the chat.",
+            "The SVG arrives complete and Open WebUI draws it in the chat at full sharpness, whatever size you view it at.",
             "Use V4 Vector for iteration; V4 Pro Vector for higher-fidelity finals.",
         ],
     },
@@ -458,7 +458,7 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "display_name": "Recraft: Recraft V4.1",
         "best_known_for": (
             "V4.1 is Recraft's May 2026 aesthetic refresh of V4 — same 1024x1024 "
-            "raster output, same image_config surface, but tuned for stronger "
+            "raster output, but tuned for stronger "
             "composition, color cohesion, and visual polish. Best for marketing "
             "assets, social posts, hero imagery, and any work where the V4 "
             "output felt almost-but-not-quite-right aesthetically. Same speed "
@@ -494,8 +494,8 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Vector (SVG) variant of V4.1 Pro — V4.1's aesthetic tuning, ~2K "
             "equivalent detail, true `<svg>` output. Best for high-polish logos, "
             "editorial icon sets, and brand assets that need to scale and edit "
-            "downstream. OpenRouter returns the SVG inline as a "
-            "`data:image/svg+xml;base64,...` URL; OWUI renders it natively."
+            "downstream. The SVG arrives complete and Open WebUI draws it in the "
+            "chat at full sharpness, whatever size you view it at."
         ),
         "tips_and_pitfalls": [
             "Output is SVG, not PNG/JPEG — scales infinitely without quality loss.",
@@ -549,7 +549,7 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "tips_and_pitfalls": [
             "Output is SVG, not PNG/JPEG — scales infinitely without quality loss.",
             "Prefer simple, graphic prompts (logos, icons, flat illustrations) over photoreal subjects.",
-            "OpenRouter returns the SVG inline as base64; OWUI renders it natively.",
+            "The SVG arrives complete and Open WebUI draws it in the chat at full sharpness, whatever size you view it at.",
             "Use V4.1 Vector for iteration; V4.1 Pro Vector for higher-fidelity finals.",
         ],
     },
@@ -753,8 +753,8 @@ def _image_render_catalog_fallback(model_id: str, image_model: dict[str, Any] | 
         "",
         description,
         "",
-        f"- **Output modalities**: {', '.join(out_mods) or '(none)'}",
-        f"- **Input modalities**: {', '.join(in_mods) or '(none)'}",
+        f"- **What it produces**: {', '.join(out_mods) or '(none)'}",
+        f"- **What you can send it**: {', '.join(in_mods) or '(none)'}",
         "",
         "_No curated help available for this model. Catalog metadata shown above._",
         "",

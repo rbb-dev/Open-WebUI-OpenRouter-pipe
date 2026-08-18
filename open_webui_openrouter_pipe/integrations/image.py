@@ -21,10 +21,9 @@ from .image_types import (
     ImageGenerationError,
     ImageGenerationResult,
     clamp_text,
-    pixel_size,
     prompt_with_system,
-    reduced_ratio,
     summarise_names,
+    supersede_size_conflicts,
 )
 from .provider_options import (
     IMAGE_PROVIDER_KEYS,
@@ -108,26 +107,13 @@ def _superseded(name: str, value: Any, reason: str) -> tuple[str, str, str]:
 
 
 def _size_consistency_notes(top_level: dict[str, Any]) -> list[tuple[str, str, str]]:
-    size = top_level.get("size")
-    if size is None:
+    dropped = supersede_size_conflicts(top_level)
+    if not dropped:
         return []
-    shown_size = _clamp(repr(size), _NOTE_VALUE_LIMIT)
-    pixels = pixel_size(size)
-    if pixels is None:
-        resolution = top_level.get("resolution")
-        if resolution is None or str(resolution).strip().casefold() == str(size).strip().casefold():
-            return []
-        return [_superseded("resolution", top_level.pop("resolution"),
-                            f"size={shown_size} sets the same thing")]
-    dropped: list[tuple[str, str, str]] = []
-    if "resolution" in top_level:
-        dropped.append(_superseded("resolution", top_level.pop("resolution"),
-                                   f"size={shown_size} already fixes the output dimensions"))
-    ratio = reduced_ratio(top_level.get("aspect_ratio"))
-    if ratio is not None and ratio != reduced_ratio(f"{pixels[0]}:{pixels[1]}"):
-        dropped.append(_superseded("aspect_ratio", top_level.pop("aspect_ratio"),
-                                   f"size={shown_size} is not that shape"))
-    return dropped
+    shown_size = _clamp(repr(top_level.get("size")), _NOTE_VALUE_LIMIT)
+    return [
+        _superseded(name, value, f"size={shown_size} {reason}") for name, value, reason in dropped
+    ]
 
 
 class ImageGenerationAdapter:
@@ -195,11 +181,6 @@ class ImageGenerationAdapter:
     def _reachable_records(
         records: list[dict[str, Any]], requested: dict[str, Any] | None
     ) -> list[dict[str, Any]]:
-        """The records this request could still be routed to.
-
-        A pin narrows it: validating against a provider the operator excluded would
-        accept a value the one that actually serves rejects.
-        """
         keyed = [
             (options_key(slug), record)
             for record in records
@@ -314,9 +295,6 @@ class ImageGenerationAdapter:
                 )
                 continue
             if name in _SCHEMA_ONLY_PARAMS and (declared is None or name not in declared):
-                # Free text only while nothing publishes a domain for it. The renderer
-                # draws a typed control the moment a model does publish one, and sending
-                # it unchecked here would accept a value that control could never offer.
                 top_level[name] = value
                 continue
             if name in _TOP_LEVEL_PARAMS:
@@ -370,7 +348,7 @@ class ImageGenerationAdapter:
             )
         if unreported:
             notes.append(
-                _Note("overflow", "*", f"{unreported} further image_config key(s) were not sent")
+                _Note("overflow", "*", f"{unreported} further setting(s) were not sent")
             )
         return top_level, provider, notes
 
@@ -935,7 +913,7 @@ class ImageGenerationAdapter:
                 _Note(
                     "unkeyable",
                     "*",
-                    f"{names} was not sent (this model's endpoint record carries no provider slug)",
+                    f"{names} was not sent (OpenRouter does not name the company running this model)",
                 )
             )
             self._logger.log(

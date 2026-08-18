@@ -260,7 +260,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Audio": "Toggles native synchronised audio generation; off uses the cheaper no-audio price SKU and skips dialogue/SFX, model_default lets the model decide.",
             "Seed": "Integer for deterministic regeneration — same prompt + same seed yields a near-identical clip, useful for iterating prompt tweaks without identity drift.",
             "Provider options JSON": "Escape hatch to inject raw OpenRouter/Google parameters that the typed valves don't expose, for advanced or future fields.",
-            "Person generation": "Safety gate for human/face content — \"allow_all\" (broadest), \"allow_adult\" (default per Vertex AI docs, adults only), \"dont_allow\" (no people); blank uses model default.",
+            "Person generation": "Safety gate for human/face content — \"allow_all\" (broadest), \"allow_adult\" (default per Vertex AI docs, adults only), \"dont_allow\" (no people, Gemini API spelling), \"disallow\" (the same refusal, Vertex AI spelling); blank uses model default.",
             "Conditioning scale": "Float weight (0–1) that biases how strongly reference/frame images steer the output versus the text prompt; 0 leaves the model at its default balance.",
             "Enhance prompt": "Asks the provider to auto-rewrite/expand the prompt before generation — on for richer cinematic detail, off to send your prompt verbatim, model_default to defer.",
         },
@@ -293,7 +293,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Audio": "Toggles native synchronised audio generation (ambient sound, SFX, dialogue, music); disabling it bills the clip at the cheaper without-audio rate for whichever resolution you picked.",
             "Seed": "Sets an integer seed for reproducibility — Google notes it improves determinism but does not strictly guarantee identical outputs across runs.",
             "Provider options JSON": "Raw escape hatch for sending arbitrary google-vertex provider fields not covered by the named valves above.",
-            "Person generation": "Controls whether humans may appear in output — allow_all, allow_adult, or dont_allow; in EU/UK/CH/MENA only allow_adult is permitted for Veo 3.1.",
+            "Person generation": "Controls whether humans may appear in output — allow_all, allow_adult, dont_allow (Gemini API) or disallow (Vertex AI); in EU/UK/CH/MENA only allow_adult is permitted for Veo 3.1.",
             "Conditioning scale": "Float that biases how strongly the model adheres to your input image(s) versus the text prompt when using first/last frame conditioning.",
             "Enhance prompt": "Lets Vertex auto-rewrite your prompt for better results (on), keep it verbatim (off), or use the provider default (model_default).",
         },
@@ -327,7 +327,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Audio": "Toggles native synchronised audio generation; turning it off bills the clip at the cheaper without-audio rate — a proportionally bigger saving below 4K than at 4K — but you lose Veo 3.1's signature joint-diffusion soundtrack.",
             "Seed": "A 32-bit integer that makes generation reproducible — reuse the same seed plus prompt to get consistent results when iterating on small prompt changes.",
             "Provider options JSON": "An escape hatch for passing raw provider-specific fields to the Vertex/Gemini backend that aren't surfaced as dedicated valves.",
-            "Person generation": "Safety control for human subjects; \"allow_adult\" (default) permits adult faces and bodies, while \"dont_allow\" refuses any people/faces.",
+            "Person generation": "Safety control for human subjects; \"allow_adult\" (default) permits adult faces and bodies, while \"dont_allow\" (Gemini API) and \"disallow\" (Vertex AI) refuse any people/faces.",
             "Conditioning scale": "Adjusts how strictly Veo 3.1 follows the prompt versus exploring creatively — exposed as a passthrough but documented behaviour may be provider-internal.",
             "Enhance prompt": "Asks the backend to auto-rewrite your prompt for richer cinematic detail; per Google's Vertex docs this flag is officially Veo 2-only, so on Veo 3.1 it may be a no-op.",
         },
@@ -634,7 +634,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Text-to-video only here: this catalog entry has no frame_image support, so you can't seed it with a start/end image — drive the result entirely from prompt language.",
             "20-second durations and 1080p are unique strengths but render slow — community tests report 2–5 minutes for a 20s clip and much longer at peak, so prefer 4–8s 720p for iteration and reserve 16–20s 1080p for finals.",
             "Plays to its strengths on physics, motion weight, lighting, and ambient/dialogue audio; struggles with on-screen text, brand logos, fine hand details, and highly choreographed multi-character action — don't ship as-is for client deliverables that depend on legible text.",
-            "Quality and Style are passthrough hints OpenRouter forwards; the OpenAI Videos API itself doesn't expose a discrete quality enum (resolution drives the tier), so treat them as soft hints rather than guaranteed switches.",
+            "Quality and Style are passthrough hints OpenRouter forwards; OpenAI's Videos API documents neither one (its whole request body is prompt, input_reference, model, seconds and size), so both are free text and neither is a guaranteed switch.",
         ],
         "knob_descriptions": {
             "Duration": "Pick clip length in seconds from 4/8/12/16/20 — Sora 2 Pro is the only model in this catalog that reaches 20s, but render time and cost scale roughly linearly with duration.",
@@ -643,7 +643,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Size": "Picks the exact pixel dimensions (1280×720, 1920×1080, 720×1280, 1080×1920) — use this when your downstream pipeline needs a specific frame size rather than just a ratio.",
             "Audio": "Sora 2 Pro generates synchronised audio natively (dialogue, SFX, ambience) from the same scene representation as the video — leave it on for realistic results.",
             "Provider options JSON": "Free-form JSON forwarded to OpenRouter for advanced/experimental fields not covered by the dedicated valves; leave empty unless you're following specific OpenRouter or OpenAI Videos API docs.",
-            "Quality": "Passthrough hint (\"standard\" or \"hd\") that maps loosely to OpenAI's quality tier; in practice the visible quality tier is governed mainly by the chosen resolution, so this is a secondary nudge.",
+            "Quality": "Free-text passthrough hint. OpenAI publishes no quality values for video — \"standard\"/\"hd\" belong to the DALL·E 3 image endpoint — so send only a value your provider accepts; in practice the visible tier is governed mainly by the chosen resolution.",
             "Style": "Free-text passthrough that lets you bias the look (e.g. \"cinematic\", \"anamorphic\", \"documentary handheld\"); since the OpenAI API has no formal style enum, prompt language remains the primary stylistic lever.",
         },
     },
@@ -682,6 +682,28 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
 VIDEO_HELP_BY_MODEL = _PER_MODEL_HELP_DATA
 
 
+_INTENT_ADMIN_GATE = "intent_classifier_admin"
+
+_INTENT_KNOB_DESCRIPTIONS: dict[str, str] = {
+    "Reuse previous videos": (
+        "Whether a follow-up such as \"make it black\" edits the video you just got, or "
+        "starts a new one from that message alone. On unless an admin says otherwise."
+    ),
+    "Clarifying question limit": (
+        "How many short questions the chat may ask in a row when it cannot tell which "
+        "earlier video you mean, before it picks one and gets on with it. 0 asks none."
+    ),
+    "Which frame to use from previous video": (
+        "Which still is taken from the earlier clip when it is reused as a starting "
+        "point: last continues from where it ended, first restarts from how it began."
+    ),
+    "Show what was reused": (
+        "When to show the thumbnail naming what was reused. It appears while the clip "
+        "is being made, so a wrong pick can be stopped before the generation is paid for."
+    ),
+}
+
+
 _KNOB_GATE: dict[str, str | None] = {
     "Duration": None,
     "Aspect ratio": None,
@@ -711,6 +733,10 @@ _KNOB_GATE: dict[str, str | None] = {
     "Request key": "req_key",
     "Quality": "quality",
     "Style": "style",
+    "Reuse previous videos": _INTENT_ADMIN_GATE,
+    "Clarifying question limit": _INTENT_ADMIN_GATE,
+    "Which frame to use from previous video": _INTENT_ADMIN_GATE,
+    "Show what was reused": _INTENT_ADMIN_GATE,
 }
 
 
@@ -724,6 +750,8 @@ def _knob_is_active(knob: str, spec: VideoFilterSpec) -> bool:
         return spec.supports_generate_audio_toggle
     if gate == "seed_top_level":
         return spec.supports_seed
+    if gate == _INTENT_ADMIN_GATE:
+        return spec.intent_classifier_admin_enabled
     return gate in spec.allowed_params
 
 
@@ -973,14 +1001,26 @@ def _declared_capability(declared: Any, offered: bool) -> str:
     return "no"
 
 
-def _render_template(model_id: str, model: dict[str, Any], data: dict[str, Any]) -> str:
+def _panel_knob_descriptions(curated: Any) -> dict[str, str]:
+    merged = dict(curated) if isinstance(curated, dict) else {}
+    for knob, description in _INTENT_KNOB_DESCRIPTIONS.items():
+        merged.setdefault(knob, description)
+    return merged
+
+
+def _render_template(
+    model_id: str,
+    model: dict[str, Any],
+    data: dict[str, Any],
+    admin_valves: Any = None,
+) -> str:
     from ..filters.video_filter_renderer import (
         _unhandled_params,
         build_video_filter_spec,
     )
     from .image_types import PASSTHROUGH_DESCRIPTION
 
-    spec = build_video_filter_spec(model_id, model)
+    spec = build_video_filter_spec(model_id, model, admin_valves=admin_valves)
     display_name = str(model.get("name") or "").strip() or data.get("display_name") or model_id
     durations = _format_csv(model.get("supported_durations")) or "model default"
     aspects = _format_csv(model.get("supported_aspect_ratios")) or "model default"
@@ -990,7 +1030,7 @@ def _render_template(model_id: str, model: dict[str, Any], data: dict[str, Any])
     seed = _declared_capability(model.get("seed"), spec.supports_seed)
 
     knob_lines: list[str] = []
-    for knob, description in data.get("knob_descriptions", {}).items():
+    for knob, description in _panel_knob_descriptions(data.get("knob_descriptions")).items():
         if not _knob_is_active(knob, spec):
             continue
         knob_lines.append(f"- `{knob}`: {description}")
@@ -1040,12 +1080,17 @@ def _render_template(model_id: str, model: dict[str, Any], data: dict[str, Any])
     )
 
 
-def render_video_help(model_id: str, video_model: dict[str, Any] | None = None) -> str:
+def render_video_help(
+    model_id: str,
+    video_model: dict[str, Any] | None = None,
+    *,
+    admin_valves: Any = None,
+) -> str:
     model = video_model if isinstance(video_model, dict) else {}
     canonical_id = _canonical_model_id(model_id, model)
     data = _PER_MODEL_HELP_DATA.get(canonical_id)
     if data:
-        return _render_template(canonical_id, model, data)
+        return _render_template(canonical_id, model, data, admin_valves)
     return _render_catalog_fallback(canonical_id, model)
 
 

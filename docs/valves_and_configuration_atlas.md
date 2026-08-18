@@ -354,7 +354,7 @@ Each video model gets its OWN filter function in Open WebUI. The `UserValves` re
 
 | Valve | Type | Default | Maps to | Exposed on |
 | --- | --- | --- | --- | --- |
-| `VIDEO_PERSON_GENERATION` | `Literal["", "allow_all", "allow_adult", "dont_allow"]` | `""` | passthrough `personGeneration` | Veo trio |
+| `VIDEO_PERSON_GENERATION` | `Literal["", "allow_all", "allow_adult", "dont_allow", "disallow"]` | `""` | passthrough `personGeneration` | Veo trio |
 | `VIDEO_CONDITIONING_SCALE` | `float` (`ge=0.0`, `le=1.0`) | `0.0` | passthrough `conditioningScale` | Veo trio |
 | `VIDEO_CFG_SCALE` | `float` (`ge=0.0`, `le=1.0`) | `0.0` | passthrough `cfg_scale` | Kling v3.0 (Pro, Standard) |
 | `VIDEO_ENHANCE_PROMPT` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `enhancePrompt` (boolean) | Veo trio |
@@ -366,7 +366,7 @@ Each video model gets its OWN filter function in Open WebUI. The `UserValves` re
 | `VIDEO_SHOT_TYPE` | `str` | `""` | passthrough `shot_type` | Wan 2.6 |
 | `VIDEO_WATERMARK` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `watermark` (boolean) | Seedance trio |
 | `VIDEO_REQ_KEY` | `str` | `""` | passthrough `req_key` | Seedance trio |
-| `VIDEO_QUALITY` | `Literal["", "standard", "hd"]` | `""` | passthrough `quality` | Sora 2 Pro |
+| `VIDEO_QUALITY` | `str` | `""` | passthrough `quality` | Sora 2 Pro |
 | `VIDEO_STYLE` | `str` | `""` | passthrough `style` | Sora 2 Pro |
 
 **Skip-when-default sentinel**: a valve set to its default value (`""`, `0`, `0.0`, or `"model_default"`) is **NOT** included in the request body. The upstream provider's own default applies. 3-state Literals translate `"on"` → `True`, `"off"` → `False`, `"model_default"` → omitted.
@@ -379,7 +379,7 @@ A task-model classifier that reads recent chat turns and attachments before an O
 
 | Valve | Type | Default (verified) | Purpose / notes |
 | --- | --- | --- | --- |
-| `VIDEO_INTENT_ENABLED` | `bool` | `True` | Master switch. When off, video requests bypass the classifier — only the latest user message is sent (no cross-turn context, clarifying questions, or frame reuse). |
+| `VIDEO_INTENT_ENABLED` | `bool` | `True` | Master switch. When off, video requests bypass the classifier — only the latest user message is sent (no cross-turn context, clarifying questions, or frame reuse) — and all four user-facing controls come off every video filter. User-overridable per video model. |
 | `VIDEO_INTENT_TASK_MODEL_MODE` | `internal` / `external` | `external` | Which Open WebUI global Task Model runs the classifier: `external`=`TASK_MODEL_EXTERNAL`, `internal`=`TASK_MODEL`. |
 | `VIDEO_INTENT_TASK_MODEL_FALLBACK` | `none` / `other_task_model` | `other_task_model` | Second-attempt strategy when the chosen Task Model fails: `none`=stop; `other_task_model`=try the other global Task Model (deduped if identical/unset). |
 | `VIDEO_INTENT_SKIP_WHEN_EMPTY_CHAT` | `bool` | `True` | Skip the classifier on a chat's first turn with no attachments (nothing to reference), saving a wasted Task Model call. |

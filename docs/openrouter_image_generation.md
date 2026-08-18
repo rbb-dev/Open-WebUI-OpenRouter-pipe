@@ -336,8 +336,8 @@ iteration where premium-tier quality isn't required.
 Updated GPT-5.4 generation of multimodal text+image output. Improved
 prompt adherence and visual fidelity over GPT-5 Image.
 
-- Successor to GPT-5 Image — same modalities + image_config schema,
-  improved quality.
+- Successor to GPT-5 Image — it still answers with both text and
+  pictures in one turn, at better quality.
 - Use for production deliverables that need the latest OpenAI image
   model.
 
@@ -386,8 +386,8 @@ OpenRouter to pick rather than committing to a specific provider.
 
 - Auto-routing — exact model used varies; check the response metadata
   for routed model id.
-- Universal input modalities (text + image + audio + file + video) —
-  flexible request shape.
+- Takes text, images, audio, files and video alongside the prompt, so
+  almost anything you attach can go with it.
 
 ### Microsoft: MAI-Image-2.5
 
@@ -595,8 +595,8 @@ anatomy/realism in complex compositions.
 
 Vector (SVG) variant of V4 — true `<svg>` output destined for logos,
 icon sets, and flat illustrations that need to scale and edit
-downstream. OpenRouter returns the SVG inline as a
-`data:image/svg+xml;base64,...` URL; OWUI renders it natively.
+downstream. The SVG arrives complete and Open WebUI draws it in the
+chat at full sharpness, whatever size you view it at.
 
 - Output is SVG, not PNG/JPEG — scales infinitely without quality loss.
 - Prefer simple, graphic prompts (logos, icons, flat illustrations)
@@ -623,7 +623,7 @@ final logo/brand deliverables.
 > **id**: `recraft/recraft-v4.1` · **pure-image-only**
 
 V4.1 is Recraft's May 2026 aesthetic refresh of V4 — same 1024x1024
-raster output, same image_config surface, but tuned for stronger
+raster output, but tuned for stronger
 composition, color cohesion, and visual polish. Best for marketing
 assets, social posts, and hero imagery where V4 felt
 almost-but-not-quite-right aesthetically. Same speed envelope as V4
