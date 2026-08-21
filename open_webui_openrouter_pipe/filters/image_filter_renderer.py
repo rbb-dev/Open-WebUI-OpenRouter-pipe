@@ -26,11 +26,15 @@ from ..core.utils import OWUI_FUNCTION_ID_ILLEGAL_RE as _IMAGE_FILTER_ID_RE
 from ..integrations.image_types import (
     PASSTHROUGH_DESCRIPTION,
     PASSTHROUGH_ENUMS,
+    PROVIDER_OPTIONS_DESCRIPTION,
     RENDERABLE_FIELD_NAME_RE,
+    SCHEMA_ENUMS,
     SCHEMA_ONLY_PARAMS,
+    SCHEMA_RANGES,
     TOP_LEVEL_PARAMS,
     scrub_surrogates,
 )
+from ..integrations.provider_options import CHAT_PROVIDER_KEYS
 from ..models.registry import sanitize_model_id
 
 
@@ -136,6 +140,9 @@ def _descriptor_enum(descriptor: dict) -> tuple[Any, ...]:
     )
 
 
+_BOUND_LIMIT = 2**53
+
+
 def _descriptor_bound(descriptor: dict, key: str) -> int | None:
     """The published bound, or None when it is not a whole number.
 
@@ -146,9 +153,12 @@ def _descriptor_bound(descriptor: dict, key: str) -> int | None:
     raw = descriptor.get(key)
     if isinstance(raw, bool) or not isinstance(raw, (int, float)):
         return None
-    if isinstance(raw, float) and raw != int(raw):
+    if isinstance(raw, float) and (not math.isfinite(raw) or raw != int(raw)):
         return None
-    return int(raw)
+    value = int(raw)
+    if not -_BOUND_LIMIT <= value <= _BOUND_LIMIT:
+        return None
+    return value
 
 
 def _published_records(endpoint_record: Any) -> list[dict]:
@@ -247,6 +257,8 @@ def build_image_model_filter_spec(
     model_id: str,
     image_model: dict | None = None,
     endpoint_record: dict | list[dict] | None = None,
+    *,
+    dedicated_image_api: bool,
 ) -> ImageModelFilterSpec:
     """Turn one model's published contract into the knobs its filter should render.
 
@@ -321,7 +333,7 @@ def build_image_model_filter_spec(
         marker=f"{_OPENROUTER_IMAGE_FILTER_MARKER}:{canonical}",
         dotted_id=sanitize_model_id(canonical.lstrip("~")).casefold(),
         contract_read=endpoint_record is not None,
-        dedicated_image_api=not _answers_on_the_chat_route(image_model),
+        dedicated_image_api=dedicated_image_api,
         published_anything=any(
             isinstance((record.get("supported_parameters") or {}), dict)
             and any(
@@ -355,7 +367,17 @@ _IMAGE_KNOB_TITLE_OVERRIDES = {
     "quality": ("Quality", "Rendering quality tier."),
     "output_format": ("Output format", "Container the image comes back in."),
     "output_compression": ("Output compression", "Compression level, where the format allows one."),
-    "size": ("Output size", "Exact pixel dimensions, where the model takes them rather than a tier."),
+    "size": (
+        "Output size",
+        (
+            "Either a size tier (512, 1K, 2K or 4K) or exact pixels written like "
+            "1024x1024. A tier sets the same thing as Resolution, is checked against the "
+            "tiers this model publishes, and still takes its shape from Aspect ratio. "
+            "Exact pixels settle the picture on their own, so Resolution is not sent "
+            "alongside them, and nor is Aspect ratio unless it is the shape you typed. "
+            "You are told in the chat whenever one of them is dropped that way."
+        ),
+    ),
 }
 
 IMAGE_KNOB_TITLES = {
@@ -394,9 +416,29 @@ def _image_literal_union(values: tuple[Any, ...]) -> str:
 
 
 _SCHEMA_ONLY_CAVEAT = (
-    "This model publishes no list of what it accepts here, so the value goes out as "
-    "typed and the company running it decides. Empty leaves it unset."
+    "No model publishes a list of pixel sizes, so exact pixels go out as typed and the "
+    "company running this one decides what to do with them. Empty leaves it unset."
 )
+
+
+def _schema_only_caveat(name: str) -> str:
+    bounds = SCHEMA_RANGES.get(name)
+    if bounds is not None:
+        low, high = bounds
+        return (
+            f"This model publishes no limits of its own. OpenRouter's image API takes a "
+            f"whole number from {low} to {high} here, and the company running the model "
+            "decides what it does with it. Empty leaves it unset."
+        )
+    values = SCHEMA_ENUMS.get(name)
+    if not values:
+        return _SCHEMA_ONLY_CAVEAT
+    offered = ", ".join(values)
+    return (
+        f"This model publishes no preference of its own. OpenRouter's image API takes "
+        f"one of {offered} here and refuses anything else before the company running "
+        "the model sees it. Empty leaves it unset."
+    )
 
 ALWAYS_ON_CONTROLS: tuple[tuple[str, str, str, str, str], ...] = (
     (
@@ -404,11 +446,7 @@ ALWAYS_ON_CONTROLS: tuple[tuple[str, str, str, str, str], ...] = (
         "str",
         '""',
         "Provider options",
-        (
-            "Extra settings for the company that runs this model, as "
-            "a JSON object keyed by its OpenRouter name. Use it for anything this panel does "
-            "not already offer. Empty sends nothing."
-        ),
+        PROVIDER_OPTIONS_DESCRIPTION,
     ),
     (
         "IMAGE_REFERENCE_MODE",
@@ -417,7 +455,8 @@ ALWAYS_ON_CONTROLS: tuple[tuple[str, str, str, str, str], ...] = (
         "Reference images",
         (
             "Which attached images go to the model as references. "
-            "auto sends every one on this turn, oldest first; latest-only sends just the most "
+            "auto sends every picture in this chat, and where the model takes fewer than "
+            "you attached the most recent ones are kept; latest-only sends just the most "
             "recent; none sends none of them."
         ),
     ),
@@ -434,16 +473,10 @@ ALWAYS_ON_CONTROLS: tuple[tuple[str, str, str, str, str], ...] = (
     ),
 )
 
-def _answers_on_the_chat_route(image_model: Any) -> bool:
-    if not isinstance(image_model, dict):
-        return False
-    modalities = (image_model.get("architecture") or {}).get("output_modalities")
-    if not isinstance(modalities, list):
-        return False
-    return "image" in modalities and "text" in modalities
-
-
-_IMAGE_API_ONLY_CONTROLS = frozenset({"IMAGE_REFERENCE_MODE", "IMAGE_REFERENCE_URLS"})
+_IMAGE_API_ONLY_CONTROLS = frozenset(
+    {"IMAGE_REFERENCE_MODE", "IMAGE_REFERENCE_URLS"}
+    | ({"IMAGE_PROVIDER_OPTIONS_JSON"} if "options" not in CHAT_PROVIDER_KEYS else set())
+)
 
 
 def always_on_controls(dedicated_image_api: bool) -> tuple[tuple[str, str, str, str, str], ...]:
@@ -512,12 +545,23 @@ def _render_image_model_user_valves(spec: ImageModelFilterSpec) -> str:
         )
     for name in spec.schema_only:
         title, description = IMAGE_KNOB_TITLES.get(name, (name, ""))
+        if name in SCHEMA_RANGES:
+            fields.append(
+                _image_field(
+                    f"{_valve_name(name)}: int | None = Field(\n"
+                    "            default=None,\n"
+                    f"            title={title!r},\n"
+                    f"            description={f'{description} {_schema_only_caveat(name)}'!r},\n"
+                    "        )"
+                )
+            )
+            continue
         fields.append(
             _image_field(
                 f"{_valve_name(name)}: str = Field(\n"
                 '            default="",\n'
                 f"            title={title!r},\n"
-                f"            description={f'{description} {_SCHEMA_ONLY_CAVEAT}'!r},\n"
+                f"            description={f'{description} {_schema_only_caveat(name)}'!r},\n"
                 "        )"
             )
         )
@@ -555,7 +599,7 @@ def _render_image_model_user_valves(spec: ImageModelFilterSpec) -> str:
                     f"{_valve_name(name)}: Literal[{literals}] = Field(\n"
                     '            default="",\n'
                     f"            title={name!r},\n"
-                    f'            description="{meaning} Empty leaves it unset.",\n'
+                    f"            description={f'{meaning} Empty leaves it unset.'!r},\n"
                     "        )"
                 )
             )
@@ -565,7 +609,7 @@ def _render_image_model_user_valves(spec: ImageModelFilterSpec) -> str:
                 f"{_valve_name(name)}: str = Field(\n"
                 '            default="",\n'
                 f"            title={name!r},\n"
-                f'            description="{PASSTHROUGH_DESCRIPTION}",\n'
+                f"            description={PASSTHROUGH_DESCRIPTION!r},\n"
                 "        )"
             )
         )
@@ -594,6 +638,11 @@ def _render_image_overrides(
         lines.append("        if count is not None:")
         lines.append(f"            {target}[{_key(name)!r}] = int(count)")
     for name in spec.schema_only:
+        if name in SCHEMA_RANGES:
+            lines.append(f"        measure = user_valves.{_valve_name(name)}")
+            lines.append("        if measure is not None:")
+            lines.append(f"            {target}[{_key(name)!r}] = int(measure)")
+            continue
         lines.append(f'        wanted = (user_valves.{_valve_name(name)} or "").strip()')
         lines.append("        if wanted:")
         lines.append(f"            {target}[{_key(name)!r}] = wanted")
@@ -879,14 +928,7 @@ IMAGE_GEN_TOOL_PARAMS: tuple[str, ...] = (
     "background",
     "output_format",
     "output_compression",
-    "moderation",
 )
-
-IMAGE_GEN_TOOL_FALLBACK_VALUES: dict[str, tuple[str, ...]] = {
-    "output_format": ("png", "jpeg", "webp"),
-    "background": ("transparent", "opaque"),
-}
-
 
 def image_gen_tool_wire_keys() -> dict[str, str]:
     return {"resolution": IMAGE_GEN_TOOL_TIER_KEY}
@@ -903,15 +945,14 @@ def build_image_gen_tool_spec(spec: ImageModelFilterSpec) -> ImageModelFilterSpe
         if name == "size":
             if tiers:
                 enums.append(("resolution", tiers))
-            schema_only.append("size")
+            else:
+                schema_only.append("size")
             continue
         if name in published:
             enums.append((name, published[name]))
         elif name in published_ranges:
             low, high = published_ranges[name]
             ranges.append((name, low, high))
-        elif name in IMAGE_GEN_TOOL_FALLBACK_VALUES:
-            enums.append((name, IMAGE_GEN_TOOL_FALLBACK_VALUES[name]))
         else:
             schema_only.append(name)
     return replace(
@@ -930,13 +971,16 @@ def image_gen_model_note(spec: ImageModelFilterSpec, *, catalog_match: bool) -> 
     opening = "Which OpenRouter model draws the picture."
     if not catalog_match:
         return (
-            f"{opening} No settings are offered for {named}: it is not in the image "
-            "model list this pipe has loaded. Check the id if that is unexpected."
+            f"{opening} {named} is not in the image model list this pipe has loaded, so "
+            "the settings below are not its own: each one offers what OpenRouter's image "
+            "API accepts in general, and this model decides what to do with the value. "
+            "Check the id if that is unexpected."
         )
     if not spec.contract_read:
         return (
-            f"{opening} What {named} accepts could not be read this time, so no settings "
-            "are offered; they appear once it can be read again."
+            f"{opening} What {named} accepts could not be read this time, so the settings "
+            "below offer what OpenRouter's image API accepts in general rather than this "
+            "model's own choices. They narrow to its own once it can be read again."
         )
     if not spec.has_knobs:
         if spec.published_anything:

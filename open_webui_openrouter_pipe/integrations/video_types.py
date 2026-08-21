@@ -4,6 +4,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+VIDEO_REQ_KEY_DESCRIPTION = (
+    "A value ByteDance accepts here. OpenRouter does not publish what it means, so leave "
+    "it blank unless your provider has told you what to send."
+)
+
 
 class VideoGenerationError(RuntimeError):
     pass

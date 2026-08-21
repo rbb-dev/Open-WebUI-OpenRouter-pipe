@@ -15,12 +15,14 @@ from ..core.logging_system import SessionLogger
 from ..core.warn_latch import warn_level
 from .image_client import OpenRouterImageClient
 from .image_types import (
+    SCHEMA_ENUMS,
     SCHEMA_ONLY_PARAMS,
     TOP_LEVEL_PARAMS,
     GeneratedImage,
     ImageGenerationError,
     ImageGenerationResult,
     clamp_text,
+    pixel_size,
     prompt_with_system,
     summarise_names,
     supersede_size_conflicts,
@@ -65,6 +67,8 @@ _BILLING_MULTIPLIERS = frozenset({"n"})
 _LEGACY_PARAM_NAMES = {
     "image_size": "resolution",
 }
+
+_TIER_EQUIVALENT = {"size": "resolution"}
 
 _warned_image_endpoints: set[str] = set()
 
@@ -186,10 +190,16 @@ class ImageGenerationAdapter:
             for record in records
             if isinstance(slug := record.get("provider_slug"), str) and options_key(slug)
         ]
-        chosen = carrier_slug(bare_pins(requested or {}), [key for key, _ in keyed])
-        if not chosen:
-            return [record for _key, record in keyed]
-        return [record for key, record in keyed if key == chosen]
+        pins = bare_pins(requested or {})
+        only = pins.get("only")
+        if isinstance(only, list) and only:
+            allowed = {slug for slug in only if isinstance(slug, str) and slug}
+            return [record for key, record in keyed if key in allowed]
+        ignored = pins.get("ignore")
+        if isinstance(ignored, list) and ignored:
+            excluded = {slug for slug in ignored if isinstance(slug, str) and slug}
+            return [record for key, record in keyed if key not in excluded]
+        return [record for _key, record in keyed]
 
     @staticmethod
     def _union_declared(records: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -219,14 +229,13 @@ class ImageGenerationAdapter:
         return merged or None
 
     @staticmethod
-    def _records_accepting(records: list[dict[str, Any]], chosen: dict[str, Any]) -> list[str]:
-        keep: list[str] = []
+    def _records_accepting(
+        records: list[dict[str, Any]], chosen: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        keep: list[dict[str, Any]] = []
         for record in records:
             supported = record.get("supported_parameters")
             declared = supported if isinstance(supported, dict) else {}
-            slug = record.get("provider_slug")
-            if not isinstance(slug, str) or not slug:
-                continue
             ok = True
             for name, value in chosen.items():
                 if name not in declared:
@@ -236,8 +245,32 @@ class ImageGenerationAdapter:
                     ok = False
                     break
             if ok:
-                keep.append(slug)
+                keep.append(record)
         return keep
+
+    @staticmethod
+    def _routing_pins(records: list[dict[str, Any]]) -> list[str]:
+        tags = {
+            tag.strip()
+            for record in records
+            if isinstance(tag := record.get("provider_tag"), str) and tag.strip()
+        }
+        return sorted(tags)
+
+    @staticmethod
+    def _pin_accepting_providers(
+        provider: dict[str, Any],
+        reachable_records: list[dict[str, Any]],
+        chosen: dict[str, Any],
+    ) -> None:
+        if "only" in provider:
+            return
+        accepting = ImageGenerationAdapter._records_accepting(reachable_records, chosen)
+        if not accepting or len(accepting) >= len(reachable_records):
+            return
+        pins = ImageGenerationAdapter._routing_pins(accepting)
+        if pins:
+            provider["only"] = pins
 
     @staticmethod
     def _split_image_config(
@@ -295,6 +328,24 @@ class ImageGenerationAdapter:
                 )
                 continue
             if name in _SCHEMA_ONLY_PARAMS and (declared is None or name not in declared):
+                tier_of = _TIER_EQUIVALENT.get(name)
+                descriptor = (declared or {}).get(tier_of) if tier_of else None
+                if (
+                    descriptor is not None
+                    and pixel_size(value) is None
+                    and value in SCHEMA_ENUMS.get(tier_of or "", ())
+                ):
+                    fitted, note = ImageGenerationAdapter._fit_descriptor(descriptor, value)
+                    if fitted is None:
+                        _note(
+                            "outside-contract",
+                            name,
+                            f"{name}={_clamp(repr(value), _NOTE_VALUE_LIMIT)} was not sent "
+                            f"(it sets {tier_of}, which {note})",
+                        )
+                        continue
+                    top_level[name] = fitted
+                    continue
                 top_level[name] = value
                 continue
             if name in _TOP_LEVEL_PARAMS:
@@ -518,9 +569,8 @@ class ImageGenerationAdapter:
         records = [record for record in (published or []) if isinstance(record, dict)]
         if not isinstance(raw, dict) or not raw or not records:
             return
-        record, unserved_pin = self._select_endpoint(
-            records, requested_provider_block(responses_body, metadata)
-        )
+        requested_provider = requested_provider_block(responses_body, metadata)
+        record, unserved_pin = self._select_endpoint(records, requested_provider)
         if record is None:
             if unserved_pin:
                 await self._report_notes(
@@ -534,11 +584,21 @@ class ImageGenerationAdapter:
             for item in (record.get("allowed_passthrough_parameters") or [])
             if isinstance(item, str)
         )
+        reachable_records = self._reachable_records(records, requested_provider)
         fitted, passthrough, notes = self._split_image_config(
-            {"image_config": raw}, allowed_passthrough=allowed, record=record
+            {"image_config": raw},
+            allowed_passthrough=allowed,
+            record=record,
+            records=reachable_records,
         )
         merged = {**passthrough, **fitted}
         responses_body.image_config = merged or None
+        provider = (
+            responses_body.provider if isinstance(responses_body.provider, dict) else {}
+        )
+        self._pin_accepting_providers(provider, reachable_records, fitted)
+        if provider:
+            responses_body.provider = provider
         await self._report_notes(
             notes, api_model_id=api_model_id, event_emitter=event_emitter
         )
@@ -622,31 +682,33 @@ class ImageGenerationAdapter:
             attached = []
         elif mode == "latest-only":
             attached = attached[-1:]
-        refs = [
+        links = [
             {"type": "image_url", "image_url": {"url": url}}
             for url in await self._vetted_reference_urls(chosen)
         ]
-        refs.extend(attached)
         published = self._reference_limit(record)
         limit = (
             _SCHEMA_REFERENCE_CAP
             if published is None
             else min(published, _SCHEMA_REFERENCE_CAP)
         )
-        if len(refs) > limit:
+        room = max(0, limit - len(links))
+        refs = links[:limit] + (attached[-room:] if room else [])
+        offered = len(links) + len(attached)
+        if offered > len(refs):
             reason = (
                 f"this model accepts {limit}"
                 if published is not None
-                else f"a request carries at most {limit}"
+                else f"this pipe sends at most {limit} when a model publishes no limit"
             )
             notes.append(
                 _Note(
                     "refs-dropped",
                     "input_references",
-                    f"dropped {len(refs) - limit} reference image(s); {reason}",
+                    f"dropped {offered - len(refs)} reference image(s), keeping the most "
+                    f"recent; {reason}",
                 )
             )
-            refs = refs[:limit]
         return refs
 
     @staticmethod
@@ -946,9 +1008,7 @@ class ImageGenerationAdapter:
                 api_model_id,
                 names,
             )
-        reachable = self._records_accepting(reachable_records, top_level)
-        if reachable and len(reachable) < len(reachable_records) and "only" not in provider:
-            provider["only"] = sorted(reachable)
+        self._pin_accepting_providers(provider, reachable_records, top_level)
 
         if provider:
             payload["provider"] = provider
@@ -981,13 +1041,13 @@ class ImageGenerationAdapter:
         )
 
         outcome["usage"] = result.usage
+        outcome["costed"] = True
         await asyncio.shield(
             self._record_cost(
                 valves, result.usage, user=user, metadata=metadata, user_obj=user_obj,
                 api_model_id=api_model_id,
             )
         )
-        outcome["costed"] = True
 
         snippets: list[str] = []
         unsaved = 0

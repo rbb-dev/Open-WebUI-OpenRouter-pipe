@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import aiohttp
@@ -10,11 +11,11 @@ from ..core.config import (
     _OPENROUTER_TITLE,
     _apply_owui_forward_user_headers,
 )
+from ..core.errors import _build_openrouter_api_error
 from ..requests.debug import (
     _debug_print_error_response,
     _debug_print_request,
     _debug_print_response,
-    _extract_error_message_from_body,
 )
 from .video_types import VideoGenerationError
 
@@ -101,6 +102,25 @@ class OpenRouterVideoClient:
         data = payload.get("data") if isinstance(payload, dict) else None
         return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
 
+    async def model_modalities(self, model_id: str) -> list[str]:
+        slug = (model_id or "").strip().strip("/")
+        if not slug:
+            return []
+        url = f"{self._base_url}/models/{slug}/endpoints"
+        try:
+            async with self._session.get(url, headers=self._headers()) as resp:
+                if resp.status >= 400:
+                    return []
+                payload = await resp.json()
+        except asyncio.CancelledError:
+            raise
+        except (aiohttp.ClientError, TimeoutError, OSError, ValueError):
+            return []
+        data = payload.get("data") if isinstance(payload, dict) else None
+        arch = (data or {}).get("architecture") if isinstance(data, dict) else None
+        found = (arch or {}).get("input_modalities") if isinstance(arch, dict) else None
+        return [item for item in found if isinstance(item, str)] if isinstance(found, list) else []
+
     async def submit(self, payload: dict[str, Any]) -> dict[str, Any]:
         url = f"{self._base_url}/videos"
         headers = self._headers()
@@ -108,8 +128,12 @@ class OpenRouterVideoClient:
         async with self._session.post(url, headers=headers, json=payload) as resp:
             if resp.status >= 400:
                 body = await _debug_print_error_response(resp, logger=self._logger)
-                detail = _extract_error_message_from_body(body)
-                raise VideoGenerationError(detail or f"OpenRouter video generation failed with HTTP {resp.status}.")
+                raise _build_openrouter_api_error(
+                    resp.status,
+                    resp.reason or "",
+                    body,
+                    requested_model=str(payload.get("model") or "") or None,
+                )
             data = await resp.json()
         _debug_print_response(data, logger=self._logger)
         if not isinstance(data, dict):
@@ -126,8 +150,11 @@ class OpenRouterVideoClient:
         async with self._session.get(url, headers=headers) as resp:
             if resp.status >= 400:
                 body = await _debug_print_error_response(resp, logger=self._logger)
-                detail = _extract_error_message_from_body(body)
-                raise VideoGenerationError(detail or f"OpenRouter video status failed with HTTP {resp.status}.")
+                raise _build_openrouter_api_error(
+                    resp.status,
+                    resp.reason or "",
+                    body,
+                )
             data = await resp.json()
         _debug_print_response(data, logger=self._logger)
         if not isinstance(data, dict):

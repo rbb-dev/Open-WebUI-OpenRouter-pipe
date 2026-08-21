@@ -13,6 +13,7 @@ same way the endpoint contracts in this directory are re-recorded.
 
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,6 +30,13 @@ from open_webui_openrouter_pipe.integrations.request_fields import (
     VIDEO_FIELD_ROUTES,
     VIDEO_REQUEST_FIELDS,
 )
+from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+    IMAGE_GEN_TOOL_PARAMS,
+    build_image_gen_tool_spec,
+    build_image_model_filter_spec,
+    render_image_gen_filter_source,
+)
+from open_webui_openrouter_pipe.integrations.image_types import SCHEMA_ENUMS
 from open_webui_openrouter_pipe.integrations.video_types import VideoGenerationError
 from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
 
@@ -123,9 +131,21 @@ class _NoPersistence:
         raise AssertionError("nothing was generated, so nothing may be stored")
 
 
+@pytest.mark.parametrize(
+    "references",
+    [
+        pytest.param([], id="nothing-attached"),
+        pytest.param(
+            [{"id": "file-1", "kind": "image", "content_type": "image/png"}],
+            id="one-reference-attached",
+        ),
+    ],
+)
 @pytest.mark.parametrize("model_id", ["google/veo-3.1", "openai/sora-2-pro"])
 @pytest.mark.asyncio
-async def test_no_named_gap_appears_in_the_payload_the_adapter_submits(monkeypatch, model_id):
+async def test_no_named_gap_appears_in_the_payload_the_adapter_submits(
+    monkeypatch, model_id, references
+):
     """The reason has to describe the code. A field listed as unreachable that the
     adapter does send would be a false record, which is worse than none.
 
@@ -134,11 +154,12 @@ async def test_no_named_gap_appears_in_the_payload_the_adapter_submits(monkeypat
     a variable, or merged in through `dict.update` went out to OpenRouter with nothing
     here noticing -- and `submit` posts what it is handed, with no key filter of its own.
 
-    What is observed is one whole turn: a text prompt plus the per-model controls, with
-    nothing attached. On such a turn `input_references` has nothing that could fill it
-    and `callback_url` is never built at all, so the whole gap list must be absent, and a
-    gap added to the record later is covered without anyone naming it here. Two models
-    because their catalogue entries differ, so a builder returning a fixed dict fails one.
+    What is observed is one whole turn: a text prompt plus the per-model controls, run
+    once with nothing attached and once with a reference. The empty turn alone made the
+    check vacuous -- the intersection it asserts against was the empty set whatever the
+    record said -- and that is what hid `input_references`, recorded as unreachable while
+    the adapter sent it. Two models because their catalogue entries differ, so a builder
+    returning a fixed dict fails one.
     """
     submitted: list[dict[str, Any]] = []
 
@@ -154,11 +175,27 @@ async def test_no_named_gap_appears_in_the_payload_the_adapter_submits(monkeypat
         "open_webui_openrouter_pipe.integrations.video.OpenRouterVideoClient", FakeClient
     )
 
+    async def _file(file_id, _logger):
+        return SimpleNamespace(id=file_id, meta={"content_type": "image/png"})
+
+    monkeypatch.setattr(
+        "open_webui_openrouter_pipe.integrations.video.get_file_by_id", _file
+    )
+    monkeypatch.setattr(
+        "open_webui_openrouter_pipe.integrations.video.infer_file_mime_type",
+        lambda _obj: "image/png",
+    )
+
     pipe = Pipe()
     pipe.valves.API_KEY = EncryptedStr("test-api-key")
     OpenRouterModelRegistry.register_video_models([VIDEO_CATALOG[model_id]])
     adapter = pipe._ensure_video_generation_adapter()
     cast(Any, adapter)._persistence = _NoPersistence()
+
+    async def _b64(*_args, **_kwargs):
+        return base64.b64encode(b"\x89PNG\r\n\x1a\n").decode()
+
+    monkeypatch.setattr(pipe._file_gateway, "read_file_record_base64", _b64)
 
     result = await adapter.generate(
         body={"messages": [{"role": "user", "content": "a paper kite over a harbour"}]},
@@ -176,7 +213,8 @@ async def test_no_named_gap_appears_in_the_payload_the_adapter_submits(monkeypat
                         "duration": 8,
                         "resolution": "720p",
                         "generate_audio": True,
-                    }
+                    },
+                    "input_references": references,
                 }
             },
         },
@@ -201,6 +239,11 @@ async def test_no_named_gap_appears_in_the_payload_the_adapter_submits(monkeypat
         "below would hold over a payload nobody built"
     )
     assert sent & set(VIDEO_FIELD_ROUTES), "an empty payload would pass vacuously"
+    if references:
+        assert "input_references" in sent, (
+            "the attached reference never reached the request, so this row observes the "
+            "same empty intersection the text-only row does and adds no coverage"
+        )
     assert not (sent & set(VIDEO_FIELD_GAPS)), (
         f"{sorted(sent & set(VIDEO_FIELD_GAPS))} went to OpenRouter while the record calls "
         "them unreachable, so the written reason describes code that is not there"
@@ -208,4 +251,203 @@ async def test_no_named_gap_appears_in_the_payload_the_adapter_submits(monkeypat
     assert sent <= set(VIDEO_REQUEST_FIELDS), (
         f"{sorted(sent - set(VIDEO_REQUEST_FIELDS))} is in neither half of the partition; a "
         "gap spelled differently escapes the check above by not being the recorded name"
+    )
+
+
+def test_the_closed_value_lists_match_the_recorded_request_format():
+    """Every closed enum the pipe offers is the one OpenRouter's request format publishes.
+
+    These are the values the server-tool filter falls back to when a model publishes no
+    list of its own. Hand-trimming them narrowed what users could ask for below what the
+    API accepts -- `svg` vanished from every vectorising model, `auto` from every
+    background. The comparison runs against the recording so a literal cannot satisfy it.
+    """
+    recorded = RECORDED["image"]["enums"]
+    assert recorded, "the enum recording is empty, so this gate asserts nothing"
+
+    assert set(SCHEMA_ENUMS) == set(recorded), (
+        f"unlisted={sorted(set(recorded) - set(SCHEMA_ENUMS))} "
+        f"invented={sorted(set(SCHEMA_ENUMS) - set(recorded))}"
+    )
+    for name, values in sorted(recorded.items()):
+        assert SCHEMA_ENUMS[name] == tuple(values), (
+            f"{name}: dropped={sorted(set(values) - set(SCHEMA_ENUMS[name]))} "
+            f"invented={sorted(set(SCHEMA_ENUMS[name]) - set(values))}"
+        )
+
+
+_RECORDED_IMAGE_CONTRACTS = sorted(
+    (Path(__file__).parent / "fixtures").glob("openrouter_image_endpoints_*.json")
+)
+
+assert len(_RECORDED_IMAGE_CONTRACTS) > 30, (
+    f"only {len(_RECORDED_IMAGE_CONTRACTS)} recorded contracts found; the sweeps below "
+    "parametrise over this list, and an empty one collects no nodes and SKIPS rather "
+    "than failing"
+)
+
+
+def _tool_domains(path: Path) -> tuple[dict[str, Any], dict[str, Any], Any]:
+    raw = json.loads(path.read_text())
+    spec = build_image_model_filter_spec(
+        raw["id"], None, raw["endpoints"], dedicated_image_api=True
+    )
+    tool = build_image_gen_tool_spec(spec)
+    published = {name: values for name, values in spec.enums}
+    published.update({name: (low, high) for name, low, high in spec.ranges})
+    offered = {name: values for name, values in tool.enums}
+    offered.update({name: (low, high) for name, low, high in tool.ranges})
+    return published, offered, tool
+
+
+@pytest.mark.parametrize(
+    "path", _RECORDED_IMAGE_CONTRACTS, ids=lambda p: p.stem.split("endpoints_")[-1]
+)
+def test_the_server_tool_offers_no_value_list_its_model_did_not_publish(path):
+    """Every closed list the tool filter draws came from the model it will run on.
+
+    The tool filter used to substitute the API-wide enum whenever a model published
+    nothing -- so three models were handed a `background`, an `output_format` and an
+    `output_compression` range they publish nothing for, and `svg` was a selectable
+    option on all forty recorded models while no recorded contract publishes it. An
+    absent key means the parameter is unsupported by that endpoint, so the control has
+    to fall back to free entry, the way `quality` already did.
+    """
+    published, offered, tool = _tool_domains(path)
+
+    for name, domain in offered.items():
+        assert name in published, (
+            f"{path.stem}: the tool draws a domain for {name} that the model publishes "
+            f"nothing for: {domain!r}"
+        )
+        assert domain == published[name], (
+            f"{path.stem}: {name} is offered as {domain!r} where the model publishes "
+            f"{published[name]!r}"
+        )
+
+    for name in IMAGE_GEN_TOOL_PARAMS:
+        # the tool spells the resolution tier `size` on the wire
+        published_as = "resolution" if name == "size" else name
+        assert (published_as in offered) == (published_as in published), (
+            f"{path.stem}: {name} draws a domain {published_as in offered!r} while the "
+            f"model publishes one {published_as in published!r}"
+        )
+        if published_as not in published:
+            assert name in tool.schema_only, (
+                f"{path.stem}: {name} is published by nothing and drawn by nothing, so "
+                "the capability is unreachable rather than unconstrained"
+            )
+
+
+def test_the_sweep_sees_both_a_model_that_publishes_a_list_and_one_that_does_not():
+    """Neither half of the rule above may be vacuous across the recorded fleet.
+
+    A sweep that only ever met models publishing nothing would pass with the domain
+    check never running, and one that only met models publishing everything would pass
+    with the fallback check never running.
+    """
+    with_domain: set[str] = set()
+    without_domain: set[str] = set()
+    for path in _RECORDED_IMAGE_CONTRACTS:
+        published, offered, _tool = _tool_domains(path)
+        for name in IMAGE_GEN_TOOL_PARAMS:
+            published_as = "resolution" if name == "size" else name
+            (with_domain if published_as in offered else without_domain).add(name)
+
+    assert {"background", "quality", "output_compression"} <= with_domain, (
+        f"no recorded model publishes these, so the domain half asserts nothing: "
+        f"{sorted({'background', 'quality', 'output_compression'} - with_domain)}"
+    )
+    assert {"background", "quality", "output_compression", "output_format"} <= without_domain, (
+        f"every recorded model publishes these, so the free-entry half asserts nothing: "
+        f"{sorted({'background', 'quality', 'output_compression', 'output_format'} - without_domain)}"
+    )
+
+
+@pytest.mark.parametrize(
+    "path", _RECORDED_IMAGE_CONTRACTS, ids=lambda p: p.stem.split("endpoints_")[-1]
+)
+def test_no_rendered_tool_filter_offers_a_format_its_model_never_published(path):
+    """`svg` reached the chat UI as a choice on every model, and none publishes it.
+
+    Asserted on the rendered source rather than the spec, because the spec is what the
+    renderer reads and a Literal written from anywhere else would not show up there.
+    """
+    import re
+
+    raw = json.loads(path.read_text())
+    spec = build_image_model_filter_spec(
+        raw["id"], None, raw["endpoints"], dedicated_image_api=True
+    )
+    source = render_image_gen_filter_source(
+        spec, catalog_match=True, selected_model=raw["id"]
+    )
+    _operator, _sep, user_valves = source.partition("class UserValves(BaseModel):")
+    assert _sep, "the tool filter draws no user valve block at all"
+    published = dict(spec.enums)
+    for field, literal in re.findall(r"IMAGE_([A-Z_]+): Literal\[([^\]]*)\]", user_valves):
+        name = field.lower()
+        wire = "resolution" if name == "size" else name
+        drawn = {
+            value for value in re.findall(r"'([^']*)'", literal) if value
+        }
+        assert wire in published, (
+            f"{raw['id']}: {name} is drawn as a closed list {sorted(drawn)} while the "
+            "model publishes no list for it"
+        )
+        assert drawn <= set(published[wire]), (
+            f"{raw['id']}: {name} offers {sorted(drawn - set(published[wire]))}, which "
+            "the model does not publish"
+        )
+
+
+def test_the_server_tool_carries_every_parameter_its_table_documents():
+    """The panel's parameter set is the published table, not a copy of itself.
+
+    Deriving the expectation from `IMAGE_GEN_TOOL_PARAMS` made this vacuous: deleting a
+    name from the constant deleted the control and the check for it in one move, and the
+    suite stayed green. The recording is transcribed from OpenRouter's own server-tool
+    page, so the two can disagree.
+    """
+    recorded = RECORDED["image_server_tool"]
+    documented = set(recorded["parameters"])
+    assert documented, "the server-tool recording is empty, so this gate asserts nothing"
+
+    operator_owned = set(recorded["chosen_by_the_operator"])
+    assert operator_owned <= documented, (
+        f"the recording marks a parameter its own table does not list: "
+        f"{sorted(operator_owned - documented)}"
+    )
+    assert set(IMAGE_GEN_TOOL_PARAMS) == documented - operator_owned, (
+        f"unlisted={sorted(documented - operator_owned - set(IMAGE_GEN_TOOL_PARAMS))} "
+        f"invented={sorted(set(IMAGE_GEN_TOOL_PARAMS) - documented)}"
+    )
+
+
+@pytest.mark.parametrize("transport", ["image", "video", "chat"])
+def test_the_accepted_provider_keys_are_the_ones_the_format_publishes(transport):
+    """Each transport accepts the keys its own provider schema defines, and no others.
+
+    The picker's gate derived its expectation from the same constants the picker reads,
+    so adding a key to one moved both sides together: five phantom price controls could
+    be drawn on every image model, emitting a `max_price` the image request format has no
+    field for, with the whole suite still green. The recording is transcribed from
+    OpenRouter's reference pages, so production and expectation can disagree.
+    """
+    from open_webui_openrouter_pipe.integrations.provider_options import (
+        CHAT_PROVIDER_KEYS,
+        IMAGE_PROVIDER_KEYS,
+        VIDEO_PROVIDER_KEYS,
+    )
+
+    accepted = {
+        "image": IMAGE_PROVIDER_KEYS,
+        "video": VIDEO_PROVIDER_KEYS,
+        "chat": CHAT_PROVIDER_KEYS,
+    }[transport]
+    recorded = set(RECORDED[transport]["provider_properties"])
+    assert recorded, f"the {transport} provider recording is empty, so this gate asserts nothing"
+    assert set(accepted) == recorded, (
+        f"{transport}: invented={sorted(set(accepted) - recorded)} "
+        f"missing={sorted(recorded - set(accepted))}"
     )

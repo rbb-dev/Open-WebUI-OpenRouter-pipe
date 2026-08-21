@@ -34,7 +34,7 @@ class Filter:
         IMAGE_GENERATION_MODEL: str = Field(
             default='openai/gpt-5-image-mini',
             title="Image generation model",
-            description='Which OpenRouter model draws the picture. No settings are offered for openai/gpt-5-image-mini: it is not in the image model list this pipe has loaded. Check the id if that is unexpected.',
+            description="Which OpenRouter model draws the picture. openai/gpt-5-image-mini is not in the image model list this pipe has loaded, so the settings below are not its own: each one offers what OpenRouter's image API accepts in general, and this model decides what to do with the value. Check the id if that is unexpected.",
         )
         IMAGE_GENERATION_MODERATION: Literal['auto', 'low'] = Field(
             default='auto',
@@ -72,40 +72,35 @@ class Filter:
                 kept[name] = data[name]
             return kept
 
-        IMAGE_BACKGROUND: Literal['', 'transparent', 'opaque'] = Field(
-                    default="",
-                    title='Background',
-                    description='Background treatment. Empty uses the model default.',
-                )
-        IMAGE_OUTPUT_FORMAT: Literal['', 'png', 'jpeg', 'webp'] = Field(
-                    default="",
-                    title='Output format',
-                    description='Container the image comes back in. Empty uses the model default.',
-                )
         IMAGE_QUALITY: str = Field(
                     default="",
                     title='Quality',
-                    description='Rendering quality tier. This model publishes no list of what it accepts here, so the value goes out as typed and the company running it decides. Empty leaves it unset.',
+                    description="Rendering quality tier. This model publishes no preference of its own. OpenRouter's image API takes one of auto, low, medium, high here and refuses anything else before the company running the model sees it. Empty leaves it unset.",
                 )
         IMAGE_SIZE: str = Field(
                     default="",
                     title='Output size',
-                    description='Exact pixel dimensions, where the model takes them rather than a tier. This model publishes no list of what it accepts here, so the value goes out as typed and the company running it decides. Empty leaves it unset.',
+                    description='Either a size tier (512, 1K, 2K or 4K) or exact pixels written like 1024x1024. A tier sets the same thing as Resolution, is checked against the tiers this model publishes, and still takes its shape from Aspect ratio. Exact pixels settle the picture on their own, so Resolution is not sent alongside them, and nor is Aspect ratio unless it is the shape you typed. You are told in the chat whenever one of them is dropped that way. No model publishes a list of pixel sizes, so exact pixels go out as typed and the company running this one decides what to do with them. Empty leaves it unset.',
                 )
         IMAGE_ASPECT_RATIO: str = Field(
                     default="",
                     title='Aspect ratio',
-                    description='Frame shape. This model publishes no list of what it accepts here, so the value goes out as typed and the company running it decides. Empty leaves it unset.',
+                    description="Frame shape. This model publishes no preference of its own. OpenRouter's image API takes one of 1:1, 1:2, 1:4, 1:8, 2:1, 2:3, 3:2, 3:4, 4:1, 4:3, 4:5, 5:4, 8:1, 9:16, 16:9, 9:19.5, 19.5:9, 9:20, 20:9, 9:21, 21:9, auto here and refuses anything else before the company running the model sees it. Empty leaves it unset.",
                 )
-        IMAGE_OUTPUT_COMPRESSION: str = Field(
+        IMAGE_BACKGROUND: str = Field(
                     default="",
+                    title='Background',
+                    description="Background treatment. This model publishes no preference of its own. OpenRouter's image API takes one of auto, transparent, opaque here and refuses anything else before the company running the model sees it. Empty leaves it unset.",
+                )
+        IMAGE_OUTPUT_FORMAT: str = Field(
+                    default="",
+                    title='Output format',
+                    description="Container the image comes back in. This model publishes no preference of its own. OpenRouter's image API takes one of png, jpeg, webp, svg here and refuses anything else before the company running the model sees it. Empty leaves it unset.",
+                )
+        IMAGE_OUTPUT_COMPRESSION: int | None = Field(
+                    default=None,
                     title='Output compression',
-                    description='Compression level, where the format allows one. This model publishes no list of what it accepts here, so the value goes out as typed and the company running it decides. Empty leaves it unset.',
-                )
-        IMAGE_MODERATION: str = Field(
-                    default="",
-                    title='moderation',
-                    description=' This model publishes no list of what it accepts here, so the value goes out as typed and the company running it decides. Empty leaves it unset.',
+                    description="Compression level, where the format allows one. This model publishes no limits of its own. OpenRouter's image API takes a whole number from 0 to 100 here, and the company running the model decides what it does with it. Empty leaves it unset.",
                 )
 
     def __init__(self) -> None:
@@ -142,12 +137,6 @@ class Filter:
         params: dict[str, Any] = {"model": self.valves.IMAGE_GENERATION_MODEL}
         if self.valves.IMAGE_GENERATION_MODERATION != 'auto':
             params["moderation"] = self.valves.IMAGE_GENERATION_MODERATION
-        value = user_valves.IMAGE_BACKGROUND
-        if value != "":
-            params['background'] = value
-        value = user_valves.IMAGE_OUTPUT_FORMAT
-        if value != "":
-            params['output_format'] = value
         wanted = (user_valves.IMAGE_QUALITY or "").strip()
         if wanted:
             params['quality'] = wanted
@@ -157,12 +146,15 @@ class Filter:
         wanted = (user_valves.IMAGE_ASPECT_RATIO or "").strip()
         if wanted:
             params['aspect_ratio'] = wanted
-        wanted = (user_valves.IMAGE_OUTPUT_COMPRESSION or "").strip()
+        wanted = (user_valves.IMAGE_BACKGROUND or "").strip()
         if wanted:
-            params['output_compression'] = wanted
-        wanted = (user_valves.IMAGE_MODERATION or "").strip()
+            params['background'] = wanted
+        wanted = (user_valves.IMAGE_OUTPUT_FORMAT or "").strip()
         if wanted:
-            params['moderation'] = wanted
+            params['output_format'] = wanted
+        measure = user_valves.IMAGE_OUTPUT_COMPRESSION
+        if measure is not None:
+            params['output_compression'] = int(measure)
 
         if isinstance(__metadata__, dict):
             prev_pipe_meta = __metadata__.get('openrouter_pipe')

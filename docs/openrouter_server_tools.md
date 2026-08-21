@@ -142,27 +142,43 @@ These appear in the filter's user-facing knobs UI and control per-user, per-chat
 
 ### OpenRouter Image Generation filter user valves
 
-There is no fixed list. The filter is re-rendered for whichever model
-`IMAGE_GENERATION_MODEL` names, and it offers exactly the settings that model's own
-published contract carries — the same contract, read the same way, as the per-model
-image filters described in
-[OpenRouter Image Generation](openrouter_image_generation.md).
+Six controls, always six. The filter is re-rendered for whichever model
+`IMAGE_GENERATION_MODEL` names, reading that model's own published list of what it
+accepts — the same list, read the same way, as the per-model image filters described in
+[OpenRouter Image Generation](openrouter_image_generation.md). Five of the six are always
+the same five; the sixth depends on the model. What that list changes most is what each
+control will let a user pick: where the model publishes values, the control becomes a
+dropdown of exactly those, and where it publishes none the control takes free text and
+names in its description what OpenRouter's image API accepts.
 
-| Valve | Type | Shown when |
-| --- | --- | --- |
-| `IMAGE_GENERATION` | `bool` | Always. Let the model generate images from text prompts. |
-| `IMAGE_ASPECT_RATIO` | `Literal` over the published ratios | The model publishes a ratio list. |
-| `IMAGE_RESOLUTION` | `Literal` over the published tiers | The model publishes a tier list. |
-| `IMAGE_QUALITY` | `Literal` over the published levels | The model publishes a quality list. |
-| `IMAGE_BACKGROUND` | `Literal` over the published treatments | The model publishes a background list. |
-| `IMAGE_OUTPUT_FORMAT` | `Literal` over the published formats | The model publishes a format list. |
-| `IMAGE_N` | `int \| None`, bounded by the published range | The model publishes a range for it. |
-| `IMAGE_OUTPUT_COMPRESSION` | `int \| None`, bounded by the published range | The model publishes a range for it. |
-| `IMAGE_SEED` | `int \| None` | The model declares it supports seeding. |
-| `IMAGE_SIZE` | `str` | Always. No model publishes a value list for it, so it is typed rather than picked and goes out unchecked. |
+Turning image generation on for a chat is the filter's own on/off switch in the message
+box, not one of these settings.
 
-A model the pipe's catalog does not carry, or whose contract has not been read yet,
-offers none of these; `IMAGE_GENERATION_MODEL`'s own description says which case it is.
+| Valve | On screen | Type | Shown when |
+| --- | --- | --- | --- |
+| `IMAGE_QUALITY` | Quality | `Literal` over the published levels, otherwise `str` | Always. |
+| `IMAGE_ASPECT_RATIO` | Aspect ratio | `Literal` over the published ratios, otherwise `str` | Always. |
+| `IMAGE_BACKGROUND` | Background | `Literal` over the published treatments, otherwise `str` | Always. |
+| `IMAGE_OUTPUT_FORMAT` | Output format | `Literal` over the published formats, otherwise `str` | Always. |
+| `IMAGE_OUTPUT_COMPRESSION` | Output compression | `int \| None`, bounded by the published range where there is one | Always. |
+| `IMAGE_RESOLUTION` | Resolution | `Literal` over the published tiers | The model publishes a tier list. |
+| `IMAGE_SIZE` | Output size | `str` | The model publishes no tier list. |
+
+The last two are alternatives, never both at once: a model that publishes size tiers gets
+the **Resolution** dropdown, and one that does not gets **Output size** instead, where a
+tier name or exact pixels can be typed. Across the forty image models recorded in this
+repository, sixteen draw **Resolution** and twenty-four draw **Output size**.
+
+Where a control falls back to `str` — because the model publishes no values for it — its
+own description names what OpenRouter's image API accepts there, so an admin or user still
+knows what to type. `IMAGE_OUTPUT_COMPRESSION` behaves the same way: bounded by the model's
+own range when it publishes one, and otherwise unbounded with OpenRouter's 0-to-100 range
+named in the description.
+
+A model the pipe's image model list does not carry, or whose settings could not be read
+this time, still gets all six — with `IMAGE_SIZE` as the sixth, and every one of them
+offering what OpenRouter's image API accepts in general rather than that model's own
+values. `IMAGE_GENERATION_MODEL`'s own description says which case it is.
 
 ---
 

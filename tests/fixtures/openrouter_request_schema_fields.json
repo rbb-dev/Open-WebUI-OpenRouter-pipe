@@ -20,7 +20,70 @@
       "model",
       "prompt"
     ],
-    "schema": "ImageGenerationRequest"
+    "schema": "ImageGenerationRequest",
+    "enums": {
+      "aspect_ratio": [
+        "1:1",
+        "1:2",
+        "1:4",
+        "1:8",
+        "2:1",
+        "2:3",
+        "3:2",
+        "3:4",
+        "4:1",
+        "4:3",
+        "4:5",
+        "5:4",
+        "8:1",
+        "9:16",
+        "16:9",
+        "9:19.5",
+        "19.5:9",
+        "9:20",
+        "20:9",
+        "9:21",
+        "21:9",
+        "auto"
+      ],
+      "background": [
+        "auto",
+        "transparent",
+        "opaque"
+      ],
+      "output_format": [
+        "png",
+        "jpeg",
+        "webp",
+        "svg"
+      ],
+      "quality": [
+        "auto",
+        "low",
+        "medium",
+        "high"
+      ],
+      "resolution": [
+        "512",
+        "1K",
+        "2K",
+        "4K"
+      ]
+    },
+    "provider_properties": [
+      "allow_fallbacks",
+      "ignore",
+      "only",
+      "options",
+      "order",
+      "sort"
+    ],
+    "ranges": {
+      "output_compression": {
+        "min": 0,
+        "max": 100
+      }
+    }
   },
   "recorded": "2026-08-09",
   "source": {
@@ -46,6 +109,45 @@
       "model",
       "prompt"
     ],
-    "schema": "VideoGenerationRequest"
+    "schema": "VideoGenerationRequest",
+    "provider_properties": [
+      "options"
+    ]
+  },
+  "image_server_tool": {
+    "source": "guides/features/server-tools/image-generation.md",
+    "parameters": [
+      "model",
+      "quality",
+      "size",
+      "aspect_ratio",
+      "background",
+      "output_format",
+      "output_compression",
+      "moderation"
+    ],
+    "chosen_by_the_operator": [
+      "model",
+      "moderation"
+    ]
+  },
+  "chat": {
+    "schema": "ProviderPreferences",
+    "source": "api/api-reference/chat/create-a-chat-completion.md",
+    "provider_properties": [
+      "allow_fallbacks",
+      "data_collection",
+      "enforce_distillable_text",
+      "ignore",
+      "max_price",
+      "only",
+      "order",
+      "preferred_max_latency",
+      "preferred_min_throughput",
+      "quantizations",
+      "require_parameters",
+      "sort",
+      "zdr"
+    ]
   }
 }

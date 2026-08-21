@@ -17,7 +17,7 @@ import re
 import sys
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, get_args
 from unittest.mock import AsyncMock, MagicMock
 
 import logging
@@ -63,6 +63,12 @@ def _load_filter_from_source(source: str, module_name: str) -> ModuleType:
 _FIXTURE = json.loads(
     (Path(__file__).parent / "fixtures" / "openrouter_image_models.json").read_text()
 )
+
+_SERVER_TOOL_RECORDING = json.loads(
+    (Path(__file__).parent / "fixtures" / "openrouter_request_schema_fields.json").read_text()
+)["image_server_tool"]
+
+_RECORDED_SERVER_TOOL_PARAMS = tuple(_SERVER_TOOL_RECORDING["parameters"])
 IMAGE_MODELS: list[dict[str, Any]] = _FIXTURE["data"]
 IMAGE_BY_ID: dict[str, dict[str, Any]] = {m["id"]: m for m in IMAGE_MODELS}
 
@@ -366,13 +372,13 @@ def test_image_help_covers_multimodal_models():
 
 
 def test_render_image_help_for_known_model_includes_display_name():
-    rendered = render_image_help("sourceful/riverflow-v2-pro", IMAGE_BY_ID["sourceful/riverflow-v2-pro"])
+    rendered = render_image_help("sourceful/riverflow-v2-pro", IMAGE_BY_ID["sourceful/riverflow-v2-pro"], dedicated_image_api=True)
     assert "Sourceful: Riverflow V2 Pro" in rendered
     assert "tips" in rendered.lower() or "Tips" in rendered
 
 
 def test_render_image_help_falls_back_to_catalog_for_unknown_model():
-    rendered = render_image_help("unknown/model", {"name": "Unknown", "description": "desc", "architecture": {}})
+    rendered = render_image_help("unknown/model", {"name": "Unknown", "description": "desc", "architecture": {}}, dedicated_image_api=True)
     assert "Unknown" in rendered
     assert "No curated help" in rendered
 
@@ -548,34 +554,72 @@ async def test_image_catalog_skip_when_disabled():
     assert OpenRouterModelRegistry._last_image_attempt == 0.0
 
 
+def _image_only_catalog_entry(model_id: str, display_name: str) -> dict[str, Any]:
+    return {
+        "id": model_id,
+        "name": display_name,
+        "architecture": {"input_modalities": ["text"], "output_modalities": ["image"]},
+        "pricing": {},
+    }
+
+
+@pytest.mark.parametrize(
+    "catalog",
+    [
+        pytest.param([_image_only_catalog_entry("acme/paintbox-1", "Paintbox 1")], id="paintbox"),
+        pytest.param([_image_only_catalog_entry("zeta/inkwell-9", "Inkwell 9")], id="inkwell"),
+    ],
+)
 @pytest.mark.asyncio
-async def test_image_catalog_master_disable_clears_existing_image_models():
-    """When ENABLE_OPENROUTER_IMAGE_GENERATION flips off after models were
-    previously registered, the catalog loader must drop them via register_image_models([])
-    so they vanish from OWUI's dropdown (don't persist until restart)."""
-    from open_webui_openrouter_pipe.integrations.image_catalog import ensure_image_catalog_loaded
+async def test_master_disable_takes_image_models_out_of_the_model_list(
+    monkeypatch, pipe_instance_async, catalog
+):
+    """Turning ENABLE_OPENROUTER_IMAGE_GENERATION off empties the picker on the next pipes().
 
-    OpenRouterModelRegistry.register_image_models(IMAGE_MODELS)
-    pre_count = len([
-        norm_id for norm_id, spec in OpenRouterModelRegistry._specs.items()
-        if "image_output" in (spec.get("features") or set())
-    ])
-    assert pre_count > 0
+    Driven through `pipes()`, which is what Open WebUI calls, not through the loader.
+    Both call sites used to guard the loader with the same valve, so the branch that
+    clears the models could never be reached and an administrator who switched image
+    generation off kept seeing image-only models until an unrelated TTL expired. A test
+    that calls `ensure_image_catalog_loaded` directly exercises the branch and passes
+    whatever the wiring does.
+    """
+    from open_webui_openrouter_pipe.integrations.image_client import OpenRouterImageClient
 
-    valves = MagicMock()
-    valves.ENABLE_OPENROUTER_IMAGE_GENERATION = False
-    valves.BASE_URL = "https://openrouter.ai/api/v1"
-    session = MagicMock()
+    pipe = pipe_instance_async
+    monkeypatch.setattr(pipe, "_maybe_start_startup_checks", lambda: None)
+    monkeypatch.setattr(pipe, "_maybe_start_redis", lambda: None)
+    monkeypatch.setattr(pipe, "_maybe_start_cleanup", lambda: None)
+    monkeypatch.setattr(pipe, "_resolve_openrouter_api_key", lambda _valves: ("sk-test", None))
 
-    await ensure_image_catalog_loaded(
-        session, valves=valves, api_key="test", logger=MagicMock(), cache_seconds=3600
+    async def _no_chat_catalog(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(OpenRouterModelRegistry, "ensure_loaded", _no_chat_catalog)
+
+    async def _list_models(_self):
+        return [dict(entry) for entry in catalog]
+
+    monkeypatch.setattr(OpenRouterImageClient, "list_models", _list_models)
+
+    pipe.valves.ENABLE_OPENROUTER_IMAGE_GENERATION = True
+    pipe.valves.ENABLE_VIDEO_GENERATION = False
+    pipe.valves.AUTO_INSTALL_IMAGE_FILTERS = False
+    pipe.valves.AUTO_ATTACH_IMAGE_FILTERS = False
+
+    offered = {entry["name"] for entry in await pipe.pipes()}
+    wanted = {entry["name"] for entry in catalog}
+    assert wanted <= offered, (
+        f"{sorted(wanted)} never reached the model list, so the disable arm below would "
+        "pass for the wrong reason"
     )
 
-    post_count = len([
-        norm_id for norm_id, spec in OpenRouterModelRegistry._specs.items()
-        if "image_output" in (spec.get("features") or set())
-    ])
-    assert post_count == 0, "Master-disable must clean up previously-registered image models"
+    pipe.valves.ENABLE_OPENROUTER_IMAGE_GENERATION = False
+    still_offered = {entry["name"] for entry in await pipe.pipes()}
+
+    assert not (wanted & still_offered), (
+        f"{sorted(wanted & still_offered)} stayed selectable after "
+        "ENABLE_OPENROUTER_IMAGE_GENERATION was switched off"
+    )
 
 
 @pytest.mark.asyncio
@@ -1385,7 +1429,8 @@ def test_a_model_is_offered_the_ratios_its_own_contract_publishes(
     )
 
     spec = build_image_model_filter_spec(
-        model_id, {"id": model_id, "name": model_id}, _recorded_endpoint(fixture)
+        model_id, {"id": model_id, "name": model_id}, _recorded_endpoint(fixture),
+        dedicated_image_api=True,
     )
 
     assert dict(spec.enums).get("aspect_ratio") == expected_ratios, (
@@ -1402,7 +1447,7 @@ def test_an_unreadable_contract_offers_no_knobs_rather_than_inventing_them():
         build_image_model_filter_spec,
     )
 
-    spec = build_image_model_filter_spec("vendor/unknown", {"id": "vendor/unknown"}, None)
+    spec = build_image_model_filter_spec("vendor/unknown", {"id": "vendor/unknown"}, None, dedicated_image_api=True)
 
     assert not spec.has_knobs, (
         "with no published contract there is nothing to offer; guessing a knob set is how "
@@ -1479,7 +1524,8 @@ def test_a_generated_filter_loads_and_offers_only_the_published_knobs(
     )
 
     spec = build_image_model_filter_spec(
-        model_id, {"id": model_id, "name": model_id}, _recorded_endpoint(fixture)
+        model_id, {"id": model_id, "name": model_id}, _recorded_endpoint(fixture),
+        dedicated_image_api=True,
     )
     source = render_image_model_filter_source(spec)
 
@@ -1628,7 +1674,8 @@ def test_the_filter_writes_for_the_id_open_webui_actually_sends(fixture, model_i
     )
 
     spec = build_image_model_filter_spec(
-        model_id, {"id": model_id, "name": model_id}, _recorded_endpoint(fixture)
+        model_id, {"id": model_id, "name": model_id}, _recorded_endpoint(fixture),
+        dedicated_image_api=True,
     )
     module = _load_filter_from_source(
         render_image_model_filter_source(spec), f"owui_id_form_{fixture}"
@@ -1690,7 +1737,8 @@ def test_the_chosen_value_is_the_value_that_travels(fixture, model_id):
     )
 
     spec = build_image_model_filter_spec(
-        model_id, {"id": model_id, "name": model_id}, _recorded_endpoint(fixture)
+        model_id, {"id": model_id, "name": model_id}, _recorded_endpoint(fixture),
+        dedicated_image_api=True,
     )
     module = _load_filter_from_source(
         render_image_model_filter_source(spec), f"value_travels_{fixture}"
@@ -1731,7 +1779,8 @@ def test_every_control_the_filter_shows_is_a_control_that_writes(fixture, model_
     )
 
     spec = build_image_model_filter_spec(
-        model_id, {"id": model_id, "name": model_id}, _recorded_endpoint(fixture)
+        model_id, {"id": model_id, "name": model_id}, _recorded_endpoint(fixture),
+        dedicated_image_api=True,
     )
     module = _load_filter_from_source(
         render_image_model_filter_source(spec), f"every_control_{fixture}"
@@ -1788,6 +1837,7 @@ def test_the_filter_adds_to_image_config_rather_than_replacing_it():
         "recraft/recraft-v3",
         {"id": "recraft/recraft-v3", "name": "Recraft V3"},
         _recorded_endpoint("recraft_recraft-v3"),
+        dedicated_image_api=True,
     )
     module = _load_filter_from_source(render_image_model_filter_source(spec), "merge_semantics")
     ratio = spec.enums[0][1][0]
@@ -1814,7 +1864,7 @@ def _spec(**record):
         build_image_model_filter_spec,
     )
 
-    return build_image_model_filter_spec("v/m", {"id": "v/m", "name": "M"}, record)
+    return build_image_model_filter_spec("v/m", {"id": "v/m", "name": "M"}, record, dedicated_image_api=True)
 
 
 @pytest.mark.parametrize(
@@ -1923,8 +1973,8 @@ def test_a_catalog_string_cannot_become_a_statement(hostile):
     )
 
     for spec in (
-        build_image_model_filter_spec(hostile, {"id": hostile, "name": "M"}, {}),
-        build_image_model_filter_spec("v/m", {"id": "v/m", "name": hostile}, {}),
+        build_image_model_filter_spec(hostile, {"id": hostile, "name": "M"}, {}, dedicated_image_api=True),
+        build_image_model_filter_spec("v/m", {"id": "v/m", "name": hostile}, {}, dedicated_image_api=True),
     ):
         source = render_image_model_filter_source(spec)
         tree = ast.parse(source)
@@ -2106,9 +2156,9 @@ def test_a_multi_provider_contract_narrows_to_what_its_providers_share(fixture, 
     assert len(records) > 1, f"{fixture} is not a multi-provider contract"
 
     model = {"id": model_id, "name": model_id}
-    agreed = dict(build_image_model_filter_spec(model_id, model, records).enums)
+    agreed = dict(build_image_model_filter_spec(model_id, model, records, dedicated_image_api=True).enums)
     per_provider = [
-        dict(build_image_model_filter_spec(model_id, model, record).enums) for record in records
+        dict(build_image_model_filter_spec(model_id, model, record, dedicated_image_api=True).enums) for record in records
     ]
 
     for name, values in agreed.items():
@@ -2118,7 +2168,7 @@ def test_a_multi_provider_contract_narrows_to_what_its_providers_share(fixture, 
         )
 
     reordered = dict(
-        build_image_model_filter_spec(model_id, model, list(reversed(records))).enums
+        build_image_model_filter_spec(model_id, model, list(reversed(records)), dedicated_image_api=True).enums
     )
     assert reordered == agreed, (
         f"{model_id} offers a different set when its providers are listed in the other "
@@ -2142,9 +2192,9 @@ def test_a_recorded_contract_really_does_withhold_something_a_provider_publishes
     for fixture, model_id in sorted(_multi_provider_contracts().items()):
         records = _recorded_endpoint(fixture)
         model = {"id": model_id, "name": model_id}
-        agreed = dict(build_image_model_filter_spec(model_id, model, records).enums)
+        agreed = dict(build_image_model_filter_spec(model_id, model, records, dedicated_image_api=True).enums)
         per_provider = [
-            dict(build_image_model_filter_spec(model_id, model, record).enums) for record in records
+            dict(build_image_model_filter_spec(model_id, model, record, dedicated_image_api=True).enums) for record in records
         ]
         dropped = {
             name: sorted(set().union(*[set(a.get(name, ())) for a in per_provider]) - set(values))
@@ -2164,7 +2214,7 @@ def _spec_from(record):
         build_image_model_filter_spec,
     )
 
-    return build_image_model_filter_spec("v/m", {"id": "v/m", "name": "M"}, record)
+    return build_image_model_filter_spec("v/m", {"id": "v/m", "name": "M"}, record, dedicated_image_api=True)
 
 
 def test_a_filter_id_is_derived_from_the_model_id_and_stays_readable():
@@ -2295,7 +2345,7 @@ async def test_the_catalog_publishes_contracts_the_installer_can_actually_read(f
     if filters_wanted:
         assert awaited == ["recraft/recraft-v3"], "the contract must be read once for the model"
         assert published == [record], f"what the client published must be what is stored; got {published}"
-        spec = build_image_model_filter_spec("recraft/recraft-v3", picked[0], published)
+        spec = build_image_model_filter_spec("recraft/recraft-v3", picked[0], published, dedicated_image_api=True)
         assert spec.knob_count > 0, "a model with a published contract must end up with knobs"
     else:
         assert awaited == [], "no filter consumes contracts, so none should be read"
@@ -2414,6 +2464,7 @@ def test_a_passthrough_value_arrives_as_what_the_user_meant(typed, expected):
         "recraft/recraft-v3",
         {"id": "recraft/recraft-v3", "name": "Recraft V3"},
         _recorded_endpoint("recraft_recraft-v3"),
+        dedicated_image_api=True,
     )
     module = _load_filter_from_source(render_image_model_filter_source(spec), "decode_ok")
     body = module.Filter().inlet(
@@ -2443,6 +2494,7 @@ def test_a_number_no_encoder_can_serialise_is_refused_inside_a_container(typed):
         "recraft/recraft-v3",
         {"id": "recraft/recraft-v3", "name": "Recraft V3"},
         _recorded_endpoint("recraft_recraft-v3"),
+        dedicated_image_api=True,
     )
     module = _load_filter_from_source(render_image_model_filter_source(spec), "decode_nan")
     with pytest.raises(Exception) as caught:
@@ -2470,6 +2522,7 @@ def test_a_container_that_does_not_parse_names_the_field_it_came_from():
         "recraft/recraft-v3",
         {"id": "recraft/recraft-v3", "name": "Recraft V3"},
         _recorded_endpoint("recraft_recraft-v3"),
+        dedicated_image_api=True,
     )
     module = _load_filter_from_source(render_image_model_filter_source(spec), "decode_bad")
     with pytest.raises(Exception) as caught:
@@ -2565,7 +2618,7 @@ def test_a_numeric_published_value_stays_numeric():
         "provider_slug": "p",
         "supported_parameters": {"resolution": {"type": "enum", "values": [512, 1024]}},
     }
-    spec = build_image_model_filter_spec("v/m", {"id": "v/m", "name": "M"}, record)
+    spec = build_image_model_filter_spec("v/m", {"id": "v/m", "name": "M"}, record, dedicated_image_api=True)
     assert dict(spec.enums)["resolution"] == (512, 1024), (
         f"the values must survive as published; got {dict(spec.enums).get('resolution')}"
     )
@@ -2594,6 +2647,7 @@ def test_a_values_field_that_is_not_a_list_yields_no_control(published):
         "v/m",
         {"id": "v/m", "name": "M"},
         {"provider_slug": "p", "supported_parameters": {"aspect_ratio": {"type": "enum", "values": published}}},
+        dedicated_image_api=True,
     )
     assert spec.enums == (), f"{published!r} is not a published option list; got {spec.enums}"
     assert spec.knob_count == 0
@@ -2619,8 +2673,8 @@ def test_help_names_exactly_the_controls_the_filter_draws(fixture, model_id):
 
     record = _recorded_endpoint(fixture)
     model = {"id": model_id, "name": model_id}
-    spec = build_image_model_filter_spec(model_id, model, record)
-    rendered = render_image_help(model_id, model, endpoint_record=record)
+    spec = build_image_model_filter_spec(model_id, model, record, dedicated_image_api=True)
+    rendered = render_image_help(model_id, model, endpoint_record=record, dedicated_image_api=True)
 
     expected = [
         double or single
@@ -2644,17 +2698,74 @@ def test_help_names_exactly_the_controls_the_filter_draws(fixture, model_id):
     )
 
 
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        "openai_gpt-image-2",
+        "openai_gpt-image-1",
+        "openai_gpt-image-1-mini",
+        "openai_gpt-5-image",
+        "openai_gpt-5-image-mini",
+        "openai_gpt-5.4-image-2",
+    ],
+)
+def test_help_lists_the_choices_a_provider_setting_is_drawn_with(fixture):
+    """A control drawn as a dropdown must not be described as free text.
+
+    The filter draws `moderation` from the published choices, so the panel offers
+    `auto` and `low` and nothing else. Help listed every provider setting with one flat
+    sentence, so the six models that publish this one told the reader to guess at a
+    value the control would not have accepted.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        build_image_model_filter_spec,
+        render_image_model_filter_source,
+    )
+    from open_webui_openrouter_pipe.integrations.image_types import PASSTHROUGH_ENUMS
+
+    record = _recorded_endpoint(fixture)
+    model_id = _recorded_contract_slugs()[fixture]
+    model = {"id": model_id, "name": model_id}
+    drawn = render_image_model_filter_source(build_image_model_filter_spec(model_id, model, record, dedicated_image_api=True))
+    values, meaning = PASSTHROUGH_ENUMS["moderation"]
+    literal = f"Literal[{', '.join(repr(choice) for choice in ('', *values))}]"
+    assert literal in drawn, "the panel must draw these choices for this to matter"
+
+    rendered = render_image_help(model_id, model, endpoint_record=record, dedicated_image_api=True)
+    line = next(
+        line for line in rendered.splitlines() if line.startswith("- **moderation**")
+    )
+    assert meaning in line, line
+    assert f"Choices: {', '.join(values)}." in line, line
+
+
+def test_help_still_describes_a_provider_setting_with_no_published_choices():
+    """Only settings OpenRouter documents get a list. The rest keep the plain sentence."""
+    from open_webui_openrouter_pipe.integrations.image_types import PASSTHROUGH_ENUMS
+
+    assert "font_inputs" not in PASSTHROUGH_ENUMS, "this case exists to cover the other branch"
+    rendered = render_image_help(
+        "sourceful/riverflow-v2.5-fast",
+        {"id": "sourceful/riverflow-v2.5-fast", "name": "Riverflow V2.5 Fast"},
+        endpoint_record=_recorded_endpoint("sourceful_riverflow-v2.5-fast"),
+        dedicated_image_api=True,
+    )
+    assert "- **font_inputs** — a setting this model's provider accepts." in rendered
+    assert "Choices:" not in rendered.split("- **font_inputs**", 1)[1]
+
+
 def test_help_says_so_when_a_model_publishes_no_controls():
     """Silence would read as "the help is broken", which is a different thing."""
     rendered = render_image_help(
-        "vendor/unknown", {"id": "vendor/unknown", "name": "Unknown"}, endpoint_record={}
+        "vendor/unknown", {"id": "vendor/unknown", "name": "Unknown"}, endpoint_record={},
+        dedicated_image_api=True,
     )
     assert "publishes no adjustable settings" in rendered, rendered
 
 
 def test_help_without_a_contract_still_describes_the_model():
     """A contract that could not be read must not cost the user the prose as well."""
-    rendered = render_image_help("recraft/recraft-v3", {"id": "recraft/recraft-v3", "name": "R"})
+    rendered = render_image_help("recraft/recraft-v3", {"id": "recraft/recraft-v3", "name": "R"}, dedicated_image_api=True)
     assert rendered.strip(), "the model description must survive"
     assert "## Controls" not in rendered, (
         "with no contract there is nothing truthful to list, so nothing is listed"
@@ -2680,12 +2791,12 @@ async def test_help_reads_the_contract_itself_when_nothing_cached_it():
         "nothing cached, so the orchestrator must read the contract itself"
     )
 
-    without = render_image_help("recraft/recraft-v3", model)
+    without = render_image_help("recraft/recraft-v3", model, dedicated_image_api=True)
     assert "## Controls" not in without, (
         "with no contract at all there is nothing truthful to list"
     )
 
-    with_record = render_image_help("recraft/recraft-v3", model, endpoint_record=record)
+    with_record = render_image_help("recraft/recraft-v3", model, endpoint_record=record, dedicated_image_api=True)
     assert "## Controls" in with_record
     assert "Aspect ratio" in with_record.split("## Controls", 1)[1], (
         "the fetched contract must reach the rendered controls"
@@ -2725,7 +2836,8 @@ async def test_a_contract_that_shrinks_to_nothing_replaces_the_old_controls():
     fm._image_filter_exists = AsyncMock(return_value=True)
 
     result = await fm._ensure_single_image_filter_function_id(
-        model_id="v/m", image_model={"id": "v/m", "name": "M"}, endpoint_record=[wide, disjoint]
+        model_id="v/m", image_model={"id": "v/m", "name": "M"}, endpoint_record=[wide, disjoint],
+        dedicated_image_api=True,
     )
 
     assert result, "an installed filter must be reachable so it can be overwritten"
@@ -2737,7 +2849,8 @@ async def test_a_contract_that_shrinks_to_nothing_replaces_the_old_controls():
     fm._image_filter_exists = AsyncMock(return_value=False)
     fm._ensure_filter_installed.reset_mock()
     nothing = await fm._ensure_single_image_filter_function_id(
-        model_id="v/m2", image_model={"id": "v/m2", "name": "M"}, endpoint_record=[wide, disjoint]
+        model_id="v/m2", image_model={"id": "v/m2", "name": "M"}, endpoint_record=[wide, disjoint],
+        dedicated_image_api=True,
     )
     assert nothing is None, "with nothing installed and nothing to offer, install nothing"
     assert not fm._ensure_filter_installed.await_count
@@ -2768,6 +2881,7 @@ async def test_retirement_touches_only_the_rows_the_previous_design_left():
             "recraft/recraft-v3",
             {"id": "recraft/recraft-v3", "name": "R"},
             _recorded_endpoint("recraft_recraft-v3"),
+            dedicated_image_api=True,
         )
     )
     rows = [
@@ -2817,7 +2931,7 @@ def test_help_prose_never_names_a_setting_the_model_does_not_publish(fixture, mo
     """
     records = _recorded_endpoint(fixture)
     model = {"id": model_id, "name": model_id}
-    rendered = render_image_help(model_id, model, endpoint_record=records)
+    rendered = render_image_help(model_id, model, endpoint_record=records, dedicated_image_api=True)
     prose = rendered.split("## Controls", 1)[0]
 
     published: set[str] = set()
@@ -2912,6 +3026,7 @@ def test_the_documented_help_example_is_what_the_code_produces():
         "recraft/recraft-v3",
         {"id": "recraft/recraft-v3", "name": "Recraft V3"},
         endpoint_record=_recorded_endpoint("recraft_recraft-v3"),
+        dedicated_image_api=True,
     ).strip()
     assert block == rendered, (
         "the documented example no longer matches what the code renders.\n"
@@ -3160,6 +3275,7 @@ def test_a_stored_value_the_contract_no_longer_accepts_costs_only_itself():
             },
             "allowed_passthrough_parameters": ["style"],
         },
+        dedicated_image_api=True,
     )
     module = _load_filter_from_source(render_image_model_filter_source(spec), "stale_valves")
 
@@ -3346,16 +3462,16 @@ def test_help_says_which_kind_of_nothing_a_model_offers():
     b = {"provider_slug": "b", "supported_parameters": {"aspect_ratio": {"type": "enum", "values": ["16:9"]}}}
     model = {"id": "v/m", "name": "M"}
 
-    disagreeing = build_image_model_filter_spec("v/m", model, [a, b])
+    disagreeing = build_image_model_filter_spec("v/m", model, [a, b], dedicated_image_api=True)
     assert disagreeing.knob_count == 0, "the intersection is empty"
     assert disagreeing.published_anything, "but the records did publish something"
-    text = render_image_help("v/m", model, endpoint_record=[a, b])
+    text = render_image_help("v/m", model, endpoint_record=[a, b], dedicated_image_api=True)
     assert "publish different settings" in text, text
     assert "publishes no adjustable settings" not in text
 
-    empty = build_image_model_filter_spec("v/m", model, [{"provider_slug": "a"}])
+    empty = build_image_model_filter_spec("v/m", model, [{"provider_slug": "a"}], dedicated_image_api=True)
     assert not empty.published_anything
-    text = render_image_help("v/m", model, endpoint_record=[{"provider_slug": "a"}])
+    text = render_image_help("v/m", model, endpoint_record=[{"provider_slug": "a"}], dedicated_image_api=True)
     assert "publishes no adjustable settings" in text, text
 
 
@@ -3398,7 +3514,8 @@ def test_help_prices_a_generation_from_the_contract_it_already_holds(pricing, ex
     charge.
     """
     rendered = render_image_help(
-        "v/m", {"id": "v/m", "name": "M"}, endpoint_record=_priced_record(pricing)
+        "v/m", {"id": "v/m", "name": "M"}, endpoint_record=_priced_record(pricing),
+        dedicated_image_api=True,
     )
     assert expected in _cost_block(rendered)
 
@@ -3421,6 +3538,7 @@ def test_a_token_priced_model_is_quoted_per_million_and_says_what_is_unknowable(
             endpoint_record=_priced_record(
                 [{"billable": "output_image", "unit": "token", "cost_usd": cost_usd}]
             ),
+            dedicated_image_api=True,
         )
     )
     assert expected in block
@@ -3433,6 +3551,7 @@ def test_a_token_priced_model_is_quoted_per_million_and_says_what_is_unknowable(
             endpoint_record=_priced_record(
                 [{"billable": "output_image", "unit": "image", "cost_usd": 0.25}]
             ),
+            dedicated_image_api=True,
         )
     )
     assert "not published" not in per_image, "a per-image model has no such caveat"
@@ -3443,7 +3562,7 @@ def test_help_says_a_model_publishes_no_price_rather_than_showing_nothing(publis
     """Three of the forty publish an empty array, and silence reads as a broken panel."""
     record = _priced_record(published) if published is not None else {"provider_slug": "krea"}
     block = _cost_block(
-        render_image_help("krea/krea-2-large", {"id": "krea/krea-2-large", "name": "K"}, endpoint_record=record)
+        render_image_help("krea/krea-2-large", {"id": "krea/krea-2-large", "name": "K"}, endpoint_record=record, dedicated_image_api=True)
     )
     assert "OpenRouter publishes no price for this model" in block
     assert "$" not in block
@@ -3465,6 +3584,7 @@ def test_a_tier_that_changes_the_price_gets_its_own_line(tier_cost, expected):
                     {"billable": "output_image", "unit": "image", "cost_usd": tier_cost, "variant": "4k"},
                 ]
             ),
+            dedicated_image_api=True,
         )
     )
     assert "- Each image it makes: $0.15 per image" in block
@@ -3483,7 +3603,7 @@ def test_the_companies_serving_a_model_are_named_only_where_they_charge_differen
         _priced_record([{"billable": "output_image", "unit": "token", "cost_usd": 0.00012}],
                        provider_name="Google AI Studio", provider_slug="google-ai-studio/global"),
     ]
-    block = _cost_block(render_image_help("v/m", {"id": "v/m", "name": "M"}, endpoint_record=agreeing))
+    block = _cost_block(render_image_help("v/m", {"id": "v/m", "name": "M"}, endpoint_record=agreeing, dedicated_image_api=True))
     assert block.count("- Each image it makes") == 1, block
     assert "Google Vertex" not in block
 
@@ -3493,7 +3613,7 @@ def test_the_companies_serving_a_model_are_named_only_where_they_charge_differen
         _priced_record([{"billable": "output_image", "unit": "token", "cost_usd": 0.00024}],
                        provider_name="Google AI Studio", provider_slug="google-ai-studio/global"),
     ]
-    block = _cost_block(render_image_help("v/m", {"id": "v/m", "name": "M"}, endpoint_record=differing))
+    block = _cost_block(render_image_help("v/m", {"id": "v/m", "name": "M"}, endpoint_record=differing, dedicated_image_api=True))
     assert "$120.00 per million tokens via Google Vertex" in block, block
     assert "$240.00 per million tokens via Google AI Studio" in block
 
@@ -3506,7 +3626,7 @@ def test_no_price_reaches_a_user_that_did_not_come_from_a_contract():
     the price. Without a contract the panel now says nothing about money at all.
     """
     for model_id in IMAGE_HELP_BY_MODEL:
-        rendered = render_image_help(model_id, {"id": model_id, "name": model_id})
+        rendered = render_image_help(model_id, {"id": model_id, "name": model_id}, dedicated_image_api=True)
         assert not re.search(r"\$\s*\d", rendered), f"{model_id} quotes a price of its own"
 
     priced = render_image_help(
@@ -3515,6 +3635,7 @@ def test_no_price_reaches_a_user_that_did_not_come_from_a_contract():
         endpoint_record=_priced_record(
             [{"billable": "output_image", "unit": "image", "cost_usd": 0.25}]
         ),
+        dedicated_image_api=True,
     )
     assert "$0.25 per image" in priced, "with a contract, the published price is shown"
 
@@ -3597,6 +3718,7 @@ async def test_only_a_contract_that_was_read_may_blank_an_installed_filter(
         model_id="v/m",
         image_model={"id": "v/m", "name": "M"},
         endpoint_record=endpoint_record,
+        dedicated_image_api=True,
     )
 
     assert bool(manager._ensure_filter_installed.await_count) is overwrites, (
@@ -3613,8 +3735,8 @@ async def test_a_genuinely_empty_contract_is_not_collapsed_into_a_failed_read():
         build_image_model_filter_spec,
     )
 
-    assert build_image_model_filter_spec("v/m", {"id": "v/m"}, []).contract_read is True
-    assert build_image_model_filter_spec("v/m", {"id": "v/m"}, None).contract_read is False
+    assert build_image_model_filter_spec("v/m", {"id": "v/m"}, [], dedicated_image_api=True).contract_read is True
+    assert build_image_model_filter_spec("v/m", {"id": "v/m"}, None, dedicated_image_api=True).contract_read is False
 
 
 # ============================================================================
@@ -3664,7 +3786,7 @@ def test_the_server_tool_filter_offers_exactly_what_the_model_publishes(slug, mo
     )
 
     records = _recorded_endpoint(slug)
-    spec = build_image_model_filter_spec(model_id, {"id": model_id, "name": model_id}, records)
+    spec = build_image_model_filter_spec(model_id, {"id": model_id, "name": model_id}, records, dedicated_image_api=True)
     from open_webui_openrouter_pipe.filters.image_filter_renderer import (
         render_image_gen_filter_source,
     )
@@ -3718,16 +3840,24 @@ def test_the_server_tool_filter_offers_exactly_what_the_model_publishes(slug, mo
     )
 
     drawn = set(module.Filter.UserValves.model_fields)
-    for parameter in IMAGE_GEN_TOOL_PARAMS:
-        assert f"IMAGE_{parameter.upper()}" in drawn, (
-            f"{model_id}: OpenRouter's server-tool parameter table documents {parameter}, "
-            "so this panel must carry it. The per-model images contract describes a "
-            "different endpoint and does not decide which controls the server tool draws."
+    seeded = re.search(r"params: dict\[str, Any\] = \{(.*?)\}", source)
+    written = re.findall(r"[\"']([a-z_]+)[\"']\s*:", seeded.group(1) if seeded else "")
+    written += re.findall(r"params\[[\"']([a-z_]+)[\"']\]\s*=", source)
+    for parameter in _RECORDED_SERVER_TOOL_PARAMS:
+        assert written.count(parameter) == 1, (
+            f"{model_id}: OpenRouter's server-tool parameter table documents {parameter}, so "
+            f"exactly one control must set it; {written.count(parameter)} do. The per-model "
+            "images contract describes a different endpoint and does not decide which "
+            "parameters the server tool carries."
         )
     assert ("IMAGE_RESOLUTION" in drawn) == bool(offered.get("resolution")), (
         f"{model_id} publishes resolution={bool(offered.get('resolution'))!r} and the panel "
         f"drew {('IMAGE_RESOLUTION' in drawn)!r}; the tier control is the one that does "
         "track this model's own published values"
+    )
+    assert ("IMAGE_SIZE" in drawn) != bool(offered.get("resolution")), (
+        f"{model_id}: the tier dropdown and the free-text size box write the same request "
+        "key, so drawing both loses whichever runs first without saying so"
     )
 
 
@@ -3756,6 +3886,7 @@ def test_the_server_tool_tier_key_is_decided_in_one_place(monkeypatch, candidate
         "google/gemini-3.1-flash-image",
         {"id": "google/gemini-3.1-flash-image", "name": "Gemini"},
         records,
+        dedicated_image_api=True,
     )
     tier = dict(spec.enums)["resolution"][0]
     module = _image_gen_module(spec, name=f"image_gen_tier_{candidate}")
@@ -3779,10 +3910,22 @@ def test_the_server_tool_tier_key_is_decided_in_one_place(monkeypatch, candidate
             )
 
 
-def test_the_shipped_tier_key_is_one_of_the_recorded_candidates():
+def test_the_shipped_tier_key_is_the_one_openrouters_own_parameter_table_publishes():
+    """The candidate list is hand-written and the shipped key is its first entry, so
+    asking whether one is in the other asks nothing. The recorded table is OpenRouter's.
+
+    `image_size` appears in no OpenRouter document; `resolution` is the /images request
+    field, not a chat server-tool parameter. Sending either names a knob the tool has
+    no entry for, and unrecognised keys are dropped without a word.
+    """
     from open_webui_openrouter_pipe.filters import image_filter_renderer as renderer
 
-    assert renderer.IMAGE_GEN_TOOL_TIER_KEY in renderer.IMAGE_GEN_TOOL_TIER_KEY_CANDIDATES
+    published = set(_RECORDED_SERVER_TOOL_PARAMS)
+
+    assert renderer.IMAGE_GEN_TOOL_TIER_KEY in published
+    rejected = set(renderer.IMAGE_GEN_TOOL_TIER_KEY_CANDIDATES) - published
+    assert rejected, "every candidate is published, so the table discriminates nothing"
+    assert renderer.IMAGE_GEN_TOOL_TIER_KEY not in rejected
 
 
 @pytest.mark.parametrize(("ratio", "ratio_survives"), [("16:9", False), ("1:1", True)])
@@ -3804,11 +3947,16 @@ def test_the_emitted_tool_call_never_carries_a_ratio_the_pixel_size_contradicts(
     )
     from open_webui_openrouter_pipe.requests.orchestrator import _build_server_tool_entries
 
-    model_id = "google/gemini-3.1-flash-image"
+    model_id = "google/gemini-2.5-flash-image"
     spec = build_image_model_filter_spec(
         model_id,
         {"id": model_id, "name": "Gemini"},
-        _recorded_endpoint("google_gemini-3.1-flash-image"),
+        _recorded_endpoint("google_gemini-2.5-flash-image"),
+        dedicated_image_api=True,
+    )
+    assert not dict(spec.enums).get("resolution"), (
+        f"{model_id} publishes tiers, so its panel draws the tier dropdown rather than the "
+        "free-text size box this case is about"
     )
     assert ratio in dict(spec.enums)["aspect_ratio"], (
         f"{model_id} does not publish {ratio}, so the panel never drew it and this case "
@@ -3843,9 +3991,9 @@ def _note_cases():
 
     model = {"id": "v/m", "name": "M"}
     return {
-        "unmatched": (build_image_model_filter_spec("v/m", None, None), False),
-        "unreadable": (build_image_model_filter_spec("v/m", model, None), True),
-        "empty": (build_image_model_filter_spec("v/m", model, [{"provider_slug": "a"}]), True),
+        "unmatched": (build_image_model_filter_spec("v/m", None, None, dedicated_image_api=True), False),
+        "unreadable": (build_image_model_filter_spec("v/m", model, None, dedicated_image_api=True), True),
+        "empty": (build_image_model_filter_spec("v/m", model, [{"provider_slug": "a"}], dedicated_image_api=True), True),
         "disagreeing": (
             build_image_model_filter_spec(
                 "v/m",
@@ -3864,6 +4012,7 @@ def _note_cases():
                         },
                     },
                 ],
+                dedicated_image_api=True,
             ),
             True,
         ),
@@ -3905,10 +4054,17 @@ def test_a_model_that_publishes_nothing_offers_nothing_and_says_which_nothing():
         assert notes[label] in source, (
             f"the {label} filter renders no visible statement of why it is empty"
         )
+        module = _load_filter_from_source(source, f"image_gen_empty_{label}")
+        offered = {
+            value
+            for field in module.Filter.UserValves.model_fields.values()
+            for value in (get_args(field.annotation) or ())
+            if isinstance(value, str)
+        }
         for retired in ("1024x1024", "1536x672", "0.5K", "21:9"):
-            assert retired not in source, (
-                f"the {label} filter still offers {retired!r}, which came from the fixed "
-                "list rather than from any contract"
+            assert retired not in offered, (
+                f"the {label} filter still offers {retired!r} as a choice, which came from "
+                "the fixed list rather than from any contract"
             )
 
 
@@ -4033,7 +4189,7 @@ async def test_a_selection_the_catalog_does_not_carry_reads_differently_from_an_
     pipe = MagicMock()
     manager = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
 
-    model_id, image_model, record = await manager.image_gen_filter_inputs()
+    model_id, image_model, record, _transport = await manager.image_gen_filter_inputs()
     assert (model_id, record) == (known, None)
     assert isinstance(image_model, dict), (
         "the model is in the catalog and its contract is not; that is a read that has "
@@ -4041,5 +4197,407 @@ async def test_a_selection_the_catalog_does_not_carry_reads_differently_from_an_
     )
 
     selected = "vendor/not-a-model"
-    model_id, image_model, record = await manager.image_gen_filter_inputs()
+    model_id, image_model, record, _transport = await manager.image_gen_filter_inputs()
     assert (model_id, image_model, record) == ("vendor/not-a-model", None, None)
+
+
+@pytest.mark.parametrize(
+    ("model_id", "spec_name", "expected_name"),
+    [
+        ("openai/gpt-5-image", None, "openai/gpt-5-image"),
+        ("google/gemini-3-pro-image", "Gemini 3 Pro Image", "Gemini 3 Pro Image"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_chat_catalog_selection_is_given_a_stand_in_model_record(
+    monkeypatch, model_id, spec_name, expected_name
+):
+    """A model in the chat catalog carries no image record, so one is synthesised.
+
+    Only `register_image_models` writes `image_model`. A multimodal text+image model
+    lives in the chat catalog instead, so the selection resolves to a spec that has no
+    such record, and the caller needs a name and an id to render the filter's heading
+    with. Two rows, one whose spec names the model and one whose spec does not, so a
+    constant cannot satisfy both sides of the fallback.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    import open_webui.models.functions as functions_module
+
+    from open_webui_openrouter_pipe.core.config import _OPENROUTER_IMAGE_GEN_FILTER_MARKER
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+
+    norm_id = ModelFamily.base_model(sanitize_model_id(model_id))
+    spec: dict[str, Any] = {
+        "features": {"image_gen_tool"},
+        "capabilities": {},
+        "supported_parameters": frozenset(),
+        "full_model": {"id": model_id},
+        "architecture": {"output_modalities": ["image", "text"]},
+    }
+    if spec_name is not None:
+        spec["name"] = spec_name
+    OpenRouterModelRegistry._specs = {norm_id: spec}
+    OpenRouterModelRegistry._id_map = {norm_id: model_id}
+    OpenRouterModelRegistry._models = [
+        {"id": sanitize_model_id(model_id), "norm_id": norm_id, "original_id": model_id}
+    ]
+    assert "image_model" not in OpenRouterModelRegistry.spec(model_id)
+
+    class _Table:
+        @staticmethod
+        async def get_functions_by_type(kind, active_only=False):
+            return [SimpleNamespace(id="or_image_gen", content=_OPENROUTER_IMAGE_GEN_FILTER_MARKER)]
+
+        @staticmethod
+        async def get_function_valves_by_id(function_id):
+            return {"IMAGE_GENERATION_MODEL": model_id}
+
+    monkeypatch.setattr(functions_module, "Functions", _Table)
+    pipe = MagicMock()
+    manager = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
+
+    resolved_id, image_model, _record, _dedicated = await manager.image_gen_filter_inputs()
+
+    assert resolved_id == model_id
+    assert image_model == {"id": model_id, "name": expected_name}
+
+
+@pytest.mark.parametrize(
+    "broken_source",
+    ["def (:\n", "class Filter\n    pass\n"],
+)
+@pytest.mark.asyncio
+async def test_an_unparseable_image_gen_filter_is_refused_rather_than_installed(
+    monkeypatch, broken_source
+):
+    """A source that will not parse is raised on, not written into Open WebUI.
+
+    Open WebUI executes a filter's content on load, so a row whose source cannot be
+    parsed breaks the filter list for everything else installed. Two different broken
+    sources, so the check cannot be a match against one string.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    import open_webui.models.functions as functions_module
+
+    from open_webui_openrouter_pipe.core.config import _OPENROUTER_IMAGE_GEN_FILTER_MARKER
+    from open_webui_openrouter_pipe.filters import image_filter_renderer
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+
+    model_id = "openai/gpt-5-image"
+    OpenRouterModelRegistry.register_image_models(
+        [{"id": model_id, "name": model_id, "architecture": {"output_modalities": ["image"]}}]
+    )
+
+    installed: list[Any] = []
+
+    class _Table:
+        @staticmethod
+        async def get_functions_by_type(kind, active_only=False):
+            return [SimpleNamespace(id="or_image_gen", content=_OPENROUTER_IMAGE_GEN_FILTER_MARKER)]
+
+        @staticmethod
+        async def get_function_valves_by_id(function_id):
+            return {"IMAGE_GENERATION_MODEL": model_id}
+
+        @staticmethod
+        async def get_function_by_id(function_id):
+            return None
+
+        @staticmethod
+        async def insert_new_function(user_id, function_type, form):
+            installed.append(form)
+            return form
+
+        @staticmethod
+        async def update_function_by_id(function_id, updates):
+            installed.append(updates)
+            return None
+
+    monkeypatch.setattr(functions_module, "Functions", _Table)
+    monkeypatch.setattr(
+        image_filter_renderer,
+        "render_image_gen_filter_source",
+        lambda *_args, **_kwargs: broken_source,
+    )
+
+    pipe = MagicMock()
+    manager = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
+
+    with pytest.raises(ValueError, match="Image Generation filter is invalid"):
+        await manager.ensure_openrouter_image_gen_filter_function_id()
+
+    assert installed == [], "a filter Open WebUI cannot parse was written anyway"
+
+
+@pytest.mark.parametrize(
+    ("model_id", "already_installed"),
+    [
+        ("acme/paintbox-1", True),
+        ("acme/paintbox-1", False),
+        ("zeta/inkwell-9", True),
+        ("zeta/inkwell-9", False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_contract_that_shrank_to_nothing_overwrites_the_filter_it_left_behind(
+    monkeypatch, model_id, already_installed
+):
+    """A model that now publishes no knobs must not leave yesterday's controls on screen.
+
+    Nothing to offer and nothing installed means install nothing. But when a filter IS
+    installed, the shrunk contract has to overwrite it -- otherwise the panel keeps
+    writing values the model no longer accepts into every request. The two outcomes turn
+    on whether a row exists, so both are driven here with two model ids, and neither a
+    constant nor a `return None` satisfies all four rows.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    import open_webui.models.functions as functions_module
+
+    from open_webui_openrouter_pipe.core.config import _OPENROUTER_IMAGE_FILTER_MARKER
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        build_image_model_filter_spec,
+    )
+
+    image_model = {"id": model_id, "name": model_id}
+    spec = build_image_model_filter_spec(model_id, image_model, [], dedicated_image_api=True)
+    assert (spec.knob_count, spec.contract_read) == (0, True)
+
+    rows: dict[str, Any] = {}
+    if already_installed:
+        rows[spec.function_id] = SimpleNamespace(
+            id=spec.function_id,
+            name=spec.display_name,
+            content=f"{_OPENROUTER_IMAGE_FILTER_MARKER}\nIMAGE_FILTER_MODEL_ID = {spec.model_id!r}\nclass Filter:\n    pass\n",
+            meta=None,
+            is_active=True,
+            updated_at=1,
+        )
+
+    class _Table:
+        @staticmethod
+        async def get_functions_by_type(kind, active_only=False):
+            return list(rows.values())
+
+        @staticmethod
+        async def get_function_by_id(function_id):
+            return rows.get(function_id)
+
+        @staticmethod
+        async def insert_new_function(user_id, function_type, form):
+            rows[form.id] = SimpleNamespace(
+                id=form.id, name=form.name, content=form.content, meta=form.meta,
+                is_active=False, is_global=False, updated_at=2,
+            )
+            return rows[form.id]
+
+        @staticmethod
+        async def update_function_by_id(function_id, updates):
+            row = rows.get(function_id)
+            if row is None:
+                return None
+            for key, value in dict(updates).items():
+                setattr(row, key, value)
+            return row
+
+    monkeypatch.setattr(functions_module, "Functions", _Table)
+    pipe = MagicMock()
+    pipe.valves.AUTO_INSTALL_IMAGE_FILTERS = True
+    manager = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
+
+    result = await manager._ensure_single_image_filter_function_id(
+        model_id=model_id,
+        image_model=image_model,
+        endpoint_record=[],
+        dedicated_image_api=True,
+    )
+
+    if already_installed:
+        assert result == spec.function_id, (
+            "a filter is installed for a model whose contract shrank to nothing and it "
+            "was left untouched, so its stale controls stay on screen"
+        )
+        assert "IMAGE_FILTER_MODEL_ID" in rows[spec.function_id].content
+    else:
+        assert result is None
+        assert rows == {}
+
+
+@pytest.mark.parametrize(
+    "billed", [{"cost": 0.04, "total_tokens": 9}, {"cost": 0.11, "total_tokens": 21}]
+)
+@pytest.mark.asyncio
+async def test_one_billed_generation_is_costed_once_even_when_the_client_disconnects(billed):
+    """`asyncio.shield` finishes the write and still raises at the await.
+
+    So the line after it never ran, the settle handler saw an uncosted outcome, and one
+    billed image was recorded twice -- exactly when the database is slow enough for the
+    cancel to land mid-write, which is when a duplicate costs the most. The cancel is
+    delivered from inside the cost write, one seam below the ordering under test.
+    """
+    import asyncio as _asyncio
+    from unittest.mock import MagicMock
+
+    from open_webui_openrouter_pipe.integrations.image import ImageGenerationAdapter
+
+    snapshots: list[dict] = []
+
+    class _Adapter(ImageGenerationAdapter):
+        def __init__(self) -> None:
+            self.logger = MagicMock()
+            self._pipe = MagicMock()
+
+        async def _record_cost(self, valves, usage, **_kw):
+            snapshots.append(dict(usage))
+            raise _asyncio.CancelledError
+
+        async def _report_generation(self, *_a, **_kw):
+            return None
+
+    adapter = _Adapter()
+    outcome: dict = {"usage": None, "costed": False, "reported": False}
+
+    outcome["usage"] = billed
+    outcome["costed"] = True
+    try:
+        await _asyncio.shield(
+            adapter._record_cost(None, billed, user=None, metadata=None, user_obj=None,
+                                 api_model_id="m/x")
+        )
+    except _asyncio.CancelledError:
+        await adapter._settle(outcome, None, None, None, None, "m/x")
+
+    assert len(snapshots) == 1, (
+        f"one billed image produced {len(snapshots)} cost snapshots: {snapshots}"
+    )
+    assert snapshots[0] == billed
+
+
+def test_the_cost_flag_is_claimed_before_the_write_it_describes():
+    """The ordering is the property; a shielded write already claimed cannot double.
+
+    Read from the source because the interleaving only shows up when a cancel lands
+    between the two statements, which no test can schedule deterministically.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from open_webui_openrouter_pipe.integrations.image import ImageGenerationAdapter
+
+    body = textwrap.dedent(inspect.getsource(ImageGenerationAdapter._generate))
+    generate = ast.parse(body).body[0]
+    assert isinstance(generate, ast.AsyncFunctionDef), (
+        f"_generate parsed as {type(generate).__name__}; the scan below reads the "
+        "statement list of an async def"
+    )
+    statements = [ast.unparse(node) for node in generate.body]
+    claim = next(i for i, line in enumerate(statements) if line == "outcome['costed'] = True")
+    write = next(i for i, line in enumerate(statements) if "_record_cost" in line)
+    assert claim < write, (
+        "the flag that suppresses a second cost snapshot is set after the snapshot it "
+        "describes, so a cancel at the await leaves it False and the settle path repeats it"
+    )
+
+
+# REGFIX: supersede_size_conflicts -- the tier half, and what OpenRouter says is legal
+
+
+@pytest.mark.parametrize(
+    ("size", "resolution", "dropped"),
+    [("2K", "1K", True), ("2K", "2K", False), ("4K", "4k", False), ("1K", "4K", True)],
+)
+def test_a_tier_size_supersedes_only_a_resolution_that_disagrees_with_it(
+    size, resolution, dropped
+):
+    """OpenRouter: a tier size "is equivalent to setting `resolution`".
+
+    Equivalent, so naming both is legal when they agree -- dropping the agreeing one
+    prints a note claiming a conflict the API does not have. Case differs in one row
+    because `4k` and `4K` are one value.
+    """
+    from open_webui_openrouter_pipe.integrations.image_types import supersede_size_conflicts
+
+    params = {"size": size, "resolution": resolution}
+    notes = supersede_size_conflicts(params)
+
+    assert bool(notes) is dropped
+    assert ("resolution" in params) is not dropped
+    if dropped:
+        assert notes[0][0] == "resolution"
+        assert notes[0][1] == resolution
+
+
+@pytest.mark.parametrize(
+    ("size", "resolution"), [("1024x1024", "2K"), ("1536x1024", "1K")]
+)
+def test_an_exact_size_supersedes_the_tier_beside_it_and_says_which_one_went(
+    size, resolution
+):
+    """A pixel size and a tier both set the output dimensions, and the API takes one.
+
+    Only the tier half of this rule was ever driven: with an exact size in the slot the
+    branch that removes `resolution` never ran, so the request went out naming both and
+    was rejected. The note has to name the value that was dropped or the user re-sends
+    the same pair.
+
+    Two sizes, one square and one not, so a rule keyed to a single shape fails.
+    """
+    from open_webui_openrouter_pipe.integrations.image_types import supersede_size_conflicts
+
+    params = {"size": size, "resolution": resolution}
+    dropped = supersede_size_conflicts(params)
+
+    assert params == {"size": size}, f"the request still carries {sorted(params)}"
+    assert [name for name, _value, _why in dropped] == ["resolution"]
+    assert dropped[0][1] == resolution, (
+        f"the note names {dropped[0][1]!r} rather than the value that was removed"
+    )
+    assert "dimensions" in dropped[0][2]
+
+
+@pytest.mark.parametrize(
+    ("size", "ratio", "kept"),
+    [("1024x1024", "1:1", True), ("1024x1024", "16:9", False), ("1536x1024", "3:2", True)],
+)
+def test_an_exact_size_only_supersedes_an_aspect_ratio_it_contradicts(size, ratio, kept):
+    """An agreeing ratio is not a conflict, and dropping it prints a note that is untrue."""
+    from open_webui_openrouter_pipe.integrations.image_types import supersede_size_conflicts
+
+    params = {"size": size, "aspect_ratio": ratio}
+    dropped = supersede_size_conflicts(params)
+
+    assert ("aspect_ratio" in params) is kept
+    assert (dropped == []) is kept
+    if not kept:
+        assert dropped[0][0] == "aspect_ratio" and dropped[0][1] == ratio
+
+
+@pytest.mark.parametrize("ratio", ["16:9", "1:4"])
+def test_a_tier_size_never_conflicts_with_an_aspect_ratio(ratio):
+    """OpenRouter: a tier "combines with `aspect_ratio`".
+
+    Suppressing a working combination and blaming the model is the defect class this
+    whole redesign exists to remove.
+    """
+    from open_webui_openrouter_pipe.integrations.image_types import supersede_size_conflicts
+
+    params = {"size": "2K", "aspect_ratio": ratio}
+
+    assert supersede_size_conflicts(params) == []
+    assert params["aspect_ratio"] == ratio
+
+
+def test_a_request_naming_no_size_is_left_exactly_as_the_user_built_it():
+    from open_webui_openrouter_pipe.integrations.image_types import supersede_size_conflicts
+
+    params = {"resolution": "2K", "aspect_ratio": "16:9"}
+
+    assert supersede_size_conflicts(params) == []
+    assert params == {"resolution": "2K", "aspect_ratio": "16:9"}

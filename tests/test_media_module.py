@@ -314,3 +314,121 @@ class TestExtractFrame:
                 synthetic_mp4, target="middle",  # type: ignore[arg-type]
                 logger=logging.getLogger("test"),
             )
+
+
+# -----------------------------------------------------------------------------
+# image_pixel_size -- the gate that keeps a reference image inside 256..5760 px
+# -----------------------------------------------------------------------------
+
+
+def _encoded(width: int, height: int, fmt: str, **options) -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (width, height), (12, 34, 56)).save(buffer, fmt, **options)
+    return buffer.getvalue()
+
+
+@pytest.mark.parametrize(("width", "height"), [(320, 140), (257, 4096)])
+@pytest.mark.parametrize(
+    ("fmt", "options"),
+    [
+        ("PNG", {}),
+        ("JPEG", {}),
+        ("WEBP", {"lossless": True}),
+        ("WEBP", {"quality": 80}),
+    ],
+)
+def test_the_dimensions_are_read_from_what_an_encoder_actually_writes(
+    width, height, fmt, options
+):
+    """OpenRouter rejects a reference image outside 256..5760 px on either side.
+
+    Reading that from a hand-built header proves the test author can write a header.
+    These bytes come from a real encoder, and the two sizes are distinct in both axes
+    so a parser returning a constant, or swapping width for height, fails.
+    """
+    from open_webui_openrouter_pipe.storage.multimodal import image_pixel_size
+
+    assert image_pixel_size(_encoded(width, height, fmt, **options)) == (width, height)
+
+
+def test_lossy_and_lossless_webp_are_both_read_though_their_headers_differ():
+    """One RIFF container, two chunk layouts -- VP8L packs the size into a bitfield."""
+    from open_webui_openrouter_pipe.storage.multimodal import image_pixel_size
+
+    lossy = _encoded(300, 200, "WEBP", quality=80)
+    lossless = _encoded(300, 200, "WEBP", lossless=True)
+
+    assert lossy[12:16] == b"VP8 "
+    assert lossless[12:16] == b"VP8L"
+    assert image_pixel_size(lossy) == image_pixel_size(lossless) == (300, 200)
+
+
+def test_an_extended_webp_declares_its_size_one_less_than_it_is():
+    """VP8X stores width-1 in three little-endian bytes; off by one is off by a pixel.
+
+    Pillow does not emit VP8X for a plain RGB image, so the container is assembled to
+    the specification here rather than encoded.
+    """
+    from open_webui_openrouter_pipe.storage.multimodal import image_pixel_size
+
+    payload = b"VP8X" + (10).to_bytes(4, "little") + b"\x00" * 4
+    payload += (640 - 1).to_bytes(3, "little") + (480 - 1).to_bytes(3, "little")
+    raw = b"RIFF" + (len(payload) + 4).to_bytes(4, "little") + b"WEBP" + payload
+
+    assert image_pixel_size(raw) == (640, 480)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [b"", b"not an image", b"\x89PNG\r\n\x1a\n" + b"\x00" * 4, b"RIFF" + b"\x00" * 20],
+)
+def test_bytes_that_are_not_a_picture_are_declined_rather_than_guessed(raw):
+    """A guessed size would refuse a legal upload or pass an illegal one."""
+    from open_webui_openrouter_pipe.storage.multimodal import image_pixel_size
+
+    assert image_pixel_size(raw) is None
+
+
+def _jpeg_frame_header(width: int, height: int) -> bytes:
+    return (
+        b"\xff\xc0\x00\x11\x08"
+        + height.to_bytes(2, "big")
+        + width.to_bytes(2, "big")
+        + b"\x03\x01\x22\x00\x02\x11\x01\x03\x11\x01"
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "raw", "expected"),
+    [
+        (
+            "bytes-between-two-markers",
+            b"\xff\xd8" + b"\xff\xe0\x00\x04AB" + b"CD" + _jpeg_frame_header(640, 480),
+            (640, 480),
+        ),
+        (
+            "markers-that-carry-no-segment",
+            b"\xff\xd8" + b"\xff\xd0" + b"\xff\xd7" + _jpeg_frame_header(321, 123),
+            (321, 123),
+        ),
+        ("a-segment-shorter-than-its-own-length-field", b"\xff\xd8\xff\xe0\x00\x01" + b"\x00" * 64, None),
+        ("a-segment-declaring-no-length", b"\xff\xd8\xff" + b"\x00" * 64, None),
+    ],
+)
+def test_a_jpeg_the_scanner_has_to_walk_is_measured_or_declined_never_guessed(
+    name, raw, expected
+):
+    """The reference-image gate is a size, so a wrong one refuses a picture that is fine.
+
+    These four streams are written by hand because no encoder produces them: the
+    scanner's resync arm, its standalone-marker arm and its short-segment guard are
+    reached only by a stream that is damaged or padded, which is exactly the stream a
+    user's re-encoded upload can be. All three arms were unreachable from the suite, so
+    the scanner could walk off the end or read a length as a size and nothing said so.
+
+    The two readable rows carry different sizes and are not square, so a parser that
+    returns a constant or transposes the axes fails.
+    """
+    from open_webui_openrouter_pipe.storage.multimodal import image_pixel_size
+
+    assert image_pixel_size(raw) == expected, name

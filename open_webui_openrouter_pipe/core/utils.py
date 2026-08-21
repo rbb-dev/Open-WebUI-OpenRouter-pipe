@@ -166,6 +166,8 @@ def _pretty_json(value: Any) -> str:
     if isinstance(value, (str, bytes)):
         text = value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value
         return text.strip()
+    if isinstance(value, (dict, list, tuple)) and not value:
+        return ""
     try:
         return json.dumps(value, indent=2, ensure_ascii=False)
     except (RecursionError, TypeError, ValueError):

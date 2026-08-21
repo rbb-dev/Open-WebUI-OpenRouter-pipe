@@ -123,7 +123,7 @@ If the per-model filters do not appear in the Integrations menu, check:
   delivered; the pipe writes a warning to its log naming any filter whose
   stored version is out of date.
 - The pipe has been called at least once with a logged-in user.
-- OpenRouter Admin → Functions lists one entry per catalogued video model,
+- Open WebUI's own Admin → Functions screen lists one entry per catalogued video model,
   named ` Veo 3.1 Lite`,
   ` Seedance 2.0`, etc. (note the leading space — that's intentional, see
   [The chat filter UI](#the-chat-filter-ui-uservalves)).
@@ -167,7 +167,7 @@ See [Configuration valves](#configuration-valves-admin) for the full list of vid
 | `bytedance/seedance-2.0-fast` | ByteDance: Seedance 2.0 Fast | Speed-optimised Seedance 2.0; cheaper per token; 480p/720p only; ideal for drafts and bulk pipelines. | ✅ | ✅ | first + last | Per video token; less with video input |
 | `bytedance/seedance-2.5` | ByteDance: Seedance 2.5 | Longest single take in the catalogue at 30s; long-form storytelling, reference-driven generation, editing and extending existing clips. 480p/720p. | ✅ | ✅ | first + last | Per video token; less with video input |
 | `openai/sora-2-pro` | OpenAI: Sora 2 Pro | Physics-accurate motion + world-state persistence across multi-shot sequences. 20s clips. **Text-only — no frame images.** | ✅ | ❌ | none | Per second; more at 1080p |
-| `x-ai/grok-imagine-video` | xAI: Grok Imagine Video | Fast iteration with per-second duration control (any integer 1–15s, 24fps); 7 aspect ratios; image-to-video via first frame. | — | — | first only | Per second by resolution, plus a flat charge per supplied image |
+| `x-ai/grok-imagine-video` | SpaceXAI: Grok Imagine Video | Fast iteration with per-second duration control (any integer 1–15s, 24fps); 7 aspect ratios; image-to-video via first frame. | — | — | first only | Per second by resolution, plus a flat charge per supplied image |
 | `x-ai/grok-imagine-video-1.5` | SpaceXAI: Grok Imagine Video 1.5 | Same per-second granularity and seven framings, now up to 1080p, so drafting cheap and finishing sharp is one control change. No provider parameters at all. | — | — | first only | Per second by resolution, plus a flat charge per supplied image |
 | `black-forest-labs/flux-3-video` | Black Forest Labs: FLUX.3 Video | Keyframe-driven shots with opening and closing stills, and continuation of an existing clip so long sequences can be built a segment at a time. Up to 20s at 1080p. | ✅ | ❌ | first + last | Per second by resolution; a higher rate again for continuing an existing clip |
 | `runway/gen-4.5` | Runway: Gen-4.5 | Cinematic text- and image-to-video with strong motion and close prompt adherence; deliberately narrow — 720p, 16:9 or 9:16, 2–10s. | ❌ | ✅ | first only | Per second, one flat rate |
@@ -194,21 +194,26 @@ Pick model selection rules of thumb:
 - **Physics realism / human motion** → Sora 2 Pro, Hailuo 2.3.
 - **Longest clip** → Seedance 2.5 (30s), then FLUX.3 Video and Sora 2 Pro (20s each).
 - **Long sequence in pieces** → FLUX.3 Video, which continues an existing clip so you can build and redirect a segment at a time.
-- **Exact clip length (e.g. precisely 7s)** → either Grok Imagine Video tier (1-second granularity; most others use fixed tiers).
-- **Editing footage you already have** → Aleph 2.0, the only in-context video editor here; attach the clip and describe the change.
+- **Exact clip length (e.g. precisely 7s)** → most models here take any whole number of seconds inside their range; only Veo 3.1 (all three tiers), Kling O1, Hailuo 2.3, Wan 2.6 and Sora 2 Pro are locked to fixed steps. For anything shorter than 2s, the Grok Imagine Video tiers are the only ones that start at 1.
+- **Editing footage you already have** → Aleph 2.0 is built for it: attach the clip and describe the change. H3 and Seedance 2.5 also take an instruction against footage you supply, alongside the scenes they generate from scratch. All three need an administrator to have turned on sending media to a file host before an attached clip can reach the model at all.
 - **Legible text or a brand mark in shot** → H3, which is built for controlled rendering rather than free-running scenes.
-- **Ultrawide or very tall framing** → HappyHorse 1.1 (21:9 and 9:21), or Seedance 2.5 / FLUX.3 Video / H3 for 21:9.
+- **Ultrawide framing (21:9)** → nine models offer it: both HappyHorse tiers, all four Seedance, FLUX.3 Video, H3 and Aleph 2.0.
+- **Very tall framing (9:21)** → five: both HappyHorse tiers and Seedance 1.5 Pro, 2.0 and 2.0 Fast. Seedance 2.5 does not publish it.
 - **No audio needed (cheapest path)** → Hailuo 2.3, Gen-4.5 and Aleph 2.0 are silent, or set `Audio = off` on Veo Lite.
 
 ---
 
 ## Per-model deep dive
 
-This section is the same content the in-chat `help` command renders, in
-written form. Skip to a model that matches your use case, or read them
-all to get a feel for the catalog. Every paragraph here is grounded
-in the OpenRouter catalog metadata + targeted public research on each
-model's reputation, papers, and signature features.
+This section is a written-up companion to the in-chat `help` command, not a
+copy of what it prints. It covers what each model is for and how to prompt
+it. `help` covers that too, and then adds what the model can output, the
+controls its panel draws, and what it charges — all read from OpenRouter
+when you ask, so where the two disagree, `help` is the one that is current.
+Skip to a model that matches your use case, or read them all to get a feel
+for the catalog. The descriptions draw on what OpenRouter publishes about
+each model together with public research on its reputation, papers, and
+signature features.
 
 ### Google: Veo 3.1
 
@@ -418,11 +423,12 @@ ink-wash looks.
 
 Alibaba Tongyi Lab's flagship multimodal video model, unifying text,
 image, audio, and video conditioning in a single 27B-parameter Diffusion
-Transformer with Flow Matching. Its standout capability is true
-multi-reference control: lock subject identity, vocal timbre, props, and
-visual style across new scenes by feeding up to five reference videos
-plus reference image grids. It also adds last-frame anchoring (FLF2V),
-native audio-synced lip generation across languages, and a "Thinking
+Transformer with Flow Matching. Its standout capability is
+multi-reference control: lock subject identity, props and visual style
+across new scenes by feeding a grid of reference images, plus last-frame
+anchoring. Alibaba describes reference clips and voice conditioning for
+this model, but OpenRouter reports it as taking only text and pictures,
+so neither is offered here. A "Thinking
 Mode" planner that improves coherence on dialogue- and character-led
 shots — at the cost of weaker fast-motion physics than Seedance 2.0.
 
@@ -499,7 +505,7 @@ dialects).
   anything you'll dub later.
 - Use 1.5 Pro for short, repeatable clips with simple camera work and
   known-good prompts; switch to 2.0 only when you need richer multimodal
-  references, 2K output, or longer 15s shots — 1.5 Pro caps at 1080p
+  references, 4K output, or longer 15s shots — 1.5 Pro caps at 1080p
   and 12s.
 - Long durations drift: 4–6s clips stay on-model, but 10–12s shots show
   face drift, color shift, and continuity errors — chain shorter shots
@@ -583,18 +589,17 @@ land on the correct frame and lip-sync stays tight. Its standout
 differentiator is world-state persistence across multi-shot sequences —
 characters, props, and spatial relationships stay consistent across
 cuts, enabling cohesive short-form storytelling. In this catalog it
-also offers 20-second clips — second only to Seedance 2.5's 30s — at
-full 1080p.
+also runs to 20-second clips — only Seedance 2.5's 30s goes longer —
+at full 1080p.
 
 **Tips & pitfalls**
 
 - **Text-to-video only here**: this catalog entry has no
   `frame_image` support, so you can't seed it with a start/end image —
   drive the result entirely from prompt language.
-- 20-second durations and 1080p are unique strengths but render slow —
-  community tests report 2–5 minutes for a 20s clip and much longer at
-  peak, so prefer 4–8s 720p for iteration and reserve 16–20s 1080p for
-  finals.
+- Long takes at 1080p render slowly — community tests report 2–5
+  minutes for a 20s clip and much longer at peak, so prefer 4–8s 720p
+  for iteration and reserve 16–20s 1080p for finals.
 - Plays to its strengths on physics, motion weight, lighting, and
   ambient/dialogue audio; struggles with on-screen text, brand logos,
   fine hand details, and highly choreographed multi-character action —
@@ -604,15 +609,15 @@ full 1080p.
   (resolution drives the tier), so treat them as soft hints rather than
   guaranteed switches.
 
-### xAI: Grok Imagine Video
+### SpaceXAI: Grok Imagine Video
 
 > **id**: `x-ai/grok-imagine-video`
 
-xAI's fast text-, image-, and reference-conditioned video generator,
+SpaceXAI's fast text-, image-, and reference-conditioned video generator,
 producing short clips at 24fps in 480p or 720p across seven aspect
-ratios. Its standout differentiator is duration granularity: any
-integer from 1 to 15 seconds, where every other model in the catalog
-locks you into fixed tiers (4/6/8 or similar). Charged per output
+ratios. Its standout differentiator is how short it will go: any
+integer from 1 to 15 seconds, starting at 1 — the lowest floor in the
+catalog, where the next shortest models start at 2. Charged per output
 second by resolution with a small surcharge per input image, it is one
 of the cheapest paths to video in the catalog and well suited to rapid
 iteration and high-volume production.
@@ -952,11 +957,8 @@ admin turns `VIDEO_INTENT_ENABLED` off, all four disappear from the filter.
 | Audio (`generate_audio`) | Literal | model_default / on / off | Native audio with multi-language lip-sync. |
 | Seed | int | 0 / 32-bit int | Multi-shot continuity uses this. |
 | Provider options JSON | str | raw JSON | |
-| Audio reference URL | str | URL | Voice timbre + lip motion conditioning (Wan-2.7-r2v). |
-| Last image URL | str | URL | Anchor closing frame via passthrough. |
-| Reference video URL | str | URL | Single reference video (motion/camera/vocal style transfer). |
-| Reference videos JSON | str | JSON array | Up to 5 reference videos in one call. |
-| Reference images JSON | str | JSON array | 9-image structured grid for identity/wardrobe/props. |
+| Last image URL | str | URL | Anchor the closing frame. |
+| Reference images JSON | str | JSON array | 9-image structured grid for identity, wardrobe and props. |
 | Prompt extend | Literal | model_default / on / off | Wan prompt rewriter. |
 | Ratio | str | provider-specific string | Non-standard aspect string passthrough. |
 
@@ -983,7 +985,7 @@ admin turns `VIDEO_INTENT_ENABLED` off, all four disappear from the filter.
 |------|------|----------------------------|-------|
 | Duration | Literal | 4–15 (Fast/2.0); 4–12 (1.5 Pro) | Token-priced. |
 | Aspect ratio | Literal | 1:1, 3:4, 9:16, 4:3, 16:9, 21:9, 9:21 (+ 9:21 on 1.5 Pro) | Widest aspect coverage. |
-| Resolution | Literal | 480p, 720p (Fast); 480p, 720p, 1080p (2.0, 1.5 Pro) | |
+| Resolution | Literal | 480p, 720p (Fast); 480p, 720p, 1080p, 4K (2.0); 480p, 720p, 1080p (1.5 Pro) | Only 2.0 reaches 4K. |
 | Size | Literal | 13 (2.0 Fast); 25 (2.0); 21 (1.5 Pro); 12 (2.5) | 2.0 publishes the most exact pixel sizes of any catalog model. |
 | Frames | Literal | auto / none / first_only / first_last | |
 | Audio (`generate_audio`) | Literal | model_default / on / off | Native audio in same pass as video. |
@@ -1009,7 +1011,7 @@ admin turns `VIDEO_INTENT_ENABLED` off, all four disappear from the filter.
 
 **No frames knob** (catalog says `supported_frame_images: null` — text-to-video only). **No seed knob** (`seed: false`). **No negative prompt.**
 
-### xAI: Grok Imagine Video
+### SpaceXAI: Grok Imagine Video
 
 | Knob | Type | Values | Notes |
 |------|------|--------|-------|
@@ -1301,10 +1303,10 @@ generation job and returns the model's help blurb directly:
   use cases, position vs siblings).
 - **Output capabilities**: live durations, aspect ratios, resolutions,
   frame controls, audio, seed — read from the live catalog.
-- **Knobs in this filter**: every UserValve on this model's filter — the
-  model's own knobs, each with a one-sentence description tailored to it,
-  then the four reuse-of-previous-video controls, which read the same on
-  every model because they are pipe behaviour.
+- **Controls**: every control this model's filter draws — the model's own
+  settings, each with a one-sentence description tailored to it, then the
+  four reuse-of-previous-video controls, which read the same on every
+  model because they are pipe behaviour.
 - **Tips & pitfalls**: 3–4 practical bullets — what works, what fails,
   prompt patterns.
 - **Cost** (live): every published rate as a readable bullet (e.g. `per
@@ -1383,12 +1385,14 @@ to draw on rather than a fixed start or end point. Nothing you attach is
 silently discarded any more.
 
 A left-over image goes as an image reference. Clips and sound files go
-as video and audio references; a model that does not use them
-ignores them, which is why they are sent rather than dropped where you
-could not see it. Each reference is checked against the frame limits
-above (with clips and sound files capped by `REMOTE_VIDEO_MAX_SIZE_MB`
-instead), and one that fails is left out with a warning notice naming it
-and why — the render still goes ahead.
+as video and audio references, on the models that declare they read
+them: OpenRouter publishes the kinds each model takes, and one that does
+not name a kind is not sent that kind — the file is left out with a
+notice saying the model does not take it, rather than sent somewhere it
+would be discarded without a word. Each reference is checked against the
+frame limits above (with clips and sound files capped by
+`REMOTE_VIDEO_MAX_SIZE_MB` instead), and one that fails is left out with
+a warning notice naming it and why — the render still goes ahead.
 
 Because a reference is enough to generate from, a turn with attachments
 and **no typed words** is now submitted rather than refused.
@@ -1459,9 +1463,15 @@ For advanced users or future fields not yet typed, the
 ```
 
 The pipe deep-merges this into `provider.options` after typed valves are
-written. Provider parameters sit directly under the slug; a `parameters`
-wrapper is accepted for convenience and flattened away, because a wrapped
-value is silently discarded by OpenRouter rather than rejected.
+written, and forwards whatever nesting was written. It does not move a value
+between a `parameters` wrapper and the slug in either direction, because both
+placements are in use and neither is right everywhere: OpenRouter's own
+provider-specific video options cookbook posts
+`options.<slug>.parameters` for `google-vertex`, while a recorded probe against
+the `seed` provider showed a knob under `parameters` accepted with a job id and
+never applied, and the same knob written directly under the slug taking effect.
+Which placement a provider reads is the operator's call, so the pipe does not
+choose one for them.
 
 OpenRouter's video request schema defines exactly one provider property,
 `options`. Chat-routing and privacy fields — `only`, `order`, `sort`,
@@ -1778,4 +1788,114 @@ visibly leaked because there's no newline before it.
 
 ---
 
-For how this is put together inside the pipe, see [the developer guide](developer_guide_and_architecture.md).
+## Architecture overview
+
+Roughly, in order of who-calls-who:
+
+```
+pipe()
+  └─ orchestrator dispatches to VideoGenerationAdapter.generate() if
+     model.features has "video_generation"
+        ├─ help short-circuit (prompt == "help" → render_video_help)
+        ├─ resume check (read message → scan for [videojob:...] marker)
+        ├─ intent classification, when it is switched on and the turn
+        │  qualifies — may answer with a clarification instead of a job,
+        │  and degrades open if it fails
+        ├─ acquire user slot
+        ├─ prepare attachments
+        │     ├─ frame images inlined as data URLs
+        │     └─ clip and sound references need a public https link, so
+        │        with the file-host valves on the pipe uploads them and
+        │        sends the link (media_relay); without those valves such
+        │        a reference is left out with a notice
+        ├─ acquire global semaphore
+        ├─ build the request body (top-level fields the model publishes,
+        │  the rest under provider.options.<slug>)
+        ├─ submit job via OpenRouterVideoClient.submit(); read the job id
+        │  out of the accepted payload
+        ├─ emit pending content via OWUI socket 'message' event
+        │      (routed to Chats.upsert_message_to_chat_by_id_and_message_id —
+        │       persists the [videojob:<id>] marker BEFORE the bg task starts)
+        ├─ spawn _run_lifecycle_after_submit() as bg asyncio.Task
+        │     ├─ poll with backoff until terminal status
+        │     ├─ download each generated clip (streaming, bounded, capped
+        │     │  number of outputs)
+        │     ├─ MIME-sniff against VIDEO_OUTPUT_MIME_ALLOWLIST
+        │     ├─ stream-upload to OWUI storage (per-backend: Local/S3/GCS/Azure)
+        │     ├─ insert Files row + link to chat
+        │     ├─ build success content (markers + <video> + footer)
+        │     └─ return VideoLifecycleResult — emits status lines, but never
+        │        the message content
+        ├─ outer awaits bg task with asyncio.shield (survives client disconnect)
+        ├─ outer emits status footer + chat:completion (the SOLE emit)
+        └─ outer returns content string
+              └─ functions.py wraps as SSE chunk, OWUI middleware accumulates,
+                 stream finalizer upserts to message DB (one write).
+```
+
+Key invariant: **exactly one `_emit_completion` per `(chat_id,
+message_id)`**. The bg task does the work and returns the result;
+the outer (or waiter for de-duped re-entries) is the sole emitter. This
+prevents the duplicate-content / leaked-marker bug class.
+
+Second invariant, on the way in: **a clip or a sound file is only ever
+sent as a link**. OpenRouter takes those references as https URLs, so
+there is no inline-data path for them to fall back to — a file that
+cannot be given a link is left out and the user is told why, rather than
+being encoded into the request and silently dropped at the other end.
+Pictures are the exception: a frame image is always inlined, and an image
+reference is inlined too unless it has been sent to the file host as well.
+
+Key files:
+
+- [`integrations/video.py`](../open_webui_openrouter_pipe/integrations/video.py)
+  — `VideoGenerationAdapter` (entry point, lifecycle, emit).
+- [`integrations/video_client.py`](../open_webui_openrouter_pipe/integrations/video_client.py)
+  — `OpenRouterVideoClient`, the HTTP client for `/videos/*` endpoints.
+- [`integrations/video_catalog.py`](../open_webui_openrouter_pipe/integrations/video_catalog.py)
+  — fetches `/videos/models` and registers them in
+  `OpenRouterModelRegistry`.
+- [`integrations/media_relay.py`](../open_webui_openrouter_pipe/integrations/media_relay.py)
+  — puts an attached clip or sound file behind a public link so it can be
+  sent as a reference: which hosts are known, how long each keeps a file,
+  the size ceiling, and the retries.
+- [`integrations/video_intent.py`](../open_webui_openrouter_pipe/integrations/video_intent.py)
+  and [`integrations/video_intent_prompts.py`](../open_webui_openrouter_pipe/integrations/video_intent_prompts.py)
+  — work out what the turn is asking for before a job is submitted; see
+  [the intent classifier document](openrouter_video_intent_classifier.md).
+- [`integrations/video_help.py`](../open_webui_openrouter_pipe/integrations/video_help.py)
+  — per-model help blurbs + live pricing renderer.
+- [`integrations/video_types.py`](../open_webui_openrouter_pipe/integrations/video_types.py)
+  — `VideoLifecycleResult`, `DownloadedVideo` dataclasses.
+- [`integrations/provider_options.py`](../open_webui_openrouter_pipe/integrations/provider_options.py)
+  — the per-transport set of provider keys OpenRouter documents. The video
+  schema defines `options` and nothing else, so a routing preference that
+  belongs to chat completions is dropped here rather than sent where
+  nothing would enforce it.
+- [`filters/video_filter_renderer.py`](../open_webui_openrouter_pipe/filters/video_filter_renderer.py)
+  — generates the per-model OWUI filter source code.
+- [`filters/filter_manager.py`](../open_webui_openrouter_pipe/filters/filter_manager.py)
+  — installs filter rows in OWUI Functions table.
+- [`storage/video_persistence.py`](../open_webui_openrouter_pipe/storage/video_persistence.py)
+  — thin resume-path helper that reads the persisted chat message to
+  detect prior `videojob` markers.
+- [`storage/multimodal.py`](../open_webui_openrouter_pipe/storage/multimodal.py)
+  — `_download_remote_url_streaming`: the size- and type-bounded download
+  that fetches the finished clip. Video generation is its only caller; the
+  non-streaming sibling next to it is what the rest of the pipe uses.
+- [`storage/owui_files.py`](../open_webui_openrouter_pipe/storage/owui_files.py)
+  — `OwuiFileGateway.upload_to_owui_storage_from_path` and
+  `try_link_file_to_chat`, which put the downloaded clip into OWUI storage
+  and attach it to the chat.
+- [`models/registry.py`](../open_webui_openrouter_pipe/models/registry.py)
+  — `register_video_models()` merges video models into the chat catalog.
+- [`models/catalog_manager.py`](../open_webui_openrouter_pipe/models/catalog_manager.py)
+  — metadata sync that attaches and defaults filters.
+- [`core/config.py`](../open_webui_openrouter_pipe/core/config.py)
+  — Valve definitions.
+
+---
+
+For the rest of the pipe — repository layout, the normal chat request
+lifecycle, background workers — see
+[the developer guide](developer_guide_and_architecture.md).

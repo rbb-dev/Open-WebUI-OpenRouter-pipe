@@ -220,6 +220,75 @@ class TestShortCircuit:
             body={"messages": [{}, {}]}, video_meta={}, chat_id="chat1",
         )
 
+    @pytest.mark.parametrize("cap", [1, 3])
+    def test_the_per_chat_budget_is_filled_by_the_calls_that_were_made(self, cap):
+        """The cap costs money, so the counter that fills it has to be the real one.
+
+        Every other test of this cap pre-seeded `_intent_call_counts_per_chat` by hand,
+        so `_intent_record_call` could do nothing at all and the budget would never be
+        reached: the classifier is an extra LLM call per request, and the valve that
+        bounds it would have bounded nothing.
+
+        Two caps, so neither a constant nor a counter that saturates at one satisfies
+        both.
+        """
+        adapter = self._make_adapter()
+        valves = _make_valves(VIDEO_INTENT_MAX_CALLS_PER_CHAT=cap)
+
+        def _ask():
+            return adapter._intent_classifier_should_run(
+                valves=valves,
+                persisted_content="", prompt="make a video",
+                body={"messages": [{}, {}]}, video_meta={}, chat_id="chat1",
+            )
+
+        allowed = 0
+        for _turn in range(cap + 2):
+            if not _ask():
+                break
+            allowed += 1
+            adapter._intent_record_call("chat1", "")
+
+        assert allowed == cap, (
+            f"a cap of {cap} allowed {allowed} classifier call(s) before it closed"
+        )
+        assert adapter._intent_call_counts_per_chat["chat1"] == cap
+
+    @pytest.mark.parametrize("cap", [1, 3])
+    def test_the_per_user_day_budget_is_filled_by_the_calls_that_were_made(self, cap):
+        """The same counter question for the per-user daily cap, which is keyed by date."""
+        adapter = self._make_adapter()
+        valves = _make_valves(VIDEO_INTENT_MAX_CALLS_PER_USER_DAY=cap)
+
+        allowed = 0
+        for _turn in range(cap + 2):
+            if not adapter._intent_classifier_should_run(
+                valves=valves,
+                persisted_content="", prompt="make a video",
+                body={"messages": [{}, {}]}, video_meta={}, user_id="user-1",
+            ):
+                break
+            allowed += 1
+            adapter._intent_record_call("", "user-1")
+
+        assert allowed == cap, (
+            f"a daily cap of {cap} allowed {allowed} classifier call(s) before it closed"
+        )
+        assert sum(adapter._intent_call_counts_per_user_day.values()) == cap
+
+    def test_one_chats_calls_are_not_charged_to_another(self):
+        """The counters are per chat and per user; sharing one would close both together."""
+        adapter = self._make_adapter()
+        adapter._intent_record_call("chat-a", "user-1")
+        adapter._intent_record_call("chat-a", "user-1")
+
+        assert adapter._intent_call_counts_per_chat == {"chat-a": 2}
+        assert adapter._intent_classifier_should_run(
+            valves=_make_valves(VIDEO_INTENT_MAX_CALLS_PER_CHAT=2),
+            persisted_content="", prompt="make a video",
+            body={"messages": [{}, {}]}, video_meta={}, chat_id="chat-b",
+        ), "a second chat was refused for calls the first one made"
+
     def test_breaker_open_returns_false(self):
         adapter = self._make_adapter()
         adapter._intent_breaker_until_ts = time.time() + 60

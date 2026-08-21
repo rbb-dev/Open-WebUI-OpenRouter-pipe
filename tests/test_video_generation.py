@@ -3,18 +3,26 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import re
+import tempfile
 import time
 import json
 import logging
 import sys
+from decimal import Decimal
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any, cast
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from open_webui_openrouter_pipe import EncryptedStr, Pipe
-from open_webui_openrouter_pipe.core.errors import RequiredInternalFileError
+from open_webui_openrouter_pipe.core.errors import (
+    OpenRouterAPIError,
+    RequiredInternalFileError,
+    _build_openrouter_api_error,
+)
 from open_webui_openrouter_pipe.filters import FilterManager
 from open_webui_openrouter_pipe.filters.video_filter_renderer import (
     build_video_filter_spec,
@@ -40,6 +48,16 @@ _VIDEO_CATALOG_FIXTURE = Path(__file__).parent / "fixtures" / "video_models_cata
 VIDEO_MODELS = json.loads(_VIDEO_CATALOG_FIXTURE.read_text())["data"]
 VIDEO_BY_ID = {item["id"]: item for item in VIDEO_MODELS}
 MP4_BYTES = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 32
+
+
+def _reference_png(width: int, height: int) -> bytes:
+    import io
+
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (width, height), (12, 34, 56)).save(buffer, "PNG")
+    return buffer.getvalue()
 
 
 def _load_filter_from_source(source: str, module_name: str) -> ModuleType:
@@ -593,9 +611,29 @@ def _file_item(file_id: str, name: str, content_type: str, size: int = 1024) -> 
     }
 
 
-def _run_inlet_via_metadata(model_id: str, files: list[dict[str, Any]], frame_mode: str = "auto") -> tuple[dict, dict]:
-    source = render_video_filter_source(model_id=model_id, video_model=VIDEO_BY_ID[model_id])
-    module = _load_filter_from_source(source, f"video_filter_inlet_{model_id.replace('/', '_').replace('.', '_').replace('-', '_')}_{frame_mode}")
+_DECLARED_INPUT_MODALITIES: dict[str, list[str]] = json.loads(
+    (Path(__file__).parent / "fixtures" / "openrouter_video_input_modalities.json").read_text()
+)["input_modalities"]
+
+
+def _model_with_declared_modalities(model_id: str) -> dict[str, Any]:
+    return dict(
+        VIDEO_BY_ID[model_id],
+        input_modalities=_DECLARED_INPUT_MODALITIES[model_id],
+    )
+
+
+def _run_inlet_via_metadata(
+    model_id: str,
+    files: list[dict[str, Any]],
+    frame_mode: str = "auto",
+    video_model: dict[str, Any] | None = None,
+    module_suffix: str = "",
+) -> tuple[dict, dict]:
+    source = render_video_filter_source(
+        model_id=model_id, video_model=video_model or VIDEO_BY_ID[model_id]
+    )
+    module = _load_filter_from_source(source, f"video_filter_inlet_{model_id.replace('/', '_').replace('.', '_').replace('-', '_')}_{frame_mode}{module_suffix}")
     valves_kwargs: dict[str, Any] = {}
     if hasattr(module.Filter.UserValves, "model_fields") and "VIDEO_FRAME_MODE" in module.Filter.UserValves.model_fields:
         valves_kwargs["VIDEO_FRAME_MODE"] = frame_mode
@@ -649,67 +687,235 @@ def test_unselected_images_dropped_not_routed_to_rag():
     assert frames[0]["id"] == "img-A"
 
 
-def test_video_chat_attachment_routed_for_wan_2_7():
-    """Wan 2.7 supports `video` and `videos` passthrough — single video chat attachment
-    should land in metadata.video_attachments."""
+async def _encode_references_for(
+    model_id: str,
+    items: list[dict[str, Any]],
+    *,
+    companions: bool = False,
+) -> tuple[list[dict[str, Any]], list[tuple[str, str]]]:
+    from open_webui_openrouter_pipe.integrations import video as video_module
+
+    adapter = VideoGenerationAdapter.__new__(VideoGenerationAdapter)
+    adapter.logger = _test_logger()
+    adapter._pipe = MagicMock()
+
+    payload_by_family = {"video": MP4_BYTES, "audio": b"ID3\x04tone"}
+
+    async def _file(file_id, _logger):
+        return SimpleNamespace(id=file_id, filename=f"{file_id}.bin")
+
+    def _mime(file_obj):
+        return next(
+            item["content_type"] for item in items if item["id"] == file_obj.id
+        )
+
+    async def _b64(file_obj, *_args, **_kwargs):
+        family = _mime(file_obj).split("/", 1)[0]
+        return base64.b64encode(payload_by_family[family]).decode()
+
+    async def _relay(_session, _blob, **_kwargs):
+        return "https://files.example/relayed-asset"
+
+    adapter._pipe._file_gateway.read_file_record_base64 = AsyncMock(side_effect=_b64)
+    valves = SimpleNamespace(
+        VIDEO_FRAME_IMAGE_MAX_BYTES=10_000_000,
+        VIDEO_FRAME_TOTAL_MAX_BYTES=20_000_000,
+        REMOTE_VIDEO_MAX_SIZE_MB=500,
+        IMAGE_UPLOAD_CHUNK_BYTES=1024,
+        VIDEO_FRAME_IMAGE_MIME_ALLOWLIST="image/png,image/jpeg",
+        SEND_MEDIA_VIA_FILE_HOST=True,
+        SEND_VIDEO_VIA_FILE_HOST=True,
+        SEND_AUDIO_VIA_FILE_HOST=True,
+        SEND_IMAGES_VIA_FILE_HOST=False,
+        MEDIA_FILE_HOST="litterbox",
+    )
+    withheld: list[tuple[str, str]] = []
+    with patch.object(video_module, "get_file_by_id", _file), \
+         patch.object(video_module, "infer_file_mime_type", _mime), \
+         patch.object(video_module, "relay_to_public_url", _relay):
+        refs = await adapter._encode_input_references(
+            {"model_id": model_id, "input_references": items},
+            valves,
+            withheld=withheld,
+            video_model=_model_with_declared_modalities(model_id),
+            companions=companions,
+        )
+    return refs, withheld
+
+
+@pytest.mark.parametrize(
+    ("model_id", "declares_video"),
+    [("alibaba/wan-2.7", False), ("runway/aleph-2", True)],
+)
+@pytest.mark.asyncio
+async def test_a_video_chat_attachment_takes_the_input_reference_route(model_id, declares_video):
+    """A clip attached in chat reaches `input_references`, never a base64 provider slot.
+
+    `provider.options.<slug>.video` is silently ignored by OpenRouter, so a clip claimed
+    into it went nowhere with no error. The filter must leave the clip unclaimed so the
+    `input_references` route carries it, and that route's declared-modality gate then
+    decides: `alibaba/wan-2.7` publishes `video` in its passthrough list yet declares no
+    video input, so the clip is withheld with a reason the user is shown; `runway/aleph-2`
+    declares video input, so the clip is relayed to an https link and sent.
+    """
     files = [_file_item("vid-X", "clip.mp4", "video/mp4")]
-    body, metadata = _run_inlet_via_metadata("alibaba/wan-2.7", files)
-    video_attachments = metadata["openrouter_pipe"]["video_generation"].get("video_attachments", [])
-    assert len(video_attachments) == 1
-    assert video_attachments[0]["id"] == "vid-X"
-    assert video_attachments[0]["content_type"] == "video/mp4"
+    body, metadata = _run_inlet_via_metadata(
+        model_id,
+        files,
+        video_model=_model_with_declared_modalities(model_id),
+        module_suffix="_declared",
+    )
+    video_meta = metadata["openrouter_pipe"]["video_generation"]
+    assert "video_attachments" not in video_meta
+    assert [ref["id"] for ref in video_meta["input_references"]] == ["vid-X"]
     assert body["files"] == []
     assert metadata["files"] == []
 
+    refs, withheld = await _encode_references_for(model_id, video_meta["input_references"])
+    carried = [ref["type"] for ref in refs]
+    assert ("video_url" in carried) is declares_video, (
+        f"{model_id} declares {_DECLARED_INPUT_MODALITIES[model_id]}; carried {carried}"
+    )
+    if declares_video:
+        assert refs[0]["video_url"]["url"].startswith("https://")
+        assert "base64" not in json.dumps(refs)
+    else:
+        assert [name for name, _reason in withheld] == ["vid-X"]
+        assert "does not take a clip" in withheld[0][1]
 
-def test_multiple_video_chat_attachments_routed_for_wan_2_7():
-    """Two video chat attachments + Wan 2.7 → both go to video_attachments."""
+
+@pytest.mark.parametrize(
+    ("model_id", "declares_video"),
+    [("alibaba/wan-2.7", False), ("runway/aleph-2", True)],
+)
+@pytest.mark.asyncio
+async def test_every_video_chat_attachment_takes_the_input_reference_route(model_id, declares_video):
+    """Two clips both reach `input_references`; neither is claimed into a provider slot.
+
+    The retired route took one clip for `video` and the rest for `videos`, so which clips
+    survived depended on the slot. `input_references` is a list on every model, so the
+    count in equals the count considered.
+    """
     files = [
         _file_item("vid-1", "a.mp4", "video/mp4"),
         _file_item("vid-2", "b.mp4", "video/mp4"),
     ]
-    body, metadata = _run_inlet_via_metadata("alibaba/wan-2.7", files)
-    video_attachments = metadata["openrouter_pipe"]["video_generation"].get("video_attachments", [])
-    assert len(video_attachments) == 2
-    assert {v["id"] for v in video_attachments} == {"vid-1", "vid-2"}
-
-
-def test_audio_chat_attachment_routed_for_wan_2_6():
-    """Wan 2.6 supports `audio` passthrough — audio chat attachment should land in metadata.audio_attachments."""
-    files = [_file_item("aud-1", "voice.mp3", "audio/mpeg")]
-    body, metadata = _run_inlet_via_metadata("alibaba/wan-2.6", files)
-    audio_attachments = metadata["openrouter_pipe"]["video_generation"].get("audio_attachments", [])
-    assert len(audio_attachments) == 1
-    assert audio_attachments[0]["id"] == "aud-1"
+    body, metadata = _run_inlet_via_metadata(
+        model_id,
+        files,
+        video_model=_model_with_declared_modalities(model_id),
+        module_suffix="_declared",
+    )
+    video_meta = metadata["openrouter_pipe"]["video_generation"]
+    assert "video_attachments" not in video_meta
+    assert [ref["id"] for ref in video_meta["input_references"]] == ["vid-1", "vid-2"]
     assert body["files"] == []
     assert metadata["files"] == []
 
+    refs, withheld = await _encode_references_for(model_id, video_meta["input_references"])
+    assert len(refs) == (2 if declares_video else 0)
+    assert [name for name, _reason in withheld] == ([] if declares_video else ["vid-1", "vid-2"])
 
-def test_audio_chat_attachment_routed_for_wan_2_7():
-    """Wan 2.7 also supports `audio` passthrough — audio chat attachment must land in metadata.audio_attachments."""
+
+@pytest.mark.parametrize(
+    ("model_id", "declares_audio"),
+    [
+        ("alibaba/wan-2.6", False),
+        ("alibaba/wan-2.7", False),
+        ("bytedance/seedance-2.0", True),
+    ],
+)
+@pytest.mark.asyncio
+async def test_an_audio_chat_attachment_takes_the_input_reference_route(model_id, declares_audio):
+    """A sound file attached in chat reaches `input_references`, never a base64 slot.
+
+    Both Wan tiers publish `audio` in `allowed_passthrough_parameters` and neither
+    declares audio input, so the sound file is withheld with a stated reason rather than
+    encoded into `provider.options.<slug>.audio` where it would be discarded in silence.
+    `bytedance/seedance-2.0` declares audio input and carries it as an https link.
+    """
     files = [_file_item("aud-1", "voice.mp3", "audio/mpeg")]
-    body, metadata = _run_inlet_via_metadata("alibaba/wan-2.7", files)
-    audio_attachments = metadata["openrouter_pipe"]["video_generation"].get("audio_attachments", [])
-    assert len(audio_attachments) == 1
-    assert audio_attachments[0]["id"] == "aud-1"
+    body, metadata = _run_inlet_via_metadata(
+        model_id,
+        files,
+        video_model=_model_with_declared_modalities(model_id),
+        module_suffix="_declared",
+    )
+    video_meta = metadata["openrouter_pipe"]["video_generation"]
+    assert "audio_attachments" not in video_meta
+    assert [ref["id"] for ref in video_meta["input_references"]] == ["aud-1"]
     assert body["files"] == []
     assert metadata["files"] == []
 
+    refs, withheld = await _encode_references_for(
+        model_id, video_meta["input_references"], companions=True,
+    )
+    carried = [ref["type"] for ref in refs]
+    assert ("audio_url" in carried) is declares_audio, (
+        f"{model_id} declares {_DECLARED_INPUT_MODALITIES[model_id]}; carried {carried}"
+    )
+    if declares_audio:
+        assert refs[0]["audio_url"]["url"].startswith("https://")
+        assert "base64" not in json.dumps(refs)
+    else:
+        assert [name for name, _reason in withheld] == ["aud-1"]
+        assert "does not take a sound file" in withheld[0][1]
 
-def test_video_attachment_dropped_for_models_that_do_not_accept_video():
-    """Veo doesn't accept video passthrough — video chat attachment is dropped, NOT sent to RAG."""
-    files = [_file_item("vid-X", "clip.mp4", "video/mp4")]
-    body, metadata = _run_inlet_via_metadata("google/veo-3.1", files)
-    assert metadata["openrouter_pipe"]["video_generation"].get("video_attachments") is None
-    assert body["files"] == []
-    assert metadata["files"] == []
+
+@pytest.mark.parametrize("stale_key", ["video_attachments", "audio_attachments"])
+def test_a_retired_key_left_in_metadata_is_cleared_by_the_filter(stale_key):
+    """The filter clears the retired keys unconditionally, not only when it wrote them.
+
+    `video_meta` is rebuilt from whatever `openrouter_pipe.video_generation` already holds,
+    so a value left by an earlier pass would otherwise ride through to the adapter as a
+    live instruction. Both retired names are driven, because clearing one and forgetting
+    the other is the shape this guards.
+    """
+    files = [_file_item("img-A", "a.jpg", "image/jpeg")]
+    source = render_video_filter_source(
+        model_id="alibaba/wan-2.7", video_model=VIDEO_BY_ID["alibaba/wan-2.7"]
+    )
+    module = _load_filter_from_source(source, "video_filter_inlet_stale_key")
+    metadata: dict[str, Any] = {
+        "user_message": {"files": files},
+        "openrouter_pipe": {
+            "video_generation": {stale_key: [{"id": "left-over", "content_type": "video/mp4"}]}
+        },
+    }
+    module.Filter().inlet(
+        {"files": None},
+        __metadata__=metadata,
+        __user__={"valves": module.Filter.UserValves()},
+    )
+    video_meta = metadata["openrouter_pipe"]["video_generation"]
+    assert stale_key not in video_meta, (
+        f"{stale_key} survived the inlet: {video_meta!r}"
+    )
+    assert [ref["id"] for ref in video_meta.get("frame_images", [])] == ["img-A"]
 
 
-def test_audio_attachment_dropped_for_models_that_do_not_accept_audio():
-    """Veo doesn't accept audio passthrough — audio chat attachment is dropped."""
-    files = [_file_item("aud-1", "voice.mp3", "audio/mpeg")]
-    body, metadata = _run_inlet_via_metadata("google/veo-3.1", files)
-    assert metadata["openrouter_pipe"]["video_generation"].get("audio_attachments") is None
+@pytest.mark.parametrize("model_id", ["google/veo-3.1", "alibaba/wan-2.7"])
+@pytest.mark.parametrize(
+    ("file_id", "filename", "mime"),
+    [("vid-X", "clip.mp4", "video/mp4"), ("aud-1", "voice.mp3", "audio/mpeg")],
+)
+def test_no_model_claims_a_media_attachment_into_a_retired_slot(
+    model_id, file_id, filename, mime
+):
+    """Whether or not the model publishes a video/audio passthrough slot, the attachment
+    reaches `input_references` and never `video_attachments`/`audio_attachments`.
+
+    `google/veo-3.1` publishes neither slot and `alibaba/wan-2.7` publishes all three, so
+    a filter that still consulted the passthrough list would answer differently for the
+    two. It must not: the slot took base64 and OpenRouter ignored it. The file must also
+    leave `body["files"]` either way, so Open WebUI never RAGs a clip.
+    """
+    files = [_file_item(file_id, filename, mime)]
+    body, metadata = _run_inlet_via_metadata(model_id, files)
+    video_meta = metadata["openrouter_pipe"]["video_generation"]
+    assert "video_attachments" not in video_meta
+    assert "audio_attachments" not in video_meta
+    assert [ref["id"] for ref in video_meta["input_references"]] == [file_id]
     assert body["files"] == []
     assert metadata["files"] == []
 
@@ -744,74 +950,114 @@ def test_sora_routes_every_attachment_to_input_references():
     assert [r["id"] for r in video_meta["input_references"]] == ["img-A", "vid-X", "aud-1"]
 
 
+def _adapter_with_safe_urls(mapping=None):
+    adapter = VideoGenerationAdapter(
+        pipe=_pipe_with_provider_map(mapping or _ROUTED_PROVIDER_MAP), logger=_test_logger()
+    )
+
+    async def _is_safe(_url):
+        return True
+
+    cast(Any, adapter._pipe)._multimodal_handler._is_safe_url = _is_safe
+    return adapter
+
+
+@pytest.mark.parametrize(
+    "link", ["https://files.example/a.mp4", "https://cdn.example/second-clip.mp4"]
+)
 @pytest.mark.asyncio
-async def test_payload_routes_video_attachment_url_to_video_field_for_wan_2_7():
-    """`_build_payload` routes a single video data URL to params.video for Wan 2.7."""
-    pipe = _pipe_with_provider_map(_ROUTED_PROVIDER_MAP)
-    adapter = VideoGenerationAdapter(pipe=pipe, logger=_test_logger())
-    data_url = "data:video/mp4;base64,AAAA"
+async def test_a_reference_video_link_reaches_the_provider_video_slot(link):
+    """`VIDEO_REFERENCE_VIDEO_URL` reaches `provider.options.<slug>.video` as a link.
+
+    The slot is real; only base64 in it was dead. The filter writes the valve into
+    `params["video"]`, and `_build_payload` must carry that through to the slug the
+    catalog names, unchanged.
+    """
+    adapter = _adapter_with_safe_urls()
     payload = await adapter._build_payload(
         api_model_id="alibaba/wan-2.7",
         prompt="x",
-        video_meta={"params": {}},
+        video_meta={"params": {"video": link}},
         video_model=VIDEO_BY_ID["alibaba/wan-2.7"],
         frame_images=[],
         provider_options={},
-        video_attachment_urls=[data_url],
     )
-    assert _provider_params(payload, "atlas-cloud")["video"] == data_url
+    assert _provider_params(payload, "atlas-cloud")["video"] == link
     assert set(payload["provider"]["options"]) == {"atlas-cloud"}
 
+
+@pytest.mark.parametrize("count", [1, 3])
 @pytest.mark.asyncio
-async def test_payload_routes_multiple_video_urls_to_videos_array_for_wan_2_7():
-    pipe = _pipe_with_provider_map(_ROUTED_PROVIDER_MAP)
-    adapter = VideoGenerationAdapter(pipe=pipe, logger=_test_logger())
-    urls = ["data:video/mp4;base64,AAAA", "data:video/mp4;base64,BBBB"]
+async def test_a_reference_videos_array_reaches_the_provider_videos_slot(count):
+    """`VIDEO_REFERENCE_VIDEOS_JSON` reaches `provider.options.<slug>.videos` intact.
+
+    Every entry supplied is carried; the array is not collapsed to its first element.
+    """
+    adapter = _adapter_with_safe_urls()
+    links = [{"url": f"https://files.example/clip-{index}.mp4"} for index in range(count)]
     payload = await adapter._build_payload(
         api_model_id="alibaba/wan-2.7",
         prompt="x",
-        video_meta={"params": {}},
+        video_meta={"params": {"videos": links}},
         video_model=VIDEO_BY_ID["alibaba/wan-2.7"],
         frame_images=[],
         provider_options={},
-        video_attachment_urls=urls,
     )
-    assert _provider_params(payload, "atlas-cloud")["videos"] == [{"url": urls[0]}, {"url": urls[1]}]
+    assert _provider_params(payload, "atlas-cloud")["videos"] == links
     assert set(payload["provider"]["options"]) == {"atlas-cloud"}
 
+
+@pytest.mark.parametrize("model_id", ["alibaba/wan-2.6", "alibaba/wan-2.7"])
 @pytest.mark.asyncio
-async def test_payload_routes_audio_attachment_for_wan_2_6():
-    pipe = _pipe_with_provider_map(_ROUTED_PROVIDER_MAP)
-    adapter = VideoGenerationAdapter(pipe=pipe, logger=_test_logger())
-    data_url = "data:audio/mpeg;base64,AAAA"
+async def test_an_audio_link_reaches_the_provider_audio_slot(model_id):
+    """`VIDEO_AUDIO_URL` reaches `provider.options.<slug>.audio` on both Wan tiers."""
+    adapter = _adapter_with_safe_urls()
+    link = "https://files.example/voice.mp3"
     payload = await adapter._build_payload(
-        api_model_id="alibaba/wan-2.6",
+        api_model_id=model_id,
         prompt="x",
-        video_meta={"params": {}},
-        video_model=VIDEO_BY_ID["alibaba/wan-2.6"],
+        video_meta={"params": {"audio": link}},
+        video_model=VIDEO_BY_ID[model_id],
         frame_images=[],
         provider_options={},
-        audio_attachment_url=data_url,
     )
-    assert _provider_params(payload, "atlas-cloud")["audio"] == data_url
+    assert _provider_params(payload, "atlas-cloud")["audio"] == link
     assert set(payload["provider"]["options"]) == {"atlas-cloud"}
 
+
+@pytest.mark.parametrize("slot", ["video", "audio"])
 @pytest.mark.asyncio
-async def test_payload_routes_audio_attachment_for_wan_2_7():
-    pipe = _pipe_with_provider_map(_ROUTED_PROVIDER_MAP)
-    adapter = VideoGenerationAdapter(pipe=pipe, logger=_test_logger())
-    data_url = "data:audio/mpeg;base64,AAAA"
+async def test_a_chat_attachment_never_reaches_a_provider_slot_as_base64(slot):
+    """A clip or sound file attached in chat must never be encoded into `provider.options`.
+
+    OpenRouter ignores a base64 value in `provider.options.<slug>.{video,videos,audio}`
+    without a 400, so the attachment vanished. Regression guard for the retired route:
+    the filter metadata that used to feed it produces nothing under the slug, and the
+    adapter offers no parameter that would accept it.
+    """
+    import inspect
+
+    mime = {"video": "video/mp4", "audio": "audio/mpeg"}[slot]
+    adapter = _adapter_with_safe_urls()
     payload = await adapter._build_payload(
         api_model_id="alibaba/wan-2.7",
         prompt="x",
-        video_meta={"params": {}},
+        video_meta={
+            "params": {},
+            "video_attachments": [{"id": "vid-X", "content_type": mime}],
+            "audio_attachments": [{"id": "aud-1", "content_type": mime}],
+        },
         video_model=VIDEO_BY_ID["alibaba/wan-2.7"],
         frame_images=[],
         provider_options={},
-        audio_attachment_url=data_url,
     )
-    assert _provider_params(payload, "atlas-cloud")["audio"] == data_url
-    assert set(payload["provider"]["options"]) == {"atlas-cloud"}
+    assert "base64" not in json.dumps(payload)
+    assert payload.get("provider") is None or not payload["provider"].get("options")
+    accepted = set(inspect.signature(adapter._build_payload).parameters)
+    assert not (accepted & {"video_attachment_urls", "audio_attachment_url"}), (
+        f"the retired parameters are still offered: {sorted(accepted)}"
+    )
+
 
 @pytest.mark.asyncio
 async def test_data_urls_bypass_ssrf_validator():
@@ -1447,18 +1693,26 @@ async def test_message_lock_cancellation_after_release_yields_lock_to_next_waite
     assert pipe._video_message_lock_refs == {}
 
 
-def test_provider_options_are_emitted_flat_and_legacy_wrappers_are_unwrapped():
+def test_provider_options_reach_the_wire_in_the_shape_they_were_written():
+    """OpenRouter's own cookbook submits these wrapped, so unwrapping them was a rewrite.
+
+    `cookbook/video-generation/provider-specific-video-options.md` posts
+    `options: {"google-vertex": {parameters: {...}}}` at three separate sites and reports a
+    completed job, and Vertex's predict body reads `parameters.negativePrompt` rather than a
+    top-level one. Flattening the wrapper moved the value somewhere the provider does not
+    read. Both shapes are asserted so a rule that rewrites either one fails.
+    """
     adapter = VideoGenerationAdapter(pipe=Pipe(), logger=_test_logger())
 
-    flattened = adapter._normalise_provider_options(
+    kept = adapter._normalise_provider_options(
         {
             "google-vertex": {"negativePrompt": "blur"},
             "fal": {"parameters": {"motion": "slow"}},
         }
     )
 
-    assert flattened["google-vertex"] == {"negativePrompt": "blur"}
-    assert flattened["fal"] == {"motion": "slow"}
+    assert kept["google-vertex"] == {"negativePrompt": "blur"}
+    assert kept["fal"] == {"parameters": {"motion": "slow"}}
 
 
 @pytest.mark.asyncio
@@ -1623,6 +1877,42 @@ def test_the_documented_video_model_table_lists_exactly_the_catalogued_models():
     )
 
 
+@pytest.mark.parametrize(
+    "written",
+    [
+        {"parameters": {"negativePrompt": "blur"}},
+        {"parameters": {"watermark": True}, "seed": 7},
+    ],
+)
+def test_the_document_promises_the_nesting_rule_the_normaliser_actually_applies(written):
+    """The document said a `parameters` wrapper was "flattened away" for eight commits
+    after the flattening was removed, so an operator following it wrote a shape the pipe
+    forwards untouched while the prose said it would be rewritten.
+
+    Both sides are computed, so this cannot be satisfied by editing one of them: the claim
+    is derived from the prose and the behaviour from the normaliser, and re-introducing
+    either without the other reddens this. Two payloads, so a rule that only fires on a
+    lone key is still caught.
+    """
+    adapter = VideoGenerationAdapter(pipe=Pipe(), logger=_test_logger())
+    flattens = adapter._normalise_provider_options({"google-vertex": written}) != {
+        "google-vertex": written
+    }
+
+    doc = (Path(__file__).parent.parent / "docs" / "openrouter_video_generation.md").read_text()
+    paragraphs = [p for p in doc.split("\n\n") if "deep-merges this into `provider.options`" in p]
+    assert len(paragraphs) == 1, (
+        "the paragraph describing what happens to `Provider options JSON` moved or "
+        f"multiplied; found {len(paragraphs)}"
+    )
+    claims_flattening = "flatten" in paragraphs[0].lower()
+
+    assert claims_flattening is flattens, (
+        f"the document claims flattening={claims_flattening} and the normaliser does "
+        f"flattening={flattens}. Paragraph:\n{paragraphs[0]}"
+    )
+
+
 def test_the_docs_name_the_controls_every_video_filter_carries():
     """The four intent controls are on every filter and in no per-model table.
 
@@ -1767,6 +2057,11 @@ def test_video_help_renders_pricing_live_from_pricing_skus():
     $0.0896/s -- was a quarter under what OpenRouter charges by the time it was read.
     A literal cannot notice that; reading every published rate back out of every model's
     own help can, and it is what the assertion does now.
+
+    The comparison is numeric rather than textual because the panel normalises how a
+    figure is written -- `0.1120` and `0.112` are the same rate, and one model publishing
+    a trailing zero must not make its panel disagree with an identically-priced sibling.
+    A truncated figure is still caught: `0.000004` is not equal to `0.0000042`.
     """
     published = {
         model_id: {
@@ -1784,11 +2079,129 @@ def test_video_help_renders_pricing_live_from_pricing_skus():
             continue
         rendered = render_video_help(model_id, model)
         assert "**Cost** (as OpenRouter publishes it for this model)" in rendered, model_id
+        on_screen = {Decimal(shown) for shown in re.findall(r"\$(\d+(?:\.\d+)?)", rendered)}
         for key, rate in published[model_id].items():
-            assert f"${rate}" in rendered, (
+            assert Decimal(str(rate)) in on_screen, (
                 f"{model_id} publishes {key}={rate!r}; the help must quote that figure, "
                 "not one typed alongside it"
             )
+
+
+def _amounts_on_screen(rendered: str) -> set[str]:
+    """Every money figure the panel prints, as whole tokens.
+
+    Matching `"$0.112" in rendered` is satisfied by a panel printing `$0.1120`, which is
+    the exact defect these cases exist to catch, so the comparison is against complete
+    tokens rather than against substrings of the rendering.
+    """
+    return set(re.findall(r"\$\d+(?:\.\d+)?", rendered))
+
+
+@pytest.mark.parametrize(
+    ("model_id", "published", "on_screen"),
+    [
+        ("kwaivgi/kling-video-o1", "0.1120", "$0.112"),
+        ("kwaivgi/kling-v3.0-pro", "0.112", "$0.112"),
+        ("alibaba/wan-2.7", "0.1", "$0.10"),
+        ("bytedance/seedance-2.0-fast", "0.000002475", "$0.000002475"),
+        ("bytedance/seedance-2.0", "0.0000077", "$0.0000077"),
+    ],
+)
+def test_video_help_writes_every_rate_the_same_way(model_id, published, on_screen):
+    """Two models charging the same amount must print the same amount.
+
+    `kling-video-o1` publishes `0.1120` and `kling-v3.0-pro` publishes `0.112`; before
+    the ceiling line's formatter was applied to the rates as well, the first printed
+    `$0.1120` two lines above its own `$1.12` ceiling. Rounding is not an option: the
+    token rates run to nine decimal places, and a six-place formatter turns
+    `0.000002475` into `0.000002`, understating what OpenRouter charges by a fifth.
+    """
+    model = VIDEO_BY_ID[model_id]
+    assert published in [str(rate) for rate in model["pricing_skus"].values()], (
+        "the fixture must publish this figure, or the case proves nothing"
+    )
+    assert on_screen in _amounts_on_screen(render_video_help(model_id, model))
+
+
+def test_two_models_charging_the_same_rate_print_it_the_same_way():
+    """The catalogue writes one of them with a trailing zero. The panels must not."""
+    o1 = VIDEO_BY_ID["kwaivgi/kling-video-o1"]
+    pro = VIDEO_BY_ID["kwaivgi/kling-v3.0-pro"]
+    published_o1 = o1["pricing_skus"]["duration_seconds"]
+    published_pro = pro["pricing_skus"]["duration_seconds"]
+    assert published_o1 != published_pro, "identical strings would make this vacuous"
+    assert Decimal(published_o1) == Decimal(published_pro), "and so would different rates"
+    o1_lines = render_video_help("kwaivgi/kling-video-o1", o1).splitlines()
+    pro_lines = render_video_help("kwaivgi/kling-v3.0-pro", pro).splitlines()
+    assert "- per second: $0.112" in o1_lines
+    assert "- per second: $0.112" in pro_lines
+
+
+@pytest.mark.parametrize(
+    ("model_id", "line"),
+    [
+        ("google/veo-3.1-lite", "- Durations: 4, 6, 8"),
+        ("bytedance/seedance-2.5", "- Durations: 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30"),
+        ("alibaba/wan-2.6", "- Durations: 5, 10"),
+    ],
+)
+def test_video_help_lists_durations_in_numeric_order(model_id, line):
+    """`veo-3.1-lite` publishes `[8, 4, 6]`, and its own knob text says "(4, 6, or 8)"."""
+    rendered = render_video_help(model_id, VIDEO_BY_ID[model_id])
+    assert line in rendered
+
+
+def test_video_help_leaves_non_numeric_capability_lists_in_published_order():
+    """Sorting is for numbers. Ratios and resolutions are published in a chosen order."""
+    rendered = render_video_help("bytedance/seedance-2.0", VIDEO_BY_ID["bytedance/seedance-2.0"])
+    assert "- Aspect ratios: 1:1, 3:4, 9:16, 4:3, 16:9, 21:9, 9:21" in rendered
+    assert "- Resolutions: 480p, 720p, 1080p, 4K" in rendered
+
+
+@pytest.mark.parametrize(
+    ("model_id", "expected"),
+    [
+        ("kwaivgi/kling-v3.0-pro", "rates for 480p and 1080p here, which are not sizes this model offers"),
+        ("kwaivgi/kling-v3.0-std", "rates for 480p and 1080p here, which are not sizes this model offers"),
+        ("openai/sora-2-pro", "a rate for 1024p here, which is not a size this model offers"),
+        ("alibaba/wan-2.6", "a rate for 480p here, which is not a size this model offers"),
+    ],
+)
+def test_video_help_says_when_a_priced_tier_is_not_on_offer(model_id, expected):
+    """The cost block quotes rates for sizes the model's own list does not carry.
+
+    Kling v3.0 offers 720p and nothing else, yet OpenRouter prices 480p and 1080p for
+    it; Sora 2 Pro offers 720p and 1080p and is priced for 1024p. A reader who takes
+    the cost block as a menu picks a tier the model will not produce.
+    """
+    model = VIDEO_BY_ID[model_id]
+    rendered = render_video_help(model_id, model)
+    assert expected in rendered
+    assert "the resolutions listed above are the ones you can pick" in rendered
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    ["bytedance/seedance-2.0", "google/veo-3.1-fast", "x-ai/grok-imagine-video-1.5"],
+)
+def test_video_help_stays_quiet_when_every_priced_tier_is_on_offer(model_id):
+    rendered = render_video_help(model_id, VIDEO_BY_ID[model_id])
+    assert "which is not a size this model offers" not in rendered
+    assert "which are not sizes this model offers" not in rendered
+
+
+@pytest.mark.parametrize("model_id", sorted(VIDEO_BY_ID))
+def test_curated_display_names_match_the_name_the_catalogue_publishes(model_id):
+    """The fallback name and the name on screen must be the same name.
+
+    The panel prints the catalogue's `name`, so a curated `display_name` that drifts is
+    invisible until the catalogue row is missing -- at which point the user is shown a
+    vendor the picker never called it. `x-ai/grok-imagine-video` carried "xAI" here while
+    the catalogue, its own sibling tier, and the model picker all said "SpaceXAI".
+    """
+    published = VIDEO_BY_ID[model_id].get("name")
+    assert published, "the fixture must name the model for this to mean anything"
+    assert VIDEO_HELP_BY_MODEL[model_id]["display_name"] == published
 
 
 def test_video_help_pricing_section_omitted_when_no_skus():
@@ -1869,6 +2282,17 @@ def _video_model(**published: Any) -> dict[str, Any]:
     return model
 
 
+def _money_on_the_line(rendered: str, needle: str) -> list[str]:
+    """Every dollar amount on the one line that mentions `needle`.
+
+    Substring assertions cannot tell `$0.10` from `$0.109`, and cents-to-dollars bugs
+    land exactly there. Comparing whole tokens on one line can.
+    """
+    lines = [line for line in rendered.splitlines() if needle in line]
+    assert len(lines) == 1, f"{needle!r} appears on {len(lines)} lines"
+    return re.findall(r"\$\d+(?:\.\d+)?", lines[0])
+
+
 @pytest.mark.parametrize(
     ("published_cents", "dollars"),
     [("56", "$0.56"), ("125", "$1.25")],
@@ -1890,10 +2314,10 @@ def test_a_minimum_charge_is_read_in_cents_and_kept_out_of_the_rate_list(publish
             }
         ),
     )
-    assert f"Minimum charge per generation: {dollars}" in rendered, rendered
+    assert _money_on_the_line(rendered, "Minimum charge per generation") == [dollars]
     assert f"- per generation: {dollars}" not in rendered, "a floor is not a rate bullet"
     assert f"${published_cents}" not in rendered, "the value is published in cents"
-    assert "- per output second: $0.28" in rendered, "the rate beside it still renders"
+    assert _money_on_the_line(rendered, "per output second") == ["$0.28"]
     assert "per minimum cents per generation" not in rendered
 
 
@@ -1907,7 +2331,8 @@ def test_a_charge_this_panel_cannot_name_is_marked_rather_than_invented():
         "test/priced",
         _video_model(pricing_skus={"duration_seconds": "0.10", "storage_gigabyte_month": "0.02"}),
     )
-    assert "- per second: $0.10" in rendered
+    assert _money_on_the_line(rendered, "per second") == ["$0.10"]
+    assert _money_on_the_line(rendered, "storage_gigabyte_month") == ["$0.02"]
     assert '"storage_gigabyte_month" at $0.02' in rendered, rendered
     assert "per storage gigabyte month" not in rendered
     assert "- per storage" not in rendered
@@ -2581,9 +3006,15 @@ async def test_a_passthrough_url_is_withheld_when_no_provider_slug_is_known():
         "the requester set this and it is not being sent; silence here is what made the "
         f"vendor-prefix guess look like it worked for years. got {notice!r}"
     )
-    assert "publishes no provider slug" in notice, (
+    assert "does not name the company to send it to" in notice, (
         "this was withheld for want of a slug, not because the API rejects the field; "
         f"telling the user to set it on a chat model instead is unfollowable. got {notice!r}"
+    )
+    from open_webui_openrouter_pipe.integrations.video import _NOT_IN_SCHEMA
+
+    assert _NOT_IN_SCHEMA not in notice, (
+        "that is the other cause, and reporting it here would send the reader to a chat "
+        f"model for a field the video API does define. got {notice!r}"
     )
 
 
@@ -2818,6 +3249,73 @@ def _ttl_test_valves():
         ENABLE_VIDEO_GENERATION=True,
         BASE_URL="https://openrouter.ai/api/v1",
         HTTP_REFERER_OVERRIDE="",
+    )
+
+
+def _video_catalog_entry(model_id: str, display_name: str) -> dict[str, Any]:
+    return {
+        "id": model_id,
+        "name": display_name,
+        "pricing": {},
+        "allowed_passthrough_parameters": [],
+    }
+
+
+@pytest.mark.parametrize(
+    "catalog",
+    [
+        pytest.param([_video_catalog_entry("acme/reelmaker-1", "Reelmaker 1")], id="reelmaker"),
+        pytest.param([_video_catalog_entry("zeta/clipsmith-9", "Clipsmith 9")], id="clipsmith"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_master_disable_takes_video_models_out_of_the_model_list(
+    monkeypatch, pipe_instance_async, catalog
+):
+    """Turning ENABLE_VIDEO_GENERATION off empties the picker on the next pipes().
+
+    The same wiring defect the image catalog had: `pipes()` guarded the loader with the
+    valve, so the loader's disabled branch was unreachable and had nothing to clear
+    anyway. Driven through `pipes()` because the loader on its own cannot show it.
+    """
+    pipe = pipe_instance_async
+    monkeypatch.setattr(pipe, "_maybe_start_startup_checks", lambda: None)
+    monkeypatch.setattr(pipe, "_maybe_start_redis", lambda: None)
+    monkeypatch.setattr(pipe, "_maybe_start_cleanup", lambda: None)
+    monkeypatch.setattr(pipe, "_resolve_openrouter_api_key", lambda _valves: ("sk-test", None))
+
+    async def _no_chat_catalog(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(OpenRouterModelRegistry, "ensure_loaded", _no_chat_catalog)
+
+    async def _list_models(_self):
+        return [dict(entry) for entry in catalog]
+
+    async def _modalities(_self, _model_id):
+        return ["text"]
+
+    monkeypatch.setattr(OpenRouterVideoClient, "list_models", _list_models)
+    monkeypatch.setattr(OpenRouterVideoClient, "model_modalities", _modalities)
+
+    pipe.valves.ENABLE_VIDEO_GENERATION = True
+    pipe.valves.ENABLE_OPENROUTER_IMAGE_GENERATION = False
+    pipe.valves.AUTO_INSTALL_VIDEO_FILTERS = False
+    pipe.valves.AUTO_ATTACH_VIDEO_FILTERS = False
+
+    offered = {entry["name"] for entry in await pipe.pipes()}
+    wanted = {entry["name"] for entry in catalog}
+    assert wanted <= offered, (
+        f"{sorted(wanted)} never reached the model list, so the disable arm below would "
+        "pass for the wrong reason"
+    )
+
+    pipe.valves.ENABLE_VIDEO_GENERATION = False
+    still_offered = {entry["name"] for entry in await pipe.pipes()}
+
+    assert not (wanted & still_offered), (
+        f"{sorted(wanted & still_offered)} stayed selectable after ENABLE_VIDEO_GENERATION "
+        "was switched off"
     )
 
 
@@ -3459,29 +3957,39 @@ async def test_a_temp_directory_that_cannot_be_removed_is_reported(monkeypatch, 
         {"parameters": {"negativePrompt": "blur"}, "steps": 40},
     ],
 )
-def test_provider_options_emit_one_flat_shape_however_the_operator_nested_them(written):
+def test_the_operators_provider_options_arrive_exactly_as_they_were_written(written):
+    """Whatever nesting an operator chose is what OpenRouter receives.
+
+    The wrapper used to be stripped on the strength of one recorded watermark A/B whose
+    model id appears in none of the captured `/videos/models` dumps. OpenRouter's own
+    cookbook submits `options.<slug>.parameters` at three sites and reports a completed
+    job, and Vertex reads `parameters.negativePrompt`, so stripping it moved the value out
+    of the place the provider looks. Three nestings, so a rule that normalises any of them
+    into another fails.
+    """
     adapter = VideoGenerationAdapter(pipe=Pipe(), logger=_test_logger())
 
     result = adapter._normalise_provider_options({"google-vertex": written})
 
-    assert result == {"google-vertex": {"negativePrompt": "blur", "steps": 40}}, (
-        "OpenRouter reads provider.options.<slug> flat — the ByteDance watermark A/B proved a "
-        "`parameters` wrapper is inert. Emitting a different shape because of an unrelated "
-        "sibling key means the same operator config silently works or does nothing."
+    assert result == {"google-vertex": written}, (
+        "the pipe rewrote what the operator wrote; whichever shape reaches the provider "
+        "should be the operator's choice, not ours"
     )
 
 
-def test_derived_provider_params_beat_a_legacy_parameters_block():
+def test_a_wrapper_and_a_sibling_key_both_survive_untouched():
+    """Two placements of one name are the operator's business, and both go out as written.
+
+    Collapsing them used to pick a winner here. The pipe no longer chooses: it forwards
+    the block, and OpenRouter and the provider decide which placement they read.
+    """
     adapter = VideoGenerationAdapter(pipe=Pipe(), logger=_test_logger())
 
     result = adapter._normalise_provider_options(
         {"seed": {"parameters": {"watermark": True}, "watermark": False}}
     )
 
-    assert result["seed"]["watermark"] is False, (
-        "_build_payload merges derived filter params over the manual hatch as siblings; "
-        "flattening must not invert that precedence."
-    )
+    assert result["seed"] == {"parameters": {"watermark": True}, "watermark": False}
 
 
 @pytest.mark.parametrize(
@@ -3608,35 +4116,37 @@ async def test_a_documented_top_level_field_is_never_shipped_inside_provider_opt
 
 @pytest.mark.asyncio
 async def test_an_inline_attachment_is_not_duplicated_once_per_provider_slug():
-    adapter = VideoGenerationAdapter(
-        pipe=_pipe_with_provider_map(
-            {"alibaba/wan-2.7": {"providers": ["atlas-cloud", "alibaba", "fal"]}}
-        ),
-        logger=_test_logger(),
+    from open_webui_openrouter_pipe.integrations.video import _MAX_PASSTHROUGH_URLS
+
+    adapter = _adapter_with_safe_urls(
+        {"alibaba/wan-2.7": {"providers": ["atlas-cloud", "alibaba", "fal"]}}
     )
-    data_url = "data:video/mp4;base64," + ("A" * 200_000)
+    links = [
+        {"url": "https://files.example/" + ("clip" * 500) + f"-{index}.mp4"}
+        for index in range(_MAX_PASSTHROUGH_URLS)
+    ]
+    bulky = json.dumps(links)
 
     payload = await adapter._build_payload(
         api_model_id="alibaba/wan-2.7",
         prompt="x",
-        video_meta={"params": {"negative_prompt": "blur"}},
+        video_meta={"params": {"negative_prompt": "blur", "videos": links}},
         video_model=VIDEO_BY_ID["alibaba/wan-2.7"],
         frame_images=[],
         provider_options={},
-        video_attachment_urls=[data_url],
     )
 
     serialized = len(json.dumps(payload))
-    assert serialized < int(len(data_url) * 1.2), (
+    assert serialized < int(len(bulky) * 1.2), (
         "the attachment must appear once however many providers the catalog lists; "
-        f"payload is {serialized} bytes for a {len(data_url)}-byte attachment"
+        f"payload is {serialized} bytes for a {len(bulky)}-byte attachment"
     )
     options = payload["provider"]["options"]
     assert set(options) == {"atlas-cloud", "alibaba", "fal"}
     assert all(entry.get("negative_prompt") == "blur" for entry in options.values()), (
         "the scalar knobs must still reach every candidate; only the bulky values are pinned"
     )
-    carriers = [slug for slug, entry in options.items() if "video" in entry]
+    carriers = [slug for slug, entry in options.items() if "videos" in entry]
     assert carriers == ["atlas-cloud"]
 
 
@@ -3846,22 +4356,20 @@ async def test_the_drop_reason_distinguishes_its_two_causes(caplog):
 @pytest.mark.parametrize("pin", ["fal", "atlas-cloud"])
 @pytest.mark.asyncio
 async def test_a_pin_the_video_api_never_receives_does_not_decide_the_carrier(pin):
-    adapter = VideoGenerationAdapter(
-        pipe=_pipe_with_provider_map(
-            {"alibaba/wan-2.7": {"providers": ["alibaba", "atlas-cloud", "fal"]}}
-        ),
-        logger=_test_logger(),
+    adapter = _adapter_with_safe_urls(
+        {"alibaba/wan-2.7": {"providers": ["alibaba", "atlas-cloud", "fal"]}}
     )
 
     payload = await adapter._build_payload(
         api_model_id="alibaba/wan-2.7",
         prompt="x",
-        video_meta={"params": {"negative_prompt": "blur"}},
+        video_meta={
+            "params": {"negative_prompt": "blur", "video": "https://files.example/a.mp4"}
+        },
         video_model=VIDEO_BY_ID["alibaba/wan-2.7"],
         frame_images=[],
         provider_options={},
         provider_block={"only": [pin]},
-        video_attachment_urls=["data:video/mp4;base64,AAAA"],
     )
 
     options = payload["provider"]["options"]
@@ -3876,21 +4384,17 @@ async def test_a_pin_the_video_api_never_receives_does_not_decide_the_carrier(pi
 
 @pytest.mark.asyncio
 async def test_without_a_pin_the_attachment_uses_the_first_candidate():
-    adapter = VideoGenerationAdapter(
-        pipe=_pipe_with_provider_map(
-            {"alibaba/wan-2.7": {"providers": ["alibaba", "atlas-cloud"]}}
-        ),
-        logger=_test_logger(),
+    adapter = _adapter_with_safe_urls(
+        {"alibaba/wan-2.7": {"providers": ["alibaba", "atlas-cloud"]}}
     )
 
     payload = await adapter._build_payload(
         api_model_id="alibaba/wan-2.7",
         prompt="x",
-        video_meta={"params": {}},
+        video_meta={"params": {"video": "https://files.example/a.mp4"}},
         video_model=VIDEO_BY_ID["alibaba/wan-2.7"],
         frame_images=[],
         provider_options={},
-        video_attachment_urls=["data:video/mp4;base64,AAAA"],
     )
 
     options = payload["provider"]["options"]
@@ -3901,22 +4405,18 @@ async def test_without_a_pin_the_attachment_uses_the_first_candidate():
 @pytest.mark.parametrize("order", [["fal", "atlas-cloud"], ["atlas-cloud", "fal"]])
 @pytest.mark.asyncio
 async def test_provider_order_decides_the_attachment_carrier_without_an_only(order):
-    adapter = VideoGenerationAdapter(
-        pipe=_pipe_with_provider_map(
-            {"alibaba/wan-2.7": {"providers": ["alibaba", "atlas-cloud", "fal"]}}
-        ),
-        logger=_test_logger(),
+    adapter = _adapter_with_safe_urls(
+        {"alibaba/wan-2.7": {"providers": ["alibaba", "atlas-cloud", "fal"]}}
     )
 
     payload = await adapter._build_payload(
         api_model_id="alibaba/wan-2.7",
         prompt="x",
-        video_meta={"params": {}},
+        video_meta={"params": {"video": "https://files.example/a.mp4"}},
         video_model=VIDEO_BY_ID["alibaba/wan-2.7"],
         frame_images=[],
         provider_options={},
         provider_block={"order": order},
-        video_attachment_urls=["data:video/mp4;base64,AAAA"],
     )
 
     options = payload["provider"]["options"]
@@ -4549,16 +5049,24 @@ def test_user_attached_audio_and_video_reach_input_references(model_id, file_id,
 
 
 @pytest.mark.parametrize(
-    ("content_type", "payload_bytes", "expected_kind"),
+    ("content_type", "payload_bytes", "expected_kind", "inlineable"),
     [
-        ("audio/mpeg", b"ID3\x04audio-one", "audio_url"),
-        ("video/mp4", b"\x00\x00\x00\x18ftypmp42vid", "video_url"),
+        ("image/png", b"\x89PNG\r\n\x1a\nref", "image_url", True),
+        ("audio/mpeg", b"ID3\x04audio-one", "audio_url", False),
+        ("video/mp4", b"\x00\x00\x00\x18ftypmp42vid", "video_url", False),
     ],
 )
 @pytest.mark.asyncio
 async def test_the_reference_kind_follows_the_media_family(
-    monkeypatch, content_type, payload_bytes, expected_kind
+    monkeypatch, content_type, payload_bytes, expected_kind, inlineable
 ):
+    """A picture may be carried in the request; a clip or a sound file may not.
+
+    OpenRouter answers a base64 data URL under `video_url` with
+    `400 Invalid reference URL: ... Only HTTPS URLs are allowed`, which fails the whole
+    generation. Its image references are documented as taking base64 data URLs, so the
+    two families are asserted together and a rule that treats them alike fails one.
+    """
     pipe = Pipe()
     adapter = VideoGenerationAdapter(pipe=pipe, logger=_test_logger())
     encoded = base64.b64encode(payload_bytes).decode()
@@ -4578,22 +5086,34 @@ async def test_the_reference_kind_follows_the_media_family(
     )
     monkeypatch.setattr(pipe._file_gateway, "read_file_record_base64", fake_read_b64)
 
+    withheld: list[tuple[str, str]] = []
     refs = await adapter._encode_input_references(
         {"input_references": [{"id": "ref-1", "content_type": content_type}]},
         pipe.valves,
+        withheld=withheld,
     )
+
+    if not inlineable:
+        assert refs == [], (
+            f"a {content_type} attachment was carried in the request as base64; OpenRouter "
+            "refuses that under this field and fails the whole generation"
+        )
+        assert withheld and "https" in withheld[0][1], (
+            f"the drop must say what would work instead; got {withheld!r}"
+        )
+        return
 
     assert len(refs) == 1
     assert refs[0]["type"] == expected_kind
     assert refs[0][expected_kind]["url"] == f"data:{content_type};base64,{encoded}"
-    assert "image_url" not in refs[0]
+    assert withheld == []
 
 
 @pytest.mark.parametrize(
     ("model_id", "file_id", "content_type", "payload_bytes", "expected_kind"),
     [
-        ("google/veo-3.1", "aud-7", "audio/mpeg", b"ID3\x04score", "audio_url"),
-        ("openai/sora-2-pro", "vid-3", "video/mp4", b"\x00\x00\x00\x18ftypmp42clip", "video_url"),
+        ("google/veo-3.1", "img-7", "image/png", b"\x89PNG\r\n\x1a\nstill", "image_url"),
+        ("openai/sora-2-pro", "img-3", "image/jpeg", b"\xff\xd8\xff\xe0still", "image_url"),
     ],
 )
 @pytest.mark.asyncio
@@ -4602,9 +5122,14 @@ async def test_a_chat_attachment_reaches_the_wire_as_a_typed_reference(
 ):
     """The whole pipeline, because neither end alone is the property.
 
-    The plan's own stated predicate is DELIVERY: run `inlet`, run the encoder, run
-    `_build_payload`, and assert the discriminator is on the request. A renderer that
-    writes the metadata and a payload builder that drops it are each green in isolation.
+    The stated predicate is DELIVERY: run `inlet`, run the encoders, run `_build_payload`,
+    and assert the discriminator is on the request. A renderer that writes the metadata and
+    a payload builder that drops it are each green in isolation.
+
+    Which field carries the picture is the model's own business: a model publishing
+    `supported_frame_images` takes it as a first frame, one that publishes none takes it as
+    a reference, and OpenRouter documents `frame_images` as winning when both are present.
+    Both models are driven so a test written for one routing cannot pass for the other.
     """
     files = [_file_item(file_id, "asset.bin", content_type)]
     _body, metadata = _run_inlet_via_metadata(model_id, files)
@@ -4630,19 +5155,29 @@ async def test_a_chat_attachment_reaches_the_wire_as_a_typed_reference(
     monkeypatch.setattr(pipe._file_gateway, "read_file_record_base64", fake_read_b64)
 
     references = await adapter._encode_input_references(video_meta, pipe.valves)
+    frames = await adapter._encode_frame_images(
+        video_meta, VIDEO_BY_ID[model_id], pipe.valves
+    )
+    assert references or frames, (
+        f"{model_id}: the classifier routed the attachment nowhere, so the encoders below "
+        "never ran and the payload check would hold over a turn carrying nothing"
+    )
     payload = await adapter._build_payload(
         api_model_id=model_id,
         prompt="a red mug",
         video_meta=video_meta,
         video_model=VIDEO_BY_ID[model_id],
-        frame_images=[],
+        frame_images=frames,
         provider_options={},
         input_references=references,
     )
 
-    delivered = payload["input_references"]
-    assert [r["type"] for r in delivered] == [expected_kind]
-    assert delivered[0][expected_kind]["url"] == f"data:{content_type};base64,{encoded}"
+    carried = payload.get("input_references") or payload.get("frame_images") or []
+    assert carried, (
+        f"the attached picture reached neither reference field: {sorted(payload)}"
+    )
+    assert [r["type"] for r in carried] == [expected_kind]
+    assert carried[0][expected_kind]["url"] == f"data:{content_type};base64,{encoded}"
 
 
 @pytest.mark.parametrize(
@@ -4869,6 +5404,123 @@ def test_a_null_list_field_still_renders_no_control(list_field):
     source = render_video_filter_source(model_id="alibaba/wan-2.7", video_model=model)
 
     assert valve not in source
+
+
+@pytest.mark.parametrize(
+    ("clip_count", "failing"),
+    [(3, (1,)), (3, (0, 2)), (2, ())],
+)
+@pytest.mark.asyncio
+async def test_a_clip_that_cannot_be_stored_is_logged_and_declared_to_the_user(
+    monkeypatch, clip_count, failing
+):
+    """`upload_to_owui_storage_from_path` answers None on every failure path, and a falsy
+    result used to be skipped in silence — so a job billed for three clips rendered two
+    `<video>` blocks with nothing saying a third existed.
+
+    The download loop twenty lines above already logs a warning naming the job and the
+    index for the same class of partial failure; the storage loop must match it, and the
+    shortfall must also reach the content the user reads. Three rows: one failure, two
+    failures, and none, so neither a hardcoded count nor an unconditional notice passes.
+    The clips that did store must survive — the job is already paid for.
+    """
+    pipe = Pipe()
+    pipe.valves.API_KEY = EncryptedStr("test-api-key")
+    pipe.valves.VIDEO_INITIAL_POLL_DELAY_SECONDS = 0
+    adapter = pipe._ensure_video_generation_adapter()
+    cast(Any, adapter)._persistence = _MemoryPersistence(
+        "[openrouter:v1:videojob:job-partial]: #\n\nVideo generation is running..."
+    )
+
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    handler = _Capture()
+    adapter.logger.addHandler(handler)
+    monkeypatch.setattr(adapter.logger, "propagate", False, raising=False)
+
+    class FakeClient(OpenRouterVideoClient):
+        async def status(self, job_id, polling_url=None):
+            return {
+                "status": "completed",
+                "unsigned_urls": [
+                    f"https://storage.test/{i}.mp4" for i in range(clip_count)
+                ],
+            }
+
+        def bearer_header(self) -> dict[str, str]:
+            return {"Authorization": "Bearer test"}
+
+    async def fake_streaming_download(url: str, dest_path, **_kwargs):
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        dest_path.write_bytes(MP4_BYTES)
+        return {"path": dest_path, "mime_type": "video/mp4", "url": url,
+                "size_bytes": len(MP4_BYTES)}
+
+    seen: list[int] = []
+
+    async def fake_upload_from_path(*_args, **kwargs):
+        index = len(seen)
+        seen.append(index)
+        if index in failing:
+            return None
+        return f"file-{index}"
+
+    monkeypatch.setattr(
+        "open_webui_openrouter_pipe.integrations.video.OpenRouterVideoClient", FakeClient
+    )
+    monkeypatch.setattr(pipe, "_create_http_session", lambda *_a, **_k: _FakeSession([]))
+    monkeypatch.setattr(
+        pipe._multimodal_handler, "_download_remote_url_streaming", fake_streaming_download
+    )
+    monkeypatch.setattr(
+        pipe._file_gateway, "upload_to_owui_storage_from_path", fake_upload_from_path
+    )
+
+    try:
+        result = await adapter.generate(
+            body={"messages": [{"role": "user", "content": "make a video"}]},
+            responses_body=SimpleNamespace(provider={}),
+            valves=pipe.valves,
+            session=None,
+            event_emitter=None,
+            metadata={"chat_id": "chat-1", "message_id": "msg-1"},
+            user={"id": "user-1"},
+            request=None,
+            user_obj={"id": "user-1"},
+            normalized_model_id="openai.sora-2-pro",
+            api_model_id="openai/sora-2-pro",
+        )
+    finally:
+        adapter.logger.removeHandler(handler)
+
+    stored = clip_count - len(failing)
+    assert "### Video generation failed" not in result, (
+        "a partial storage failure must not discard the clips that did store"
+    )
+    assert result.count("<video>") == stored
+    for index in range(clip_count):
+        rendered = f"/api/v1/files/file-{index}/content" in result
+        assert rendered is (index not in failing)
+
+    warnings = [
+        r.getMessage() for r in records
+        if r.levelno == logging.WARNING and "could not be stored" in r.getMessage()
+    ]
+    assert len(warnings) == len(failing), warnings
+    for index in failing:
+        assert any(
+            "job-partial" in message and f"clip {index}" in message
+            for message in warnings
+        ), f"no warning named job-partial and clip {index}: {warnings}"
+
+    if failing:
+        assert f"{len(failing)} of the {clip_count} clips" in result, result
+    else:
+        assert "could not be saved" not in result
 
 
 @pytest.mark.parametrize("clip_count", [1, 3])
@@ -5169,4 +5821,1044 @@ async def test_a_video_filter_is_re_identified_whatever_its_id_needs_escaping(mo
     )
     assert not matches(other), (
         "the matcher accepts a different model's filter, so it would overwrite it"
+    )
+
+
+@pytest.mark.asyncio
+async def test_one_video_models_install_failure_costs_only_that_model():
+    """A failure installing for one video model must not skip the models after it.
+
+    The image sweep already isolates per model; this one did not, so a single model
+    whose render or database write raised took every model after it in the list down
+    with it, and the log named only the first.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+    from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
+
+    wanted = ["google/veo-3.1", "google/veo-3.1-fast", "alibaba/wan-2.7"]
+    picked = [VIDEO_BY_ID[model_id] for model_id in wanted]
+
+    OpenRouterModelRegistry._specs = {}
+    OpenRouterModelRegistry._id_map = {}
+    OpenRouterModelRegistry._models = []
+    OpenRouterModelRegistry.register_video_models(picked)
+
+    doomed = "google/veo-3.1"
+    doomed_id = "openrouter_video_google_veo_3_1"
+    attempted: list[str] = []
+
+    async def _install(**kwargs):
+        attempted.append(kwargs["preferred_id"])
+        if kwargs["preferred_id"] == doomed_id:
+            raise RuntimeError("the database is locked")
+        return kwargs["preferred_id"]
+
+    pipe = MagicMock()
+    fm = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
+    fm._ensure_filter_installed = AsyncMock(side_effect=_install)
+
+    models = OpenRouterModelRegistry.list_models()
+    result = await fm.ensure_openrouter_video_gen_filter_function_ids(models)
+
+    assert len(attempted) == len(wanted), (
+        f"every model must be attempted; only {len(attempted)} were: {attempted}"
+    )
+    assert doomed_id in attempted, f"the test never reached the doomed model: {attempted}"
+    assert doomed not in result, "the model whose install raised must not be reported installed"
+    assert len(set(result.values())) == len(wanted) - 1, (
+        f"the other models keep their filters; got {sorted(set(result.values()))}"
+    )
+
+
+def test_a_log_record_is_bounded_by_the_pipe_not_by_the_catalog():
+    """A list the pipe did not author is summarised before it reaches a log record.
+
+    The names come straight out of `allowed_passthrough_parameters`, unbounded in both
+    element length and count, and the model id -- the half of the record that says which
+    model has the problem -- sat in front of them where an oversized list evicts it.
+    """
+    import logging
+
+    from open_webui_openrouter_pipe.filters import video_filter_renderer as renderer
+
+    model = dict(VIDEO_BY_ID["google/veo-3.1"])
+    model["allowed_passthrough_parameters"] = [f"{'x' * 5000}-{index}" for index in range(500)]
+    records: list[logging.LogRecord] = []
+
+    class _Collect(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    handler = _Collect()
+    renderer.logger.addHandler(handler)
+    try:
+        renderer.render_video_filter_source(model_id="google/veo-3.1", video_model=model)
+    finally:
+        renderer.logger.removeHandler(handler)
+
+    warned = [r for r in records if r.levelno >= logging.WARNING]
+    assert warned, "the unrenderable names must still be reported"
+    message = warned[0].getMessage()
+    assert len(message) < 1000, f"the record is {len(message)} characters long"
+    assert "google/veo-3.1" in message, "the record must still name the model it is about"
+
+
+def test_the_video_lifecycle_records_its_cost_on_every_terminal_path():
+    """Both the success return and the failure handler reach a snapshot, and share a flag.
+
+    The success path held the only call in the file; the `except Exception` handler --
+    which this changeset gave two new post-billing failure branches -- returned without
+    one, so a job OpenRouter had charged for went unrecorded whenever the download or the
+    upload failed. The image adapter had been settling from the same position for months.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
+
+    source = textwrap.dedent(inspect.getsource(VideoGenerationAdapter._run_lifecycle_after_submit))
+    tree = ast.parse(source)
+    calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", getattr(node.func, "attr", "")) == "maybe_dump_costs_snapshot"
+    ]
+    assert len(calls) == 2, (
+        f"the lifecycle has {len(calls)} cost snapshot call(s); the success return and the "
+        "failure handler each need one"
+    )
+    guards = [
+        ast.unparse(node.test) for node in ast.walk(tree)
+        if isinstance(node, ast.If) and "costed" in ast.unparse(node.test)
+    ]
+    assert len(guards) == 2 and all(guard == "usage and (not costed)" for guard in guards), (
+        f"both snapshots must share one flag so a job is recorded once, not twice: {guards}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("published", "expected"),
+    [([], 1), (["https://a/1", "https://a/2"], 2), (["https://a/%d" % n for n in range(5000)], 16)],
+)
+@pytest.mark.asyncio
+async def test_the_download_loop_never_turns_more_often_than_the_ceiling(
+    monkeypatch, published, expected
+):
+    """The number of downloads the lifecycle actually performs, counted at the download.
+
+    `output_count` is a number read out of the response body and it sizes a loop; each
+    turn downloads up to `REMOTE_VIDEO_MAX_SIZE_MB` and writes a permanent Open WebUI
+    file row, so an operator who set that valve to bound one generation was bounding one
+    clip. Three rows spanning the clamp, so neither a constant nor a missing clamp can
+    satisfy them all.
+
+    Recomputing `min(reported, _MAX_VIDEO_OUTPUTS)` in the test is what the previous
+    shape did, and deleting the clamp from the loop left it green.
+
+    The double SUBCLASSES the real client, so `output_count` is the production
+    implementation reached through the MRO. Delegating to it by name re-read the
+    patched module attribute at call time, and in the flattened bundles
+    `integrations.video` and `integrations.video_client` are ONE module object, so
+    the name resolved back to this double and recursed until the stack ran out.
+    """
+    from open_webui_openrouter_pipe.integrations.video import _MAX_VIDEO_OUTPUTS
+
+    assert 0 < _MAX_VIDEO_OUTPUTS <= 64, (
+        f"the ceiling is {_MAX_VIDEO_OUTPUTS}, which does not bound anything a user would hit"
+    )
+
+    pipe = Pipe()
+    pipe.valves.API_KEY = EncryptedStr("test")
+    pipe.valves.VIDEO_INITIAL_POLL_DELAY_SECONDS = 0
+    pipe.valves.VIDEO_POLL_INTERVAL_SECONDS = 0
+    pipe.valves.VIDEO_POLL_INTERVAL_MAX_SECONDS = 0
+    adapter = pipe._ensure_video_generation_adapter()
+
+    class FakeClient(OpenRouterVideoClient):
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def status(self, job_id, polling_url=None):
+            return {"status": "completed", "usage": {"cost": 0.1}, "unsigned_urls": published}
+
+        def content_url(self, job_id, index=0):
+            return f"https://example.test/videos/{job_id}/content/{index}"
+
+        def bearer_header(self):
+            return {"Authorization": "Bearer test"}
+
+    downloaded: list[str] = []
+
+    async def fake_streaming_download(url, dest_path, **_kwargs):
+        downloaded.append(url)
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        dest_path.write_bytes(MP4_BYTES)
+        return {"path": dest_path, "mime_type": "video/mp4", "url": url, "size_bytes": len(MP4_BYTES)}
+
+    uploaded: list[str] = []
+
+    async def fake_upload_from_path(*_args, **_kwargs):
+        uploaded.append("file")
+        return f"file-{len(uploaded)}"
+
+    monkeypatch.setattr(
+        "open_webui_openrouter_pipe.integrations.video.OpenRouterVideoClient", FakeClient
+    )
+    monkeypatch.setattr(pipe, "_create_http_session", lambda *_a, **_k: _FakeSession([]))
+    monkeypatch.setattr(
+        pipe._multimodal_handler, "_download_remote_url_streaming", fake_streaming_download
+    )
+    monkeypatch.setattr(pipe._file_gateway, "upload_to_owui_storage_from_path", fake_upload_from_path)
+
+    semaphore = asyncio.Semaphore(1)
+    await semaphore.acquire()
+    message_lock = asyncio.Lock()
+    await message_lock.acquire()
+
+    async def emitter(_event):
+        return None
+
+    await adapter._run_lifecycle_after_submit(
+        key=("chat-ceiling", "msg-ceiling"),
+        job_id="job-ceiling",
+        api_model_id="openai/sora-2-pro",
+        normalized_model_id="openai.sora-2-pro",
+        valves=pipe.valves,
+        event_emitter=emitter,
+        user={"id": "user-1"},
+        user_obj={"id": "user-1"},
+        chat_id="chat-ceiling",
+        message_id="msg-ceiling",
+        request=None,
+        user_id="user-1",
+        global_semaphore=semaphore,
+        message_lock=message_lock,
+        started_at=time.monotonic(),
+    )
+
+    assert len(downloaded) == expected, (
+        f"{len(published)} published url(s) drove {len(downloaded)} download(s); the "
+        f"ceiling is {_MAX_VIDEO_OUTPUTS}"
+    )
+    assert len(uploaded) == expected, (
+        "every clip downloaded becomes a permanent Open WebUI file row, so the two counts "
+        f"must agree: {len(downloaded)} downloaded, {len(uploaded)} stored"
+    )
+
+
+@pytest.mark.parametrize(
+    ("attachment", "loads", "mime", "reason", "expected_phrase"),
+    [
+        (
+            {"id": "user-upload-1", "type": "image", "content_type": "image/heic"},
+            True,
+            "image/heic",
+            "allowlist",
+            "allowlist",
+        ),
+        (
+            {"id": "user-upload-2", "type": "image", "content_type": "image/png"},
+            False,
+            "image/png",
+            "storage",
+            "could not be loaded",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_reference_file_the_request_drops_leaves_a_record_on_the_server(
+    monkeypatch, attachment, loads, mime, reason, expected_phrase, caplog
+):
+    """The chat notice is an addition to the server's record, never a substitute for it.
+
+    Open WebUI builds `__event_emitter__` only when the request carries a session, chat
+    and message id, so an API-key caller has none -- and the toast was the only place the
+    drop was mentioned. Sibling encoders in the same function still raise, so the same
+    failure was loud for a frame image and silent for a reference image.
+
+    Each row reaches a DIFFERENT rejection: the previous shape never made the file
+    loadable, so both rows fell out at "could not be loaded from Open WebUI storage" and
+    deleting the MIME allowlist check entirely left the suite green.
+    """
+    import logging
+    from unittest.mock import AsyncMock, MagicMock
+
+    from open_webui_openrouter_pipe.integrations import video as video_module
+    from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
+
+    adapter = VideoGenerationAdapter.__new__(VideoGenerationAdapter)
+    adapter.logger = logging.getLogger("openrouter.video.reference_record")
+    adapter._pipe = MagicMock()
+    adapter._pipe._file_gateway.load_file_bytes = AsyncMock(return_value=None)
+    adapter._pipe._file_gateway.read_file_record_base64 = AsyncMock(
+        return_value=base64.b64encode(b"\x89PNG\r\n\x1a\n").decode()
+    )
+
+    async def _get_file(file_id, _logger):
+        return SimpleNamespace(id=file_id, filename="frame.bin") if loads else None
+
+    monkeypatch.setattr(video_module, "get_file_by_id", _get_file)
+    monkeypatch.setattr(video_module, "infer_file_mime_type", lambda _f: mime)
+
+    valves = SimpleNamespace(
+        VIDEO_FRAME_IMAGE_MAX_BYTES=1024,
+        REMOTE_VIDEO_MAX_SIZE_MB=1,
+        VIDEO_FRAME_TOTAL_MAX_BYTES=4096,
+        IMAGE_UPLOAD_CHUNK_BYTES=1024,
+        VIDEO_FRAME_IMAGE_MIME_ALLOWLIST="image/png,image/jpeg",
+    )
+    withheld: list[tuple[str, str]] = []
+    with caplog.at_level(logging.DEBUG, logger=adapter.logger.name):
+        refs = await adapter._encode_input_references(
+            {"input_references": [attachment]}, valves, withheld=withheld, user_obj=None
+        )
+
+    assert refs == [], "the attachment must not reach the request"
+    assert withheld, "the drop must still be reported to the user where a channel exists"
+    assert expected_phrase in withheld[0][1], (
+        f"the {reason} row was rejected for {withheld[0][1]!r}, which is a different rule"
+    )
+    if reason == "allowlist":
+        assert mime in withheld[0][1], (
+            f"the user is not told which type was refused: {withheld[0][1]!r}"
+        )
+    recorded = [r for r in caplog.records if r.levelno >= logging.INFO]
+    assert recorded, (
+        f"the {reason} drop left no server-side record; the toast is the only copy"
+    )
+    assert attachment["id"] in recorded[0].getMessage()
+    assert expected_phrase in recorded[0].getMessage(), (
+        f"the server record does not say why: {recorded[0].getMessage()!r}"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mime", "declared_content_type", "b64", "raises", "phrase"),
+    [
+        ("application/pdf", "", "AAAA", None, "no media type the video API has a reference kind for"),
+        ("image/png", "", "AAAA", "another chat", "another chat"),
+        ("image/png", "", "", None, "could not be encoded"),
+        ("image/png", "", "AAAAA", None, "invalid base64 data"),
+    ],
+)
+async def test_every_reason_a_reference_is_left_out_reaches_the_user_in_words(
+    monkeypatch, mime, declared_content_type, b64, raises, phrase
+):
+    """One row per rejection the encoder can reach, read off `withheld`, not off the source.
+
+    Each of these branches drops an attachment the user paid attention to, and the only
+    thing they get back is the sentence. Every one of them could be replaced with `pass`
+    and the suite stayed green, because no test ever made the encoder reach them.
+    """
+    import logging
+    from unittest.mock import AsyncMock, MagicMock
+
+    from open_webui_openrouter_pipe.core.errors import RequiredInternalFileError
+    from open_webui_openrouter_pipe.integrations import video as video_module
+    from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
+
+    adapter = VideoGenerationAdapter.__new__(VideoGenerationAdapter)
+    adapter.logger = logging.getLogger("openrouter.video.reference_reasons")
+    adapter._pipe = MagicMock()
+    if raises:
+        adapter._pipe._file_gateway.read_file_record_base64 = AsyncMock(
+            side_effect=RequiredInternalFileError(f"it belongs to {raises}")
+        )
+    else:
+        adapter._pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=b64)
+
+    async def _get_file(file_id, _logger):
+        return SimpleNamespace(id=file_id, filename="reference.bin")
+
+    monkeypatch.setattr(video_module, "get_file_by_id", _get_file)
+    monkeypatch.setattr(video_module, "infer_file_mime_type", lambda _f: mime)
+
+    valves = SimpleNamespace(
+        VIDEO_FRAME_IMAGE_MAX_BYTES=1024 * 1024,
+        REMOTE_VIDEO_MAX_SIZE_MB=1,
+        VIDEO_FRAME_TOTAL_MAX_BYTES=1024 * 1024,
+        IMAGE_UPLOAD_CHUNK_BYTES=1024,
+        VIDEO_FRAME_IMAGE_MIME_ALLOWLIST="image/png,image/jpeg",
+        SEND_MEDIA_VIA_FILE_HOST=False,
+    )
+    withheld: list[tuple[str, str]] = []
+    item = {"id": "ref-1"}
+    if declared_content_type:
+        item["content_type"] = declared_content_type
+    encoded = await adapter._encode_input_references(
+        {"input_references": [item]}, valves, withheld=withheld, companions=True
+    )
+
+    assert encoded == [], f"the reference reached the request anyway: {encoded}"
+    assert withheld, "the reference vanished with nothing said about it"
+    assert phrase in withheld[0][1], (
+        f"the user was told {withheld[0][1]!r}, which does not explain this rejection"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_file_whose_type_only_the_upload_declared_is_still_sent(monkeypatch):
+    """Open WebUI stores rows whose stored mime is blank; the upload's own type stands in.
+
+    Without the fallback the file is dropped as "carries no media type", which is a lie
+    about a picture the user can see in the composer.
+    """
+    import logging
+    from unittest.mock import AsyncMock, MagicMock
+
+    from open_webui_openrouter_pipe.integrations import video as video_module
+    from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
+
+    adapter = VideoGenerationAdapter.__new__(VideoGenerationAdapter)
+    adapter.logger = logging.getLogger("openrouter.video.reference_fallback")
+    adapter._pipe = MagicMock()
+    adapter._pipe._file_gateway.read_file_record_base64 = AsyncMock(
+        return_value=base64.b64encode(_reference_png(512, 512)).decode()
+    )
+
+    async def _get_file(file_id, _logger):
+        return SimpleNamespace(id=file_id, filename="frame.png")
+
+    monkeypatch.setattr(video_module, "get_file_by_id", _get_file)
+    monkeypatch.setattr(video_module, "infer_file_mime_type", lambda _f: "")
+
+    valves = SimpleNamespace(
+        VIDEO_FRAME_IMAGE_MAX_BYTES=1024 * 1024,
+        REMOTE_VIDEO_MAX_SIZE_MB=1,
+        VIDEO_FRAME_TOTAL_MAX_BYTES=1024 * 1024,
+        IMAGE_UPLOAD_CHUNK_BYTES=1024,
+        VIDEO_FRAME_IMAGE_MIME_ALLOWLIST="image/png,image/jpeg",
+        SEND_MEDIA_VIA_FILE_HOST=False,
+    )
+    withheld: list[tuple[str, str]] = []
+    encoded = await adapter._encode_input_references(
+        {"input_references": [{"id": "ref-1", "content_type": "image/png"}]},
+        valves,
+        withheld=withheld,
+        companions=True,
+    )
+
+    assert withheld == [], f"the picture was dropped: {withheld}"
+    assert [entry["type"] for entry in encoded] == ["image_url"]
+    assert encoded[0]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("width", "height"), [(64, 64), (6400, 300)])
+async def test_a_reference_picture_outside_openrouters_sizes_is_named_with_its_own(
+    monkeypatch, width, height
+):
+    """256..5760 px on each side is OpenRouter's published rule for reference images.
+
+    Two sizes, one under and one over, so a check that only tests one end passes on the
+    other. The sentence has to carry the picture's own size or the user cannot tell which
+    attachment to replace.
+    """
+    import logging
+    from unittest.mock import AsyncMock, MagicMock
+
+    from open_webui_openrouter_pipe.integrations import video as video_module
+    from open_webui_openrouter_pipe.integrations.video import (
+        _REFERENCE_IMAGE_MAX_SIDE,
+        _REFERENCE_IMAGE_MIN_SIDE,
+        VideoGenerationAdapter,
+    )
+
+    adapter = VideoGenerationAdapter.__new__(VideoGenerationAdapter)
+    adapter.logger = logging.getLogger("openrouter.video.reference_size")
+    adapter._pipe = MagicMock()
+    adapter._pipe._file_gateway.read_file_record_base64 = AsyncMock(
+        return_value=base64.b64encode(_reference_png(width, height)).decode()
+    )
+
+    async def _get_file(file_id, _logger):
+        return SimpleNamespace(id=file_id, filename="frame.png")
+
+    monkeypatch.setattr(video_module, "get_file_by_id", _get_file)
+    monkeypatch.setattr(video_module, "infer_file_mime_type", lambda _f: "image/png")
+
+    valves = SimpleNamespace(
+        VIDEO_FRAME_IMAGE_MAX_BYTES=8 * 1024 * 1024,
+        REMOTE_VIDEO_MAX_SIZE_MB=8,
+        VIDEO_FRAME_TOTAL_MAX_BYTES=8 * 1024 * 1024,
+        IMAGE_UPLOAD_CHUNK_BYTES=1024,
+        VIDEO_FRAME_IMAGE_MIME_ALLOWLIST="image/png,image/jpeg",
+        SEND_MEDIA_VIA_FILE_HOST=False,
+    )
+    withheld: list[tuple[str, str]] = []
+    encoded = await adapter._encode_input_references(
+        {"input_references": [{"id": "ref-1"}]}, valves, withheld=withheld, companions=True
+    )
+
+    assert encoded == [], "OpenRouter refuses this size, so sending it buys a rejection"
+    assert withheld, "the picture was dropped with nothing said about it"
+    note = withheld[0][1]
+    assert f"{width}x{height}" in note, f"the user is not told the size they sent: {note}"
+    assert str(_REFERENCE_IMAGE_MIN_SIDE) in note and str(_REFERENCE_IMAGE_MAX_SIDE) in note, (
+        f"the user is not told what would be accepted: {note}"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("budget", [1200, 2400])
+async def test_the_references_that_do_not_fit_the_budget_are_named_not_silently_cut(
+    monkeypatch, budget
+):
+    """The budget is a byte total across every inlined reference in one request.
+
+    Two budgets admitting a different number of the same three pictures, so a constant
+    cannot satisfy both and a missing check admits all three.
+    """
+    import logging
+    from unittest.mock import AsyncMock, MagicMock
+
+    from open_webui_openrouter_pipe.integrations import video as video_module
+    from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
+
+    blob = _reference_png(300, 300)
+    assert 600 <= len(blob) <= 1200, f"this picture is {len(blob)} bytes; the rows assume ~1KB"
+
+    adapter = VideoGenerationAdapter.__new__(VideoGenerationAdapter)
+    adapter.logger = logging.getLogger("openrouter.video.reference_budget")
+    adapter._pipe = MagicMock()
+    adapter._pipe._file_gateway.read_file_record_base64 = AsyncMock(
+        return_value=base64.b64encode(blob).decode()
+    )
+
+    async def _get_file(file_id, _logger):
+        return SimpleNamespace(id=file_id, filename="frame.png")
+
+    monkeypatch.setattr(video_module, "get_file_by_id", _get_file)
+    monkeypatch.setattr(video_module, "infer_file_mime_type", lambda _f: "image/png")
+
+    valves = SimpleNamespace(
+        VIDEO_FRAME_IMAGE_MAX_BYTES=8 * 1024 * 1024,
+        REMOTE_VIDEO_MAX_SIZE_MB=8,
+        VIDEO_FRAME_TOTAL_MAX_BYTES=budget,
+        IMAGE_UPLOAD_CHUNK_BYTES=1024,
+        VIDEO_FRAME_IMAGE_MIME_ALLOWLIST="image/png,image/jpeg",
+        SEND_MEDIA_VIA_FILE_HOST=False,
+    )
+    withheld: list[tuple[str, str]] = []
+    encoded = await adapter._encode_input_references(
+        {"input_references": [{"id": f"ref-{n}"} for n in range(3)]},
+        valves,
+        withheld=withheld,
+        companions=True,
+    )
+
+    admitted = budget // len(blob)
+    assert len(encoded) == admitted, (
+        f"a {budget}-byte budget admitted {len(encoded)} of three {len(blob)}-byte pictures"
+    )
+    assert len(withheld) == 3 - admitted
+    assert all("budget" in reason for _name, reason in withheld), withheld
+
+
+# REGFIX: the templated error card on the video path
+
+
+@pytest.mark.parametrize(
+    ("status", "banner", "other_banner"),
+    [
+        (400, "🚫", "🔴 OpenRouter Service Error"),
+        (503, "🔴 OpenRouter Service Error", "🚫"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_rejected_video_reaches_the_user_as_the_operators_error_card(
+    monkeypatch, status, banner, other_banner
+):
+    """A provider refusal is the one video outcome a user is guaranteed to read.
+
+    Deleting the whole `except OpenRouterAPIError` arm left the suite green, and what a
+    user then saw was the generic failure paragraph -- the raw wall of text this pipe
+    has templates to replace. Two statuses, because one card cannot be both.
+    """
+    pipe = Pipe()
+    pipe.valves.API_KEY = EncryptedStr("test-api-key")
+    adapter = pipe._ensure_video_generation_adapter()
+    cast(Any, adapter)._persistence = _MemoryPersistence("")
+
+    class FakeClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def submit(self, _payload):
+            raise OpenRouterAPIError(
+                status=status,
+                reason="Bad Request" if status == 400 else "Service Unavailable",
+                upstream_message="the input video is shorter than this model accepts",
+                upstream_type="invalid_request_error",
+                model_slug="openai/sora-2-pro",
+            )
+
+    monkeypatch.setattr(
+        "open_webui_openrouter_pipe.integrations.video.OpenRouterVideoClient", FakeClient
+    )
+
+    events: list[dict[str, Any]] = []
+
+    async def emitter(event: dict[str, Any]) -> None:
+        events.append(event)
+
+    result = await adapter.generate(
+        body={"messages": [{"role": "user", "content": "make a video"}]},
+        responses_body=SimpleNamespace(provider={}),
+        valves=pipe.valves,
+        session=object(),
+        event_emitter=emitter,
+        metadata={"chat_id": "chat-1", "message_id": "msg-1", "user_id": "user-1"},
+        user={"id": "user-1"},
+        request=None,
+        user_obj={"id": "user-1"},
+        normalized_model_id="openai.sora-2-pro",
+        api_model_id="openai/sora-2-pro",
+    )
+
+    assert result == ""
+    cards = [
+        str(event.get("data", {}).get("content", ""))
+        for event in events
+        if event.get("type") == "chat:message"
+    ]
+    assert len(cards) == 1, f"expected exactly one error card; got {events!r}"
+    card = cards[0]
+    assert banner in card, card
+    assert other_banner not in card, "the status picked the wrong template"
+    assert "the input video is shorter than this model accepts" in card
+    assert "Video generation failed" not in card, "this is the untemplated fallback"
+
+
+@pytest.mark.asyncio
+async def test_the_error_card_says_which_provider_sentence_it_is_reporting(monkeypatch):
+    """OpenRouter nests the provider's whole HTTP response inside its own message.
+
+    Unlifted, the card shows the user a line of JSON. This is the Seedance shape the
+    pipe was reported on, with the wrapper OpenRouter actually sends.
+    """
+    pipe = Pipe()
+    pipe.valves.API_KEY = EncryptedStr("test-api-key")
+    adapter = pipe._ensure_video_generation_adapter()
+    cast(Any, adapter)._persistence = _MemoryPersistence("")
+
+    class FakeClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def submit(self, _payload):
+            raise _build_openrouter_api_error(
+                400,
+                "Bad Request",
+                json.dumps(
+                    {
+                        "error": {
+                            "message": (
+                                'HTTP 400: {"error":{"message":"input video is too '
+                                'short","type":"InvalidParameter"}}'
+                            ),
+                            "code": 400,
+                        }
+                    }
+                ),
+                requested_model="bytedance/seedance-2.0",
+            )
+
+    monkeypatch.setattr(
+        "open_webui_openrouter_pipe.integrations.video.OpenRouterVideoClient", FakeClient
+    )
+
+    events: list[dict[str, Any]] = []
+
+    async def emitter(event: dict[str, Any]) -> None:
+        events.append(event)
+
+    await adapter.generate(
+        body={"messages": [{"role": "user", "content": "make a video"}]},
+        responses_body=SimpleNamespace(provider={}),
+        valves=pipe.valves,
+        session=object(),
+        event_emitter=emitter,
+        metadata={"chat_id": "chat-1", "message_id": "msg-1", "user_id": "user-1"},
+        user={"id": "user-1"},
+        request=None,
+        user_obj={"id": "user-1"},
+        normalized_model_id="bytedance.seedance-2.0",
+        api_model_id="bytedance/seedance-2.0",
+    )
+
+    cards = [
+        str(event.get("data", {}).get("content", ""))
+        for event in events
+        if event.get("type") == "chat:message"
+    ]
+    assert len(cards) == 1, f"expected exactly one error card; got {events!r}"
+    card = cards[0]
+    headline, _, diagnostics = card.partition("**Raw provider response:**")
+    assert "### Error: `input video is too short`" in headline, headline
+    assert "**Provider error**: `InvalidParameter`" in headline
+    assert "**OpenRouter message**: `HTTP 400`" in headline
+    assert "{" not in headline, "the nested JSON reached the part a user reads"
+    assert '{"error"' in diagnostics, "the verbatim body an operator needs is gone"
+
+
+@pytest.mark.parametrize("blob", [b"", MP4_BYTES, MP4_BYTES * 3])
+def test_the_clip_written_for_the_probe_is_the_clip_and_the_handle_is_released(blob, tmp_path):
+    """`mkstemp` hands out a raw descriptor, and one reference per request would leak it.
+
+    The probe that decides whether a clip is too small reads this file, so a short write
+    makes every clip look unreadable and the size rule silently stops applying. Three
+    payloads, so a writer that truncates or one that writes a constant fails.
+    """
+    import os
+
+    from open_webui_openrouter_pipe.integrations.video import _write_and_close
+
+    handle, path = tempfile.mkstemp(prefix="probe-write-", dir=str(tmp_path))
+    _write_and_close(handle, blob)
+
+    assert Path(path).read_bytes() == blob
+    with pytest.raises(OSError):
+        os.fstat(handle)
+
+
+@pytest.mark.parametrize(
+    ("size", "resolution", "kept"),
+    [
+        ("720p", "1080p", False),
+        ("720p", "720p", True),
+        ("1080p", "720p", False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_size_that_is_itself_a_tier_cannot_travel_with_a_different_tier(
+    size, resolution, kept
+):
+    """`size` is not always a pixel pair: several models publish tier names in that slot.
+
+    Sending `size=720p` beside `resolution=1080p` asks the API for two different pictures
+    in one request and it rejects the whole thing, so the user pays nothing and gets
+    nothing. The agreeing row must survive, or the rule would be "drop the tier whenever
+    a size is set", which silently discards a setting the user chose.
+
+    Nothing ever put a non-pixel size through this rule -- the size parser's own
+    `return None` arms were never reached by any test.
+    """
+    adapter = _adapter_with_safe_urls()
+    withheld: list[tuple[str, str]] = []
+    payload = await adapter._build_payload(
+        api_model_id="alibaba/wan-2.7",
+        prompt="x",
+        video_meta={"params": {"size": size, "resolution": resolution}},
+        video_model=VIDEO_BY_ID["alibaba/wan-2.7"],
+        frame_images=[],
+        provider_options={},
+        withheld=withheld,
+    )
+
+    assert payload.get("size") == size, "the size the user chose must always survive"
+    assert (payload.get("resolution") == resolution) is kept, (
+        f"size={size!r} resolution={resolution!r} produced {payload.get('resolution')!r}"
+    )
+    dropped = [name for name, _reason in withheld]
+    assert ("resolution" in dropped) is not kept
+    if not kept:
+        reason = next(text for name, text in withheld if name == "resolution")
+        assert "tier" in reason, f"the user is not told why it was dropped: {reason}"
+
+
+@pytest.mark.parametrize("api_key", ["sk-or-first-video-key", "sk-or-second-video-key"])
+@pytest.mark.asyncio
+async def test_the_key_the_operator_configured_is_the_key_the_video_job_is_submitted_with(
+    api_key,
+):
+    """The bearer on the submit, taken off the request that actually goes out.
+
+    Every other test of this path replaces `OpenRouterVideoClient` with a double, so
+    `_resolve_api_key` could return `None` for every request and the WHOLE suite stayed
+    green -- 7773 tests. A video job submitted without the operator's key is refused by
+    OpenRouter and the user is shown a failure the operator cannot explain.
+
+    Two keys, so a hardcoded bearer satisfies at most one.
+    """
+    import aiohttp
+    from aioresponses import aioresponses
+
+    OpenRouterModelRegistry.register_video_models([VIDEO_BY_ID["openai/sora-2-pro"]])
+    pipe = Pipe()
+    try:
+        pipe.valves.API_KEY = EncryptedStr(api_key)
+        pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
+        pipe.valves.VIDEO_INITIAL_POLL_DELAY_SECONDS = 0
+        pipe.valves.VIDEO_POLL_INTERVAL_SECONDS = 0
+        adapter = pipe._ensure_video_generation_adapter()
+
+        async with aiohttp.ClientSession() as session:
+            with aioresponses() as http:
+                http.post(
+                    "https://openrouter.ai/api/v1/videos",
+                    status=400,
+                    payload={"error": {"message": "provider stopped"}},
+                )
+                await adapter.generate(
+                    body={"messages": [{"role": "user", "content": "make a video"}]},
+                    responses_body=SimpleNamespace(provider={}),
+                    valves=pipe.valves,
+                    session=session,
+                    event_emitter=None,
+                    metadata={"chat_id": "chat-key", "message_id": "msg-key"},
+                    user={"id": "user-1"},
+                    request=None,
+                    user_obj={"id": "user-1"},
+                    normalized_model_id="openai.sora-2-pro",
+                    api_model_id="openai/sora-2-pro",
+                )
+                submits = [
+                    call
+                    for key, calls in http.requests.items()
+                    if key[0] == "POST" and str(key[1]).endswith("/videos")
+                    for call in calls
+                ]
+    finally:
+        await pipe.close()
+
+    assert submits, "the job was never submitted, so this asserts nothing about its bearer"
+    sent = dict(submits[0].kwargs.get("headers") or {})
+    assert sent.get("Authorization") == f"Bearer {api_key}", (
+        f"the submit carried {sent.get('Authorization')!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_video_job_is_never_submitted_without_a_key():
+    """An unauthenticated submit is a refusal the user pays attention to for nothing."""
+    from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
+
+    adapter = VideoGenerationAdapter.__new__(VideoGenerationAdapter)
+    adapter._pipe = MagicMock()
+    adapter._pipe._resolve_openrouter_api_key = staticmethod(
+        lambda _valves: (None, "OpenRouter API key is not configured.")
+    )
+
+    with pytest.raises(VideoGenerationError) as refused:
+        adapter._resolve_api_key(SimpleNamespace())
+    assert "not configured" in str(refused.value)
+
+
+@pytest.mark.asyncio
+async def test_a_background_video_task_that_failed_has_its_error_collected():
+    """A lifecycle task runs detached, so nothing awaits it and asyncio logs its exception.
+
+    That log is a bare traceback with no job id, no model and no user, printed at an
+    arbitrary later moment by the garbage collector -- the shape of report an operator
+    cannot act on. The done-callback exists to take the exception off the task; stubbed
+    to do nothing, the whole suite stayed green.
+    """
+    from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
+
+    async def _fails():
+        raise VideoGenerationError("the provider stopped")
+
+    task = asyncio.get_running_loop().create_task(_fails())
+    with contextlib.suppress(VideoGenerationError):
+        await asyncio.wait_for(asyncio.shield(task), timeout=1)
+    assert task.done() and task.exception() is not None
+
+    fresh = asyncio.get_running_loop().create_task(_fails())
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert fresh.done(), "the probe task never finished, so this asserts nothing"
+    assert fresh._log_traceback is True, (
+        "asyncio is no longer holding this failure for a later report, so the callback "
+        "under test has nothing left to do and this test cannot fail"
+    )
+
+    VideoGenerationAdapter._consume_background_exception(fresh)
+
+    assert fresh._log_traceback is False, (
+        "the failure is still queued for asyncio's own 'exception was never retrieved' "
+        "report, which names neither the job nor the user"
+    )
+
+
+@pytest.mark.asyncio
+async def test_collecting_the_error_of_a_cancelled_background_task_is_not_itself_an_error():
+    """A shutdown cancels these tasks, and a done-callback that raises is a second failure."""
+    from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
+
+    async def _forever():
+        await asyncio.sleep(3600)
+
+    task = asyncio.get_running_loop().create_task(_forever())
+    await asyncio.sleep(0)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    assert VideoGenerationAdapter._consume_background_exception(task) is None
+
+
+@pytest.mark.parametrize(
+    ("kind", "field", "expected"),
+    [
+        ("duplicate", "param", "declared twice"),
+        ("free-text-with-a-citation", "source", "no citation"),
+        ("free-text-with-choices", "choices", "no citation"),
+        ("enum-with-no-values", "choices", "enum with no values"),
+        ("number-carrying-enum-values", "choices", "may not declare enum values"),
+    ],
+)
+def test_every_way_the_passthrough_table_can_be_wrong_stops_the_build(kind, field, expected):
+    """The table is prose a user reads beside a control, and this validator is its proof.
+
+    Only the missing-citation arm was ever tripped. The other four -- a parameter
+    declared twice, a free-text control carrying a citation it cannot support, an enum
+    with no values, and a bounded number carrying an enum -- were unreachable from the
+    suite, so each could be deleted and a table with that fault would ship: a duplicate
+    silently renders one control and drops the other, and a citation on a free-text box
+    tells the user their typed value was checked against a document when it was not.
+    """
+    from dataclasses import replace
+
+    from open_webui_openrouter_pipe.filters.video_filter_renderer import (
+        _CONTROL_ENUM,
+        _CONTROL_NUMBER,
+        _CONTROL_TEXT,
+        _PassthroughControl,
+        _validate_passthrough_controls,
+    )
+
+    text = _PassthroughControl(
+        param="style", field="VIDEO_STYLE", title="Style", description="d",
+        kind=_CONTROL_TEXT,
+    )
+    enum = _PassthroughControl(
+        param="mood", field="VIDEO_MOOD", title="Mood", description="d",
+        kind=_CONTROL_ENUM, choices=(("calm", "https://vendor.example/doc"),),
+    )
+    number = _PassthroughControl(
+        param="scale", field="VIDEO_SCALE", title="Scale", description="d",
+        kind=_CONTROL_NUMBER, minimum=0.0, maximum=1.0, source="https://vendor.example/doc",
+    )
+    _validate_passthrough_controls((text, enum, number))
+
+    table = {
+        "duplicate": (text, replace(text, field="VIDEO_STYLE_2")),
+        "free-text-with-a-citation": (replace(text, source="https://vendor.example/doc"),),
+        "free-text-with-choices": (replace(text, choices=(("a", "https://v.example/d"),)),),
+        "enum-with-no-values": (replace(enum, choices=()),),
+        "number-carrying-enum-values": (replace(number, choices=(("a", "https://v.example/d"),)),),
+    }[kind]
+
+    with pytest.raises(ValueError) as refused:
+        _validate_passthrough_controls(table)
+    assert expected in str(refused.value), str(refused.value)
+    assert field in str(refused.value) or expected in str(refused.value)
+
+
+@pytest.mark.parametrize(
+    ("failing_index", "kept", "raises"),
+    [(0, 0, True), (1, 1, False), (2, 2, False)],
+)
+@pytest.mark.asyncio
+async def test_a_generation_whose_later_clips_fail_keeps_the_ones_it_already_has(
+    monkeypatch, failing_index, kept, raises
+):
+    """OpenRouter has already charged for the generation by the time the download starts.
+
+    Throwing away two good clips because the third link 404s bills the user for work
+    they never receive; failing on the FIRST is different, because there is nothing to
+    keep and a job that produced no file is not a success. Neither arm was reached by any
+    test.
+
+    The double SUBCLASSES the real client, so `output_count` is the production
+    implementation reached through the MRO. Delegating to it by name re-read the
+    patched module attribute at call time, and in the flattened bundles
+    `integrations.video` and `integrations.video_client` are ONE module object, so
+    the name resolved back to this double and recursed until the stack ran out.
+    """
+    from open_webui_openrouter_pipe.integrations.video_types import VideoLifecycleResult
+
+    pipe = Pipe()
+    pipe.valves.API_KEY = EncryptedStr("test")
+    pipe.valves.VIDEO_INITIAL_POLL_DELAY_SECONDS = 0
+    pipe.valves.VIDEO_POLL_INTERVAL_SECONDS = 0
+    adapter = pipe._ensure_video_generation_adapter()
+    published = ["https://a/0", "https://a/1", "https://a/2"]
+
+    class FakeClient(OpenRouterVideoClient):
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def status(self, job_id, polling_url=None):
+            return {"status": "completed", "usage": {"cost": 0.1}, "unsigned_urls": published}
+
+        def content_url(self, job_id, index=0):
+            return f"https://example.test/videos/{job_id}/content/{index}"
+
+        def bearer_header(self):
+            return {"Authorization": "Bearer test"}
+
+    seen: list[int] = []
+
+    async def fake_streaming_download(url, dest_path, **_kwargs):
+        index = int(url.rsplit("/", 1)[-1])
+        seen.append(index)
+        if index >= failing_index:
+            return None
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        dest_path.write_bytes(MP4_BYTES)
+        return {"path": dest_path, "mime_type": "video/mp4", "url": url, "size_bytes": len(MP4_BYTES)}
+
+    stored: list[str] = []
+
+    async def fake_upload_from_path(*_args, **_kwargs):
+        stored.append("file")
+        return f"file-{len(stored)}"
+
+    monkeypatch.setattr(
+        "open_webui_openrouter_pipe.integrations.video.OpenRouterVideoClient", FakeClient
+    )
+    monkeypatch.setattr(pipe, "_create_http_session", lambda *_a, **_k: _FakeSession([]))
+    monkeypatch.setattr(
+        pipe._multimodal_handler, "_download_remote_url_streaming", fake_streaming_download
+    )
+    monkeypatch.setattr(pipe._file_gateway, "upload_to_owui_storage_from_path", fake_upload_from_path)
+
+    semaphore = asyncio.Semaphore(1)
+    await semaphore.acquire()
+    message_lock = asyncio.Lock()
+    await message_lock.acquire()
+
+    async def emitter(_event):
+        return None
+
+    result: VideoLifecycleResult = await adapter._run_lifecycle_after_submit(
+        key=("chat-partial", "msg-partial"),
+        job_id="job-partial",
+        api_model_id="openai/sora-2-pro",
+        normalized_model_id="openai.sora-2-pro",
+        valves=pipe.valves,
+        event_emitter=emitter,
+        user={"id": "user-1"},
+        user_obj={"id": "user-1"},
+        chat_id="chat-partial",
+        message_id="msg-partial",
+        request=None,
+        user_id="user-1",
+        global_semaphore=semaphore,
+        message_lock=message_lock,
+        started_at=time.monotonic(),
+    )
+
+    assert seen == list(range(failing_index + 1)), (
+        f"the loop kept downloading past the failure: tried {seen}"
+    )
+    assert len(stored) == kept, f"{len(stored)} clip(s) were stored, expected {kept}"
+    assert ("failed" in str(result.content).lower()) is raises, (
+        f"a run that kept {kept} clip(s) reported: {result.content!r}"
     )

@@ -984,6 +984,7 @@ class FilterManager:
         model_id: str = "",
         image_model: dict[str, Any] | None = None,
         endpoint_record: list[dict[str, Any]] | dict[str, Any] | None = None,
+        dedicated_image_api: bool,
     ) -> str:
         """Return the canonical OWUI filter source for the OpenRouter Image Generation filter."""
         from .image_filter_renderer import (
@@ -993,25 +994,37 @@ class FilterManager:
 
         resolved = (model_id or "").strip() or _OPENROUTER_IMAGE_GEN_FILTER_DEFAULT_MODEL
         return render_image_gen_filter_source(
-            build_image_model_filter_spec(resolved, image_model, endpoint_record),
+            build_image_model_filter_spec(
+                resolved,
+                image_model,
+                endpoint_record,
+                dedicated_image_api=dedicated_image_api,
+            ),
             catalog_match=isinstance(image_model, dict),
             selected_model=resolved,
         )
 
     async def image_gen_filter_inputs(
         self,
-    ) -> tuple[str, dict[str, Any] | None, list[dict[str, Any]] | None]:
-        from ..models.registry import OpenRouterModelRegistry
+    ) -> tuple[str | None, dict[str, Any] | None, list[dict[str, Any]] | None, bool]:
+        from ..models.registry import OpenRouterModelRegistry, uses_dedicated_image_api
 
-        selected = (await self.image_gen_filter_selected_model()).strip()
-        model_id = selected or _OPENROUTER_IMAGE_GEN_FILTER_DEFAULT_MODEL
+        selected = await self.image_gen_filter_selected_model()
+        if selected is None:
+            return None, None, None, False
+        model_id = selected.strip() or _OPENROUTER_IMAGE_GEN_FILTER_DEFAULT_MODEL
         spec = OpenRouterModelRegistry.spec(model_id)
         if not isinstance(spec, dict) or not spec:
-            return model_id, None, None
+            return model_id, None, None, False
         image_model = spec.get("image_model")
         if not isinstance(image_model, dict):
             image_model = {"id": model_id, "name": spec.get("name") or model_id}
-        return model_id, image_model, OpenRouterModelRegistry.image_endpoint(model_id)
+        return (
+            model_id,
+            image_model,
+            OpenRouterModelRegistry.image_endpoint(model_id),
+            uses_dedicated_image_api(spec),
+        )
 
     @timed
     async def ensure_openrouter_image_gen_filter_function_id(self) -> str | None:
@@ -1028,8 +1041,14 @@ class FilterManager:
             render_image_gen_filter_source,
         )
 
-        model_id, image_model, endpoint_record = await self.image_gen_filter_inputs()
-        spec = build_image_model_filter_spec(model_id, image_model, endpoint_record)
+        model_id, image_model, endpoint_record, dedicated_image_api = (
+            await self.image_gen_filter_inputs()
+        )
+        if model_id is None:
+            return None
+        spec = build_image_model_filter_spec(
+            model_id, image_model, endpoint_record, dedicated_image_api=dedicated_image_api
+        )
         catalog_match = isinstance(image_model, dict)
         desired_source = render_image_gen_filter_source(
             spec, catalog_match=catalog_match, selected_model=model_id
@@ -1062,7 +1081,7 @@ class FilterManager:
             primary_marker=_OPENROUTER_IMAGE_GEN_FILTER_MARKER,
         )
 
-    async def image_gen_filter_selected_model(self) -> str:
+    async def image_gen_filter_selected_model(self) -> str | None:
         try:
             from open_webui.models.functions import Functions  # type: ignore
         except ImportError:
@@ -1092,12 +1111,15 @@ class FilterManager:
                 str(getattr(chosen, "id", "") or "")
             )
         except Exception as exc:
-            self.logger.debug(
-                "Could not read the image generation filter's selected model: %s",
+            self.logger.log(
+                warn_level(_warned_stale_filter_rows, f"valve_read:{type(exc).__name__}"),
+                "Could not read the image generation filter's selected model, so the "
+                "installed filter is left as it is rather than rebuilt for the default "
+                "model: %s",
                 exc,
                 exc_info=True,
             )
-            return ""
+            return None
 
         selected = (stored or {}).get("IMAGE_GENERATION_MODEL")
         return selected.strip() if isinstance(selected, str) else ""
@@ -1141,10 +1163,17 @@ class FilterManager:
                 video_model = dict(model)
             original_id = model.get("original_id")
             canonical_id = original_id if isinstance(original_id, str) and original_id.strip() else model_id
-            function_id = await self._ensure_single_video_gen_filter_function_id(
-                model_id=canonical_id,
-                video_model=video_model,
-            )
+            try:
+                function_id = await self._ensure_single_video_gen_filter_function_id(
+                    model_id=canonical_id,
+                    video_model=video_model,
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    "Video filter install failed for %r: %s", canonical_id, exc, exc_info=True
+                )
+                continue
+
             if function_id:
                 installed[model_id] = function_id
                 if isinstance(original_id, str) and original_id.strip():
@@ -1209,6 +1238,7 @@ class FilterManager:
         model_id: str,
         image_model: dict[str, Any] | None = None,
         endpoint_record: list[dict[str, Any]] | dict[str, Any] | None = None,
+        dedicated_image_api: bool,
     ) -> str:
         from .image_filter_renderer import (
             build_image_model_filter_spec,
@@ -1216,7 +1246,12 @@ class FilterManager:
         )
 
         return render_image_model_filter_source(
-            build_image_model_filter_spec(model_id, image_model, endpoint_record)
+            build_image_model_filter_spec(
+                model_id,
+                image_model,
+                endpoint_record,
+                dedicated_image_api=dedicated_image_api,
+            )
         )
 
     @timed
@@ -1230,7 +1265,11 @@ class FilterManager:
         seven fixed variants this replaces assigned knobs by a regex on the model id, so a
         model was handed the same ten aspect ratios whatever it actually accepted.
         """
-        from ..models.registry import ModelFamily, OpenRouterModelRegistry
+        from ..models.registry import (
+            ModelFamily,
+            OpenRouterModelRegistry,
+            uses_dedicated_image_api,
+        )
 
         installed: dict[str, list[str]] = {}
         for model in models:
@@ -1261,6 +1300,7 @@ class FilterManager:
                     model_id=canonical_id,
                     image_model=image_model,
                     endpoint_record=endpoint_record,
+                    dedicated_image_api=uses_dedicated_image_api(spec),
                 )
             except Exception as exc:
                 # One model's install failure costs that model its filter and nothing
@@ -1335,10 +1375,13 @@ class FilterManager:
         model_id: str,
         image_model: dict[str, Any] | None,
         endpoint_record: list[dict[str, Any]] | dict[str, Any] | None,
+        dedicated_image_api: bool,
     ) -> str | None:
         from .image_filter_renderer import build_image_model_filter_spec
 
-        spec = build_image_model_filter_spec(model_id, image_model, endpoint_record)
+        spec = build_image_model_filter_spec(
+            model_id, image_model, endpoint_record, dedicated_image_api=dedicated_image_api
+        )
         if spec.knob_count == 0 and (
             not spec.contract_read or not await self._image_filter_exists(spec.function_id)
         ):
@@ -1367,6 +1410,7 @@ class FilterManager:
             model_id=model_id,
             image_model=image_model,
             endpoint_record=endpoint_record,
+            dedicated_image_api=dedicated_image_api,
         ).strip() + "\n"
         valid, error = self.validate_filter_source(desired_source)
         if not valid:
@@ -2114,7 +2158,10 @@ class Filter:
             if __metadata__ is None:
                 __metadata__ = {}
             pipe_meta = __metadata__.setdefault("__PIPE_META_KEY__", {})
-            pipe_meta["provider"] = provider
+            existing = pipe_meta.get("provider")
+            merged = dict(existing) if isinstance(existing, dict) else {}
+            merged.update(provider)
+            pipe_meta["provider"] = merged
             self.log.debug("Injected provider routing: %s", provider)
 '''
         return logic

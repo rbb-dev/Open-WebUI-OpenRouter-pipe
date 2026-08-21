@@ -260,13 +260,13 @@ def test_video_help_reports_the_capability_its_own_panel_draws(field, published,
 
 
 @pytest.mark.parametrize(
-    ("fixture", "model_id"),
+    ("fixture", "model_id", "dedicated"),
     [
-        ("google_gemini-3-pro-image", "google/gemini-3-pro-image"),
-        ("openai_gpt-image-2", "openai/gpt-image-2"),
+        ("google_gemini-3-pro-image", "google/gemini-3-pro-image", False),
+        ("openai_gpt-image-2", "openai/gpt-image-2", True),
     ],
 )
-def test_image_help_offers_every_value_its_own_panel_offers(fixture, model_id):
+def test_image_help_offers_every_value_its_own_panel_offers(fixture, model_id, dedicated):
     """The values in the control, not the values before agreement was applied.
 
     A model served by several companies gets the ones they all accept plus the ones only
@@ -288,7 +288,9 @@ def test_image_help_offers_every_value_its_own_panel_offers(fixture, model_id):
         .read_text()
     )["endpoints"]
     model = {"id": model_id, "name": model_id}
-    spec = build_image_model_filter_spec(model_id, model, record)
+    spec = build_image_model_filter_spec(
+        model_id, model, record, dedicated_image_api=dedicated
+    )
     source = render_image_model_filter_source(spec)
 
     drawn = {}
@@ -299,12 +301,25 @@ def test_image_help_offers_every_value_its_own_panel_offers(fixture, model_id):
         drawn[name] = options
     assert drawn, "the fixture must draw a choice control for this to mean anything"
 
-    rendered = render_image_help(model_id, model, endpoint_record=record)
+    rendered = render_image_help(
+        model_id, model, endpoint_record=record, dedicated_image_api=dedicated
+    )
     for published, _values in spec.enums:
         title = IMAGE_KNOB_TITLES.get(published, (published, ""))[0]
         row = next(r for r in rendered.splitlines() if r.startswith(f"- **{title}** "))
         listed = row.split("Choices: ", 1)[1].split(".", 1)[0]
         assert listed == ", ".join(drawn[published.upper()]), row
+
+    # Help lists the controls the panel drew, so a control the panel withholds on this
+    # model's transport must not be described as available on it.
+    assert ("**Reference images**" in rendered) is dedicated, (
+        f"{model_id}: help describes the reference controls "
+        f"{'**Reference images**' in rendered!r} while the panel draws them {dedicated!r}"
+    )
+    assert ("IMAGE_REFERENCE_MODE:" in source) is dedicated, (
+        f"{model_id}: the panel draws the reference control on a transport that does "
+        "not read it"
+    )
 
 
 _MONEY_WORDS = re.compile(

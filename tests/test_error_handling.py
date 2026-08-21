@@ -1234,3 +1234,70 @@ class TestErrorsModuleCoverage:
 
         result = await _await_if_needed(async_value(), timeout=5.0)
         assert result == "awaited_with_timeout"
+
+
+# REGFIX: the provider's own words are nested inside OpenRouter's message
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (
+            'HTTP 400: {"error":{"message":"input video is too small","type":"invalid_request"}}',
+            ("input video is too small", "invalid_request", "HTTP 400"),
+        ),
+        (
+            'Provider said: {"error":{"message":"content policy","code":"moderation_blocked"}}',
+            ("content policy", "moderation_blocked", "Provider said"),
+        ),
+    ],
+)
+def test_the_provider_message_openrouter_wrapped_is_the_one_the_user_reads(raw, expected):
+    """OpenRouter puts the provider's entire HTTP response inside its own `error.message`.
+
+    Left nested, the chat shows a wall of JSON and the one sentence that says what to do
+    differently is buried in it. Two rows, so a hardcoded answer satisfies neither, and
+    the second uses `code` rather than `type` because providers use both.
+    """
+    from open_webui_openrouter_pipe.core.errors import _unnest_provider_error
+
+    found = _unnest_provider_error(raw)
+
+    assert found is not None
+    message, kind, prefix = expected
+    assert found["message"] == message
+    assert found["type"] == kind
+    assert found["prefix"] == prefix
+    assert "{" not in found["message"]
+
+
+def test_a_request_id_is_lifted_out_of_the_sentence_rather_than_shown_inside_it():
+    """The id is for the operator's support ticket; the sentence is for the user."""
+    from open_webui_openrouter_pipe.core.errors import _unnest_provider_error
+
+    found = _unnest_provider_error(
+        'HTTP 500: {"error":{"message":"upstream timed out. Request id: req_9fA-2b"}}'
+    )
+
+    assert found is not None
+    assert found["request_id"] == "req_9fA-2b"
+    assert found["message"] == "upstream timed out"
+    assert "req_9fA-2b" not in found["message"]
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "the provider refused the request",
+        'HTTP 400: {"error":{"message":"   "}}',
+        "HTTP 400: {not json at all}",
+        'HTTP 400: {"error":{"code":"bad_request"}}',
+        None,
+        42,
+    ],
+)
+def test_nothing_is_invented_when_there_is_no_nested_message_to_lift(raw):
+    """A plain message must be left exactly as OpenRouter sent it, not half-parsed."""
+    from open_webui_openrouter_pipe.core.errors import _unnest_provider_error
+
+    assert _unnest_provider_error(raw) is None

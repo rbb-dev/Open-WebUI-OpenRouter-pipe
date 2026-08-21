@@ -66,10 +66,11 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
     "google/gemini-3.1-flash-image-preview": {
         "display_name": "Google: Nano Banana 2 (Gemini 3.1 Flash Image Preview)",
         "best_known_for": (
-            "Cost-optimized Gemini 3.1 with native image output AND unique "
-            "extended knobs: 4 extra aspect ratios (1:4, 4:1, 1:8, 8:1) for "
-            "ultrawide/tall layouts AND a 512 low-res tier for cheap "
-            "iteration. The Gemini 3.x Flash Image line (GA + preview) has these; Pro and 2.5 do not."
+            "Cost-optimized Gemini 3.1 with native image output, four extra "
+            "aspect ratios (1:4, 4:1, 1:8, 8:1) for ultrawide and tall layouts, "
+            "and a 512 low-res tier for cheap iteration. This line is the only "
+            "one offering all four ratios, though Qwen Image 3 publishes 1:4 and "
+            "4:1; the 512 tier is on this model and the GA release, not the Lite."
         ),
         "tips_and_pitfalls": [
             "512 renders far fewer pixels than 1K, and this model bills by token, so an iteration pass at 512 costs materially less.",
@@ -226,8 +227,10 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "display_name": "Microsoft: MAI-Image-2.5 Pro",
         "best_known_for": (
             "The larger MAI-Image-2.5, served via Azure AI Foundry. Photorealistic "
-            "and artistic output with the same token-based pricing as the base "
-            "model, at higher quality and cost."
+            "and artistic output, billed by token exactly as the base model is but at "
+            "a higher rate for each picture it makes. The rates below are this "
+            "listing's own — check them against the base model's before picking this "
+            "tier."
         ),
         "tips_and_pitfalls": [
             "Token-priced rather than per-image, so long prompts cost proportionally more.",
@@ -292,8 +295,12 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "The speed-optimized variant of Sourceful's Riverflow 2.5 lineup "
             "— best for production deployments and latency-critical "
             "workflows. Same unified text-to-image and image-to-image family "
-            "and the same 2.5 extras as Pro at a fraction of the cost, with "
-            "the charge settled per job at completion."
+            "as Pro, and it keeps the 2.5 background choice, at a fraction of "
+            "the cost and with the charge settled per job at completion. It is "
+            "the narrower listing of the two: pictures come back as JPEG only, "
+            "the largest size is 2K rather than 4K, and it takes fewer reference "
+            "pictures per request. Switch to Pro when you need PNG or WebP, a 4K "
+            "picture, or more references than Fast will take."
         ),
         "tips_and_pitfalls": [
             "PURE-image-only — does NOT output text.",
@@ -353,8 +360,9 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
     "bytedance-seed/seedream-4.5": {
         "display_name": "ByteDance Seed: Seedream 4.5",
         "best_known_for": (
-            "ByteDance Seed's image-only model. Pure-image-only output; "
-            "supports temperature and top_p for controlled generation."
+            "ByteDance Seed's image-only model. Pure-image-only output; a seed "
+            "and a batch of up to 10 images per request give you several varied "
+            "takes on one prompt to choose between."
         ),
         "tips_and_pitfalls": [
             "PURE-image-only — does NOT output text.",
@@ -376,8 +384,8 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "tips_and_pitfalls": [
             "PURE-image-only — does NOT output text in chat.",
             "Every Recraft variant takes `style` and `text_layout`; V3 is the one tuned for long-form text, so it holds full sentences and paragraphs where the others hold short lines.",
-            "For text rendering: put exact wording in quotes in your prompt AND use `text_layout` for precise placement (V3-exclusive feature).",
-            "Style names: see https://www.recraft.ai/docs/api-reference/styles. Vector styles NOT supported via OpenRouter.",
+            "For text rendering: put exact wording in quotes in your prompt AND use `text_layout` to place each line exactly where you want it.",
+            "Style names: see https://www.recraft.ai/docs/api-reference/styles. This model draws pixels; for SVG, pick one of the Recraft Vector models.",
             "text_layout: array of {text, bbox} where bbox is 4 [x,y] corners in 0-1 coords (order: TL, TR, BR, BL).",
             "If you need newer composition or cleaner geometry, V4 and V4.1 offer the same three settings with a different look.",
         ],
@@ -508,17 +516,19 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "display_name": "Recraft: Recraft V4.1 Utility",
         "best_known_for": (
             "Recraft's general-purpose V4.1 variant — drops the aesthetic-tuning "
-            "bias of the regular V4.1 in exchange for broader subject coverage "
-            "and faster/cheaper generation. Best for spot illustrations, "
-            "diagrams, placeholder/stock imagery, and any work where 'on-brand "
-            "aesthetics' is not the goal. 1024x1024 raster output."
+            "bias of the regular V4.1 in exchange for broader subject coverage. "
+            "It costs the same per image as the regular V4.1, so the choice "
+            "between them is about the look you want, not the bill. Best for "
+            "spot illustrations, diagrams, placeholder/stock imagery, and any "
+            "work where 'on-brand aesthetics' is not the goal. 1024x1024 raster "
+            "output."
         ),
         "tips_and_pitfalls": [
             "PURE-image-only.",
             "Pick Utility over regular V4.1 when you need versatility, not aesthetic polish.",
             "Image-to-image: only one input image supported.",
             "Same human-subject limitations as V4.1.",
-            "Use Utility for fast/cheap work; switch to regular V4.1 (aesthetic) or V4.1 Pro (print) when output quality matters.",
+            "Utility and regular V4.1 are priced the same per image, so switch on the look you want — regular V4.1 for its aesthetic tuning, or V4.1 Pro when you need print resolution.",
         ],
     },
     "recraft/recraft-v4.1-utility-pro": {
@@ -767,6 +777,7 @@ def render_image_help(
     image_model: dict[str, Any] | None = None,
     *,
     endpoint_record: list[dict[str, Any]] | dict[str, Any] | None = None,
+    dedicated_image_api: bool,
 ) -> str:
     """Describe a model, and list the controls its own contract publishes.
 
@@ -787,8 +798,11 @@ def render_image_help(
         always_on_controls,
         build_image_model_filter_spec,
     )
+    from .image_types import PASSTHROUGH_ENUMS
 
-    spec = build_image_model_filter_spec(model_id, image_model, endpoint_record)
+    spec = build_image_model_filter_spec(
+        model_id, image_model, endpoint_record, dedicated_image_api=dedicated_image_api
+    )
     lines = [f"{rendered.rstrip()}", ""]
     lines.extend(_image_cost_section(_published_records(endpoint_record)))
     lines.extend(["", "## Controls"])
@@ -807,7 +821,7 @@ def render_image_help(
         return "\n".join(lines) + "\n"
 
     for _name, _annotation, _default, title, description in always_on_controls(
-        getattr(spec, 'dedicated_image_api', True)
+        spec.dedicated_image_api
     ):
         lines.append(f"- **{title}** — {description}".replace("  ", " "))
     also_offered = dict(spec.narrowed)
@@ -829,5 +843,12 @@ def render_image_help(
         title, description = IMAGE_KNOB_TITLES.get(name, (name, ""))
         lines.append(f"- **{title}** — {description}".replace("  ", " "))
     for name in spec.passthrough:
-        lines.append(f"- **{name}** — a setting this model's provider accepts.")
+        published = PASSTHROUGH_ENUMS.get(name)
+        if published is None:
+            lines.append(f"- **{name}** — a setting this model's provider accepts.")
+            continue
+        values, meaning = published
+        lines.append(
+            f"- **{name}** — {meaning} Choices: {', '.join(values)}."
+        )
     return "\n".join(lines) + "\n"

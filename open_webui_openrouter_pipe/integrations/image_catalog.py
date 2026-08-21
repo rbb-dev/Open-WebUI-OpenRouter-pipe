@@ -46,10 +46,6 @@ async def ensure_image_catalog_loaded(
     reads for every model it will not call.
     """
     if not getattr(valves, "ENABLE_OPENROUTER_IMAGE_GENERATION", False):
-        # Master-disable: drop any previously-registered pure-image-only models
-        # so they vanish from OWUI's dropdown immediately. `register_image_models([])`
-        # triggers stale-norm cleanup without re-registering anything. Reset
-        # `_last_image_fetch` so subsequent disabled-state calls are no-ops.
         if OpenRouterModelRegistry.last_image_fetch() > 0:
             OpenRouterModelRegistry.register_image_models([])
             OpenRouterModelRegistry.reset_image_fetch_timestamp()

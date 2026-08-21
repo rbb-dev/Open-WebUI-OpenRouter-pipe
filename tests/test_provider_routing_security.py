@@ -633,3 +633,53 @@ def test_a_hostile_slug_executes_nothing_when_the_filter_loads(slug):
     assert _os.environ.get(sentinel) is None, (
         f"loading the filter generated from slug {slug!r} executed injected code"
     )
+
+
+@pytest.mark.parametrize(
+    ("label", "payload"),
+    [
+        ("EXTRA", 'a", json_schema_extra={"z": __import__("os").environ.setdefault("CANARY", "1")}, alias="b'),
+        ("ALIAS", "a\", validation_alias=__import__('os').environ.setdefault('CANARY', '1'), title=\"b"),
+    ],
+)
+def test_a_published_description_cannot_close_the_literal_it_is_written_into(label, payload):
+    """Every value reaching generated source goes through a serializer, descriptions included.
+
+    Two description sites interpolated into a hand-written ``"..."`` literal, so a value
+    carrying a double quote closed it and everything after was parsed as Python. The
+    generated module is executed here because parsing cleanly is what an injection needs:
+    ``validate_filter_source`` returns True on the exploit by design.
+    """
+    import os as _os
+
+    from open_webui_openrouter_pipe.filters import image_filter_renderer as renderer
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import ImageModelFilterSpec
+
+    canary = f"OPENROUTER_PIPE_DESCRIPTION_CANARY_{label}"
+    _os.environ.pop(canary, None)
+    hostile = payload.replace("CANARY", canary)
+    original = renderer.PASSTHROUGH_ENUMS
+    renderer.PASSTHROUGH_ENUMS = {"moderation": (("auto", "low"), hostile)}
+    try:
+        spec = ImageModelFilterSpec(
+            model_id="vendor/model",
+            display_name="Vendor: Model",
+            function_id="openrouter_image_filter_vendor_model",
+            marker="openrouter_image_filter:vendor/model:v1",
+            contract_read=True,
+            passthrough=("moderation",),
+        )
+        source = renderer.render_image_model_filter_source(spec)
+    finally:
+        renderer.PASSTHROUGH_ENUMS = original
+
+    namespace: dict = {}
+    exec(compile(source, "<generated-filter>", "exec"), namespace)  # noqa: S102 - executing the artifact is the check
+    assert _os.environ.get(canary) is None, (
+        "loading the generated image filter executed code carried in a published description"
+    )
+    described = namespace["Filter"].UserValves.model_fields["IMAGE_MODERATION"].description
+    assert described.startswith(hostile), (
+        "the description must arrive verbatim rather than escaped or truncated; "
+        f"got {described!r}"
+    )

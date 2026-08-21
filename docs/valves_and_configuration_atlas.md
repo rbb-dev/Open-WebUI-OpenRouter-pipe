@@ -191,7 +191,7 @@ Image-output models (Sourceful Riverflow, Black Forest Labs FLUX, ByteDance Seed
 | Valve | Type | Default (verified) | Purpose / notes |
 | --- | --- | --- | --- |
 | `ENABLE_OPENROUTER_IMAGE_GENERATION` | `bool` | `True` | Expose OpenRouter native image-output models as chat models. Pure-image-only models (FLUX, Riverflow, Seedream) are discovered via `/api/v1/models?output_modalities=image`. Multimodal text+image models (gpt-5-image, gemini-image variants) stay in the chat catalog and get their own settings panel, like every other image model. Setting this to `False` empties the image model list and clears its refresh timestamp, so pure-image-only models vanish from OWUI's dropdown immediately. |
-| `AUTO_INSTALL_IMAGE_FILTERS` | `bool` | `True` | Install and keep up to date one settings panel per image model, offering the settings that model publishes to OpenRouter plus four controls every panel carries (`IMAGE_PROVIDER_OPTIONS_JSON`, `IMAGE_REFERENCE_MODE`, `IMAGE_REFERENCE_URLS`, `IMAGE_SIZE`). If a model's settings list cannot be read on a refresh it keeps the settings from its last successful read; a model never read gets no panel at all rather than a guessed set. |
+| `AUTO_INSTALL_IMAGE_FILTERS` | `bool` | `True` | Install and keep up to date one settings panel per image model, offering the settings that model publishes to OpenRouter plus `IMAGE_SIZE`, which every panel carries, and — on models that answer only with a picture — `IMAGE_PROVIDER_OPTIONS_JSON`, `IMAGE_REFERENCE_MODE` and `IMAGE_REFERENCE_URLS`. If a model's settings list cannot be read on a refresh it keeps the settings from its last successful read; a model never read gets no panel at all rather than a guessed set. |
 | `AUTO_ATTACH_IMAGE_FILTERS` | `bool` | `True` | Attach each image model's own settings panel to it, so its settings appear in the chat controls when that model is selected. A single model can opt out with the `disable_image_filter_auto_attach` advanced parameter. |
 | `AUTO_DEFAULT_IMAGE_FILTERS` | `bool` | `True` | Always keep the attached image filters enabled by default on image-output models. Re-asserted on every catalog metadata sync. Setting this to `False` stops new models being defaulted but does not detach panels already marked default — clear those on the model itself. |
 
@@ -220,9 +220,12 @@ choices), `n` (1 to 6) and the provider options `style`, `controls` and
 `text_layout`, so its filter carries `IMAGE_ASPECT_RATIO`, `IMAGE_N`,
 `IMAGE_STYLE`, `IMAGE_CONTROLS` and `IMAGE_TEXT_LAYOUT`.
 
-Four controls appear on **every** image model that has a panel at all, whatever
-its contract publishes, because a request carries them for any model and no
-model's contract describes them:
+`IMAGE_SIZE` appears on **every** image model that has a panel at all, whatever
+its contract publishes, because a request carries it for any model and no
+model's contract describes it. The other three below are drawn only for models
+that answer only with a picture: a model that answers with text as well takes
+its references from the message itself, and the chat route it answers on takes
+no provider options object, so those three are left off its panel:
 
 | Valve | Title in chat | Type | Default | Maps to |
 | --- | --- | --- | --- | --- |
@@ -304,6 +307,16 @@ for the model it belongs to, in any of the id forms Open WebUI produces.
 | `VIDEO_POLL_INTERVAL_MAX_SECONDS` | `float` | `20.0` | Maximum interval between video status polls. |
 | `VIDEO_MAX_POLL_TIME_SECONDS` | `int` | `600` | Maximum wall-clock polling time before a visible timeout failure is persisted. |
 | `VIDEO_STATUS_POLL_MAX_ERRORS` | `int` | `5` | Consecutive status-poll failures before the lifecycle fails visibly. |
+| `SEND_MEDIA_VIA_FILE_HOST` | `bool` | `False` | Upload an attached clip or sound file to a public file host and send OpenRouter the link. OpenRouter accepts reference media only as a link it can fetch, so without this an attachment cannot reach a video model at all. The file becomes readable by anyone holding the link until it expires. |
+| `MEDIA_FILE_HOST` | `Literal` | `litterbox` | Which host receives the upload. `litterbox` deletes the file itself after the retention below; `catbox` keeps it until removed by hand. Neither needs an account. |
+| `MEDIA_FILE_HOST_RETENTION` | `Literal` | `1h` | How long `litterbox` keeps the file: `1h`, `12h`, `24h` or `72h`. The model fetches it within seconds, so an hour suits most jobs. `catbox` ignores this. |
+| `USE_THE_OTHER_FILE_HOST_IF_ONE_IS_DOWN` | `bool` | `False` | When the chosen host refuses the file, try the other one instead of failing. Off by default because the two keep files for very different lengths of time. The upload is retried three times on the chosen host before this applies. |
+| `MEDIA_FILE_HOST_MAX_SIZE_MB` | `int` | `200` | Largest attachment that will be uploaded. A file over this stops the request rather than generating without it. |
+| `SEND_VIDEO_VIA_FILE_HOST` | `bool` | `True` | Include attached clips when the file host is in use. A clip has no other route to a video model. |
+| `SEND_AUDIO_VIA_FILE_HOST` | `bool` | `True` | Include attached sound files. OpenRouter accepts a sound reference only alongside a picture or a clip, never on its own. |
+| `SEND_IMAGES_VIA_FILE_HOST` | `bool` | `False` | Include attached pictures. They do not need it — a picture already travels inside the request and never leaves this server. |
+| `TELL_USERS_ABOUT_THE_FILE_HOST` | `bool` | `True` | Show a line in the chat when a user's attachment is uploaded to the file host. |
+| `FILE_HOST_NOTICE` | `str` | see below | Wording of that line. `{kind}`, `{host}` and `{retention}` are substituted; they render in English, so rewrite the sentence rather than translating around them. |
 | `REMOTE_VIDEO_MAX_SIZE_MB` | `int` | `500` | Maximum generated video download size. The download is streamed to a bounded temp file and aborted during streaming if this cap is exceeded. |
 | `VIDEO_DOWNLOAD_CHUNK_SIZE` | `int` | `1048576` | Chunk size used while streaming generated video content to a temp file. |
 | `MAX_CONCURRENT_VIDEO_GENS` | `int` | `2` | Maximum active video lifecycles per pipe process. |
@@ -318,7 +331,7 @@ Notes:
 - Chats with no stored row (`chat_id` beginning with `temporary:`, `local:` or `channel:`) cannot persist markers or final assistant content to Open WebUI chat storage. The on-submit `'message'` emit is skipped for them. They remain in-process only.
 - `Pipe.close()` cancels in-process video lifecycles. OpenRouter has no cancel endpoint here; the on-submit `videojob` marker is what allows the next user request for that message to resume polling rather than submit a duplicate job.
 - Video filters are generated per model from OpenRouter video metadata. Unsupported controls are not exposed: for example Sora text-only models do not show frame controls, and a model with no negative-prompt passthrough does not show that control.
-- Seed and audio are offered unless the catalog says outright the model has neither. A published `false` hides the control; a published `null` — which the catalog uses for some models — shows it, and leaving it alone sends nothing so the model's own default applies. On the recorded catalog this is `minimax/hailuo-2.3` for seed and the two `alibaba/happyhorse` entries for audio.
+- Seed and audio are offered unless the catalog says outright the model has neither. A published `false` hides the control; a published `null` — which the catalog uses for some models — shows it, and leaving it alone sends nothing so the model's own default applies. On the recorded catalog the seed control is shown on that basis for `minimax/hailuo-2.3`, `x-ai/grok-imagine-video` and `x-ai/grok-imagine-video-1.5`, and the audio control for `alibaba/happyhorse-1.0`, `alibaba/happyhorse-1.1`, `x-ai/grok-imagine-video` and `x-ai/grok-imagine-video-1.5`.
 - Attachments the frame controls do not claim — extra images, a clip, a sound file — are sent as `input_references` rather than discarded. Each is checked against the same limits as a frame, but a reference that fails one is left out with a warning notice in the chat naming it and the reason, and the render proceeds; a frame that fails one fails the whole request. References draw on their own combined-size budget, separate from the frames'.
 - User-supplied passthrough URLs (`VIDEO_AUDIO_URL`, `VIDEO_LAST_IMAGE_URL`, `VIDEO_REFERENCE_VIDEO_URL`, and JSON-array references) go through the same safety gate as every other URL the pipe fetches before being forwarded to OpenRouter — blocks `file://`, private IPs, loopback, and unallowlisted `http://`.
 - A request needs a prompt **or** something to generate from: a turn with no words but an attached image, reference or clip is submitted rather than refused.

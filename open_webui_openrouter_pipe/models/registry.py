@@ -603,6 +603,10 @@ class OpenRouterModelRegistry:
         cls._last_video_attempt = time.time()
 
     @classmethod
+    def reset_video_fetch_timestamp(cls) -> None:
+        cls._last_video_fetch = 0.0
+
+    @classmethod
     def register_video_models(cls, video_models: list[dict[str, Any]]) -> None:
         """Register OpenRouter async video-generation models as selectable models."""
         if not isinstance(video_models, list):

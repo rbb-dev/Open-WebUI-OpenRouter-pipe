@@ -110,10 +110,6 @@ The dropdown labels use provider display names (from OpenRouter's catalog), whil
 - **ONLY** — restrict routing to a single provider (maps to `provider.only`).
 - **IGNORE** — exclude a single provider from routing (maps to `provider.ignore`).
 
-### SORT
-
-Sort candidate providers by `price`, `throughput`, or `latency` — or leave `(no preference)`. Maps to `provider.sort`.
-
 ### Boolean toggles
 
 | Field | Default | Purpose |

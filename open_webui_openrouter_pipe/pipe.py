@@ -999,26 +999,23 @@ class Pipe:
                     logger=self.logger,
                     http_referer=_select_openrouter_http_referer(self.valves),
                 )
-                if self.valves.ENABLE_VIDEO_GENERATION:
-                    from .integrations.video_catalog import ensure_video_catalog_loaded
+                from .integrations.image_catalog import ensure_image_catalog_loaded
+                from .integrations.video_catalog import ensure_video_catalog_loaded
 
-                    await ensure_video_catalog_loaded(
-                        session,
-                        valves=self.valves,
-                        api_key=api_key_value,
-                        logger=self.logger,
-                        cache_seconds=self.valves.MODEL_CATALOG_REFRESH_SECONDS,
-                    )
-                if self.valves.ENABLE_OPENROUTER_IMAGE_GENERATION:
-                    from .integrations.image_catalog import ensure_image_catalog_loaded
-
-                    await ensure_image_catalog_loaded(
-                        session,
-                        valves=self.valves,
-                        api_key=api_key_value,
-                        logger=self.logger,
-                        cache_seconds=self.valves.MODEL_CATALOG_REFRESH_SECONDS,
-                    )
+                await ensure_video_catalog_loaded(
+                    session,
+                    valves=self.valves,
+                    api_key=api_key_value,
+                    logger=self.logger,
+                    cache_seconds=self.valves.MODEL_CATALOG_REFRESH_SECONDS,
+                )
+                await ensure_image_catalog_loaded(
+                    session,
+                    valves=self.valves,
+                    api_key=api_key_value,
+                    logger=self.logger,
+                    cache_seconds=self.valves.MODEL_CATALOG_REFRESH_SECONDS,
+                )
         except ValueError as exc:
             refresh_error = exc
             self.logger.exception("OpenRouter configuration error")
@@ -1181,7 +1178,7 @@ class Pipe:
             try:
                 image_gen_filter_model = (
                     await self._ensure_filter_manager().image_gen_filter_selected_model()
-                )
+                ) or ""
             except Exception as exc:
                 level = warn_level(
                     _warned_pipes_maintenance, f"image_gen_model:{type(exc).__name__}"
@@ -2416,27 +2413,24 @@ class Pipe:
                 cache_seconds=valves.MODEL_CATALOG_REFRESH_SECONDS,
                 logger=self.logger,
             )
-            if valves.ENABLE_VIDEO_GENERATION:
-                from .integrations.video_catalog import ensure_video_catalog_loaded
+            from .integrations.image_catalog import ensure_image_catalog_loaded
+            from .integrations.video_catalog import ensure_video_catalog_loaded
 
-                await ensure_video_catalog_loaded(
-                    session,
-                    valves=valves,
-                    api_key=api_key_value or "",
-                    logger=self.logger,
-                    cache_seconds=valves.MODEL_CATALOG_REFRESH_SECONDS,
-                )
-            if valves.ENABLE_OPENROUTER_IMAGE_GENERATION:
-                from .integrations.image_catalog import ensure_image_catalog_loaded
-
-                await ensure_image_catalog_loaded(
-                    session,
-                    valves=valves,
-                    api_key=api_key_value or "",
-                    logger=self.logger,
-                    cache_seconds=valves.MODEL_CATALOG_REFRESH_SECONDS,
-                    with_contracts=False,
-                )
+            await ensure_video_catalog_loaded(
+                session,
+                valves=valves,
+                api_key=api_key_value or "",
+                logger=self.logger,
+                cache_seconds=valves.MODEL_CATALOG_REFRESH_SECONDS,
+            )
+            await ensure_image_catalog_loaded(
+                session,
+                valves=valves,
+                api_key=api_key_value or "",
+                logger=self.logger,
+                cache_seconds=valves.MODEL_CATALOG_REFRESH_SECONDS,
+                with_contracts=False,
+            )
         except ValueError as exc:
             await self._ensure_error_formatter()._emit_error(
                 __event_emitter__,

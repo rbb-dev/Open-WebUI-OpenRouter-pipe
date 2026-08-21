@@ -25,6 +25,12 @@ PASSTHROUGH_DESCRIPTION = (
 )
 """One sentence for one encoding rule, read by both renderers."""
 
+PROVIDER_OPTIONS_DESCRIPTION = (
+    "Extra settings for the company that runs this model, as a JSON object keyed by its "
+    "OpenRouter name. Use it for anything this panel does not already offer. Empty sends "
+    "nothing."
+)
+
 TOP_LEVEL_PARAMS: tuple[str, ...] = (
     "aspect_ratio",
     "resolution",
@@ -51,6 +57,24 @@ SCHEMA_ONLY_PARAMS: tuple[str, ...] = ("size",)
 CONTRACT_GATED_PARAMS: tuple[str, ...] = tuple(
     name for name in TOP_LEVEL_PARAMS if name not in SCHEMA_ONLY_PARAMS
 )
+
+SCHEMA_ENUMS: dict[str, tuple[str, ...]] = {
+    "aspect_ratio": (
+        "1:1", "1:2", "1:4", "1:8", "2:1", "2:3", "3:2", "3:4", "4:1", "4:3", "4:5",
+        "5:4", "8:1", "9:16", "16:9", "9:19.5", "19.5:9", "9:20", "20:9", "9:21",
+        "21:9", "auto",
+    ),
+    "background": ("auto", "transparent", "opaque"),
+    "output_format": ("png", "jpeg", "webp", "svg"),
+    "quality": ("auto", "low", "medium", "high"),
+    "resolution": ("512", "1K", "2K", "4K"),
+}
+
+
+SCHEMA_RANGES: dict[str, tuple[int, int]] = {
+    "output_compression": (0, 100),
+}
+
 
 PASSTHROUGH_ENUMS: dict[str, tuple[tuple[str, ...], str]] = {
     "moderation": (

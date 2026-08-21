@@ -479,6 +479,7 @@ def _image_model_filter_spec_for_stamp_check():
             "provider_slug": "recraft",
             "supported_parameters": {"aspect_ratio": {"type": "enum", "values": ["1:1", "16:9"]}},
         },
+        dedicated_image_api=True,
     )
 
 
@@ -515,11 +516,12 @@ def test_the_installed_filters_guard_their_open_webui_import():
         "render_openrouter_web_tools_filter_source": {
             "enable_web_search": True, "enable_web_fetch": True, "enable_datetime": True
         },
-        "render_openrouter_image_gen_filter_source": {},
+        "render_openrouter_image_gen_filter_source": {"dedicated_image_api": True},
         "render_direct_uploads_filter_source": {},
         "render_openrouter_image_filter_source": {
             "model_id": "recraft/recraft-v3",
             "image_model": {"id": "recraft/recraft-v3", "name": "Recraft V3"},
+            "dedicated_image_api": True,
         },
         "render_openrouter_video_gen_filter_source": {
             "model_id": "google/veo-3",

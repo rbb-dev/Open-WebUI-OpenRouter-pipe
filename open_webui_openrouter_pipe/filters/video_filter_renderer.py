@@ -12,10 +12,13 @@ from ..core.utils import OWUI_FUNCTION_ID_ILLEGAL_RE as _FILTER_ID_RE
 from ..core.utils import _clean_str
 from ..integrations.image_types import (
     PASSTHROUGH_DESCRIPTION,
+    PROVIDER_OPTIONS_DESCRIPTION,
     RENDERABLE_FIELD_NAME_RE,
     capability_declared_off,
     scrub_surrogates,
+    summarise_names,
 )
+from ..integrations.video_types import VIDEO_REQ_KEY_DESCRIPTION
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +34,8 @@ _CLOSED_DOMAIN_CONTROLS: frozenset[str] = frozenset(
 )
 
 _UNCONFIRMED_DOMAIN = "unconfirmed: no vendor page publishes a domain for this parameter"
+
+_ESCAPE_HATCH_TITLE = "Provider options JSON"
 
 _TOGGLE_VALUES: tuple[str, ...] = ("model_default", "on", "off")
 
@@ -66,14 +71,29 @@ class _PassthroughControl:
     source: str = ""
 
 
+def _unconfirmed_notice(kind: str, minimum: float, maximum: float) -> str:
+    offered = (
+        f"{minimum:g} to {maximum:g} range"
+        if kind == _CONTROL_NUMBER
+        else "set of choices"
+    )
+    return (
+        f"No page anywhere publishes what this setting accepts, so the {offered} offered "
+        "here is this pipe's own caution rather than a rule the model stated, and nothing "
+        "published says what any particular value does either. To send something outside "
+        f"it, write it under {_ESCAPE_HATCH_TITLE} instead."
+    )
+
+
 _PASSTHROUGH_CONTROLS: tuple[_PassthroughControl, ...] = (
     _PassthroughControl(
         param="personGeneration",
         field="VIDEO_PERSON_GENERATION",
         title="Person generation",
         description=(
-            "Veo policy for human subjects: allow_all, allow_adult, dont_allow (Gemini API "
-            "spelling), disallow (Vertex AI spelling), or model default."
+            "Whether people may appear in the clip: allow_all, allow_adult for grown-ups "
+            "only, or dont_allow / disallow to refuse any. Google spells the refusal both "
+            "ways, so pick the one your account takes. Blank leaves the model's own rule."
         ),
         kind=_CONTROL_ENUM,
         choices=(
@@ -87,7 +107,11 @@ _PASSTHROUGH_CONTROLS: tuple[_PassthroughControl, ...] = (
         param="conditioningScale",
         field="VIDEO_CONDITIONING_SCALE",
         title="Conditioning scale",
-        description="Strength of frame/reference conditioning (0 leaves the model default).",
+        description=(
+            "How hard the stills you supply steer the result against your written prompt. "
+            "0 sends nothing, so the model keeps its own balance. "
+            + _unconfirmed_notice(_CONTROL_NUMBER, 0.0, 1.0)
+        ),
         kind=_CONTROL_NUMBER,
         minimum=0.0,
         maximum=1.0,
@@ -98,8 +122,8 @@ _PASSTHROUGH_CONTROLS: tuple[_PassthroughControl, ...] = (
         field="VIDEO_CFG_SCALE",
         title="CFG scale",
         description=(
-            "Classifier-free guidance strength (0 leaves the provider default; higher values "
-            "bias toward stricter prompt adherence)."
+            "How literally the model follows your wording. 0 leaves its own balance; higher "
+            "values stick to the prompt more strictly and invent less."
         ),
         kind=_CONTROL_NUMBER,
         minimum=0.0,
@@ -110,7 +134,10 @@ _PASSTHROUGH_CONTROLS: tuple[_PassthroughControl, ...] = (
         param="enhancePrompt",
         field="VIDEO_ENHANCE_PROMPT",
         title="Enhance prompt",
-        description="Veo prompt-rewriter for richer scenes (on/off/model default).",
+        description=(
+            "Lets Google rewrite your prompt into a fuller scene description before "
+            "generating. On for richer detail, off to use your words as written."
+        ),
         kind=_CONTROL_TOGGLE,
         source=_VEO_VERTEX_PROMPT_REWRITER,
     ),
@@ -118,7 +145,10 @@ _PASSTHROUGH_CONTROLS: tuple[_PassthroughControl, ...] = (
         param="prompt_optimizer",
         field="VIDEO_PROMPT_OPTIMIZER",
         title="Prompt optimizer",
-        description="Provider-side prompt rewriter (on/off/model default).",
+        description=(
+            "Lets MiniMax expand and tidy your prompt before generating. On helps a short "
+            "or casual prompt, off uses your words as written."
+        ),
         kind=_CONTROL_TOGGLE,
         source=_MINIMAX_TEXT_TO_VIDEO,
     ),
@@ -126,7 +156,10 @@ _PASSTHROUGH_CONTROLS: tuple[_PassthroughControl, ...] = (
         param="fast_pretreatment",
         field="VIDEO_FAST_PRETREATMENT",
         title="Fast pretreatment",
-        description="Hailuo fast input preprocessing (on/off/model default).",
+        description=(
+            "Runs that prompt rewrite as a quicker, lighter pass — less waiting on a batch, "
+            "a little less polish. Only does anything while the prompt optimizer is on."
+        ),
         kind=_CONTROL_TOGGLE,
         source=_MINIMAX_TEXT_TO_VIDEO,
     ),
@@ -134,7 +167,10 @@ _PASSTHROUGH_CONTROLS: tuple[_PassthroughControl, ...] = (
         param="prompt_extend",
         field="VIDEO_PROMPT_EXTEND",
         title="Prompt extend",
-        description="Wan prompt-extension toggle (on/off/model default).",
+        description=(
+            "Lets Wan pad out a short prompt with extra cinematic detail before generating. "
+            "Off uses your words as written."
+        ),
         kind=_CONTROL_TOGGLE,
         source=_WAN_DASHSCOPE_TEXT_TO_VIDEO,
     ),
@@ -142,14 +178,20 @@ _PASSTHROUGH_CONTROLS: tuple[_PassthroughControl, ...] = (
         param="ratio",
         field="VIDEO_RATIO",
         title="Ratio",
-        description="Wan-specific ratio passthrough; leave blank to use model default.",
+        description=(
+            "A frame shape written the way Wan names it, for a shape the Aspect ratio list "
+            "does not offer. Blank sends nothing, and the Aspect ratio list is the easier way."
+        ),
         kind=_CONTROL_TEXT,
     ),
     _PassthroughControl(
         param="enable_prompt_expansion",
         field="VIDEO_ENABLE_PROMPT_EXPANSION",
         title="Enable prompt expansion",
-        description="Wan 2.6 prompt expansion toggle (on/off/model default).",
+        description=(
+            "Lets Wan 2.6 enrich a short prompt with camera and lighting detail before "
+            "generating. Off uses your words as written."
+        ),
         kind=_CONTROL_TOGGLE,
         source=_WAN_FAL_2_6_IMAGE_TO_VIDEO,
     ),
@@ -157,14 +199,20 @@ _PASSTHROUGH_CONTROLS: tuple[_PassthroughControl, ...] = (
         param="shot_type",
         field="VIDEO_SHOT_TYPE",
         title="Shot type",
-        description="Wan camera/composition shot type passthrough; blank = model default.",
+        description=(
+            "How close the camera sits — for example wide, medium, close-up — written the "
+            "way Wan names it. Blank lets the model frame the shot."
+        ),
         kind=_CONTROL_TEXT,
     ),
     _PassthroughControl(
         param="watermark",
         field="VIDEO_WATERMARK",
         title="Watermark",
-        description="Seedance watermark toggle (on/off/model default).",
+        description=(
+            "Whether ByteDance burns its visible branding into the finished clip. Off asks "
+            "for a clean clip, which your account has to be allowed to receive."
+        ),
         kind=_CONTROL_TOGGLE,
         source=_SEEDANCE_ARK_TASKS,
     ),
@@ -172,7 +220,7 @@ _PASSTHROUGH_CONTROLS: tuple[_PassthroughControl, ...] = (
         param="req_key",
         field="VIDEO_REQ_KEY",
         title="Request key",
-        description="Seedance provider req_key passthrough; blank = model default.",
+        description=VIDEO_REQ_KEY_DESCRIPTION,
         kind=_CONTROL_TEXT,
     ),
     _PassthroughControl(
@@ -180,8 +228,8 @@ _PASSTHROUGH_CONTROLS: tuple[_PassthroughControl, ...] = (
         field="VIDEO_QUALITY",
         title="Quality",
         description=(
-            "Sora quality passthrough; OpenAI's video API publishes no quality values, so "
-            "send only one your provider accepts. Blank = model default."
+            "A quality hint sent to Sora exactly as you type it. OpenAI publishes no values "
+            "for it, so send only one your provider accepts. Blank sends nothing."
         ),
         kind=_CONTROL_TEXT,
     ),
@@ -189,7 +237,10 @@ _PASSTHROUGH_CONTROLS: tuple[_PassthroughControl, ...] = (
         param="style",
         field="VIDEO_STYLE",
         title="Style",
-        description="Sora style passthrough; blank = model default.",
+        description=(
+            "A look to lean towards — cinematic, anamorphic, documentary handheld — sent to "
+            "Sora exactly as you type it. Blank sends nothing."
+        ),
         kind=_CONTROL_TEXT,
     ),
 )
@@ -226,6 +277,15 @@ def _validate_passthrough_controls(controls: tuple[_PassthroughControl, ...]) ->
                     f"{control.param!r} renders a closed value domain, so it must name the "
                     f"document that domain was read from; got {source!r}"
                 )
+        if _UNCONFIRMED_DOMAIN in cited and (
+            _unconfirmed_notice(control.kind, control.minimum, control.maximum)
+            not in control.description
+        ):
+            raise ValueError(
+                f"{control.param!r} renders a value domain no document publishes, so its "
+                "description must say so and point at the way round it; a reader is "
+                "otherwise handed this pipe's own caution as though the model had stated it"
+            )
 
 
 _validate_passthrough_controls(_PASSTHROUGH_CONTROLS)
@@ -294,22 +354,6 @@ class VideoFilterSpec:
     def supports_audio_reference(self) -> bool:
         return "audio" in self.allowed_params
 
-    @property
-    def accepts_video_single(self) -> bool:
-        return "video" in self.allowed_params
-
-    @property
-    def accepts_videos_array(self) -> bool:
-        return "videos" in self.allowed_params
-
-    @property
-    def accepts_video_attachment(self) -> bool:
-        return self.accepts_video_single or self.accepts_videos_array
-
-    @property
-    def supports_wan_reference_arrays(self) -> bool:
-        return any(param in self.allowed_params for param in ("images", "videos", "video", "last_image"))
-
 
 def sanitize_video_filter_id(model_id: str) -> str:
     raw = model_id.strip()
@@ -332,6 +376,41 @@ _VALID_FRAME_DEFAULTS = ("first", "last")
 _VALID_CONFIRM_MODES = ("always", "on_reference", "low_confidence", "never")
 
 
+_REFERENCE_PARAMS_BY_KIND: dict[str, tuple[str, ...]] = {
+    "video": ("video", "videos"),
+    "audio": ("audio",),
+    "image": ("images", "last_image"),
+}
+
+
+def _reachable_reference_params(
+    allowed: tuple[str, ...], model: dict[str, Any]
+) -> tuple[str, ...]:
+    declared = model.get("input_modalities")
+    if not isinstance(declared, list):
+        arch = model.get("architecture")
+        declared = arch.get("input_modalities") if isinstance(arch, dict) else None
+    if not isinstance(declared, list) or not declared:
+        return allowed
+    kinds = {item for item in declared if isinstance(item, str)}
+    refused = {
+        name
+        for kind, names in _REFERENCE_PARAMS_BY_KIND.items()
+        if kind not in kinds
+        for name in names
+    }
+    kept = tuple(name for name in allowed if name not in refused)
+    dropped = sorted(set(allowed) - set(kept))
+    if dropped:
+        logger.info(
+            "Model %r declares %s, so it is not offered %s",
+            _clean_str(model.get("id")),
+            summarise_names(sorted(kinds)),
+            summarise_names(dropped),
+        )
+    return kept
+
+
 def build_video_filter_spec(
     model_id: str,
     video_model: dict[str, Any] | None,
@@ -342,7 +421,9 @@ def build_video_filter_spec(
     raw_name = _clean_str(model.get("name")) or canonical_id
     display_name = _strip_vendor_prefix(raw_name)
     function_id = sanitize_video_filter_id(canonical_id)
-    allowed_params = _string_tuple(model.get("allowed_passthrough_parameters"))
+    allowed_params = _reachable_reference_params(
+        _string_tuple(model.get("allowed_passthrough_parameters")), model
+    )
     aspect_ratios = _safe_literal_tuple(model.get("supported_aspect_ratios"))
     durations = _int_tuple(model.get("supported_durations"))
     resolutions = _safe_literal_tuple(model.get("supported_resolutions"))
@@ -413,7 +494,7 @@ def render_video_filter_source(
             "Model %r publishes parameter(s) %s whose names cannot become form fields, so "
             "they are not offered. Every other parameter it publishes is.",
             spec.model_id,
-            unreachable,
+            summarise_names(unreachable),
         )
     user_valves_fields = _render_user_valves_fields(spec)
     inlet_param_lines = _render_param_lines(spec)
@@ -650,14 +731,8 @@ class Filter:
                 video_meta["frame_images"] = frame_images
             else:
                 video_meta.pop("frame_images", None)
-            if video_attachments:
-                video_meta["video_attachments"] = video_attachments
-            else:
-                video_meta.pop("video_attachments", None)
-            if audio_attachments:
-                video_meta["audio_attachments"] = audio_attachments
-            else:
-                video_meta.pop("audio_attachments", None)
+            video_meta.pop("video_attachments", None)
+            video_meta.pop("audio_attachments", None)
             if input_references:
                 video_meta["input_references"] = input_references
             else:
@@ -705,7 +780,7 @@ def _render_purpose_built_fields(spec: VideoFilterSpec) -> list[str]:
             'VIDEO_PROVIDER_OPTIONS_JSON: str = Field(\n'
             '            default="",\n'
             '            title="Provider options JSON",\n'
-            '            description="Provider-specific video options keyed by provider slug.",\n'
+            f"            description={PROVIDER_OPTIONS_DESCRIPTION!r},\n"
             "        )"
         )
     ]
@@ -716,7 +791,7 @@ def _render_purpose_built_fields(spec: VideoFilterSpec) -> list[str]:
                 f"VIDEO_DURATION: Literal[{literals}] = Field(\n"
                 "            default=0,\n"
                 '            title="Duration",\n'
-                '            description="Video duration. 0 uses the model default.",\n'
+                '            description="How long the finished clip runs, in seconds. 0 lets the model pick.",\n'
                 "        )"
             )
         )
@@ -727,7 +802,7 @@ def _render_purpose_built_fields(spec: VideoFilterSpec) -> list[str]:
                 f"VIDEO_ASPECT_RATIO: Literal[{literals}] = Field(\n"
                 '            default="",\n'
                 '            title="Aspect ratio",\n'
-                '            description="Supported aspect ratio for this model.",\n'
+                '            description="The shape of the frame. Blank lets the model pick.",\n'
                 "        )"
             )
         )
@@ -738,7 +813,7 @@ def _render_purpose_built_fields(spec: VideoFilterSpec) -> list[str]:
                 f"VIDEO_RESOLUTION: Literal[{literals}] = Field(\n"
                 '            default="",\n'
                 '            title="Resolution",\n'
-                '            description="Supported output resolution for this model.",\n'
+                '            description="How much detail the clip is rendered at, which usually drives what it costs. Blank lets the model pick.",\n'
                 "        )"
             )
         )
@@ -749,7 +824,7 @@ def _render_purpose_built_fields(spec: VideoFilterSpec) -> list[str]:
                 f"VIDEO_SIZE: Literal[{literals}] = Field(\n"
                 '            default="",\n'
                 '            title="Size",\n'
-                '            description="Supported provider size value for this model.",\n'
+                '            description="Exact pixel dimensions, for when you need a precise canvas rather than a shape and a detail level. Blank lets those two decide it.",\n'
                 "        )"
             )
         )
@@ -759,7 +834,7 @@ def _render_purpose_built_fields(spec: VideoFilterSpec) -> list[str]:
                 'VIDEO_GENERATE_AUDIO: Literal["model_default", "on", "off"] = Field(\n'
                 '            default="model_default",\n'
                 '            title="Audio",\n'
-                '            description="Request generated audio where this provider exposes a toggle.",\n'
+                '            description="Whether a soundtrack is generated along with the picture.",\n'
                 "        )"
             )
         )
@@ -769,7 +844,7 @@ def _render_purpose_built_fields(spec: VideoFilterSpec) -> list[str]:
                 'VIDEO_AUDIO_URL: str = Field(\n'
                 '            default="",\n'
                 '            title="Audio reference URL",\n'
-                '            description="Provider-supported audio reference URL for this model.",\n'
+                '            description="A public link to a sound file the clip should match — a voice to copy, or music to move to. Blank sends nothing.",\n'
                 "        )"
             )
         )
@@ -780,7 +855,7 @@ def _render_purpose_built_fields(spec: VideoFilterSpec) -> list[str]:
                 "            default=0,\n"
                 "            ge=0,\n"
                 '            title="Seed",\n'
-                '            description="Deterministic seed. 0 uses the model default.",\n'
+                '            description="A number that fixes the random draw, so the same prompt and the same number make the same clip again. 0 leaves it random.",\n'
                 "        )"
             )
         )
@@ -790,7 +865,7 @@ def _render_purpose_built_fields(spec: VideoFilterSpec) -> list[str]:
                 'VIDEO_NEGATIVE_PROMPT: str = Field(\n'
                 '            default="",\n'
                 '            title="Negative prompt",\n'
-                '            description="Things the model should avoid where supported.",\n'
+                '            description="What you do not want to see — blurry, extra fingers, on-screen text. Blank asks for nothing in particular.",\n'
                 "        )"
             )
         )
@@ -804,7 +879,7 @@ def _render_purpose_built_fields(spec: VideoFilterSpec) -> list[str]:
                 f"VIDEO_FRAME_MODE: Literal[{literals}] = Field(\n"
                 '            default="auto",\n'
                 '            title="Frames",\n'
-                '            description="How attached images are used as video frame references.",\n'
+                '            description="What the pictures you attach are for: auto follows the model, none ignores them, first_only opens the shot with one, first_last pins the opening and the closing still.",\n'
                 "        )"
             )
         )
@@ -814,7 +889,7 @@ def _render_purpose_built_fields(spec: VideoFilterSpec) -> list[str]:
                 'VIDEO_REFERENCE_VIDEO_URL: str = Field(\n'
                 '            default="",\n'
                 '            title="Reference video URL",\n'
-                '            description="Provider-supported single reference video URL.",\n'
+                '            description="A public link to one clip whose motion, camera work or voice the new clip should copy. Blank sends nothing.",\n'
                 "        )"
             )
         )
@@ -824,7 +899,7 @@ def _render_purpose_built_fields(spec: VideoFilterSpec) -> list[str]:
                 'VIDEO_REFERENCE_VIDEOS_JSON: str = Field(\n'
                 '            default="",\n'
                 '            title="Reference videos JSON",\n'
-                '            description="JSON array of provider-supported reference video URLs or objects.",\n'
+                '            description="Several clips to copy motion, camera work or voices from, written as a JSON list of links. Blank sends nothing.",\n'
                 "        )"
             )
         )
@@ -834,7 +909,7 @@ def _render_purpose_built_fields(spec: VideoFilterSpec) -> list[str]:
                 'VIDEO_REFERENCE_IMAGES_JSON: str = Field(\n'
                 '            default="",\n'
                 '            title="Reference images JSON",\n'
-                '            description="JSON array of provider-supported reference image URLs or objects.",\n'
+                '            description="Several pictures that hold a face, an outfit, a prop or a setting steady, written as a JSON list of links. Blank sends nothing.",\n'
                 "        )"
             )
         )
@@ -844,7 +919,7 @@ def _render_purpose_built_fields(spec: VideoFilterSpec) -> list[str]:
                 'VIDEO_LAST_IMAGE_URL: str = Field(\n'
                 '            default="",\n'
                 '            title="Last image URL",\n'
-                '            description="Provider-supported final image URL.",\n'
+                '            description="A public link to the still the clip should finish on. Blank sends nothing.",\n'
                 "        )"
             )
         )
@@ -1103,9 +1178,6 @@ def _render_param_lines(spec: VideoFilterSpec) -> str:
 def _render_frame_block(spec: VideoFilterSpec) -> str:
     has_frames = spec.supports_frames
     has_first_last = spec.supports_first_last
-    accepts_video_single = spec.accepts_video_single
-    accepts_videos_array = spec.accepts_videos_array
-    accepts_audio_attachment = spec.supports_audio_reference
 
     frame_mode_line = ""
     if has_frames:
@@ -1149,30 +1221,10 @@ def _render_frame_block(spec: VideoFilterSpec) -> str:
                     }
                 )'''
 
-    video_select_block = ""
-    if accepts_video_single or accepts_videos_array:
-        emit_video_single = "True" if accepts_video_single else "False"
-        emit_videos_array = "True" if accepts_videos_array else "False"
-        video_select_block = f'''            if video_items:
-                accepts_single = {emit_video_single}
-                accepts_array = {emit_videos_array}
-                if accepts_array and len(video_items) > 1:
-                    taken = list(video_items)
-                elif accepts_single or accepts_array:
-                    taken = [video_items[0]]
-                else:
-                    taken = []
-                for item in taken:
-                    claimed_ids.add(self._file_id(item))
-                    video_attachments.append(self._build_attachment(item))'''
-
-    audio_select_block = ""
-    if accepts_audio_attachment:
-        audio_select_block = '''            if audio_items:
-                claimed_ids.add(self._file_id(audio_items[0]))
-                audio_attachments.append(self._build_attachment(audio_items[0]))'''
-
-    reference_select_block = '''            for item in image_items + video_items + audio_items:
+    referable_images = (
+        '(image_items if frame_mode != "none" else [])' if has_frames else "image_items"
+    )
+    reference_select_block = f'''            for item in {referable_images} + video_items + audio_items:
                 if self._file_id(item) in claimed_ids:
                     continue
                 claimed_ids.add(self._file_id(item))
@@ -1182,8 +1234,6 @@ def _render_frame_block(spec: VideoFilterSpec) -> str:
         block
         for block in (
             image_select_block,
-            video_select_block,
-            audio_select_block,
             reference_select_block,
         )
         if block
@@ -1197,8 +1247,6 @@ def _render_frame_block(spec: VideoFilterSpec) -> str:
         retained: list[Any] = []
         claimed: list[Any] = []
         unclaimed: list[Any] = []
-        video_attachments: list[dict[str, Any]] = []
-        audio_attachments: list[dict[str, Any]] = []
         input_references: list[dict[str, Any]] = []
         claimed_ids: set[str] = set()
 {frame_mode_line}        if isinstance(files, list) and files:
@@ -1322,6 +1370,9 @@ def _string_tuple(value: Any) -> tuple[str, ...]:
     return tuple(out)
 
 
+_DURATION_LIMIT = 2**53
+
+
 def _int_tuple(value: Any) -> tuple[int, ...]:
     if not isinstance(value, list):
         return ()
@@ -1341,7 +1392,7 @@ def _int_tuple(value: Any) -> tuple[int, ...]:
                 continue
         else:
             continue
-        if number <= 0 or number in seen:
+        if number <= 0 or number > _DURATION_LIMIT or number in seen:
             continue
         seen.add(number)
         out.append(number)

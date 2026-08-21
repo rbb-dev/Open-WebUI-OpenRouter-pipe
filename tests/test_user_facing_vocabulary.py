@@ -37,6 +37,13 @@ from open_webui_openrouter_pipe.integrations.image_help import (
     IMAGE_HELP_BY_MODEL,
     render_image_help,
 )
+from open_webui_openrouter_pipe.integrations.video_help import (
+    VIDEO_HELP_BY_MODEL,
+    render_video_help,
+)
+from open_webui_openrouter_pipe.filters.video_filter_renderer import (
+    render_video_filter_source,
+)
 
 FIXTURES = pathlib.Path(__file__).resolve().parent / "fixtures"
 
@@ -49,14 +56,30 @@ BANNED_KEYS = (
     "supported_parameters",
     "allowed_passthrough_parameters",
     "provider_slug",
+    "provider slug",
     "b64_json",
     "endpoint record",
     "endpoint_record",
     "our side",
+    "supported_durations",
+    "supported_resolutions",
+    "supported_aspect_ratios",
+    "supported_frame_images",
+    "supported_sizes",
+    "pricing_skus",
+    "passthrough",
 )
 
 BANNED_NAMES = (
     "OWUI",
+    "VideoFilterSpec",
+    "VideoGenerationAdapter",
+    "VideoGenerationError",
+    "video_filter_renderer",
+    "video_help",
+    "video_types",
+    "video_client",
+    "video_catalog",
     "modalities",
     "modality",
     "ImageGenerationAdapter",
@@ -119,6 +142,27 @@ def _contracts() -> list[tuple[str, str]]:
     return out
 
 
+def _video_models() -> list[tuple[str, dict]]:
+    """Every model in the recorded video catalog, paired with its own record.
+
+    Rendering from the record rather than from a stub is what makes the sweep
+    fleet-wide: the panel prints durations, rates and passthrough names straight out
+    of it, so a stub would exercise the prose and none of the catalog-fed lines.
+    """
+    raw = json.loads((FIXTURES / "video_models_catalog.json").read_text(encoding="utf-8"))
+    models = [m for m in raw.get("data", []) if isinstance(m, dict) and m.get("id")]
+    assert models, "the recorded catalog is what makes this sweep fleet-wide"
+    unresolved = [m["id"] for m in models if m["id"] not in VIDEO_HELP_BY_MODEL]
+    assert not unresolved, (
+        "every catalog model must have curated prose, or this sweep quietly becomes "
+        f"twenty-two renderings of the catalog fallback instead: {unresolved}"
+    )
+    return [(m["id"], m) for m in models]
+
+
+EVERY_VIDEO_MODEL = _video_models()
+
+
 def _records(slug: str) -> list[dict]:
     raw = json.loads(
         (FIXTURES / f"openrouter_image_endpoints_{slug}.json").read_text(encoding="utf-8")
@@ -133,7 +177,8 @@ EVERY_CONTRACT = _contracts()
 @pytest.mark.parametrize(("slug", "model_id"), EVERY_CONTRACT, ids=[s for s, _ in EVERY_CONTRACT])
 def test_a_rendered_help_panel_names_nothing_only_the_code_can_see(slug, model_id):
     rendered = render_image_help(
-        model_id, {"id": model_id, "name": model_id}, endpoint_record=_records(slug)
+        model_id, {"id": model_id, "name": model_id}, endpoint_record=_records(slug),
+        dedicated_image_api=True,
     )
     assert "## Controls" in rendered, "an empty panel would make this vacuous"
     hits = [(model_id, term, rendered) for term in offences(rendered)]
@@ -142,7 +187,7 @@ def test_a_rendered_help_panel_names_nothing_only_the_code_can_see(slug, model_i
 
 @pytest.mark.parametrize("model_id", sorted(IMAGE_HELP_BY_MODEL))
 def test_curated_prose_names_nothing_only_the_code_can_see(model_id):
-    rendered = render_image_help(model_id, {"id": model_id, "name": model_id})
+    rendered = render_image_help(model_id, {"id": model_id, "name": model_id}, dedicated_image_api=True)
     assert rendered.strip(), "the prose must exist for this to mean anything"
     hits = [(model_id, term, rendered) for term in offences(rendered)]
     assert not hits, f"curated help carries implementation vocabulary:\n{_report(hits)}"
@@ -160,6 +205,7 @@ def test_the_catalog_fallback_panel_names_nothing_only_the_code_can_see():
                 "input_modalities": ["text", "image"],
             },
         },
+        dedicated_image_api=True,
     )
     assert "image" in rendered, "the fallback must still report what the model does"
     hits = [("vendor/unlisted", term, rendered) for term in offences(rendered)]
@@ -169,7 +215,7 @@ def test_the_catalog_fallback_panel_names_nothing_only_the_code_can_see():
 @pytest.mark.parametrize(("slug", "model_id"), EVERY_CONTRACT, ids=[s for s, _ in EVERY_CONTRACT])
 def test_every_control_a_filter_draws_is_labelled_in_words_a_user_can_act_on(slug, model_id):
     """Read off the rendered filter, which is the panel the chat UI actually draws."""
-    spec = build_image_model_filter_spec(model_id, {"id": model_id, "name": model_id}, _records(slug))
+    spec = build_image_model_filter_spec(model_id, {"id": model_id, "name": model_id}, _records(slug), dedicated_image_api=True)
     source = render_image_model_filter_source(spec)
     labels: list[tuple[str, str]] = []
     for node in ast.walk(ast.parse(source)):
@@ -186,22 +232,71 @@ def test_every_control_a_filter_draws_is_labelled_in_words_a_user_can_act_on(slu
     assert not hits, f"a drawn control is labelled with implementation vocabulary:\n{_report(hits)}"
 
 
+_LOGGING_METHODS = (
+    "log",
+    "debug",
+    "info",
+    "warning",
+    "warn",
+    "error",
+    "exception",
+    "critical",
+)
+
+
+def _log_only_constants(tree: ast.Module) -> set[int]:
+    """Module constants whose every reference is an argument to a logging call.
+
+    A log message hoisted into a module constant so two call sites can share it reads,
+    at the assignment, exactly like text bound for the chat. Excluding it by name --
+    and only while nothing outside a logging call loads that name -- keeps the sweep
+    off log records without letting a string that is ALSO shown to a user hide behind
+    one log use.
+    """
+    assigned: dict[str, ast.Constant] = {}
+    for node in tree.body:
+        targets = node.targets if isinstance(node, ast.Assign) else []
+        value = getattr(node, "value", None)
+        if (
+            len(targets) == 1
+            and isinstance(targets[0], ast.Name)
+            and isinstance(value, ast.Constant)
+            and isinstance(value.value, str)
+        ):
+            assigned[targets[0].id] = value
+    if not assigned:
+        return set()
+    in_a_log: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr in _LOGGING_METHODS:
+            for inner in ast.walk(node):
+                if isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Load):
+                    in_a_log.add(id(inner))
+    loaded_elsewhere = {
+        node.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name)
+        and isinstance(node.ctx, ast.Load)
+        and node.id in assigned
+        and id(node) not in in_a_log
+    }
+    return {
+        id(constant)
+        for name, constant in assigned.items()
+        if name not in loaded_elsewhere
+    }
+
+
 def _key_or_log_constants(tree: ast.Module) -> set[int]:
     """Literals that are a mapping key or a log record, neither of which a user reads."""
-    excluded: set[int] = set()
+    excluded: set[int] = _log_only_constants(tree)
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             func = node.func
-            logging_call = isinstance(func, ast.Attribute) and func.attr in (
-                "log",
-                "debug",
-                "info",
-                "warning",
-                "warn",
-                "error",
-                "exception",
-                "critical",
-            )
+            logging_call = isinstance(func, ast.Attribute) and func.attr in _LOGGING_METHODS
             if logging_call:
                 for inner in ast.walk(node):
                     if isinstance(inner, ast.Constant):
@@ -314,3 +409,73 @@ def test_the_overflow_note_counts_settings_rather_than_naming_the_request_block(
     hits = [("overflow", term, text) for text in overflow for term in offences(text)]
     assert not hits, f"the overflow note names the implementation:\n{_report(hits)}"
     assert "setting" in overflow[0], overflow[0]
+
+
+@pytest.mark.parametrize(
+    ("model_id", "record"), EVERY_VIDEO_MODEL, ids=[m for m, _ in EVERY_VIDEO_MODEL]
+)
+def test_a_rendered_video_help_panel_names_nothing_only_the_code_can_see(model_id, record):
+    rendered = render_video_help(model_id, record)
+    assert "**Controls**" in rendered, "an empty panel would make this vacuous"
+    hits = [(model_id, term, rendered) for term in offences(rendered)]
+    assert not hits, f"video help panel carries implementation vocabulary:\n{_report(hits)}"
+
+
+def test_the_video_catalog_fallback_panel_names_nothing_only_the_code_can_see():
+    """The fallback labels the catalog's own fields, which is where their names leak."""
+    rendered = render_video_help(
+        "vendor/unlisted",
+        {
+            "id": "vendor/unlisted",
+            "name": "Unlisted",
+            "description": "A model with no curated entry.",
+            "supported_durations": [4, 8],
+            "supported_resolutions": ["720p"],
+            "supported_aspect_ratios": ["16:9"],
+            "supported_frame_images": ["first_frame"],
+            "allowed_passthrough_parameters": ["style"],
+            "pricing_skus": {"duration_seconds": "0.10"},
+        },
+    )
+    assert "720p" in rendered, "the fallback must still report what the model does"
+    hits = [("vendor/unlisted", term, rendered) for term in offences(rendered)]
+    assert not hits, f"video catalog fallback carries implementation vocabulary:\n{_report(hits)}"
+
+
+@pytest.mark.parametrize(
+    ("model_id", "record"), EVERY_VIDEO_MODEL, ids=[m for m, _ in EVERY_VIDEO_MODEL]
+)
+def test_every_control_a_video_filter_draws_is_labelled_in_words_a_user_can_act_on(
+    model_id, record
+):
+    """Read off the rendered filter, which is the panel the chat UI actually draws."""
+    source = render_video_filter_source(model_id=model_id, video_model=record)
+    labels: list[tuple[str, str]] = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        for keyword in node.keywords:
+            if keyword.arg in ("title", "description") and isinstance(keyword.value, ast.Constant):
+                if isinstance(keyword.value.value, str):
+                    labels.append((keyword.arg, keyword.value.value))
+    assert labels, "a filter with no labelled control would make this vacuous"
+    hits = [
+        (f"{model_id} {arg}", term, text) for arg, text in labels for term in offences(text)
+    ]
+    assert not hits, f"a drawn control is labelled with implementation vocabulary:\n{_report(hits)}"
+
+
+def test_no_text_the_video_adapter_can_show_a_user_names_the_implementation():
+    """Every literal in the video adapter that is not a key and not a log record."""
+    path = PACKAGE / "integrations" / "video.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    skip = _key_or_log_constants(tree)
+    hits = [
+        (f"video.py:{node.lineno}", term, node.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in skip
+        for term in offences(node.value)
+    ]
+    assert not hits, f"text the adapter can put in front of a user names the code:\n{_report(hits)}"

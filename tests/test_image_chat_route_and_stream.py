@@ -271,6 +271,166 @@ async def test_the_chat_route_reads_the_contract_of_the_provider_that_was_pinned
     assert body.image_config == expected
 
 
+@pytest.mark.parametrize("tier", ["4K", "2K"])
+@pytest.mark.parametrize("order", ["published", "reversed"])
+@pytest.mark.asyncio
+async def test_the_chat_route_answers_the_same_however_the_records_are_ordered(tier, order):
+    """A published value may not be kept or dropped by the position of a record.
+
+    This model's two companies disagree: Google Vertex publishes `1K, 2K` and Google AI
+    Studio publishes `1K, 2K, 4K`, and the filter draws `4K` because one of them takes
+    it. Gating on a single record made the answer depend on which one the listing
+    happened to put first -- with Vertex first `4K` was unreachable and the note
+    contradicted the control's own text, and with AI Studio first `4K` was sent with
+    nothing stopping Vertex taking the request and rejecting a value it does not
+    publish. Both tiers are asserted so a rule that always kept, or always dropped,
+    satisfies at most one row.
+    """
+    published = records(GEMINI)
+    assert len(published) == 2, "the recorded contract no longer has two disagreeing records"
+    if order == "reversed":
+        published = list(reversed(published))
+
+    pipe = _Pipe()
+    body = _Body({"resolution": tier})
+    await adapter(pipe).fit_chat_image_config(
+        responses_body=body,
+        published=published,
+        metadata=None,
+        event_emitter=object(),
+        api_model_id=GEMINI,
+    )
+    assert body.image_config == {"resolution": tier}, (
+        f"{order} order dropped a tier the model publishes: {body.image_config!r}"
+    )
+    expected_pin = ["google-ai-studio/global"] if tier == "4K" else None
+    assert (body.provider or {}).get("only") == expected_pin, (
+        f"{order} order pinned {(body.provider or {}).get('only')!r} for {tier}; a tier "
+        "only one company publishes has to restrict routing to that company, and one "
+        "they all publish must restrict nothing"
+    )
+    assert pipe._event_emitter_handler.notices == [], (
+        f"{order} order reported {pipe._event_emitter_handler.notices!r} for a tier this "
+        "model publishes"
+    )
+
+
+@pytest.mark.parametrize("tier", ["4K", "2K"])
+@pytest.mark.asyncio
+async def test_the_chat_route_pin_survives_the_restriction_the_orchestrator_applies(tier):
+    """A pin the chat request format then discards is a routing control nothing enforces.
+
+    `fit_chat_image_config` writes into `responses_body.provider`, and the orchestrator
+    reduces that block to `CHAT_PROVIDER_KEYS` immediately afterwards, so the write is
+    only worth making if it survives that step.
+    """
+    from open_webui_openrouter_pipe.integrations.provider_options import (
+        CHAT_PROVIDER_KEYS,
+        restrict_provider_block,
+    )
+
+    pipe = _Pipe()
+    body = _Body({"resolution": tier})
+    await adapter(pipe).fit_chat_image_config(
+        responses_body=body,
+        published=records(GEMINI),
+        metadata=None,
+        event_emitter=object(),
+        api_model_id=GEMINI,
+    )
+    kept, _dropped = restrict_provider_block(body.provider or {}, CHAT_PROVIDER_KEYS)
+    assert kept == (body.provider or {}), (
+        f"the chat restriction dropped {sorted(set(body.provider or {}) - set(kept))} of "
+        "the block the fitting wrote"
+    )
+
+
+@pytest.mark.parametrize(
+    ("tag", "expected"),
+    [("google-ai-studio/global", ["google-ai-studio/global"]), ("northstar", ["northstar"])],
+)
+@pytest.mark.asyncio
+async def test_the_routing_pin_is_the_field_openrouter_designates_for_pinning(tag, expected):
+    """OpenRouter splits the two roles and the pipe read the wrong one.
+
+    `provider_slug` is documented for `provider.options[slug]`; `provider_tag` is
+    documented for pinning a request to a provider and is `null` where provider-level
+    routing is unavailable. Every one of the forty-four recorded contracts happens to
+    publish the same string for both, so the two are indistinguishable on live data --
+    these records give them different values so the pin has to name the one it is for.
+    """
+    published = [
+        {
+            "provider_slug": "google-vertex",
+            "provider_tag": "google-vertex/global",
+            "supported_parameters": {"resolution": {"type": "enum", "values": ["1K", "2K"]}},
+            "allowed_passthrough_parameters": [],
+        },
+        {
+            "provider_slug": "google-ai-studio",
+            "provider_tag": tag,
+            "supported_parameters": {
+                "resolution": {"type": "enum", "values": ["1K", "2K", "4K"]}
+            },
+            "allowed_passthrough_parameters": [],
+        },
+    ]
+    pipe = _Pipe()
+    body = _Body({"resolution": "4K"})
+    await adapter(pipe).fit_chat_image_config(
+        responses_body=body,
+        published=published,
+        metadata=None,
+        event_emitter=object(),
+        api_model_id=GEMINI,
+    )
+    assert body.image_config == {"resolution": "4K"}
+    assert (body.provider or {}).get("only") == expected, (
+        f"the pin named {(body.provider or {}).get('only')!r}; `provider_tag` is the "
+        "field OpenRouter documents for pinning"
+    )
+
+
+@pytest.mark.parametrize("tags", [(None, None), ("", "   ")])
+@pytest.mark.asyncio
+async def test_no_pin_is_written_where_no_candidate_publishes_a_routing_tag(tags):
+    """`provider_tag` is null where provider-level routing is unavailable.
+
+    Falling back to `provider_slug` would send a pin naming something routing cannot
+    select, and OpenRouter's `only` is an allow-set -- so the request would be restricted
+    to a provider that matches nothing and could not be served at all.
+    """
+    published = [
+        {
+            "provider_slug": "google-vertex",
+            "provider_tag": tags[0],
+            "supported_parameters": {"resolution": {"type": "enum", "values": ["1K", "2K"]}},
+            "allowed_passthrough_parameters": [],
+        },
+        {
+            "provider_slug": "google-ai-studio",
+            "provider_tag": tags[1],
+            "supported_parameters": {
+                "resolution": {"type": "enum", "values": ["1K", "2K", "4K"]}
+            },
+            "allowed_passthrough_parameters": [],
+        },
+    ]
+    pipe = _Pipe()
+    body = _Body({"resolution": "4K"})
+    await adapter(pipe).fit_chat_image_config(
+        responses_body=body,
+        published=published,
+        metadata=None,
+        event_emitter=object(),
+        api_model_id=GEMINI,
+    )
+    assert body.image_config == {"resolution": "4K"}
+    assert "only" not in (body.provider or {}), (
+        f"a pin was written from something other than a routing tag: {body.provider!r}"
+    )
+
+
 @pytest.mark.parametrize(("ratio", "kept"), [("16:9", True), ("32:9", False)])
 @pytest.mark.asyncio
 async def test_a_chat_image_models_settings_are_fitted_on_the_way_out_of_the_pipe(
@@ -575,3 +735,130 @@ async def test_the_stream_flag_reaches_the_request_for_the_models_that_publish_o
 
     assert posts
     assert ("stream" in posts[0].kwargs["json"]) is asked
+
+
+@pytest.mark.parametrize("typed", [{"style": "digital_illustration"}, {"style": "vector_illustration"}])
+@pytest.mark.asyncio
+async def test_the_filters_provider_options_survive_to_the_image_request(typed):
+    """A request bound for the image API must not be cut down to the chat key set.
+
+    `ProviderPreferences` defines no `options`, so the merged block was emptied of it
+    before the transport was chosen -- and the image request format, which does define
+    `options`, then received a block with the user's settings already gone. Driven from
+    `Pipe.pipe` because the cut happens above the adapter, where an adapter-level test
+    cannot see it.
+    """
+    from open_webui_openrouter_pipe import EncryptedStr, Pipe
+    from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
+
+    model_id = "recraft/recraft-v3"
+    OpenRouterModelRegistry.set_image_endpoints({model_id: records(model_id)})
+    pipe = Pipe()
+    sent: list[dict[str, Any]] = []
+    try:
+        pipe.valves.API_KEY = EncryptedStr("test-api-key")
+        pipe.valves.BASE_URL = BASE
+        pipe.valves.ENABLE_OPENROUTER_IMAGE_GENERATION = True
+
+        def _callback(url, **kwargs):
+            from aioresponses import CallbackResult
+
+            sent.append(kwargs["json"])
+            return CallbackResult(status=200, payload={"data": [], "usage": {}})
+
+        with aioresponses() as mocked:
+            mocked.post(f"{BASE}/images", callback=_callback, repeat=True)
+            mocked.get(
+                f"{BASE}/models",
+                payload={"data": [{"id": model_id, "name": "Recraft V3",
+                                   "architecture": {"output_modalities": ["image"]}}]},
+                repeat=True,
+            )
+            await pipe.pipe(
+                body={"model": model_id, "messages": [{"role": "user", "content": "a red maple leaf"}]},
+                __user__={"id": "user_1"},
+                __request__=None,
+                __event_emitter__=None,
+                __event_call__=None,
+                __metadata__={
+                    "model": {"id": model_id},
+                    "openrouter_pipe": {
+                        "provider": {"only": ["recraft"], "options": {"recraft": typed}}
+                    },
+                },
+                __tools__=None,
+                __task__=None,
+                __task_body__=None,
+            )
+    finally:
+        await pipe.close()
+        OpenRouterModelRegistry.set_image_endpoints({})
+
+    assert sent, "nothing was sent upstream"
+    provider = sent[0].get("provider") or {}
+    assert provider.get("options", {}).get("recraft") == typed, (
+        f"the user's provider options did not reach the request: provider={provider!r}"
+    )
+    assert provider.get("only") == ["recraft"], (
+        f"the routing pin that triggered the cut was itself lost: provider={provider!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("ignored", "expected"),
+    [("google-vertex", {"resolution": "4K"}), ("google-ai-studio", None)],
+)
+@pytest.mark.asyncio
+async def test_the_chat_route_stops_reading_the_contract_of_a_provider_the_operator_excluded(
+    ignored, expected
+):
+    """`ignore` narrows which endpoints can serve the request exactly as `only` does.
+
+    Google Vertex stops at `2K` and Google AI Studio publishes `4K`, so excluding one or
+    the other decides whether the tier survives. Only the `only` pin was ever driven
+    through this path, so the `ignore` arm could be deleted and every excluded provider's
+    limits would go on being applied to a request it can no longer serve.
+
+    The two rows expect opposite answers, so a rule that ignores the pin satisfies one at
+    most.
+    """
+    pipe = _Pipe()
+    body = _Body({"resolution": "4K"}, provider={"ignore": [ignored]})
+    await adapter(pipe).fit_chat_image_config(
+        responses_body=body,
+        published=records(GEMINI),
+        metadata=None,
+        event_emitter=object(),
+        api_model_id=GEMINI,
+    )
+    assert body.image_config == expected
+
+
+@pytest.mark.asyncio
+async def test_a_pin_naming_a_provider_that_does_not_serve_this_model_says_so():
+    """A pin nobody serves is an operator mistake, not an outage.
+
+    The contract WAS read, so reporting nothing would leave the user watching a request
+    take a provider they thought they had pinned away from, and reporting a lookup
+    failure would send an operator to check OpenRouter's status page.
+    """
+    pipe = _Pipe()
+    body = _Body({"resolution": "4K"}, provider={"only": ["some-other-company"]})
+
+    await adapter(pipe).fit_chat_image_config(
+        responses_body=body,
+        published=records(GEMINI),
+        metadata=None,
+        event_emitter=object(),
+        api_model_id=GEMINI,
+    )
+
+    said = " ".join(pipe._event_emitter_handler.notices)
+    assert "some-other-company" in said, (
+        f"the pin that does not match was never mentioned to anyone: "
+        f"{pipe._event_emitter_handler.notices}"
+    )
+    assert "does not serve this model" in said, said
+    assert body.image_config == {"resolution": "4K"}, (
+        "an unmatched pin must not also silently drop the settings the user chose"
+    )

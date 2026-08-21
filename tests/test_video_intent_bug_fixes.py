@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -147,6 +148,177 @@ class TestRetargetingNotADowngrade:
         assert any("retarget_skipped_invalid_index" in d for d in intent.downgrades)
 
 
+class TestInputReferenceTargetIsMovedNotStamped:
+    """`input_reference` is a valid classifier target and an invalid `frame_type`.
+
+    `video_intent_prompts` Rule D asks the classifier for it by name, and
+    `validate_intent_params` admits it on any model that supports frames. Stamping it
+    onto a frame_image made `_encode_frame_images` raise and fail the whole generation,
+    because `input_reference` is never in a model's `supported_frame_images`. The entry
+    must move to `video_meta["input_references"]` instead, in the shape
+    `_materialise_frame_plan` already appends.
+    """
+
+    @staticmethod
+    def _frames() -> list[dict[str, Any]]:
+        return [
+            {"id": "img-0", "frame_type": "first_frame", "name": "a.png",
+             "content_type": "image/png"},
+            {"id": "img-1", "frame_type": "first_frame", "name": "b.png",
+             "content_type": "image/png"},
+        ]
+
+    @pytest.mark.parametrize(
+        ("idx", "moved_id", "moved_name", "kept_id"),
+        [(0, "img-0", "a.png", "img-1"), (1, "img-1", "b.png", "img-0")],
+    )
+    def test_the_named_attachment_is_the_one_that_moves(
+        self, idx, moved_id, moved_name, kept_id
+    ):
+        adapter = _adapter()
+        intent = VideoIntentResult(
+            intent="image_to_video",
+            frame_plan=[FramePlanEntry(
+                source="uploaded_attachment", source_index=idx,
+                timestamp_seconds=None, target="input_reference",
+            )],
+            prompt="x", use_user_prompt=False, language="en",
+            confidence="high", clarification=None, reason="",
+        )
+        video_meta: dict[str, list[dict[str, Any]]] = {"frame_images": self._frames()}
+        adapter._apply_uploaded_attachment_retargeting(intent, video_meta)
+
+        assert [f["id"] for f in video_meta["frame_images"]] == [kept_id]
+        assert video_meta["input_references"] == [
+            {"id": moved_id, "name": moved_name, "content_type": "image/png"}
+        ]
+        assert all(
+            "frame_type" not in ref for ref in video_meta["input_references"]
+        ), "input_references carry no frame_type; that key is what the encoder rejects"
+        assert intent.frames_retargeted == 1
+
+    @pytest.mark.parametrize(
+        ("target", "expect_moved"),
+        [("input_reference", True), ("last_frame", False)],
+    )
+    def test_only_input_reference_moves_other_targets_are_stamped(self, target, expect_moved):
+        adapter = _adapter()
+        intent = VideoIntentResult(
+            intent="image_to_video",
+            frame_plan=[FramePlanEntry(
+                source="uploaded_attachment", source_index=1,
+                timestamp_seconds=None, target=target,
+            )],
+            prompt="x", use_user_prompt=False, language="en",
+            confidence="high", clarification=None, reason="",
+        )
+        video_meta: dict[str, list[dict[str, Any]]] = {"frame_images": self._frames()}
+        adapter._apply_uploaded_attachment_retargeting(intent, video_meta)
+
+        assert (len(video_meta["frame_images"]) == 1) is expect_moved
+        assert ("input_references" in video_meta) is expect_moved
+        if not expect_moved:
+            assert video_meta["frame_images"][1]["frame_type"] == target
+
+    @pytest.mark.parametrize("plan_order", [[0, 2], [2, 0]])
+    def test_two_moves_pop_without_shifting_each_other(self, plan_order):
+        adapter = _adapter()
+        frames = [
+            {"id": f"img-{n}", "frame_type": "first_frame", "name": f"{n}.png",
+             "content_type": "image/png"}
+            for n in range(3)
+        ]
+        intent = VideoIntentResult(
+            intent="image_to_video",
+            frame_plan=[
+                FramePlanEntry(
+                    source="uploaded_attachment", source_index=idx,
+                    timestamp_seconds=None, target="input_reference",
+                )
+                for idx in plan_order
+            ],
+            prompt="x", use_user_prompt=False, language="en",
+            confidence="high", clarification=None, reason="",
+        )
+        video_meta: dict[str, list[dict[str, Any]]] = {"frame_images": frames}
+        adapter._apply_uploaded_attachment_retargeting(intent, video_meta)
+
+        assert [f["id"] for f in video_meta["frame_images"]] == ["img-1"], (
+            "a descending pop keeps the untouched middle entry; an ascending pop "
+            "would take img-1 as the second victim"
+        )
+        assert [r["id"] for r in video_meta["input_references"]] == [
+            f"img-{n}" for n in plan_order
+        ], "the classifier's plan order is the reference order"
+        assert intent.frames_retargeted == 2
+
+    def test_a_move_appends_to_references_the_frame_plan_already_produced(self):
+        adapter = _adapter()
+        intent = VideoIntentResult(
+            intent="image_to_video",
+            frame_plan=[FramePlanEntry(
+                source="uploaded_attachment", source_index=0,
+                timestamp_seconds=None, target="input_reference",
+            )],
+            prompt="x", use_user_prompt=False, language="en",
+            confidence="high", clarification=None, reason="",
+        )
+        existing = {"id": "prior", "name": "intent-frame-input_reference.png",
+                    "content_type": "image/png"}
+        video_meta: dict[str, list[dict[str, Any]]] = {
+            "frame_images": self._frames(),
+            "input_references": [existing],
+        }
+        adapter._apply_uploaded_attachment_retargeting(intent, video_meta)
+        assert video_meta["input_references"][0] is existing
+        assert [r["id"] for r in video_meta["input_references"]] == ["prior", "img-0"]
+        assert set(video_meta["input_references"][1]) == {"id", "name", "content_type"}
+
+    @pytest.mark.parametrize(
+        "supported", [["first_frame"], ["first_frame", "last_frame"]]
+    )
+    @pytest.mark.asyncio
+    async def test_the_surviving_frames_encode_instead_of_failing_the_generation(
+        self, monkeypatch, supported
+    ):
+        import base64
+
+        from open_webui_openrouter_pipe.integrations import video as video_module
+
+        adapter = _adapter()
+        intent = VideoIntentResult(
+            intent="image_to_video",
+            frame_plan=[FramePlanEntry(
+                source="uploaded_attachment", source_index=1,
+                timestamp_seconds=None, target="input_reference",
+            )],
+            prompt="x", use_user_prompt=False, language="en",
+            confidence="high", clarification=None, reason="",
+        )
+        video_meta: dict[str, list[dict[str, Any]]] = {"frame_images": self._frames()}
+        adapter._apply_uploaded_attachment_retargeting(intent, video_meta)
+
+        async def _file(file_id, _logger):
+            return SimpleNamespace(id=file_id, filename=f"{file_id}.png")
+
+        monkeypatch.setattr(video_module, "get_file_by_id", _file)
+        monkeypatch.setattr(video_module, "infer_file_mime_type", lambda _obj: "image/png")
+        adapter._pipe._file_gateway.read_file_record_base64 = AsyncMock(
+            return_value=base64.b64encode(b"\x89PNG\r\n\x1a\n").decode()
+        )
+        valves = SimpleNamespace(
+            VIDEO_FRAME_IMAGE_MAX_BYTES=10_000_000,
+            VIDEO_FRAME_TOTAL_MAX_BYTES=20_000_000,
+            IMAGE_UPLOAD_CHUNK_BYTES=1024,
+            VIDEO_FRAME_IMAGE_MIME_ALLOWLIST="image/png",
+        )
+
+        encoded = await adapter._encode_frame_images(
+            video_meta, {"supported_frame_images": supported}, valves,
+        )
+        assert [item["frame_type"] for item in encoded] == ["first_frame"]
+
+
 # -----------------------------------------------------------------------------
 # Bug A (telemetry) — new field exposed to operators
 # -----------------------------------------------------------------------------
@@ -280,3 +452,62 @@ def test_video_intent_result_has_frames_retargeted_field():
     assert result.frames_retargeted == 0
     result.frames_retargeted += 3
     assert result.frames_retargeted == 3
+
+
+class TestTheAdapterWrapperAroundTelemetry:
+    """The adapter's own `_emit_intent_telemetry`, which nothing exercised.
+
+    `emit_telemetry_log` is well covered; the wrapper that decides whether it is called
+    at all, and with which valve, is not. Stubbed to do nothing, the whole suite -- 7773
+    tests -- stayed green, so an operator who turned the decision log on would get
+    silence and no test would say so.
+    """
+
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_the_decision_log_valve_reaches_the_line_it_governs(self, caplog, enabled):
+        from types import SimpleNamespace
+
+        adapter = _adapter()
+        caplog.set_level(logging.DEBUG, logger="t")
+        adapter._emit_intent_telemetry(
+            _result(intent="modify_prior_video"),
+            valves=SimpleNamespace(VIDEO_INTENT_LOG_DECISIONS=enabled),
+            chat_id="chat-telemetry",
+        )
+
+        lines = [rec for rec in caplog.records if "video_intent telemetry" in rec.message]
+        assert lines, "the turn produced no telemetry line at any level"
+        assert (lines[0].levelno >= logging.INFO) is enabled, (
+            f"VIDEO_INTENT_LOG_DECISIONS={enabled} produced a {lines[0].levelname} line"
+        )
+        assert '"intent": "modify_prior_video"' in lines[0].message
+
+    def test_a_telemetry_failure_never_reaches_the_users_video_request(self, caplog):
+        """Telemetry is the operator's convenience; the user's generation outranks it."""
+        from types import SimpleNamespace
+
+        from open_webui_openrouter_pipe.integrations import video as video_module
+
+        adapter = _adapter()
+        calls: list[str] = []
+
+        def _boom(*_args, **_kwargs):
+            calls.append("called")
+            raise TypeError("telemetry field is not serialisable")
+
+        original = video_module.emit_telemetry_log
+        video_module.emit_telemetry_log = _boom
+        try:
+            caplog.set_level(logging.DEBUG, logger="t")
+            adapter._emit_intent_telemetry(
+                _result(),
+                valves=SimpleNamespace(VIDEO_INTENT_LOG_DECISIONS=True),
+                chat_id="chat-telemetry",
+            )
+        finally:
+            video_module.emit_telemetry_log = original
+
+        assert calls == ["called"], "the wrapper never called the telemetry writer"
+        assert any("suppressed" in rec.message for rec in caplog.records), (
+            "a swallowed telemetry failure left no trace at all"
+        )

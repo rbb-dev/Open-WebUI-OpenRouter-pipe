@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
@@ -14,6 +15,8 @@ from .video_client import OpenRouterVideoClient
 
 _warned_video_catalog: set[str] = set()
 
+_MODALITY_FETCH_CONCURRENCY = 6
+
 
 async def ensure_video_catalog_loaded(
     session: aiohttp.ClientSession,
@@ -25,7 +28,12 @@ async def ensure_video_catalog_loaded(
 ) -> None:
     """Fetch video models and register them into the shared model registry."""
     if not getattr(valves, "ENABLE_VIDEO_GENERATION", False):
-        logger.info("Video catalog skipped: ENABLE_VIDEO_GENERATION is False.")
+        if OpenRouterModelRegistry.last_video_fetch() > 0:
+            OpenRouterModelRegistry.register_video_models([])
+            OpenRouterModelRegistry.reset_video_fetch_timestamp()
+            logger.info("Video catalog cleared: ENABLE_VIDEO_GENERATION is False.")
+        else:
+            logger.debug("Video catalog skipped: ENABLE_VIDEO_GENERATION is False.")
         return
 
     last_attempt = OpenRouterModelRegistry.last_video_attempt()
@@ -57,5 +65,35 @@ async def ensure_video_catalog_loaded(
         logger.warning("Video catalog fetch returned 0 models; nothing to register.")
         return
 
+    await _attach_declared_input_modalities(client, models, logger)
+
     OpenRouterModelRegistry.register_video_models(models)
     logger.info("Registered %d OpenRouter video model(s) into the catalog.", len(models))
+
+
+async def _attach_declared_input_modalities(
+    client: OpenRouterVideoClient,
+    models: list[dict[str, Any]],
+    logger: Any,
+) -> None:
+    wanted = [m for m in models if isinstance(m, dict) and isinstance(m.get("id"), str)]
+    if not wanted:
+        return
+    gate = asyncio.Semaphore(_MODALITY_FETCH_CONCURRENCY)
+
+    async def _one(model: dict[str, Any]) -> None:
+        async with gate:
+            found = await client.model_modalities(str(model["id"]))
+        if found:
+            model["input_modalities"] = found
+
+    await asyncio.gather(*(_one(model) for model in wanted), return_exceptions=True)
+    known = sum(1 for m in wanted if m.get("input_modalities"))
+    if known < len(wanted):
+        logger.log(
+            warn_level(_warned_video_catalog, "modalities"),
+            "Read the accepted input kinds for %d of %d video model(s); the rest are offered "
+            "every reference control until it can be read again.",
+            known,
+            len(wanted),
+        )

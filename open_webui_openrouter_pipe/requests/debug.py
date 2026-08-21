@@ -101,21 +101,3 @@ async def _debug_print_error_response(resp: Any, *, logger: logging.Logger) -> s
             logger.debug("could not read the error response body", exc_info=True)
             return f"<<failed to read body: {exc}>>"
 
-
-def _extract_error_message_from_body(body: str, *, max_length: int = 1000) -> str:
-    if not isinstance(body, str) or not body.strip():
-        return ""
-    try:
-        payload = json.loads(body)
-    except (RecursionError, TypeError, ValueError):
-        return body.strip()[:max_length]
-    if isinstance(payload, dict):
-        err = payload.get("error")
-        if isinstance(err, dict):
-            message = err.get("message") or err.get("detail")
-            if isinstance(message, str) and message.strip():
-                return message.strip()[:max_length]
-        message = payload.get("message") or payload.get("detail")
-        if isinstance(message, str) and message.strip():
-            return message.strip()[:max_length]
-    return json.dumps(payload, ensure_ascii=False)[:max_length]

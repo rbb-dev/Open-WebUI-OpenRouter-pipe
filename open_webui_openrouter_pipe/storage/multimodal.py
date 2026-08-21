@@ -146,6 +146,53 @@ def _guess_image_mime_type(url: str, content_type: str | None, data: bytes) -> s
     return None
 
 
+def image_pixel_size(data: bytes) -> tuple[int, int] | None:
+    if not isinstance(data, (bytes, bytearray)) or len(data) < 16:
+        return None
+    raw = bytes(data)
+
+    if raw.startswith(b"\x89PNG\r\n\x1a\n") and raw[12:16] == b"IHDR":
+        return (int.from_bytes(raw[16:20], "big"), int.from_bytes(raw[20:24], "big"))
+
+    if raw.startswith(b"RIFF") and raw[8:12] == b"WEBP":
+        chunk = raw[12:16]
+        if chunk == b"VP8X" and len(raw) >= 30:
+            return (
+                int.from_bytes(raw[24:27], "little") + 1,
+                int.from_bytes(raw[27:30], "little") + 1,
+            )
+        if chunk == b"VP8 " and len(raw) >= 30:
+            return (
+                int.from_bytes(raw[26:28], "little") & 0x3FFF,
+                int.from_bytes(raw[28:30], "little") & 0x3FFF,
+            )
+        if chunk == b"VP8L" and len(raw) >= 25:
+            bits = int.from_bytes(raw[21:25], "little")
+            return ((bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1)
+
+    if raw.startswith(b"\xff\xd8\xff"):
+        index = 2
+        while index + 9 < len(raw):
+            if raw[index] != 0xFF:
+                index += 1
+                continue
+            marker = raw[index + 1]
+            if marker in (0xD8, 0xD9) or 0xD0 <= marker <= 0xD7:
+                index += 2
+                continue
+            length = int.from_bytes(raw[index + 2 : index + 4], "big")
+            if length < 2:
+                return None
+            if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
+                          0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                return (
+                    int.from_bytes(raw[index + 7 : index + 9], "big"),
+                    int.from_bytes(raw[index + 5 : index + 7], "big"),
+                )
+            index += 2 + length
+    return None
+
+
 def _sniff_mime_from_prefix(data: bytes) -> str | None:
     if not isinstance(data, (bytes, bytearray)) or not data:
         return None

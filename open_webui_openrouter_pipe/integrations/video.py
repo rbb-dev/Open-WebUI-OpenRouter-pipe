@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import contextlib
 import functools
 import logging
@@ -10,6 +11,7 @@ import shutil
 import tempfile
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,7 +19,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from ..core.config import _PIPE_METADATA_KEY, _select_openrouter_http_referer
 from ..core.costs import maybe_dump_costs_snapshot
-from ..core.errors import RequiredInternalFileError
+from ..core.errors import OpenRouterAPIError, RequiredInternalFileError
 from ..core.utils import (
     _clean_str,
     _csv_set,
@@ -30,9 +32,11 @@ from ..media import (
     FrameExtractionError,
     extract_frame,
     make_thumbnail,
+    probe_video,
 )
 from ..models.registry import OpenRouterModelRegistry
 from ..requests.fusion_engine import asks_for_help, latest_user_text
+from ..storage.multimodal import image_pixel_size
 from ..storage.owui_files import (
     get_file_by_id,
     infer_file_mime_type,
@@ -41,6 +45,12 @@ from ..storage.owui_files import (
 )
 from ..storage.video_persistence import VideoPersistence
 from .image_types import capability_declared_off, prompt_with_system, summarise_names
+from .media_relay import (
+    RELAY_HOSTS,
+    MediaRelayError,
+    host_keeps_forever,
+    relay_to_public_url,
+)
 from .provider_options import (
     VIDEO_PROVIDER_KEYS,
     carrier_slug,
@@ -73,9 +83,112 @@ _warned_video_provider_keys: set[str] = set()
 # semaphore is held, and the list arrives from the request. The models take a handful of
 # reference clips; a cap well above that bounds the work without reaching real usage.
 _MAX_PASSTHROUGH_URLS = 16
+_MAX_VIDEO_OUTPUTS = 16
+
+_REFERENCE_KINDS_NEEDING_A_LINK = frozenset({"audio_url", "video_url"})
+
+
+def _declared_input_kinds(video_model: Any) -> Callable[[str], bool]:
+    source = video_model if isinstance(video_model, dict) else {}
+    declared = source.get("input_modalities")
+    if not isinstance(declared, list):
+        declared = ((source.get("architecture") or {}) if isinstance(source.get("architecture"), dict) else {}).get(
+            "input_modalities"
+        )
+    if not isinstance(declared, list) or not declared:
+        return lambda _family: True
+    kinds = {item for item in declared if isinstance(item, str)}
+    return lambda family: family in kinds
+
+
+def _reference_kind_refused(family: str) -> str:
+    spoken = {"video": "a clip", "audio": "a sound file", "image": "a picture"}.get(family, family)
+    return f"this model does not take {spoken} as a reference"
+
+@dataclass(frozen=True, slots=True)
+class _AcceptedReference:
+    file_id: str
+    kind: str
+    family: str
+    mime: str
+    b64: str
+    via_file_host: bool
+    filename: str
+
+
+_FLOOR_UNPUBLISHED = (
+    "unpublished: no OpenRouter page, model listing or recorded reply states this figure"
+)
+
+_FLOOR_OBSERVED_PREFIX = "observed: "
+
+
+@dataclass(frozen=True, slots=True)
+class _InputPixelFloor:
+    pixels: int
+    source: str
+
+    @property
+    def whose_rule(self) -> str:
+        if self.source == _FLOOR_UNPUBLISHED:
+            return (
+                "a floor this pipe applies itself, because nobody publishes one for this "
+                "model; a larger clip goes through"
+            )
+        if self.source.startswith(_FLOOR_OBSERVED_PREFIX):
+            return (
+                "a floor read off a refusal this model sent back: "
+                f"{self.source[len(_FLOOR_OBSERVED_PREFIX):]}"
+            )
+        return f"a floor this model's own documentation states, at {self.source}"
+
+
+_INPUT_PIXEL_FLOORS: dict[str, _InputPixelFloor] = {
+    "bytedance/seedance-2.5": _InputPixelFloor(407696, _FLOOR_UNPUBLISHED),
+    "bytedance/seedance-2.0": _InputPixelFloor(407696, _FLOOR_UNPUBLISHED),
+    "bytedance/seedance-2.0-fast": _InputPixelFloor(407696, _FLOOR_UNPUBLISHED),
+    "bytedance/seedance-2.0-mini": _InputPixelFloor(407696, _FLOOR_UNPUBLISHED),
+    "bytedance/seedance-1-5-pro": _InputPixelFloor(407696, _FLOOR_UNPUBLISHED),
+}
+
+
+def _validate_input_pixel_floors(floors: dict[str, _InputPixelFloor]) -> None:
+    for model_id, floor in floors.items():
+        if floor.pixels <= 0:
+            raise ValueError(
+                f"{model_id!r} declares a pixel floor of {floor.pixels!r}, which would "
+                "drop nothing or everything"
+            )
+        if not (
+            floor.source == _FLOOR_UNPUBLISHED
+            or floor.source.startswith(_FLOOR_OBSERVED_PREFIX)
+            or floor.source.startswith("https://")
+        ):
+            raise ValueError(
+                f"{model_id!r} leaves a user's clip out of a request they are paying for "
+                "on the strength of a pixel count, so the table must record where that "
+                "count came from - the page that publishes it, the refusal it was read "
+                f"off, or the explicit note that nothing publishes it; got {floor.source!r}"
+            )
+
+
+_validate_input_pixel_floors(_INPUT_PIXEL_FLOORS)
+
+
+_AUDIO_NEEDS_A_COMPANION = (
+    "OpenRouter only takes a sound reference alongside a picture or a clip, so it was left out"
+)
+
+_REFERENCE_IMAGE_MIN_SIDE = 256
+_REFERENCE_IMAGE_MAX_SIDE = 5760
+
+_REFERENCE_NEEDS_A_LINK = (
+    "OpenRouter takes sound and video references as https links, not as uploaded files, "
+    "so a file attached here cannot be sent. Paste a public https link to it instead"
+)
 
 _NO_SLUG = (
-    "this model's catalog entry publishes no provider slug to key it under"
+    "this model's catalog entry does not name the company to send it to"
 )
 
 _NOT_IN_SCHEMA = (
@@ -83,7 +196,7 @@ _NOT_IN_SCHEMA = (
 )
 
 _OVER_URL_BUDGET = (
-    f"only the first {_MAX_PASSTHROUGH_URLS} passthrough URLs in a request are forwarded"
+    f"only the first {_MAX_PASSTHROUGH_URLS} links in a request are forwarded"
 )
 
 _OVER_REFERENCE_BUDGET = (
@@ -124,6 +237,11 @@ _DOCUMENTED_TOP_LEVEL_VIDEO_FIELDS: frozenset[str] = VIDEO_REQUEST_FIELDS
 if TYPE_CHECKING:
     from ..pipe import Pipe
     from ..streaming.event_emitter import EventEmitter
+
+
+def _write_and_close(handle: int, blob: bytes) -> None:
+    with open(handle, "wb") as sink:
+        sink.write(blob)
 
 
 class VideoGenerationAdapter:
@@ -427,27 +545,18 @@ class VideoGenerationAdapter:
                 await self._emit_completion(event_emitter, content)
                 return content
 
-            global_semaphore = self._ensure_global_semaphore(valves)
-            await global_semaphore.acquire()
-            global_slot_acquired = True
-
             video_meta = self._extract_video_metadata(metadata)
             withheld: list[tuple[str, str]] = []
             frame_images = await self._encode_frame_images(
                 video_meta, video_model, valves, user_obj=user_obj or user,
             )
+            relayed_families: set[tuple[str, str]] = set()
             input_references = await self._encode_input_references(
                 video_meta, valves, withheld=withheld, user_obj=user_obj or user,
+                video_model=video_model, relayed=relayed_families,
+                companions=bool(frame_images),
             )
-            video_attachment_urls = await self._encode_video_attachments(
-                video_meta, valves, user_obj=user_obj or user,
-            )
-            audio_attachment_url = await self._encode_audio_attachment(
-                video_meta, valves, user_obj=user_obj or user,
-            )
-            if not prompt.strip() and not (
-                frame_images or input_references or video_attachment_urls
-            ):
+            if not prompt.strip() and not (frame_images or input_references):
                 content = self._build_failure_content(
                     job_id="",
                     model_id=api_model_id,
@@ -459,6 +568,10 @@ class VideoGenerationAdapter:
                 await self._emit_status(event_emitter, "Video generation could not start.", done=True)
                 await self._emit_completion(event_emitter, content)
                 return content
+            global_semaphore = self._ensure_global_semaphore(valves)
+            await global_semaphore.acquire()
+            global_slot_acquired = True
+
             provider_block = requested_provider_block(
                 SimpleNamespace(provider=getattr(responses_body, "provider", None)), metadata
             )
@@ -472,10 +585,14 @@ class VideoGenerationAdapter:
                 frame_images=frame_images,
                 input_references=input_references,
                 provider_options=provider_options,
-                video_attachment_urls=video_attachment_urls,
-                audio_attachment_url=audio_attachment_url,
                 withheld=withheld,
             )
+            if relayed_families and event_emitter and bool(
+                getattr(valves, "TELL_USERS_ABOUT_THE_FILE_HOST", True)
+            ):
+                await self._pipe._event_emitter_handler._emit_notification(
+                    event_emitter, self._file_host_notice(valves, relayed_families), level="info"
+                )
             if withheld and event_emitter:
                 await self._pipe._event_emitter_handler._emit_notification(
                     event_emitter, self._withheld_notice(withheld), level="warning"
@@ -539,6 +656,15 @@ class VideoGenerationAdapter:
             return result.content
         except asyncio.CancelledError:
             raise
+        except OpenRouterAPIError as exc:
+            self.logger.warning("Video generation rejected (job_id=%s): %s", job_id, exc)
+            await self._pipe._ensure_error_formatter()._report_openrouter_error(
+                exc,
+                event_emitter=event_emitter,
+                normalized_model_id=normalized_model_id,
+                api_model_id=api_model_id,
+            )
+            return ""
         except Exception as exc:
             self.logger.exception("Video generation request failed (job_id=%s)", job_id)
             reason = str(exc) or exc.__class__.__name__
@@ -675,6 +801,7 @@ class VideoGenerationAdapter:
         content = ""
         failed = False
         usage: dict[str, Any] = {}
+        costed = False
         file_id: str | None = None
         output_mime = ""
         description = ""
@@ -705,7 +832,13 @@ class VideoGenerationAdapter:
                         "Video job %s produced generation %s", job_id, generation_id
                     )
                 counter: Any = getattr(client, "output_count", None)
-                outputs = 1 if counter is None else int(counter(status_payload))
+                reported = 1 if counter is None else int(counter(status_payload))
+                outputs = min(reported, _MAX_VIDEO_OUTPUTS)
+                if reported > outputs:
+                    self.logger.warning(
+                        "Video job %s reported %d outputs; downloading the first %d",
+                        job_id, reported, outputs,
+                    )
                 max_bytes = int(valves.REMOTE_VIDEO_MAX_SIZE_MB) * 1024 * 1024
                 allowed_mimes = _csv_set(valves.VIDEO_OUTPUT_MIME_ALLOWLIST)
                 await self._emit_status(event_emitter, "Downloading generated video...", done=False, progress=80)
@@ -773,6 +906,14 @@ class VideoGenerationAdapter:
                     file_ids.append(stored)
                     with contextlib.suppress(Exception):
                         clip.path.unlink(missing_ok=True)
+                else:
+                    self.logger.warning(
+                        "Video job %s downloaded %d clips but clip %d could not be stored "
+                        "in Open WebUI; the clips already stored are kept",
+                        job_id,
+                        len(downloads),
+                        index,
+                    )
             if not file_ids:
                 raise VideoGenerationError(
                     "Generated video could not be stored in Open WebUI; the upload failed."
@@ -784,21 +925,24 @@ class VideoGenerationAdapter:
                 file_ids=file_ids,
                 elapsed=elapsed,
                 usage=usage,
+                unstored=len(downloads) - len(file_ids),
             )
             if intent_disclosure_block:
                 content = intent_disclosure_block + "\n" + content
             description = self._format_final_status(elapsed=elapsed, usage=usage, valves=valves)
             await self._emit_status(event_emitter, description, done=True, progress=100)
-            with contextlib.suppress(Exception):
-                await maybe_dump_costs_snapshot(
-                    self._pipe,
-                    valves,
-                    user_id=user_id,
-                    model_id=api_model_id,
-                    usage=usage,
-                    user_obj=user_obj,
-                    pipe_id=self._pipe.id,
-                )
+            if usage and not costed:
+                costed = True
+                with contextlib.suppress(Exception):
+                    await maybe_dump_costs_snapshot(
+                        self._pipe,
+                        valves,
+                        user_id=user_id,
+                        model_id=api_model_id,
+                        usage=usage,
+                        user_obj=user_obj,
+                        pipe_id=self._pipe.id,
+                    )
             return VideoLifecycleResult(
                 content=content,
                 status_description=description,
@@ -822,6 +966,18 @@ class VideoGenerationAdapter:
                 content = intent_disclosure_block + "\n" + content
             description = f"Video generation failed: {reason}"
             await self._emit_status(event_emitter, description, done=True)
+            if usage and not costed:
+                costed = True
+                with contextlib.suppress(Exception):
+                    await maybe_dump_costs_snapshot(
+                        self._pipe,
+                        valves,
+                        user_id=user_id,
+                        model_id=api_model_id,
+                        usage=usage,
+                        user_obj=user_obj,
+                        pipe_id=self._pipe.id,
+                    )
             return VideoLifecycleResult(
                 content=content,
                 status_description=description,
@@ -1055,8 +1211,6 @@ class VideoGenerationAdapter:
         frame_images: list[dict[str, Any]],
         provider_options: dict[str, Any],
         provider_block: dict[str, Any] | None = None,
-        video_attachment_urls: list[str] | None = None,
-        audio_attachment_url: str = "",
         input_references: list[dict[str, Any]] | None = None,
         withheld: list[tuple[str, str]] | None = None,
     ) -> dict[str, Any]:
@@ -1091,15 +1245,6 @@ class VideoGenerationAdapter:
                     else "the catalog entry does not list it as an allowed passthrough parameter",
                 )
         self._apply_size_consistency(payload, video_model, withheld)
-        if video_attachment_urls:
-            if "videos" in passthrough and len(video_attachment_urls) > 1:
-                provider_params["videos"] = [{"url": u} for u in video_attachment_urls]
-            elif "video" in passthrough:
-                provider_params["video"] = video_attachment_urls[0]
-            elif "videos" in passthrough:
-                provider_params["videos"] = [{"url": video_attachment_urls[0]}]
-        if audio_attachment_url and "audio" in passthrough:
-            provider_params["audio"] = audio_attachment_url
         if frame_images:
             payload["frame_images"] = frame_images
         if input_references:
@@ -1335,10 +1480,7 @@ class VideoGenerationAdapter:
         for slug, payload in provider_options.items():
             if not isinstance(slug, str) or not slug.strip() or not isinstance(payload, dict):
                 continue
-            inner = payload.get("parameters")
-            flattened = dict(inner) if isinstance(inner, dict) else {}
-            flattened.update({key: value for key, value in payload.items() if key != "parameters"})
-            normalised[slug.strip()] = flattened
+            normalised[slug.strip()] = dict(payload)
         return normalised
 
     async def _encode_frame_images(
@@ -1417,6 +1559,9 @@ class VideoGenerationAdapter:
         *,
         withheld: list[tuple[str, str]] | None = None,
         user_obj: Any = None,
+        video_model: Any = None,
+        relayed: set[tuple[str, str]] | None = None,
+        companions: bool = False,
     ) -> list[dict[str, Any]]:
         raw = video_meta.get("input_references")
         if not isinstance(raw, list) or not raw:
@@ -1426,10 +1571,17 @@ class VideoGenerationAdapter:
         total_max = int(valves.VIDEO_FRAME_TOTAL_MAX_BYTES)
         chunk_size = int(getattr(valves, "IMAGE_UPLOAD_CHUNK_BYTES", 1024 * 1024))
         allowed_images = _csv_set(valves.VIDEO_FRAME_IMAGE_MIME_ALLOWLIST)
+        accepted: list[_AcceptedReference] = []
+        model_takes = _declared_input_kinds(video_model)
+        blob_floor = _INPUT_PIXEL_FLOORS.get(_clean_str(video_meta.get("model_id")))
         encoded: list[dict[str, Any]] = []
         total_bytes = 0
 
         def _skip(name: str, reason: str) -> None:
+            self.logger.log(
+                warn_level(_warned_dropped_video_param, f"input_reference:{reason}"),
+                "Reference file %r was not sent with the video request: %s", name, reason,
+            )
             if withheld is not None:
                 withheld.append((name, reason))
 
@@ -1454,6 +1606,13 @@ class VideoGenerationAdapter:
             if family == "image" and mime not in allowed_images:
                 _skip(file_id, f"the type {mime!r} is not on the reference image allowlist")
                 continue
+            if not model_takes(family):
+                _skip(file_id, _reference_kind_refused(family))
+                continue
+            via_file_host = self._file_host_wanted(valves, family)
+            if kind in _REFERENCE_KINDS_NEEDING_A_LINK and not via_file_host:
+                _skip(file_id, _REFERENCE_NEEDS_A_LINK)
+                continue
             try:
                 b64 = await self._pipe._file_gateway.read_file_record_base64(
                     file_obj,
@@ -1476,82 +1635,179 @@ class VideoGenerationAdapter:
                 )
                 _skip(file_id, "it contains invalid base64 data")
                 continue
-            if total_bytes + decoded_len > total_max:
+            if family == "image":
+                note = self._reference_image_size_note(b64)
+                if note:
+                    _skip(file_id, note)
+                    continue
+            if via_file_host:
+                if family == "video":
+                    note = await self._clip_too_small_note(blob_floor, b64, mime)
+                    if note:
+                        _skip(file_id, note)
+                        continue
+            elif total_bytes + decoded_len > total_max:
                 _skip(file_id, _OVER_REFERENCE_BUDGET)
                 continue
-            total_bytes += decoded_len
-            encoded.append({
-                "type": kind,
-                kind: {"url": f"data:{mime};base64,{b64}"},
-            })
+            else:
+                total_bytes += decoded_len
+            accepted.append(
+                _AcceptedReference(
+                    file_id=file_id,
+                    kind=kind,
+                    family=family,
+                    mime=mime,
+                    b64=b64,
+                    via_file_host=via_file_host,
+                    filename=_clean_str(getattr(file_obj, "filename", "")),
+                )
+            )
+        if accepted and not companions and all(
+            entry.kind == "audio_url" for entry in accepted
+        ):
+            for entry in accepted:
+                _skip(entry.file_id, _AUDIO_NEEDS_A_COMPANION)
+            return []
+        for entry in accepted:
+            if entry.via_file_host:
+                link, host = await self._relay_reference(
+                    valves, entry.b64, filename=entry.filename,
+                    mime=entry.mime, family=entry.family,
+                )
+                encoded.append({"type": entry.kind, entry.kind: {"url": link}})
+                if relayed is not None:
+                    relayed.add((entry.family, host))
+                continue
+            encoded.append(
+                {
+                    "type": entry.kind,
+                    entry.kind: {"url": f"data:{entry.mime};base64,{entry.b64}"},
+                }
+            )
         return encoded
 
-    async def _encode_attachment_data_url(
-        self,
-        item: dict[str, Any],
-        valves: Any,
-        kind: str,
-        *,
-        user_obj: Any = None,
-    ) -> str:
-        file_id = _clean_str(item.get("id"))
-        if not file_id:
-            raise VideoGenerationError(f"{kind} attachment is missing a file id.")
-        chunk_size = int(getattr(valves, "IMAGE_UPLOAD_CHUNK_BYTES", 1024 * 1024))
-        max_bytes = int(getattr(valves, "REMOTE_VIDEO_MAX_SIZE_MB", 500)) * 1024 * 1024
-        file_obj = await get_file_by_id(file_id, self._pipe.logger)
-        if not file_obj:
-            raise VideoGenerationError(f"{kind} attachment '{file_id}' could not be loaded from Open WebUI storage.")
-        mime = infer_file_mime_type(file_obj)
-        mime = _clean_str(mime).split(";", 1)[0].lower() or _clean_str(item.get("content_type")).split(";", 1)[0].lower()
-        if not mime:
-            raise VideoGenerationError(f"{kind} attachment '{file_id}' has no detectable MIME type.")
+    @staticmethod
+    def _file_host_notice(valves: Any, relayed: set[tuple[str, str]]) -> str:
+        template = str(getattr(valves, "FILE_HOST_NOTICE", "") or "")
+        hosts = sorted({used for _family, used in relayed})
+        host = hosts[0] if hosts else str(getattr(valves, "MEDIA_FILE_HOST", "litterbox"))
+        kinds = {"video": "clip", "audio": "sound file", "image": "picture"}
+        spoken = sorted({kinds.get(family, family) for family, _used in relayed})
+        named = spoken[0] if len(spoken) == 1 else " and ".join(
+            [", ".join(spoken[:-1]), spoken[-1]]
+        )
+        if any(host_keeps_forever(used) for used in hosts) or (
+            not hosts and host_keeps_forever(host)
+        ):
+            retention = "and stays there until someone deletes it"
+        else:
+            spans = {"1h": "an hour", "12h": "12 hours", "24h": "a day", "72h": "three days"}
+            span = str(getattr(valves, "MEDIA_FILE_HOST_RETENTION", "1h"))
+            retention = f"and is deleted again {spans.get(span, span)} later"
         try:
-            b64 = await self._pipe._file_gateway.read_file_record_base64(
-                file_obj, chunk_size, max_bytes, user=user_obj,
+            return template.format(
+                kind=named, host=" and ".join(hosts) or host, retention=retention
             )
-        except RequiredInternalFileError as exc:
-            raise VideoGenerationError(exc.user_message) from exc
-        if not b64:
-            raise VideoGenerationError(f"{kind} attachment '{file_id}' could not be encoded.")
-        return f"data:{mime};base64,{b64}"
+        except (KeyError, IndexError, ValueError):
+            return template
 
-    async def _encode_video_attachments(
-        self,
-        video_meta: dict[str, Any],
-        valves: Any,
-        *,
-        user_obj: Any = None,
-    ) -> list[str]:
-        raw = video_meta.get("video_attachments")
-        if not isinstance(raw, list) or not raw:
-            return []
-        urls: list[str] = []
-        for item in raw:
-            if isinstance(item, dict):
-                urls.append(
-                    await self._encode_attachment_data_url(
-                        item, valves, "Video", user_obj=user_obj,
-                    )
-                )
-        return urls
+    @staticmethod
+    def _file_host_wanted(valves: Any, family: str) -> bool:
+        if not bool(getattr(valves, "SEND_MEDIA_VIA_FILE_HOST", False)):
+            return False
+        per_kind = {
+            "video": "SEND_VIDEO_VIA_FILE_HOST",
+            "audio": "SEND_AUDIO_VIA_FILE_HOST",
+            "image": "SEND_IMAGES_VIA_FILE_HOST",
+        }.get(family)
+        return bool(per_kind and getattr(valves, per_kind, False))
 
-    async def _encode_audio_attachment(
-        self,
-        video_meta: dict[str, Any],
-        valves: Any,
-        *,
-        user_obj: Any = None,
+    async def _clip_too_small_note(
+        self, floor: _InputPixelFloor | None, b64: str, mime: str
     ) -> str:
-        raw = video_meta.get("audio_attachments")
-        if not isinstance(raw, list) or not raw:
+        if floor is None:
             return ""
-        for item in raw:
-            if isinstance(item, dict):
-                return await self._encode_attachment_data_url(
-                    item, valves, "Audio", user_obj=user_obj,
-                )
-        return ""
+        try:
+            blob = base64.b64decode(b64, validate=False)
+        except (binascii.Error, ValueError):
+            return ""
+        suffix = extension_for_video_mime(mime) or ".mp4"
+        handle, path = tempfile.mkstemp(suffix=suffix, prefix="openrouter-clip-")
+        temp = Path(path)
+        try:
+            await asyncio.to_thread(_write_and_close, handle, blob)
+            meta = await probe_video(temp)
+        except FrameExtractionError:
+            return ""
+        except asyncio.CancelledError:
+            raise
+        except (OSError, ValueError, RuntimeError):
+            return ""
+        finally:
+            with contextlib.suppress(OSError):
+                temp.unlink()
+        pixels = int(meta.width) * int(meta.height)
+        if pixels <= 0 or pixels >= floor.pixels:
+            return ""
+        return (
+            f"it is {meta.width} by {meta.height}, which is {pixels:,} pixels a frame, and "
+            f"anything under {floor.pixels:,} is left out here: {floor.whose_rule}"
+        )
+
+    async def _relay_reference(
+        self, valves: Any, b64: str, *, filename: str, mime: str, family: str
+    ) -> tuple[str, str]:
+        try:
+            blob = base64.b64decode(b64, validate=False)
+        except (binascii.Error, ValueError) as exc:
+            raise VideoGenerationError(
+                f"The attached {family} could not be read, so it was not sent."
+            ) from exc
+        chosen = str(getattr(valves, "MEDIA_FILE_HOST", "litterbox"))
+        hosts = [chosen]
+        if bool(getattr(valves, "USE_THE_OTHER_FILE_HOST_IF_ONE_IS_DOWN", False)):
+            hosts += [name for name in RELAY_HOSTS if name != chosen]
+        failures: list[str] = []
+        async with self._pipe._create_http_session(valves) as http:
+            for host in hosts:
+                try:
+                    link = await relay_to_public_url(
+                        http,
+                        blob,
+                        filename=filename or f"reference.{mime.split('/', 1)[-1]}",
+                        mime=mime,
+                        host=host,
+                        retention=str(getattr(valves, "MEDIA_FILE_HOST_RETENTION", "1h")),
+                        max_bytes=int(getattr(valves, "MEDIA_FILE_HOST_MAX_SIZE_MB", 200))
+                        * 1024
+                        * 1024,
+                    )
+                    return link, host
+                except MediaRelayError as exc:
+                    failures.append(str(exc))
+                    self.logger.warning(
+                        "Could not put the attached %s behind a link via %s: %s",
+                        family, host, exc,
+                    )
+        raise VideoGenerationError(
+            f"The attached {family} could not be sent: {'; '.join(failures)}."
+        )
+
+    @staticmethod
+    def _reference_image_size_note(b64: str) -> str:
+        try:
+            sides = image_pixel_size(base64.b64decode(b64, validate=False))
+        except (binascii.Error, ValueError):
+            return ""
+        if sides is None:
+            return ""
+        width, height = sides
+        if all(_REFERENCE_IMAGE_MIN_SIDE <= side <= _REFERENCE_IMAGE_MAX_SIDE for side in sides):
+            return ""
+        return (
+            f"it is {width}x{height} and OpenRouter takes reference images between "
+            f"{_REFERENCE_IMAGE_MIN_SIDE} and {_REFERENCE_IMAGE_MAX_SIDE} pixels on each side"
+        )
 
     def _extract_video_metadata(self, metadata: dict[str, Any]) -> dict[str, Any]:
         pipe_meta = metadata.get(_PIPE_METADATA_KEY) if isinstance(metadata, dict) else None
@@ -1661,26 +1917,13 @@ class VideoGenerationAdapter:
         intent: VideoIntentResult,
         video_meta: dict[str, Any],
     ) -> None:
-        """Apply classifier `uploaded_attachment` retargeting to existing
-        `video_meta["frame_images"]`.
-
-        When the user attaches an image via UI/filter and types
-        "use this as the last frame", the classifier returns
-        `{source: "uploaded_attachment", source_index: N, target: "last_frame"}`.
-        The validator preserves the entry through explicit-attachment precedence;
-        this helper updates the matching explicit attachment's `kind` field so
-        `_encode_frame_images` wires it through with the new target.
-
-        Targets that the underlying frame_image dict can't represent
-        (e.g. `input_reference` on a model that only supports first/last) are
-        recorded as a downgrade; the existing kind is left intact.
-        """
         if not intent.frame_plan:
             return
         frame_images = video_meta.get("frame_images")
         if not isinstance(frame_images, list):
             return
         retargeted = 0
+        moved: list[int] = []
         for entry in intent.frame_plan:
             if entry.source != "uploaded_attachment":
                 continue
@@ -1693,15 +1936,36 @@ class VideoGenerationAdapter:
             target = frame_images[idx]
             if not isinstance(target, dict):
                 continue
+            if entry.target == "input_reference":
+                moved.append(idx)
+                continue
             existing_frame_type = target.get("frame_type")
             if existing_frame_type != entry.target:
                 target["frame_type"] = entry.target
                 retargeted += 1
+        if moved:
+            references = video_meta.setdefault("input_references", [])
+            if not isinstance(references, list):
+                references = []
+                video_meta["input_references"] = references
+            ordered = list(dict.fromkeys(moved))
+            picked = {idx: frame_images[idx] for idx in ordered}
+            for idx in sorted(picked, reverse=True):
+                frame_images.pop(idx)
+            for idx in ordered:
+                item = picked[idx]
+                references.append({
+                    "id": item.get("id"),
+                    "name": item.get("name"),
+                    "content_type": item.get("content_type"),
+                })
+                retargeted += 1
         if retargeted:
             intent.frames_retargeted += retargeted
             self.logger.debug(
-                "_apply_uploaded_attachment_retargeting: rewrote %d frame "
-                "image frame_type(s) per classifier instruction", retargeted,
+                "_apply_uploaded_attachment_retargeting: applied %d classifier "
+                "frame instruction(s), %d moved to input_references",
+                retargeted, len(dict.fromkeys(moved)),
             )
 
     async def _materialise_frame_plan(
@@ -2070,14 +2334,23 @@ class VideoGenerationAdapter:
         file_ids: list[str],
         elapsed: float,
         usage: dict[str, Any],
+        unstored: int = 0,
     ) -> str:
         clips = "".join(
             f"<video>\n/api/v1/files/{file_id}/content\n</video>\n" for file_id in file_ids
         )
+        shortfall = ""
+        if unstored > 0:
+            produced = len(file_ids) + unstored
+            shortfall = (
+                f"\n{unstored} of the {produced} clips this job produced could not be saved "
+                "to Open WebUI storage and are not shown above. The job was billed for all "
+                f"{produced}.\n"
+            )
         return (
             f"{_serialize_kind_marker(self.JOB_MARKER_KIND, job_id)}\n"
             f"{_serialize_kind_marker(self.MODEL_MARKER_KIND, model_id)}\n\n"
-            f"{clips}"
+            f"{clips}{shortfall}"
         )
 
     def _build_failure_content(self, *, job_id: str, model_id: str, reason: str) -> str:

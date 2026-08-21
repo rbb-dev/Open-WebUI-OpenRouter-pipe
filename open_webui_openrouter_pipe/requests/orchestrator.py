@@ -675,21 +675,7 @@ class RequestOrchestrator:
                         merged_provider = {**existing_provider, **filter_provider}
                     else:
                         merged_provider = filter_provider
-                    merged_provider, unsupported = restrict_provider_block(
-                        merged_provider, CHAT_PROVIDER_KEYS
-                    )
                     responses_body.provider = merged_provider or None
-                    if unsupported:
-                        self.logger.log(
-                            warn_level(
-                                _warned_chat_provider_keys,
-                                f"{responses_body.model}:unsupported",
-                            ),
-                            "Provider preferences the chat request format does not define "
-                            "were not sent for %r: %s.",
-                            responses_body.model,
-                            ", ".join(unsupported),
-                        )
                     self.logger.debug("Injected provider routing from filter: %s", filter_provider)
 
         normalized_model_id = ModelFamily.base_model(responses_body.model)
@@ -945,6 +931,7 @@ class RequestOrchestrator:
                     api_model_id,
                     image_model if isinstance(image_model, dict) else None,
                     endpoint_record=endpoint_record,
+                    dedicated_image_api=uses_dedicated_image_api(video_spec),
                 )
                 if __event_emitter__:
                     await __event_emitter__({"type": "chat:message:delta", "data": {"content": help_content}})
@@ -977,6 +964,23 @@ class RequestOrchestrator:
                 event_emitter=__event_emitter__,
                 api_model_id=api_model_id,
             )
+
+        if isinstance(responses_body.provider, dict):
+            kept, unsupported = restrict_provider_block(
+                responses_body.provider, CHAT_PROVIDER_KEYS
+            )
+            responses_body.provider = kept or None
+            if unsupported:
+                self.logger.log(
+                    warn_level(
+                        _warned_chat_provider_keys,
+                        f"{responses_body.model}:unsupported",
+                    ),
+                    "Provider preferences the chat request format does not define "
+                    "were not sent for %r: %s.",
+                    responses_body.model,
+                    ", ".join(unsupported),
+                )
 
         tools_registry = __tools__
         if inspect.isawaitable(tools_registry):

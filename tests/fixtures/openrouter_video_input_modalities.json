@@ -1,0 +1,110 @@
+{
+  "source": "GET /api/v1/models/{id}/endpoints",
+  "captured": "2026-08-21",
+  "input_modalities": {
+    "alibaba/happyhorse-1.0": [
+      "image",
+      "text"
+    ],
+    "alibaba/happyhorse-1.1": [
+      "image",
+      "text"
+    ],
+    "alibaba/wan-2.6": [
+      "image",
+      "text"
+    ],
+    "alibaba/wan-2.7": [
+      "image",
+      "text"
+    ],
+    "black-forest-labs/flux-3-video": [
+      "image",
+      "text",
+      "video"
+    ],
+    "bytedance/seedance-1-5-pro": [
+      "image",
+      "text"
+    ],
+    "bytedance/seedance-2.0": [
+      "audio",
+      "image",
+      "text",
+      "video"
+    ],
+    "bytedance/seedance-2.0-fast": [
+      "audio",
+      "image",
+      "text",
+      "video"
+    ],
+    "bytedance/seedance-2.0-mini": [
+      "audio",
+      "image",
+      "text",
+      "video"
+    ],
+    "bytedance/seedance-2.5": [
+      "audio",
+      "image",
+      "text",
+      "video"
+    ],
+    "google/veo-3.1": [
+      "image",
+      "text"
+    ],
+    "google/veo-3.1-fast": [
+      "image",
+      "text"
+    ],
+    "google/veo-3.1-lite": [
+      "image",
+      "text"
+    ],
+    "kwaivgi/kling-v3.0-pro": [
+      "image",
+      "text"
+    ],
+    "kwaivgi/kling-v3.0-std": [
+      "image",
+      "text"
+    ],
+    "kwaivgi/kling-video-o1": [
+      "image",
+      "text"
+    ],
+    "minimax/hailuo-2.3": [
+      "image",
+      "text"
+    ],
+    "minimax/hailuo-3": [
+      "audio",
+      "image",
+      "text",
+      "video"
+    ],
+    "openai/sora-2-pro": [
+      "image",
+      "text"
+    ],
+    "runway/aleph-2": [
+      "image",
+      "text",
+      "video"
+    ],
+    "runway/gen-4.5": [
+      "image",
+      "text"
+    ],
+    "x-ai/grok-imagine-video": [
+      "image",
+      "text"
+    ],
+    "x-ai/grok-imagine-video-1.5": [
+      "image",
+      "text"
+    ]
+  }
+}

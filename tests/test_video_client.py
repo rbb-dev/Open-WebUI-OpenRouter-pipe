@@ -21,6 +21,7 @@ from open_webui_openrouter_pipe.integrations.video_client import (
     OpenRouterVideoClient,
     extension_for_video_mime,
 )
+from open_webui_openrouter_pipe.core.errors import OpenRouterAPIError
 from open_webui_openrouter_pipe.integrations.video_types import VideoGenerationError
 
 BASE = "https://openrouter.ai/api/v1"
@@ -67,7 +68,13 @@ async def test_submit_posts_to_the_videos_endpoint_and_returns_the_job(base_url)
 
 @pytest.mark.asyncio
 async def test_submit_raises_with_the_providers_message_on_an_error_status():
-    """A 4xx body carries the reason; swallowing it strands the user on a generic error."""
+    """A 4xx body carries the reason, and it has to arrive in the shape the templates read.
+
+    The error blocks users see -- heading, error id, provider message, request id -- are
+    rendered from an `OpenRouterAPIError`. Raising a bare `VideoGenerationError` meant every
+    media failure bypassed those templates and dumped whatever string came off the wire into
+    the chat, so the type is part of the contract, not an implementation detail.
+    """
     async with aiohttp.ClientSession() as session:
         client = await _client(session)
         with aioresponses() as http:
@@ -76,9 +83,10 @@ async def test_submit_raises_with_the_providers_message_on_an_error_status():
                 status=402,
                 payload={"error": {"message": "Insufficient credits"}},
             )
-            with pytest.raises(VideoGenerationError) as excinfo:
+            with pytest.raises(OpenRouterAPIError) as excinfo:
                 await client.submit({"model": "test/video"})
-    assert "Insufficient credits" in str(excinfo.value)
+    assert excinfo.value.status == 402
+    assert "Insufficient credits" in str(excinfo.value.openrouter_message)
 
 
 @pytest.mark.asyncio
@@ -106,9 +114,10 @@ async def test_status_raises_rather_than_parsing_an_error_body_as_a_job(base_url
                 status=500,
                 payload={"error": {"message": "upstream exploded"}},
             )
-            with pytest.raises(VideoGenerationError) as excinfo:
+            with pytest.raises(OpenRouterAPIError) as excinfo:
                 await client.status("job-1")
-    assert "upstream exploded" in str(excinfo.value)
+    assert excinfo.value.status == 500
+    assert "upstream exploded" in str(excinfo.value.openrouter_message)
 
 
 @pytest.mark.asyncio
@@ -256,6 +265,9 @@ def test_the_output_count_comes_from_the_urls_the_api_returned(payload, expected
         ("https://evil.example/steal", None),
         ("", None),
         (None, None),
+        ("<base>/videos/job-9", "<base>/videos/job-9"),
+        ("<base>", "<base>"),
+        ("<base>x/videos/job-9", None),
     ],
 )
 @pytest.mark.asyncio
@@ -264,10 +276,164 @@ async def test_the_poll_url_follows_the_api_but_never_leaves_the_configured_orig
 ):
     async with aiohttp.ClientSession() as session:
         client = await _client(session, base_url=base_url)
-        resolved = client.poll_url("job-9", polling_url)
+        wanted = polling_url
+        if isinstance(wanted, str) and wanted.startswith("<base>"):
+            wanted = base_url + wanted[len("<base>"):]
+        resolved = client.poll_url("job-9", wanted)
 
         if expected_path is None:
             assert resolved == f"{base_url}/videos/job-9"
+        elif expected_path.startswith("<base>"):
+            assert resolved == base_url + expected_path[len("<base>"):]
         else:
             origin = "/".join(base_url.split("/", 3)[:3])
             assert resolved == f"{origin}{expected_path}"
+
+
+@pytest.mark.parametrize(
+    ("declared", "expected"),
+    [
+        (["image", "text"], ["image", "text"]),
+        (["video", "image", "audio", "text"], ["video", "image", "audio", "text"]),
+    ],
+)
+@pytest.mark.asyncio
+async def test_the_accepted_input_kinds_are_read_off_the_endpoints_contract(
+    base_url, declared, expected
+):
+    """The declared-modality gate's only source, parsed off the wire the API actually sends.
+
+    `/videos/models` publishes no `architecture` block, so `GET /models/{id}/endpoints`
+    is the sole place a video model states which reference kinds it accepts, and the
+    gates that hide reference controls read nothing else. Every test of those gates fed
+    the list in by hand or replaced the whole client, so `model_modalities` never ran:
+    reading `output_modalities` instead, or returning a constant, was invisible.
+
+    Two different declarations, so a constant cannot satisfy both.
+    """
+    async with aiohttp.ClientSession() as session:
+        client = await _client(session, base_url=base_url)
+        with aioresponses() as http:
+            http.get(
+                f"{base_url}/models/vendor/clip-1/endpoints",
+                payload={
+                    "data": {
+                        "id": "vendor/clip-1",
+                        "architecture": {
+                            "input_modalities": declared,
+                            "output_modalities": ["video"],
+                        },
+                        "endpoints": [{"provider_name": "Vendor"}],
+                    }
+                },
+            )
+            found = await client.model_modalities("vendor/clip-1")
+
+            requests = [(m, str(u)) for (m, u) in http.requests]
+            assert requests == [("GET", f"{base_url}/models/vendor/clip-1/endpoints")], (
+                f"the kinds were read from {requests!r}, which is not the endpoint that "
+                "publishes them"
+            )
+        assert found == expected
+
+
+@pytest.mark.parametrize("status", [404, 500])
+@pytest.mark.asyncio
+async def test_a_contract_that_cannot_be_read_declares_nothing_rather_than_refusing(status):
+    """An unreadable contract must not read as "this model accepts no references".
+
+    The gate treats an empty list as "nothing declared, offer every control", so a bad
+    afternoon on one endpoint must not silently strip reference controls fleet-wide --
+    and it must not raise, because this runs inside the catalog load for every model.
+    """
+    async with aiohttp.ClientSession() as session:
+        client = await _client(session)
+        with aioresponses() as http:
+            http.get(f"{BASE}/models/vendor/clip-1/endpoints", status=status, payload={})
+            assert await client.model_modalities("vendor/clip-1") == []
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"data": {"architecture": {"input_modalities": "image"}}},
+        {"data": {"architecture": {}}},
+        {"data": {}},
+        {},
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_contract_missing_the_declaration_is_not_read_as_an_empty_one(payload):
+    """Four shapes the endpoint can send, none of which states the kinds."""
+    async with aiohttp.ClientSession() as session:
+        client = await _client(session)
+        with aioresponses() as http:
+            http.get(f"{BASE}/models/vendor/clip-1/endpoints", payload=payload)
+            assert await client.model_modalities("vendor/clip-1") == []
+
+
+@pytest.mark.asyncio
+async def test_a_blank_model_id_is_never_turned_into_a_request():
+    """A blank id would address `/models//endpoints`, which is somebody else's resource."""
+    async with aiohttp.ClientSession() as session:
+        client = await _client(session)
+        with aioresponses() as http:
+            assert await client.model_modalities("  ") == []
+            assert list(http.requests) == [], "a blank id still reached the network"
+
+
+@pytest.mark.parametrize(
+    ("published", "expected_ids"),
+    [
+        ([{"id": "vendor/a"}, {"id": "vendor/b"}], ["vendor/a", "vendor/b"]),
+        ([{"id": "vendor/c"}], ["vendor/c"]),
+    ],
+)
+@pytest.mark.asyncio
+async def test_the_video_catalog_is_read_from_the_videos_models_endpoint(
+    base_url, published, expected_ids
+):
+    """The catalog every video filter is built from, taken off the wire.
+
+    Two different catalogs, so a hardcoded list cannot satisfy both.
+    """
+    async with aiohttp.ClientSession() as session:
+        client = await _client(session, base_url=base_url)
+        with aioresponses() as http:
+            http.get(f"{base_url}/videos/models", payload={"data": published})
+            models = await client.list_models()
+
+            requests = [(m, str(u)) for (m, u) in http.requests]
+            assert requests == [("GET", f"{base_url}/videos/models")], (
+                f"the catalog was fetched from {requests!r}"
+            )
+        assert [entry["id"] for entry in models] == expected_ids
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        ({"data": [{"id": "vendor/a"}, "not-a-model", 7]}, [{"id": "vendor/a"}]),
+        ({"data": "not-a-list"}, []),
+        ({}, []),
+    ],
+)
+@pytest.mark.asyncio
+async def test_only_the_catalog_entries_that_are_objects_reach_the_registry(payload, expected):
+    """Anything that is not an object would be registered as a model nobody can call."""
+    async with aiohttp.ClientSession() as session:
+        client = await _client(session)
+        with aioresponses() as http:
+            http.get(f"{BASE}/videos/models", payload=payload)
+            assert await client.list_models() == expected
+
+
+@pytest.mark.asyncio
+async def test_a_catalog_fetch_that_fails_raises_rather_than_registering_nothing():
+    """An empty catalog and a failed fetch are different events for the loader above."""
+    async with aiohttp.ClientSession() as session:
+        client = await _client(session)
+        with aioresponses() as http:
+            http.get(f"{BASE}/videos/models", status=500, payload={"error": {"message": "down"}})
+            with pytest.raises(aiohttp.ClientResponseError):
+                await client.list_models()

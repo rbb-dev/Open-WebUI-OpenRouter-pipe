@@ -6,6 +6,7 @@ to ensure we test the ACTUAL code that gets deployed, not static backup copies.
 # pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 from __future__ import annotations
 
+import inspect
 import os
 from types import ModuleType
 from typing import Any
@@ -16,6 +17,7 @@ from pydantic import BaseModel
 
 from open_webui_openrouter_pipe import Pipe
 from open_webui_openrouter_pipe.filters import FilterManager
+from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
 
 
 def _load_filter_from_source(source: str, module_name: str) -> ModuleType:
@@ -2304,6 +2306,194 @@ class TestProviderRoutingHashPersistence:
         assert second == first
         assert _FakeFunctionsTable.update_count == updates_after_first
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("routable", "undeliverable"),
+        [
+            ("example/steady-model", "acme/reelmaker-1"),
+            ("vendor/other-model", "zeta/clipsmith-9"),
+        ],
+    )
+    async def test_a_transport_without_routing_controls_gets_no_filter(
+        self, pipe_instance_async, routable, undeliverable
+    ):
+        """A model whose transport carries none of the routing keys is skipped.
+
+        Video requests carry a provider block of `options` alone, so every routing
+        control a filter offered would be accepted from the user and then dropped before
+        the request left. Installing the filter anyway puts controls on screen that
+        cannot do anything. Two slug pairs, so a mapping built from a constant cannot
+        satisfy both.
+        """
+        pipe = pipe_instance_async
+        filter_manager = pipe._ensure_filter_manager()
+        OpenRouterModelRegistry.register_video_models(
+            [{"id": undeliverable, "name": undeliverable, "pricing": {},
+              "allowed_passthrough_parameters": []}]
+        )
+        assert filter_manager.model_transport(undeliverable) == "video"
+        assert filter_manager.model_transport(routable) == "chat"
+
+        provider_map = {
+            slug: {
+                "providers": ["alpha", "beta"],
+                "quantizations": ["fp8"],
+                "short_name": slug,
+                "provider_names": {"alpha": "Alpha", "beta": "Beta"},
+            }
+            for slug in (routable, undeliverable)
+        }
+
+        mapping = await filter_manager.ensure_provider_routing_filters(
+            f"{routable},{undeliverable}", "", provider_map, [], "openrouter"
+        )
+
+        assert routable in mapping
+        assert undeliverable not in mapping, (
+            f"{undeliverable} was handed a provider routing filter, but its request "
+            "format carries none of those settings"
+        )
+        installed = {
+            row_id
+            for row_id, row in _FakeFunctionsTable.store.items()
+            if getattr(row, "is_active", False)
+        }
+        assert mapping[routable] in installed
+        assert not any(
+            filter_manager.sanitize_model_for_filter_id(undeliverable) in row_id
+            for row_id in installed
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("routable", "undeliverable"),
+        [
+            ("example/steady-model", "acme/reelmaker-1"),
+            ("vendor/other-model", "zeta/clipsmith-9"),
+        ],
+    )
+    async def test_an_already_installed_filter_for_such_a_transport_is_switched_off(
+        self, pipe_instance_async, routable, undeliverable
+    ):
+        """A filter installed before the model's transport was known is deactivated.
+
+        The routing valves are unchanged across the two passes, so the second pass takes
+        the state-hash early return. That return must still drop the model whose
+        transport cannot carry the controls, otherwise a filter installed by an older
+        build stays attached and keeps offering settings the request format discards.
+        """
+        pipe = pipe_instance_async
+        filter_manager = pipe._ensure_filter_manager()
+        provider_map = {
+            slug: {
+                "providers": ["alpha", "beta"],
+                "quantizations": ["fp8"],
+                "short_name": slug,
+                "provider_names": {"alpha": "Alpha", "beta": "Beta"},
+            }
+            for slug in (routable, undeliverable)
+        }
+        csv = f"{routable},{undeliverable}"
+
+        first = await filter_manager.ensure_provider_routing_filters(
+            csv, "", provider_map, [], "openrouter"
+        )
+        assert undeliverable in first
+        stale_id = first[undeliverable]
+        assert _FakeFunctionsTable.store[stale_id].is_active is True
+
+        OpenRouterModelRegistry.register_video_models(
+            [{"id": undeliverable, "name": undeliverable, "pricing": {},
+              "allowed_passthrough_parameters": []}]
+        )
+
+        second = await filter_manager.ensure_provider_routing_filters(
+            csv, "", provider_map, [], "openrouter"
+        )
+
+        assert undeliverable not in second
+        assert routable in second
+        assert _FakeFunctionsTable.store[stale_id].is_active is False, (
+            f"the provider routing filter for {undeliverable} is still active after its "
+            "transport was found to carry none of those settings"
+        )
+
+        third = await filter_manager.ensure_provider_routing_filters(
+            csv, "", provider_map, [], "openrouter"
+        )
+        assert undeliverable not in third
+        assert third == second
+
+
+@pytest.mark.parametrize("auto_install", [True, False])
+@pytest.mark.asyncio
+async def test_the_fusion_filter_install_is_wired_to_its_own_marker_valve_and_id(
+    monkeypatch, auto_install
+):
+    """The fusion install composes a renderer, a valve and an id; all three must arrive.
+
+    Nothing else asserts them, so stubbing the whole method to a constant id used to pass
+    the suite. Both valve states are driven, because a wiring that ignores the valve
+    returns the same id in each.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    import open_webui.models.functions as functions_module
+
+    from open_webui_openrouter_pipe.core.config import (
+        _OPENROUTER_FUSION_FILTER_MARKER,
+        _OPENROUTER_FUSION_FILTER_PREFERRED_FUNCTION_ID,
+    )
+
+    rows: dict[str, Any] = {}
+
+    class _Table:
+        @staticmethod
+        async def get_functions_by_type(kind, active_only=False):
+            return list(rows.values())
+
+        @staticmethod
+        async def get_function_by_id(function_id):
+            return rows.get(function_id)
+
+        @staticmethod
+        async def insert_new_function(user_id, function_type, form):
+            rows[form.id] = SimpleNamespace(
+                id=form.id, name=form.name, content=form.content, meta=form.meta,
+                is_active=False, is_global=False, updated_at=1,
+            )
+            return rows[form.id]
+
+        @staticmethod
+        async def update_function_by_id(function_id, updates):
+            row = rows.get(function_id)
+            if row is None:
+                return None
+            for key, value in dict(updates).items():
+                setattr(row, key, value)
+            return row
+
+    monkeypatch.setattr(functions_module, "Functions", _Table)
+    pipe = MagicMock()
+    pipe.valves.AUTO_INSTALL_FUSION_FILTER = auto_install
+    manager = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
+
+    result = await manager.ensure_openrouter_fusion_filter_function_id()
+
+    if not auto_install:
+        assert result is None, "AUTO_INSTALL_FUSION_FILTER off must install nothing"
+        assert rows == {}
+        return
+
+    assert result == _OPENROUTER_FUSION_FILTER_PREFERRED_FUNCTION_ID
+    installed = rows[result]
+    assert _OPENROUTER_FUSION_FILTER_MARKER in installed.content, (
+        "the installed source carries no fusion marker, so the next pass cannot "
+        "recognise its own row and installs a duplicate"
+    )
+    assert "class Filter" in installed.content
+
 
 def test_filter_id_sanitiser_handles_every_real_catalog_id():
     """Enumerated .replace() chains only cover the separators someone thought of.
@@ -2503,11 +2693,12 @@ _INSTALLED_FILTER_RENDERER_ARGS: dict[str, dict[str, Any]] = {
     "render_openrouter_web_tools_filter_source": {
         "enable_web_search": True, "enable_web_fetch": True, "enable_datetime": True
     },
-    "render_openrouter_image_gen_filter_source": {},
+    "render_openrouter_image_gen_filter_source": {"dedicated_image_api": True},
     "render_direct_uploads_filter_source": {},
     "render_openrouter_image_filter_source": {
         "model_id": "recraft/recraft-v3",
         "image_model": {"id": "recraft/recraft-v3", "name": "Recraft V3"},
+        "dedicated_image_api": True,
     },
     "render_openrouter_video_gen_filter_source": {
         "model_id": "google/veo-3",
@@ -2578,6 +2769,7 @@ def _render_installed_filter(name: str) -> str:
                 "supported_parameters": {"aspect_ratio": {"type": "enum", "values": ["1:1"]}},
                 "allowed_passthrough_parameters": ["style"],
             }],
+            dedicated_image_api=True,
         )
 
     fn = _installed_filter_renderers()[name]
@@ -2725,6 +2917,7 @@ def test_both_generated_filters_stamp_the_renderer_version(monkeypatch, version)
                 "supported_parameters": {"aspect_ratio": {"type": "enum", "values": ["1:1"]}},
                 "allowed_passthrough_parameters": ["style"],
             }],
+            dedicated_image_api=True,
         )
     )
     video = render_video_filter_source(
@@ -2878,4 +3071,126 @@ async def test_a_row_that_is_already_current_says_nothing(caplog, monkeypatch):
 
     assert not [r for r in caplog.records if r.name == logger.name], (
         "a current row warned about being stale, so the signal is noise and gets muted"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_valve_read_that_failed_leaves_the_installed_filter_alone():
+    """A read that failed and a read that returned nothing are different answers.
+
+    Both came back as `""`, and `""` means "use the default model", so one transient
+    database error during a catalog refresh rewrote the installed row for a model nobody
+    had chosen -- while the valve still named the real one, so requests kept going to it
+    with the wrong controls on screen.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+
+    import pytest as _pytest
+
+    from open_webui.models.functions import Functions
+
+    from open_webui_openrouter_pipe.filters.filter_manager import (
+        _OPENROUTER_IMAGE_GEN_FILTER_MARKER,
+        FilterManager,
+    )
+
+    pipe = MagicMock()
+    manager = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
+    manager._ensure_filter_installed = AsyncMock(return_value="openrouter_image_gen")
+
+    installed = SimpleNamespace(id="openrouter_image_gen", content=_OPENROUTER_IMAGE_GEN_FILTER_MARKER)
+
+    with _pytest.MonkeyPatch.context() as patched:
+        patched.setattr(Functions, "get_functions_by_type", AsyncMock(return_value=[installed]))
+        patched.setattr(
+            Functions, "get_function_valves_by_id",
+            AsyncMock(side_effect=RuntimeError("the database is locked")),
+        )
+        assert await manager.image_gen_filter_selected_model() is None, (
+            "a read that raised must be distinguishable from a valve that is unset"
+        )
+        assert await manager.image_gen_filter_inputs() == (None, None, None, False)
+        assert await manager.ensure_openrouter_image_gen_filter_function_id() is None
+        assert manager._ensure_filter_installed.await_count == 0, (
+            "a read that failed must not rewrite the installed row"
+        )
+
+    with _pytest.MonkeyPatch.context() as patched:
+        patched.setattr(Functions, "get_functions_by_type", AsyncMock(return_value=[installed]))
+        patched.setattr(Functions, "get_function_valves_by_id", AsyncMock(return_value={}))
+        assert await manager.image_gen_filter_selected_model() == ""
+        assert (
+            await manager.ensure_openrouter_image_gen_filter_function_id()
+            == "openrouter_image_gen"
+        )
+        assert manager._ensure_filter_installed.await_count == 1, (
+            "a valve that is genuinely unset must still install for the default model"
+        )
+
+
+# REGFIX: "Frames: none" must mean none
+
+
+@pytest.mark.parametrize("model_id", ["google/veo-3.1", "bytedance/seedance-2.0"])
+@pytest.mark.parametrize(
+    ("frame_mode", "any_picture_sent"), [("none", False), ("auto", True)]
+)
+@pytest.mark.asyncio
+async def test_setting_frames_to_none_stops_every_picture_reaching_the_model(
+    model_id, frame_mode, any_picture_sent
+):
+    """The control's own text is "none ignores them", and billing follows the payload.
+
+    Selecting no frames stopped pictures anchoring the shot but a later sweep collected
+    every unclaimed attachment as a soft reference, so the pictures still steered the
+    result and were still charged for. Two modes, because a filter that sends nothing
+    ever satisfies the "none" row alone.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    from open_webui_openrouter_pipe.filters.video_filter_renderer import (
+        render_video_filter_source,
+    )
+
+    catalog = {
+        item["id"]: item
+        for item in _json.loads(
+            (_Path(__file__).parent / "fixtures" / "video_models_catalog.json").read_text()
+        )["data"]
+    }
+    source = render_video_filter_source(model_id=model_id, video_model=catalog[model_id])
+    module = _load_filter_from_source(source, f"frames_none_{model_id.replace('/', '_')}")
+    instance = module.Filter()
+
+    files = [
+        {"id": f"img-{tag}", "name": f"{tag}.png", "content_type": "image/png"}
+        for tag in ("A", "B", "C")
+    ]
+    body = {"files": list(files), "messages": [{"role": "user", "content": "go"}]}
+    signature = inspect.signature(instance.inlet)
+    metadata: dict = {}
+    supplied = {
+        "__user__": {"valves": instance.UserValves(VIDEO_FRAME_MODE=frame_mode)},
+        "__metadata__": metadata,
+        "__model__": {},
+        "__request__": None,
+    }
+    result = instance.inlet(
+        body, **{k: v for k, v in supplied.items() if k in signature.parameters}
+    )
+    if inspect.isawaitable(result):
+        await result
+
+    from open_webui_openrouter_pipe.core.config import _PIPE_METADATA_KEY
+
+    video_meta = (metadata.get(_PIPE_METADATA_KEY) or {}).get("video_generation") or {}
+    reached = [
+        item["id"]
+        for key in ("frame_images", "input_references")
+        for item in (video_meta.get(key) or [])
+    ]
+    assert bool(reached) is any_picture_sent, (
+        f"{model_id} with frames={frame_mode!r} sent {reached}"
     )

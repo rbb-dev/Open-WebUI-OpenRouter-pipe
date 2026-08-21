@@ -30,6 +30,12 @@ IMAGE_FIELD_ROUTES: dict[str, str] = {
 IMAGE_FIELD_GAPS: dict[str, str] = {}
 
 VIDEO_FIELD_ROUTES: dict[str, str] = {
+    "input_references": (
+        "chosen for you: the classifier that reads the chat decides when an earlier "
+        "frame or an attachment becomes a reference, and there is no control to set the "
+        "list directly or to supply a link. Audio and video references, which this field "
+        "also accepts, are reachable only the same way."
+    ),
     "aspect_ratio": "per-model control, drawn from the shapes the catalogue lists",
     "duration": "per-model control, drawn from the lengths the catalogue lists",
     "frame_images": "the images attached to the turn, narrowed by the frames control",
@@ -52,12 +58,6 @@ VIDEO_FIELD_GAPS: dict[str, str] = {
         "proves such a call genuine is set on an OpenRouter workspace rather than sent "
         "with a request, so nothing here could tell a real callback from a forged one. "
         "The pipe polls for the result instead, which needs neither."
-    ),
-    "input_references": (
-        "chosen for you: the classifier that reads the chat decides when an earlier "
-        "frame or an attachment becomes a reference, and there is no control to set the "
-        "list directly or to supply a link. Audio and video references, which this field "
-        "also accepts, are unreachable for the same reason."
     ),
 }
 

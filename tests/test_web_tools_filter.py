@@ -178,7 +178,7 @@ def _standalone_pairs():
         "render_openrouter_web_tools_filter_source": {
             "enable_web_search": True, "enable_web_fetch": True, "enable_datetime": True
         },
-        "render_openrouter_image_gen_filter_source": {},
+        "render_openrouter_image_gen_filter_source": {"dedicated_image_api": True},
         "render_direct_uploads_filter_source": {},
     }
     rendered = {

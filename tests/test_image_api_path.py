@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 from typing import Any, cast
 
+from unittest.mock import patch
+
 import pytest
 from aioresponses import aioresponses
 
@@ -3755,7 +3757,7 @@ def test_help_advertises_only_what_the_request_path_will_actually_send(advertise
         "allowed_passthrough_parameters": advertised,
     }
     model = {"id": "recraft/recraft-v3", "name": "Recraft V3"}
-    rendered = render_image_help("recraft/recraft-v3", model, endpoint_record=record)
+    rendered = render_image_help("recraft/recraft-v3", model, endpoint_record=record, dedicated_image_api=True)
 
     controls = rendered.split("## Controls", 1)[1]
     named = [
@@ -3773,7 +3775,7 @@ def test_help_advertises_only_what_the_request_path_will_actually_send(advertise
         build_image_model_filter_spec,
     )
 
-    spec = build_image_model_filter_spec("recraft/recraft-v3", model, record)
+    spec = build_image_model_filter_spec("recraft/recraft-v3", model, record, dedicated_image_api=True)
     config = {name: values[0] for name, values in spec.enums}
     config.update({name: "a_value" for name in spec.passthrough})
     top_level, provider, notes = ImageGenerationAdapter._split_image_config(
@@ -3849,7 +3851,8 @@ async def test_help_is_given_every_published_record_not_the_one_a_request_would_
     )
 
     spec = build_image_model_filter_spec(
-        "vendor/model", {"id": "vendor/model", "name": "M"}, records
+        "vendor/model", {"id": "vendor/model", "name": "M"}, records,
+        dedicated_image_api=True,
     )
     assert spec.knob_count == 0, (
         "the providers disagree, so the filter offers nothing -- and help built from the "
@@ -3857,7 +3860,8 @@ async def test_help_is_given_every_published_record_not_the_one_a_request_would_
     )
 
     from_first_only = build_image_model_filter_spec(
-        "vendor/model", {"id": "vendor/model", "name": "M"}, records[:1]
+        "vendor/model", {"id": "vendor/model", "name": "M"}, records[:1],
+        dedicated_image_api=True,
     )
     assert from_first_only.knob_count == 1, (
         "sanity: one record alone would offer a control, which is what makes the "
@@ -3922,3 +3926,133 @@ def test_a_client_key_the_encoder_refuses_still_reaches_the_log_stream(body):
     )
     for note in notes:
         note.text.encode("utf-8")
+
+
+# REGFIX: which reference survives when the model takes fewer than were attached
+
+
+@pytest.mark.parametrize("published_max", [1, 2])
+@pytest.mark.asyncio
+async def test_the_picture_the_user_just_attached_is_the_one_that_survives(published_max):
+    """Sixteen of the forty recorded image models accept exactly one reference.
+
+    References are gathered from the whole conversation, oldest first, so trimming from
+    the front handed the model an image from an earlier turn and dropped the one the
+    request was about. Two limits, because keeping only the final element passes at one
+    and fails at two.
+    """
+    from types import SimpleNamespace
+
+    from open_webui_openrouter_pipe.integrations.image import ImageGenerationAdapter
+
+    def _picture(tag):
+        return {
+            "type": "input_image",
+            "image_url": {"url": f"data:image/png;base64,{tag}"},
+        }
+
+    conversation = SimpleNamespace(
+        input=[
+            {"role": "user", "content": [_picture("OLDEST"), {"type": "input_text", "text": "a mug"}]},
+            {"role": "assistant", "content": [{"type": "output_text", "text": "here"}]},
+            {"role": "user", "content": [_picture("MIDDLE")]},
+            {"role": "user", "content": [_picture("NEWEST"), {"type": "input_text", "text": "bluer"}]},
+        ]
+    )
+    record = {
+        "supported_parameters": {
+            "input_references": {"type": "range", "min": 0, "max": published_max}
+        }
+    }
+    adapter = ImageGenerationAdapter.__new__(ImageGenerationAdapter)
+    notes: list = []
+
+    async def _no_links(_self, _urls):
+        return []
+
+    with patch.object(ImageGenerationAdapter, "_vetted_reference_urls", _no_links):
+        refs = await adapter._reference_payload(
+            conversation, {}, record=record, notes=notes
+        )
+
+    tags = [entry["image_url"]["url"].split(",")[-1] for entry in refs]
+    assert tags == ["OLDEST", "MIDDLE", "NEWEST"][-published_max:], tags
+    assert notes and "most recent" in notes[0].text
+
+
+@pytest.mark.parametrize("previews", [1, 3])
+@pytest.mark.asyncio
+async def test_the_previews_a_streamed_generation_delivers_reach_the_user_as_status(previews):
+    """The progress a streaming image generation reports has to arrive in the chat.
+
+    A drawing can run for minutes; the preview line is the only thing that says it is
+    still going. The client's `on_progress` was exercised with a callback the test wrote
+    itself, so `_status_reporter` -- the adapter's only wiring between that callback and
+    the event emitter -- could return `None` and every one of those tests still passed.
+
+    Two preview counts, so a constant number of status lines cannot satisfy both.
+    """
+    import aiohttp
+
+    adapter = _adapter(_KeyPipe("sk-stream"))
+    model_id = "openai/gpt-image-2"
+    adapter._endpoint_cache[model_id] = (
+        time.monotonic(),
+        [{"provider_slug": "openai", "supports_streaming": True}],
+    )
+    emitter = _Emitter()
+    events = [
+        {
+            "type": "image_generation.partial_image",
+            "partial_image_index": index,
+            "b64_json": _b64(_png(2, 2)),
+        }
+        for index in range(previews)
+    ]
+    events.append(
+        {"type": "image_generation.completed", "b64_json": _b64(_png(4, 4)), "created": 1}
+    )
+    body = "".join(f"data: {json.dumps(event)}\n\n" for event in events) + "data: [DONE]\n\n"
+
+    with aioresponses() as mocked:
+        mocked.get(
+            f"{BASE}/images/models/{model_id}/endpoints",
+            payload={"endpoints": [{"provider_slug": "openai", "supports_streaming": True}]},
+        )
+        mocked.post(
+            f"{BASE}/images",
+            status=200,
+            body=body,
+            headers={"Content-Type": "text/event-stream"},
+        )
+        async with aiohttp.ClientSession() as session:
+            await adapter.generate(
+                body={},
+                responses_body=cast(
+                    Any,
+                    _Body(
+                        [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "input_text", "text": "a red maple leaf"}
+                                ],
+                            }
+                        ]
+                    ),
+                ),
+                valves=adapter._pipe.valves,
+                session=session,
+                event_emitter=emitter,
+                metadata={"chat_id": "chat-1", "message_id": "msg-1"},
+                user=None,
+                request=object(),
+                user_obj=object(),
+                normalized_model_id="openai.gpt-image-2",
+                api_model_id=model_id,
+            )
+
+    said = [str(event.get("description", "")) for event in emitter.statuses]
+    assert [line for line in said if "preview" in line] == [
+        f"Generating image… preview {index + 1}" for index in range(previews)
+    ], f"the previews the stream delivered never reached the chat: {said}"

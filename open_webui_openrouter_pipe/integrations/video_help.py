@@ -3,8 +3,15 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from .image_types import PROVIDER_OPTIONS_DESCRIPTION
+from .video_types import VIDEO_REQ_KEY_DESCRIPTION
+
 if TYPE_CHECKING:
     from ..filters.video_filter_renderer import VideoFilterSpec
+
+TRUE_WAN_REFERENCES = (
+    "lock subject identity, props and visual style across new scenes by feeding a grid of reference images. It also adds last-frame anchoring. Alibaba describes reference clips and voice conditioning for this model, but OpenRouter reports it as taking only text and pictures, so neither is offered here"
+)
 
 _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
     "black-forest-labs/flux-3-video": {
@@ -21,7 +28,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Anchor both ends when you know where the shot should finish — a closing frame is what separates this from a model you can only point at a starting still.",
             "Build a long sequence a segment at a time: generate a shot, then use its closing still as the next shot's opening frame. Each segment stays sharper than one very long request, and you can stop and redirect between them.",
             "There is no seed here, so an idea you like cannot be re-rolled exactly — save the clip you want before iterating on the prompt.",
-            "OpenRouter publishes a higher rate for continuing an existing clip, but this model takes no clip as input here, so every request is charged at the fresh-footage rate in the cost list below.",
+            "Continuing a clip you attach is charged at its own higher rate, listed below — and the attachment only reaches the model if your administrator has turned on sending media to a file host. Generating from a prompt alone stays on the cheaper fresh-footage rate.",
             "Audio is generated alongside the picture, so it is worth describing the sound you want rather than leaving it to chance.",
         ],
         "knob_descriptions": {
@@ -30,7 +37,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Resolution": "720p or 1080p — the choice that drives what a second costs.",
             "Frames": "Which supplied stills anchor the shot: none for pure text-to-video, first_only to animate from an opening still, or first_last to fix both ends and let the model fill the middle.",
             "Audio": "Whether a soundtrack is generated with the picture.",
-            "Provider options JSON": "Raw parameters for anything the controls above do not cover.",
+            "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
         },
     },
     "bytedance/seedance-2.5": {
@@ -39,7 +46,8 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "ByteDance's Seedance 2.5, the long-form member of the Seedance family. It runs to 30 "
             "seconds in a single clip — twice the length most video models will give you — and is "
             "aimed at storytelling that has to hold together across that span: reference-driven "
-            "generation, editing an existing clip, and extending one that already exists. It takes "
+            "generation, editing an existing clip, and extending one that already exists — the "
+            "last two need a clip attached, which only reaches the model if your administrator has turned on sending media to a file host; otherwise it is left out with a note. It takes "
             "an opening still, a closing still, or both, offers six framings including ultrawide "
             "21:9, generates audio, and honours a seed, so a take you like can be reproduced and "
             "then adjusted a line at a time. Output is 480p or 720p, with twelve exact canvas sizes "
@@ -61,8 +69,8 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Audio": "Whether a soundtrack is generated with the picture.",
             "Seed": "Fixes the random draw so the same prompt and seed reproduce the same clip — worth setting before you iterate.",
             "Watermark": "Whether the provider's visible branding overlay is burned into the output.",
-            "Request key": "Provider-side request identifier, for callers that need their own job reference carried through.",
-            "Provider options JSON": "Raw parameters for anything the controls above do not cover.",
+            "Request key": VIDEO_REQ_KEY_DESCRIPTION,
+            "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
         },
     },
     "minimax/hailuo-3": {
@@ -71,7 +79,9 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "MiniMax's H3, a lightweight open-weights model aimed at precise, instruction-guided "
             "work rather than free-running scenes. It is the one to reach for when the clip has to "
             "carry legible text or a brand mark correctly, or when you want an edit applied to "
-            "supplied footage instead of a scene invented from scratch. Everything it makes is 2K — "
+            "footage you supply instead of a scene invented from scratch. Attached footage only "
+            "reaches it if your administrator has turned on sending media to a file host, and is otherwise left "
+            "out with a note in the chat. Everything it makes is 2K — "
             "there is no lower tier to trade down to — across six framings from ultrawide 21:9 to "
             "vertical 9:16, in clips of 5 to 15 seconds, with audio. There is no seed, so runs vary."
         ),
@@ -88,7 +98,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Resolution": "2K, the only tier this model publishes.",
             "Frames": "Which supplied stills anchor the clip: none, first_only, or first_last to fix both ends.",
             "Audio": "Whether a soundtrack is generated with the picture.",
-            "Provider options JSON": "Raw parameters for anything the controls above do not cover.",
+            "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
         },
     },
     "runway/aleph-2": {
@@ -101,12 +111,14 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "let you show it what a moment should look like instead of describing it. Because the "
             "work is done on your footage, the length and the dimensions of the result come from "
             "the clip you supply, not from a setting here; the eight framings it publishes cover "
-            "everything from 21:9 down to 9:16. It honours a seed, and it does not add audio."
+            "everything from 21:9 down to 9:16. It honours a seed, and it does not add audio. "
+            "Your footage only reaches it if your administrator has turned on sending media to a file host; with that "
+            "off the clip is left out and the chat tells you so."
         ),
         "tips_and_pitfalls": [
-            "Attach the clip you want edited to your message — there is nothing to generate from if no footage arrives with the instruction.",
+            "Attach the clip you want edited to your message. It is only sent if your administrator has turned on sending media to a file host — with that off the clip is left out, the chat says so, and there is nothing here to edit.",
             "Name the change and nothing else. \"Make it raining\" preserves the shot; re-describing the whole scene invites the model to redo parts you wanted kept.",
-            "The clip you attach sets the length and the size of the result — there is no duration or resolution control here, so trim the footage to what you actually want before sending it.",
+            "Once it arrives, the clip you attached sets the length and the size of the result — there is no duration or resolution control here, so trim the footage to what you actually want before sending it.",
             "One instruction per pass holds up far better than a list; run a second pass for the second change and you keep the ability to reject either one.",
             "Use keyframes when a change is easier to show than to write — a frame of the intended look steers it harder than another sentence will.",
             "Fix a seed before iterating so the untouched parts of the shot stay untouched between runs.",
@@ -116,7 +128,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "knob_descriptions": {
             "Aspect ratio": "The framing to work in — 16:9, 4:3, 3:2, 1:1, 2:3, 3:4, 9:16, or 21:9.",
             "Seed": "Fixes the random draw so the same footage and instruction reproduce the same edit — set it before iterating.",
-            "Provider options JSON": "Raw parameters for anything the controls above do not cover.",
+            "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
         },
     },
     "runway/gen-4.5": {
@@ -145,7 +157,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Size": "Pins exact pixel dimensions — 1280x720 or 720x1280 — instead of letting the ratio decide.",
             "Frames": "Whether a supplied still opens the shot: none for pure text-to-video, or first_only to animate from it.",
             "Seed": "Fixes the random draw so the same prompt and seed reproduce the same clip.",
-            "Provider options JSON": "Raw parameters for anything the controls above do not cover.",
+            "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
         },
     },
     "x-ai/grok-imagine-video-1.5": {
@@ -174,7 +186,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Frames": "Whether a supplied still opens the shot: none for pure text-to-video, or first_only to animate from it.",
             "Audio": "Asks for a soundtrack with the picture. Nothing is published about whether this model obliges, so leaving it alone keeps the model's own behaviour.",
             "Seed": "Asks for a fixed random draw so a prompt can be re-run. Nothing is published about whether this model honours one, so treat a repeat as likely rather than guaranteed.",
-            "Provider options JSON": "Raw parameters for anything the controls above do not cover.",
+            "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
         },
     },
     "alibaba/happyhorse-1.1": {
@@ -198,12 +210,12 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "knob_descriptions": {
             "Duration": "Clip length in seconds (3-15); longer clips cost proportionally more and are harder to keep consistent.",
             "Aspect ratio": "Framing from a wide set — 16:9 / 9:16 / 1:1 / 4:3 / 3:4 plus ultrawide 21:9 and tall 9:21.",
-            "Resolution": "720p (cheapest) or 1080p output tier, which drives the price SKU.",
+            "Resolution": "720p (cheapest) or 1080p, which is what sets the per-second rate you are charged.",
             "Size": "Pins exact pixel dimensions (e.g. 1920x1080, 1080x1920, 2520x1080) instead of letting aspect ratio + resolution decide.",
             "Frames": "First-frame image conditioning — auto/none for pure text-to-video, or first_only to animate from a supplied starting still.",
             "Audio": "Asks for a soundtrack with the picture. Nothing is published about whether this model obliges, so leaving it alone keeps the model's own behaviour.",
             "Seed": "Integer for reproducible regeneration — same prompt + seed yields a near-identical clip when iterating.",
-            "Provider options JSON": "Escape hatch for raw provider parameters not exposed by the typed valves above.",
+            "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
         },
     },
     "alibaba/happyhorse-1.0": {
@@ -225,12 +237,12 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "knob_descriptions": {
             "Duration": "Clip length in seconds (3-15); longer clips cost more and strain consistency.",
             "Aspect ratio": "16:9 / 9:16 / 1:1 / 4:3 / 3:4 plus ultrawide 21:9 and tall 9:21.",
-            "Resolution": "720p or 1080p output tier (drives the price SKU).",
+            "Resolution": "720p or 1080p, which is what sets the per-second rate you are charged.",
             "Size": "Exact pixel dimensions when you need a specific canvas rather than a ratio+resolution pair.",
             "Frames": "First-frame conditioning — none for text-to-video or first_only to animate from a starting still.",
             "Audio": "Asks for a soundtrack with the picture. Nothing is published about whether this model obliges, so leaving it alone keeps the model's own behaviour.",
             "Seed": "Integer seed for reproducible regeneration across prompt iterations.",
-            "Provider options JSON": "Raw escape hatch for provider parameters the typed valves don't expose.",
+            "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
         },
     },
     "google/veo-3.1-fast": {
@@ -253,15 +265,15 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "knob_descriptions": {
             "Duration": "Picks clip length in seconds — 4 (quick beat), 6 (mid-shot), or 8 (full scene with audio arc); longer durations cost proportionally more and tax motion consistency harder.",
             "Aspect ratio": "Chooses 16:9 for landscape (YouTube/TV) or 9:16 for vertical (Reels/TikTok/Shorts); Veo composes natively for the chosen ratio rather than cropping.",
-            "Resolution": "Selects 720p, 1080p, or 4K output tier, which also drives the OpenRouter price SKU (720p cheapest, 4K most expensive) and generation time.",
+            "Resolution": "Selects 720p, 1080p, or 4K, which also sets the rate you are charged (720p cheapest, 4K most expensive) and how long the render takes.",
             "Size": "Pins exact pixel dimensions (e.g., 1920×1080, 2160×3840) when you need a specific canvas instead of letting aspect_ratio + resolution decide.",
             "Frames": "Controls image conditioning — auto/none for pure text-to-video, first_only to animate from a starting still, or first_last to interpolate a controlled transition between two stills.",
             "Negative prompt": "Free-text list of things to exclude (e.g., \"no text, no extra limbs, no logos\") — Veo 3.1 honours negation explicitly per the DeepMind prompt guide.",
-            "Audio": "Toggles native synchronised audio generation; off uses the cheaper no-audio price SKU and skips dialogue/SFX, model_default lets the model decide.",
+            "Audio": "Toggles native synchronised audio generation; off is charged at the cheaper silent rate and skips dialogue and effects, model_default lets the model decide.",
             "Seed": "Integer for deterministic regeneration — same prompt + same seed yields a near-identical clip, useful for iterating prompt tweaks without identity drift.",
-            "Provider options JSON": "Escape hatch to inject raw OpenRouter/Google parameters that the typed valves don't expose, for advanced or future fields.",
+            "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
             "Person generation": "Safety gate for human/face content — \"allow_all\" (broadest), \"allow_adult\" (default per Vertex AI docs, adults only), \"dont_allow\" (no people, Gemini API spelling), \"disallow\" (the same refusal, Vertex AI spelling); blank uses model default.",
-            "Conditioning scale": "Float weight (0–1) that biases how strongly reference/frame images steer the output versus the text prompt; 0 leaves the model at its default balance.",
+            "Conditioning scale": "Biases how strongly reference/frame images steer the output versus the text prompt; 0 leaves the model at its default balance. Google publishes no range for it and no meaning for any value, so the 0–1 slider is this pipe's own caution — send a larger number under Provider options JSON if you need one.",
             "Enhance prompt": "Asks the provider to auto-rewrite/expand the prompt before generation — on for richer cinematic detail, off to send your prompt verbatim, model_default to defer.",
         },
     },
@@ -289,12 +301,12 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Resolution": "Chooses 720p or 1080p, and drives which per-second rate you are billed at — 720p is the cheaper of the two; 4K is not available on this tier.",
             "Size": "Pins exact pixel dimensions (1280×720, 720×1280, 1920×1080, or 1080×1920) when you need a specific output size rather than just a resolution+ratio pair.",
             "Frames": "Controls image-to-video conditioning — auto/none for pure text-to-video, first_only to anchor the opening frame, or first_last to interpolate between a starting and ending image.",
-            "Negative prompt": "Free-text list of things to avoid in the output (e.g. \"blurry, watermark, distorted hands\"), passed through as negativePrompt to Vertex.",
+            "Negative prompt": "Free-text list of things to keep out of the clip (e.g. \"blurry, watermark, distorted hands\"); Google applies it as an explicit exclusion rather than a hint.",
             "Audio": "Toggles native synchronised audio generation (ambient sound, SFX, dialogue, music); disabling it bills the clip at the cheaper without-audio rate for whichever resolution you picked.",
             "Seed": "Sets an integer seed for reproducibility — Google notes it improves determinism but does not strictly guarantee identical outputs across runs.",
-            "Provider options JSON": "Raw escape hatch for sending arbitrary google-vertex provider fields not covered by the named valves above.",
+            "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
             "Person generation": "Controls whether humans may appear in output — allow_all, allow_adult, dont_allow (Gemini API) or disallow (Vertex AI); in EU/UK/CH/MENA only allow_adult is permitted for Veo 3.1.",
-            "Conditioning scale": "Float that biases how strongly the model adheres to your input image(s) versus the text prompt when using first/last frame conditioning.",
+            "Conditioning scale": "Biases how strongly the model adheres to your input image(s) versus the text prompt when using first/last frame conditioning. Google publishes no range for it and no meaning for any value, so the 0–1 slider is this pipe's own caution — send a larger number under Provider options JSON if you need one.",
             "Enhance prompt": "Lets Vertex auto-rewrite your prompt for better results (on), keep it verbatim (off), or use the provider default (model_default).",
         },
     },
@@ -326,9 +338,9 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Negative prompt": "Free-text list of things to suppress (e.g., \"motion blur, warped hands, on-screen text\") — the primary lever for cleaning up Veo's known artifacts.",
             "Audio": "Toggles native synchronised audio generation; turning it off bills the clip at the cheaper without-audio rate — a proportionally bigger saving below 4K than at 4K — but you lose Veo 3.1's signature joint-diffusion soundtrack.",
             "Seed": "A 32-bit integer that makes generation reproducible — reuse the same seed plus prompt to get consistent results when iterating on small prompt changes.",
-            "Provider options JSON": "An escape hatch for passing raw provider-specific fields to the Vertex/Gemini backend that aren't surfaced as dedicated valves.",
+            "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
             "Person generation": "Safety control for human subjects; \"allow_adult\" (default) permits adult faces and bodies, while \"dont_allow\" (Gemini API) and \"disallow\" (Vertex AI) refuse any people/faces.",
-            "Conditioning scale": "Adjusts how strictly Veo 3.1 follows the prompt versus exploring creatively — exposed as a passthrough but documented behaviour may be provider-internal.",
+            "Conditioning scale": "Balances how hard the stills you supply steer the clip against your written prompt. Google publishes no range for it and no meaning for any value, so the 0–1 slider is this pipe's own caution — send a larger number under Provider options JSON if you need one.",
             "Enhance prompt": "Asks the backend to auto-rewrite your prompt for richer cinematic detail; per Google's Vertex docs this flag is officially Veo 2-only, so on Veo 3.1 it may be a no-op.",
         },
     },
@@ -357,14 +369,14 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Frames": "Lets you pin a first_frame and/or last_frame image to anchor the opening or closing pose, useful for continuity across shots or for image-to-video starts.",
             "Negative prompt": "Free-text list of things to avoid (artifacts, distorted faces, text, unwanted styles); Kling treats this as hard guardrails and it's the main quality lever here.",
             "Audio": "Toggles Kling's native audio generation (ambient sound / effects) along with the video — turn off if you plan to score the clip externally.",
-            "Provider options JSON": "Escape hatch for raw OpenRouter/Kling provider parameters not surfaced as valves; leave empty unless OpenRouter docs call out a specific override you need.",
+            "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
         },
     },
     "kwaivgi/kling-v3.0-pro": {
         "display_name": "Kling: Video v3.0 Pro",
         "best_known_for": (
-            "Kuaishou's premium tier of Kling v3.0 — the highest-quality Kling SKU "
-            "OpenRouter exposes, with sharper detail, stronger character consistency, "
+            "Kuaishou's premium tier of Kling v3.0 — the highest-quality Kling "
+            "listing OpenRouter carries, with sharper detail, stronger character consistency, "
             "and richer motion fidelity than the Standard tier. Best suited for hero "
             "shots, marketing deliverables, and pre-vis where quality matters more "
             "than cost. Same capability matrix as Kling v3.0 Standard (granular "
@@ -376,25 +388,25 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Pricing is per-second of output, with a separate higher rate when audio is on — both are listed below — so the bill tracks the duration you pick; plan duration deliberately.",
             "Kling responds to cinematic intent — describe camera move (slow dolly-in / tracking), motion physics, and end state explicitly rather than listing objects.",
             "No seed is exposed (catalog confirms seed=false), so re-running the same prompt does NOT produce identical output — lock look via first_frame / last_frame and the negative prompt instead.",
-            "cfg_scale is new in v3.0 (not present on the older O1 SKU): leave at 0 to take the provider default, or nudge upward (~0.5+) when prompts must be followed strictly at the expense of creative variation.",
+            "The CFG scale control is new in v3.0 — Kling O1 does not have it. Leave it at 0 to take Kling's own balance, or nudge it up (~0.5+) when the prompt must be followed strictly at the expense of creative variation.",
         ],
         "knob_descriptions": {
             "Duration": "Clip length in whole seconds; Kling v3.0 Pro accepts any integer from 3 to 15s and pricing scales linearly per second.",
             "Aspect ratio": "Frame shape (16:9 landscape, 9:16 vertical, 1:1 square) — pick to match your delivery surface; the model fills the chosen aspect with a fixed 720p tier.",
-            "Resolution": "Output quality tier; Kling v3.0 currently outputs only 720p, so this knob is effectively fixed.",
+            "Resolution": "Kling v3.0 currently outputs only 720p, so there is nothing else to pick here.",
             "Size": "Exact pixel dimensions tied to your aspect choice (1280×720, 720×1280, 720×720); usually leave on auto so it follows the aspect ratio.",
             "Frames": "Optional first_frame and/or last_frame reference images that anchor the opening and/or closing pose — essential for multi-shot continuity and for image-to-video starts.",
             "Negative prompt": "Free-text guardrails (e.g. \"blurry text, extra fingers, warped face, on-screen text\"); Kling honours negatives well, treat as hard constraints.",
             "CFG scale": "Classifier-free guidance strength (0–1); 0 uses the provider default, higher values force stricter prompt adherence at the cost of creative range — new in Kling v3.0.",
             "Audio": "Toggles native synchronised ambient/effects audio along with the video; switch off only if you plan to score the clip externally, since audio is billed at its own higher per-second rate, listed below.",
-            "Provider options JSON": "Escape hatch for raw OpenRouter/Kling provider parameters not exposed as dedicated valves; leave empty unless docs call out a specific override.",
+            "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
         },
     },
     "kwaivgi/kling-v3.0-std": {
         "display_name": "Kling: Video v3.0 Standard",
         "best_known_for": (
             "Kuaishou's standard tier of Kling v3.0 — the most cost-efficient Kling "
-            "SKU OpenRouter exposes, with the same capability surface as Kling v3.0 "
+            "listing OpenRouter carries, with the same capabilities as Kling v3.0 "
             "Pro (granular 3–15s durations, first/last-frame anchoring, native "
             "audio, 720p, three aspects) at a lower per-second rate than Pro. "
             "Best suited for prompt iteration, drafts, and bulk pipelines where "
@@ -405,18 +417,18 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Pricing is per-second of output, with a separate higher rate when audio is on — both are listed below — so the bill tracks the duration you pick; plan duration deliberately.",
             "Kling responds to cinematic intent — describe camera move, motion physics, and end state explicitly rather than listing objects.",
             "No seed is exposed (catalog confirms seed=false), so re-running the same prompt does NOT produce identical output — lock look via first_frame / last_frame and the negative prompt instead.",
-            "cfg_scale is new in v3.0 (not present on the older O1 SKU): leave at 0 to take the provider default, or nudge upward (~0.5+) when prompts must be followed strictly at the expense of creative variation.",
+            "The CFG scale control is new in v3.0 — Kling O1 does not have it. Leave it at 0 to take Kling's own balance, or nudge it up (~0.5+) when the prompt must be followed strictly at the expense of creative variation.",
         ],
         "knob_descriptions": {
             "Duration": "Clip length in whole seconds; Kling v3.0 Standard accepts any integer from 3 to 15s and pricing scales linearly per second.",
             "Aspect ratio": "Frame shape (16:9 landscape, 9:16 vertical, 1:1 square) — pick to match your delivery surface; the model fills the chosen aspect with a fixed 720p tier.",
-            "Resolution": "Output quality tier; Kling v3.0 currently outputs only 720p, so this knob is effectively fixed.",
+            "Resolution": "Kling v3.0 currently outputs only 720p, so there is nothing else to pick here.",
             "Size": "Exact pixel dimensions tied to your aspect choice (1280×720, 720×1280, 720×720); usually leave on auto so it follows the aspect ratio.",
             "Frames": "Optional first_frame and/or last_frame reference images that anchor the opening and/or closing pose — essential for multi-shot continuity and for image-to-video starts.",
             "Negative prompt": "Free-text guardrails (e.g. \"blurry text, extra fingers, warped face, on-screen text\"); Kling honours negatives well, treat as hard constraints.",
             "CFG scale": "Classifier-free guidance strength (0–1); 0 uses the provider default, higher values force stricter prompt adherence at the cost of creative range — new in Kling v3.0.",
             "Audio": "Toggles native synchronised ambient/effects audio along with the video; switch off only if you plan to score the clip externally, since audio is billed at its own higher per-second rate, listed below.",
-            "Provider options JSON": "Escape hatch for raw OpenRouter/Kling provider parameters not exposed as dedicated valves; leave empty unless docs call out a specific override.",
+            "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
         },
     },
     "minimax/hailuo-2.3": {
@@ -431,10 +443,10 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "anime, illustration, and ink-wash looks."
         ),
         "tips_and_pitfalls": [
-            "No audio: Hailuo 2.3 is silent — you must add dialogue, SFX, and music in post; the catalog confirms generate_audio=false.",
+            "No audio: Hailuo 2.3 is silent — OpenRouter publishes it as generating none, so dialogue, effects and music all have to be added afterwards.",
             "First-frame only: 2.3 dropped last-frame conditioning that 2.0 had, so you can anchor the opening still but cannot pin the ending — plan motion to flow forward from the first frame.",
             "Hailuo rewards specific physical and emotional direction (e.g. \"tight smile turning to laughter,\" \"cloth catches the wind, then settles\") far more than other models — vague prompts under-use its physics strengths.",
-            "prompt_optimizer rewrites/expands your prompt for better adherence; turn it off only when you have a deliberately precise prompt. fast_pretreatment speeds up that step at a small quality cost — useful for batch runs, otherwise leave at default.",
+            "Prompt optimizer rewrites and expands what you wrote so the model follows it more closely; turn it off only when your prompt is already deliberately precise. Fast pretreatment runs that same step more quickly at a small cost in quality — handy for batch runs, otherwise leave it alone.",
         ],
         "knob_descriptions": {
             "Duration": "Length of the generated clip in seconds; Hailuo 2.3 supports either 6s or 10s.",
@@ -443,7 +455,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Size": "Exact pixel dimensions of the output frame; fixed at 1920×1080.",
             "Frames": "Optional reference images; Hailuo 2.3 accepts only a first_frame image to anchor the opening shot and does not support a last frame.",
             "Seed": "Asks for a fixed random draw so a prompt can be re-run. Nothing is published about whether this model honours one, so treat a repeat as likely rather than guaranteed.",
-            "Provider options JSON": "Free-form passthrough for OpenRouter provider routing (not for video parameters themselves).",
+            "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
             "Prompt optimizer": "Enables MiniMax's server-side prompt rewriter that expands and refines your prompt for better motion and adherence; leave on for short or casual prompts, set off for verbatim.",
             "Fast pretreatment": "Only meaningful when the prompt optimiser is active — runs a quicker, lighter optimisation pass to cut latency (handy for batch generation) at a small loss of fine-tuning quality.",
         },
@@ -453,19 +465,16 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "best_known_for": (
             "Alibaba Tongyi Lab's flagship multimodal video model, unifying text, image, "
             "audio, and video conditioning in a single 27B-parameter Diffusion Transformer "
-            "with Flow Matching. Its standout capability is true multi-reference control: "
-            "lock subject identity, vocal timbre, props, and visual style across new "
-            "scenes by feeding up to five reference videos plus reference image grids. "
-            "It also adds last-frame anchoring (FLF2V), native audio-synced lip generation "
-            "across languages, and a \"Thinking Mode\" planner that improves coherence on "
+            "with Flow Matching. Its standout capability is multi-reference control: "
+            f"{TRUE_WAN_REFERENCES}. A \"Thinking Mode\" planner improves coherence on "
             "dialogue- and character-led shots — at the cost of weaker fast-motion physics "
             "than Seedance 2.0."
         ),
         "tips_and_pitfalls": [
-            "Pick the right reference channel: use the images array to lock appearance, wardrobe, props (it works like a 9-image storyboard grid in 2.7); use the video / videos passthrough for motion style, camera language, or vocal timbre transfer.",
+            "Pick the right kind of reference: Reference images JSON locks appearance, wardrobe and props (it reads like a 9-image storyboard grid in 2.7), while Reference video URL and Reference videos JSON carry motion style, camera language, or a voice to copy.",
             "For talking-head and dialogue clips, supply an audio reference — Wan 2.7's automatic lip-sync matches mouth shapes to the supplied speech in the target language, a headline upgrade over 2.6.",
             "Wan 2.7 is tuned for character-led, narrative content; for fast sports/action shots its physics still trails Seedance 2.0 and Runway Gen-4, so add explicit motion verbs and a negative prompt against blur/morphing.",
-            "Wan 2.7's instruction-following changed vs 2.6, so prompts calibrated on 2.6 may drift; lean on prompt_extend = on when prompts are short, but turn it off when you've already written a precise multi-shot storyboard.",
+            "Wan 2.7's instruction-following changed vs 2.6, so prompts calibrated on 2.6 may drift; turn Prompt extend on when prompts are short, and off when you've already written a precise multi-shot storyboard.",
         ],
         "knob_descriptions": {
             "Duration": "Sets clip length in seconds (2–10 here); longer durations let Wan 2.7's full-attention DiT carry character identity further, but cost scales linearly with every second you add.",
@@ -476,14 +485,14 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Negative prompt": "Free-text list of things to suppress (e.g. \"blurry, extra fingers, morphing\"); useful on Wan 2.7 to push back on residual fast-motion artefacts.",
             "Audio": "Toggles native audio generation — Wan 2.7 bakes synchronised speech, ambience, and effects into the clip rather than dubbing them in post.",
             "Seed": "Fixes the RNG so the same prompt + references reproduce the same clip; essential when iterating on multi-shot sequences that need to match.",
-            "Provider options JSON": "Raw escape hatch for any OpenRouter provider parameter not surfaced as a dedicated valve; useful for niche flags Alibaba may add post-launch.",
-            "Audio reference URL": "Sends an audio clip in the audio passthrough so Wan 2.7 conditions the character's voice timbre and lip motion on your reference — the basis for its multi-language lip-sync feature.",
-            "Last image URL": "Convenience field for the last_image passthrough that anchors the closing frame, used together with first-frame to compose a controlled in-between motion arc.",
-            "Reference video URL": "Sends a single video to the video passthrough for reference-to-video (Wan2.7-r2v); the model copies motion style, camera moves, and/or vocal identity from this clip into the new generation.",
-            "Reference videos JSON": "Array form of the videos passthrough — Wan 2.7 accepts up to five reference videos in one call to lock multiple distinct characters' appearance and voice across the same scene.",
-            "Reference images JSON": "Array form of the images passthrough — feeds Wan 2.7's 9-image structured grid that anchors subject identity, wardrobe, props, and environment without you having to describe them in text.",
+            "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
+            "Audio reference URL": "A public link to a sound file whose voice and timing Wan 2.7 should match — this is what its multi-language lip-sync works from.",
+            "Last image URL": "A public link to the still the clip should finish on; pair it with an opening frame to fix both ends and let the model fill the motion between them.",
+            "Reference video URL": "A public link to one clip whose motion style, camera moves or voice Wan 2.7 should carry into the new scene.",
+            "Reference videos JSON": "Up to five clips at once, written as a JSON list of links, so several different characters keep their look and voice across the same scene.",
+            "Reference images JSON": "Up to nine pictures, written as a JSON list of links, fixing who is in shot, what they wear, the props and the setting so you do not have to describe them.",
             "Prompt extend": "Selects whether Wan's prompt rewriter expands your text (on), leaves it untouched (off), or uses the model's default; turn it off when you've already written a precise multi-shot storyboard.",
-            "Ratio": "String passthrough that sends ratio directly to OpenRouter; use this when you need a non-standard aspect string the dropdown doesn't expose, otherwise prefer the Aspect ratio valve.",
+            "Ratio": "A frame shape written the way Wan names it, for a shape the Aspect ratio list does not offer. Otherwise use Aspect ratio, which is checked against what this model accepts.",
         },
     },
     "bytedance/seedance-2.0-fast": {
@@ -501,8 +510,9 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "tips_and_pitfalls": [
             "Use Fast for drafting, prompt iteration, and bulk pipelines; switch to standard Seedance 2.0 for hero shots — Fast trades a small amount of motion refinement and detail for a lower published token rate.",
             "Token math means doubling resolution or duration roughly multiplies cost; a 720p 10s clip costs far more than a 480p 5s draft, so iterate small first.",
-            "This OpenRouter listing does not expose negative_prompt and caps at 720p — for 1080p or text-prompted negatives you need the standard 2.0 model or another provider.",
-            "watermark toggles the visible provider/ByteDance branding overlay on the returned MP4, and req_key is ByteDance/Volcengine ModelArk's internal model-routing identifier — leave both at defaults unless your provider explicitly tells you otherwise.",
+            "This listing caps at 720p — for 1080p or 4K, switch to the standard Seedance 2.0 model.",
+            "Neither this model nor standard Seedance 2.0 offers a box for saying what to keep out, so anything you want excluded has to be worded into the prompt itself.",
+            "Watermark turns ByteDance's visible branding on the finished clip on or off. Request key takes a value ByteDance accepts whose meaning OpenRouter does not publish. Leave both alone unless your provider has told you otherwise.",
         ],
         "knob_descriptions": {
             "Duration": "Length of the generated clip in whole seconds; Seedance 2.0 Fast accepts any integer from 4 to 15s and longer durations linearly increase token cost.",
@@ -512,9 +522,9 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Frames": "Lets you pin the first and/or last frame of the video to a supplied image for image-to-video or precise start/end control of motion.",
             "Audio": "When on (model default true), Seedance generates synchronised dialogue, ambient sound, and music in the same pass as the video — no second audio model required.",
             "Seed": "Integer that makes generations reproducible — same prompt + seed yields the same clip, useful for A/B testing prompt edits.",
-            "Provider options JSON": "Free-form passthrough block forwarded to OpenRouter's provider field for routing/fallback control; not for model parameters.",
-            "Watermark": "Controls whether the upstream provider stamps a visible watermark on the returned MP4 — model_default keeps the provider's policy, on forces the watermark, off requests an unwatermarked clip (subject to provider permission/billing).",
-            "Request key": "A ByteDance/Volcengine ModelArk routing string identifying which Seedance SKU/endpoint variant to dispatch to upstream; leave blank to use OpenRouter's default mapping.",
+            "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
+            "Watermark": "Whether ByteDance stamps its visible branding on the finished clip — model_default keeps ByteDance's own policy, on forces it, off asks for a clean clip, which your account has to be allowed to receive.",
+            "Request key": VIDEO_REQ_KEY_DESCRIPTION,
         },
     },
     "bytedance/seedance-2.0": {
@@ -523,13 +533,17 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "ByteDance's flagship multimodal video model, best known for \"locked\" "
             "character consistency — preserving faces, clothing, accessories, and small "
             "subject details across the duration of a clip and across multi-shot "
-            "generations. It stands out for its \"Universal Reference\" system that "
-            "accepts text plus up to 9 images and 3 video/audio clips in a single "
-            "generation, letting you direct composition, camera movement, and character "
-            "actions from reference assets at once. Unlike 2.0 Fast (speed over quality) "
-            "and 1.5 Pro (limited to text + first/last frame), the full 2.0 variant is "
-            "the production-quality choice with native audio (dialogue, ambience, SFX) "
-            "and multi-shot story coherence."
+            "generations. It takes references as well as a prompt: the first picture you "
+            "attach anchors the opening of the shot and the last one the ending, and any "
+            "further pictures ride along as references that fix a character, a prop or a "
+            "setting without you having to describe it. Clips and sound files you attach "
+            "ride along the same way, but only if your administrator has turned on sending "
+            "media to a file host; otherwise they are left out with a note in the chat. A "
+            "sound file on its own is left out either way, because it is only accepted "
+            "alongside a picture or a clip. Against 2.0 Fast, which stops at 720p, and 1.5 "
+            "Pro, which stops at 1080p and 12 seconds, the full 2.0 variant reaches 4K and "
+            "15 seconds with native audio (dialogue, ambience, SFX) and multi-shot story "
+            "coherence."
         ),
         "tips_and_pitfalls": [
             "Reach for full Seedance 2.0 (not Fast) when you need production drafts where identity preservation matters — branded characters, story-led scenes, or repeatable creative formats — and accept the longer render in exchange for tighter facial/clothing fidelity.",
@@ -540,14 +554,14 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "knob_descriptions": {
             "Duration": "Sets clip length from 4 to 15 seconds; longer durations cost more tokens and increase the chance of subtle character or scene drift, so pick the shortest length that tells the shot.",
             "Aspect ratio": "Chooses the framing from seven options (1:1, 3:4, 9:16, 4:3, 16:9, 21:9, 9:21), useful for matching social, cinematic, or vertical-mobile delivery before sizing.",
-            "Resolution": "Selects 480p, 720p, or 1080p output — 1080p is available on the full 2.0 variant and is the recommended choice for client-facing drafts where character detail matters.",
+            "Resolution": "Selects 480p, 720p, 1080p, or 4K output — 1080p is the usual pick for client-facing drafts where character detail matters, and 4K is the highest tier this model publishes.",
             "Size": "Locks the exact pixel dimensions from the supported list (e.g. 1920×1080, 1080×1920, 2520×1080) when you need a specific frame size rather than just an aspect ratio.",
             "Frames": "Lets you supply a first_frame and/or last_frame image to anchor the clip's start and end, the most reliable way to enforce character/scene continuity on this model.",
             "Audio": "Toggles native audio generation (dialogue, ambient sound, SFX) — Seedance 2.0 has phoneme-level lip-sync, so leave on for finished drafts and off only for silent B-roll.",
             "Seed": "Locks the random seed for reproducible output, letting you re-run the same prompt and references to get a near-identical clip for iteration or A/B comparison.",
-            "Provider options JSON": "Forwards advanced ByteDance/provider parameters not surfaced as dedicated knobs (e.g. reference-mode flags, multi-reference weighting), for power users following provider docs.",
-            "Watermark": "Per-model passthrough that toggles ByteDance's visible video watermark on the output; turn off only if your provider account permits unwatermarked delivery.",
-            "Request key": "Per-model passthrough for an optional request/idempotency key forwarded to ByteDance, useful for tracing or de-duplicating long-running video jobs.",
+            "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
+            "Watermark": "Whether ByteDance's visible branding is burned into the clip; turn it off only if your account is allowed to receive clean clips.",
+            "Request key": VIDEO_REQ_KEY_DESCRIPTION,
         },
     },
     "alibaba/wan-2.6": {
@@ -566,12 +580,12 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         ),
         "tips_and_pitfalls": [
             "First-frame ONLY: Wan 2.6 supports first_frame image conditioning but has no last_frame. To define both endpoints of a clip, you must upgrade to Wan 2.7 — don't try to fake it through prompts.",
-            "shot_type controls camera framing/composition (e.g., values like \"medium_to_closeup\"), used for cinematic shot intent; this knob was removed in 2.7. For multi-shot scripts, write scene-timed segments in the prompt itself.",
-            "Use enable_prompt_expansion (LLM-based prompt rewriter) for short or terse prompts — it adds cinematographic detail \"for free\" without consuming your budget; turn it OFF when you've already crafted a long, precise prompt.",
+            "Shot type sets how close the camera sits (values written as Wan names them, such as \"medium_to_closeup\"); Wan 2.7 dropped it. For multi-shot scripts, write scene-timed segments into the prompt itself.",
+            "Turn Enable prompt expansion on for short or terse prompts — it adds camera and lighting detail at no extra charge; turn it off when you have already written a long, precise prompt.",
             "Audio reference files must be 3–30s, WAV/MP3, max 15 MB; clips longer than the video get truncated and shorter clips leave a silent tail. Two-speaker dialogue tends to collapse to one dominant voice — generate single-speaker clips and composite.",
         ],
         "knob_descriptions": {
-            "Duration": "Selects 5s or 10s of video (Wan 2.6 OpenRouter SKU caps at 10s; the 15s tier from Alibaba Cloud is not exposed here).",
+            "Duration": "Selects 5s or 10s of video; the OpenRouter listing caps at 10s, so the 15s length Alibaba Cloud sells directly is not available here.",
             "Aspect ratio": "Picks 16:9 (landscape) or 9:16 (portrait/vertical) framing for the output clip.",
             "Resolution": "Chooses 720p or 1080p; 1080p is the model's native high-fidelity tier and is billed at a higher per-second rate — the rate for each is listed below.",
             "Size": "Direct pixel dimensions (1280×720, 1920×1080, 720×1280, 1080×1920) — overrides aspect/resolution if you need an exact frame size.",
@@ -579,10 +593,10 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Negative prompt": "Free-text list of things to avoid (artifacts, styles, objects, motion) — passed through to suppress unwanted features in the render.",
             "Audio": "Toggles Wan 2.6's native A/V synthesis so the output clip ships with synchronised sound effects, ambience, dialogue, or voiceover instead of a silent video.",
             "Seed": "Integer that fixes the random initialisation for reproducible/iterative generations from the same prompt.",
-            "Provider options JSON": "Escape hatch for any extra OpenRouter/Alibaba passthrough field not surfaced as a dedicated valve.",
+            "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
             "Audio reference URL": "Public WAV/MP3 link (3–30s, ≤15 MB) that Wan 2.6 will lip-sync or musically conform the video to instead of generating audio from scratch.",
             "Enable prompt expansion": "Tri-state (model_default / on / off) for the LLM prompt-rewriter that auto-enriches short prompts with cinematographic detail; turn off for deterministic, fully-authored prompts.",
-            "Shot type": "String hint controlling camera framing/composition (e.g., wide, medium, close-up, \"medium_to_closeup\") so Wan 2.6 picks the intended cinematographic shot — a 2.6-only knob.",
+            "Shot type": "How close the camera sits — wide, medium, close-up, \"medium_to_closeup\" — written the way Wan names it, so 2.6 frames the shot you intended. Wan 2.7 dropped this control.",
         },
     },
     "bytedance/seedance-1-5-pro": {
@@ -599,21 +613,21 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         ),
         "tips_and_pitfalls": [
             "Audio is billed at a higher per-token rate than silent output — both rates are listed below — so toggle Audio off for silent B-roll, layout passes, or anything you'll dub later.",
-            "Use 1.5 Pro for short, repeatable clips with simple camera work and known-good prompts; switch to 2.0 only when you need richer multimodal references, 2K output, or longer 15s shots — 1.5 Pro caps at 1080p and 12s.",
+            "Use 1.5 Pro for short, repeatable clips with simple camera work and known-good prompts; switch to 2.0 only when you need richer multimodal references, 4K output, or longer 15s shots — 1.5 Pro caps at 1080p and 12s.",
             "Long durations drift: 4–6s clips stay on-model, but 10–12s shots show face drift, color shift, and continuity errors — chain shorter shots with last_frame anchors and consistent character descriptions.",
             "last_frame is a directional guide, not a pixel-perfect target — pick an end frame with framing and lighting close to the start frame, or you'll get jumpy transitions in the final second.",
         ],
         "knob_descriptions": {
             "Duration": "Sets clip length from 4–12 seconds; cost scales linearly and quality/continuity degrade past ~8s, so iterate short and only extend after motion looks right.",
             "Aspect ratio": "Picks one of seven framings (1:1, 3:4, 9:16, 9:21, 4:3, 16:9, 21:9) and should match your input image orientation to avoid awkward crops or stretched motion.",
-            "Resolution": "Chooses 480p (fast previews), 720p (balanced), or native 1080p (final delivery); 1.5 Pro does not offer 2K, unlike Seedance 2.0.",
+            "Resolution": "Chooses 480p (fast previews), 720p (balanced), or native 1080p (final delivery); 1080p is the top tier here, while Seedance 2.0 carries on to 4K.",
             "Size": "Selects from 21 exact pixel dimensions, so you can hit platform-specific targets without post-crop.",
             "Frames": "Accepts a first_frame to lock identity/lighting and an optional last_frame to steer the ending, enabling match cuts and multi-shot continuity when you chain clips.",
             "Audio": "Turns on the dual-branch joint generation so lip-sync and physics SFX are produced in the same pass; it is billed at the higher with-audio rate, so disable when you don't need sound.",
             "Seed": "Fixes the random initialisation for reproducible outputs — essential when iterating on prompt wording without re-rolling the whole scene.",
-            "Provider options JSON": "Free-form passthrough for any extra ByteDance fields not mapped to a dedicated valve; useful for experimental flags surfaced in OpenRouter's video API.",
-            "Watermark": "Per-model passthrough that toggles the visible ByteDance watermark on the rendered output.",
-            "Request key": "Per-model passthrough idempotency/request token forwarded to ByteDance — set a stable value to dedupe retries on the provider side.",
+            "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
+            "Watermark": "Whether ByteDance's visible branding is burned into the finished clip.",
+            "Request key": VIDEO_REQ_KEY_DESCRIPTION,
         },
     },
     "openai/sora-2-pro": {
@@ -627,53 +641,53 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "frame and lip-sync stays tight. Its standout differentiator is world-state "
             "persistence across multi-shot sequences — characters, props, and spatial "
             "relationships stay consistent across cuts, enabling cohesive short-form "
-            "storytelling. In this catalog it also offers the longest clips of any video "
-            "model, up to 20 seconds at full 1080p."
+            "storytelling. It runs to 20 seconds at full 1080p."
         ),
         "tips_and_pitfalls": [
-            "Text-to-video only here: this catalog entry has no frame_image support, so you can't seed it with a start/end image — drive the result entirely from prompt language.",
-            "20-second durations and 1080p are unique strengths but render slow — community tests report 2–5 minutes for a 20s clip and much longer at peak, so prefer 4–8s 720p for iteration and reserve 16–20s 1080p for finals.",
+            "Text-to-video only here: this model takes no opening or closing still, so you cannot seed it with a picture — drive the result entirely from prompt language.",
+            "Long takes at 1080p render slowly — community tests report 2–5 minutes for a 20s clip and much longer at peak, so prefer 4–8s 720p for iteration and reserve 16–20s 1080p for finals.",
             "Plays to its strengths on physics, motion weight, lighting, and ambient/dialogue audio; struggles with on-screen text, brand logos, fine hand details, and highly choreographed multi-character action — don't ship as-is for client deliverables that depend on legible text.",
-            "Quality and Style are passthrough hints OpenRouter forwards; OpenAI's Videos API documents neither one (its whole request body is prompt, input_reference, model, seconds and size), so both are free text and neither is a guaranteed switch.",
+            "Quality and Style are hints OpenRouter forwards exactly as you type them; OpenAI's video API documents neither, so treat both as a suggestion rather than a switch.",
         ],
         "knob_descriptions": {
-            "Duration": "Pick clip length in seconds from 4/8/12/16/20 — Sora 2 Pro is the only model in this catalog that reaches 20s, but render time and cost scale roughly linearly with duration.",
+            "Duration": "Pick clip length in seconds from 4, 8, 12, 16 or 20 — nothing in between is accepted, and render time and cost scale roughly linearly with the length you pick.",
             "Aspect ratio": "Choose 16:9 for landscape/cinematic framing or 9:16 for vertical/social; this model does not support 1:1 or other ratios.",
             "Resolution": "720p is the cheap iteration tier while 1080p is the cinematic finishing tier, billed at a higher rate per second, with sharper textures and richer color depth at the cost of longer renders.",
             "Size": "Picks the exact pixel dimensions (1280×720, 1920×1080, 720×1280, 1080×1920) — use this when your downstream pipeline needs a specific frame size rather than just a ratio.",
             "Audio": "Sora 2 Pro generates synchronised audio natively (dialogue, SFX, ambience) from the same scene representation as the video — leave it on for realistic results.",
-            "Provider options JSON": "Free-form JSON forwarded to OpenRouter for advanced/experimental fields not covered by the dedicated valves; leave empty unless you're following specific OpenRouter or OpenAI Videos API docs.",
-            "Quality": "Free-text passthrough hint. OpenAI publishes no quality values for video — \"standard\"/\"hd\" belong to the DALL·E 3 image endpoint — so send only a value your provider accepts; in practice the visible tier is governed mainly by the chosen resolution.",
-            "Style": "Free-text passthrough that lets you bias the look (e.g. \"cinematic\", \"anamorphic\", \"documentary handheld\"); since the OpenAI API has no formal style enum, prompt language remains the primary stylistic lever.",
+            "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
+            "Quality": "A free-text hint. OpenAI publishes no quality values for video — \"standard\" and \"hd\" belong to its image models — so send only a value your provider accepts; in practice what you see is governed mainly by the resolution you pick.",
+            "Style": "Free text that biases the look (e.g. \"cinematic\", \"anamorphic\", \"documentary handheld\"); OpenAI publishes no list of styles, so the prompt itself stays the main stylistic lever.",
         },
     },
     "x-ai/grok-imagine-video": {
-        "display_name": "xAI: Grok Imagine Video",
+        "display_name": "SpaceXAI: Grok Imagine Video",
         "best_known_for": (
-            "xAI's fast text-, image-, and reference-conditioned video generator, "
+            "SpaceXAI's fast text-, image-, and reference-conditioned video generator, "
             "producing short clips (1-15 seconds, 24 fps) at 480p or 720p across "
             "seven aspect ratios. Best for rapid iteration where you want tight "
-            "control over duration in 1-second increments (rather than the 4/6/8 "
-            "tier other models impose) and the option to anchor on a first frame "
-            "for image-to-video continuity. Charged per output-second by "
+            "control over duration in whole seconds and can start as short as one "
+            "second — no other model in this catalog goes below two — with the "
+            "option to anchor on a first frame for image-to-video continuity. "
+            "Charged per output-second by "
             "resolution; image conditioning adds a flat per-image surcharge."
         ),
         "tips_and_pitfalls": [
-            "Duration is free-form 1-15 seconds — pick the exact length you need; cost scales linearly per second.",
+            "Duration is any whole number from 1 to 15 seconds — pick the exact length you need; cost scales linearly per second, so a one-second draft costs a fifteenth of a full-length take.",
             "Resolution drives price: 480p is the iteration tier, 720p the finishing tier; there is no 1080p/4K on this model.",
             "Single-frame conditioning only — `first_frame` is supported but `last_frame` is not. Use Veo 3.1 or Kling if you need both endpoints locked.",
             "Seven aspect ratios cover landscape, vertical, square, and 4:3 / 3:2 photo formats; pick by destination platform.",
             "Image conditioning adds a small flat charge for each image you supply, on top of the per-second video cost.",
         ],
         "knob_descriptions": {
-            "Duration": "Pick clip length in seconds from 1 through 15 — Grok Imagine Video is unique here in offering per-second granularity rather than fixed tiers; cost scales linearly per second.",
+            "Duration": "Pick clip length in seconds, any whole number from 1 through 15. One second is the shortest start any model in this catalog offers — the next shortest begin at 2 — and cost scales linearly per second.",
             "Aspect ratio": "Choose from 16:9, 9:16, 1:1, 4:3, 3:4, 3:2, or 2:3 — broader landscape/portrait/square/photo coverage than Sora or Veo Lite.",
-            "Resolution": "Picks 480p (cheaper iteration) or 720p (finishing); resolution drives the per-second SKU.",
+            "Resolution": "Picks 480p (cheaper iteration) or 720p (finishing); this is what sets the per-second rate you are charged.",
             "Size": "Pin exact pixel dimensions when you need a specific canvas (e.g. 854×480 for legacy SD, 1280×720 for HD).",
             "Frames": "Image conditioning — `first_frame` for image-to-video continuity, none for pure text-to-video. `last_frame` is not supported on this model.",
             "Audio": "Asks for a soundtrack with the picture. Nothing is published about whether this model obliges, so leaving it alone keeps the model's own behaviour.",
             "Seed": "Asks for a fixed random draw so a prompt can be re-run. Nothing is published about whether this model honours one, so treat a repeat as likely rather than guaranteed.",
-            "Provider options JSON": "Free-form JSON passthrough for OpenRouter/xAI fields not covered by the dedicated valves.",
+            "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
         },
     },
 }
@@ -824,11 +838,10 @@ def _published_amount(value: Any) -> Decimal | None:
 
 
 def _format_dollars(amount: Decimal) -> str:
-    text = f"{amount:.6f}".rstrip("0")
-    if text.endswith("."):
-        return text + "00"
-    if len(text.split(".", 1)[1]) < 2:
-        return text + "0"
+    text = format(amount.normalize(), "f")
+    whole, _point, fraction = text.partition(".")
+    if len(fraction) < 2:
+        return f"{whole}.{fraction.ljust(2, '0')}"
     return text
 
 
@@ -923,8 +936,51 @@ def _longest_clip_line(highest_rate: Decimal, supported_durations: Any) -> str:
     )
 
 
+def _format_published_rate(value: str) -> str:
+    amount = _published_amount(value)
+    return value if amount is None else _format_dollars(amount)
+
+
+def _named_list(spoken: list[str]) -> str:
+    if len(spoken) == 1:
+        return spoken[0]
+    return " and ".join([", ".join(spoken[:-1]), spoken[-1]])
+
+
+def _sku_resolution_tiers(pricing_skus: dict[str, str]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    for raw_key in pricing_skus:
+        seen.update(set(str(raw_key).strip().lower().split("_")) & set(_SKU_RESOLUTION_TAGS))
+    return tuple(tag for tag in _SKU_RESOLUTION_TAGS if tag in seen)
+
+
+def _tiers_priced_but_not_offered(
+    pricing_skus: dict[str, str], supported_resolutions: Any
+) -> str:
+    if not isinstance(supported_resolutions, list):
+        return ""
+    offered = {
+        str(item).strip().lower() for item in supported_resolutions if str(item).strip()
+    }
+    if not offered:
+        return ""
+    extra = [tag for tag in _sku_resolution_tiers(pricing_skus) if tag not in offered]
+    if not extra:
+        return ""
+    spoken = [tag.upper() if tag.endswith("k") else tag for tag in extra]
+    rate_word = "a rate" if len(spoken) == 1 else "rates"
+    size_word = "is not a size" if len(spoken) == 1 else "are not sizes"
+    return (
+        f"OpenRouter publishes {rate_word} for {_named_list(spoken)} here, which "
+        f"{size_word} this model offers — the resolutions listed above are the ones "
+        "you can pick."
+    )
+
+
 def _format_pricing_skus(
-    pricing_skus: dict[str, str] | None, supported_durations: Any = None
+    pricing_skus: dict[str, str] | None,
+    supported_durations: Any = None,
+    supported_resolutions: Any = None,
 ) -> str:
     if not isinstance(pricing_skus, dict) or not pricing_skus:
         return ""
@@ -939,7 +995,11 @@ def _format_pricing_skus(
         if not isinstance(raw_value, (int, float, str)) or str(raw_value).strip() == "":
             continue
         value = str(raw_value).strip()
-        amount = _format_cents_as_dollars(value) if _sku_priced_in_cents(raw_key) else value
+        amount = (
+            _format_cents_as_dollars(value)
+            if _sku_priced_in_cents(raw_key)
+            else _format_published_rate(value)
+        )
         unit = _sku_unit(raw_key)
         if unit.kind == _SKU_RATE:
             per_token = per_token or unit.per_token
@@ -963,6 +1023,9 @@ def _format_pricing_skus(
                 "OpenRouter before relying on it."
             )
     sections = ["\n".join(rates)] if rates else []
+    unoffered = _tiers_priced_but_not_offered(pricing_skus, supported_resolutions)
+    if unoffered:
+        sections.append(unoffered)
     sections.extend(floors)
     if every_charge_by_the_second and by_the_second:
         ceiling = _longest_clip_line(max(by_the_second), supported_durations)
@@ -974,11 +1037,22 @@ def _format_pricing_skus(
     return "\n\n".join(sections)
 
 
+def _numeric_order(items: list[str]) -> list[str]:
+    pairs: list[tuple[Decimal, str]] = []
+    for item in items:
+        amount = _published_amount(item)
+        if amount is None:
+            return items
+        pairs.append((amount, item))
+    pairs.sort(key=lambda pair: pair[0])
+    return [item for _amount, item in pairs]
+
+
 def _format_csv(value: Any) -> str:
     if not isinstance(value, list):
         return ""
     items = [str(item).strip() for item in value if str(item).strip()]
-    return ", ".join(items)
+    return ", ".join(_numeric_order(items))
 
 
 def _format_frames_capability(supported_frames: Any) -> str:
@@ -1043,7 +1117,9 @@ def _render_template(
         knob_lines.append(f"- `{name}`: {PASSTHROUGH_DESCRIPTION}")
 
     pricing_block = _format_pricing_skus(
-        model.get("pricing_skus") or {}, model.get("supported_durations")
+        model.get("pricing_skus") or {},
+        model.get("supported_durations"),
+        model.get("supported_resolutions"),
     )
     pricing_section = ""
     if pricing_block:
@@ -1058,7 +1134,7 @@ def _render_template(
 
     knobs_section = ""
     if knob_lines:
-        knobs_section = "\n\n**Knobs in this filter**\n" + "\n".join(knob_lines)
+        knobs_section = "\n\n**Controls**\n" + "\n".join(knob_lines)
 
     tips_section = ""
     if tip_lines:
@@ -1120,7 +1196,9 @@ def _render_catalog_fallback(model_id: str, model: dict[str, Any]) -> str:
     durations = _format_csv(model.get("supported_durations")) or "model default"
     resolutions = _format_csv(model.get("supported_resolutions")) or "model default"
     pricing_block = _format_pricing_skus(
-        model.get("pricing_skus") or {}, model.get("supported_durations")
+        model.get("pricing_skus") or {},
+        model.get("supported_durations"),
+        model.get("supported_resolutions"),
     )
     pricing_section = ""
     if pricing_block:

@@ -875,6 +875,21 @@ class TestPrettyJson:
         assert '"key"' in result
         assert '"value"' in result
 
+    @pytest.mark.parametrize("empty", [{}, [], ()])
+    def test_an_empty_container_is_not_applicable_rather_than_a_placeholder(self, empty):
+        """Every consumer is a template field gated on `{{#if <field>}}`.
+
+        Returning "{}" made that gate fire, so an error with no metadata still printed a
+        `**Metadata:**` heading over an empty fence -- two lines of noise on a card whose
+        whole job is telling a user what went wrong.
+        """
+        assert _pretty_json(empty) == ""
+
+    @pytest.mark.parametrize(("value", "expected"), [(0, "0"), (False, "false")])
+    def test_a_falsey_value_that_is_not_a_container_still_renders(self, value, expected):
+        """`0` is a datum; `{}` is an absence. Suppressing both loses a real one."""
+        assert _pretty_json(value) == expected
+
     def test_non_serializable_uses_str(self):
         """Non-serializable objects use str()."""
         class Custom:

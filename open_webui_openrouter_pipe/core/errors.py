@@ -13,6 +13,7 @@ Responsible for translating technical errors into user-friendly markdown message
 from __future__ import annotations
 
 import concurrent.futures
+import re
 from typing import Any
 
 import httpx
@@ -216,6 +217,34 @@ def _classify_retryable_http_error(
     return False, None
 
 
+_EMBEDDED_PROVIDER_ERROR = re.compile(r"^(?P<prefix>[^{]*?)\s*(?P<body>\{.*\})\s*$", re.DOTALL)
+
+
+def _unnest_provider_error(message: Any) -> dict[str, str] | None:
+    if not isinstance(message, str) or "{" not in message:
+        return None
+    match = _EMBEDDED_PROVIDER_ERROR.match(message.strip())
+    if not match:
+        return None
+    inner = _safe_json_loads(match.group("body"))
+    if not isinstance(inner, dict):
+        return None
+    section = inner.get("error")
+    section = section if isinstance(section, dict) else inner
+    text = section.get("message") or section.get("detail")
+    if not isinstance(text, str) or not text.strip():
+        return None
+    found: dict[str, str] = {"message": text.strip(), "prefix": match.group("prefix").strip(" :")}
+    kind = section.get("type") or section.get("code")
+    if isinstance(kind, str) and kind.strip():
+        found["type"] = kind.strip()
+    marker = re.search(r"Request id:\s*([A-Za-z0-9_-]+)", text)
+    if marker:
+        found["request_id"] = marker.group(1)
+        found["message"] = text[: marker.start()].strip().rstrip(".") or text.strip()
+    return found
+
+
 def _extract_openrouter_error_details(body_text: str | None) -> dict[str, Any]:
     """Normalize OpenRouter error payloads into structured metadata."""
     parsed = _safe_json_loads(body_text) if body_text else None
@@ -246,9 +275,17 @@ def _extract_openrouter_error_details(body_text: str | None) -> dict[str, Any]:
         or (parsed.get("request_id") if isinstance(parsed, dict) else None)
     )
 
+    own_message = error_section.get("message")
+    nested = _unnest_provider_error(own_message)
+    if nested:
+        own_message = nested.get("prefix") or own_message
+        upstream_message = upstream_message or nested.get("message")
+        upstream_type = upstream_type or nested.get("type")
+        request_id = request_id or nested.get("request_id")
+
     return {
         "provider": metadata_dict.get("provider_name") or metadata_dict.get("provider"),
-        "openrouter_message": error_section.get("message"),
+        "openrouter_message": own_message,
         "openrouter_code": error_section.get("code"),
         "upstream_message": upstream_message,
         "upstream_type": upstream_type,

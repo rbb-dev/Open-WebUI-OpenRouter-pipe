@@ -1806,6 +1806,94 @@ class Valves(BaseModel):
         le=25,
         description="Maximum consecutive video status polling errors before the job is marked failed in the chat.",
     )
+    SEND_MEDIA_VIA_FILE_HOST: bool = Field(
+        default=False,
+        description=(
+            "Put an attached clip or sound file behind a public link so the model can fetch "
+            "it. OpenRouter takes reference media only as a link it can download, so without "
+            "this an attachment cannot reach a video model at all. Turning it on uploads the "
+            "file to the third-party host chosen below, where anyone holding the link can "
+            "watch it until it expires. Off unless you decide otherwise."
+        ),
+    )
+    MEDIA_FILE_HOST: Literal["litterbox", "catbox"] = Field(
+        default="litterbox",
+        description=(
+            "Which file host receives the upload. litterbox deletes the file by itself after "
+            "the time set below. catbox keeps it until someone removes it by hand, so choose "
+            "it only when a link has to outlive the job."
+        ),
+    )
+    MEDIA_FILE_HOST_RETENTION: Literal["1h", "12h", "24h", "72h"] = Field(
+        default="1h",
+        description=(
+            "How long litterbox keeps the file before deleting it. The model fetches it within "
+            "seconds of the request, so an hour is ample; raise it only if your provider queues "
+            "jobs for longer. catbox ignores this and keeps everything."
+        ),
+    )
+    USE_THE_OTHER_FILE_HOST_IF_ONE_IS_DOWN: bool = Field(
+        default=False,
+        description=(
+            "If the chosen host cannot take the file, try the other one instead of failing "
+            "the request. Off by default because the two keep files for very different "
+            "lengths of time: falling back from litterbox to catbox turns a file that would "
+            "have deleted itself within the hour into one that stays up until somebody "
+            "removes it. Turn it on only if you would rather the request succeed."
+        ),
+    )
+    MEDIA_FILE_HOST_MAX_SIZE_MB: int = Field(
+        default=200,
+        ge=1,
+        le=1024,
+        description=(
+            "Largest attachment that will be uploaded to the file host. A file over this is "
+            "refused and the request stops rather than generating without it."
+        ),
+    )
+    SEND_VIDEO_VIA_FILE_HOST: bool = Field(
+        default=True,
+        description=(
+            "Include attached video clips when the file host is in use. OpenRouter refuses a "
+            "clip sent any other way, so a video attachment needs this to reach the model."
+        ),
+    )
+    SEND_AUDIO_VIA_FILE_HOST: bool = Field(
+        default=True,
+        description=(
+            "Include attached sound files when the file host is in use. OpenRouter refuses "
+            "audio sent any other way. It also only accepts a sound reference alongside a "
+            "picture or a clip, never on its own."
+        ),
+    )
+    SEND_IMAGES_VIA_FILE_HOST: bool = Field(
+        default=False,
+        description=(
+            "Include attached pictures as well. They do not need it: a picture travels inside "
+            "the request already and never leaves this server. Turn it on only if large "
+            "reference images are being refused for size."
+        ),
+    )
+    TELL_USERS_ABOUT_THE_FILE_HOST: bool = Field(
+        default=True,
+        description=(
+            "Say in the chat when a user's attachment is uploaded to the file host. Their own "
+            "media leaves this server, so they are told by default. Switch it off if you have "
+            "told your users another way."
+        ),
+    )
+    FILE_HOST_NOTICE: str = Field(
+        default=(
+            "Sending your {kind} to {host} so the model can read it, {retention}."
+        ),
+        description=(
+            "The wording of that notice. Rewrite it in your own words or your own language. "
+            "{kind} becomes clip, sound file or picture; {host} names the file host; "
+            "{retention} says how long it stays there. Leave out any you do not want. "
+            "{kind} and {retention} are written in English, so if you are writing this in "
+            "another language, say those parts yourself rather than using the placeholders."
+        ),
+    )
     REMOTE_VIDEO_MAX_SIZE_MB: int = Field(
         default=500,
         ge=1,

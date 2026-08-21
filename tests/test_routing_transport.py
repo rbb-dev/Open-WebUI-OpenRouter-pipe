@@ -288,3 +288,39 @@ def test_the_distillation_control_the_inlet_already_read_now_exists(visibility):
         filt.inlet(body, metadata, {"valves": model(ENFORCE_DISTILLABLE_TEXT=True)}, None)
 
     assert metadata["openrouter_pipe"]["provider"]["enforce_distillable_text"] is True
+
+
+def test_the_routing_filter_adds_to_the_provider_block_rather_than_replacing_it():
+    """Two filters write one provider block, and neither may erase the other's keys.
+
+    Open WebUI runs filters in `(priority, id)` order and both default to priority 0, so
+    `openrouter_image_filter_*` runs before `openrouter_provider_*`. The routing filter
+    assigned the whole block, which threw away the provider options the image filter had
+    just deep-merged into it -- silently, and only in that ordering.
+    """
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+
+    source = FilterManager._render_provider_routing_filter_source(
+        model_slug="vendor_model",
+        providers=["openai", "together"],
+        quantizations=["fp16"],
+        visibility="user",
+    )
+    module = _load_filter_from_source(source, "routing_filter_merge_probe")
+
+    already_there = {"options": {"openai": {"labels": {"team": "x"}}}}
+    metadata: dict = {"openrouter_pipe": {"provider": dict(already_there)}}
+    instance = module.Filter()
+    instance.inlet(
+        {},
+        __user__={"valves": module.Filter.UserValves(ONLY="Openai")},
+        __metadata__=metadata,
+    )
+
+    written = metadata["openrouter_pipe"]["provider"]
+    assert written.get("only") == ["openai"], (
+        f"the routing filter did not write its own key: {written!r}"
+    )
+    assert written.get("options") == already_there["options"], (
+        f"the routing filter erased another filter's provider options: {written!r}"
+    )

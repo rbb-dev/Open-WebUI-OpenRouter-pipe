@@ -58,7 +58,8 @@ will be removed from the dropdown immediately.
 1. Open a chat in Open WebUI.
 2. In the model picker, choose any image-output model (e.g.
    `Sourceful: Riverflow V2 Pro`, `Black Forest Labs: FLUX.2 Pro`,
-   `Google: Gemini 3.1 Flash Image (Preview)`, `OpenAI: GPT-5 Image`).
+   `Google: Nano Banana 2 (Gemini 3.1 Flash Image Preview)`,
+   `OpenAI: GPT-5 Image`).
    Image models look like normal chat models — they are not in a
    separate menu.
 3. (Optional) Open the Integrations menu (puzzle-piece icon below the
@@ -67,9 +68,11 @@ will be removed from the dropdown immediately.
 4. (Optional) Click its settings icon to adjust the model's options
    before you send. Most of what you see there is what that model
    accepts — two models rarely offer the same set, and a model that does
-   not accept an aspect ratio will not list it. Four controls are on
-   every panel whatever the model publishes: **Provider options**,
-   **Reference images**, **Reference image links** and **Output size**.
+   not accept an aspect ratio will not list it. **Output size** is on
+   every panel whatever the model publishes. Models that answer only with
+   a picture also carry **Provider options**, **Reference images** and
+   **Reference image links**; a model that answers with text as well takes
+   its references from the message itself, so those three are left off.
 5. (Optional) Attach images. They are sent as references for the model to
    work from, newest last, unless you change **Reference images**.
 6. Type your prompt and press send.
@@ -86,8 +89,8 @@ image model returns a curated model-specific help blurb covering:
 - What the model is best known for
 - Tips and pitfalls (how to prompt, when to use vs alternatives)
 - What OpenRouter charges for it right now
-- The controls this model publishes and what they do (the four
-  always-present controls above are not repeated there)
+- The controls this model publishes and what they do, listed together
+  with the always-present ones above that this model carries
 
 This is the fastest way to learn a model without leaving the chat. Try
 it on each image model — the answers are different for every one (the auto-router `openrouter/auto` is a routing layer rather than a generator).
@@ -189,11 +192,11 @@ TTL is shared with the video and chat catalogs.
 | `black-forest-labs/flux.2-max` | Black Forest Labs: FLUX.2 Max | image only | Highest FLUX.2 tier |
 | `black-forest-labs/flux.2-pro` | Black Forest Labs: FLUX.2 Pro | image only | Premium FLUX.2 |
 | `bytedance-seed/seedream-4.5` | ByteDance Seed: Seedream 4.5 | image only | Image-only with sampling controls |
-| `google/gemini-2.5-flash-image` | Google: Gemini 2.5 Flash Image | text + image | Standard Gemini multimodal |
+| `google/gemini-2.5-flash-image` | Google: Nano Banana (Gemini 2.5 Flash Image) | text + image | Standard Gemini multimodal |
 | `google/gemini-3-pro-image` | Google: Nano Banana Pro (Gemini 3 Pro Image) | text + image | Most capable Gemini image model |
-| `google/gemini-3-pro-image-preview` | Google: Gemini 3 Pro Image (Preview) | text + image | Premium Gemini 3 with image |
+| `google/gemini-3-pro-image-preview` | Google: Nano Banana Pro (Gemini 3 Pro Image Preview) | text + image | Premium Gemini 3 with image |
 | `google/gemini-3.1-flash-image` | Google: Nano Banana 2 (Gemini 3.1 Flash Image) | text + image | Pro-level quality at Flash speed |
-| `google/gemini-3.1-flash-image-preview` | Google: Gemini 3.1 Flash Image (Preview) | text + image | Cost-optimized; 512 tier for cheap iteration |
+| `google/gemini-3.1-flash-image-preview` | Google: Nano Banana 2 (Gemini 3.1 Flash Image Preview) | text + image | Cost-optimized; 512 tier for cheap iteration |
 | `google/gemini-3.1-flash-lite-image` | Google: Nano Banana 2 Lite (Gemini 3.1 Flash Lite Image) | text + image | Fastest, cheapest Gemini image model |
 | `krea/krea-2-large` | Krea: Krea 2 Large | image only | Rawer, less house-styled output |
 | `krea/krea-2-medium` | Krea: Krea 2 Medium | image only | Krea's balanced default |
@@ -208,7 +211,7 @@ TTL is shared with the video and chat catalogs.
 | `openai/gpt-image-2` | OpenAI: GPT Image 2 | image only | OpenAI's newest image model |
 | `qwen/qwen-image-3` | Qwen: Qwen Image 3 | image only | Text and detail down to ~10px |
 | `qwen/qwen-image-3-pro` | Qwen: Qwen Image 3 Pro | image only | Larger Qwen 3 with more world knowledge |
-| `recraft/recraft-v3` | Recraft: Recraft V3 | image only | Typography champion; only model with text-at-position |
+| `recraft/recraft-v3` | Recraft: Recraft V3 | image only | Typography champion; tuned for long-form text |
 | `recraft/recraft-v4` | Recraft: Recraft V4 | image only | Design-taste rebuild; 1024x1024; ~10s/image |
 | `recraft/recraft-v4-pro` | Recraft: Recraft V4 Pro | image only | Print-ready 2048x2048 (~30s/image); flat per-image fee |
 | `recraft/recraft-v4-pro-vector` | Recraft: Recraft V4 Pro Vector | image only | High-fidelity SVG finals |
@@ -223,38 +226,45 @@ TTL is shared with the video and chat catalogs.
 | `sourceful/riverflow-v2-pro` | Sourceful: Riverflow V2 Pro | image only | Premium Sourceful tier |
 | `sourceful/riverflow-v2.5-fast` | Sourceful: Riverflow V2.5 Fast | image only | Cheapest Riverflow tier; settled per job |
 | `sourceful/riverflow-v2.5-pro` | Sourceful: Riverflow V2.5 Pro | image only | Premium Riverflow tier; settled per job |
-| `x-ai/grok-imagine-image-quality` | xAI: Grok Imagine Image Quality | image only | Per generated image; 2K dearer than 1K |
+| `x-ai/grok-imagine-image-quality` | SpaceXAI: Grok Imagine Image Quality | image only | Per generated image; 2K dearer than 1K |
 
 Pick model selection rules of thumb:
 
 - **Long-form text or precise text-at-position in images** → Recraft V3
-  (the only model with `text_layout` for explicit placement; renders
-  full sentences/paragraphs cleanly).
+  (every Recraft variant takes `text_layout` for explicit placement, and
+  V3 is the one tuned to render full sentences/paragraphs cleanly).
 - **Print-ready high-resolution finals** → Recraft V4/V4.1 Pro
-  (2048x2048 with design-taste output) or FLUX.2 Max (4K).
-- **Transparent or solid-color backgrounds** → Riverflow 2.5 Pro/Fast
-  (`background_mode` original/transparent/solid + `background_hex_color`).
-- **Self-scored candidate selection (model picks its best attempt)** →
-  Riverflow 2.5 Pro/Fast (`scoring_prompt` + `scoring_rubric`).
+  (2048x2048 with design-taste output), or a model that publishes a 4K
+  tier: Riverflow V2.5 Pro, Riverflow V2 Pro/Fast, Seedream 4.5, Nano
+  Banana Pro or Nano Banana 2.
+- **Transparent or opaque backgrounds** → Riverflow 2.5 Pro/Fast, GPT
+  Image 1/1 Mini or GPT-5 Image/Image Mini (**Background**: auto,
+  transparent or opaque). GPT Image 2 and GPT-5.4 Image 2 offer auto and
+  opaque only.
 - **Vector (SVG) output for logos/icons** → Recraft V4/V4.1 Vector
   variants (true `<svg>`, scales infinitely).
-- **Ultrawide / ultratall layouts (4:1, 1:4, 8:1, 1:8)** → Gemini 3.1
-  Flash Image — GA or preview (only line with extended aspect ratios).
+- **Ultrawide / ultratall layouts (4:1, 1:4, 8:1, 1:8)** → the Gemini
+  3.1 Flash Image line: GA, preview and Lite each publish all four. Qwen
+  Image 3 and 3 Pro take 4:1 and 1:4.
 - **Tall phone-screen ratios (9:19.5, 9:20) or auto-ratio** → xAI Grok
   Imagine Image Quality (14-value Grok ratio set).
-- **Multiple variations per request** → Grok Imagine Image Quality
-  (`n` up to 10 images per call; cost scales linearly).
+- **Multiple variations per request** → Seedream 4.5 or any of the GPT
+  Image models (up to 10 per call), or Qwen Image 3/3 Pro and the Recraft
+  variants (up to 6); cost scales linearly. Grok Imagine Image Quality
+  makes one image per request, so it draws no such control.
 - **Cheap iteration** → Gemini 3.1 Flash Image Preview at 512 (far
   fewer pixels than 1K on a token-billed model), FLUX.2 Klein 4B,
   Riverflow V2.5 Fast, or Recraft V4.1 Utility.
 - **Photorealism / hero shots** → FLUX.2 Pro/Max, Riverflow V2.5 Pro,
   Gemini 3 Pro Image, Recraft V4.1 Pro, or Microsoft MAI-Image-2.5.
 - **Color-palette-driven design (corporate brand colors)** → any
-  Recraft variant (`rgb_colors` + `background_rgb_color`).
+  Recraft variant, through its `controls` setting; Recraft's own API
+  reference documents what that setting accepts.
 - **Want commentary alongside the image (chat-style)** → multimodal
   text+image models (GPT-5 Image, Gemini Image variants).
-- **Deterministic regeneration with same prompt** → FLUX.2 family
-  (only models with seed support).
+- **Deterministic regeneration with same prompt** → any model that
+  publishes a seed: the four FLUX.2 variants, Seedream 4.5, the three
+  Krea 2 variants, and Qwen Image 3 and 3 Pro.
 - **Don't know which to pick** → `openrouter/auto` routes for you.
 
 ---
@@ -275,10 +285,11 @@ Riverflow variants, all 4 FLUX.2 variants, ByteDance Seedream 4.5.
   one it adds appears without anything being configured.
 - **Multimodal dedupe**: if a model has `text` in `output_modalities`,
   `register_image_models` skips it (those stay in the chat catalog).
-- **Master-disable cleanup**: setting
-  `ENABLE_OPENROUTER_IMAGE_GENERATION=False` calls
-  `register_image_models([])` and `reset_image_fetch_timestamp()` so
-  models vanish from OWUI's dropdown immediately.
+- **Master-disable**: setting `ENABLE_OPENROUTER_IMAGE_GENERATION=False`
+  stops the pipe reading the image list at all. Models registered while it
+  was on stay in the picker until the chat catalog next refreshes and
+  rebuilds the registry without them, so they leave within
+  `MODEL_CATALOG_REFRESH_SECONDS`.
 
 ### Multimodal (text + image)
 
@@ -294,10 +305,18 @@ re-registered as image-only. They answer with both a picture and text.
 
 ## Per-model deep dive
 
-This section is written-up prose about each model. The in-chat `help`
-command carries a shorter version of it, followed by what the model
-charges and its live control list. Skip to a model that matches your use
-case, or read them all to get a feel for the catalog.
+This section is written-up prose about most of the models, plus
+`openrouter/auto`, which picks a model rather than being one. It does not
+cover all of them. Qwen Image 3 and Qwen Image 3 Pro, the three Krea 2
+tiers, GPT Image 1, GPT Image 1 Mini and GPT Image 2, Nano Banana Pro
+(Gemini 3 Pro Image), Nano Banana 2 (Gemini 3.1 Flash Image), Nano Banana 2
+Lite (Gemini 3.1 Flash Lite Image) and MAI-Image-2.5 Pro have no entry
+below yet.
+
+Every model answers `help`, written up here or not. Send `help` in a chat
+with the model and the reply describes it, prints what it charges, and
+lists the controls its own panel draws. Skip to a model that matches your
+use case, or read them all to get a feel for the catalog.
 
 ### OpenAI: GPT-5 Image
 
@@ -341,7 +360,7 @@ prompt adherence and visual fidelity over GPT-5 Image.
 - Use for production deliverables that need the latest OpenAI image
   model.
 
-### Google: Gemini 2.5 Flash Image
+### Google: Nano Banana (Gemini 2.5 Flash Image)
 
 > **id**: `google/gemini-2.5-flash-image` · **multimodal**
 
@@ -352,7 +371,7 @@ output. Outputs both text and image.
 - Multimodal: model decides emission based on prompt; be explicit.
 - Strong at photoreal scenes and prompt-faithful composition.
 
-### Google: Gemini 3 Pro Image (Preview)
+### Google: Nano Banana Pro (Gemini 3 Pro Image Preview)
 
 > **id**: `google/gemini-3-pro-image-preview` · **multimodal**
 
@@ -363,14 +382,16 @@ high-detail outputs.
 - Premium variant — higher cost than Flash; reserve for finals.
 - Multimodal text+image output.
 
-### Google: Gemini 3.1 Flash Image (Preview)
+### Google: Nano Banana 2 (Gemini 3.1 Flash Image Preview)
 
 > **id**: `google/gemini-3.1-flash-image-preview` · **multimodal**
 
-Cost-optimized Gemini 3.1 with native image output AND unique extended
-knobs: 4 extra aspect ratios (1:4, 4:1, 1:8, 8:1) for ultrawide/tall
-layouts AND a 512 low-res tier for cheap iteration. **Only Gemini
-variant with these extensions.**
+Cost-optimized Gemini 3.1 with native image output, four extra aspect
+ratios (1:4, 4:1, 1:8, 8:1) for ultrawide and tall layouts, and a 512
+low-res tier for cheap iteration. The Gemini 3.1 Flash Image line is the
+only one offering all four ratios — Qwen Image 3 and 3 Pro publish 1:4
+and 4:1 — and the 512 tier is on this model and the GA release, not on
+the Lite.
 
 - Set aspect from this model's own aspect-ratio control; the values it
   offers are the ones this model published.
@@ -412,8 +433,7 @@ Sourceful's premium tier — pure image-only output with custom font
 rendering and image-to-image super-resolution. Strongest for marketing
 assets requiring exact text rendering at scale.
 
-- **PURE-image-only** — does NOT output text. Filter writes
-  `modalities=["image"]` for this model.
+- **PURE-image-only** — does NOT output text.
 - **4.5MB request size limit** — pass image URLs instead of base64 to
   avoid bloat.
 
@@ -421,8 +441,8 @@ assets requiring exact text rendering at scale.
 
 > **id**: `sourceful/riverflow-v2-fast` · **pure-image-only**
 
-Faster, cheaper variant of Riverflow V2 — same Sourceful extensions
-(`font_inputs`, `super_resolution_references`) at lower quality and
+Faster, cheaper variant of Riverflow V2 — same Sourceful extension
+(`font_inputs`) and the same per-reference charge, at lower quality and
 reduced cost. Best for iteration before committing to a Pro render.
 
 - Same caveats as Riverflow V2 Pro: pure-image-only, 4.5MB request
@@ -440,7 +460,8 @@ control and quality-sensitive outputs: brand assets, marketing finals,
 and work that benefits from the new 2.5 self-scoring and background
 controls. Priced per image, rising with the output size you ask for.
 
-- Supports reasoning effort up to xhigh (low/medium/high/xhigh).
+- Publishes a **Background** choice (auto, transparent or opaque) and
+  an output format, alongside 1K, 2K and 4K sizes.
 - Pricing is dynamic: the published per-image rate is a starting point,
   and the final charge is settled per job from the processing it
   actually took.
@@ -450,17 +471,18 @@ controls. Priced per image, rising with the output size you ask for.
 > **id**: `sourceful/riverflow-v2.5-fast` · **pure-image-only**
 
 The speed-optimized variant of Sourceful's Riverflow 2.5 lineup — best
-for production deployments and latency-critical workflows. Same
-unified text-to-image and image-to-image family and the same 2.5
-extras as Pro at a fraction of the cost, with the charge settled per
-job at completion.
+for production deployments and latency-critical workflows. Same unified
+text-to-image and image-to-image family as Pro, at a fraction of the
+cost, with the charge settled per job at completion. It is the narrower
+of the two listings.
 
 - PURE-image-only — does NOT output text.
 - Use Fast for iteration and high-volume production; switch to V2.5
   Pro for quality-sensitive finals.
-  plus the 2.5 extras (scoring_prompt, scoring_rubric,
-  background_mode, background_hex_color).
-- Supports reasoning effort low/medium/high (xhigh is Pro-only).
+- Publishes the same **Background** choice (auto, transparent or opaque)
+  as V2.5 Pro, but only 1K and 2K sizes and only JPEG output, and it
+  takes fewer reference pictures per request. Switch to Pro for PNG or
+  WebP, for 4K, or for more references than Fast will take.
 
 ### Black Forest Labs: FLUX.2 Pro
 
@@ -513,12 +535,14 @@ work.
 
 > **id**: `bytedance-seed/seedream-4.5` · **pure-image-only**
 
-ByteDance Seed's image-only model. Pure-image-only output; supports
-temperature and top_p for controlled generation.
+ByteDance Seed's image-only model. Pure-image-only output; a seed and a
+batch of up to 10 images per request give you several varied takes on one
+prompt to choose between.
 
 - PURE-image-only — does NOT output text.
-- **Supports `temperature`/`top_p` (unusual for image models)** —
-  useful for varied outputs from same prompt.
+- **Publishes a seed and up to 10 images per request** — ask for several
+  takes at once and pick the one you want. OpenRouter publishes no range
+  for the seed and does not promise the same seed repeats an image.
 
 ### Recraft: Recraft V3
 
@@ -532,17 +556,16 @@ inside the image. Used in production by Shopify and Salesforce.
 ~1K resolution output, pure-image-only.
 
 - PURE-image-only — does NOT output text in chat.
-- **Has the FULL Recraft knob set** (5 image_config params): strength,
-  rgb_colors, background_rgb_color, plus V3-only `style` and
-  `text_layout`. V4/V4 Pro lack the last two.
+- **Publishes the full Recraft set**: `style`, `controls` and
+  `text_layout` — the same three every Recraft variant takes.
 - For text rendering: put exact wording in quotes in the prompt AND
-  use `text_layout` for precise placement (V3-exclusive feature).
+  use `text_layout` to place each line exactly where you want it.
 - `text_layout` uses normalized 0-1 coordinates; bbox is 4 corner
   [x,y] points (TL, TR, BR, BL).
-- Image-to-image: only one input image supported. Use `strength`
-  (0.0-1.0) to control deviation; default 0.5.
+- Image-to-image: only one input image supported.
 - Style names: see [Recraft style list](https://www.recraft.ai/docs/api-reference/styles).
-  Vector styles NOT supported via OpenRouter.
+  This model draws pixels; for SVG, pick one of the Recraft Vector
+  models.
 
 ### Recraft: Recraft V4
 
@@ -558,10 +581,8 @@ stock-like. Best for infographics, signage, packaging, and rapid
 iteration on branded assets.
 
 - PURE-image-only.
-- Does NOT support `style` or `text_layout` — those are V3 ONLY.
-  For long-form text or precise placement use V3.
-- Has `strength` + `rgb_colors` + `background_rgb_color` (3 Recraft
-  image_config params).
+- Takes `style`, `controls` and `text_layout`, like every Recraft
+  variant. For long-form text, V3 is the one tuned for it.
 - Image-to-image: only one input image supported.
 - Limitations: photorealistic human faces and hands can be unreliable;
   not the right tool for editorial portraiture.
@@ -580,8 +601,7 @@ V4 but with sharper geometry, finer textures, and better
 anatomy/realism in complex compositions.
 
 - PURE-image-only.
-- Same image_config knobs as V4 (strength + rgb_colors +
-  background_rgb_color); NO style or text_layout (V3 only).
+- Same three settings as V4: `style`, `controls` and `text_layout`.
 - ~3x slower than V4 due to higher resolution — reserve for finals,
   not iteration.
 - **Flat per-image fee** rather than per-token, so prompt length does
@@ -601,10 +621,10 @@ chat at full sharpness, whatever size you view it at.
 - Output is SVG, not PNG/JPEG — scales infinitely without quality loss.
 - Prefer simple, graphic prompts (logos, icons, flat illustrations)
   over photoreal subjects.
-- `rgb_colors`/`background_rgb_color` are sent through, but how the
+- `style`, `controls` and `text_layout` are sent through, but how the
   vector model honors them is undocumented — verify visually.
-- `strength` image-to-image works but input is rasterised internally;
-  output is SVG either way.
+- Image-to-image input is rasterised internally; output is SVG either
+  way.
 
 ### Recraft: Recraft V4 Pro Vector
 
@@ -630,8 +650,7 @@ almost-but-not-quite-right aesthetically. Same speed envelope as V4
 (~10s/image).
 
 - PURE-image-only.
-- Same knobs as V4 (strength + rgb_colors + background_rgb_color);
-  NO style or text_layout (V3 ONLY).
+- Same three settings as V4: `style`, `controls` and `text_layout`.
 - Drop-in successor to V4 — try V4.1 first; fall back to V4 if its
   aesthetic doesn't suit a specific brand.
 - Image-to-image: only one input image supported.
@@ -680,14 +699,15 @@ brand assets that must scale and edit downstream.
 > **id**: `recraft/recraft-v4.1-utility` · **pure-image-only**
 
 Recraft's general-purpose V4.1 variant — drops the aesthetic-tuning
-bias in exchange for broader subject coverage and cheaper generation.
-Best for spot illustrations, diagrams, placeholder/stock imagery, and
-any work where "on-brand aesthetics" is not the goal. 1024x1024.
+bias in exchange for broader subject coverage. Best for spot
+illustrations, diagrams, placeholder/stock imagery, and any work where
+"on-brand aesthetics" is not the goal. 1024x1024.
 
 - Pick Utility over regular V4.1 when you need versatility, not polish.
-- Same knob set as V4.1; NO style or text_layout (V3 ONLY).
-- Switch to regular V4.1 (aesthetic) or V4.1 Pro (print) when output
-  quality matters.
+- Same three settings as V4.1: `style`, `controls` and `text_layout`.
+- Utility and regular V4.1 are priced the same per image, so switch on
+  the look you want — regular V4.1 for its aesthetic tuning, or V4.1 Pro
+  when you need print resolution.
 
 ### Recraft: Recraft V4.1 Utility Pro
 
@@ -700,7 +720,7 @@ aesthetic polish is not the goal; otherwise prefer V4.1 Pro.
 - ~3x slower than V4.1 Utility due to higher resolution.
 - Same knob set and limitations as the rest of the V4.1 family.
 
-### xAI: Grok Imagine Image Quality
+### SpaceXAI: Grok Imagine Image Quality
 
 > **id**: `x-ai/grok-imagine-image-quality` · **pure-image-only**
 
@@ -732,16 +752,34 @@ document. Where a ratio, size or quality tier is offered, that model accepts it;
 where a setting appears for one model and not another, only the first supports
 it.
 
-This matters because the alternative — a fixed set offered to everything — is
-what the older built-in **Image Generation** filter still does. That one is the
-inline server tool a chat model calls mid-answer (see
-[`ENABLE_IMAGE_GENERATION`](valves_and_configuration_atlas.md)), and it carries
-the same six controls on every drawing model, so a value the chosen model does
-not accept can still be picked and quietly ignored. The per-model panels
-described here are the ones that match the model.
+The inline server tool a chat model calls mid-answer (see
+[`ENABLE_IMAGE_GENERATION`](valves_and_configuration_atlas.md)) is built the same
+way, from the same published list — it just reads the list of the one model an
+admin pointed it at. It shows six controls. **Quality**, **Aspect ratio**,
+**Background**, **Output format** and **Output compression** are there for every
+drawing model; the sixth is either **Resolution**, for a model that publishes a
+list of size tiers, or **Output size**, for one that does not. No model gets
+both. Where the model publishes the values it takes, the control becomes a list
+of exactly those; where it publishes nothing, the control offers what
+OpenRouter's image API accepts in general and the company running the model
+decides what to do with the value.
 
-Four controls do appear on every per-model panel, because a request carries
-them for any model and no model's published list mentions them:
+One control does appear on every per-model panel, because a request carries it
+for any model and no model's published list mentions it:
+
+- **Output size** — either a size tier (`512`, `1K`, `2K`, `4K`) or exact pixels
+  such as `1024x1024`. A tier sets the same thing as **Resolution**, is checked
+  against the tiers that model publishes, and still takes its shape from
+  **Aspect ratio**. Exact pixels settle the picture on their own: no model
+  publishes a list of pixel sizes, so those go out as typed and the company
+  running the model decides — and because they already fix the dimensions,
+  **Resolution** is not sent alongside them, nor is **Aspect ratio** unless it is
+  the shape you typed. Anything dropped that way is named in the chat.
+
+Models that answer only with a picture carry three more, for the same reason. A
+model that answers with text as well takes its references from the message
+itself, and the chat request it travels on takes no provider options, so these
+three are not drawn for it:
 
 - **Provider options** — extra settings for the company running the model, as a
   JSON object keyed by its OpenRouter name. Use it for anything the panel does
@@ -751,10 +789,6 @@ them for any model and no model's published list mentions them:
 - **Reference image links** — a JSON list of `https` links or `data:` URLs to
   use as well as, or instead of, the attached pictures. These go first, so they
   survive on models that take only one reference.
-- **Output size** — exact pixel dimensions. This is the one control sent without
-  a check, because no model publishes what it accepts here; the value goes out
-  as typed and the company running the model decides, which the control says on
-  its face.
 
 A request carries at most 16 references. Where a model publishes a lower limit
 the lower one applies, and anything over the limit is dropped with a note saying
@@ -783,9 +817,9 @@ Other consequences worth knowing:
   Today that is `moderation` on the OpenAI image models.
 
 To see what a specific model accepts, type `help` to it in a chat. The reply
-lists the settings read from that model's published list — the four controls
-above are not repeated there, and a value only some providers accept is not
-shown among the choices.
+lists the settings read from that model's published list, together with the
+always-present controls that model carries. A value only some of the companies
+serving the model accept is shown among the choices with a note saying so.
 
 ## What the settings panel looks like
 
@@ -841,8 +875,8 @@ Recraft's typography champion — the only AI image model that can render long-f
 ## Tips & pitfalls
 - PURE-image-only — does NOT output text in chat.
 - Every Recraft variant takes `style` and `text_layout`; V3 is the one tuned for long-form text, so it holds full sentences and paragraphs where the others hold short lines.
-- For text rendering: put exact wording in quotes in your prompt AND use `text_layout` for precise placement (V3-exclusive feature).
-- Style names: see https://www.recraft.ai/docs/api-reference/styles. Vector styles NOT supported via OpenRouter.
+- For text rendering: put exact wording in quotes in your prompt AND use `text_layout` to place each line exactly where you want it.
+- Style names: see https://www.recraft.ai/docs/api-reference/styles. This model draws pixels; for SVG, pick one of the Recraft Vector models.
 - text_layout: array of {text, bbox} where bbox is 4 [x,y] corners in 0-1 coords (order: TL, TR, BR, BL).
 - If you need newer composition or cleaner geometry, V4 and V4.1 offer the same three settings with a different look.
 
@@ -854,10 +888,10 @@ The cost of each generation is reported on the status line when it finishes.
 
 ## Controls
 - **Provider options** — Extra settings for the company that runs this model, as a JSON object keyed by its OpenRouter name. Use it for anything this panel does not already offer. Empty sends nothing.
-- **Reference images** — Which attached images go to the model as references. auto sends every one on this turn, oldest first; latest-only sends just the most recent; none sends none of them.
+- **Reference images** — Which attached images go to the model as references. auto sends every picture in this chat, and where the model takes fewer than you attached the most recent ones are kept; latest-only sends just the most recent; none sends none of them.
 - **Reference image links** — Reference images to use as well as, or instead of, the attached ones: a JSON list of https links or data URLs. These are placed first, so they survive when the model takes fewer references than are on offer.
 - **Aspect ratio** — Frame shape. Choices: 1:1, 4:3, 3:4, 16:9, 9:16, auto.
-- **Output size** — Exact pixel dimensions, where the model takes them rather than a tier. This model publishes no list of what it accepts here, so the value goes out as typed and the company running it decides. Empty leaves it unset.
+- **Output size** — Either a size tier (512, 1K, 2K or 4K) or exact pixels written like 1024x1024. A tier sets the same thing as Resolution, is checked against the tiers this model publishes, and still takes its shape from Aspect ratio. Exact pixels settle the picture on their own, so Resolution is not sent alongside them, and nor is Aspect ratio unless it is the shape you typed. You are told in the chat whenever one of them is dropped that way. No model publishes a list of pixel sizes, so exact pixels go out as typed and the company running this one decides what to do with them. Empty leaves it unset.
 - **Number of images** — How many images this request asks for. Accepts 1 to 6.
 - **style** — a setting this model's provider accepts.
 - **controls** — a setting this model's provider accepts.
@@ -867,10 +901,11 @@ The cost of each generation is reported on the status line when it finishes.
 The `## Controls` section is read from the model's own published
 settings, so it lists that model's choices and no others. A model that
 publishes none says so rather than showing an empty section. It covers the
-published settings only: the four controls every panel carries — Provider
-options, Reference images, Reference image links and Output size — are not
-listed there, and where a value is accepted by only some of the companies
-serving the model, the panel offers it but this list does not.
+published settings, and above them the always-present controls that model
+carries — Output size on every model, plus Provider options, Reference images
+and Reference image links on the ones that answer only with a picture. Where a
+value is accepted by only some of the companies serving the model, both the
+panel and this list offer it and say so.
 
 The `## Cost` section comes from the same record and is read fresh every
 time you ask, so it follows OpenRouter's rates without a new release.
@@ -895,12 +930,6 @@ catalog metadata — display name, description, output/input modalities.
 ---
 
 ## Output rendering and message format
-
-Multimodal image responses follow the chat-completion image rendering
-pipeline that has always handled `gpt-5-image` and similar models. Models
-that emit only images take the dedicated image adapter instead, described
-above; both end at the same persisted file URL and the same markdown. The
-chat pipeline:
 
 A picture that arrives on the chat route is saved to Open WebUI's file
 store and shown inline, exactly as one from a dedicated image model is.
@@ -932,8 +961,9 @@ as completion tokens — the cost is bundled. For pure-image-only models
 (FLUX, Sourceful, Seedream), token-based pricing applies via OpenRouter's
 standard usage accounting.
 
-`super_resolution_references` adds +$0.20 per reference. These appear
-in the cost breakdown if you use those features.
+On Riverflow V2 Pro and V2 Fast, each reference image you supply adds
+$0.20 and each font file $0.03. These appear in the cost breakdown if
+you use those features.
 
 ---
 
@@ -980,9 +1010,9 @@ Tuning hints:
 If the user sees the OR Web Tools filter toggle on an image-output
 model (e.g. Sourceful Riverflow), and enabling it causes a 404, the
 capability gate may not be working. The pipe explicitly excludes
-image-output and video-generation models from Web Tools attach via
-a model that answers with a picture or a clip is never given the Web
-Tools filter, whatever the attach valves are set to.
+image-output and video-generation models from Web Tools attach: a model
+that answers with a picture or a clip is never given the Web Tools
+filter, whatever the attach valves are set to.
 
 If a model is mis-detected, check its `architecture.output_modalities`
 in the OpenRouter catalog — only models with `image` (and not `text`,
@@ -1019,11 +1049,12 @@ That model does not publish it. The panel lists what the model told
 OpenRouter it accepts, so a missing setting means the model would not
 have honoured it. Type `help` to the model to see its published list.
 
-Four controls are there on every panel whatever the model publishes —
-Provider options, Reference images, Reference image links and Output
-size — so if what you want is a provider-specific setting the panel does
-not name, put it in **Provider options** as a JSON object keyed by the
-company's OpenRouter name.
+**Output size** is there on every panel whatever the model publishes.
+Models that answer only with a picture also carry Provider options,
+Reference images and Reference image links — so on those, if what you
+want is a provider-specific setting the panel does not name, put it in
+**Provider options** as a JSON object keyed by the company's OpenRouter
+name.
 
 If a model has **no panel at all**, its settings list has never been read
 successfully — the next refresh retries. It still generates images
@@ -1082,12 +1113,239 @@ Check:
   storage (Local/S3/GCS/Azure) is healthy.
 - Check the pipe logs for storage errors.
 
+### Body validation error mentioning `image_config`
+
+Multimodal models carry their settings to OpenRouter in one object called
+`image_config`, and the pipe checks the request against its own schema
+before sending it. If the pipe log shows a validation error naming
+`image_config`, that object was rejected as the wrong shape — it has to be
+a set of named settings, and something upstream supplied a single value
+instead.
+
+Nothing an administrator sets in Valves can cause this, and nothing a user
+types in a settings panel can either: both write named settings. It means
+the running code has been modified or a hand-edited bundle is installed.
+Reinstall the released bundle. Image generation on models that answer only
+with a picture is unaffected — those requests do not carry this object.
+
+---
+
+## Architecture overview
+
+Roughly, in order of who-calls-who:
+
+```
+pipes()
+  ├─ ensure chat catalog loaded
+  ├─ ensure video catalog loaded
+  └─ if ENABLE_OPENROUTER_IMAGE_GENERATION:
+        ensure_image_catalog_loaded()
+          ├─ TTL-gated fetch (cache_seconds = MODEL_CATALOG_REFRESH_SECONDS)
+          ├─ /api/v1/models?output_modalities=image via OpenRouterImageClient
+          ├─ if a filter valve is on, read each model's published contract
+          │  from /api/v1/images/models/<id>/endpoints — 8 reads at a time,
+          │  whole sweep capped at 45s by the pipe; a model that could not
+          │  be read this pass keeps its last good record
+          └─ register_image_models()
+                ├─ skip multimodal (text in output_modalities)
+                ├─ stale-norm cleanup (drop models removed from catalog)
+                ├─ publish as one run of plain assignments with no await
+                │  between them, so no request sees a half-updated catalog
+                └─ features = {"image_output", "image_gen_tool"}, plus
+                   {"vision", "file_input"} when the model takes images in
+
+  └─ if AUTO_INSTALL_IMAGE_FILTERS:
+        ensure_openrouter_image_filter_function_ids(available_models)
+          ├─ one settings row per image model, built from its own contract
+          ├─ a model with no readable contract gets none
+          ├─ each install in own try/except — partial failures isolated
+          └─ retire rows left over from the fixed-variant design
+
+  └─ catalog_manager._update_or_insert_model_with_metadata()
+        ├─ pipe_capabilities.image_output gate
+        ├─ web_tools_supported = ... and not image_output
+        ├─ _apply_list_filter_ids(meta_dict)       — writes filterIds
+        └─ _apply_list_default_filter_ids(meta_dict) — writes defaultFilterIds
+
+settings-row inlet (Open WebUI runs this before the pipe sees the body)
+  ├─ model gate: every id form OWUI produces, and no other model
+  ├─ merge the chosen values into body.image_config, per key
+  ├─ typed values parsed as JSON only when they open a container
+  └─ provider options and reference choices go to the pipe's metadata key
+
+pipe(body, ...)
+  └─ orchestrator._inject_image_modalities(body)
+        ├─ no-op if model not in registry or no image in output_modalities
+        ├─ pure-image: body["modalities"] = ["image"]
+        └─ multimodal: body["modalities"] = ["image", "text"]
+
+  └─ orchestrator: uses_dedicated_image_api(spec) chooses the transport
+        ├─ image-only model → POST /api/v1/images
+        │     ├─ image_config split against the model's published record
+        │     ├─ what the record names goes top-level; a provider setting
+        │     │  it names goes under provider.options.<slug>
+        │     ├─ whatever was withheld is reported to the user
+        │     ├─ each returned image persisted → file URL
+        │     └─ renders "![alt](file_url)"
+        └─ multimodal model → chat completions
+              ├─ image_config fitted to the same kind of record, with any
+              │  provider setting kept inside image_config
+              ├─ response carries message.images
+              ├─ chat_completions_adapter parses message.images
+              ├─ streaming_core materialises the entry → persists → file URL
+              └─ streaming_core renders "![alt](file_url)"
+  └─ OWUI renders inline image
+```
+
+**One place decides the transport.** `uses_dedicated_image_api()` in
+[`models/registry.py`](../open_webui_openrouter_pipe/models/registry.py) is
+the only answer to "does this model go to the image endpoint". It says yes
+when the model's published `output_modalities` contain `image` and do not
+contain `text`. Everything that needs to know asks it: the request
+dispatch, the data-retention gate, the `help` reply, and the settings-row
+installer — which is handed the answer as an argument it cannot omit,
+rather than working it out a second time. Two readings of that question
+would let a request open one transport while being prepared for the other.
+
+Note what does *not* decide it: the `modalities` written into the body a
+few lines earlier. That value is prepared for every image-output model,
+but a model that goes to the image endpoint has its request built fresh
+from prompt and settings, so its `modalities` is never sent. It is the
+multimodal models, staying on chat completions, that actually carry it.
+
+**Turning the feature off.** With `ENABLE_OPENROUTER_IMAGE_GENERATION` set
+to `False`, `pipes()` stops reading the image catalog. Models registered
+while it was on are dropped when the chat catalog next refreshes and
+rebuilds the registry, so they leave the picker within
+`MODEL_CATALOG_REFRESH_SECONDS` rather than on the next page load.
+
+Key invariant: **both branches render the same markdown**. Multimodal
+models keep the streaming path that has always handled them, and both
+produce `![alt](file_url)`. That is what keeps iterative editing working:
+the next request re-parses that markdown back into an input image.
+
+Both branches also read the same contract. A multimodal model never
+reaches the image endpoint, but it still gets a settings row built from
+its published record, and its `image_config` is put through that record on
+the way out: a value outside the published domain is withheld and reported
+rather than sent, and a key no record names is withheld too. Where the two
+differ is where a provider-specific setting may sit. OpenRouter's image
+schema defines a `provider.options` block keyed by provider; its chat
+schema does not — the chat provider block is closed (`additionalProperties:
+false`) and lists no `options` — and OpenRouter documents chat's
+`image_config` as "provider-specific image configuration options" in its
+own right. So on chat completions a provider setting the record does name
+stays inside `image_config`. A model whose contract is not in hand is left
+exactly as it arrived; a read that failed is not a contract that shrank.
+
+Key files:
+
+- [`integrations/image_catalog.py`](../open_webui_openrouter_pipe/integrations/image_catalog.py)
+  — TTL-gated catalog fetch and the bounded sweep that reads each model's
+  published contract.
+- [`integrations/image_client.py`](../open_webui_openrouter_pipe/integrations/image_client.py)
+  — HTTP client for the image model catalog, the per-model endpoint record
+  that publishes which knobs a model accepts, and image generation itself.
+- [`integrations/image.py`](../open_webui_openrouter_pipe/integrations/image.py)
+  — `ImageGenerationAdapter`: runs the image-endpoint request end to end,
+  and on the chat side fits a multimodal model's `image_config` to its
+  record. Either way it gates each requested knob against what the model
+  published, reports the ones it withheld, persists the returned images
+  and renders the markdown.
+- [`integrations/provider_options.py`](../open_webui_openrouter_pipe/integrations/provider_options.py)
+  — the single reader of a request's provider block, the per-transport set
+  of provider keys OpenRouter documents, and the choice of which provider
+  slug carries a value that cannot be duplicated across providers.
+- [`integrations/image_help.py`](../open_webui_openrouter_pipe/integrations/image_help.py)
+  — `_IMAGE_PER_MODEL_HELP_DATA` (per-model prose), `render_image_help()`
+  (control list read from the model's endpoint record).
+- [`filters/image_filter_renderer.py`](../open_webui_openrouter_pipe/filters/image_filter_renderer.py)
+  — `build_image_model_filter_spec()` turns a model's endpoint record into
+  its knob set, taking `dedicated_image_api` as a required keyword because
+  the three always-on controls belong only to models on the image endpoint;
+  `render_image_model_filter_source()` renders one settings row from that.
+- [`filters/filter_manager.py::ensure_openrouter_image_filter_function_ids`](../open_webui_openrouter_pipe/filters/filter_manager.py)
+  — installs rows in OWUI Functions table; returns per-model id mapping.
+- [`models/catalog_manager.py`](../open_webui_openrouter_pipe/models/catalog_manager.py)
+  — `_apply_list_filter_ids`, `_apply_list_default_filter_ids`,
+  `pipe_capabilities.image_output` gate, capability-gated
+  `web_tools_supported` exclusion.
+- [`models/registry.py`](../open_webui_openrouter_pipe/models/registry.py)
+  — `uses_dedicated_image_api` (the transport decision) and
+  `register_image_models` (atomic registry merge with stale-norm cleanup;
+  multimodal dedupe).
+- [`requests/orchestrator.py::_inject_image_modalities`](../open_webui_openrouter_pipe/requests/orchestrator.py)
+  — body modalities injection, and the dispatch that follows it.
+- [`api/transforms.py`](../open_webui_openrouter_pipe/api/transforms.py)
+  — `CompletionsBody`, whose `image_config` field is a mapping of named
+  settings (`dict[str, Any] | None`).
+- [`core/config.py`](../open_webui_openrouter_pipe/core/config.py)
+  — the image valves and `_OPENROUTER_IMAGE_FILTER_MARKER`, the marker that
+  identifies a settings row this pipe installed.
+
+Also involved, shared with other features:
+
+- [`api/gateway/chat_completions_adapter.py`](../open_webui_openrouter_pipe/api/gateway/chat_completions_adapter.py)
+  — reads `message.images` off a chat response.
+- [`streaming/streaming_core.py`](../open_webui_openrouter_pipe/streaming/streaming_core.py)
+  — materialises those images, persists them and renders the markdown, via
+  `_persist_generated_image`.
+- [`storage/owui_files.py`](../open_webui_openrouter_pipe/storage/owui_files.py)
+  — `OwuiFileGateway.upload_to_owui_storage`, the single write into OWUI
+  file storage used by both branches.
+- The legacy `openrouter_image_gen` filter (OpenAI Responses-tool wiring),
+  which is a separate feature on its own valves.
+
+### `_inject_image_modalities()` (orchestrator)
+
+The body modification happens at [`requests/orchestrator.py`](../open_webui_openrouter_pipe/requests/orchestrator.py)
+in `_inject_image_modalities()`. Its decision logic, with the debug
+logging that follows it left out:
+
+```python
+def _inject_image_modalities(body, *, logger=None):
+    if not isinstance(body, dict):
+        return
+    raw_model = body.get("model")
+    if not isinstance(raw_model, str) or not raw_model:
+        return
+    if "modalities" in body:
+        return
+    spec = OpenRouterModelRegistry.spec(raw_model)
+    if not isinstance(spec, dict):
+        return
+    arch = spec.get("architecture") or {}
+    out_mods = arch.get("output_modalities") or []
+    if "image" not in out_mods:
+        return
+    if "text" in out_mods:
+        body["modalities"] = ["image", "text"]
+    else:
+        body["modalities"] = ["image"]
+```
+
+Key behavior:
+
+- **No-op on non-image models.** No injection if `output_modalities`
+  doesn't contain `image`.
+- **Respects user override.** If `body.modalities` is already set
+  (manual config or an older settings row), the orchestrator leaves it
+  alone.
+- **Pure-image gets `["image"]`**, multimodal gets `["image", "text"]`.
+
+It runs on every request, before the transport is chosen, so a model bound
+for the image endpoint is written too — and, as above, that value is not
+what routes it and is not sent. On chat completions the value does go out,
+and asking for both modalities is what gets a multimodal model to answer
+with a picture as well as text.
+
 ---
 
 ## Limitations and non-goals
 
-- **Synchronous only.** Image generation is a single chat-completions
-  request — no polling lifecycle, no resume, no disconnect recovery.
+- **Synchronous only.** Image generation is a single request, whichever
+  transport it takes — no polling lifecycle, no resume, no disconnect
+  recovery.
   If the request fails or the user disconnects, the generation is lost.
   Re-submit to retry.
 - **Previews, not partial results.** A few providers — currently only

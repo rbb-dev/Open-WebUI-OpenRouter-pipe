@@ -80,7 +80,7 @@ CONFIG_META: dict[str, dict[str, str]] = {
     "AUTO_ATTACH_IMAGE_FILTERS": {
         "title": "Attach image controls to models",
         "group": "Filters & Integrations/Image",
-        "detail": "Puts each image model's own controls on it, automatically, so they appear in the chat settings when that model is selected.\n\nThe choices are that model's own -- an aspect ratio it never accepts is not offered, and a setting only it supports appears nowhere else. Where a model is served by several companies that accept different values, a value only some of them take is still offered and marked as such on the control, and the user is told afterwards if the company that took the request would not accept it. Four controls appear on every image model regardless -- `Provider options`, `Reference images`, `Reference image links` and `Output size` -- because the request carries them for any model.\n\nOn by default; a single model can opt out with the `disable_image_filter_auto_attach` advanced parameter. Needs the controls present first (see `Install native image filters`)."
+        "detail": "Puts each image model's own controls on it, automatically, so they appear in the chat settings when that model is selected.\n\nThe choices are that model's own -- an aspect ratio it never accepts is not offered, and a setting only it supports appears nowhere else. Where a model is served by several companies that accept different values, a value only some of them take is still offered and marked as such on the control, and the user is told afterwards if the company that took the request would not accept it. `Output size` appears on every image model regardless, because the request carries it for any model. Models that answer only with a picture also get `Provider options`, `Reference images` and `Reference image links`; a model that answers with text as well takes its references from the message itself, so those three are left off its panel.\n\nOn by default; a single model can opt out with the `disable_image_filter_auto_attach` advanced parameter. Needs the controls present first (see `Install native image filters`)."
     },
     "AUTO_ATTACH_IMAGE_GEN_FILTER": {
         "title": "Attach Image Generation toggle",
@@ -145,7 +145,7 @@ CONFIG_META: dict[str, dict[str, str]] = {
     "AUTO_INSTALL_IMAGE_FILTERS": {
         "title": "Install native image filters",
         "group": "Filters & Integrations/Image",
-        "detail": "Keeps a set of controls for each of OpenRouter's image models available in this workspace and up to date.\n\nEvery model gets its own, built from the settings that model tells OpenRouter it accepts -- so the aspect ratios, sizes and provider options a user sees are the ones that model will honour, and they change on their own when the model does. Four controls sit alongside them on every model that has a panel, because a request carries them whatever the model says about itself: `Provider options` for settings addressed to the company running the model, `Reference images` and `Reference image links` for the pictures a generation works from, and `Output size` for exact pixel dimensions. `Output size` is the one control sent without a check, since no model publishes what it accepts there.\n\nIf a model's settings list cannot be read on a refresh, it keeps the settings from its last successful read; a model that has never been read gets no panel at all rather than a guessed one, and generates with its own defaults. The next refresh retries either way. On by default; `Attach image controls to models` and `Pre-enable image controls per chat` do nothing until this is on, and it needs `Show native image models` on."
+        "detail": "Keeps a set of controls for each of OpenRouter's image models available in this workspace and up to date.\n\nEvery model gets its own, built from the settings that model tells OpenRouter it accepts -- so the aspect ratios, sizes and provider options a user sees are the ones that model will honour, and they change on their own when the model does. `Output size` sits alongside them on every model that has a panel, because a request carries it whatever the model says about itself, and it is the one control sent without a check, since no model publishes what it accepts there. Models that answer only with a picture get three more: `Provider options` for settings addressed to the company running the model, and `Reference images` and `Reference image links` for the pictures a generation works from. A model that answers with text as well takes its references from the message itself, so those three are left off its panel.\n\nIf a model's settings list cannot be read on a refresh, it keeps the settings from its last successful read; a model that has never been read gets no panel at all rather than a guessed one, and generates with its own defaults. The next refresh retries either way. On by default; `Attach image controls to models` and `Pre-enable image controls per chat` do nothing until this is on, and it needs `Show native image models` on."
     },
     "AUTO_INSTALL_IMAGE_GEN_FILTER": {
         "title": "Install Image Generation filter",
@@ -240,7 +240,7 @@ CONFIG_META: dict[str, dict[str, str]] = {
     "ENABLE_IMAGE_GENERATION": {
         "title": "Enable image generation",
         "group": "Files & Media/Image Generation",
-        "detail": "Gives models OpenRouter's image-generation server tool - one they can call to create an image from a text prompt while answering.\n\nWhen a request calls for a picture, the model writes a prompt, OpenRouter generates the image server-side (one or more per turn) and returns it inline. An admin picks which model draws (`Image generation model`) and a moderation level in the Image Generation filter; each user gets a fixed set of per-chat controls - quality, size, aspect ratio, background, format and size tier - behind a per-chat image switch that starts off. That set is the same on every drawing model, so a value one model does not accept can still be chosen; the model's own settings panel is the place where the choices match the model. Generating images bills extra - per image or per token depending on the model; check current rates on OpenRouter. On by default."
+        "detail": "Gives models OpenRouter's image-generation server tool - one they can call to create an image from a text prompt while answering.\n\nWhen a request calls for a picture, the model writes a prompt, OpenRouter generates the image server-side (one or more per turn) and returns it inline. An admin picks which model draws (`Image generation model`) and a moderation level in the Image Generation filter; each user gets six per-chat controls behind a per-chat image switch that starts off. Those six are built from whichever model the admin picked: **Quality**, **Aspect ratio**, **Background**, **Output format** and **Output compression** appear for every drawing model, and the sixth is either **Resolution**, where that model publishes a list of size tiers, or **Output size**, where it does not - never both. Where the model publishes the values it takes, the control becomes a list of exactly those, so every choice on it is one the model named; where it publishes nothing, the control offers what OpenRouter's image API accepts in general and the company running the model decides what to do with it. Point the tool at a different model and the controls change with it. Generating images bills extra - per image or per token depending on the model; check current rates on OpenRouter. On by default."
     },
     "ENABLE_LZ4_COMPRESSION": {
         "title": "Compress stored artifacts",
@@ -586,6 +586,56 @@ CONFIG_META: dict[str, dict[str, str]] = {
         "title": "Re-host remote file URLs",
         "group": "Files & Media/Uploads & Limits",
         "detail": "When on, `http`/`https` and `data:` links in an uploaded file's `file_url` field are downloaded or decoded and re-hosted in Open WebUI storage, replacing the link with a storage reference.\n\nOn by default, so a chat stays replayable even if the original link later dies - at the cost of storage growth. Turn it off to forward the original URL to OpenRouter untouched: storage stays lean, but replay then depends on that third-party link surviving. This covers only the `file_url` field; inline `file_data` is handled by `Re-host inline file data`, and remote fetches remain subject to `Enable SSRF protection`."
+    },
+    "SEND_MEDIA_VIA_FILE_HOST": {
+        "title": "Send attachments through a file host",
+        "group": "Files & Media/Sending Media to a Model",
+        "detail": "Lets a user's attached clip or sound file reach a video model, by uploading it to a public file host first and passing OpenRouter the link.\n\nOpenRouter accepts reference media only as a link its providers can download. A clip sent any other way is refused outright and the whole generation is lost, so without this an attachment simply cannot be used. The cost is real: the file goes to the third-party host chosen below, where anyone who has the link can watch it until it expires. Off until you decide otherwise. Pictures do not need this and are sent inside the request as before."
+    },
+    "MEDIA_FILE_HOST": {
+        "title": "File host",
+        "group": "Files & Media/Sending Media to a Model",
+        "detail": "Which public host receives the upload.\n\n`litterbox` deletes the file by itself after the time set below, which suits a file that only has to survive one generation. `catbox` keeps it until somebody removes it by hand, so pick it only when a link genuinely has to outlive the job - and remember nothing will clean up after you. Neither needs an account or a key."
+    },
+    "MEDIA_FILE_HOST_RETENTION": {
+        "title": "How long the file stays there",
+        "group": "Files & Media/Sending Media to a Model",
+        "detail": "How long `litterbox` keeps the upload before deleting it.\n\nThe model fetches the file within seconds of the request and a generation typically finishes in a few minutes, so an hour is ample and keeps the file public for the shortest time. Raise it only if your provider queues jobs for longer, or if you have seen a link expire before a slow job read it. `catbox` ignores this setting and keeps everything."
+    },
+    "MEDIA_FILE_HOST_MAX_SIZE_MB": {
+        "title": "Largest attachment to upload",
+        "group": "Files & Media/Sending Media to a Model",
+        "detail": "The biggest file that will be sent to the host, in megabytes.\n\nA file over this is refused and the request stops, rather than quietly generating from the words alone and charging for a result that ignored the attachment. Set it to whatever your users realistically attach; both hosts accept considerably more than the default."
+    },
+    "SEND_VIDEO_VIA_FILE_HOST": {
+        "title": "Send attached clips",
+        "group": "Files & Media/Sending Media to a Model",
+        "detail": "Include video attachments when the file host is in use.\n\nA clip has no other route: OpenRouter refuses one sent inside the request, so turning this off means an attached video is left out with a note in the chat. This is the setting that makes video editing and video-to-video work at all."
+    },
+    "SEND_AUDIO_VIA_FILE_HOST": {
+        "title": "Send attached sound files",
+        "group": "Files & Media/Sending Media to a Model",
+        "detail": "Include audio attachments when the file host is in use.\n\nAudio has no other route either. Note that OpenRouter only accepts a sound reference alongside a picture or a clip - a request carrying audio on its own is refused whatever this is set to."
+    },
+    "SEND_IMAGES_VIA_FILE_HOST": {
+        "title": "Send attached pictures",
+        "group": "Files & Media/Sending Media to a Model",
+        "detail": "Include picture attachments as well.\n\nThey do not need it. A picture already travels inside the request and never leaves this server, so turning this on uploads user files to a third party for no gain. The one reason to switch it on is large reference images being refused for size, since a link has no size limit of its own."
+    },
+    "TELL_USERS_ABOUT_THE_FILE_HOST": {
+        "title": "Tell users when their file is uploaded",
+        "group": "Files & Media/Sending Media to a Model",
+        "detail": "Shows a short line in the chat whenever a user's attachment is sent to the file host.\n\nTheir own media leaves this server and becomes readable by anyone holding the link, so they are told by default. Switch it off only if you have already told your users another way - and consider whether your local rules require the notice regardless. The wording is yours to change in the setting below."
+    },
+    "FILE_HOST_NOTICE": {
+        "title": "Wording of that notice",
+        "group": "Files & Media/Sending Media to a Model",
+        "detail": "The sentence users see when their attachment is uploaded.\n\nRewrite it in your own words, your own tone, or your own language. `{kind}` becomes clip, sound file or picture; `{host}` names the host; `{retention}` says how long it stays there. Leave out any you do not want. Those substitutions are written in English, so if you are writing for users in another language, say those parts yourself rather than using the placeholders."
+    },
+    "USE_THE_OTHER_FILE_HOST_IF_ONE_IS_DOWN": {
+        "title": "Fall back to the other host",
+        "group": "Files & Media/Sending Media to a Model",
+        "detail": "When the chosen host will not take the file, try the other one rather than failing the request.\n\nOff by default, and the reason is retention rather than reliability: `litterbox` deletes a file within hours, `catbox` keeps it until somebody removes it by hand. Falling back turns a file that would have cleaned itself up into one that does not, without the user or you choosing that. Turn it on if an occasional outage matters more - the upload is retried three times on the chosen host first, so this only comes into play when that host is genuinely unavailable."
     },
     "SEND_CACHE_SESSION_ID": {
         "title": "Pin conversation to one provider",
