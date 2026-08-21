@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Iterator
 from typing import Any
 
 from ..core.config import _PIPE_METADATA_KEY
@@ -154,3 +156,62 @@ def restrict_provider_block(
     kept = {key: value for key, value in block.items() if key in accepted}
     dropped = sorted(key for key in block if key not in accepted)
     return kept, dropped
+
+
+PROSE_PAYLOAD_FIELDS = frozenset({"prompt"})
+
+MAX_URL_SCAN_DEPTH = 12
+
+MAX_URL_SCAN_NODES = 4096
+
+_ABSOLUTE_URL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
+
+_TOO_DEEP_TO_VET = (
+    f"This request nests values more than {MAX_URL_SCAN_DEPTH} levels deep. Every address "
+    "in a request is checked before OpenRouter is asked to fetch it, nothing that deep can "
+    "be checked, so the request was not sent."
+)
+
+_TOO_MANY_VALUES_TO_VET = (
+    f"This request carries more than {MAX_URL_SCAN_NODES} values. Every address in a "
+    "request is checked before OpenRouter is asked to fetch it, a request that large "
+    "cannot be checked, so it was not sent."
+)
+
+
+class UnvettableRequest(Exception):
+    pass
+
+
+def _addresses_in(
+    value: Any, path: str, depth: int, remaining: list[int]
+) -> Iterator[tuple[str, str]]:
+    if remaining[0] <= 0:
+        raise UnvettableRequest(_TOO_MANY_VALUES_TO_VET)
+    remaining[0] -= 1
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if _ABSOLUTE_URL_RE.match(cleaned):
+            yield cleaned, path
+        return
+    if isinstance(value, dict):
+        if depth >= MAX_URL_SCAN_DEPTH:
+            raise UnvettableRequest(_TOO_DEEP_TO_VET)
+        for key, item in value.items():
+            yield from _addresses_in(item, f"{path}.{key}", depth + 1, remaining)
+        return
+    if isinstance(value, list):
+        if depth >= MAX_URL_SCAN_DEPTH:
+            raise UnvettableRequest(_TOO_DEEP_TO_VET)
+        for index, item in enumerate(value):
+            yield from _addresses_in(item, f"{path}[{index}]", depth + 1, remaining)
+
+
+def payload_addresses(
+    payload: dict[str, Any], prose_fields: frozenset[str] = PROSE_PAYLOAD_FIELDS
+) -> Iterator[tuple[str, str]]:
+    remaining = [MAX_URL_SCAN_NODES]
+    for key, value in payload.items():
+        if key in prose_fields:
+            continue
+        yield from _addresses_in(value, str(key), 1, remaining)

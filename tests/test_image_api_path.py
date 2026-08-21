@@ -4066,3 +4066,123 @@ async def test_the_previews_a_streamed_generation_delivers_reach_the_user_as_sta
     assert [line for line in said if "preview" in line] == [
         f"Generating image… preview {index + 1}" for index in range(previews)
     ], f"the previews the stream delivered never reached the chat: {said}"
+
+
+_IMAGE_PRIVATE_ADDRESSES = (
+    "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+    "http://10.0.0.7:9200/_cluster/health",
+)
+
+_IMAGE_PUBLIC_ADDRESSES = (
+    "https://cdn.example.test/style-one.png",
+    "https://media.example.test/style-two.png",
+)
+
+
+class _PayloadCapturingClient:
+    def __init__(self) -> None:
+        self.payloads: list[dict[str, Any]] = []
+
+    async def generate(self, payload, **_kwargs):
+        self.payloads.append(payload)
+        return ImageGenerationResult(
+            images=[GeneratedImage(data=_png(8, 8), mime_type="image/png")], usage={}
+        )
+
+
+async def _krea_generation(passthrough: dict[str, Any], refuse: tuple[str, ...]):
+    """Drive a real generation for a model whose record publishes reference passthrough.
+
+    The resolver under `_is_safe_url` is the stub, one seam below the payload builder, so
+    the async wrapper and the insecure-http policy both stay in the call.
+    """
+    pipe = _KeyPipe("sk-x")
+    asked: list[str] = []
+
+    def _resolve(url: str) -> list[str] | None:
+        asked.append(url)
+        return None if any(bad in url for bad in refuse) else ["203.0.113.9"]
+
+    from types import SimpleNamespace
+
+    from open_webui_openrouter_pipe.storage.multimodal import MultimodalHandler
+
+    handler = SimpleNamespace(_request_ips_blocking=_resolve)
+    handler._is_safe_url = MultimodalHandler._is_safe_url.__get__(handler)
+    cast(Any, pipe)._multimodal_handler = handler
+
+    adapter = _adapter(pipe)
+    adapter._endpoint_cache["krea/krea-2-large"] = (
+        time.monotonic(),
+        [
+            {
+                "provider_name": "Krea",
+                "provider_slug": "krea",
+                "allowed_passthrough_parameters": ["image_style_references", "moodboards"],
+                "supported_parameters": {},
+            }
+        ],
+    )
+    client = _PayloadCapturingClient()
+    monkeypatch_client(adapter, client)
+
+    said = await adapter.generate(
+        body={"image_config": passthrough},
+        responses_body=_StubResponsesBody(
+            [{"role": "user", "content": [{"type": "input_text", "text": "a leaf"}]}]
+        ),
+        valves=_StubValves("sk-x"),
+        session=object(),
+        event_emitter=_Emitter(),
+        metadata={"chat_id": "chat-1", "message_id": "msg-1"},
+        user={"id": "u1"},
+        request=object(),
+        user_obj=object(),
+        normalized_model_id="krea.krea-2-large",
+        api_model_id="krea/krea-2-large",
+    )
+    return asked, client.payloads, str(said)
+
+
+@pytest.mark.parametrize("address", _IMAGE_PRIVATE_ADDRESSES)
+@pytest.mark.parametrize(
+    ("field", "shape"),
+    [
+        ("image_style_references", list),
+        ("moodboards", str),
+    ],
+)
+@pytest.mark.asyncio
+async def test_an_image_passthrough_address_reaches_the_gate(field, shape, address):
+    """The image request is walked for addresses the same way the video request is.
+
+    Krea publishes `image_style_references` and `moodboards`; Recraft publishes `controls`;
+    Sourceful publishes `font_inputs`. None was ever named in a list, so a URL a user put in
+    one of them used to travel to OpenRouter's fetcher with the gate never asked.
+    """
+    asked, payloads, said = await _krea_generation(
+        {field: [address] if shape is list else address}, ("169.254.", "10.0.0.")
+    )
+
+    assert asked == [address], (
+        f"the gate was asked about {asked!r}; the address in the request was {address!r}"
+    )
+    assert payloads == [], f"the request was sent anyway: {payloads!r}"
+    assert "Refusing to send the address" in said, (
+        f"the refusal must say the address was the problem; got {said!r}"
+    )
+
+
+@pytest.mark.parametrize("address", _IMAGE_PUBLIC_ADDRESSES)
+@pytest.mark.asyncio
+async def test_a_public_image_passthrough_address_is_checked_and_still_sent(address):
+    """Checked is not refused on the image path either."""
+    asked, payloads, said = await _krea_generation(
+        {"image_style_references": [address]}, ("169.254.", "10.0.0.")
+    )
+
+    assert asked == [address], f"the gate was asked about {asked!r}, expected {address!r}"
+    assert len(payloads) == 1, f"the request never left: {said!r}"
+    assert address in json.dumps(payloads[0]), (
+        f"a checked public link was dropped from the request: {payloads[0]!r}"
+    )

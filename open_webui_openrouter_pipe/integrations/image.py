@@ -30,10 +30,12 @@ from .image_types import (
 )
 from .provider_options import (
     IMAGE_PROVIDER_KEYS,
+    UnvettableRequest,
     bare_pins,
     carrier_slug,
     fan_provider_options,
     options_key,
+    payload_addresses,
     requested_provider_block,
     restrict_provider_block,
 )
@@ -62,6 +64,8 @@ _SCHEMA_ONLY_PARAMS = SCHEMA_ONLY_PARAMS
 _REFERENCE_MODES = frozenset({"auto", "latest-only", "none"})
 
 _SCHEMA_REFERENCE_CAP = 16
+
+_MAX_PAYLOAD_ADDRESSES = 16
 
 _BILLING_MULTIPLIERS = frozenset({"n"})
 
@@ -719,6 +723,29 @@ class ImageGenerationAdapter:
             seen[url] = verdict
         return verdict
 
+    async def _vet_payload_addresses(
+        self, payload: dict[str, Any], seen: dict[str, bool]
+    ) -> None:
+        try:
+            addresses = list(payload_addresses(payload))
+        except UnvettableRequest as exc:
+            raise ImageGenerationError(str(exc)) from exc
+        budget = _MAX_PAYLOAD_ADDRESSES
+        for url, where in addresses:
+            if url not in seen:
+                if budget <= 0:
+                    raise ImageGenerationError(
+                        f"Refusing to send '{where}' unchecked: a request is checked "
+                        f"against at most {_MAX_PAYLOAD_ADDRESSES} addresses and this one "
+                        "is past that."
+                    )
+                budget -= 1
+            if not await self._fetchable(url, seen):
+                raise ImageGenerationError(
+                    f"Refusing to send the address in '{where}'. Use https, or a plain "
+                    "http address this deployment allows."
+                )
+
     async def _vetted_reference_urls(
         self, urls: list[str], seen: dict[str, bool] | None = None
     ) -> list[str]:
@@ -767,6 +794,7 @@ class ImageGenerationAdapter:
         *,
         record: dict[str, Any] | None,
         notes: list[_Note],
+        seen: dict[str, bool] | None = None,
     ) -> list[dict[str, Any]]:
         mode, chosen = self._reference_settings(metadata)
         attached = self._input_references(responses_body)
@@ -774,7 +802,7 @@ class ImageGenerationAdapter:
             attached = []
         elif mode == "latest-only":
             attached = attached[-1:]
-        seen: dict[str, bool] = {}
+        seen = {} if seen is None else seen
         links = [
             {"type": "image_url", "image_url": {"url": url}}
             for url in await self._vetted_reference_urls(chosen, seen)
@@ -1068,8 +1096,9 @@ class ImageGenerationAdapter:
         payload: dict[str, Any] = {"model": api_model_id, "prompt": prompt}
         payload.update(top_level)
 
+        vetted: dict[str, bool] = {}
         refs = await self._reference_payload(
-            responses_body, metadata, record=record, notes=notes
+            responses_body, metadata, record=record, notes=notes, seen=vetted
         )
         if refs:
             payload["input_references"] = refs
@@ -1118,6 +1147,8 @@ class ImageGenerationAdapter:
 
         if provider:
             payload["provider"] = provider
+
+        await self._vet_payload_addresses(payload, vetted)
 
         await self._report_notes(
             notes, api_model_id=api_model_id, event_emitter=event_emitter

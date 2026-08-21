@@ -6863,3 +6863,276 @@ async def test_a_generation_whose_later_clips_fail_keeps_the_ones_it_already_has
     assert ("failed" in str(result.content).lower()) is raises, (
         f"a run that kept {kept} clip(s) reported: {result.content!r}"
     )
+
+
+_PRIVATE_ADDRESSES = (
+    "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+    "http://10.0.0.7:9200/_cluster/health",
+)
+
+_PUBLIC_ADDRESSES = (
+    "https://cdn.example.test/first-reference.png",
+    "https://media.example.test/second-reference.png",
+)
+
+
+def _recording_resolver(pipe: Any, refuse: tuple[str, ...]) -> list[str]:
+    """Replace the blocking resolver under `_is_safe_url`, one seam below the subject.
+
+    The subject is the payload builder. Patching `_is_safe_url` itself would leave the
+    async wrapper untested; patching the resolver keeps every layer of the real gate in
+    the call while removing the DNS.
+    """
+    asked: list[str] = []
+
+    def _resolve(url: str) -> list[str] | None:
+        asked.append(url)
+        return None if any(bad in url for bad in refuse) else ["203.0.113.9"]
+
+    cast(Any, pipe)._multimodal_handler._request_ips_blocking = _resolve
+    return asked
+
+
+async def _aleph_payload(pipe: Any, params: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+    adapter = VideoGenerationAdapter(pipe=pipe, logger=_test_logger())
+    return await adapter._build_payload(
+        api_model_id="runway/aleph-2",
+        prompt="a slow dolly across a lake",
+        video_meta={"params": params},
+        video_model=VIDEO_BY_ID["runway/aleph-2"],
+        frame_images=[],
+        provider_options={},
+        **kwargs,
+    )
+
+
+@pytest.mark.parametrize("address", _PRIVATE_ADDRESSES)
+@pytest.mark.parametrize(
+    "params",
+    [
+        pytest.param(lambda url: {"keyframes": [{"at": 0, "image": url}]}, id="under-image"),
+        pytest.param(lambda url: {"keyframes": [url]}, id="bare-string"),
+        pytest.param(lambda url: {"keyframes": {"start": {"src": url}}}, id="nested-src"),
+        pytest.param(lambda url: {"contentModeration": url}, id="second-field"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_every_address_a_published_passthrough_carries_reaches_the_gate(params, address):
+    """Whatever key a URL sits under, and however it nests, the SSRF gate is asked first.
+
+    `keyframes` is the field runway/aleph-2 publishes that no hardcoded list named, and the
+    URL inside it rides under `image`, not `url`. Both spellings have to be found by walking
+    the value rather than by recognising a name, or the next model that publishes a sixth
+    spelling reopens this.
+    """
+    pipe = _pipe_with_provider_map({"runway/aleph-2": {"providers": ["runway"]}})
+    asked = _recording_resolver(pipe, ("169.254.", "10.0.0."))
+
+    with pytest.raises(VideoGenerationError) as caught:
+        await _aleph_payload(pipe, params(address))
+
+    assert asked == [address], (
+        f"the gate was asked about {asked!r}; the address in the request was {address!r}"
+    )
+    assert "Refusing to forward unsafe URL" in str(caught.value), (
+        f"the refusal must say the address was the problem; got {caught.value!r}"
+    )
+
+
+@pytest.mark.parametrize("address", _PUBLIC_ADDRESSES)
+@pytest.mark.asyncio
+async def test_a_public_link_under_an_unnamed_field_is_checked_and_still_sent(address):
+    """Checked is not refused: a reachable https link a user pasted still travels."""
+    pipe = _pipe_with_provider_map({"runway/aleph-2": {"providers": ["runway"]}})
+    asked = _recording_resolver(pipe, ("169.254.", "10.0.0."))
+
+    payload = await _aleph_payload(pipe, {"keyframes": [{"at": 0, "image": address}]})
+
+    assert asked == [address], f"the gate was asked about {asked!r}, expected {address!r}"
+    assert address in json.dumps(payload), (
+        f"a checked public link was dropped from the request: {payload!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("value", "resolutions"),
+    [
+        pytest.param("data:image/png;base64,AAAA", 0, id="inline-content"),
+        pytest.param("style:noir", 0, id="colon-but-no-authority"),
+        pytest.param("a shot of https://example.test/x", 0, id="prose-carrying-a-link"),
+        pytest.param("https://example.test/x", 1, id="an-actual-link"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_only_values_that_are_addresses_cost_a_resolution(value, resolutions):
+    """A data URI is inline content and a colon is not an authority; neither is fetched.
+
+    Sending every string to `getaddrinfo` would turn free-text passthrough settings into
+    DNS traffic and would refuse ordinary values like `style:noir`.
+    """
+    pipe = _pipe_with_provider_map({"runway/aleph-2": {"providers": ["runway"]}})
+    asked = _recording_resolver(pipe, ("169.254.",))
+
+    await _aleph_payload(pipe, {"keyframes": [{"image": value}]})
+
+    assert len(asked) == resolutions, (
+        f"{value!r} caused {len(asked)} resolution(s), expected {resolutions}: {asked!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("params", "fragment"),
+    [
+        pytest.param(
+            lambda: {"keyframes": json.loads("[" * 14 + "]" * 14)},
+            "levels deep",
+            id="past-the-depth-bound",
+        ),
+        pytest.param(
+            lambda: {"keyframes": [str(index) for index in range(6000)]},
+            "values",
+            id="past-the-node-bound",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_request_too_large_to_certify_is_refused_not_waved_through(params, fragment):
+    """Running out of walk budget must fail closed.
+
+    `provider.options` is user-supplied JSON, so abandoning the walk at a bound would let
+    an address be buried one level past it. Refusing costs a request nobody sends; walking
+    on without a bound costs the worker.
+    """
+    pipe = _pipe_with_provider_map({"runway/aleph-2": {"providers": ["runway"]}})
+    asked = _recording_resolver(pipe, ("169.254.",))
+
+    with pytest.raises(VideoGenerationError) as caught:
+        await _aleph_payload(pipe, params())
+
+    assert fragment in str(caught.value), (
+        f"the refusal must say which bound was reached; got {caught.value!r}"
+    )
+    assert asked == [], f"nothing should have been resolved: {asked!r}"
+
+
+@pytest.mark.parametrize("count", [3, 16])
+@pytest.mark.asyncio
+async def test_a_link_the_pipe_minted_is_not_resolved_again(count):
+    """A relay link carries its verdict from where it was established.
+
+    `relay_to_public_url` only returns an https link on an origin the pipe pins, so the
+    verdict is settled at the moment it is minted. Re-resolving it would spend the request's
+    address budget on the pipe's own uploads and could refuse a request after the file is
+    already public.
+    """
+    pipe = _pipe_with_provider_map({"runway/aleph-2": {"providers": ["runway"]}})
+    asked = _recording_resolver(pipe, ("169.254.",))
+    links = [f"https://files.catbox.moe/minted{index}.mp4" for index in range(count)]
+    references = [
+        {"type": "video_url", "video_url": {"url": link}} for link in links
+    ]
+
+    payload = await _aleph_payload(
+        pipe, {}, input_references=references, vetted=dict.fromkeys(links, True)
+    )
+
+    assert asked == [], f"a minted link was resolved again: {asked!r}"
+    assert all(link in json.dumps(payload) for link in links), (
+        f"the minted links were dropped from the request: {payload!r}"
+    )
+
+
+@pytest.mark.parametrize("address", _PRIVATE_ADDRESSES)
+@pytest.mark.asyncio
+async def test_an_address_in_input_references_the_pipe_did_not_mint_is_still_gated(address):
+    """The exemption is per address, not per field name.
+
+    Recording a verdict for the links the pipe minted must not turn `input_references` into
+    a hole: an address that arrived some other way has no recorded verdict and is checked.
+    """
+    pipe = _pipe_with_provider_map({"runway/aleph-2": {"providers": ["runway"]}})
+    asked = _recording_resolver(pipe, ("169.254.", "10.0.0."))
+    minted = "https://files.catbox.moe/minted0.mp4"
+
+    with pytest.raises(VideoGenerationError, match="Refusing to forward unsafe URL"):
+        await _aleph_payload(
+            pipe,
+            {},
+            input_references=[{"type": "video_url", "video_url": {"url": address}}],
+            vetted={minted: True},
+        )
+
+    assert asked == [address], (
+        f"the gate was asked about {asked!r}; the unminted address was {address!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("link", "family", "mime"),
+    [
+        ("https://files.catbox.moe/first-relay.mp4", "video", "video/mp4"),
+        ("https://litterbox.catbox.moe/second-relay.mp3", "audio", "audio/mpeg"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_the_relay_records_its_verdict_where_the_link_is_minted(link, family, mime):
+    """The recorded verdict must arrive from the real relay, not from a spelled kwarg.
+
+    `_build_payload` trusts an address it finds in this dict, so a wiring that passes the
+    name but never the value would leave the pipe's own uploads resolving again, and a
+    wiring that recorded the wrong string would leave them unrecognised. Driving the real
+    encode path with the relay stubbed one seam lower is what shows the value arrives.
+    """
+    from open_webui_openrouter_pipe.integrations import video as video_module
+
+    adapter = VideoGenerationAdapter.__new__(VideoGenerationAdapter)
+    adapter.logger = _test_logger()
+    adapter._pipe = MagicMock()
+
+    blob = MP4_BYTES if family == "video" else b"ID3\x04tone"
+
+    async def _file(file_id, _logger):
+        return SimpleNamespace(id=file_id, filename=f"{file_id}.bin", user_id="bob")
+
+    async def _b64(_file_obj, *_args, **_kwargs):
+        return base64.b64encode(blob).decode()
+
+    async def _relay(_session, _blob, **_kwargs):
+        return link
+
+    adapter._pipe._file_gateway.read_file_record_base64 = AsyncMock(side_effect=_b64)
+    valves = SimpleNamespace(
+        VIDEO_FRAME_IMAGE_MAX_BYTES=10_000_000,
+        VIDEO_FRAME_TOTAL_MAX_BYTES=20_000_000,
+        REMOTE_VIDEO_MAX_SIZE_MB=500,
+        IMAGE_UPLOAD_CHUNK_BYTES=1024,
+        VIDEO_FRAME_IMAGE_MIME_ALLOWLIST="image/png,image/jpeg",
+        SEND_MEDIA_VIA_FILE_HOST=True,
+        SEND_VIDEO_VIA_FILE_HOST=True,
+        SEND_AUDIO_VIA_FILE_HOST=True,
+        SEND_IMAGES_VIA_FILE_HOST=False,
+        MEDIA_FILE_HOST="litterbox",
+    )
+    vetted: dict[str, bool] = {}
+
+    with patch.object(video_module, "get_file_by_id", _file), \
+         patch.object(video_module, "infer_file_mime_type", lambda _o: mime), \
+         patch.object(video_module, "relay_to_public_url", _relay):
+        refs = await adapter._encode_input_references(
+            {
+                "model_id": "runway/aleph-2",
+                "input_references": [{"id": "ref-1", "content_type": mime}],
+            },
+            valves,
+            video_model=dict(
+                VIDEO_BY_ID["runway/aleph-2"],
+                input_modalities=["text", "image", "video", "audio"],
+            ),
+            companions=True,
+            user_obj=SimpleNamespace(id="bob", role="user"),
+            vetted=vetted,
+        )
+
+    assert vetted == {link: True}, (
+        f"the minted link never reached the verdict record: {vetted!r} for refs {refs!r}"
+    )

@@ -58,9 +58,11 @@ from .media_relay import (
 )
 from .provider_options import (
     VIDEO_PROVIDER_KEYS,
+    UnvettableRequest,
     carrier_slug,
     merge_provider_options,
     options_key,
+    payload_addresses,
     requested_provider_block,
     requested_provider_options,
     restrict_provider_block,
@@ -88,6 +90,7 @@ _warned_video_provider_keys: set[str] = set()
 # semaphore is held, and the list arrives from the request. The models take a handful of
 # reference clips; a cap well above that bounds the work without reaching real usage.
 _MAX_PASSTHROUGH_URLS = 16
+
 _MAX_VIDEO_OUTPUTS = 16
 
 _REFERENCE_KINDS_NEEDING_A_LINK = frozenset({"audio_url", "video_url"})
@@ -568,10 +571,12 @@ class VideoGenerationAdapter:
                 video_meta, video_model, valves, user_obj=user_obj or user,
             )
             relayed_families: set[tuple[str, str]] = set()
+            vetted_addresses: dict[str, bool] = {}
             input_references = await self._encode_input_references(
                 video_meta, valves, withheld=withheld, user_obj=user_obj or user,
                 video_model=video_model, relayed=relayed_families,
                 companions=bool(frame_images), event_emitter=event_emitter,
+                vetted=vetted_addresses,
             )
             if not prompt.strip() and not (frame_images or input_references):
                 content = self._build_failure_content(
@@ -603,6 +608,7 @@ class VideoGenerationAdapter:
                 input_references=input_references,
                 provider_options=provider_options,
                 withheld=withheld,
+                vetted=vetted_addresses,
             )
             if withheld and event_emitter:
                 await self._pipe._event_emitter_handler._emit_notification(
@@ -1224,6 +1230,7 @@ class VideoGenerationAdapter:
         provider_block: dict[str, Any] | None = None,
         input_references: list[dict[str, Any]] | None = None,
         withheld: list[tuple[str, str]] | None = None,
+        vetted: dict[str, bool] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": api_model_id,
@@ -1318,7 +1325,7 @@ class VideoGenerationAdapter:
             )
         if block:
             payload["provider"] = block
-        await self._validate_passthrough_urls(payload, withheld)
+        await self._validate_passthrough_urls(payload, withheld, vetted=vetted)
         return payload
 
     @staticmethod
@@ -1343,8 +1350,11 @@ class VideoGenerationAdapter:
         withheld: list[tuple[str, str]] | None = None,
         seen: dict[str, bool] | None = None,
         budget: list[int] | None = None,
+        vetted: dict[str, bool] | None = None,
     ) -> None:
-        seen = {} if seen is None else seen
+        root = seen is None
+        if seen is None:
+            seen = dict(vetted) if isinstance(vetted, dict) else {}
         budget = [_MAX_PASSTHROUGH_URLS] if budget is None else budget
         provider = payload.get("provider")
         options = provider.get("options") if isinstance(provider, dict) else None
@@ -1425,6 +1435,20 @@ class VideoGenerationAdapter:
                     (f"{dropped} of {len(items)} {field_name} entries", _OVER_URL_BUDGET)
                 )
             payload[field_name] = validated
+
+        if not root:
+            return
+        try:
+            addresses = list(payload_addresses(payload))
+        except UnvettableRequest as exc:
+            raise VideoGenerationError(str(exc)) from exc
+        for url, where in addresses:
+            if not _spend(url):
+                raise VideoGenerationError(
+                    f"Refusing to send '{where}' unchecked: a request is checked against "
+                    f"at most {_MAX_PASSTHROUGH_URLS} addresses and this one is past that."
+                )
+            await _check(url, where)
 
     @staticmethod
     def _parse_pixel_size(value: Any) -> tuple[int, int] | None:
@@ -1574,6 +1598,7 @@ class VideoGenerationAdapter:
         relayed: set[tuple[str, str]] | None = None,
         companions: bool = False,
         event_emitter: Any = None,
+        vetted: dict[str, bool] | None = None,
     ) -> list[dict[str, Any]]:
         raw = video_meta.get("input_references")
         if not isinstance(raw, list) or not raw:
@@ -1725,6 +1750,8 @@ class VideoGenerationAdapter:
                     mime=entry.mime, family=entry.family,
                 )
                 encoded.append({"type": entry.kind, entry.kind: {"url": link}})
+                if vetted is not None:
+                    vetted[link] = True
                 used.add((entry.family, host))
                 if relayed is not None:
                     relayed.add((entry.family, host))
