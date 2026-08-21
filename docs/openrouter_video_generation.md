@@ -1807,7 +1807,13 @@ pipe()
         │     └─ clip and sound references need a public https link, so
         │        with the file-host valves on the pipe uploads them and
         │        sends the link (media_relay); without those valves such
-        │        a reference is left out with a notice
+        │        a reference is left out with a notice. A reference is
+        │        only uploaded when the requester owns the file and the
+        │        stored record names its media type, at most sixteen per
+        │        request and at most MEDIA_FILE_HOST_MAX_SIZE_MB of them
+        │        put together; the chat is told which host and for how
+        │        long BEFORE the first byte is sent, and told again if
+        │        the fallback host took it
         ├─ acquire global semaphore
         ├─ build the request body (top-level fields the model publishes,
         │  the rest under provider.options.<slug>)
@@ -1846,6 +1852,15 @@ being encoded into the request and silently dropped at the other end.
 Pictures are the exception: a frame image is always inlined, and an image
 reference is inlined too unless it has been sent to the file host as well.
 
+Third invariant, on the same way in: **nothing is published without the
+user being told first, and only the owner of a file may publish it**. The
+upload is anonymous — that is what lets it work with no account — so it
+carries no credential anybody here could later use to delete it, and the
+notice says so rather than implying a takedown that nobody can perform.
+Read access inside Open WebUI is granted by sharing a chat, a channel, a
+knowledge base or a workspace model; publication is not, so a reference
+the requester can open but does not own is withheld with a note.
+
 Key files:
 
 - [`integrations/video.py`](../open_webui_openrouter_pipe/integrations/video.py)
@@ -1857,8 +1872,11 @@ Key files:
   `OpenRouterModelRegistry`.
 - [`integrations/media_relay.py`](../open_webui_openrouter_pipe/integrations/media_relay.py)
   — puts an attached clip or sound file behind a public link so it can be
-  sent as a reference: which hosts are known, how long each keeps a file,
-  the size ceiling, and the retries.
+  sent as a reference: which hosts are known, which origins each may
+  answer with, how long each keeps a file, the size ceiling, and the
+  retries. A 200 carrying a link the chosen host does not serve is not an
+  answer, and whatever the host did say is quoted inertly rather than
+  rendered into the chat as markdown.
 - [`integrations/video_intent.py`](../open_webui_openrouter_pipe/integrations/video_intent.py)
   and [`integrations/video_intent_prompts.py`](../open_webui_openrouter_pipe/integrations/video_intent_prompts.py)
   — work out what the turn is asking for before a job is submitted; see

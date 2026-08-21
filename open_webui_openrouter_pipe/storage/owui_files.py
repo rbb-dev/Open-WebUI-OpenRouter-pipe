@@ -319,6 +319,28 @@ async def authorize_file_read(file_obj: Any, user: Any, logger: logging.Logger) 
         return False
 
 
+PUBLISHING_NEEDS_OWNERSHIP = (
+    "A file has to be your own before it can be uploaded to a public file host, even "
+    "when Open WebUI lets you open it here."
+)
+
+
+def authorize_file_publication(file_obj: Any, user: Any) -> bool:
+    if user is None:
+        return False
+    role = user.get("role") if isinstance(user, dict) else getattr(user, "role", None)
+    if role == "admin":
+        return True
+    owner_id = getattr(file_obj, "user_id", None)
+    requester_id = user.get("id") if isinstance(user, dict) else getattr(user, "id", None)
+    return bool(
+        isinstance(owner_id, str)
+        and owner_id
+        and isinstance(requester_id, str)
+        and owner_id == requester_id
+    )
+
+
 @timed
 async def materialize_owui_file_to_temp(
     file_obj: Any,

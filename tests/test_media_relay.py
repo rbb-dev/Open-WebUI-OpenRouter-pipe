@@ -33,6 +33,11 @@ from open_webui_openrouter_pipe.integrations.media_relay import (
 from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
 from open_webui_openrouter_pipe.integrations.video_types import VideoGenerationError
 
+# Every OWUI file row carries the id of the person who uploaded it, and every request
+# carries the person making it. Relaying is gated on those two being the same, so a
+# record without an owner is not a record this code path can ever see.
+_OWNER = SimpleNamespace(id="bob", role="user")
+
 
 def test_nothing_is_uploaded_until_an_operator_asks_for_it():
     """A user's private media must not leave the server on a default install."""
@@ -71,7 +76,10 @@ def test_the_notice_reads_as_a_sentence_on_every_host_and_every_span(host, reten
     assert "{" not in line and "}" not in line, f"a placeholder was left unfilled: {line}"
     assert line.endswith("."), line
     if host_keeps_forever(host):
-        assert "until someone deletes it" in line, line
+        assert "stays there for good" in line, line
+        assert "nothing here can take it down" in line, (
+            f"the notice implies somebody at this deployment could delete it: {line}"
+        )
     else:
         assert "deleted again" in line, line
 
@@ -128,21 +136,40 @@ def test_a_host_this_pipe_does_not_know_is_refused_by_name():
     ("answer", "expected"),
     [
         ("https://files.catbox.moe/abc.mp4", "https://files.catbox.moe/abc.mp4"),
-        ('{"status":"success","data":{"url":"https://tmp.example/x.mp4"}}', "https://tmp.example/x.mp4"),
+        ('{"status":"success","data":{"url":"https://litter.catbox.moe/x.mp4"}}',
+         "https://litter.catbox.moe/x.mp4"),
     ],
 )
 def test_a_link_is_read_out_of_either_answer_shape(answer, expected):
     """One host answers with a bare URL, the other with JSON around it."""
-    from open_webui_openrouter_pipe.integrations.media_relay import _extract_url
+    from open_webui_openrouter_pipe.integrations.media_relay import _ENDPOINTS, _extract_url
 
-    assert _extract_url(answer) == expected
+    assert _extract_url(answer, _ENDPOINTS["catbox"].origins) == expected
 
 
-@pytest.mark.parametrize("answer", ["", "ERROR: something went wrong", "{}", "{not json"])
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "",
+        "ERROR: something went wrong",
+        "{}",
+        "{not json",
+        "https://attacker.example/beacon.mp4",
+        "http://files.catbox.moe/plaintext.mp4",
+        "https://catbox.moe.attacker.example/x.mp4",
+        '{"status":"success","data":{"url":"http://169.254.169.254/latest/meta-data/"}}',
+    ],
+)
 def test_an_answer_carrying_no_link_is_not_mistaken_for_one(answer):
-    from open_webui_openrouter_pipe.integrations.media_relay import _extract_url
+    """A link is only a link when the host that took the file is the one serving it.
 
-    assert _extract_url(answer) == ""
+    The last four are 200 answers carrying a perfectly well-formed URL somewhere else:
+    the pipe hands whatever comes back to OpenRouter as the user's media, so an address
+    the chosen host does not serve is not an answer, it is a redirection.
+    """
+    from open_webui_openrouter_pipe.integrations.media_relay import _ENDPOINTS, _extract_url
+
+    assert _extract_url(answer, _ENDPOINTS["litterbox"].origins) == ""
 
 
 @pytest.mark.asyncio
@@ -163,7 +190,7 @@ async def test_a_clip_reaches_the_request_as_a_link_rather_than_as_bytes(monkeyp
     monkeypatch.setattr(module, "relay_to_public_url", fake_relay)
 
     async def fake_file(file_id, _logger):
-        return SimpleNamespace(id=file_id, filename="holiday.mp4")
+        return SimpleNamespace(id=file_id, filename="holiday.mp4", user_id=_OWNER.id)
 
     monkeypatch.setattr(module, "get_file_by_id", fake_file)
     monkeypatch.setattr(module, "infer_file_mime_type", lambda _obj: "video/mp4")
@@ -187,6 +214,7 @@ async def test_a_clip_reaches_the_request_as_a_link_rather_than_as_bytes(monkeyp
         {"input_references": [{"id": "clip-1", "content_type": "video/mp4"}]},
         valves,
         withheld=withheld,
+        user_obj=_OWNER,
     )
 
     assert withheld == [], withheld
@@ -223,7 +251,7 @@ async def test_a_reference_kind_is_offered_only_where_the_model_declares_it(
     payload = {"video": b"\x00\x00\x00\x18ftypmp42", "audio": b"ID3\x04tone"}[family]
 
     async def fake_file(file_id, _logger):
-        return SimpleNamespace(id=file_id, filename=file_id)
+        return SimpleNamespace(id=file_id, filename=file_id, user_id=_OWNER.id)
 
     monkeypatch.setattr(module, "get_file_by_id", fake_file)
     monkeypatch.setattr(
@@ -273,6 +301,7 @@ async def test_a_reference_kind_is_offered_only_where_the_model_declares_it(
         valves,
         withheld=withheld,
         video_model={"id": model_id, "input_modalities": declared},
+        user_obj=_OWNER,
     )
 
     accepted = family in declared
@@ -539,9 +568,9 @@ def test_a_host_having_a_bad_moment_is_retried_and_can_still_succeed(status):
     """429 and 5xx are the transient answers; giving up on them loses a working upload."""
     sleeps = []
     link, wire = asyncio.run(
-        _relayed([(status, "busy"), (200, "https://l.moe/ok.mp4")], sleeps=sleeps)
+        _relayed([(status, "busy"), (200, "https://litter.catbox.moe/ok.mp4")], sleeps=sleeps)
     )
-    assert link == "https://l.moe/ok.mp4"
+    assert link == "https://litter.catbox.moe/ok.mp4"
     assert len(wire.calls) == 2
     assert sleeps == [2.0]
 
@@ -616,7 +645,7 @@ def test_an_ordinary_filename_still_arrives_intact():
 
 @pytest.mark.parametrize(
     ("used_host", "expected_span"),
-    [("litterbox", "an hour later"), ("catbox", "until someone deletes it")],
+    [("litterbox", "an hour later"), ("catbox", "stays there for good")],
 )
 def test_the_notice_names_the_host_that_actually_took_the_file(used_host, expected_span):
     """The fallback is exactly when the privacy statement changes.
@@ -681,7 +710,7 @@ async def test_a_sound_file_with_nothing_to_pair_with_is_never_uploaded(monkeypa
     adapter, module, relay, _AsyncMock = _adapter_with_files(records, reads, uploads)
 
     async def _get_file(file_id, _logger):
-        return SimpleNamespace(id=file_id, filename="voice.mp3")
+        return SimpleNamespace(id=file_id, filename="voice.mp3", user_id=_OWNER.id)
 
     monkeypatch.setattr(module, "get_file_by_id", _get_file)
     monkeypatch.setattr(module, "infer_file_mime_type", lambda _f: "audio/mpeg")
@@ -700,6 +729,7 @@ async def test_a_sound_file_with_nothing_to_pair_with_is_never_uploaded(monkeypa
         video_model={"id": "bytedance/seedance-2.0", "input_modalities": ["audio", "image"]},
         relayed=set(),
         companions=False,
+        user_obj=_OWNER,
     )
 
     assert encoded == []
@@ -725,7 +755,7 @@ async def test_a_sound_file_is_kept_when_a_picture_was_attached_as_a_frame(monke
     adapter, module, relay, _AsyncMock = _adapter_with_files(records, reads, uploads)
 
     async def _get_file(file_id, _logger):
-        return SimpleNamespace(id=file_id, filename="voice.mp3")
+        return SimpleNamespace(id=file_id, filename="voice.mp3", user_id=_OWNER.id)
 
     monkeypatch.setattr(module, "get_file_by_id", _get_file)
     monkeypatch.setattr(module, "infer_file_mime_type", lambda _f: "audio/mpeg")
@@ -742,6 +772,7 @@ async def test_a_sound_file_is_kept_when_a_picture_was_attached_as_a_frame(monke
         video_model={"id": "bytedance/seedance-2.0", "input_modalities": ["audio", "image"]},
         relayed=set(),
         companions=True,
+        user_obj=_OWNER,
     )
 
     assert [entry["type"] for entry in encoded] == ["audio_url"]
@@ -772,7 +803,7 @@ async def test_a_clip_that_cannot_be_sent_is_never_read_out_of_storage(
     adapter, module, relay, _AsyncMock = _adapter_with_files(records, reads, uploads)
 
     async def _get_file(file_id, _logger):
-        return SimpleNamespace(id=file_id, filename="clip.mp4")
+        return SimpleNamespace(id=file_id, filename="clip.mp4", user_id=_OWNER.id)
 
     monkeypatch.setattr(module, "get_file_by_id", _get_file)
     monkeypatch.setattr(module, "infer_file_mime_type", lambda _f: "video/mp4")
@@ -789,6 +820,7 @@ async def test_a_clip_that_cannot_be_sent_is_never_read_out_of_storage(
         video_model={"id": "runway/aleph-2", "input_modalities": ["video", "image"]},
         relayed=set(),
         companions=True,
+        user_obj=_OWNER,
     )
 
     assert reads == expected_reads
@@ -841,20 +873,23 @@ async def test_the_second_file_host_is_tried_only_when_the_operator_turned_it_on
 
         with aioresponses() as http:
             http.post(_ENDPOINTS[chosen][0], status=500, body="down", repeat=True)
-            http.post(_ENDPOINTS[other][0], status=200, body=f"https://{other}.test/clip.mp4")
+            http.post(
+                _ENDPOINTS[other][0], status=200, body=f"https://files.catbox.moe/{other}.mp4"
+            )
             with patch.object(media_relay.asyncio, "sleep", AsyncMock()):
                 link, used = await adapter._relay_reference(
                     valves, blob, filename="clip.mp4", mime="video/mp4", family="video"
                 )
 
         assert used == other, f"the operator's fallback did not reach {other}"
-        assert link == f"https://{other}.test/clip.mp4"
+        assert link == f"https://files.catbox.moe/{other}.mp4"
 
         valves.USE_THE_OTHER_FILE_HOST_IF_ONE_IS_DOWN = False
         with aioresponses() as http:
             http.post(_ENDPOINTS[chosen][0], status=500, body="down", repeat=True)
             http.post(
-                _ENDPOINTS[other][0], status=200, body=f"https://{other}.test/clip.mp4", repeat=True
+                _ENDPOINTS[other][0], status=200, body=f"https://files.catbox.moe/{other}.mp4",
+                repeat=True
             )
             with patch.object(media_relay.asyncio, "sleep", AsyncMock()):
                 with pytest.raises(VideoGenerationError) as failed:
@@ -989,7 +1024,7 @@ async def test_a_clip_below_the_models_pixel_floor_is_dropped_before_it_is_publi
     adapter, module, relay, _AsyncMock = _adapter_with_files(records, reads, uploads)
 
     async def _get_file(file_id, _logger):
-        return SimpleNamespace(id=file_id, filename="clip.mp4")
+        return SimpleNamespace(id=file_id, filename="clip.mp4", user_id=_OWNER.id)
 
     async def _probe(_path):
         return VideoMetadata(
@@ -1013,6 +1048,7 @@ async def test_a_clip_below_the_models_pixel_floor_is_dropped_before_it_is_publi
         video_model={"id": model_id, "input_modalities": ["video", "image"]},
         relayed=set(),
         companions=True,
+        user_obj=_OWNER,
     )
 
     assert (encoded != []) is sent, f"the clip produced {encoded!r}"

@@ -38,6 +38,9 @@ from ..models.registry import OpenRouterModelRegistry
 from ..requests.fusion_engine import asks_for_help, latest_user_text
 from ..storage.multimodal import image_pixel_size
 from ..storage.owui_files import (
+    PUBLISHING_NEEDS_OWNERSHIP,
+    authorize_file_publication,
+    declared_file_size,
     get_file_by_id,
     infer_file_mime_type,
     is_linkable_chat,
@@ -49,7 +52,9 @@ from .media_relay import (
     RELAY_HOSTS,
     MediaRelayError,
     host_keeps_forever,
+    megabytes,
     relay_to_public_url,
+    usable_media_type,
 )
 from .provider_options import (
     VIDEO_PROVIDER_KEYS,
@@ -203,8 +208,20 @@ _OVER_REFERENCE_BUDGET = (
     "the request's combined reference budget was already spent"
 )
 
+_MAX_INPUT_REFERENCES = 16
+
+_OVER_REFERENCE_COUNT = (
+    f"only the first {_MAX_INPUT_REFERENCES} attachments in one request are sent as "
+    "references"
+)
+
 _UNTYPED_REFERENCE = (
     "the file carries no media type the video API has a reference kind for"
+)
+
+_PUBLISHING_NEEDS_A_STORED_TYPE = (
+    "Open WebUI has no media type recorded for this file, and the type your browser "
+    "declared for it is not enough to put a file on a public host under"
 )
 
 _REFERENCE_KINDS: dict[str, str] = {
@@ -554,7 +571,7 @@ class VideoGenerationAdapter:
             input_references = await self._encode_input_references(
                 video_meta, valves, withheld=withheld, user_obj=user_obj or user,
                 video_model=video_model, relayed=relayed_families,
-                companions=bool(frame_images),
+                companions=bool(frame_images), event_emitter=event_emitter,
             )
             if not prompt.strip() and not (frame_images or input_references):
                 content = self._build_failure_content(
@@ -587,12 +604,6 @@ class VideoGenerationAdapter:
                 provider_options=provider_options,
                 withheld=withheld,
             )
-            if relayed_families and event_emitter and bool(
-                getattr(valves, "TELL_USERS_ABOUT_THE_FILE_HOST", True)
-            ):
-                await self._pipe._event_emitter_handler._emit_notification(
-                    event_emitter, self._file_host_notice(valves, relayed_families), level="info"
-                )
             if withheld and event_emitter:
                 await self._pipe._event_emitter_handler._emit_notification(
                     event_emitter, self._withheld_notice(withheld), level="warning"
@@ -1562,6 +1573,7 @@ class VideoGenerationAdapter:
         video_model: Any = None,
         relayed: set[tuple[str, str]] | None = None,
         companions: bool = False,
+        event_emitter: Any = None,
     ) -> list[dict[str, Any]]:
         raw = video_meta.get("input_references")
         if not isinstance(raw, list) or not raw:
@@ -1569,6 +1581,7 @@ class VideoGenerationAdapter:
         image_max = int(valves.VIDEO_FRAME_IMAGE_MAX_BYTES)
         asset_max = int(getattr(valves, "REMOTE_VIDEO_MAX_SIZE_MB", 500)) * 1024 * 1024
         total_max = int(valves.VIDEO_FRAME_TOTAL_MAX_BYTES)
+        relay_max = int(getattr(valves, "MEDIA_FILE_HOST_MAX_SIZE_MB", 200)) * 1024 * 1024
         chunk_size = int(getattr(valves, "IMAGE_UPLOAD_CHUNK_BYTES", 1024 * 1024))
         allowed_images = _csv_set(valves.VIDEO_FRAME_IMAGE_MIME_ALLOWLIST)
         accepted: list[_AcceptedReference] = []
@@ -1576,14 +1589,16 @@ class VideoGenerationAdapter:
         blob_floor = _INPUT_PIXEL_FLOORS.get(_clean_str(video_meta.get("model_id")))
         encoded: list[dict[str, Any]] = []
         total_bytes = 0
+        relay_bytes = 0
+        past_the_count = 0
 
-        def _skip(name: str, reason: str) -> None:
+        def _skip(name: str, cause: str, text: str) -> None:
             self.logger.log(
-                warn_level(_warned_dropped_video_param, f"input_reference:{reason}"),
-                "Reference file %r was not sent with the video request: %s", name, reason,
+                warn_level(_warned_dropped_video_param, f"input_reference:{cause}"),
+                "Reference file %r was not sent with the video request: %s", name, text,
             )
             if withheld is not None:
-                withheld.append((name, reason))
+                withheld.append((name, text))
 
         for item in raw:
             if not isinstance(item, dict):
@@ -1591,40 +1606,63 @@ class VideoGenerationAdapter:
             file_id = _clean_str(item.get("id"))
             if not file_id:
                 continue
+            if len(accepted) >= _MAX_INPUT_REFERENCES:
+                past_the_count += 1
+                continue
             file_obj = await get_file_by_id(file_id, self._pipe.logger)
             if not file_obj:
-                _skip(file_id, "it could not be loaded from Open WebUI storage")
+                _skip(file_id, "unreadable", "it could not be loaded from Open WebUI storage")
                 continue
-            mime = _clean_str(infer_file_mime_type(file_obj)).split(";", 1)[0].lower()
-            if not mime:
-                mime = _clean_str(item.get("content_type")).split(";", 1)[0].lower()
+            stored_mime = usable_media_type(infer_file_mime_type(file_obj))
+            mime = stored_mime or usable_media_type(item.get("content_type"))
             family = mime.split("/", 1)[0]
             kind = _REFERENCE_KINDS.get(family)
             if not kind:
-                _skip(file_id, _UNTYPED_REFERENCE)
+                _skip(file_id, "untyped", _UNTYPED_REFERENCE)
                 continue
             if family == "image" and mime not in allowed_images:
-                _skip(file_id, f"the type {mime!r} is not on the reference image allowlist")
+                _skip(
+                    file_id,
+                    "allowlist",
+                    f"the type {mime!r} is not on the reference image allowlist",
+                )
                 continue
             if not model_takes(family):
-                _skip(file_id, _reference_kind_refused(family))
+                _skip(file_id, "refused-kind", _reference_kind_refused(family))
                 continue
             via_file_host = self._file_host_wanted(valves, family)
             if kind in _REFERENCE_KINDS_NEEDING_A_LINK and not via_file_host:
-                _skip(file_id, _REFERENCE_NEEDS_A_LINK)
+                _skip(file_id, "needs-a-link", _REFERENCE_NEEDS_A_LINK)
                 continue
+            if via_file_host and not stored_mime:
+                _skip(file_id, "unstored-type", _PUBLISHING_NEEDS_A_STORED_TYPE)
+                continue
+            if via_file_host and not authorize_file_publication(file_obj, user_obj):
+                _skip(file_id, "not-owner", PUBLISHING_NEEDS_OWNERSHIP)
+                continue
+            if via_file_host:
+                self._refuse_over_the_relay_cap(
+                    declared_file_size(file_obj), relay_bytes, relay_max
+                )
             try:
                 b64 = await self._pipe._file_gateway.read_file_record_base64(
                     file_obj,
                     chunk_size,
-                    image_max if family == "image" else asset_max,
+                    relay_max if via_file_host else (image_max if family == "image" else asset_max),
                     user=user_obj,
                 )
             except RequiredInternalFileError as exc:
-                _skip(file_id, exc.user_message)
+                _skip(file_id, "not-allowed", exc.user_message)
                 continue
+            except ValueError as exc:
+                if not via_file_host:
+                    raise
+                raise VideoGenerationError(
+                    f"The attached {family} is larger than the "
+                    f"{megabytes(relay_max)} this deployment sends to a file host."
+                ) from exc
             if not b64:
-                _skip(file_id, "it could not be encoded")
+                _skip(file_id, "unencodable", "it could not be encoded")
                 continue
             try:
                 decoded_len = len(base64.b64decode(b64, validate=False))
@@ -1633,21 +1671,23 @@ class VideoGenerationAdapter:
                     "input_references asset %s is not valid base64: %s", file_id, exc,
                     exc_info=True,
                 )
-                _skip(file_id, "it contains invalid base64 data")
+                _skip(file_id, "not-base64", "it contains invalid base64 data")
                 continue
             if family == "image":
                 note = self._reference_image_size_note(b64)
                 if note:
-                    _skip(file_id, note)
+                    _skip(file_id, "image-size", note)
                     continue
             if via_file_host:
+                self._refuse_over_the_relay_cap(decoded_len, relay_bytes, relay_max)
                 if family == "video":
                     note = await self._clip_too_small_note(blob_floor, b64, mime)
                     if note:
-                        _skip(file_id, note)
+                        _skip(file_id, "clip-size", note)
                         continue
+                relay_bytes += decoded_len
             elif total_bytes + decoded_len > total_max:
-                _skip(file_id, _OVER_REFERENCE_BUDGET)
+                _skip(file_id, "over-budget", _OVER_REFERENCE_BUDGET)
                 continue
             else:
                 total_bytes += decoded_len
@@ -1662,12 +1702,22 @@ class VideoGenerationAdapter:
                     filename=_clean_str(getattr(file_obj, "filename", "")),
                 )
             )
+        if past_the_count:
+            _skip(
+                f"{past_the_count} further attachment(s)", "over-count", _OVER_REFERENCE_COUNT
+            )
         if accepted and not companions and all(
             entry.kind == "audio_url" for entry in accepted
         ):
             for entry in accepted:
-                _skip(entry.file_id, _AUDIO_NEEDS_A_COMPANION)
+                _skip(entry.file_id, "audio-alone", _AUDIO_NEEDS_A_COMPANION)
             return []
+        disclosed = await self._disclose_the_file_host(
+            valves,
+            {entry.family for entry in accepted if entry.via_file_host},
+            event_emitter,
+        )
+        used: set[tuple[str, str]] = set()
         for entry in accepted:
             if entry.via_file_host:
                 link, host = await self._relay_reference(
@@ -1675,6 +1725,7 @@ class VideoGenerationAdapter:
                     mime=entry.mime, family=entry.family,
                 )
                 encoded.append({"type": entry.kind, entry.kind: {"url": link}})
+                used.add((entry.family, host))
                 if relayed is not None:
                     relayed.add((entry.family, host))
                 continue
@@ -1684,7 +1735,55 @@ class VideoGenerationAdapter:
                     entry.kind: {"url": f"data:{entry.mime};base64,{entry.b64}"},
                 }
             )
+        if used and used != disclosed:
+            await self._emit_file_host_notice(valves, used, event_emitter)
         return encoded
+
+    @staticmethod
+    def _refuse_over_the_relay_cap(size: int | None, already: int, cap: int) -> None:
+        if cap <= 0 or size is None or size <= 0:
+            return
+        if size > cap:
+            raise VideoGenerationError(
+                f"The attachment is {megabytes(size)} and the limit for sending media "
+                f"to a file host is {megabytes(cap)}."
+            )
+        if already + size > cap:
+            raise VideoGenerationError(
+                f"The attachments come to {megabytes(already + size)} and one request "
+                f"sends at most {megabytes(cap)} to a file host."
+            )
+
+    @staticmethod
+    def _relay_hosts(valves: Any) -> list[str]:
+        chosen = str(getattr(valves, "MEDIA_FILE_HOST", "litterbox"))
+        if not bool(getattr(valves, "USE_THE_OTHER_FILE_HOST_IF_ONE_IS_DOWN", False)):
+            return [chosen]
+        return [chosen] + [name for name in RELAY_HOSTS if name != chosen]
+
+    async def _disclose_the_file_host(
+        self, valves: Any, families: set[str], event_emitter: Any
+    ) -> set[tuple[str, str]]:
+        if not families:
+            return set()
+        planned = {
+            (family, host)
+            for family in families
+            for host in self._relay_hosts(valves)
+        }
+        await self._emit_file_host_notice(valves, planned, event_emitter)
+        return planned
+
+    async def _emit_file_host_notice(
+        self, valves: Any, pairs: set[tuple[str, str]], event_emitter: Any
+    ) -> None:
+        if event_emitter is None or not bool(
+            getattr(valves, "TELL_USERS_ABOUT_THE_FILE_HOST", True)
+        ):
+            return
+        await self._pipe._event_emitter_handler._emit_notification(
+            event_emitter, self._file_host_notice(valves, pairs), level="info"
+        )
 
     @staticmethod
     def _file_host_notice(valves: Any, relayed: set[tuple[str, str]]) -> str:
@@ -1699,7 +1798,10 @@ class VideoGenerationAdapter:
         if any(host_keeps_forever(used) for used in hosts) or (
             not hosts and host_keeps_forever(host)
         ):
-            retention = "and stays there until someone deletes it"
+            retention = (
+                "and stays there for good, because the upload carries no account and "
+                "nothing here can take it down again"
+            )
         else:
             spans = {"1h": "an hour", "12h": "12 hours", "24h": "a day", "72h": "three days"}
             span = str(getattr(valves, "MEDIA_FILE_HOST_RETENTION", "1h"))
@@ -1763,10 +1865,7 @@ class VideoGenerationAdapter:
             raise VideoGenerationError(
                 f"The attached {family} could not be read, so it was not sent."
             ) from exc
-        chosen = str(getattr(valves, "MEDIA_FILE_HOST", "litterbox"))
-        hosts = [chosen]
-        if bool(getattr(valves, "USE_THE_OTHER_FILE_HOST_IF_ONE_IS_DOWN", False)):
-            hosts += [name for name in RELAY_HOSTS if name != chosen]
+        hosts = self._relay_hosts(valves)
         failures: list[str] = []
         async with self._pipe._create_http_session(valves) as http:
             for host in hosts:

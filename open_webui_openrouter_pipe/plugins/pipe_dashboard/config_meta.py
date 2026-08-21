@@ -590,12 +590,12 @@ CONFIG_META: dict[str, dict[str, str]] = {
     "SEND_MEDIA_VIA_FILE_HOST": {
         "title": "Send attachments through a file host",
         "group": "Files & Media/Sending Media to a Model",
-        "detail": "Lets a user's attached clip or sound file reach a video model, by uploading it to a public file host first and passing OpenRouter the link.\n\nOpenRouter accepts reference media only as a link its providers can download. A clip sent any other way is refused outright and the whole generation is lost, so without this an attachment simply cannot be used. The cost is real: the file goes to the third-party host chosen below, where anyone who has the link can watch it until it expires. Off until you decide otherwise. Pictures do not need this and are sent inside the request as before."
+        "detail": "Lets a user's attached clip or sound file reach a video model, by uploading it to a public file host first and passing OpenRouter the link.\n\nOpenRouter accepts reference media only as a link its providers can download. A clip sent any other way is refused outright and the whole generation is lost, so without this an attachment simply cannot be used. The cost is real: the file goes to the third-party host chosen below, where anyone who has the link can watch it - on `litterbox` until it expires, on `catbox` for good. Only files the person asking uploaded themselves are sent this way: a file they can merely open because a colleague shared a chat, a channel or a knowledge base with them is left out with a note, because being allowed to read a file here is not the same as being allowed to publish it. Off until you decide otherwise. Pictures do not need this and are sent inside the request as before."
     },
     "MEDIA_FILE_HOST": {
         "title": "File host",
         "group": "Files & Media/Sending Media to a Model",
-        "detail": "Which public host receives the upload.\n\n`litterbox` deletes the file by itself after the time set below, which suits a file that only has to survive one generation. `catbox` keeps it until somebody removes it by hand, so pick it only when a link genuinely has to outlive the job - and remember nothing will clean up after you. Neither needs an account or a key."
+        "detail": "Which public host receives the upload.\n\n`litterbox` deletes the file by itself after the time set below, which suits a file that only has to survive one generation. `catbox` keeps it for good, so pick it only when a link genuinely has to outlive the job. The upload carries no account or key - which is what makes it work without one - so there is no credential here that could ever delete it again, not for the user and not for you. Neither host needs an account."
     },
     "MEDIA_FILE_HOST_RETENTION": {
         "title": "How long the file stays there",
@@ -605,7 +605,7 @@ CONFIG_META: dict[str, dict[str, str]] = {
     "MEDIA_FILE_HOST_MAX_SIZE_MB": {
         "title": "Largest attachment to upload",
         "group": "Files & Media/Sending Media to a Model",
-        "detail": "The biggest file that will be sent to the host, in megabytes.\n\nA file over this is refused and the request stops, rather than quietly generating from the words alone and charging for a result that ignored the attachment. Set it to whatever your users realistically attach; both hosts accept considerably more than the default."
+        "detail": "The biggest file that will be sent to the host, in megabytes, and the ceiling on one request's uploads put together.\n\nA file over this - or several attachments coming to more than this - is refused and the request stops, rather than quietly generating from the words alone and charging for a result that ignored the attachment. It is also what bounds the memory one request can take: attachments are read and encoded before any of them is uploaded. Set it to whatever your users realistically attach; both hosts accept considerably more than the default."
     },
     "SEND_VIDEO_VIA_FILE_HOST": {
         "title": "Send attached clips",
@@ -635,7 +635,7 @@ CONFIG_META: dict[str, dict[str, str]] = {
     "USE_THE_OTHER_FILE_HOST_IF_ONE_IS_DOWN": {
         "title": "Fall back to the other host",
         "group": "Files & Media/Sending Media to a Model",
-        "detail": "When the chosen host will not take the file, try the other one rather than failing the request.\n\nOff by default, and the reason is retention rather than reliability: `litterbox` deletes a file within hours, `catbox` keeps it until somebody removes it by hand. Falling back turns a file that would have cleaned itself up into one that does not, without the user or you choosing that. Turn it on if an occasional outage matters more - the upload is retried three times on the chosen host first, so this only comes into play when that host is genuinely unavailable."
+        "detail": "When the chosen host will not take the file, try the other one rather than failing the request.\n\nOff by default, and the reason is retention rather than reliability: `litterbox` deletes a file within hours, `catbox` keeps it for good and offers nobody here a way to remove it. Falling back turns a file that would have cleaned itself up into one that does not, without the user or you choosing that. The user is told both hosts by name before anything is uploaded, and told again which one actually took the file. Turn it on if an occasional outage matters more - the upload is retried three times on the chosen host first, so this only comes into play when that host is genuinely unavailable."
     },
     "SEND_CACHE_SESSION_ID": {
         "title": "Pin conversation to one provider",

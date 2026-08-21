@@ -702,7 +702,7 @@ async def _encode_references_for(
     payload_by_family = {"video": MP4_BYTES, "audio": b"ID3\x04tone"}
 
     async def _file(file_id, _logger):
-        return SimpleNamespace(id=file_id, filename=f"{file_id}.bin")
+        return SimpleNamespace(id=file_id, filename=f"{file_id}.bin", user_id="bob")
 
     def _mime(file_obj):
         return next(
@@ -739,6 +739,7 @@ async def _encode_references_for(
             withheld=withheld,
             video_model=_model_with_declared_modalities(model_id),
             companions=companions,
+            user_obj=SimpleNamespace(id="bob", role="user"),
         )
     return refs, withheld
 

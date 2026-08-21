@@ -1813,15 +1813,18 @@ class Valves(BaseModel):
             "it. OpenRouter takes reference media only as a link it can download, so without "
             "this an attachment cannot reach a video model at all. Turning it on uploads the "
             "file to the third-party host chosen below, where anyone holding the link can "
-            "watch it until it expires. Off unless you decide otherwise."
+            "watch it: on litterbox until it expires, on catbox for good. Only a file the "
+            "person asking uploaded themselves is sent this way, never one they can merely "
+            "open because it was shared with them. Off unless you decide otherwise."
         ),
     )
     MEDIA_FILE_HOST: Literal["litterbox", "catbox"] = Field(
         default="litterbox",
         description=(
             "Which file host receives the upload. litterbox deletes the file by itself after "
-            "the time set below. catbox keeps it until someone removes it by hand, so choose "
-            "it only when a link has to outlive the job."
+            "the time set below. catbox keeps it for good: the upload carries no account, so "
+            "nobody here can take a file down again once it is up. Choose catbox only when a "
+            "link has to outlive the job."
         ),
     )
     MEDIA_FILE_HOST_RETENTION: Literal["1h", "12h", "24h", "72h"] = Field(
@@ -1838,8 +1841,9 @@ class Valves(BaseModel):
             "If the chosen host cannot take the file, try the other one instead of failing "
             "the request. Off by default because the two keep files for very different "
             "lengths of time: falling back from litterbox to catbox turns a file that would "
-            "have deleted itself within the hour into one that stays up until somebody "
-            "removes it. Turn it on only if you would rather the request succeed."
+            "have deleted itself within the hour into one that stays up for good, with no "
+            "way for anyone here to remove it. Turn it on only if you would rather the "
+            "request succeed."
         ),
     )
     MEDIA_FILE_HOST_MAX_SIZE_MB: int = Field(
@@ -1847,8 +1851,10 @@ class Valves(BaseModel):
         ge=1,
         le=1024,
         description=(
-            "Largest attachment that will be uploaded to the file host. A file over this is "
-            "refused and the request stops rather than generating without it."
+            "Largest attachment that will be uploaded to the file host, and the most one "
+            "request may upload in total. A file over this, or a set of attachments coming "
+            "to more than this, is refused and the request stops rather than generating "
+            "without it."
         ),
     )
     SEND_VIDEO_VIA_FILE_HOST: bool = Field(
