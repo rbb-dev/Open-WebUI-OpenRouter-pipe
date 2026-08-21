@@ -395,7 +395,7 @@ async def test_the_reference_mode_decides_how_many_attachments_are_sent(mode, ke
 
     assert len(result.payload.get("input_references", [])) == kept
     if kept:
-        assert result.payload["input_references"][0]["image_url"]["url"].endswith("/2/content"), (
+        assert result.payload["input_references"][0]["image_url"]["url"].endswith("att2"), (
             "latest-only means the most recent attachment, not the first"
         )
 
@@ -475,6 +475,182 @@ async def test_a_typed_link_goes_through_the_same_gate_as_every_other_fetched_ur
     assert handler.seen == [link], "the gate has to actually be asked about this link"
     assert not posts, "a refused link must stop the request, not generate without it"
     assert "https" in content
+
+
+class _Gate:
+    def __init__(self, allow: set[str] | None = None) -> None:
+        self.seen: list[str] = []
+        self._allow = allow or set()
+
+    async def _is_safe_url(self, url: str) -> bool:
+        self.seen.append(url)
+        return url in self._allow
+
+
+def _turn_carrying(urls: list[str]) -> Any:
+    content: list[dict[str, Any]] = [{"type": "input_text", "text": "make it bluer"}]
+    for url in urls:
+        content.append({"type": "input_image", "image_url": {"url": url}, "detail": "auto"})
+    return _StubResponsesBody([{"role": "user", "content": content}])
+
+
+def _gated_adapter(allow: set[str] | None = None) -> tuple[Any, _Gate]:
+    gate = _Gate(allow)
+    pipe = _KeyPipe("sk-x")
+    cast(Any, pipe)._multimodal_handler = gate
+    adapter = _adapter(pipe)
+    adapter._endpoint_cache["m/x"] = (time.monotonic(), [_OPENAI])
+    return adapter, gate
+
+
+def _notifications(result: Any) -> str:
+    return " ".join(
+        str(event.get("content", ""))
+        for event in result.events
+        if event.get("type") == "notification"
+    )
+
+
+@pytest.mark.parametrize(
+    ("blocked", "allowed"),
+    [
+        ("http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+         "https://cdn.example.com/keep-a.png"),
+        ("https://10.0.0.1/admin/backup.png", "https://cdn.example.org/keep-b.png"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_reference_the_chat_carries_meets_the_gate_the_typed_box_meets(blocked, allowed):
+    """The same address was refused through the reference box and forwarded through a message.
+
+    `_to_input_image` leaves a remote image URL in the conversation verbatim whenever its
+    download or its storage upload fails, and every prior image in the chat becomes an
+    `input_references` entry. OpenRouter fetches whatever is listed, so the unchecked
+    route turned a link chosen by whoever could put one in the history into a request the
+    deployment makes on its behalf -- the instance metadata endpoint among them.
+
+    Two addresses and a surviving sibling each time, so neither "drop everything" nor
+    "drop nothing" passes, and a constant verdict satisfies at most one row.
+    """
+    adapter, gate = _gated_adapter({allowed})
+
+    result = await _posted(
+        adapter,
+        body={},
+        responses_body=_turn_carrying([blocked, allowed]),
+        valves=_StubValves("sk-x"),
+        event_emitter=_Emitter(),
+        metadata={"chat_id": "c"},
+        normalized_model_id="m.x",
+        api_model_id="m/x",
+    )
+
+    assert gate.seen == [blocked, allowed], "every reference OpenRouter would fetch is asked about"
+    assert [ref["image_url"]["url"] for ref in result.payload["input_references"]] == [allowed]
+    assert blocked not in json.dumps(result.payload)
+    assert "dropped 1 reference image" in _notifications(result), (
+        f"a reference that was not sent has to say so; the user saw {_notifications(result)!r}"
+    )
+
+
+@pytest.mark.parametrize("carried", [1, 3])
+@pytest.mark.asyncio
+async def test_an_inline_reference_is_never_put_to_the_gate(carried):
+    """A data: URI is the payload itself, so there is no address to resolve and no fetch.
+
+    The gate here refuses everything it is asked about: routing inlined attachments
+    through it would empty `input_references` on every ordinary request, which is what
+    every image edit in the product is made of.
+    """
+    adapter, gate = _gated_adapter()
+
+    result = await _posted(
+        adapter,
+        body={},
+        responses_body=_user_turn_with_images(carried),
+        valves=_StubValves("sk-x"),
+        event_emitter=_Emitter(),
+        metadata={"chat_id": "c"},
+        normalized_model_id="m.x",
+        api_model_id="m/x",
+    )
+
+    assert gate.seen == [], "inline content is not a fetch and must not be resolved"
+    assert len(result.payload["input_references"]) == carried
+
+
+@pytest.mark.parametrize("repeats", [2, 4])
+@pytest.mark.asyncio
+async def test_one_address_is_resolved_once_however_many_turns_repeat_it(repeats):
+    """Each check is a DNS resolution on a worker thread, and a long chat repeats an image.
+
+    Resolving per occurrence also lets two occurrences of one address disagree when the
+    record changes mid-request, which is a reference sent on the strength of a lookup that
+    a later lookup contradicted.
+    """
+    link = "https://cdn.example.com/same.png"
+    adapter, gate = _gated_adapter({link})
+
+    result = await _posted(
+        adapter,
+        body={},
+        responses_body=_turn_carrying([link] * repeats),
+        valves=_StubValves("sk-x"),
+        event_emitter=_Emitter(),
+        metadata={"chat_id": "c"},
+        normalized_model_id="m.x",
+        api_model_id="m/x",
+    )
+
+    assert gate.seen == [link]
+    assert len(result.payload["input_references"]) == repeats
+
+
+@pytest.mark.parametrize("route", ["typed-into-the-box", "already-in-the-chat"])
+@pytest.mark.parametrize(
+    "blocked", ["http://169.254.169.254/latest/meta-data/", "https://192.168.0.5/x.png"]
+)
+@pytest.mark.asyncio
+async def test_no_route_puts_a_refused_address_on_the_wire(route, blocked):
+    """The property, stated over the routes rather than over one of them.
+
+    Both rows use one gate and one address; only the door changes. A guard added to
+    whichever door the reporter happened to try leaves the other one open.
+    """
+    import aiohttp
+    from aioresponses import aioresponses
+
+    adapter, gate = _gated_adapter()
+    typed = route == "typed-into-the-box"
+    metadata: dict[str, Any] = {"chat_id": "c"}
+    if typed:
+        metadata[PIPE_META] = {"image_generation": {"reference_urls": [blocked]}}
+
+    with aioresponses() as mocked:
+        mocked.post(f"{BASE}/images", payload={"data": []})
+        async with aiohttp.ClientSession() as session:
+            await adapter.generate(
+                body={},
+                responses_body=_turn_carrying([] if typed else [blocked]),
+                valves=_StubValves("sk-x"),
+                session=session,
+                event_emitter=_Emitter(),
+                metadata=metadata,
+                user=None,
+                request=object(),
+                user_obj=object(),
+                normalized_model_id="m.x",
+                api_model_id="m/x",
+            )
+        sent = [
+            json.dumps(call.kwargs.get("json"))
+            for key, calls in mocked.requests.items()
+            if key[1].path == "/api/v1/images"
+            for call in calls
+        ]
+
+    assert gate.seen == [blocked], f"{route}: the gate was never asked about it"
+    assert not any(blocked in body for body in sent), f"{route} put it on the wire: {sent}"
 
 
 @pytest.mark.parametrize("published", [None, 40])

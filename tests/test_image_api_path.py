@@ -893,9 +893,19 @@ class _StubResponsesBody:
 
 
 def _user_turn_with_images(count, provider: dict[str, Any] | None = None):
+    """Attachments in the shape the request transformer actually leaves them in.
+
+    ``_to_input_image`` inlines every attachment -- data URL, remote download or Open
+    WebUI file id -- into a ``data:`` URI before the adapter ever sees it, and raises or
+    skips when it cannot. A relative ``/api/v1/files/...`` path in ``responses_body.input``
+    is a shape production does not produce, and building references from one made these
+    tests assert that the adapter forwards an internal path to a third party.
+    """
     content: list[dict[str, Any]] = [{"type": "input_text", "text": "make it bluer"}]
     for index in range(count):
-        content.append({"type": "input_image", "image_url": f"/api/v1/files/{index}/content", "detail": "auto"})
+        content.append(
+            {"type": "input_image", "image_url": f"data:image/png;base64,att{index}", "detail": "auto"}
+        )
     return _StubResponsesBody([{"role": "user", "content": content}], provider=provider)
 
 
@@ -3967,7 +3977,7 @@ async def test_the_picture_the_user_just_attached_is_the_one_that_survives(publi
     adapter = ImageGenerationAdapter.__new__(ImageGenerationAdapter)
     notes: list = []
 
-    async def _no_links(_self, _urls):
+    async def _no_links(_self, _urls, _seen=None):
         return []
 
     with patch.object(ImageGenerationAdapter, "_vetted_reference_urls", _no_links):

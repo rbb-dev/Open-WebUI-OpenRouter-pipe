@@ -160,7 +160,7 @@ box, not one of these settings.
 | `IMAGE_ASPECT_RATIO` | Aspect ratio | `Literal` over the published ratios, otherwise `str` | Always. |
 | `IMAGE_BACKGROUND` | Background | `Literal` over the published treatments, otherwise `str` | Always. |
 | `IMAGE_OUTPUT_FORMAT` | Output format | `Literal` over the published formats, otherwise `str` | Always. |
-| `IMAGE_OUTPUT_COMPRESSION` | Output compression | `int \| None`, bounded by the published range where there is one | Always. |
+| `IMAGE_OUTPUT_COMPRESSION` | Output compression | `int \| None`, bounded by the published range where there is one and by OpenRouter's documented 0-to-100 otherwise | Always. |
 | `IMAGE_RESOLUTION` | Resolution | `Literal` over the published tiers | The model publishes a tier list. |
 | `IMAGE_SIZE` | Output size | `str` | The model publishes no tier list. |
 
@@ -172,8 +172,10 @@ repository, sixteen draw **Resolution** and twenty-four draw **Output size**.
 Where a control falls back to `str` — because the model publishes no values for it — its
 own description names what OpenRouter's image API accepts there, so an admin or user still
 knows what to type. `IMAGE_OUTPUT_COMPRESSION` behaves the same way: bounded by the model's
-own range when it publishes one, and otherwise unbounded with OpenRouter's 0-to-100 range
-named in the description.
+own range when it publishes one, and by OpenRouter's own 0-to-100 range otherwise. A bound
+is not a value list: `0` to `100` refuses only what OpenRouter itself refuses, and says
+nothing about which number this model honours, so it can come from the API-wide schema
+where a set of named choices cannot.
 
 A model the pipe's image model list does not carry, or whose settings could not be read
 this time, still gets all six — with `IMAGE_SIZE` as the sixth, and every one of them

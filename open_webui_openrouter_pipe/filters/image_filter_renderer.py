@@ -545,11 +545,15 @@ def _render_image_model_user_valves(spec: ImageModelFilterSpec) -> str:
         )
     for name in spec.schema_only:
         title, description = IMAGE_KNOB_TITLES.get(name, (name, ""))
-        if name in SCHEMA_RANGES:
+        bounds = SCHEMA_RANGES.get(name)
+        if bounds is not None:
+            low, high = bounds
             fields.append(
                 _image_field(
                     f"{_valve_name(name)}: int | None = Field(\n"
                     "            default=None,\n"
+                    f"            ge={low},\n"
+                    f"            le={high},\n"
                     f"            title={title!r},\n"
                     f"            description={f'{description} {_schema_only_caveat(name)}'!r},\n"
                     "        )"
@@ -719,11 +723,15 @@ def _matches_model(raw: str) -> bool:
     # WebUI prefixes its own function id, so the runtime body carries
     # "<function_id>.<vendor>.<model>" -- no slash. Normalise both sides to that dotted
     # form and require a "." boundary, so "recraft.recraft-v3" cannot be matched by
-    # "notrecraft.recraft-v3". A leading "~" marks a catalog alias and is not part of
-    # the identity.
+    # "notrecraft.recraft-v3". A "~" marks a catalog alias and is not part of the
+    # identity, and it opens the vendor segment rather than the whole string once a
+    # function id is prefixed, so it is stripped segment by segment.
     if not isinstance(raw, str) or not raw:
         return False
-    normalised = raw.strip().lstrip("~").replace("/", ".").casefold()
+    normalised = ".".join(
+        part.lstrip("~")
+        for part in raw.strip().replace("/", ".").casefold().split(".")
+    )
     return normalised == IMAGE_FILTER_MODEL_DOTTED or normalised.endswith(
         "." + IMAGE_FILTER_MODEL_DOTTED
     )

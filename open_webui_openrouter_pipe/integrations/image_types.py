@@ -106,6 +106,19 @@ def prompt_with_system(input_items: Any) -> str:
     return f"{system}\n\n{user}" if system else user
 
 
+def json_encodable(value: Any) -> bool:
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, float) and not math.isfinite(item):
+            return False
+        if isinstance(item, dict):
+            pending.extend(item.values())
+        elif isinstance(item, (list, tuple)):
+            pending.extend(item)
+    return True
+
+
 def pixel_size(value: Any) -> tuple[int, int] | None:
     if not isinstance(value, str):
         return None

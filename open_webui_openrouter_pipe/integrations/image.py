@@ -22,6 +22,7 @@ from .image_types import (
     ImageGenerationError,
     ImageGenerationResult,
     clamp_text,
+    json_encodable,
     pixel_size,
     prompt_with_system,
     summarise_names,
@@ -102,6 +103,12 @@ class _Note(NamedTuple):
     text: str
 
 
+class _Fitted(NamedTuple):
+    value: Any
+    reason: str
+    measured_as: str
+
+
 def _superseded(name: str, value: Any, reason: str) -> tuple[str, str, str]:
     return (
         "superseded",
@@ -164,6 +171,8 @@ class ImageGenerationAdapter:
         if kind == "range":
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 return None, "expects a number"
+            if not json_encodable(value):
+                return None, "expects a number JSON can represent"
             low, high = descriptor.get("min"), descriptor.get("max")
             if isinstance(high, (int, float)) and not isinstance(high, bool) and value > high:
                 return high, f"capped at {high}"
@@ -178,6 +187,8 @@ class ImageGenerationAdapter:
             # that is what is checked here.
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 return None, "expects a number"
+            if not json_encodable(value):
+                return None, "expects a number JSON can represent"
             return value, ""
         return value, ""
 
@@ -229,6 +240,29 @@ class ImageGenerationAdapter:
         return merged or None
 
     @staticmethod
+    def _fit_published(declared: dict[str, Any] | None, name: str, value: Any) -> _Fitted:
+        known = declared if isinstance(declared, dict) else {}
+        if name in known:
+            fitted, reason = ImageGenerationAdapter._fit_descriptor(known[name], value)
+            return _Fitted(fitted, reason, name)
+        equivalent = _TIER_EQUIVALENT.get(name)
+        if not equivalent or pixel_size(value) is not None:
+            return _Fitted(value, "", "")
+        tiers = SCHEMA_ENUMS.get(equivalent, ())
+        if value not in tiers:
+            return _Fitted(
+                None,
+                f"it is neither one of the tiers {', '.join(tiers)} nor exact pixels "
+                "written like 1024x1024",
+                "",
+            )
+        descriptor = known.get(equivalent)
+        if descriptor is None:
+            return _Fitted(value, "", "")
+        fitted, reason = ImageGenerationAdapter._fit_descriptor(descriptor, value)
+        return _Fitted(fitted, reason, equivalent)
+
+    @staticmethod
     def _records_accepting(
         records: list[dict[str, Any]], chosen: dict[str, Any]
     ) -> list[dict[str, Any]]:
@@ -236,17 +270,26 @@ class ImageGenerationAdapter:
         for record in records:
             supported = record.get("supported_parameters")
             declared = supported if isinstance(supported, dict) else {}
-            ok = True
-            for name, value in chosen.items():
-                if name not in declared:
-                    continue
-                fitted, _note = ImageGenerationAdapter._fit_descriptor(declared.get(name), value)
-                if fitted is None:
-                    ok = False
-                    break
-            if ok:
+            if all(
+                ImageGenerationAdapter._fit_published(declared, name, value).value is not None
+                for name, value in chosen.items()
+            ):
                 keep.append(record)
         return keep
+
+    @staticmethod
+    def _narrowing_params(
+        records: list[dict[str, Any]], chosen: dict[str, Any]
+    ) -> list[str]:
+        narrowing: list[str] = []
+        for name, value in chosen.items():
+            for record in records:
+                supported = record.get("supported_parameters")
+                declared = supported if isinstance(supported, dict) else {}
+                if ImageGenerationAdapter._fit_published(declared, name, value).value is None:
+                    narrowing.append(name)
+                    break
+        return narrowing
 
     @staticmethod
     def _routing_pins(records: list[dict[str, Any]]) -> list[str]:
@@ -262,15 +305,26 @@ class ImageGenerationAdapter:
         provider: dict[str, Any],
         reachable_records: list[dict[str, Any]],
         chosen: dict[str, Any],
-    ) -> None:
+    ) -> list[_Note]:
         if "only" in provider:
-            return
+            return []
         accepting = ImageGenerationAdapter._records_accepting(reachable_records, chosen)
         if not accepting or len(accepting) >= len(reachable_records):
-            return
+            return []
         pins = ImageGenerationAdapter._routing_pins(accepting)
         if pins:
             provider["only"] = pins
+            return []
+        narrowing = ImageGenerationAdapter._narrowing_params(reachable_records, chosen)
+        return [
+            _Note(
+                "unroutable",
+                "*",
+                f"{summarise_names(narrowing, 2, 20)}: accepted by only some of the "
+                "companies serving this model, and OpenRouter names none of them for "
+                "routing",
+            )
+        ]
 
     @staticmethod
     def _split_image_config(
@@ -310,6 +364,13 @@ class ImageGenerationAdapter:
             if not isinstance(key, str) or value is None or value == "":
                 continue
             shown = _clamp(key)
+            if not json_encodable(value):
+                _note(
+                    "unencodable",
+                    key,
+                    f"{shown} was not sent (it carries a number JSON cannot represent)",
+                )
+                continue
             # The alias is a compatibility spelling for a retired filter. A key the
             # model's own record claims as a provider option keeps that spelling, or the
             # rename would route it into a different published parameter and silently
@@ -328,25 +389,21 @@ class ImageGenerationAdapter:
                 )
                 continue
             if name in _SCHEMA_ONLY_PARAMS and (declared is None or name not in declared):
-                tier_of = _TIER_EQUIVALENT.get(name)
-                descriptor = (declared or {}).get(tier_of) if tier_of else None
-                if (
-                    descriptor is not None
-                    and pixel_size(value) is None
-                    and value in SCHEMA_ENUMS.get(tier_of or "", ())
-                ):
-                    fitted, note = ImageGenerationAdapter._fit_descriptor(descriptor, value)
-                    if fitted is None:
-                        _note(
-                            "outside-contract",
-                            name,
-                            f"{name}={_clamp(repr(value), _NOTE_VALUE_LIMIT)} was not sent "
-                            f"(it sets {tier_of}, which {note})",
-                        )
-                        continue
-                    top_level[name] = fitted
+                outcome = ImageGenerationAdapter._fit_published(declared, name, value)
+                if outcome.value is None:
+                    detail = (
+                        f"it sets {outcome.measured_as}, which {outcome.reason}"
+                        if outcome.measured_as
+                        else outcome.reason
+                    )
+                    _note(
+                        "outside-contract",
+                        name,
+                        f"{name}={_clamp(repr(value), _NOTE_VALUE_LIMIT)} was not sent "
+                        f"({detail})",
+                    )
                     continue
-                top_level[name] = value
+                top_level[name] = outcome.value
                 continue
             if name in _TOP_LEVEL_PARAMS:
                 if declared is None:
@@ -364,17 +421,18 @@ class ImageGenerationAdapter:
                 if name not in declared:
                     _note("not-offered", name, f"{name} is not offered by this model")
                     continue
-                fitted, note = ImageGenerationAdapter._fit_descriptor(declared.get(name), value)
-                if fitted is None:
+                outcome = ImageGenerationAdapter._fit_published(declared, name, value)
+                if outcome.value is None:
                     _note(
                         "outside-contract",
                         name,
-                        f"{name}={_clamp(repr(value), _NOTE_VALUE_LIMIT)} was not sent ({note})",
+                        f"{name}={_clamp(repr(value), _NOTE_VALUE_LIMIT)} was not sent "
+                        f"({outcome.reason})",
                     )
                     continue
-                if note:
-                    _note("clamped", name, f"{name} {note}")
-                top_level[name] = fitted
+                if outcome.reason:
+                    _note("clamped", name, f"{name} {outcome.reason}")
+                top_level[name] = outcome.value
             elif key in allowed_passthrough:
                 provider[key] = value
             elif record is None:
@@ -596,7 +654,7 @@ class ImageGenerationAdapter:
         provider = (
             responses_body.provider if isinstance(responses_body.provider, dict) else {}
         )
-        self._pin_accepting_providers(provider, reachable_records, fitted)
+        notes.extend(self._pin_accepting_providers(provider, reachable_records, fitted))
         if provider:
             responses_body.provider = provider
         await self._report_notes(
@@ -651,22 +709,56 @@ class ImageGenerationAdapter:
         )
         return (mode if mode in _REFERENCE_MODES else "auto"), urls
 
-    async def _vetted_reference_urls(self, urls: list[str]) -> list[str]:
+    async def _fetchable(self, url: str, seen: dict[str, bool] | None = None) -> bool:
+        if url.startswith("data:"):
+            return True
+        if seen is not None and url in seen:
+            return seen[url]
+        verdict = bool(await self._pipe._multimodal_handler._is_safe_url(url))
+        if seen is not None:
+            seen[url] = verdict
+        return verdict
+
+    async def _vetted_reference_urls(
+        self, urls: list[str], seen: dict[str, bool] | None = None
+    ) -> list[str]:
         if not urls:
             return []
-        handler = self._pipe._multimodal_handler
         vetted: list[str] = []
         for url in urls[:_SCHEMA_REFERENCE_CAP]:
-            if url.startswith("data:"):
-                vetted.append(url)
-                continue
-            if not await handler._is_safe_url(url):
+            if not await self._fetchable(url, seen):
                 raise ImageGenerationError(
                     f"Refusing to send the reference image link {_clamp(url)}. Use https, "
                     "or a plain http address this deployment allows."
                 )
             vetted.append(url)
         return vetted
+
+    async def _vetted_attachments(
+        self,
+        attached: list[dict[str, Any]],
+        notes: list[_Note],
+        seen: dict[str, bool] | None = None,
+    ) -> list[dict[str, Any]]:
+        kept: list[dict[str, Any]] = []
+        refused = 0
+        for reference in attached:
+            payload = reference.get("image_url")
+            url = payload.get("url") if isinstance(payload, dict) else None
+            if isinstance(url, str) and await self._fetchable(url, seen):
+                kept.append(reference)
+            else:
+                refused += 1
+        if refused:
+            notes.append(
+                _Note(
+                    "refs-unsafe",
+                    "input_references",
+                    f"dropped {refused} reference image(s) already in this chat; sending them "
+                    "would ask OpenRouter to fetch an address this deployment does not allow",
+                )
+            )
+        return kept
 
     async def _reference_payload(
         self,
@@ -682,10 +774,12 @@ class ImageGenerationAdapter:
             attached = []
         elif mode == "latest-only":
             attached = attached[-1:]
+        seen: dict[str, bool] = {}
         links = [
             {"type": "image_url", "image_url": {"url": url}}
-            for url in await self._vetted_reference_urls(chosen)
+            for url in await self._vetted_reference_urls(chosen, seen)
         ]
+        attached = await self._vetted_attachments(attached, notes, seen)
         published = self._reference_limit(record)
         limit = (
             _SCHEMA_REFERENCE_CAP
@@ -693,7 +787,9 @@ class ImageGenerationAdapter:
             else min(published, _SCHEMA_REFERENCE_CAP)
         )
         room = max(0, limit - len(links))
-        refs = links[:limit] + (attached[-room:] if room else [])
+        kept_links = links[:limit]
+        kept_attached = attached[-room:] if room else []
+        refs = kept_links + kept_attached
         offered = len(links) + len(attached)
         if offered > len(refs):
             reason = (
@@ -701,12 +797,22 @@ class ImageGenerationAdapter:
                 if published is not None
                 else f"this pipe sends at most {limit} when a model publishes no limit"
             )
+            if kept_links and kept_attached:
+                kept = (
+                    f"keeping the first {len(kept_links)} link(s) and the "
+                    f"{len(kept_attached)} most recent attachment(s)"
+                )
+            elif kept_links:
+                kept = f"keeping the first {len(kept_links)} link(s) you listed"
+            elif kept_attached:
+                kept = "keeping the most recent"
+            else:
+                kept = "sending none"
             notes.append(
                 _Note(
                     "refs-dropped",
                     "input_references",
-                    f"dropped {offered - len(refs)} reference image(s), keeping the most "
-                    f"recent; {reason}",
+                    f"dropped {offered - len(refs)} reference image(s), {kept}; {reason}",
                 )
             )
         return refs
@@ -1008,7 +1114,7 @@ class ImageGenerationAdapter:
                 api_model_id,
                 names,
             )
-        self._pin_accepting_providers(provider, reachable_records, top_level)
+        notes.extend(self._pin_accepting_providers(provider, reachable_records, top_level))
 
         if provider:
             payload["provider"] = provider

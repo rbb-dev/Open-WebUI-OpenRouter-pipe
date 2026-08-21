@@ -792,8 +792,16 @@ three are not drawn for it:
 
 A request carries at most 16 references. Where a model publishes a lower limit
 the lower one applies, and anything over the limit is dropped with a note saying
-how many and why. A reference link the deployment will not fetch fails the
-request outright rather than generating a picture that quietly ignored it.
+how many and why.
+
+Every reference OpenRouter would have to fetch is checked against the same
+address policy the pipe applies to any other outbound fetch, whether it was typed
+into the links box or arrived as a picture in the conversation. A `data:` URL
+carries the picture itself, so there is nothing to fetch and nothing to check. A
+typed link the deployment will not fetch fails the request outright rather than
+generating a picture that quietly ignored it; a picture already in the chat is
+dropped instead, with a note saying how many and why, because a single unreachable
+address in an old turn would otherwise fail every later request in that chat.
 
 Other consequences worth knowing:
 

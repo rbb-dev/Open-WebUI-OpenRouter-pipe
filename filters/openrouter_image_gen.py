@@ -99,6 +99,8 @@ class Filter:
                 )
         IMAGE_OUTPUT_COMPRESSION: int | None = Field(
                     default=None,
+                    ge=0,
+                    le=100,
                     title='Output compression',
                     description="Compression level, where the format allows one. This model publishes no limits of its own. OpenRouter's image API takes a whole number from 0 to 100 here, and the company running the model decides what it does with it. Empty leaves it unset.",
                 )

@@ -232,7 +232,7 @@ no provider options object, so those three are left off its panel:
 | `IMAGE_PROVIDER_OPTIONS_JSON` | Provider options | `str` (JSON object) | `""` | `provider.options`, keyed by provider slug |
 | `IMAGE_REFERENCE_MODE` | Reference images | `Literal["auto", "latest-only", "none"]` | `"auto"` | which attached images become `input_references` |
 | `IMAGE_REFERENCE_URLS` | Reference image links | `str` (JSON array) | `""` | extra `input_references` entries, placed first |
-| `IMAGE_SIZE` | Output size | `str` | `""` | top-level `size`, sent unvalidated |
+| `IMAGE_SIZE` | Output size | `str` | `""` | top-level `size`; exact pixels sent as typed, a tier checked against the model's published `resolution` |
 
 `IMAGE_PROVIDER_OPTIONS_JSON` is the image sibling of
 `VIDEO_PROVIDER_OPTIONS_JSON` and writes the same place the provider routing
@@ -240,8 +240,12 @@ filter writes, merging into it rather than replacing it — so a user typing one
 option does not discard an operator's routing choice. Six of the forty recorded
 models publish an empty passthrough list, so it is the only way to address a
 provider on those. `IMAGE_SIZE` is rendered on every model because **no**
-endpoint record publishes a `size` descriptor; its value is sent as typed and
-the provider decides, which the control's own text says.
+endpoint record publishes a `size` descriptor. OpenRouter documents the two forms
+it takes, and the pipe treats them differently: exact pixels go out as typed,
+because no contract describes pixel sizes, while a tier sets the same thing as
+`resolution` and is therefore measured against the tiers the model publishes —
+a tier the model does not publish, and anything that is neither a tier nor
+pixels, is withheld and named in the chat rather than sent.
 
 `IMAGE_REFERENCE_MODE` chooses which of the pictures attached to the turn are
 sent as references: `auto` sends every one, oldest first; `latest-only` sends
