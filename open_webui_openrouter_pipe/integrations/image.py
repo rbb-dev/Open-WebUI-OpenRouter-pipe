@@ -121,13 +121,14 @@ def _superseded(name: str, value: Any, reason: str) -> tuple[str, str, str]:
     )
 
 
-def _size_consistency_notes(top_level: dict[str, Any]) -> list[tuple[str, str, str]]:
+def size_consistency_notes(top_level: dict[str, Any]) -> list[_Note]:
     dropped = supersede_size_conflicts(top_level)
     if not dropped:
         return []
     shown_size = _clamp(repr(top_level.get("size")), _NOTE_VALUE_LIMIT)
     return [
-        _superseded(name, value, f"size={shown_size} {reason}") for name, value, reason in dropped
+        _Note(*_superseded(name, value, f"size={shown_size} {reason}"))
+        for name, value, reason in dropped
     ]
 
 
@@ -447,8 +448,8 @@ class ImageGenerationAdapter:
                 )
             else:
                 _note("not-offered", key, f"{shown} is not offered by this model")
-        for kind, superseded, note_text in _size_consistency_notes(top_level):
-            _note(kind, superseded, note_text)
+        for note in size_consistency_notes(top_level):
+            _note(note.kind, note.name, note.text)
         unvalidated = [name for name in unvalidated if name in top_level]
         if unvalidated:
             notes.append(

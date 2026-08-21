@@ -160,7 +160,7 @@ See [Configuration valves](#configuration-valves-admin) for the full list of vid
 | `kwaivgi/kling-v3.0-std` | Kling: Video v3.0 Standard | Cost-efficient tier of Kling v3.0 — same capability matrix as Pro at ~75% per-second cost; granular 3–15s clips; first/last-frame anchoring. New `cfg_scale` knob. No deterministic seed. | ✅ | ❌ | first + last | Per second; more with audio |
 | `minimax/hailuo-2.3` | MiniMax: Hailuo 2.3 | State-of-the-art human physics and emotional micro-expressions; fluid + cloth + fire dynamics. **Silent — no audio.** | ❌ | — | first only | Per second, one flat rate |
 | `minimax/hailuo-3` | MiniMax: H3 | Lightweight open-weights model for instruction-guided edits and controlled content; the one that renders legible text and brand marks. 2K only. | ✅ | ❌ | first + last | Per second, plus a charge per reference image |
-| `alibaba/wan-2.7` | Alibaba: Wan 2.7 | Multimodal reference control (up to 5 ref videos + image grids), lip-sync across languages, FLF2V. Tuned for character-led narrative. | ✅ | ✅ | first + last | Per second, one flat rate |
+| `alibaba/wan-2.7` | Alibaba: Wan 2.7 | Image-grid reference control, generated lip-sync across languages, FLF2V. Tuned for character-led narrative. Clip and voice references are published but not declared as input, so they are not offered. | ✅ | ✅ | first + last | Per second, one flat rate |
 | `alibaba/wan-2.6` | Alibaba: Wan 2.6 | Cheaper Wan tier with multi-shot storyboarding, 24fps, dialogue + lip-sync, shot_type cinematography. **First-frame only.** | ✅ | ✅ | first only | Per second; varies by mode and resolution |
 | `bytedance/seedance-1-5-pro` | ByteDance: Seedance 1.5 Pro | First Dual-Branch DiT with native unified video+audio, multilingual lip-sync, 21 exact pixel sizes. | ✅ | ✅ | first + last | Per video token; more with audio |
 | `bytedance/seedance-2.0` | ByteDance: Seedance 2.0 | Universal Reference (text + 9 images + 3 video/audio), best character consistency for branded/series content. | ✅ | ✅ | first + last | Per video token; varies by resolution and video input |
@@ -190,7 +190,7 @@ Pick model selection rules of thumb:
 - **Speed + cost matters most** → Veo 3.1 Lite (cheapest), Seedance 2.0 Fast (token-priced bulk), Grok Imagine Video (per-second billing with 1-second granularity, so a short draft stays short on the bill).
 - **Hero shot for client work** → Veo 3.1 (full) or Seedance 2.0.
 - **Multi-shot story with consistent characters** → Wan 2.7 or Seedance 2.0.
-- **Dialogue / lip-sync from a reference voice** → Wan 2.7 (audio passthrough), Seedance 1.5 Pro.
+- **Dialogue / lip-sync** → Wan 2.7 or Seedance 1.5 Pro, both generating the voice from your prompt. No model in this catalog declares audio input, so conditioning on a voice you supply is not available through the pipe.
 - **Physics realism / human motion** → Sora 2 Pro, Hailuo 2.3.
 - **Longest clip** → Seedance 2.5 (30s), then FLUX.3 Video and Sora 2 Pro (20s each).
 - **Long sequence in pieces** → FLUX.3 Video, which continues an existing clip so you can build and redirect a segment at a time.
@@ -1174,9 +1174,9 @@ default applies; the second gets no control.
 | `VIDEO_NEGATIVE_PROMPT` | `str` | `""` | passthrough `negative_prompt` (or `negativePrompt` on Veo) | `"negative_prompt"` or `"negativePrompt"` in `allowed_passthrough_parameters` | 8 (Veo trio, Kling trio, Wan 2.6, Wan 2.7) |
 | `VIDEO_GENERATE_AUDIO` | `Literal["model_default", "on", "off"]` | `"model_default"` | top-level `generate_audio` (boolean) | `generate_audio` present and not published as `false` | 19 (all except Hailuo 2.3, Gen-4.5, Aleph 2.0) |
 | `VIDEO_SEED` | `int` (`ge=0`) | `0` | top-level `seed` | `seed` present and not published as `false` | 16 (all except FLUX.3 Video, H3, the Kling trio, Sora 2 Pro) |
-| `VIDEO_AUDIO_URL` | `str` | `""` | passthrough `audio` (URL) | `"audio"` in `allowed_passthrough_parameters` | Wan 2.6, Wan 2.7 |
-| `VIDEO_REFERENCE_VIDEO_URL` | `str` | `""` | passthrough `video` | `"video"` in `allowed_passthrough_parameters` | Wan 2.7 |
-| `VIDEO_REFERENCE_VIDEOS_JSON` | `str` (JSON array) | `""` | passthrough `videos` | `"videos"` in `allowed_passthrough_parameters` | Wan 2.7 |
+| `VIDEO_AUDIO_URL` | `str` | `""` | passthrough `audio` (URL) | `"audio"` allowed **and** `audio` in the model's declared input modalities | none — Wan 2.6 and 2.7 publish the parameter but declare only text and pictures |
+| `VIDEO_REFERENCE_VIDEO_URL` | `str` | `""` | passthrough `video` | `"video"` allowed **and** `video` in the model's declared input modalities | none — Wan 2.7 publishes the parameter but declares only text and pictures |
+| `VIDEO_REFERENCE_VIDEOS_JSON` | `str` (JSON array) | `""` | passthrough `videos` | `"videos"` allowed **and** `video` in the model's declared input modalities | none — Wan 2.7 publishes the parameter but declares only text and pictures |
 | `VIDEO_REFERENCE_IMAGES_JSON` | `str` (JSON array) | `""` | passthrough `images` | `"images"` in `allowed_passthrough_parameters` | Wan 2.7 |
 | `VIDEO_LAST_IMAGE_URL` | `str` | `""` | passthrough `last_image` | `"last_image"` in `allowed_passthrough_parameters` | Wan 2.7 |
 
@@ -1199,8 +1199,8 @@ when the corresponding string appears in the model's
 | `VIDEO_RATIO` | `str` | `""` | passthrough `ratio` | `"ratio"` allowed | Wan 2.7 |
 | `VIDEO_ENABLE_PROMPT_EXPANSION` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `enable_prompt_expansion` (boolean) | `"enable_prompt_expansion"` allowed | Wan 2.6 |
 | `VIDEO_SHOT_TYPE` | `str` | `""` | passthrough `shot_type` | `"shot_type"` allowed | Wan 2.6 |
-| `VIDEO_WATERMARK` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `watermark` (boolean) | `"watermark"` allowed | Seedance trio |
-| `VIDEO_REQ_KEY` | `str` | `""` | passthrough `req_key` | `"req_key"` allowed | Seedance trio |
+| `VIDEO_WATERMARK` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `watermark` (boolean) | `"watermark"` allowed | 4 (Seedance 1.5 Pro, 2.0, 2.0 Fast, 2.5) |
+| `VIDEO_REQ_KEY` | `str` | `""` | passthrough `req_key` | `"req_key"` allowed | 4 (Seedance 1.5 Pro, 2.0, 2.0 Fast, 2.5) |
 | `VIDEO_QUALITY` | `str` | `""` | passthrough `quality` | `"quality"` allowed | Sora 2 Pro |
 | `VIDEO_STYLE` | `str` | `""` | passthrough `style` | `"style"` allowed | Sora 2 Pro |
 
@@ -1276,9 +1276,14 @@ rules:
 - Setting `Size` to exact pixel dimensions settles any argument with the
   other two shape knobs: a `Resolution` tier that disagrees with those
   pixels, or an `Aspect ratio` that is not the shape of those pixels, is
-  left out and named in a warning notice in the chat, rather than sent
-  and refused by OpenRouter. Where the `Size` value is itself a tier,
-  only one of the two can be sent, and `Size` is the one that is kept.
+  left out and named in a warning notice in the chat. That is this pipe's
+  rule rather than OpenRouter's — their video schema says only that
+  `size` is interchangeable with `resolution` + `aspect_ratio`, and
+  publishes nothing about what happens when the two disagree, so the pipe
+  sends the one the user was most specific about instead of a request
+  that contradicts itself. (The image API does publish a rejection rule;
+  video does not.) Where the `Size` value is itself a tier, only one of
+  the two is sent, and `Size` is the one that is kept.
 - A free-text knob's value is sent as the text you typed. A value that
   starts with `[` or `{` is read as JSON and must be valid JSON, and the
   error names the knob. A bare number is sent as a number, since several
@@ -1390,9 +1395,14 @@ them: OpenRouter publishes the kinds each model takes, and one that does
 not name a kind is not sent that kind — the file is left out with a
 notice saying the model does not take it, rather than sent somewhere it
 would be discarded without a word. Each reference is checked against the
-frame limits above (with clips and sound files capped by
-`REMOTE_VIDEO_MAX_SIZE_MB` instead), and one that fails is left out with
-a warning notice naming it and why — the render still goes ahead.
+frame limits above; a clip or sound file, which travels by way of a public
+file host, is bounded by `MEDIA_FILE_HOST_MAX_SIZE_MB` instead.
+`REMOTE_VIDEO_MAX_SIZE_MB` bounds only the finished video coming back, not
+anything you attach. A reference that fails on kind, format, pixel size,
+count or the combined budget is left out with a warning notice naming it
+and why, and the render still goes ahead; one that is simply too large
+stops the request instead, so that nothing is generated and billed from a
+prompt the attachment was meant to anchor.
 
 Because a reference is enough to generate from, a turn with attachments
 and **no typed words** is now submitted rather than refused.
@@ -1412,21 +1422,24 @@ say — are left alone either way.
 
 ## Multimodal references (Wan 2.7)
 
-Wan 2.7 is the only catalog model that exposes a full multi-reference
-workflow. It accepts:
+Wan 2.7 is the only catalog model that exposes more than one kind of
+reference. Two of its controls are drawn:
 
-- **Reference video URL** (`video` passthrough): single video for motion
-  / camera language / vocal-identity transfer.
-- **Reference videos JSON** (`videos` passthrough): JSON array of up to
-  5 reference videos. Each entry may be a URL string or an object the
-  upstream Alibaba API accepts.
 - **Reference images JSON** (`images` passthrough): JSON array — Wan
   2.7's 9-image structured grid for identity/wardrobe/props/environment
   anchoring without describing them in text.
-- **Audio reference URL** (`audio` passthrough): voice timbre + lip-sync
-  conditioning. The basis for Wan 2.7's multi-language lip-sync.
 - **Last image URL** (`last_image` passthrough): closing-frame anchor;
   used together with `first_frame` for controlled in-between motion.
+
+Wan 2.7 also publishes `video`, `videos` and `audio` in its
+`allowed_passthrough_parameters`, and Alibaba documents clip and voice
+conditioning for the model. **Neither is offered here.** OpenRouter
+declares Wan 2.6 and Wan 2.7 as accepting only text and image input, and
+a reference of a kind a model does not declare is refused at submission —
+so drawing those controls would have offered a setting whose only outcome
+is a failed job. The gate that withholds them reads the model's own
+declared input modalities, so if OpenRouter later declares video or audio
+input for these models, the controls appear again with no code change.
 
 JSON arrays must be valid JSON. Example for `Reference images JSON`:
 
@@ -1697,7 +1710,7 @@ Functions → OpenRouter pipe → Valves.
 | `VIDEO_POLL_INTERVAL_MAX_SECONDS` | `20.0` | 1.0–120.0 | Cap on the polling interval after backoff. |
 | `VIDEO_MAX_POLL_TIME_SECONDS` | `600` | 30–7200 | Max wall-clock time before failing the lifecycle with a timeout error. |
 | `VIDEO_STATUS_POLL_MAX_ERRORS` | `5` | 1–25 | Tolerable consecutive transient poll errors before failing. |
-| `REMOTE_VIDEO_MAX_SIZE_MB` | `500` | 1–2048 | Max downloaded video size; oversized aborts streaming. |
+| `REMOTE_VIDEO_MAX_SIZE_MB` | `500` | 1–2048 | Max downloaded video size; oversized aborts streaming. Bounds the generated video only, never an attachment. |
 | `VIDEO_DOWNLOAD_CHUNK_SIZE` | `1048576` | 65536–8388608 | Chunk size in bytes for streaming download. |
 | `MAX_CONCURRENT_VIDEO_GENS` | `2` | 1–100 | Global concurrency cap per pipe process. |
 | `MAX_CONCURRENT_VIDEO_GENS_PER_USER` | `2` | 1–25 | Per-user concurrency cap. |
@@ -1716,7 +1729,8 @@ Tuning hints:
 - **Slow networks** to OpenRouter: bump `VIDEO_POLL_INTERVAL_MAX_SECONDS`
   to reduce poll storm.
 - **Smaller storage budgets**: lower `REMOTE_VIDEO_MAX_SIZE_MB` to
-  reject oversized clips before they hit your file backend.
+  reject an oversized generated video before it hits your file backend.
+  To bound what users send *out*, lower `MEDIA_FILE_HOST_MAX_SIZE_MB`.
 
 ---
 

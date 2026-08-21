@@ -314,14 +314,14 @@ for the model it belongs to, in any of the id forms Open WebUI produces.
 | `SEND_MEDIA_VIA_FILE_HOST` | `bool` | `False` | Upload an attached clip or sound file to a public file host and send OpenRouter the link. OpenRouter accepts reference media only as a link it can fetch, so without this an attachment cannot reach a video model at all. The file becomes readable by anyone holding the link — on `litterbox` until it expires, on `catbox` permanently. Only files the requester uploaded themselves are sent; a file they can merely read because it was shared with them is withheld with a note. |
 | `MEDIA_FILE_HOST` | `Literal` | `litterbox` | Which host receives the upload. `litterbox` deletes the file itself after the retention below; `catbox` keeps it permanently. Neither needs an account — which is also why no credential exists on this side that could delete an upload afterwards. |
 | `MEDIA_FILE_HOST_RETENTION` | `Literal` | `1h` | How long `litterbox` keeps the file: `1h`, `12h`, `24h` or `72h`. The model fetches it within seconds, so an hour suits most jobs. `catbox` ignores this. |
-| `USE_THE_OTHER_FILE_HOST_IF_ONE_IS_DOWN` | `bool` | `False` | When the chosen host refuses the file, or could not be reached at all, try the other one instead of failing. Off by default because the two keep files for very different lengths of time. The second host is *not* tried when the first one answered in a way that cannot rule out its having stored the file — a 5xx, a timeout, a dropped connection, or a 200 whose body carried no link — because neither host issues a credential that could delete the first copy, so a retry there would leave two. A host that was never reached is retried three times before this applies. With it on, the pre-upload notice names both hosts, and a second notice names the one that actually took the file. |
+| `USE_THE_OTHER_FILE_HOST_IF_ONE_IS_DOWN` | `bool` | `False` | When the chosen host refuses the file, or could not be reached at all, try the other one instead of failing. Off by default because the two keep files for very different lengths of time. The second host is *not* tried when the first one answered in a way that cannot rule out its having stored the file — a 5xx, a timeout, a dropped connection, or a 200 whose body carried no link — because neither host issues a credential that could delete the first copy, so a retry there would leave two. A host that was never reached is retried three times before this applies; a host that answered and refused the file is not retried at all, and the other host is used straight away. With it on, the pre-upload notice names both hosts, and a second notice names the one that actually took the file. |
 | `MEDIA_FILE_HOST_MAX_SIZE_MB` | `int` | `200` | Largest attachment that will be uploaded, and the ceiling on one request's uploads combined. A file over either limit stops the request rather than generating without it. Also bounds the memory one request holds, since references are encoded before the first upload. |
 | `SEND_VIDEO_VIA_FILE_HOST` | `bool` | `True` | Include attached clips when the file host is in use. A clip has no other route to a video model. |
 | `SEND_AUDIO_VIA_FILE_HOST` | `bool` | `True` | Include attached sound files. OpenRouter accepts a sound reference only alongside a picture or a clip, never on its own. |
 | `SEND_IMAGES_VIA_FILE_HOST` | `bool` | `False` | Include attached pictures. They do not need it — a picture already travels inside the request and never leaves this server. |
 | `TELL_USERS_ABOUT_THE_FILE_HOST` | `bool` | `True` | Show a line in the chat naming the host and the retention *before* any attachment is uploaded to it. That line is a toast, which Open WebUI does not persist, so it is the warning and not the record: while it is on, an upload that could not be announced does not happen at all and the request fails instead. Turning it off says you told your users another way, and lets the upload proceed unannounced. Either way the finished message keeps a written record of what was uploaded and where — that record is not optional. |
 | `FILE_HOST_NOTICE` | `str` | see below | Wording of that pre-upload line. `{kind}`, `{host}` and `{retention}` are substituted; they render in English, so rewrite the sentence rather than translating around them. The durable record written into the finished message is not this template and is not editable. |
-| `REMOTE_VIDEO_MAX_SIZE_MB` | `int` | `500` | Maximum generated video download size. The download is streamed to a bounded temp file and aborted during streaming if this cap is exceeded. |
+| `REMOTE_VIDEO_MAX_SIZE_MB` | `int` | `500` | Maximum generated video download size. The download is streamed to a bounded temp file and aborted during streaming if this cap is exceeded. It bounds only the video coming back; an attached picture is bounded by `VIDEO_FRAME_IMAGE_MAX_BYTES` and anything sent by way of a file host by `MEDIA_FILE_HOST_MAX_SIZE_MB`. |
 | `VIDEO_DOWNLOAD_CHUNK_SIZE` | `int` | `1048576` | Chunk size used while streaming generated video content to a temp file. |
 | `MAX_CONCURRENT_VIDEO_GENS` | `int` | `2` | Maximum active video lifecycles per pipe process. |
 | `MAX_CONCURRENT_VIDEO_GENS_PER_USER` | `int` | `2` | Maximum active video lifecycles per user per pipe process. |
@@ -361,9 +361,9 @@ Each video model gets its OWN filter function in Open WebUI. The `UserValves` re
 | `VIDEO_NEGATIVE_PROMPT` | `str` | `""` | top-level `negative_prompt` (or `negativePrompt` on Veo) | `"negative_prompt"` or `"negativePrompt"` in `allowed_passthrough_parameters` |
 | `VIDEO_GENERATE_AUDIO` | `Literal["model_default", "on", "off"]` | `"model_default"` | top-level `generate_audio` (boolean) | catalog top-level `generate_audio` present and not `false` |
 | `VIDEO_SEED` | `int` (`ge=0`) | `0` | top-level `seed` | catalog top-level `seed` present and not `false` |
-| `VIDEO_AUDIO_URL` | `str` | `""` | passthrough `audio` (URL) | `"audio"` allowed |
-| `VIDEO_REFERENCE_VIDEO_URL` | `str` | `""` | passthrough `video` | `"video"` allowed |
-| `VIDEO_REFERENCE_VIDEOS_JSON` | `str` (JSON array) | `""` | passthrough `videos` | `"videos"` allowed |
+| `VIDEO_AUDIO_URL` | `str` | `""` | passthrough `audio` (URL) | `"audio"` allowed **and** `audio` among the model's declared input modalities — no catalog model currently declares it, so this control is drawn on none |
+| `VIDEO_REFERENCE_VIDEO_URL` | `str` | `""` | passthrough `video` | `"video"` allowed **and** `video` among the model's declared input modalities — no catalog model currently declares it, so this control is drawn on none |
+| `VIDEO_REFERENCE_VIDEOS_JSON` | `str` (JSON array) | `""` | passthrough `videos` | `"videos"` allowed **and** `video` among the model's declared input modalities — no catalog model currently declares it, so this control is drawn on none |
 | `VIDEO_REFERENCE_IMAGES_JSON` | `str` (JSON array) | `""` | passthrough `images` | `"images"` allowed |
 | `VIDEO_LAST_IMAGE_URL` | `str` | `""` | passthrough `last_image` | `"last_image"` allowed |
 
@@ -381,8 +381,8 @@ Each video model gets its OWN filter function in Open WebUI. The `UserValves` re
 | `VIDEO_RATIO` | `str` | `""` | passthrough `ratio` | Wan 2.7 |
 | `VIDEO_ENABLE_PROMPT_EXPANSION` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `enable_prompt_expansion` (boolean) | Wan 2.6 |
 | `VIDEO_SHOT_TYPE` | `str` | `""` | passthrough `shot_type` | Wan 2.6 |
-| `VIDEO_WATERMARK` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `watermark` (boolean) | Seedance trio |
-| `VIDEO_REQ_KEY` | `str` | `""` | passthrough `req_key` | Seedance trio |
+| `VIDEO_WATERMARK` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `watermark` (boolean) | Seedance 1.5 Pro, 2.0, 2.0 Fast, 2.5 |
+| `VIDEO_REQ_KEY` | `str` | `""` | passthrough `req_key` | Seedance 1.5 Pro, 2.0, 2.0 Fast, 2.5 |
 | `VIDEO_QUALITY` | `str` | `""` | passthrough `quality` | Sora 2 Pro |
 | `VIDEO_STYLE` | `str` | `""` | passthrough `style` | Sora 2 Pro |
 

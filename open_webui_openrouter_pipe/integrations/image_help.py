@@ -792,11 +792,11 @@ def render_image_help(
 
     from ..filters.image_filter_renderer import (
         _SCHEMA_ONLY_CAVEAT,
-        IMAGE_KNOB_TITLES,
         _image_shared_by_some,
         _published_records,
         always_on_controls,
         build_image_model_filter_spec,
+        image_knob_text,
     )
     from .image_types import PASSTHROUGH_ENUMS
 
@@ -826,7 +826,7 @@ def render_image_help(
         lines.append(f"- **{title}** — {description}".replace("  ", " "))
     also_offered = dict(spec.narrowed)
     for name, values in spec.enums:
-        title, description = IMAGE_KNOB_TITLES.get(name, (name, ""))
+        title, description = image_knob_text(name, spec)
         also = also_offered.get(name, ())
         offered = ", ".join(str(value) for value in (*values, *also))
         caveat = f" {_image_shared_by_some(also)}" if also else ""
@@ -834,13 +834,13 @@ def render_image_help(
             f"- **{title}** — {description} Choices: {offered}.{caveat}".replace("  ", " ")
         )
     for name in spec.schema_only:
-        title, description = IMAGE_KNOB_TITLES.get(name, (name, ""))
+        title, description = image_knob_text(name, spec)
         lines.append(f"- **{title}** — {description} {_SCHEMA_ONLY_CAVEAT}".replace("  ", " "))
     for name, low, high in spec.ranges:
-        title, description = IMAGE_KNOB_TITLES.get(name, (name, ""))
+        title, description = image_knob_text(name, spec)
         lines.append(f"- **{title}** — {description} Accepts {low} to {high}.".replace("  ", " "))
     for name in spec.supported:
-        title, description = IMAGE_KNOB_TITLES.get(name, (name, ""))
+        title, description = image_knob_text(name, spec)
         lines.append(f"- **{title}** — {description}".replace("  ", " "))
     for name in spec.passthrough:
         published = PASSTHROUGH_ENUMS.get(name)

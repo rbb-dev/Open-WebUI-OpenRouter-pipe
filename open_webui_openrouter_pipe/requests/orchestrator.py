@@ -101,10 +101,13 @@ _SERVER_TOOL_TYPE_OVERRIDES = {
 _IMAGE_GENERATION_TOOL_TYPE = "openrouter:image_generation"
 
 
-def _build_server_tool_entries(server_tools: dict[str, Any]) -> list[dict[str, Any]]:
-    from ..integrations.image_types import supersede_size_conflicts
+def _build_server_tool_entries(
+    server_tools: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[tuple[str, Any]]]:
+    from ..integrations.image import size_consistency_notes
 
     entries: list[dict[str, Any]] = []
+    superseded: list[tuple[str, Any]] = []
     for tool_key, tool_value in server_tools.items():
         if not isinstance(tool_key, str) or not tool_key.strip():
             continue
@@ -115,11 +118,15 @@ def _build_server_tool_entries(server_tools: dict[str, Any]) -> list[dict[str, A
             if isinstance(tool_params, dict) and tool_params:
                 cleaned_params = {k: v for k, v in tool_params.items() if v is not None and v != ""}
                 if tool_type == _IMAGE_GENERATION_TOOL_TYPE:
-                    supersede_size_conflicts(cleaned_params)
+                    drawn_by = cleaned_params.get("model")
+                    superseded.extend(
+                        (str(drawn_by) if isinstance(drawn_by, str) and drawn_by else tool_key, note)
+                        for note in size_consistency_notes(cleaned_params)
+                    )
                 if cleaned_params:
                     entry["parameters"] = cleaned_params
             entries.append(entry)
-    return entries
+    return entries, superseded
 
 
 def _fusion_plugin_injection(
@@ -229,14 +236,16 @@ def _apply_server_tools_metadata(
     metadata: Any,
     *,
     logger: logging.Logger | None = None,
-) -> None:
+) -> list[tuple[str, Any]]:
     pipe_meta = (metadata or {}).get(_PIPE_METADATA_KEY, {})
     if not isinstance(pipe_meta, dict):
-        return
+        return []
+    superseded: list[tuple[str, Any]] = []
     server_tools = pipe_meta.get("server_tools", {})
     if isinstance(server_tools, dict) and server_tools:
         tools_list = list(responses_body.tools or [])
-        tools_list.extend(_build_server_tool_entries(server_tools))
+        entries, superseded = _build_server_tool_entries(server_tools)
+        tools_list.extend(entries)
         if tools_list:
             responses_body.tools = tools_list
             if logger is not None:
@@ -248,6 +257,7 @@ def _apply_server_tools_metadata(
     stop_when = pipe_meta.get("stop_server_tools_when")
     if isinstance(stop_when, list) and stop_when:
         responses_body.stop_server_tools_when = stop_when
+    return superseded
 
 
 class RequestOrchestrator:
@@ -1127,7 +1137,18 @@ class RequestOrchestrator:
                     plugins.append({"id": "file-parser", "pdf": {"engine": engine}})
                     responses_body.plugins = plugins
 
-        _apply_server_tools_metadata(responses_body, __metadata__, logger=self.logger)
+        superseded = _apply_server_tools_metadata(
+            responses_body, __metadata__, logger=self.logger
+        )
+        if superseded:
+            grouped: dict[str, list[Any]] = {}
+            for drawn_by, note in superseded:
+                grouped.setdefault(drawn_by, []).append(note)
+            adapter = self._pipe._ensure_image_generation_adapter()
+            for drawn_by, notes in grouped.items():
+                await adapter._report_notes(
+                    notes, api_model_id=drawn_by, event_emitter=__event_emitter__
+                )
         stripped_tools = _fusion_server_tools_stripped(
             responses_body.model,
             responses_body.plugins,

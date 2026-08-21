@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -23,6 +24,7 @@ from open_webui_openrouter_pipe.filters.image_filter_renderer import (
     build_image_model_filter_spec,
     image_gen_model_note,
     render_image_gen_filter_source,
+    render_image_model_filter_source,
 )
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -52,6 +54,14 @@ def _tool_body(model_id: str, records: list[dict] | None) -> str:
     source = render_image_gen_filter_source(
         spec, catalog_match=records is not None, selected_model=model_id
     )
+    return source.split("class UserValves(BaseModel):", 1)[1].split("    def __init__", 1)[0]
+
+
+def _model_body(model_id: str, records: list[dict] | None) -> str:
+    spec = build_image_model_filter_spec(
+        model_id, {"id": model_id, "name": model_id}, records, dedicated_image_api=True
+    )
+    source = render_image_model_filter_source(spec)
     return source.split("class UserValves(BaseModel):", 1)[1].split("    def __init__", 1)[0]
 
 
@@ -152,21 +162,60 @@ def test_a_control_the_model_says_nothing_about_still_names_what_the_api_takes(
         assert "OpenRouter's image API takes" in block, block
 
 
-def test_the_output_size_control_describes_both_forms_openrouter_accepts():
-    """OpenRouter's own request schema for `size` accepts a tier OR explicit pixels.
+@pytest.mark.parametrize("panel", ["model", "tool"])
+@pytest.mark.parametrize(
+    ("slug", "model_id", "publishes_tiers"),
+    [
+        ("recraft_recraft-v3", "recraft/recraft-v3", False),
+        ("google_gemini-3-pro-image", "google/gemini-3-pro-image", True),
+    ],
+)
+def test_the_output_size_control_describes_both_forms_openrouter_accepts(
+    slug, model_id, publishes_tiers, panel
+):
+    """Both forms are named, and the check the box claims is the check it gets.
 
-    The sentence replaced said "exact pixel dimensions, where the model takes them rather
+    OpenRouter's request schema for `size` accepts a tier OR explicit pixels; the
+    sentence replaced said "exact pixel dimensions, where the model takes them rather
     than a tier", which tells a reader not to type the tier that works.
-    """
-    body = _tool_body("recraft/recraft-v3", _records("recraft_recraft-v3"))
-    block = body.split("IMAGE_SIZE: ", 1)[1].split("\n                )", 1)[0]
 
+    A tier is measured against the model's own published list only where the model
+    publishes one. On the 24 of 40 recorded contracts that publish no `resolution`
+    descriptor the tier goes out unmeasured against anything of the model's, so a box
+    claiming otherwise describes a check that does not happen -- and on those, the
+    panel does not draw a Resolution control for the sentence to point at either.
+
+    One row of each kind, because a fixed sentence cannot be right for both.
+    """
+    body = (_model_body if panel == "model" else _tool_body)(model_id, _records(slug))
+    if "IMAGE_SIZE: " not in body:
+        assert panel == "tool" and publishes_tiers, (
+            f"the {panel} panel for {model_id} drew no size box at all: {body}"
+        )
+        return
+    block = body.split("IMAGE_SIZE: ", 1)[1].split("\n                )", 1)[0]
+    resolution_drawn = "IMAGE_RESOLUTION: " in body
+
+    assert resolution_drawn is (publishes_tiers and panel == "model"), (
+        f"the {panel} panel for {model_id} drew Resolution={resolution_drawn}; the case "
+        "is not the one it was set up to be"
+    )
     for tier in ("512", "1K", "2K", "4K"):
         assert tier in block, f"{tier} is a tier this field accepts and is not named: {block}"
     assert "1024x1024" in block, block
-    assert "Resolution" in block and "Aspect ratio" in block, (
-        f"a tier sets the same thing as Resolution and combines with Aspect ratio, and "
-        f"exact pixels supersede both; the control must say so: {block}"
+    assert "Aspect ratio" in block, (
+        f"a tier still takes its shape from Aspect ratio, and exact pixels supersede it; "
+        f"the control must say so: {block}"
+    )
+    assert ("Resolution" in block) is resolution_drawn, (
+        f"the box names Resolution={('Resolution' in block)} while the panel draws it "
+        f"={resolution_drawn}; a control the reader cannot see must not be named: {block}"
+    )
+    claims_own_tiers = "checked against the tiers this model publishes" in block
+    assert claims_own_tiers is resolution_drawn, (
+        f"the box claims the model's own tiers are checked={claims_own_tiers} while this "
+        f"panel publishes a tier list={resolution_drawn}; where none is published the "
+        f"tier is measured only against OpenRouter's four names: {block}"
     )
     assert "rather than a tier" not in block
 
@@ -455,3 +504,221 @@ def test_no_document_sends_an_administrator_to_the_wrong_website():
             if "OpenRouter Admin" in line:
                 offending.append(f"{path.name}:{number}: {line.strip()}")
     assert not offending, "\n".join(offending)
+
+
+_VIDEO_CATALOG = json.loads(
+    (FIXTURES / "video_models_catalog.json").read_text(encoding="utf-8")
+)["data"]
+
+_VIDEO_MODALITIES = json.loads(
+    (FIXTURES / "openrouter_video_input_modalities.json").read_text(encoding="utf-8")
+)["input_modalities"]
+
+
+_VIDEO_MODEL_WORDS = sorted(
+    {
+        word
+        for item in _VIDEO_CATALOG
+        for word in (item["id"].split("/", 1)[1], item["id"])
+    }
+    | {"Wan 2.6", "Wan 2.7", "Seedance", "Veo", "Kling", "Hailuo", "Sora", "Aleph", "Grok"},
+    key=len,
+    reverse=True,
+)
+"""Every way a document might name a model, so "available on X" cannot slip past."""
+
+
+def _video_model(model_id: str) -> dict:
+    base = next(item for item in _VIDEO_CATALOG if item["id"] == model_id)
+    declared = _VIDEO_MODALITIES.get(model_id)
+    return dict(base, input_modalities=declared) if declared is not None else dict(base)
+
+
+def _video_field(model_id: str, field: str) -> "tuple[tuple[Any, ...], str] | None":
+    import ast
+
+    from open_webui_openrouter_pipe.filters.video_filter_renderer import (
+        render_video_filter_source,
+    )
+
+    source = render_video_filter_source(
+        model_id=model_id, video_model=_video_model(model_id)
+    )
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.AnnAssign) or getattr(node.target, "id", "") != field:
+            continue
+        annotation = node.annotation
+        offered = annotation.slice if isinstance(annotation, ast.Subscript) else None
+        choices = (
+            tuple(item.value for item in offered.elts if isinstance(item, ast.Constant))
+            if isinstance(offered, ast.Tuple)
+            else ()
+        )
+        call = node.value if isinstance(node.value, ast.Call) else None
+        described = next(
+            (
+                keyword.value.value
+                for keyword in (call.keywords if call else [])
+                if keyword.arg == "description" and isinstance(keyword.value, ast.Constant)
+            ),
+            "",
+        )
+        return choices, str(described)
+    return None
+
+
+@pytest.mark.parametrize(
+    ("model_id", "offers_first_last"),
+    [("kwaivgi/kling-video-o1", True), ("minimax/hailuo-2.3", False)],
+)
+def test_the_frames_control_names_only_the_modes_it_offers(model_id, offers_first_last):
+    """The sentence and the dropdown come off one list, so neither can name what the other does not.
+
+    Seven of the sixteen models with frame support publish `first_frame` and no
+    `last_frame`. The description was a fixed string naming `first_last`, so on those
+    seven it told the reader to pin a closing still with a choice the dropdown does not
+    contain -- and the `help` panel for the same models correctly said the opposite.
+
+    One row of each kind, so a fixed sentence cannot satisfy both.
+    """
+    found = _video_field(model_id, "VIDEO_FRAME_MODE")
+    assert found is not None, f"{model_id} draws no Frames control to check"
+    choices, described = found
+
+    assert ("first_last" in choices) is offers_first_last, (
+        f"{model_id} was chosen as the offers_first_last={offers_first_last} row and its "
+        f"choices are {choices}; the row proves nothing"
+    )
+    for mode in ("auto", "none", "first_only", "first_last"):
+        assert (mode in described) is (mode in choices), (
+            f"{model_id} offers {choices} and its description names {mode}="
+            f"{mode in described}: {described}"
+        )
+
+
+@pytest.mark.parametrize(
+    ("model_id", "publishes_the_flag"),
+    [("google/veo-3.1", True), ("x-ai/grok-imagine-video", False)],
+)
+def test_the_seed_control_hedges_the_way_openrouter_hedges(model_id, publishes_the_flag):
+    """No model is told a seed guarantees a repeat, because OpenRouter does not say so.
+
+    Their video request schema says repeated requests with the same seed "should" return
+    the same result and that "Determinism is not guaranteed for all providers", so the
+    control cannot promise one. It said "make the same clip again".
+
+    The non-guarantee is per-provider and covers all sixteen; the three that publish no
+    seed flag at all owe the reader one sentence more, which is the distinction the
+    `help` panel already draws from the same field. One row of each.
+    """
+    found = _video_field(model_id, "VIDEO_SEED")
+    assert found is not None, f"{model_id} draws no Seed control to check"
+    _choices, described = found
+
+    assert not re.search(r"\bnumber makes? the same clip\b", described), (
+        f"the control states the repeat as fact; OpenRouter's own schema says only that "
+        f"it *should* happen: {described}"
+    )
+    assert re.search(r"\bnot guarantee\b", described), (
+        f"every one of the sixteen must carry the vendor's own non-guarantee: {described}"
+    )
+    # Measured against the other row's rendering rather than against a phrase, so any
+    # rewording of the extra sentence survives and only its DISAPPEARANCE fails.
+    other = next(
+        _video_field(other_id, "VIDEO_SEED")
+        for other_id, publishes in (("google/veo-3.1", True), ("x-ai/grok-imagine-video", False))
+        if publishes is not publishes_the_flag
+    )
+    assert other is not None
+    _other_choices, other_described = other
+    if publishes_the_flag:
+        assert len(described) < len(other_described), (
+            f"{model_id} publishes the flag, so its control owes the reader LESS than the "
+            f"one whose model publishes nothing: {described!r} vs {other_described!r}"
+        )
+    else:
+        assert len(described) > len(other_described), (
+            f"{model_id} publishes no seed flag at all, so its control owes the reader a "
+            f"sentence the published one does not carry: {described!r} vs "
+            f"{other_described!r}"
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "control"),
+    [
+        ("VIDEO_REFERENCE_VIDEO_URL", "Reference video URL"),
+        ("VIDEO_REFERENCE_VIDEOS_JSON", "Reference videos JSON"),
+        ("VIDEO_AUDIO_URL", "Audio reference URL"),
+    ],
+)
+def test_no_document_offers_a_video_reference_control_no_model_draws(field, control):
+    """A control drawn on nothing must not be documented as available on something.
+
+    OpenRouter declares Wan 2.6 and Wan 2.7 as taking only text and pictures, so the
+    gate on declared input modalities withholds all three of these -- they now render on
+    zero models. The tables still named Wan 2.6 / Wan 2.7 in their "Exposed on" column,
+    and the help tips still told users to supply the references.
+
+    Measured by rendering every model in the catalog rather than by reading the tables,
+    so the day a model does declare video or audio input this test stops demanding the
+    documents deny it.
+    """
+    drawn = [
+        item["id"] for item in _VIDEO_CATALOG if _video_field(item["id"], field) is not None
+    ]
+    if drawn:
+        pytest.skip(f"{field} now renders on {drawn}; the documents may name them")
+
+    rows = []
+    for path in sorted(DOCS.rglob("*.md")):
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if not line.startswith(f"| `{field}` |"):
+                continue
+            cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+            rows.append((f"{path.name}:{number}", cells[-1]))
+    assert rows, f"no table anywhere documents {field}; the check is hollow"
+
+    named = re.compile(
+        r"\b(?:" + "|".join(re.escape(part) for part in _VIDEO_MODEL_WORDS) + r")\b", re.I
+    )
+    denied = re.compile(r"\b(?:none|no|not|never|neither)\b", re.I)
+
+    offending = []
+    for where, exposed in rows:
+        says_no = denied.search(exposed)
+        names_one = named.search(exposed)
+        if says_no is None or (names_one is not None and names_one.start() < says_no.start()):
+            offending.append(f"{where}: {exposed}")
+    assert not offending, (
+        f"{control} is drawn on no model at all; these rows present a model as a place "
+        f"it is available, or say nothing about its being unavailable:\n"
+        + "\n".join(offending)
+    )
+
+
+def test_the_withheld_aspect_ratio_notice_does_not_blame_openrouter():
+    """The pipe withholds the ratio; OpenRouter publishes no rule that it must.
+
+    Their video schema says only that `size` is "interchangeable with resolution +
+    aspect_ratio". The rejection language -- "a mismatched resolution or aspect_ratio
+    alongside it is rejected with a 400" -- belongs to the IMAGE API. The threshold is
+    the pipe's own 2.5% tolerance, so a notice reading "which the video API rejects"
+    told the user a false thing about a third party.
+    """
+    from open_webui_openrouter_pipe.integrations.video import (
+        _SIZE_CONTRADICTS_THE_RATIO,
+        _SIZE_FIXES_THE_PIXELS,
+        _SIZE_IS_A_TIER,
+    )
+
+    for notice in (_SIZE_CONTRADICTS_THE_RATIO, _SIZE_FIXES_THE_PIXELS, _SIZE_IS_A_TIER):
+        assert not re.search(
+            r"\b(the video api|openrouter)\b[^.;]{0,40}\b(rejects?|refuses?|will not take)\b",
+            notice,
+            re.I,
+        ), f"the pipe made this rule and the notice reads as OpenRouter's: {notice}"
+    assert "pipe" in _SIZE_CONTRADICTS_THE_RATIO.casefold(), (
+        f"a withholding nobody else asked for must say who asked for it: "
+        f"{_SIZE_CONTRADICTS_THE_RATIO}"
+    )

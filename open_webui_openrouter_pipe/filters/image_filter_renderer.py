@@ -367,18 +367,55 @@ _IMAGE_KNOB_TITLE_OVERRIDES = {
     "quality": ("Quality", "Rendering quality tier."),
     "output_format": ("Output format", "Container the image comes back in."),
     "output_compression": ("Output compression", "Compression level, where the format allows one."),
-    "size": (
-        "Output size",
-        (
-            "Either a size tier (512, 1K, 2K or 4K) or exact pixels written like "
-            "1024x1024. A tier sets the same thing as Resolution, is checked against the "
-            "tiers this model publishes, and still takes its shape from Aspect ratio. "
-            "Exact pixels settle the picture on their own, so Resolution is not sent "
-            "alongside them, and nor is Aspect ratio unless it is the shape you typed. "
-            "You are told in the chat whenever one of them is dropped that way."
-        ),
-    ),
+    "size": ("Output size", ""),
 }
+
+_SIZE_OPENING = (
+    "Either a size tier (512, 1K, 2K or 4K) or exact pixels written like 1024x1024."
+)
+
+_SIZE_TIER_CHECKED = (
+    "A tier sets the same thing as Resolution, is checked against the tiers this model "
+    "publishes, and still takes its shape from Aspect ratio."
+)
+
+_SIZE_TIER_UNCHECKED = (
+    "This model publishes no tiers of its own, so a tier is checked only against those "
+    "four names and then goes out for the company running the model to interpret. It "
+    "still takes its shape from Aspect ratio."
+)
+
+_SIZE_PIXELS_WIN = (
+    "Exact pixels settle the picture on their own, so Aspect ratio is not sent alongside "
+    "them unless it is the shape you typed. You are told in the chat whenever it is "
+    "dropped that way."
+)
+
+_SIZE_PIXELS_WIN_WITH_TIERS = (
+    "Exact pixels settle the picture on their own, so Resolution is not sent alongside "
+    "them, and nor is Aspect ratio unless it is the shape you typed. You are told in the "
+    "chat whenever one of them is dropped that way."
+)
+
+
+def image_knob_text(name: str, spec: ImageModelFilterSpec) -> tuple[str, str]:
+    """The title and the meaning of one control, as this model's own contract makes it.
+
+    ``size`` is the one whose meaning changes with the contract rather than only its
+    values: a tier is measured against the model's own published list where there is
+    one, and against nothing but OpenRouter's four names where there is not -- which is
+    24 of the 40 recorded contracts. The panel that renders the box also drops the
+    Resolution control in exactly that case, so naming Resolution there would name a
+    control the reader cannot see.
+    """
+    title, description = IMAGE_KNOB_TITLES.get(name, (name, ""))
+    if name != "size":
+        return title, description
+    has_tiers = any(published == "resolution" for published, _values in spec.enums)
+    tier = _SIZE_TIER_CHECKED if has_tiers else _SIZE_TIER_UNCHECKED
+    pixels = _SIZE_PIXELS_WIN_WITH_TIERS if has_tiers else _SIZE_PIXELS_WIN
+    return title, f"{_SIZE_OPENING} {tier} {pixels}"
+
 
 IMAGE_KNOB_TITLES = {
     name: _IMAGE_KNOB_TITLE_OVERRIDES.get(name, (name, "")) for name in TOP_LEVEL_PARAMS
@@ -526,7 +563,7 @@ def _render_image_model_user_valves(spec: ImageModelFilterSpec) -> str:
     fields: list[str] = []
     extra = dict(spec.narrowed)
     for name, values in spec.enums:
-        title, description = IMAGE_KNOB_TITLES.get(name, (name, ""))
+        title, description = image_knob_text(name, spec)
         also = extra.get(name, ())
         literals = _image_literal_union(("", *values, *also))
         caveat = (
@@ -544,7 +581,7 @@ def _render_image_model_user_valves(spec: ImageModelFilterSpec) -> str:
             )
         )
     for name in spec.schema_only:
-        title, description = IMAGE_KNOB_TITLES.get(name, (name, ""))
+        title, description = image_knob_text(name, spec)
         bounds = SCHEMA_RANGES.get(name)
         if bounds is not None:
             low, high = bounds
@@ -570,7 +607,7 @@ def _render_image_model_user_valves(spec: ImageModelFilterSpec) -> str:
             )
         )
     for name, low, high in spec.ranges:
-        title, description = IMAGE_KNOB_TITLES.get(name, (name, ""))
+        title, description = image_knob_text(name, spec)
         fields.append(
             _image_field(
                 f"{_valve_name(name)}: int | None = Field(\n"
@@ -583,7 +620,7 @@ def _render_image_model_user_valves(spec: ImageModelFilterSpec) -> str:
             )
         )
     for name in spec.supported:
-        title, description = IMAGE_KNOB_TITLES.get(name, (name, ""))
+        title, description = image_knob_text(name, spec)
         fields.append(
             _image_field(
                 f"{_valve_name(name)}: int | None = Field(\n"

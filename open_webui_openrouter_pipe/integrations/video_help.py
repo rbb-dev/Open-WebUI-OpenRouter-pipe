@@ -471,8 +471,8 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "than Seedance 2.0."
         ),
         "tips_and_pitfalls": [
-            "Pick the right kind of reference: Reference images JSON locks appearance, wardrobe and props (it reads like a 9-image storyboard grid in 2.7), while Reference video URL and Reference videos JSON carry motion style, camera language, or a voice to copy.",
-            "For talking-head and dialogue clips, supply an audio reference — Wan 2.7's automatic lip-sync matches mouth shapes to the supplied speech in the target language, a headline upgrade over 2.6.",
+            "Reference images JSON is the reference control you have here: it locks appearance, wardrobe and props, and reads like a 9-image storyboard grid in 2.7. Alibaba also describes clip and voice references for this model, but OpenRouter reports it as taking only text and pictures, so there is no control for either — describe the motion and the camera in the prompt instead.",
+            "For talking-head and dialogue clips, the lip-sync you get is the one Wan generates from your words: turn Audio on and write the line you want spoken, in the language you want it spoken in. Matching a supplied voice would need an audio reference, which is not offered here.",
             "Wan 2.7 is tuned for character-led, narrative content; for fast sports/action shots its physics still trails Seedance 2.0 and Runway Gen-4, so add explicit motion verbs and a negative prompt against blur/morphing.",
             "Wan 2.7's instruction-following changed vs 2.6, so prompts calibrated on 2.6 may drift; turn Prompt extend on when prompts are short, and off when you've already written a precise multi-shot storyboard.",
         ],
@@ -582,7 +582,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "First-frame ONLY: Wan 2.6 supports first_frame image conditioning but has no last_frame. To define both endpoints of a clip, you must upgrade to Wan 2.7 — don't try to fake it through prompts.",
             "Shot type sets how close the camera sits (values written as Wan names them, such as \"medium_to_closeup\"); Wan 2.7 dropped it. For multi-shot scripts, write scene-timed segments into the prompt itself.",
             "Turn Enable prompt expansion on for short or terse prompts — it adds camera and lighting detail at no extra charge; turn it off when you have already written a long, precise prompt.",
-            "Audio reference files must be 3–30s, WAV/MP3, max 15 MB; clips longer than the video get truncated and shorter clips leave a silent tail. Two-speaker dialogue tends to collapse to one dominant voice — generate single-speaker clips and composite.",
+            "Alibaba documents conditioning this model on a supplied voice or music track, but OpenRouter reports it as taking only text and pictures, so there is no control for it here — the Audio toggle generates the soundtrack from your prompt instead. Two-speaker dialogue tends to collapse to one dominant voice either way, so generate single-speaker clips and composite.",
         ],
         "knob_descriptions": {
             "Duration": "Selects 5s or 10s of video; the OpenRouter listing caps at 10s, so the 15s length Alibaba Cloud sells directly is not available here.",

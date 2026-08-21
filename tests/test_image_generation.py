@@ -3970,7 +3970,7 @@ def test_the_emitted_tool_call_never_carries_a_ratio_the_pixel_size_contradicts(
         metadata,
         {"valves": module.Filter.UserValves(IMAGE_SIZE="1024x1024", IMAGE_ASPECT_RATIO=ratio)},
     )
-    entries = _build_server_tool_entries(metadata["openrouter_pipe"]["server_tools"])
+    entries, _ = _build_server_tool_entries(metadata["openrouter_pipe"]["server_tools"])
     emitted = [e for e in entries if e["type"] == "openrouter:image_generation"]
     assert len(emitted) == 1, f"one panel must produce one tool entry; got {entries!r}"
     parameters = emitted[0]["parameters"]

@@ -5921,37 +5921,141 @@ def test_a_log_record_is_bounded_by_the_pipe_not_by_the_catalog():
     assert "google/veo-3.1" in message, "the record must still name the model it is about"
 
 
-def test_the_video_lifecycle_records_its_cost_on_every_terminal_path():
-    """Both the success return and the failure handler reach a snapshot, and share a flag.
+@pytest.mark.parametrize("billed", [0.42, 7.5])
+@pytest.mark.parametrize(
+    "exit_path", ["returns", "fails", "is cancelled", "is cancelled mid-record"]
+)
+@pytest.mark.asyncio
+async def test_the_video_lifecycle_records_its_cost_on_every_terminal_path(
+    monkeypatch, exit_path, billed
+):
+    """Usage read from a terminal poll is snapshotted exactly once, however the job ends.
 
-    The success path held the only call in the file; the `except Exception` handler --
-    which this changeset gave two new post-billing failure branches -- returned without
-    one, so a job OpenRouter had charged for went unrecorded whenever the download or the
-    upload failed. The image adapter had been settling from the same position for months.
+    The poll that reports `completed` is the moment OpenRouter has charged; the download
+    and the upload come after it. All three ways out of the lifecycle run past that
+    point, so all three owe one record: a return, an exception, and a cancellation --
+    and Open WebUI cancels these tasks whenever an admin saves a valve, so the third is
+    routine rather than exotic.
+
+    Exactly once, not at least once: the exits sharing one latch is what stops a job
+    being counted twice in the costs keyspace. The "mid-record" row is the case that
+    needs the latch RAISED BEFORE the write rather than after it -- the cancel lands
+    inside the snapshot, unwinds through the same cancel handler, and finds the latch
+    already up.
+
+    Two distinct amounts, because a snapshot that ignored `usage` and posted a constant
+    would satisfy either row on its own. The spy sits on the seam BELOW the subject --
+    the snapshot writer the lifecycle calls out to -- so what is under test is the
+    lifecycle's own decision to call it.
     """
-    import ast
-    import inspect
-    import textwrap
+    import open_webui_openrouter_pipe.integrations.video as video_module
 
-    from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
+    pipe = Pipe()
+    pipe.valves.API_KEY = EncryptedStr("test")
+    pipe.valves.VIDEO_INITIAL_POLL_DELAY_SECONDS = 0
+    pipe.valves.VIDEO_POLL_INTERVAL_SECONDS = 0
+    pipe.valves.VIDEO_POLL_INTERVAL_MAX_SECONDS = 0
+    adapter = VideoGenerationAdapter(pipe=pipe, logger=_test_logger())
 
-    source = textwrap.dedent(inspect.getsource(VideoGenerationAdapter._run_lifecycle_after_submit))
-    tree = ast.parse(source)
-    calls = [
-        node for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and getattr(node.func, "id", getattr(node.func, "attr", "")) == "maybe_dump_costs_snapshot"
-    ]
-    assert len(calls) == 2, (
-        f"the lifecycle has {len(calls)} cost snapshot call(s); the success return and the "
-        "failure handler each need one"
+    class FakeClient(OpenRouterVideoClient):
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def status(self, job_id, polling_url=None):
+            return {"status": "completed", "usage": {"cost": billed}}
+
+        def content_url(self, job_id, index=0):
+            return f"https://example.test/videos/{job_id}/content/{index}"
+
+        def bearer_header(self):
+            return {"Authorization": "Bearer test"}
+
+    recorded: list[Any] = []
+    writing = asyncio.Event()
+
+    async def spy(*_args, **kwargs):
+        recorded.append(kwargs.get("usage"))
+        if exit_path == "is cancelled mid-record":
+            writing.set()
+            await asyncio.Event().wait()
+
+    reached_the_download = asyncio.Event()
+
+    async def download(url, dest_path, **_kwargs):
+        reached_the_download.set()
+        if exit_path == "is cancelled":
+            await asyncio.Event().wait()
+        if exit_path == "fails":
+            return None
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        dest_path.write_bytes(MP4_BYTES)
+        return {
+            "path": dest_path,
+            "mime_type": "video/mp4",
+            "url": url,
+            "size_bytes": len(MP4_BYTES),
+        }
+
+    async def upload(*_args, **_kwargs):
+        return "file-1"
+
+    monkeypatch.setattr(video_module, "OpenRouterVideoClient", FakeClient)
+    monkeypatch.setattr(video_module, "maybe_dump_costs_snapshot", spy)
+    monkeypatch.setattr(pipe, "_create_http_session", lambda *_a, **_k: _FakeSession([]))
+    monkeypatch.setattr(
+        pipe._multimodal_handler, "_download_remote_url_streaming", download
     )
-    guards = [
-        ast.unparse(node.test) for node in ast.walk(tree)
-        if isinstance(node, ast.If) and "costed" in ast.unparse(node.test)
-    ]
-    assert len(guards) == 2 and all(guard == "usage and (not costed)" for guard in guards), (
-        f"both snapshots must share one flag so a job is recorded once, not twice: {guards}"
+    monkeypatch.setattr(pipe._file_gateway, "upload_to_owui_storage_from_path", upload)
+
+    semaphore = asyncio.Semaphore(1)
+    await semaphore.acquire()
+    message_lock = asyncio.Lock()
+    await message_lock.acquire()
+
+    async def emitter(_event):
+        return None
+
+    task = asyncio.create_task(
+        adapter._run_lifecycle_after_submit(
+            key=("chat-cost", "msg-cost"),
+            job_id="job-cost",
+            api_model_id="openai/sora-2-pro",
+            normalized_model_id="openai.sora-2-pro",
+            valves=pipe.valves,
+            event_emitter=emitter,
+            user={"id": "user-1"},
+            user_obj={"id": "user-1"},
+            chat_id="chat-cost",
+            message_id="msg-cost",
+            request=None,
+            user_id="user-1",
+            global_semaphore=semaphore,
+            message_lock=message_lock,
+            started_at=time.monotonic(),
+        )
+    )
+    if exit_path == "is cancelled":
+        await asyncio.wait_for(reached_the_download.wait(), timeout=5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    elif exit_path == "is cancelled mid-record":
+        await asyncio.wait_for(writing.wait(), timeout=5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            # A second, unlatched write would be shielded and would never return, so the
+            # timeout is part of the assertion rather than scaffolding.
+            await asyncio.wait_for(task, timeout=5)
+    else:
+        result = await asyncio.wait_for(task, timeout=5)
+        assert result.failed is (exit_path == "fails"), (
+            f"the {exit_path!r} row did not take the branch it was set up to take"
+        )
+
+    billed_usage = {"total_tokens": 0, "input_tokens": 0, "output_tokens": 0, "cost": billed}
+    assert recorded == [billed_usage], (
+        f"a job OpenRouter had already charged {billed} for produced {recorded!r} when the "
+        f"lifecycle {exit_path}; every exit past the terminal poll owes exactly one record"
     )
 
 

@@ -410,3 +410,109 @@ async def test_a_failing_video_download_retries_only_what_is_worth_retrying(
             f"HTTP {status} was attempted {attempts['n']} times. It will never succeed, "
             "so every extra attempt is the user waiting for nothing."
         )
+
+
+@pytest.mark.parametrize("via_file_host", [False, True])
+@pytest.mark.parametrize("cap_mb", [7, 23])
+@pytest.mark.asyncio
+async def test_the_generated_video_cap_is_not_described_as_bounding_an_attachment(
+    monkeypatch, via_file_host, cap_mb
+):
+    """The admin text for a valve names the thing it actually bounds.
+
+    ``REMOTE_VIDEO_MAX_SIZE_MB`` was documented as also capping each attached clip or
+    sound file. It does not: an attachment is measured against
+    ``VIDEO_FRAME_IMAGE_MAX_BYTES`` when it goes inline, or against
+    ``MEDIA_FILE_HOST_MAX_SIZE_MB`` when it goes to a public host, and a clip or sound
+    file has no inline route at all. An admin lowering the wrong valve to bound what
+    users upload changes nothing about what users upload.
+
+    Measured by watching the byte cap the reader is actually handed, over two distinct
+    valve values so a coincidence cannot pass, and over both routes so neither is
+    assumed.
+    """
+    import base64
+    import logging
+    from types import SimpleNamespace
+
+    from open_webui_openrouter_pipe.integrations import video as video_module
+    from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
+
+    pipe = Pipe()
+    pipe.valves.API_KEY = EncryptedStr("test")
+    try:
+        adapter = VideoGenerationAdapter(pipe=pipe, logger=logging.getLogger("cap-probe"))
+        pipe.valves.REMOTE_VIDEO_MAX_SIZE_MB = cap_mb
+        generated_video_cap = cap_mb * 1024 * 1024
+
+        async def stored_record(file_id, _logger):
+            family = file_id.split("-", 1)[0]
+            return SimpleNamespace(
+                id=file_id,
+                filename=f"{file_id}.bin",
+                meta={"content_type": {"image": "image/png", "audio": "audio/mpeg", "video": "video/mp4"}[family]},
+                user_id="user-1",
+                data={},
+                path=None,
+            )
+
+        handed: list[tuple[str, int]] = []
+
+        async def reader(file_obj, _chunk, max_bytes, **_kwargs):
+            handed.append((file_obj.id, max_bytes))
+            return base64.b64encode(b"x" * 16).decode()
+
+        async def relay(*_args, **_kwargs):
+            return "https://example.test/relayed.bin"
+
+        monkeypatch.setattr(video_module, "relay_to_public_url", relay)
+        monkeypatch.setattr(video_module, "get_file_by_id", stored_record)
+        monkeypatch.setattr(video_module, "authorize_file_publication", lambda *_a, **_k: True)
+        monkeypatch.setattr(pipe._file_gateway, "read_file_record_base64", reader)
+        monkeypatch.setattr(adapter, "_file_host_wanted", lambda *_a, **_k: via_file_host)
+
+        async def emitter(_event):
+            return None
+
+        await adapter._encode_input_references(
+            {
+                "input_references": [{"id": "image-1"}, {"id": "audio-1"}, {"id": "video-1"}],
+                "model_id": "alibaba/wan-2.7",
+            },
+            pipe.valves,
+            withheld=[],
+            user_obj={"id": "user-1"},
+            video_model={
+                "id": "alibaba/wan-2.7",
+                "input_modalities": ["text", "image", "audio", "video"],
+            },
+            event_emitter=emitter,
+        )
+    finally:
+        await pipe.close()
+
+    assert handed, "no attachment was read at all, so the caps were never exercised"
+    assert generated_video_cap not in [cap for _name, cap in handed], (
+        f"REMOTE_VIDEO_MAX_SIZE_MB={cap_mb} reached an attachment as {generated_video_cap} "
+        f"bytes; the caps actually handed out were {handed}"
+    )
+
+
+def test_the_admin_is_sent_to_the_valves_that_really_bound_an_attachment():
+    """The other half of the same property, in the surface an administrator reads.
+
+    Split from the behavioural test above so that one keeps running in the bundles
+    built without plugins, where the configuration screen's metadata does not exist.
+    """
+    pytest.importorskip("open_webui_openrouter_pipe.plugins.pipe_dashboard")
+    from open_webui_openrouter_pipe.plugins.pipe_dashboard.config_meta import CONFIG_META
+
+    detail = CONFIG_META["REMOTE_VIDEO_MAX_SIZE_MB"]["detail"]
+    for real in ("VIDEO_FRAME_IMAGE_MAX_BYTES", "MEDIA_FILE_HOST_MAX_SIZE_MB"):
+        assert CONFIG_META[real]["title"] in detail, (
+            f"{real} is what really bounds an attachment and the admin is not sent to it: "
+            f"{detail}"
+        )
+    assert "clip or sound file attached" not in detail, (
+        f"this valve bounds the generated video coming back, not anything attached: {detail}"
+    )

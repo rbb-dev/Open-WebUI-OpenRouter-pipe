@@ -80,7 +80,7 @@ class Filter:
         IMAGE_SIZE: str = Field(
                     default="",
                     title='Output size',
-                    description='Either a size tier (512, 1K, 2K or 4K) or exact pixels written like 1024x1024. A tier sets the same thing as Resolution, is checked against the tiers this model publishes, and still takes its shape from Aspect ratio. Exact pixels settle the picture on their own, so Resolution is not sent alongside them, and nor is Aspect ratio unless it is the shape you typed. You are told in the chat whenever one of them is dropped that way. No model publishes a list of pixel sizes, so exact pixels go out as typed and the company running this one decides what to do with them. Empty leaves it unset.',
+                    description='Either a size tier (512, 1K, 2K or 4K) or exact pixels written like 1024x1024. This model publishes no tiers of its own, so a tier is checked only against those four names and then goes out for the company running the model to interpret. It still takes its shape from Aspect ratio. Exact pixels settle the picture on their own, so Aspect ratio is not sent alongside them unless it is the shape you typed. You are told in the chat whenever it is dropped that way. No model publishes a list of pixel sizes, so exact pixels go out as typed and the company running this one decides what to do with them. Empty leaves it unset.',
                 )
         IMAGE_ASPECT_RATIO: str = Field(
                     default="",

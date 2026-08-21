@@ -321,6 +321,7 @@ class VideoFilterSpec:
     frame_types: tuple[str, ...]
     size_options: tuple[str, ...]
     seed_capable: bool = False
+    seed_declared: bool = False
     audio_capable: bool = False
     intent_classifier_admin_enabled: bool = True
     intent_enabled_default: bool = True
@@ -372,6 +373,47 @@ def _strip_vendor_prefix(name: str) -> str:
 
 _VALID_FRAME_DEFAULTS = ("first", "last")
 _VALID_CONFIRM_MODES = ("always", "on_reference", "low_confidence", "never")
+
+
+_SEED_OPENING = (
+    "A number that fixes the random draw, so the same prompt and the same number should "
+    "make the same clip again."
+)
+
+_SEED_NOT_GUARANTEED = (
+    "OpenRouter asks for it but does not guarantee it: whether a repeat comes back "
+    "identical is up to the company running the model."
+)
+
+_SEED_UNDECLARED = (
+    "This model does not say whether it honours a seed at all, so treat a repeat as "
+    "likely rather than certain."
+)
+
+
+def _seed_meaning(declared: bool) -> str:
+    """What the Seed control promises, hedged the way OpenRouter's own schema hedges it.
+
+    Their video schema says repeated requests *should* return the same result and that
+    "Determinism is not guaranteed for all providers", so no model here can be told it
+    will. Three of the sixteen go further and publish nothing at all about the flag.
+    """
+    tail = "" if declared else f" {_SEED_UNDECLARED}"
+    return f"{_SEED_OPENING} {_SEED_NOT_GUARANTEED}{tail} 0 leaves it random."
+
+
+_FRAME_MODE_MEANINGS: dict[str, str] = {
+    "auto": "auto follows the model",
+    "none": "none ignores them",
+    "first_only": "first_only opens the shot with one",
+    "first_last": "first_last pins the opening and the closing still",
+}
+"""What each choice means, keyed by the choice itself.
+
+One list builds the choices and the sentence describing them, so a model that is not
+offered `first_last` is not told about it either. Seven of the sixteen take a first
+frame and no last one.
+"""
 
 
 _REFERENCE_PARAMS_BY_KIND: dict[str, tuple[str, ...]] = {
@@ -458,6 +500,7 @@ def build_video_filter_spec(
         frame_types=frame_types,
         size_options=size_options,
         seed_capable="seed" in model and not capability_declared_off(model.get("seed")),
+        seed_declared=model.get("seed") is True,
         audio_capable="generate_audio" in model
         and not capability_declared_off(model.get("generate_audio")),
         intent_classifier_admin_enabled=intent_admin_enabled,
@@ -853,7 +896,7 @@ def _render_purpose_built_fields(spec: VideoFilterSpec) -> list[str]:
                 "            default=0,\n"
                 "            ge=0,\n"
                 '            title="Seed",\n'
-                '            description="A number that fixes the random draw, so the same prompt and the same number make the same clip again. 0 leaves it random.",\n'
+                f"            description={_seed_meaning(spec.seed_declared)!r},\n"
                 "        )"
             )
         )
@@ -872,12 +915,13 @@ def _render_purpose_built_fields(spec: VideoFilterSpec) -> list[str]:
         if spec.supports_first_last:
             modes.append("first_last")
         literals = _literal_union(tuple(modes))
+        described = ", ".join(_FRAME_MODE_MEANINGS[mode] for mode in modes)
         fields.append(
             _field_block(
                 f"VIDEO_FRAME_MODE: Literal[{literals}] = Field(\n"
                 '            default="auto",\n'
                 '            title="Frames",\n'
-                '            description="What the pictures you attach are for: auto follows the model, none ignores them, first_only opens the shot with one, first_last pins the opening and the closing still.",\n'
+                f"            description={f'What the pictures you attach are for: {described}.'!r},\n"
                 "        )"
             )
         )

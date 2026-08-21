@@ -266,19 +266,27 @@ _REFERENCE_KINDS: dict[str, str] = {
 }
 
 _SIZE_FIXES_THE_PIXELS = (
-    "the exact size already fixes the pixels, and a resolution tier that disagreed with "
-    "it is rejected"
+    "the exact size already fixes the pixels, and this pipe does not also send a "
+    "resolution tier that disagrees with them"
 )
 
 _SIZE_IS_A_TIER = (
-    "the size chosen is itself a resolution tier, so only one of the two can be sent"
+    "the size chosen is itself a resolution tier, so this pipe sends only one of the two"
 )
 
 _SIZE_CONTRADICTS_THE_RATIO = (
-    "it does not match the shape of the exact size chosen, which the video API rejects"
+    "it is not the shape of the exact size chosen, and this pipe sends the size on its "
+    "own rather than a request that contradicts itself. OpenRouter's video API does not "
+    "say which of the two it would have honoured"
 )
 
 _ASPECT_RATIO_TOLERANCE = 0.025
+"""How far a chosen ratio may sit from the pixels before this pipe stops sending it.
+
+This pipe's number, not OpenRouter's: their video schema says only that ``size`` is
+interchangeable with ``resolution`` + ``aspect_ratio``, and publishes no rule for the
+two disagreeing. The rejection language belongs to the image API.
+"""
 
 _warned_dropped_video_param: set[str] = set()
 
@@ -834,6 +842,36 @@ class VideoGenerationAdapter:
         task.add_done_callback(self._consume_background_exception)
         return task
 
+    async def _record_what_it_cost(
+        self,
+        *,
+        usage: dict[str, Any],
+        billing: dict[str, bool],
+        valves: Any,
+        user_id: str,
+        api_model_id: str,
+        user_obj: Any,
+    ) -> None:
+        """Record what a terminal poll says the job cost, once, whatever happens next.
+
+        The latch is raised BEFORE the write, not after: a cancel delivered inside the
+        write leaves the job recorded and unwinds through the caller's cancel handler,
+        which would otherwise see an unraised latch and record it a second time.
+        """
+        if not usage or billing["costed"]:
+            return
+        billing["costed"] = True
+        with contextlib.suppress(Exception):
+            await maybe_dump_costs_snapshot(
+                self._pipe,
+                valves,
+                user_id=user_id,
+                model_id=api_model_id,
+                usage=usage,
+                user_obj=user_obj,
+                pipe_id=self._pipe.id,
+            )
+
     async def _run_lifecycle_after_submit(
         self,
         *,
@@ -857,7 +895,7 @@ class VideoGenerationAdapter:
         content = ""
         failed = False
         usage: dict[str, Any] = {}
-        costed = False
+        billing: dict[str, bool] = {"costed": False}
         file_id: str | None = None
         output_mime = ""
         description = ""
@@ -987,18 +1025,14 @@ class VideoGenerationAdapter:
                 content = disclosure_block + "\n" + content
             description = self._format_final_status(elapsed=elapsed, usage=usage, valves=valves)
             await self._emit_status(event_emitter, description, done=True, progress=100)
-            if usage and not costed:
-                costed = True
-                with contextlib.suppress(Exception):
-                    await maybe_dump_costs_snapshot(
-                        self._pipe,
-                        valves,
-                        user_id=user_id,
-                        model_id=api_model_id,
-                        usage=usage,
-                        user_obj=user_obj,
-                        pipe_id=self._pipe.id,
-                    )
+            await self._record_what_it_cost(
+                usage=usage,
+                billing=billing,
+                valves=valves,
+                user_id=user_id,
+                api_model_id=api_model_id,
+                user_obj=user_obj,
+            )
             return VideoLifecycleResult(
                 content=content,
                 status_description=description,
@@ -1011,6 +1045,16 @@ class VideoGenerationAdapter:
                 output_mime=output_mime,
             )
         except asyncio.CancelledError:
+            await asyncio.shield(
+                self._record_what_it_cost(
+                    usage=usage,
+                    billing=billing,
+                    valves=valves,
+                    user_id=user_id,
+                    api_model_id=api_model_id,
+                    user_obj=user_obj,
+                )
+            )
             raise
         except Exception as exc:
             self.logger.exception("Video lifecycle failed (job_id=%s)", job_id)
@@ -1022,18 +1066,14 @@ class VideoGenerationAdapter:
                 content = disclosure_block + "\n" + content
             description = f"Video generation failed: {reason}"
             await self._emit_status(event_emitter, description, done=True)
-            if usage and not costed:
-                costed = True
-                with contextlib.suppress(Exception):
-                    await maybe_dump_costs_snapshot(
-                        self._pipe,
-                        valves,
-                        user_id=user_id,
-                        model_id=api_model_id,
-                        usage=usage,
-                        user_obj=user_obj,
-                        pipe_id=self._pipe.id,
-                    )
+            await self._record_what_it_cost(
+                usage=usage,
+                billing=billing,
+                valves=valves,
+                user_id=user_id,
+                api_model_id=api_model_id,
+                user_obj=user_obj,
+            )
             return VideoLifecycleResult(
                 content=content,
                 status_description=description,

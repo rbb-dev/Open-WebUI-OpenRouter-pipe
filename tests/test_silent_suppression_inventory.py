@@ -71,11 +71,11 @@ _EXPECTED: dict[str, int] = {
     # its own logging failed, and it runs before any pipe module exists.
     "../scripts/anyio_1111_workaround.py": 1,
     "core/logging_system.py": 2,
-    # 8th: the cost snapshot on the failure path. A job OpenRouter has already billed
-    # for is recorded whatever the pipe does with the bytes, and a storage error while
-    # recording it must not replace the failure the user is being shown with its own.
-    # The success-path snapshot beside it makes the same judgement.
-    "integrations/video.py": 8,
+    # 7th: the cost snapshot, now one guarded helper reached from all three exits. A job
+    # OpenRouter has already billed for is recorded whatever the pipe does with the
+    # bytes, and a storage error while recording it must not replace the failure the
+    # user is being shown -- nor take down a cancellation that is already unwinding.
+    "integrations/video.py": 7,
     "logging/session_log_manager.py": 21,
     "media/frame_extraction.py": 2,
     "models/catalog_manager.py": 2,

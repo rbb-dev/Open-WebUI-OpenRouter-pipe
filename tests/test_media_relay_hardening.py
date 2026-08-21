@@ -543,3 +543,137 @@ async def test_a_reason_carrying_the_users_own_numbers_does_not_widen_the_latch(
     assert withheld[0][1] != withheld[1][1], "the two sizes produced the same sentence"
     assert len(_warned_dropped_video_param) == 1, _warned_dropped_video_param
     assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
+
+
+@pytest.mark.parametrize(
+    ("status", "attempts"),
+    [(403, 1), (503, 1)],
+)
+@pytest.mark.asyncio
+async def test_a_host_that_answers_is_not_retried(status, attempts):
+    """A host that replied has made its decision; only an unreachable one is tried again.
+
+    The admin text for `Use the other file host if one is down` said the upload "is
+    retried three times on the chosen host first, so this only comes into play when that
+    host is genuinely unavailable". A plain refusal is not retried at all, and the
+    fallback does come into play on one -- so an admin reading that would expect the
+    second host to be reached far less often than it is.
+
+    Two statuses whose `may_have_stored_it` verdicts differ, so a single hard-coded
+    answer cannot satisfy both rows.
+    """
+    posts = []
+
+    class _Answered:
+        def __init__(self, code, body):
+            self.status, self._body = code, body
+
+        async def text(self):
+            return self._body
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    class _Session:
+        def post(self, *_args, **_kwargs):
+            posts.append(1)
+            return _Answered(status, "no thanks")
+
+    with pytest.raises(MediaRelayError) as raised:
+        await relay_to_public_url(
+            _Session(),  # pyright: ignore[reportArgumentType]
+            b"payload",
+            filename="a.mp4",
+            mime="video/mp4",
+            host="litterbox",
+            retention="1h",
+            max_bytes=4096,
+            seconds_left=30,
+        )
+
+    assert len(posts) == attempts, (
+        f"a {status} answer drove {len(posts)} upload attempt(s); a host that answered "
+        "has decided, and repeating the upload only risks a second stored copy"
+    )
+    assert raised.value.may_have_stored_it is (status >= 500), (
+        f"a {status} answer reported may_have_stored_it="
+        f"{raised.value.may_have_stored_it}; the fallback decision turns on it"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_host_that_never_answers_is_retried_the_stated_number_of_times():
+    """The count the admin text states is the count the loop performs.
+
+    Every attempt is counted at the transport, so the number is the number of uploads
+    that really left, not the number of turns a loop took.
+    """
+    from open_webui_openrouter_pipe.integrations.media_relay import _UPLOAD_ATTEMPTS
+
+    posts = []
+
+    class _NeverReached(aiohttp.ClientConnectorError):
+        def __init__(self):
+            Exception.__init__(self, "connection refused")
+
+        def __str__(self):
+            return "connection refused"
+
+    class _Unreachable:
+        async def __aenter__(self):
+            raise _NeverReached()
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    class _Session:
+        def post(self, *_args, **_kwargs):
+            posts.append(1)
+            return _Unreachable()
+
+    with pytest.raises(MediaRelayError) as raised:
+        await relay_to_public_url(
+            _Session(),  # pyright: ignore[reportArgumentType]
+            b"payload",
+            filename="a.mp4",
+            mime="video/mp4",
+            host="litterbox",
+            retention="1h",
+            max_bytes=4096,
+            seconds_left=30,
+        )
+
+    assert len(posts) == _UPLOAD_ATTEMPTS, (
+        f"an unreachable host drove {len(posts)} attempt(s) against a stated "
+        f"{_UPLOAD_ATTEMPTS}"
+    )
+    assert raised.value.may_have_stored_it is False, (
+        "a host that was never reached cannot be holding a copy, so the other one is safe "
+        "to try"
+    )
+
+
+def test_the_admin_text_states_the_number_of_attempts_the_loop_makes():
+    """The other half of the same property, in the surface an administrator reads.
+
+    Split from the behavioural test above so that one keeps running in the bundles built
+    without plugins, where the configuration screen's metadata does not exist. Measured
+    against `_UPLOAD_ATTEMPTS` rather than the literal three, so changing the constant
+    fails the text rather than quietly outdating it.
+    """
+    pytest.importorskip("open_webui_openrouter_pipe.plugins.pipe_dashboard")
+    from open_webui_openrouter_pipe.integrations.media_relay import _UPLOAD_ATTEMPTS
+    from open_webui_openrouter_pipe.plugins.pipe_dashboard.config_meta import CONFIG_META
+
+    spelled = {1: "once", 2: "twice", 3: "three times", 4: "four times", 5: "five times"}
+    detail = CONFIG_META["USE_THE_OTHER_FILE_HOST_IF_ONE_IS_DOWN"]["detail"]
+    assert spelled[_UPLOAD_ATTEMPTS] in detail, (
+        f"the loop makes {_UPLOAD_ATTEMPTS} attempts and the admin text does not say so: "
+        f"{detail}"
+    )
+    assert "retried three times on the chosen host first" not in detail, (
+        f"a host that answered and refused is not retried at all: {detail}"
+    )
