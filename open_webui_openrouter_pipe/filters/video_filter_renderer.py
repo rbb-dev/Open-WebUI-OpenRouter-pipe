@@ -9,14 +9,12 @@ from typing import Any
 
 from ..core.config import _OPENROUTER_VIDEO_GEN_FILTER_MARKER, _PIPE_METADATA_KEY
 from ..core.utils import OWUI_FUNCTION_ID_ILLEGAL_RE as _FILTER_ID_RE
-from ..core.utils import _clean_str
+from ..core.utils import _clean_str, scrub_surrogates, summarise_names
 from ..integrations.image_types import (
     PASSTHROUGH_DESCRIPTION,
     PROVIDER_OPTIONS_DESCRIPTION,
     RENDERABLE_FIELD_NAME_RE,
     capability_declared_off,
-    scrub_surrogates,
-    summarise_names,
 )
 from ..integrations.video_types import VIDEO_REQ_KEY_DESCRIPTION
 

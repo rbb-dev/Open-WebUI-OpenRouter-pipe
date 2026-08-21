@@ -12,7 +12,9 @@ from ..core.config import _PIPE_METADATA_KEY, _select_openrouter_http_referer
 from ..core.costs import maybe_dump_costs_snapshot
 from ..core.errors import OpenRouterAPIError
 from ..core.logging_system import SessionLogger
+from ..core.utils import clamp_text, summarise_names
 from ..core.warn_latch import warn_level
+from ..storage.multimodal import ADDRESS_CHECK_BUDGET_SECONDS, ADDRESS_CHECK_SECONDS
 from .image_client import OpenRouterImageClient
 from .image_types import (
     SCHEMA_ENUMS,
@@ -21,11 +23,9 @@ from .image_types import (
     GeneratedImage,
     ImageGenerationError,
     ImageGenerationResult,
-    clamp_text,
     json_encodable,
     pixel_size,
     prompt_with_system,
-    summarise_names,
     supersede_size_conflicts,
 )
 from .provider_options import (
@@ -713,18 +713,25 @@ class ImageGenerationAdapter:
         )
         return (mode if mode in _REFERENCE_MODES else "auto"), urls
 
-    async def _fetchable(self, url: str, seen: dict[str, bool] | None = None) -> bool:
+    async def _fetchable(
+        self, url: str, seen: dict[str, bool] | None = None, deadline: float | None = None
+    ) -> bool:
         if url.startswith("data:"):
             return True
         if seen is not None and url in seen:
             return seen[url]
-        verdict = bool(await self._pipe._multimodal_handler._is_safe_url(url))
+        if deadline is None:
+            deadline = time.monotonic() + ADDRESS_CHECK_BUDGET_SECONDS
+        verdict = bool(await self._pipe._multimodal_handler._is_safe_url(
+            url, seconds=min(ADDRESS_CHECK_SECONDS, deadline - time.monotonic()),
+        ))
         if seen is not None:
             seen[url] = verdict
         return verdict
 
     async def _vet_payload_addresses(
-        self, payload: dict[str, Any], seen: dict[str, bool]
+        self, payload: dict[str, Any], seen: dict[str, bool],
+        deadline: float | None = None,
     ) -> None:
         try:
             addresses = list(payload_addresses(payload))
@@ -740,20 +747,21 @@ class ImageGenerationAdapter:
                         "is past that."
                     )
                 budget -= 1
-            if not await self._fetchable(url, seen):
+            if not await self._fetchable(url, seen, deadline):
                 raise ImageGenerationError(
                     f"Refusing to send the address in '{where}'. Use https, or a plain "
                     "http address this deployment allows."
                 )
 
     async def _vetted_reference_urls(
-        self, urls: list[str], seen: dict[str, bool] | None = None
+        self, urls: list[str], seen: dict[str, bool] | None = None,
+        deadline: float | None = None,
     ) -> list[str]:
         if not urls:
             return []
         vetted: list[str] = []
         for url in urls[:_SCHEMA_REFERENCE_CAP]:
-            if not await self._fetchable(url, seen):
+            if not await self._fetchable(url, seen, deadline):
                 raise ImageGenerationError(
                     f"Refusing to send the reference image link {_clamp(url)}. Use https, "
                     "or a plain http address this deployment allows."
@@ -766,13 +774,14 @@ class ImageGenerationAdapter:
         attached: list[dict[str, Any]],
         notes: list[_Note],
         seen: dict[str, bool] | None = None,
+        deadline: float | None = None,
     ) -> list[dict[str, Any]]:
         kept: list[dict[str, Any]] = []
         refused = 0
         for reference in attached:
             payload = reference.get("image_url")
             url = payload.get("url") if isinstance(payload, dict) else None
-            if isinstance(url, str) and await self._fetchable(url, seen):
+            if isinstance(url, str) and await self._fetchable(url, seen, deadline):
                 kept.append(reference)
             else:
                 refused += 1
@@ -795,6 +804,7 @@ class ImageGenerationAdapter:
         record: dict[str, Any] | None,
         notes: list[_Note],
         seen: dict[str, bool] | None = None,
+        deadline: float | None = None,
     ) -> list[dict[str, Any]]:
         mode, chosen = self._reference_settings(metadata)
         attached = self._input_references(responses_body)
@@ -803,11 +813,13 @@ class ImageGenerationAdapter:
         elif mode == "latest-only":
             attached = attached[-1:]
         seen = {} if seen is None else seen
+        if deadline is None:
+            deadline = time.monotonic() + ADDRESS_CHECK_BUDGET_SECONDS
         links = [
             {"type": "image_url", "image_url": {"url": url}}
-            for url in await self._vetted_reference_urls(chosen, seen)
+            for url in await self._vetted_reference_urls(chosen, seen, deadline)
         ]
-        attached = await self._vetted_attachments(attached, notes, seen)
+        attached = await self._vetted_attachments(attached, notes, seen, deadline)
         published = self._reference_limit(record)
         limit = (
             _SCHEMA_REFERENCE_CAP
@@ -1097,8 +1109,10 @@ class ImageGenerationAdapter:
         payload.update(top_level)
 
         vetted: dict[str, bool] = {}
+        address_deadline = time.monotonic() + ADDRESS_CHECK_BUDGET_SECONDS
         refs = await self._reference_payload(
-            responses_body, metadata, record=record, notes=notes, seen=vetted
+            responses_body, metadata, record=record, notes=notes, seen=vetted,
+            deadline=address_deadline,
         )
         if refs:
             payload["input_references"] = refs
@@ -1148,7 +1162,7 @@ class ImageGenerationAdapter:
         if provider:
             payload["provider"] = provider
 
-        await self._vet_payload_addresses(payload, vetted)
+        await self._vet_payload_addresses(payload, vetted, address_deadline)
 
         await self._report_notes(
             notes, api_model_id=api_model_id, event_emitter=event_emitter

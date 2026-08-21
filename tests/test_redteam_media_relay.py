@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -19,6 +20,12 @@ from open_webui_openrouter_pipe.integrations.video_types import VideoGenerationE
 from open_webui_openrouter_pipe.storage.owui_files import infer_file_mime_type
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+
+
+async def _a_listening_chat(_event):
+    """A chat whose socket is attached, which is the precondition for any upload."""
+    return None
+
 MP4 = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 32
 
 
@@ -36,6 +43,7 @@ class _Harness:
         self.posts: list[dict] = []
         self.notices: list[str] = []
         self.timeline: list[str] = []
+        self.the_chat_hears_it = True
         self.second_post_raises: BaseException | None = None
         self.second_post_status = 200
         self.pipe = MagicMock()
@@ -47,6 +55,7 @@ class _Harness:
         async def _notify(_emitter, content, *, level="info"):
             self.notices.append(content)
             self.timeline.append("told")
+            return self.the_chat_hears_it
 
         self.pipe._file_gateway.read_file_record_base64 = _read
         self.pipe._event_emitter_handler._emit_notification = _notify
@@ -200,7 +209,9 @@ async def test_a_single_request_cannot_publish_an_unbounded_number_of_files(coun
     valves = Valves()
     valves.SEND_MEDIA_VIA_FILE_HOST = True
 
-    encoded = await harness.encode([{"id": f"f{i}"} for i in range(count)], valves)
+    encoded = await harness.encode(
+        [{"id": f"f{i}"} for i in range(count)], valves, event_emitter=_a_listening_chat
+    )
 
     assert len(harness.posts) <= 16, (
         f"{len(harness.posts)} files were published from one request "
@@ -235,6 +246,7 @@ async def test_the_link_forwarded_is_the_one_the_chosen_host_serves(answer):
                 await adapter._relay_reference(
                     valves, base64.b64encode(MP4).decode(),
                     filename="a.mp4", mime="video/mp4", family="video",
+                    deadline=time.monotonic() + 30.0,
                 )
 
     said = str(refused.value)

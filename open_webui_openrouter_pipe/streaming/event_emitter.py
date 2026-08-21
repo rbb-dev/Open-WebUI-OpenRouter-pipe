@@ -82,6 +82,19 @@ def openai_chat_chunk_message_template(
     return _owui_template_cached(model, content, None, tool_calls, usage)
 
 
+_UNGUARDED_ATTR = "_openrouter_unguarded_emitter"
+
+
+def unguarded_emitter(emitter: EventEmitter) -> EventEmitter:
+    """The emitter as handed to the pipe, before the wrapper that swallows its errors.
+
+    ``_wrap_safe_event_emitter`` exists so an incidental status update cannot fail a
+    request. A caller that must know whether the user was actually told needs the
+    original, and gets it here; anything that was never wrapped is already original.
+    """
+    return getattr(emitter, _UNGUARDED_ATTR, emitter)
+
+
 class EventEmitterHandler:
     """Manages event emission and stream queues.
 
@@ -462,20 +475,28 @@ class EventEmitterHandler:
         content: str,
         *,
         level: Literal["info", "success", "warning", "error"] = "info",
-    ) -> None:
-        """Emit a toast-style notification to the UI.
+    ) -> bool:
+        """Emit a toast-style notification to the UI, reporting whether it went out.
 
-        The ``level`` argument controls the styling of the notification banner.
+        The ``level`` argument controls the styling of the notification banner. The
+        return value lets a caller that must not act unheard fail closed; callers that
+        only inform ignore it. Emitted through :func:`unguarded_emitter` so a transport
+        failure is observable here rather than swallowed one layer down, which would
+        make every answer "delivered".
         """
         if event_emitter is None:
-            return
+            return False
 
         try:
-            await event_emitter(
+            await unguarded_emitter(event_emitter)(
                 {"type": "notification", "data": {"type": level, "content": content}}
             )
+        except asyncio.CancelledError:
+            raise
         except Exception:
             self.logger.exception("Failed to emit notification")
+            return False
+        return True
 
 
     def _wrap_safe_event_emitter(
@@ -495,6 +516,7 @@ class EventEmitterHandler:
                 suffix = f" ({evt_type})" if evt_type else ""
                 self.logger.warning("Event emitter failure%s: %s", suffix, exc, exc_info=True)
 
+        setattr(_guarded, _UNGUARDED_ATTR, emitter)
         return _guarded
 
 

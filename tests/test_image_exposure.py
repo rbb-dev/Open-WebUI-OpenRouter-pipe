@@ -427,7 +427,8 @@ async def test_a_typed_link_is_sent_ahead_of_the_attachments(link):
 
 
 class _AllowAll:
-    async def _is_safe_url(self, url: str) -> bool:
+    async def _is_safe_url(self, url: str, *, seconds: float = 5.0) -> bool:
+        assert seconds > 0, "the address check was handed no time at all"
         return True
 
 
@@ -435,7 +436,7 @@ class _RefuseAll:
     def __init__(self) -> None:
         self.seen: list[str] = []
 
-    async def _is_safe_url(self, url: str) -> bool:
+    async def _is_safe_url(self, url: str, *, seconds: float = 5.0) -> bool:
         self.seen.append(url)
         return False
 
@@ -482,7 +483,7 @@ class _Gate:
         self.seen: list[str] = []
         self._allow = allow or set()
 
-    async def _is_safe_url(self, url: str) -> bool:
+    async def _is_safe_url(self, url: str, *, seconds: float = 5.0) -> bool:
         self.seen.append(url)
         return url in self._allow
 

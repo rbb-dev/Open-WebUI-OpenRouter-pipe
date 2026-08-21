@@ -17,6 +17,7 @@ from ..core.config import (
 )
 from ..core.costs import chat_usage_to_responses_usage
 from ..core.errors import _build_openrouter_api_error
+from ..core.utils import clamp_text, summarise_names
 from ..requests.debug import (
     _debug_print_error_response,
     _debug_print_request,
@@ -35,8 +36,6 @@ from .image_types import (
     GeneratedImage,
     ImageGenerationError,
     ImageGenerationResult,
-    clamp_text,
-    summarise_names,
 )
 
 _IMAGE_SSE_CONTENT_TYPE = "text/event-stream"

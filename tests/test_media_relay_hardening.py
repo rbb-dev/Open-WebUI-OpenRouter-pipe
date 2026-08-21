@@ -88,6 +88,7 @@ class _Relay:
         self.posts: list[str] = []
         self.notices: list[str] = []
         self.timeline: list[str] = []
+        self.the_chat_hears_it = True
         self.pipe = MagicMock()
         self.pipe.logger = logging.getLogger("relay-hardening")
 
@@ -97,6 +98,7 @@ class _Relay:
         async def _notify(_emitter, content, *, level="info"):
             self.notices.append(content)
             self.timeline.append("told")
+            return self.the_chat_hears_it
 
         self.pipe._file_gateway.read_file_record_base64 = _read
         self.pipe._event_emitter_handler._emit_notification = _notify

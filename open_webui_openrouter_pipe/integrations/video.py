@@ -26,6 +26,7 @@ from ..core.utils import (
     _find_first_kind_marker_body,
     _iter_kind_marker_spans,
     _serialize_kind_marker,
+    summarise_names,
 )
 from ..core.warn_latch import warn_level
 from ..media import (
@@ -36,7 +37,11 @@ from ..media import (
 )
 from ..models.registry import OpenRouterModelRegistry
 from ..requests.fusion_engine import asks_for_help, latest_user_text
-from ..storage.multimodal import image_pixel_size
+from ..storage.multimodal import (
+    ADDRESS_CHECK_BUDGET_SECONDS,
+    ADDRESS_CHECK_SECONDS,
+    image_pixel_size,
+)
 from ..storage.owui_files import (
     PUBLISHING_NEEDS_OWNERSHIP,
     authorize_file_publication,
@@ -47,8 +52,9 @@ from ..storage.owui_files import (
     materialize_owui_file_to_temp,
 )
 from ..storage.video_persistence import VideoPersistence
-from .image_types import capability_declared_off, prompt_with_system, summarise_names
+from .image_types import capability_declared_off, prompt_with_system
 from .media_relay import (
+    MAX_RELAY_SECONDS_PER_REQUEST,
     RELAY_HOSTS,
     MediaRelayError,
     host_keeps_forever,
@@ -63,6 +69,7 @@ from .provider_options import (
     merge_provider_options,
     options_key,
     payload_addresses,
+    refuse_past_the_scan_depth,
     requested_provider_block,
     requested_provider_options,
     restrict_provider_block,
@@ -86,10 +93,9 @@ _warned_provider_slug_guess: set[str] = set()
 
 _warned_video_provider_keys: set[str] = set()
 
-# Every entry costs a DNS resolution, awaited one at a time while the deployment-wide video
-# semaphore is held, and the list arrives from the request. The models take a handful of
-# reference clips; a cap well above that bounds the work without reaching real usage.
 _MAX_PASSTHROUGH_URLS = 16
+
+_OPTIONS_HOP_DEPTH = 3
 
 _MAX_VIDEO_OUTPUTS = 16
 
@@ -209,6 +215,32 @@ _OVER_URL_BUDGET = (
 
 _OVER_REFERENCE_BUDGET = (
     "the request's combined reference budget was already spent"
+)
+
+_A_COPY_MAY_ALREADY_BE_THERE = (
+    "{host} may already hold a copy of it, so no second host was tried"
+)
+
+_COULD_NOT_SAY_IT_FIRST = (
+    "Your attachment has to be uploaded to a public file host before a video model can "
+    "read it, and this chat could not be told that before it happened. Nothing was "
+    "uploaded. Reload the chat and send it again."
+)
+
+_FILE_HOST_RECORD = (
+    "> **Your {kind} {was} uploaded to {host}.** Anyone holding the link can open "
+    "{it}, {retention}.\n"
+)
+
+RELAY_BLOCK_START = "relay_block_start"
+
+RELAY_BLOCK_END = "relay_block_end"
+
+_RELAY_BLOCK_REGION_RE = re.compile(
+    r"\[openrouter:v1:" + re.escape(RELAY_BLOCK_START) + r":[^\]]+\]: #"
+    r".*?"
+    r"\[openrouter:v1:" + re.escape(RELAY_BLOCK_END) + r":[^\]]+\]: #\s*\n?",
+    re.DOTALL,
 )
 
 _MAX_INPUT_REFERENCES = 16
@@ -331,6 +363,7 @@ class VideoGenerationAdapter:
         user_slot_acquired = False
         lifecycle_transferred = False
         job_id = ""
+        disclosure_block = ""
 
         try:
             existing = await self._get_active_task(key)
@@ -364,12 +397,12 @@ class VideoGenerationAdapter:
                 job_id = resume_job_id
                 await self._add_user_active_job(user_id, job_id)
                 await self._emit_status(event_emitter, "Resuming video generation job...", done=False, progress=5)
-                resumed_disclosure = ""
+                resumed_disclosure = self._recover_the_file_host_record(persisted)
                 if persisted:
                     from .video_intent import _INTENT_BLOCK_REGION_RE
                     m = _INTENT_BLOCK_REGION_RE.search(persisted)
                     if m:
-                        resumed_disclosure = m.group(0)
+                        resumed_disclosure += m.group(0)
                 bg_task = self._create_lifecycle_task(
                     key=key,
                     job_id=job_id,
@@ -386,7 +419,7 @@ class VideoGenerationAdapter:
                     global_semaphore=global_semaphore,
                     message_lock=message_lock,
                     started_at=time.monotonic(),
-                    intent_disclosure_block=resumed_disclosure,
+                    disclosure_block=resumed_disclosure,
                 )
                 lifecycle_transferred = True
                 async with self._pipe._video_active_tasks_dict_lock:
@@ -397,7 +430,6 @@ class VideoGenerationAdapter:
 
             video_meta_pre = self._extract_video_metadata(metadata)
             intent_result: VideoIntentResult | None = None
-            intent_disclosure_block = ""
 
             if self._intent_classifier_should_run(
                 valves=valves,
@@ -517,7 +549,7 @@ class VideoGenerationAdapter:
                     if should_emit_confirmation_footer(
                         intent_result, confirm_mode=confirm_mode,
                     ):
-                        intent_disclosure_block = render_intent_disclosure_block(
+                        disclosure_block = render_intent_disclosure_block(
                             intent=intent_result,
                             thumb_urls=[t for t in thumbs if t],
                         )
@@ -549,7 +581,7 @@ class VideoGenerationAdapter:
                                     },
                                 })
                     intent_result = None
-                    intent_disclosure_block = ""
+                    disclosure_block = ""
 
             user_slot_acquired = await self._try_acquire_user_slot(user_id, valves)
             if not user_slot_acquired:
@@ -578,6 +610,9 @@ class VideoGenerationAdapter:
                 companions=bool(frame_images), event_emitter=event_emitter,
                 vetted=vetted_addresses,
             )
+            disclosure_block = self._with_the_file_host_record(
+                disclosure_block, valves, relayed_families
+            )
             if not prompt.strip() and not (frame_images or input_references):
                 content = self._build_failure_content(
                     job_id="",
@@ -587,13 +622,11 @@ class VideoGenerationAdapter:
                         "generate from."
                     ),
                 )
+                if disclosure_block:
+                    content = disclosure_block + "\n" + content
                 await self._emit_status(event_emitter, "Video generation could not start.", done=True)
                 await self._emit_completion(event_emitter, content)
                 return content
-            global_semaphore = self._ensure_global_semaphore(valves)
-            await global_semaphore.acquire()
-            global_slot_acquired = True
-
             provider_block = requested_provider_block(
                 SimpleNamespace(provider=getattr(responses_body, "provider", None)), metadata
             )
@@ -610,6 +643,10 @@ class VideoGenerationAdapter:
                 withheld=withheld,
                 vetted=vetted_addresses,
             )
+            global_semaphore = self._ensure_global_semaphore(valves)
+            await global_semaphore.acquire()
+            global_slot_acquired = True
+
             if withheld and event_emitter:
                 await self._pipe._event_emitter_handler._emit_notification(
                     event_emitter, self._withheld_notice(withheld), level="warning"
@@ -639,8 +676,8 @@ class VideoGenerationAdapter:
                     job_id=job_id,
                     model_id=api_model_id,
                 )
-                if intent_disclosure_block:
-                    pending_content = intent_disclosure_block + "\n" + pending_content
+                if disclosure_block:
+                    pending_content = disclosure_block + "\n" + pending_content
                 with contextlib.suppress(Exception):
                     await event_emitter({
                         "type": "message",
@@ -662,7 +699,7 @@ class VideoGenerationAdapter:
                 global_semaphore=global_semaphore,
                 message_lock=message_lock,
                 started_at=time.monotonic(),
-                intent_disclosure_block=intent_disclosure_block,
+                disclosure_block=disclosure_block,
             )
             lifecycle_transferred = True
             async with self._pipe._video_active_tasks_dict_lock:
@@ -686,6 +723,8 @@ class VideoGenerationAdapter:
             self.logger.exception("Video generation request failed (job_id=%s)", job_id)
             reason = str(exc) or exc.__class__.__name__
             content = self._build_failure_content(job_id=job_id, model_id=api_model_id, reason=reason)
+            if disclosure_block:
+                content = disclosure_block + "\n" + content
             await self._emit_status(event_emitter, "Video generation failed.", done=True)
             await self._emit_completion(event_emitter, content)
             return content
@@ -769,7 +808,7 @@ class VideoGenerationAdapter:
         global_semaphore: asyncio.Semaphore,
         message_lock: asyncio.Lock,
         started_at: float,
-        intent_disclosure_block: str = "",
+        disclosure_block: str = "",
     ) -> asyncio.Task[VideoLifecycleResult]:
         task: asyncio.Task[VideoLifecycleResult] = asyncio.create_task(
             self._run_lifecycle_after_submit(
@@ -788,7 +827,7 @@ class VideoGenerationAdapter:
                 global_semaphore=global_semaphore,
                 message_lock=message_lock,
                 started_at=started_at,
-                intent_disclosure_block=intent_disclosure_block,
+                disclosure_block=disclosure_block,
             ),
             name=f"openrouter-video-{job_id}",
         )
@@ -813,7 +852,7 @@ class VideoGenerationAdapter:
         global_semaphore: asyncio.Semaphore,
         message_lock: asyncio.Lock,
         started_at: float,
-        intent_disclosure_block: str = "",
+        disclosure_block: str = "",
     ) -> VideoLifecycleResult:
         content = ""
         failed = False
@@ -944,8 +983,8 @@ class VideoGenerationAdapter:
                 usage=usage,
                 unstored=len(downloads) - len(file_ids),
             )
-            if intent_disclosure_block:
-                content = intent_disclosure_block + "\n" + content
+            if disclosure_block:
+                content = disclosure_block + "\n" + content
             description = self._format_final_status(elapsed=elapsed, usage=usage, valves=valves)
             await self._emit_status(event_emitter, description, done=True, progress=100)
             if usage and not costed:
@@ -979,8 +1018,8 @@ class VideoGenerationAdapter:
             elapsed = max(0.0, time.monotonic() - started_at)
             reason = str(exc) or exc.__class__.__name__
             content = self._build_failure_content(job_id=job_id, model_id=api_model_id, reason=reason)
-            if intent_disclosure_block:
-                content = intent_disclosure_block + "\n" + content
+            if disclosure_block:
+                content = disclosure_block + "\n" + content
             description = f"Video generation failed: {reason}"
             await self._emit_status(event_emitter, description, done=True)
             if usage and not costed:
@@ -1351,17 +1390,29 @@ class VideoGenerationAdapter:
         seen: dict[str, bool] | None = None,
         budget: list[int] | None = None,
         vetted: dict[str, bool] | None = None,
+        depth: int = 0,
+        deadline: float | None = None,
     ) -> None:
         root = seen is None
         if seen is None:
             seen = dict(vetted) if isinstance(vetted, dict) else {}
+        if deadline is None:
+            deadline = time.monotonic() + ADDRESS_CHECK_BUDGET_SECONDS
         budget = [_MAX_PASSTHROUGH_URLS] if budget is None else budget
         provider = payload.get("provider")
         options = provider.get("options") if isinstance(provider, dict) else None
         if isinstance(options, dict):
+            try:
+                refuse_past_the_scan_depth(depth + _OPTIONS_HOP_DEPTH)
+            except UnvettableRequest as exc:
+                raise VideoGenerationError(str(exc)) from exc
             for nested in options.values():
                 if isinstance(nested, dict):
-                    await self._validate_passthrough_urls(nested, withheld, seen, budget)
+                    await self._validate_passthrough_urls(
+                        nested, withheld, seen, budget,
+                        depth=depth + _OPTIONS_HOP_DEPTH,
+                        deadline=deadline,
+                    )
         url_fields = ("audio", "last_image", "video")
         array_fields = ("videos", "images")
         handler = self._pipe._multimodal_handler
@@ -1380,7 +1431,9 @@ class VideoGenerationAdapter:
                 return
             safe = seen.get(url)
             if safe is None:
-                safe = bool(await handler._is_safe_url(url))
+                safe = bool(await handler._is_safe_url(
+                    url, seconds=min(ADDRESS_CHECK_SECONDS, deadline - time.monotonic()),
+                ))
                 seen[url] = safe
             if not safe:
                 raise VideoGenerationError(
@@ -1743,11 +1796,13 @@ class VideoGenerationAdapter:
             event_emitter,
         )
         used: set[tuple[str, str]] = set()
+        relay_deadline = time.monotonic() + MAX_RELAY_SECONDS_PER_REQUEST
         for entry in accepted:
             if entry.via_file_host:
                 link, host = await self._relay_reference(
                     valves, entry.b64, filename=entry.filename,
                     mime=entry.mime, family=entry.family,
+                    deadline=relay_deadline,
                 )
                 encoded.append({"type": entry.kind, entry.kind: {"url": link}})
                 if vetted is not None:
@@ -1798,47 +1853,111 @@ class VideoGenerationAdapter:
             for family in families
             for host in self._relay_hosts(valves)
         }
-        await self._emit_file_host_notice(valves, planned, event_emitter)
+        if not await self._emit_file_host_notice(valves, planned, event_emitter):
+            raise VideoGenerationError(_COULD_NOT_SAY_IT_FIRST)
         return planned
 
     async def _emit_file_host_notice(
         self, valves: Any, pairs: set[tuple[str, str]], event_emitter: Any
-    ) -> None:
-        if event_emitter is None or not bool(
-            getattr(valves, "TELL_USERS_ABOUT_THE_FILE_HOST", True)
-        ):
-            return
-        await self._pipe._event_emitter_handler._emit_notification(
-            event_emitter, self._file_host_notice(valves, pairs), level="info"
+    ) -> bool:
+        if not bool(getattr(valves, "TELL_USERS_ABOUT_THE_FILE_HOST", True)):
+            return True
+        if event_emitter is None:
+            return False
+        return bool(
+            await self._pipe._event_emitter_handler._emit_notification(
+                event_emitter, self._file_host_notice(valves, pairs), level="info"
+            )
         )
 
     @staticmethod
-    def _file_host_notice(valves: Any, relayed: set[tuple[str, str]]) -> str:
-        template = str(getattr(valves, "FILE_HOST_NOTICE", "") or "")
-        hosts = sorted({used for _family, used in relayed})
-        host = hosts[0] if hosts else str(getattr(valves, "MEDIA_FILE_HOST", "litterbox"))
+    def _relay_hosts_named(relayed: set[tuple[str, str]]) -> list[str]:
+        return sorted({used for _family, used in relayed})
+
+    @staticmethod
+    def _relay_kinds_named(relayed: set[tuple[str, str]]) -> list[str]:
         kinds = {"video": "clip", "audio": "sound file", "image": "picture"}
-        spoken = sorted({kinds.get(family, family) for family, _used in relayed})
-        named = spoken[0] if len(spoken) == 1 else " and ".join(
+        return sorted({kinds.get(family, family) for family, _used in relayed})
+
+    @classmethod
+    def _relay_kinds_spoken(cls, relayed: set[tuple[str, str]]) -> str:
+        spoken = cls._relay_kinds_named(relayed)
+        if not spoken:
+            return ""
+        return spoken[0] if len(spoken) == 1 else " and ".join(
             [", ".join(spoken[:-1]), spoken[-1]]
         )
+
+    @staticmethod
+    def _relay_retention_words(
+        valves: Any, hosts: list[str], *, plural: bool = False
+    ) -> str:
+        host = hosts[0] if hosts else str(getattr(valves, "MEDIA_FILE_HOST", "litterbox"))
         if any(host_keeps_forever(used) for used in hosts) or (
             not hosts and host_keeps_forever(host)
         ):
-            retention = (
+            if plural:
+                return (
+                    "and stay there for good, because the uploads carry no account and "
+                    "nothing here can take them down again"
+                )
+            return (
                 "and stays there for good, because the upload carries no account and "
                 "nothing here can take it down again"
             )
-        else:
-            spans = {"1h": "an hour", "12h": "12 hours", "24h": "a day", "72h": "three days"}
-            span = str(getattr(valves, "MEDIA_FILE_HOST_RETENTION", "1h"))
-            retention = f"and is deleted again {spans.get(span, span)} later"
+        spans = {"1h": "an hour", "12h": "12 hours", "24h": "a day", "72h": "three days"}
+        span = str(getattr(valves, "MEDIA_FILE_HOST_RETENTION", "1h"))
+        deleted = "are deleted" if plural else "is deleted"
+        return f"and {deleted} again {spans.get(span, span)} later"
+
+    @classmethod
+    def _file_host_notice(cls, valves: Any, relayed: set[tuple[str, str]]) -> str:
+        template = str(getattr(valves, "FILE_HOST_NOTICE", "") or "")
+        hosts = cls._relay_hosts_named(relayed)
+        host = hosts[0] if hosts else str(getattr(valves, "MEDIA_FILE_HOST", "litterbox"))
         try:
             return template.format(
-                kind=named, host=" and ".join(hosts) or host, retention=retention
+                kind=cls._relay_kinds_spoken(relayed),
+                host=" and ".join(hosts) or host,
+                retention=cls._relay_retention_words(valves, hosts),
             )
         except (KeyError, IndexError, ValueError):
             return template
+
+    @classmethod
+    def _with_the_file_host_record(
+        cls, block: str, valves: Any, relayed: set[tuple[str, str]]
+    ) -> str:
+        record = cls._file_host_record(valves, relayed)
+        if not record:
+            return block
+        return f"{block}{record}" if block else record
+
+    @classmethod
+    def _file_host_record(cls, valves: Any, relayed: set[tuple[str, str]]) -> str:
+        if not relayed:
+            return ""
+        hosts = cls._relay_hosts_named(relayed)
+        many = len(cls._relay_kinds_named(relayed)) > 1
+        said = _FILE_HOST_RECORD.format(
+            kind=cls._relay_kinds_spoken(relayed),
+            was=("were" if many else "was"),
+            it=("them" if many else "it"),
+            host=" and ".join(hosts),
+            retention=cls._relay_retention_words(valves, hosts, plural=many),
+        )
+        return (
+            f"{_serialize_kind_marker(RELAY_BLOCK_START, '1')}\n"
+            f"\n{said}\n"
+            f"{_serialize_kind_marker(RELAY_BLOCK_END, '1')}\n"
+        )
+
+    @staticmethod
+    def _recover_the_file_host_record(persisted: str) -> str:
+        if not isinstance(persisted, str) or not persisted:
+            return ""
+        found = _RELAY_BLOCK_REGION_RE.search(persisted)
+        return found.group(0) if found else ""
 
     @staticmethod
     def _file_host_wanted(valves: Any, family: str) -> bool:
@@ -1884,7 +2003,8 @@ class VideoGenerationAdapter:
         )
 
     async def _relay_reference(
-        self, valves: Any, b64: str, *, filename: str, mime: str, family: str
+        self, valves: Any, b64: str, *, filename: str, mime: str, family: str,
+        deadline: float,
     ) -> tuple[str, str]:
         try:
             blob = base64.b64decode(b64, validate=False)
@@ -1907,6 +2027,7 @@ class VideoGenerationAdapter:
                         max_bytes=int(getattr(valves, "MEDIA_FILE_HOST_MAX_SIZE_MB", 200))
                         * 1024
                         * 1024,
+                        seconds_left=deadline - time.monotonic(),
                     )
                     return link, host
                 except MediaRelayError as exc:
@@ -1915,6 +2036,12 @@ class VideoGenerationAdapter:
                         "Could not put the attached %s behind a link via %s: %s",
                         family, host, exc,
                     )
+                    if getattr(exc, "may_have_stored_it", True):
+                        if host != hosts[-1]:
+                            failures.append(
+                                _A_COPY_MAY_ALREADY_BE_THERE.format(host=host)
+                            )
+                        break
         raise VideoGenerationError(
             f"The attached {family} could not be sent: {'; '.join(failures)}."
         )

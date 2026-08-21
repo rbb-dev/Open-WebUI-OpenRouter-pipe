@@ -34,7 +34,8 @@ def _metadata(links: list[str]) -> dict[str, Any]:
 
 
 class _AllowAll:
-    async def _is_safe_url(self, _url: str) -> bool:
+    async def _is_safe_url(self, _url: str, *, seconds: float = 5.0) -> bool:
+        assert seconds > 0, "the address check was handed no time at all"
         return True
 
 

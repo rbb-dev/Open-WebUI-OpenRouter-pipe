@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from typing import Any, NamedTuple
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 import aiohttp
 
@@ -36,6 +37,8 @@ _KEEPS_FOREVER: frozenset[str] = frozenset({"catbox"})
 
 _MAX_UPLOAD_SECONDS = 300
 
+MAX_RELAY_SECONDS_PER_REQUEST = 300
+
 _UPLOAD_ATTEMPTS = 3
 
 _RETRY_PAUSE_SECONDS = 2.0
@@ -50,7 +53,15 @@ _HOST_REPLY_LIMIT = 120
 
 
 class MediaRelayError(Exception):
-    pass
+    def __init__(self, message: str, *, may_have_stored_it: bool = True) -> None:
+        super().__init__(message)
+        self.may_have_stored_it = may_have_stored_it
+
+
+_RAN_OUT_OF_TIME = (
+    "the time this request may spend uploading to a file host ran out before the "
+    "transfer finished"
+)
 
 
 def host_keeps_forever(host: str) -> bool:
@@ -74,6 +85,8 @@ def _served_by(link: str, origins: tuple[str, ...]) -> bool:
     try:
         parts = urlsplit(link)
     except ValueError:
+        return False
+    if urlunsplit(parts) != link:
         return False
     if parts.scheme != "https":
         return False
@@ -122,39 +135,51 @@ async def relay_to_public_url(
     host: str,
     retention: str,
     max_bytes: int,
+    seconds_left: float = MAX_RELAY_SECONDS_PER_REQUEST,
 ) -> str:
     endpoint = _ENDPOINTS.get(host)
     if endpoint is None:
-        raise MediaRelayError(f"{host!r} is not a file host this pipe knows how to use")
+        raise MediaRelayError(
+            f"{host!r} is not a file host this pipe knows how to use",
+            may_have_stored_it=False,
+        )
     content_type = usable_media_type(mime)
     if not content_type:
         raise MediaRelayError(
             f"{mime!r} is not a media type, so there is no honest way to declare the "
-            "file to a host"
+            "file to a host",
+            may_have_stored_it=False,
         )
     if max_bytes > 0 and len(blob) > max_bytes:
         raise MediaRelayError(
             f"the file is {megabytes(len(blob))} and the limit for sending media to a "
-            f"file host is {megabytes(max_bytes)}"
+            f"file host is {megabytes(max_bytes)}",
+            may_have_stored_it=False,
         )
     if not blob:
-        raise MediaRelayError("the file is empty")
+        raise MediaRelayError("the file is empty", may_have_stored_it=False)
 
     fields = {"reqtype": "fileupload"}
     if host == "litterbox":
         fields["time"] = retention if retention in RELAY_RETENTIONS else RELAY_RETENTIONS[0]
 
+    deadline = time.monotonic() + max(0.0, seconds_left)
     last = ""
+    stored = False
     for attempt in range(_UPLOAD_ATTEMPTS):
         if attempt:
-            await asyncio.sleep(_RETRY_PAUSE_SECONDS * attempt)
+            await asyncio.sleep(min(_RETRY_PAUSE_SECONDS * attempt, _time_left(deadline)))
+        window = _time_left(deadline)
+        if window <= 0:
+            last = last or f"{host} was not reached: {_RAN_OUT_OF_TIME}"
+            break
         try:
             async with session.post(
                 endpoint.url,
                 data=_form(
                     fields, filename or "upload.bin", blob, content_type, endpoint.field
                 ),
-                timeout=aiohttp.ClientTimeout(total=_MAX_UPLOAD_SECONDS),
+                timeout=aiohttp.ClientTimeout(total=min(_MAX_UPLOAD_SECONDS, window)),
                 allow_redirects=False,
             ) as response:
                 text = (await response.text()).strip()
@@ -162,19 +187,30 @@ async def relay_to_public_url(
                     link = _extract_url(text, endpoint.origins)
                     if link:
                         return link
+                    stored = True
                     last = (
                         f"{host} answered without a link it serves: "
                         f"{_as_the_host_put_it(text)}"
                     )
                     break
+                stored = response.status >= 500
                 last = f"{host} answered {response.status}"
-                if response.status < 500 and response.status != 429:
-                    break
+                break
         except asyncio.CancelledError:
             raise
-        except (aiohttp.ClientError, TimeoutError, OSError, UnicodeDecodeError) as exc:
+        except (aiohttp.ClientConnectorError, aiohttp.ConnectionTimeoutError) as exc:
             last = f"{host} could not be reached: {_as_the_host_put_it(str(exc))}"
-    raise MediaRelayError(last or f"{host} did not accept the file")
+        except (aiohttp.ClientError, TimeoutError, OSError, UnicodeDecodeError) as exc:
+            stored = True
+            last = f"{host} did not answer: {_as_the_host_put_it(str(exc))}"
+            break
+    raise MediaRelayError(
+        last or f"{host} did not accept the file", may_have_stored_it=stored
+    )
+
+
+def _time_left(deadline: float) -> float:
+    return deadline - time.monotonic()
 
 
 def _extract_url(text: str, origins: tuple[str, ...]) -> str:

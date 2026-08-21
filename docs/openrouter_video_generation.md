@@ -1811,12 +1811,18 @@ pipe()
         │        only uploaded when the requester owns the file and the
         │        stored record names its media type, at most sixteen per
         │        request and at most MEDIA_FILE_HOST_MAX_SIZE_MB of them
-        │        put together; the chat is told which host and for how
-        │        long BEFORE the first byte is sent, and told again if
-        │        the fallback host took it
-        ├─ acquire global semaphore
+        │        put together, inside one wall-clock budget for the whole
+        │        request; the chat is told which host and for how long
+        │        BEFORE the first byte is sent, and nothing is uploaded
+        │        when that could not be delivered. A file that did go out
+        │        is written into the message Open WebUI stores, so the
+        │        record survives a reload and a resumed job
         ├─ build the request body (top-level fields the model publishes,
-        │  the rest under provider.options.<slug>)
+        │  the rest under provider.options.<slug>), resolving and checking
+        │  every address it carries — done before the global slot is taken,
+        │  since the hosts come from the request and decide how long the
+        │  lookups block
+        ├─ acquire global semaphore
         ├─ submit job via OpenRouterVideoClient.submit(); read the job id
         │  out of the accepted payload
         ├─ emit pending content via OWUI socket 'message' event

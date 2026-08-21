@@ -83,7 +83,7 @@ class _Logger:
 
 
 class _MM:
-    async def _is_safe_url(self, url): return True
+    async def _is_safe_url(self, url, *, seconds=5.0): return True
 
 
 class _CatMgr:

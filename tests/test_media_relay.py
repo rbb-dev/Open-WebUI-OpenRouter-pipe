@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import subprocess
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -32,6 +33,15 @@ from open_webui_openrouter_pipe.integrations.media_relay import (
 )
 from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
 from open_webui_openrouter_pipe.integrations.video_types import VideoGenerationError
+
+
+async def _a_listening_chat(_event):
+    """A chat whose socket is attached, which is the precondition for any upload.
+
+    `_encode_input_references` refuses to publish a user's file when it cannot say so
+    first, so a test about anything else has to supply a channel that works.
+    """
+    return None
 
 # Every OWUI file row carries the id of the person who uploaded it, and every request
 # carries the person making it. Relaying is gated on those two being the same, so a
@@ -183,8 +193,11 @@ async def test_a_clip_reaches_the_request_as_a_link_rather_than_as_bytes(monkeyp
 
     uploaded: list[tuple[str, str, int]] = []
 
-    async def fake_relay(_session, blob, *, filename, mime, host, retention, max_bytes):
+    async def fake_relay(
+        _session, blob, *, filename, mime, host, retention, max_bytes, seconds_left
+    ):
         uploaded.append((host, retention, len(blob)))
+        assert seconds_left > 0, "the upload was given no time at all"
         return "https://litter.catbox.moe/abc123.mp4"
 
     monkeypatch.setattr(module, "relay_to_public_url", fake_relay)
@@ -198,6 +211,7 @@ async def test_a_clip_reaches_the_request_as_a_link_rather_than_as_bytes(monkeyp
     adapter = VideoGenerationAdapter.__new__(VideoGenerationAdapter)
     adapter.logger = logging.getLogger("media-relay-test")
     adapter._pipe = MagicMock()
+    adapter._pipe._event_emitter_handler._emit_notification = AsyncMock(return_value=True)
     adapter._pipe._create_http_session = MagicMock(
         return_value=MagicMock(
             __aenter__=AsyncMock(return_value=MagicMock()), __aexit__=AsyncMock(return_value=False)
@@ -215,7 +229,8 @@ async def test_a_clip_reaches_the_request_as_a_link_rather_than_as_bytes(monkeyp
         valves,
         withheld=withheld,
         user_obj=_OWNER,
-    )
+    event_emitter=_a_listening_chat,
+)
 
     assert withheld == [], withheld
     assert refs == [
@@ -268,6 +283,7 @@ async def test_a_reference_kind_is_offered_only_where_the_model_declares_it(
     adapter = VideoGenerationAdapter.__new__(VideoGenerationAdapter)
     adapter.logger = logging.getLogger("declared-modalities")
     adapter._pipe = MagicMock()
+    adapter._pipe._event_emitter_handler._emit_notification = AsyncMock(return_value=True)
     adapter._pipe._create_http_session = MagicMock(
         return_value=MagicMock(
             __aenter__=AsyncMock(return_value=MagicMock()), __aexit__=AsyncMock(return_value=False)
@@ -302,7 +318,8 @@ async def test_a_reference_kind_is_offered_only_where_the_model_declares_it(
         withheld=withheld,
         video_model={"id": model_id, "input_modalities": declared},
         user_obj=_OWNER,
-    )
+    event_emitter=_a_listening_chat,
+)
 
     accepted = family in declared
     carried = [item["type"] for item in refs]
@@ -564,15 +581,39 @@ def test_the_file_reaches_the_host_intact_inside_a_declared_multipart_part():
 
 
 @pytest.mark.parametrize("status", [500, 502, 429])
-def test_a_host_having_a_bad_moment_is_retried_and_can_still_succeed(status):
-    """429 and 5xx are the transient answers; giving up on them loses a working upload."""
+def test_an_answered_upload_is_never_posted_a_second_time(status):
+    """The blob is sent whole before the status comes back, so any answer at all means
+    the host had the bytes. A second POST of the same file to an anonymous host that
+    issues no delete credential can only add a permanent copy nobody can remove -- and
+    the first copy is exactly the one a 5xx cannot rule out having written.
+
+    Parametrised over 5xx and 429 because those were the two statuses the old loop
+    retried; a production `if status == 500: break` would satisfy only one of them.
+    """
     sleeps = []
     link, wire = asyncio.run(
         _relayed([(status, "busy"), (200, "https://litter.catbox.moe/ok.mp4")], sleeps=sleeps)
     )
-    assert link == "https://litter.catbox.moe/ok.mp4"
-    assert len(wire.calls) == 2
-    assert sleeps == [2.0]
+    assert isinstance(link, MediaRelayError), f"a second upload produced {link!r}"
+    assert str(status) in str(link)
+    assert len(wire.calls) == 1, f"the file was posted {len(wire.calls)} times"
+    assert sleeps == []
+
+
+@pytest.mark.parametrize(("status", "may_have_stored_it"), [(400, False), (503, True)])
+def test_only_an_answer_that_rules_out_a_stored_copy_frees_the_second_host(
+    status, may_have_stored_it
+):
+    """A refusal is the host saying it did not take the file; a 5xx says nothing at all.
+
+    Two statuses on opposite sides of the line, so a production constant cannot satisfy
+    both, and the flag is what `_relay_reference` reads before trying the other host.
+    """
+    link, wire = asyncio.run(_relayed([(status, "no")]))
+    assert isinstance(link, MediaRelayError)
+    assert str(status) in str(link)
+    assert len(wire.calls) == 1
+    assert link.may_have_stored_it is may_have_stored_it
 
 
 @pytest.mark.parametrize("status", [400, 413])
@@ -582,14 +623,6 @@ def test_a_refusal_the_host_will_repeat_is_not_retried(status):
     assert isinstance(link, MediaRelayError)
     assert str(status) in str(link)
     assert len(wire.calls) == 1
-
-
-def test_a_host_that_stays_down_is_given_three_tries_with_a_widening_pause():
-    sleeps = []
-    link, wire = asyncio.run(_relayed([(503, "down")], sleeps=sleeps))
-    assert isinstance(link, MediaRelayError)
-    assert len(wire.calls) == 3
-    assert sleeps == [2.0, 4.0]
 
 
 def test_a_success_carrying_no_link_is_reported_with_what_the_host_said():
@@ -677,6 +710,7 @@ def _adapter_with_files(records, reads, uploads):
 
     pipe = MagicMock()
     pipe.logger = logging.getLogger("relay-order")
+    pipe._event_emitter_handler._emit_notification = _AsyncMock(return_value=True)
 
     async def _read(file_obj, _chunk, _cap, user=None):
         reads.append(file_obj.id)
@@ -685,7 +719,7 @@ def _adapter_with_files(records, reads, uploads):
     pipe._file_gateway.read_file_record_base64 = _read
     adapter = VideoGenerationAdapter(pipe=pipe, logger=logging.getLogger("relay-order"))
 
-    async def _relay(self, valves, b64, *, filename, mime, family):
+    async def _relay(self, valves, b64, *, filename, mime, family, deadline):
         uploads.append((filename, mime, family))
         return f"https://files.example/{family}.bin", "litterbox"
 
@@ -730,7 +764,8 @@ async def test_a_sound_file_with_nothing_to_pair_with_is_never_uploaded(monkeypa
         relayed=set(),
         companions=False,
         user_obj=_OWNER,
-    )
+    event_emitter=_a_listening_chat,
+)
 
     assert encoded == []
     assert uploads == [], f"the file was published before it was discarded: {uploads}"
@@ -773,7 +808,8 @@ async def test_a_sound_file_is_kept_when_a_picture_was_attached_as_a_frame(monke
         relayed=set(),
         companions=True,
         user_obj=_OWNER,
-    )
+    event_emitter=_a_listening_chat,
+)
 
     assert [entry["type"] for entry in encoded] == ["audio_url"]
     assert uploads == [("voice.mp3", "audio/mpeg", "audio")]
@@ -821,7 +857,8 @@ async def test_a_clip_that_cannot_be_sent_is_never_read_out_of_storage(
         relayed=set(),
         companions=True,
         user_obj=_OWNER,
-    )
+    event_emitter=_a_listening_chat,
+)
 
     assert reads == expected_reads
 
@@ -842,18 +879,23 @@ class _RelaySession:
 def _relay_adapter(session):
     pipe = MagicMock()
     pipe.logger = logging.getLogger("relay-failover")
+    pipe._event_emitter_handler._emit_notification = AsyncMock(return_value=True)
     pipe._create_http_session = lambda *_a, **_k: _RelaySession(session)
     return VideoGenerationAdapter(pipe=pipe, logger=logging.getLogger("relay-failover"))
 
 
 @pytest.mark.parametrize("chosen", ["litterbox", "catbox"])
+@pytest.mark.parametrize("refusal", [400, 413])
 @pytest.mark.asyncio
-async def test_the_second_file_host_is_tried_only_when_the_operator_turned_it_on(chosen):
+async def test_the_second_file_host_is_tried_only_when_the_operator_turned_it_on(
+    chosen, refusal
+):
     """`USE_THE_OTHER_FILE_HOST_IF_ONE_IS_DOWN` is the difference between a clip and an error.
 
     Parametrised over both hosts as the operator's first choice, so the fallback cannot be
     a hardcoded "try catbox": whichever host was chosen, the OTHER one is the second try
-    and neither is tried twice.
+    and neither is tried twice. Two refusal statuses, so a production `status == 400`
+    cannot stand in for "the host told us it did not take the file".
 
     With the valve off, the same outage must end as a refusal that names what went wrong,
     because silently reaching a host the operator did not pick publishes a user's file
@@ -872,13 +914,14 @@ async def test_the_second_file_host_is_tried_only_when_the_operator_turned_it_on
         valves.MEDIA_FILE_HOST_MAX_SIZE_MB = 200
 
         with aioresponses() as http:
-            http.post(_ENDPOINTS[chosen][0], status=500, body="down", repeat=True)
+            http.post(_ENDPOINTS[chosen][0], status=refusal, body="no", repeat=True)
             http.post(
                 _ENDPOINTS[other][0], status=200, body=f"https://files.catbox.moe/{other}.mp4"
             )
             with patch.object(media_relay.asyncio, "sleep", AsyncMock()):
                 link, used = await adapter._relay_reference(
-                    valves, blob, filename="clip.mp4", mime="video/mp4", family="video"
+                    valves, blob, filename="clip.mp4", mime="video/mp4", family="video",
+                    deadline=time.monotonic() + 30.0,
                 )
 
         assert used == other, f"the operator's fallback did not reach {other}"
@@ -886,7 +929,7 @@ async def test_the_second_file_host_is_tried_only_when_the_operator_turned_it_on
 
         valves.USE_THE_OTHER_FILE_HOST_IF_ONE_IS_DOWN = False
         with aioresponses() as http:
-            http.post(_ENDPOINTS[chosen][0], status=500, body="down", repeat=True)
+            http.post(_ENDPOINTS[chosen][0], status=refusal, body="no", repeat=True)
             http.post(
                 _ENDPOINTS[other][0], status=200, body=f"https://files.catbox.moe/{other}.mp4",
                 repeat=True
@@ -894,7 +937,8 @@ async def test_the_second_file_host_is_tried_only_when_the_operator_turned_it_on
             with patch.object(media_relay.asyncio, "sleep", AsyncMock()):
                 with pytest.raises(VideoGenerationError) as failed:
                     await adapter._relay_reference(
-                        valves, blob, filename="clip.mp4", mime="video/mp4", family="video"
+                        valves, blob, filename="clip.mp4", mime="video/mp4", family="video",
+                        deadline=time.monotonic() + 30.0,
                     )
             reached = sorted({str(url) for (_method, url) in http.requests})
 
@@ -903,6 +947,53 @@ async def test_the_second_file_host_is_tried_only_when_the_operator_turned_it_on
         )
         assert "video" in str(failed.value) and chosen in str(failed.value), (
             f"the refusal does not say what failed: {failed.value}"
+        )
+
+
+@pytest.mark.parametrize(("chosen", "outcome"), [("litterbox", 500), ("catbox", 503)])
+@pytest.mark.asyncio
+async def test_a_host_that_may_already_hold_the_file_is_not_followed_by_a_second_host(
+    chosen, outcome
+):
+    """A 5xx arrives after the whole file is on the wire, so the host may have written it.
+
+    Neither host issues a delete credential, so publishing to the second one turns one
+    unreachable copy into two. The operator's fallback is for a host that refused or was
+    never reached -- not for one that might be holding the user's clip right now.
+
+    Two 5xx codes and both host orders, so a production rule keyed on one status or one
+    host name cannot pass.
+    """
+    import base64
+
+    other = next(name for name in RELAY_HOSTS if name != chosen)
+    blob = base64.b64encode(b"\x00\x00\x00\x18ftypmp42").decode()
+
+    async with aiohttp.ClientSession() as session:
+        adapter = _relay_adapter(session)
+        valves = Valves()
+        valves.MEDIA_FILE_HOST = chosen
+        valves.USE_THE_OTHER_FILE_HOST_IF_ONE_IS_DOWN = True
+
+        with aioresponses() as http:
+            http.post(_ENDPOINTS[chosen][0], status=outcome, body="down", repeat=True)
+            http.post(
+                _ENDPOINTS[other][0], status=200,
+                body=f"https://files.catbox.moe/{other}.mp4", repeat=True,
+            )
+            with patch.object(media_relay.asyncio, "sleep", AsyncMock()):
+                with pytest.raises(VideoGenerationError) as failed:
+                    await adapter._relay_reference(
+                        valves, blob, filename="clip.mp4", mime="video/mp4", family="video",
+                        deadline=time.monotonic() + 30.0,
+                    )
+            reached = sorted({str(url) for (_method, url) in http.requests})
+
+        assert reached == [_ENDPOINTS[chosen][0]], (
+            f"a possibly-stored file was published again, reaching {reached}"
+        )
+        assert "may already hold a copy" in str(failed.value), (
+            f"the user is not told a copy may be out there: {failed.value}"
         )
 
 
@@ -917,7 +1008,8 @@ async def test_a_clip_that_is_not_readable_is_refused_before_any_host_sees_it():
         with aioresponses() as http:
             with pytest.raises(VideoGenerationError) as failed:
                 await adapter._relay_reference(
-                    valves, "AAAAA", filename="clip.mp4", mime="video/mp4", family="video"
+                    valves, "AAAAA", filename="clip.mp4", mime="video/mp4", family="video",
+                    deadline=time.monotonic() + 30.0,
                 )
             assert list(http.requests) == [], "an unreadable clip still reached a host"
         assert "video" in str(failed.value)
@@ -946,19 +1038,7 @@ def test_an_empty_file_is_refused_rather_than_published_as_a_zero_byte_link(host
     assert "empty" in asyncio.run(_run())
 
 
-@pytest.mark.parametrize(
-    "failure",
-    [aiohttp.ClientConnectionError("connection refused"), TimeoutError("timed out")],
-)
-def test_a_host_that_cannot_be_reached_at_all_is_reported_by_name(failure):
-    """A DNS or TCP failure is the common file-host outage, and it raises rather than answers.
-
-    The retry loop only ever saw HTTP statuses in the suite; the arm that turns a
-    transport failure into a sentence could be deleted and the user would get
-    "litterbox did not accept the file" for a host that was never contacted.
-
-    Two failure types, so an arm that catches only one is not enough.
-    """
+def _relay_raising(failure):
     async def _run():
         async with aiohttp.ClientSession() as session:
             with aioresponses() as http:
@@ -970,12 +1050,47 @@ def test_a_host_that_cannot_be_reached_at_all_is_reported_by_name(failure):
                             host="litterbox", retention="1h", max_bytes=0,
                         )
                 attempts = len(next(iter(http.requests.values())))
-        return str(refused.value), attempts
+        return refused.value, attempts
 
-    said, attempts = asyncio.run(_run())
+    return asyncio.run(_run())
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        aiohttp.ClientConnectorError(MagicMock(ssl=None), OSError(111, "connection refused")),
+        aiohttp.ConnectionTimeoutError("connect timed out"),
+    ],
+)
+def test_a_host_never_contacted_is_named_and_retried(failure):
+    """A DNS or TCP failure is the common file-host outage, and it raises rather than answers.
+
+    These are the two classes aiohttp raises before a single byte of the body is written,
+    which is the only case where posting again cannot add a second permanent copy. Two
+    of them, so an arm that catches only one is not enough.
+    """
+    refused, attempts = _relay_raising(failure)
+    said = str(refused)
     assert "litterbox could not be reached" in said, said
-    assert str(failure) in said, f"the reason the host gave is missing: {said}"
-    assert attempts == 3, f"a transport failure was retried {attempts} time(s), not three"
+    assert attempts == 3, f"a pre-send failure was retried {attempts} time(s), not three"
+    assert refused.may_have_stored_it is False
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [aiohttp.ServerDisconnectedError("gone"), TimeoutError("timed out")],
+)
+def test_a_failure_that_could_have_landed_is_neither_retried_nor_claimed_pre_send(failure):
+    """A disconnect and a whole-request timeout both happen after the body is on the wire.
+
+    Neither rules out the host having written the file, and neither carries a credential
+    that could delete it. Two classes on the same side of the line so a handler that
+    special-cases one of them still fails here.
+    """
+    refused, attempts = _relay_raising(failure)
+    assert attempts == 1, f"a possibly-stored upload was posted {attempts} times"
+    assert str(failure) in str(refused), f"the reason is missing: {refused}"
+    assert refused.may_have_stored_it is True
 
 
 @pytest.mark.parametrize("template", ["Your file goes to {hosst}.", "Your file goes to {0}."])
@@ -1049,7 +1164,8 @@ async def test_a_clip_below_the_models_pixel_floor_is_dropped_before_it_is_publi
         relayed=set(),
         companions=True,
         user_obj=_OWNER,
-    )
+    event_emitter=_a_listening_chat,
+)
 
     assert (encoded != []) is sent, f"the clip produced {encoded!r}"
     assert (uploads != []) is sent, f"a clip that was never sent was published: {uploads}"

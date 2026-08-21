@@ -53,6 +53,10 @@ if TYPE_CHECKING:
 
 # Standalone Utility Functions
 
+ADDRESS_CHECK_SECONDS = 5.0
+
+ADDRESS_CHECK_BUDGET_SECONDS = 20.0
+
 _IMAGE_EXTENSIONS = frozenset(
     {
         "png", "jpeg", "gif", "webp", "svg", "bmp", "tiff", "avif", "heic", "heif",
@@ -645,16 +649,34 @@ class MultimodalHandler:
             )
             return None
 
-    async def _is_safe_url(self, url: str) -> bool:
-        """Async wrapper to validate URLs without blocking the event loop.
+    async def _is_safe_url(self, url: str, *, seconds: float = ADDRESS_CHECK_SECONDS) -> bool:
+        """Whether this address may be fetched, decided inside a wall-clock budget.
 
         Args:
             url: URL to validate
+            seconds: how long the check may take before the address counts as unsafe
 
         Returns:
             True if URL is safe (not targeting private networks) and allowed by HTTP policy
+
+        The host is chosen by whoever wrote the request, so the nameserver it points at
+        decides how long ``getaddrinfo`` blocks -- and callers run this while holding a
+        deployment-wide slot. A budget that expires is a check that did not pass, so it
+        answers False exactly as a failed resolution does. The worker thread cannot be
+        interrupted and runs to completion; the budget frees the caller, not the thread.
         """
-        return await asyncio.to_thread(self._request_ips_blocking, url) is not None
+        try:
+            resolved = await asyncio.wait_for(
+                asyncio.to_thread(self._request_ips_blocking, url),
+                timeout=max(0.0, seconds),
+            )
+        except TimeoutError:
+            self.logger.warning(
+                "Address check for %s did not finish within %.1fs; treating it as unsafe",
+                url, seconds,
+            )
+            return False
+        return resolved is not None
 
     def _parse_insecure_http_allowlist(self, raw: str) -> set[tuple[str, int | None]]:
         """Parse ALLOW_INSECURE_HTTP_HOSTS into host/port pairs (case-insensitive)."""

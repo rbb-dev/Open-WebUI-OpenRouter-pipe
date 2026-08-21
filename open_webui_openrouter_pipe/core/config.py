@@ -1883,9 +1883,12 @@ class Valves(BaseModel):
     TELL_USERS_ABOUT_THE_FILE_HOST: bool = Field(
         default=True,
         description=(
-            "Say in the chat when a user's attachment is uploaded to the file host. Their own "
-            "media leaves this server, so they are told by default. Switch it off if you have "
-            "told your users another way."
+            "Warn in the chat before a user's attachment is uploaded to the file host. Their "
+            "own media leaves this server, so they are warned by default -- and while this is "
+            "on, an upload that could not be announced does not happen: the request fails "
+            "instead of publishing the file unannounced. Switch it off if you have told your "
+            "users another way. Either way the finished message keeps a written record of "
+            "what was uploaded and where; only this advance warning is optional."
         ),
     )
     FILE_HOST_NOTICE: str = Field(
@@ -1893,11 +1896,13 @@ class Valves(BaseModel):
             "Sending your {kind} to {host} so the model can read it, {retention}."
         ),
         description=(
-            "The wording of that notice. Rewrite it in your own words or your own language. "
-            "{kind} becomes clip, sound file or picture; {host} names the file host; "
-            "{retention} says how long it stays there. Leave out any you do not want. "
+            "The wording of that advance warning. Rewrite it in your own words or your own "
+            "language. {kind} becomes clip, sound file or picture; {host} names the file "
+            "host; {retention} says how long it stays there. Leave out any you do not want. "
             "{kind} and {retention} are written in English, so if you are writing this in "
-            "another language, say those parts yourself rather than using the placeholders."
+            "another language, say those parts yourself rather than using the placeholders. "
+            "The record kept in the finished message is written separately and is not this "
+            "template."
         ),
     )
     REMOTE_VIDEO_MAX_SIZE_MB: int = Field(

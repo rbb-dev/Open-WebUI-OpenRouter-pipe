@@ -44,6 +44,15 @@ from open_webui_openrouter_pipe.models.registry import ModelFamily, OpenRouterMo
 from open_webui_openrouter_pipe.storage.video_persistence import VideoPersistence
 
 
+
+async def _a_listening_chat(_event):
+    """A chat whose socket is attached, which is the precondition for any upload.
+
+    `_encode_input_references` refuses to publish a user's file when it cannot say so
+    first, so a test about anything else has to supply a channel that works.
+    """
+    return None
+
 _VIDEO_CATALOG_FIXTURE = Path(__file__).parent / "fixtures" / "video_models_catalog.json"
 VIDEO_MODELS = json.loads(_VIDEO_CATALOG_FIXTURE.read_text())["data"]
 VIDEO_BY_ID = {item["id"]: item for item in VIDEO_MODELS}
@@ -698,6 +707,9 @@ async def _encode_references_for(
     adapter = VideoGenerationAdapter.__new__(VideoGenerationAdapter)
     adapter.logger = _test_logger()
     adapter._pipe = MagicMock()
+    adapter._pipe._event_emitter_handler._emit_notification = AsyncMock(
+        return_value=True
+    )
 
     payload_by_family = {"video": MP4_BYTES, "audio": b"ID3\x04tone"}
 
@@ -740,7 +752,8 @@ async def _encode_references_for(
             video_model=_model_with_declared_modalities(model_id),
             companions=companions,
             user_obj=SimpleNamespace(id="bob", role="user"),
-        )
+        event_emitter=_a_listening_chat,
+    )
     return refs, withheld
 
 
@@ -956,7 +969,8 @@ def _adapter_with_safe_urls(mapping=None):
         pipe=_pipe_with_provider_map(mapping or _ROUTED_PROVIDER_MAP), logger=_test_logger()
     )
 
-    async def _is_safe(_url):
+    async def _is_safe(_url, *, seconds=5.0):
+        assert seconds > 0, "the address check was handed no time at all"
         return True
 
     cast(Any, adapter._pipe)._multimodal_handler._is_safe_url = _is_safe
@@ -2951,7 +2965,7 @@ async def test_the_passthrough_url_budget_bounds_entries_awaits_and_reporting(su
     )
     checked: list[str] = []
 
-    async def _is_safe(url):
+    async def _is_safe(url, *, seconds=5.0):
         checked.append(url)
         return True
 
@@ -5092,7 +5106,8 @@ async def test_the_reference_kind_follows_the_media_family(
         {"input_references": [{"id": "ref-1", "content_type": content_type}]},
         pipe.valves,
         withheld=withheld,
-    )
+    event_emitter=_a_listening_chat,
+)
 
     if not inlineable:
         assert refs == [], (
@@ -5155,7 +5170,7 @@ async def test_a_chat_attachment_reaches_the_wire_as_a_typed_reference(
     )
     monkeypatch.setattr(pipe._file_gateway, "read_file_record_base64", fake_read_b64)
 
-    references = await adapter._encode_input_references(video_meta, pipe.valves)
+    references = await adapter._encode_input_references(video_meta, pipe.valves, event_emitter=_a_listening_chat)
     frames = await adapter._encode_frame_images(
         video_meta, VIDEO_BY_ID[model_id], pipe.valves
     )
@@ -6093,6 +6108,9 @@ async def test_a_reference_file_the_request_drops_leaves_a_record_on_the_server(
     adapter = VideoGenerationAdapter.__new__(VideoGenerationAdapter)
     adapter.logger = logging.getLogger("openrouter.video.reference_record")
     adapter._pipe = MagicMock()
+    adapter._pipe._event_emitter_handler._emit_notification = AsyncMock(
+        return_value=True
+    )
     adapter._pipe._file_gateway.load_file_bytes = AsyncMock(return_value=None)
     adapter._pipe._file_gateway.read_file_record_base64 = AsyncMock(
         return_value=base64.b64encode(b"\x89PNG\r\n\x1a\n").decode()
@@ -6114,8 +6132,9 @@ async def test_a_reference_file_the_request_drops_leaves_a_record_on_the_server(
     withheld: list[tuple[str, str]] = []
     with caplog.at_level(logging.DEBUG, logger=adapter.logger.name):
         refs = await adapter._encode_input_references(
-            {"input_references": [attachment]}, valves, withheld=withheld, user_obj=None
-        )
+            {"input_references": [attachment]}, valves, withheld=withheld, user_obj=None,
+        event_emitter=_a_listening_chat,
+    )
 
     assert refs == [], "the attachment must not reach the request"
     assert withheld, "the drop must still be reported to the user where a channel exists"
@@ -6165,6 +6184,9 @@ async def test_every_reason_a_reference_is_left_out_reaches_the_user_in_words(
     adapter = VideoGenerationAdapter.__new__(VideoGenerationAdapter)
     adapter.logger = logging.getLogger("openrouter.video.reference_reasons")
     adapter._pipe = MagicMock()
+    adapter._pipe._event_emitter_handler._emit_notification = AsyncMock(
+        return_value=True
+    )
     if raises:
         adapter._pipe._file_gateway.read_file_record_base64 = AsyncMock(
             side_effect=RequiredInternalFileError(f"it belongs to {raises}")
@@ -6191,8 +6213,9 @@ async def test_every_reason_a_reference_is_left_out_reaches_the_user_in_words(
     if declared_content_type:
         item["content_type"] = declared_content_type
     encoded = await adapter._encode_input_references(
-        {"input_references": [item]}, valves, withheld=withheld, companions=True
-    )
+        {"input_references": [item]}, valves, withheld=withheld, companions=True,
+    event_emitter=_a_listening_chat,
+)
 
     assert encoded == [], f"the reference reached the request anyway: {encoded}"
     assert withheld, "the reference vanished with nothing said about it"
@@ -6217,6 +6240,9 @@ async def test_a_file_whose_type_only_the_upload_declared_is_still_sent(monkeypa
     adapter = VideoGenerationAdapter.__new__(VideoGenerationAdapter)
     adapter.logger = logging.getLogger("openrouter.video.reference_fallback")
     adapter._pipe = MagicMock()
+    adapter._pipe._event_emitter_handler._emit_notification = AsyncMock(
+        return_value=True
+    )
     adapter._pipe._file_gateway.read_file_record_base64 = AsyncMock(
         return_value=base64.b64encode(_reference_png(512, 512)).decode()
     )
@@ -6241,7 +6267,8 @@ async def test_a_file_whose_type_only_the_upload_declared_is_still_sent(monkeypa
         valves,
         withheld=withheld,
         companions=True,
-    )
+    event_emitter=_a_listening_chat,
+)
 
     assert withheld == [], f"the picture was dropped: {withheld}"
     assert [entry["type"] for entry in encoded] == ["image_url"]
@@ -6272,6 +6299,9 @@ async def test_a_reference_picture_outside_openrouters_sizes_is_named_with_its_o
     adapter = VideoGenerationAdapter.__new__(VideoGenerationAdapter)
     adapter.logger = logging.getLogger("openrouter.video.reference_size")
     adapter._pipe = MagicMock()
+    adapter._pipe._event_emitter_handler._emit_notification = AsyncMock(
+        return_value=True
+    )
     adapter._pipe._file_gateway.read_file_record_base64 = AsyncMock(
         return_value=base64.b64encode(_reference_png(width, height)).decode()
     )
@@ -6292,8 +6322,9 @@ async def test_a_reference_picture_outside_openrouters_sizes_is_named_with_its_o
     )
     withheld: list[tuple[str, str]] = []
     encoded = await adapter._encode_input_references(
-        {"input_references": [{"id": "ref-1"}]}, valves, withheld=withheld, companions=True
-    )
+        {"input_references": [{"id": "ref-1"}]}, valves, withheld=withheld, companions=True,
+    event_emitter=_a_listening_chat,
+)
 
     assert encoded == [], "OpenRouter refuses this size, so sending it buys a rejection"
     assert withheld, "the picture was dropped with nothing said about it"
@@ -6326,6 +6357,9 @@ async def test_the_references_that_do_not_fit_the_budget_are_named_not_silently_
     adapter = VideoGenerationAdapter.__new__(VideoGenerationAdapter)
     adapter.logger = logging.getLogger("openrouter.video.reference_budget")
     adapter._pipe = MagicMock()
+    adapter._pipe._event_emitter_handler._emit_notification = AsyncMock(
+        return_value=True
+    )
     adapter._pipe._file_gateway.read_file_record_base64 = AsyncMock(
         return_value=base64.b64encode(blob).decode()
     )
@@ -6350,7 +6384,8 @@ async def test_the_references_that_do_not_fit_the_budget_are_named_not_silently_
         valves,
         withheld=withheld,
         companions=True,
-    )
+    event_emitter=_a_listening_chat,
+)
 
     admitted = budget // len(blob)
     assert len(encoded) == admitted, (
@@ -6641,6 +6676,9 @@ async def test_a_video_job_is_never_submitted_without_a_key():
 
     adapter = VideoGenerationAdapter.__new__(VideoGenerationAdapter)
     adapter._pipe = MagicMock()
+    adapter._pipe._event_emitter_handler._emit_notification = AsyncMock(
+        return_value=True
+    )
     adapter._pipe._resolve_openrouter_api_key = staticmethod(
         lambda _valves: (None, "OpenRouter API key is not configured.")
     )
@@ -7088,6 +7126,9 @@ async def test_the_relay_records_its_verdict_where_the_link_is_minted(link, fami
     adapter = VideoGenerationAdapter.__new__(VideoGenerationAdapter)
     adapter.logger = _test_logger()
     adapter._pipe = MagicMock()
+    adapter._pipe._event_emitter_handler._emit_notification = AsyncMock(
+        return_value=True
+    )
 
     blob = MP4_BYTES if family == "video" else b"ID3\x04tone"
 
@@ -7131,7 +7172,8 @@ async def test_the_relay_records_its_verdict_where_the_link_is_minted(link, fami
             companions=True,
             user_obj=SimpleNamespace(id="bob", role="user"),
             vetted=vetted,
-        )
+        event_emitter=_a_listening_chat,
+    )
 
     assert vetted == {link: True}, (
         f"the minted link never reached the verdict record: {vetted!r} for refs {refs!r}"

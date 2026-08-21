@@ -23,6 +23,7 @@ from ..core.config import (
     _PIPE_METADATA_KEY,
 )
 from ..core.utils import OWUI_FUNCTION_ID_ILLEGAL_RE as _IMAGE_FILTER_ID_RE
+from ..core.utils import scrub_surrogates
 from ..integrations.image_types import (
     PASSTHROUGH_DESCRIPTION,
     PASSTHROUGH_ENUMS,
@@ -32,7 +33,6 @@ from ..integrations.image_types import (
     SCHEMA_ONLY_PARAMS,
     SCHEMA_RANGES,
     TOP_LEVEL_PARAMS,
-    scrub_surrogates,
 )
 from ..integrations.provider_options import CHAT_PROVIDER_KEYS
 from ..models.registry import sanitize_model_id

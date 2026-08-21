@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from typing import Any
 
 from ..core.config import _PIPE_METADATA_KEY
+from ..core.utils import clamp_text
 
 
 def requested_provider_block(
@@ -166,6 +167,12 @@ MAX_URL_SCAN_NODES = 4096
 
 _ABSOLUTE_URL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
 
+MAX_LABEL_SEGMENT = 48
+
+MAX_LABEL = 200
+
+_INERT_LABEL_SEGMENT = re.compile(r"[^A-Za-z0-9 ._/:@+-]")
+
 _TOO_DEEP_TO_VET = (
     f"This request nests values more than {MAX_URL_SCAN_DEPTH} levels deep. Every address "
     "in a request is checked before OpenRouter is asked to fetch it, nothing that deep can "
@@ -183,6 +190,17 @@ class UnvettableRequest(Exception):
     pass
 
 
+def refuse_past_the_scan_depth(depth: int) -> None:
+    if depth >= MAX_URL_SCAN_DEPTH:
+        raise UnvettableRequest(_TOO_DEEP_TO_VET)
+
+
+def label_segment(key: Any) -> str:
+    text = " ".join(str(key).split())
+    inert = _INERT_LABEL_SEGMENT.sub(" ", text).strip()
+    return clamp_text(inert, MAX_LABEL_SEGMENT) if inert else "?"
+
+
 def _addresses_in(
     value: Any, path: str, depth: int, remaining: list[int]
 ) -> Iterator[tuple[str, str]]:
@@ -195,16 +213,18 @@ def _addresses_in(
             yield cleaned, path
         return
     if isinstance(value, dict):
-        if depth >= MAX_URL_SCAN_DEPTH:
-            raise UnvettableRequest(_TOO_DEEP_TO_VET)
+        refuse_past_the_scan_depth(depth)
         for key, item in value.items():
-            yield from _addresses_in(item, f"{path}.{key}", depth + 1, remaining)
+            yield from _addresses_in(
+                item, clamp_text(f"{path}.{label_segment(key)}", MAX_LABEL), depth + 1, remaining
+            )
         return
     if isinstance(value, list):
-        if depth >= MAX_URL_SCAN_DEPTH:
-            raise UnvettableRequest(_TOO_DEEP_TO_VET)
+        refuse_past_the_scan_depth(depth)
         for index, item in enumerate(value):
-            yield from _addresses_in(item, f"{path}[{index}]", depth + 1, remaining)
+            yield from _addresses_in(
+                item, clamp_text(f"{path}[{index}]", MAX_LABEL), depth + 1, remaining
+            )
 
 
 def payload_addresses(
@@ -214,4 +234,4 @@ def payload_addresses(
     for key, value in payload.items():
         if key in prose_fields:
             continue
-        yield from _addresses_in(value, str(key), 1, remaining)
+        yield from _addresses_in(value, label_segment(key), 1, remaining)

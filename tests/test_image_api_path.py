@@ -3360,15 +3360,25 @@ async def test_the_error_card_names_the_model_that_was_requested(status):
     assert pipe.reports.calls[0]["exc"].requested_model == "m/x"
 
 
-@pytest.mark.parametrize("elapsed_is_zero", [False])
+@pytest.mark.parametrize("step", [42.5, 7.25])
 @pytest.mark.asyncio
-async def test_the_final_status_reports_a_real_duration(elapsed_is_zero, monkeypatch):
+async def test_the_final_status_reports_a_real_duration(step, monkeypatch):
+    """A clock that only ever moves forward, so the reported time is a measurement.
+
+    The clock advances by `step` on every read rather than replaying a fixed list of
+    values, because a list is indexed by call order: adding one unrelated
+    `time.monotonic()` anywhere in the request silently hands `started_at` a later value
+    and the status reports 0.00s while nothing about the timing changed. Two steps, so a
+    production constant cannot satisfy both.
+    """
+    import itertools
+
     import open_webui_openrouter_pipe.integrations.image as image_module
 
-    ticks = iter([100.0, 100.0, 142.5, 142.5, 142.5])
-    monkeypatch.setattr(image_module.time, "monotonic", lambda: next(ticks, 142.5))
+    ticks = itertools.count(100.0, step)
+    monkeypatch.setattr(image_module.time, "monotonic", lambda: next(ticks))
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (142.5, [{}])
+    adapter._endpoint_cache["m/x"] = (1e9, [{}])
 
     result = await _posted(
         adapter,
@@ -3383,7 +3393,10 @@ async def test_the_final_status_reports_a_real_duration(elapsed_is_zero, monkeyp
     )
 
     final = [d for d in result.statuses if d][-1]
-    assert "0.00s" not in final, f"a 42s generation must not report zero elapsed. got {final!r}"
+    reported = float(final.split("Time: ")[1].rstrip("s").split()[0])
+    assert reported >= step - 1e-9, (
+        f"a generation the clock advanced by at least {step}s reported {reported}s: {final!r}"
+    )
 
 
 @pytest.mark.asyncio
@@ -3977,7 +3990,7 @@ async def test_the_picture_the_user_just_attached_is_the_one_that_survives(publi
     adapter = ImageGenerationAdapter.__new__(ImageGenerationAdapter)
     notes: list = []
 
-    async def _no_links(_self, _urls, _seen=None):
+    async def _no_links(_self, _urls, _seen=None, _deadline=None):
         return []
 
     with patch.object(ImageGenerationAdapter, "_vetted_reference_urls", _no_links):
