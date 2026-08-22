@@ -1303,3 +1303,175 @@ def test_nothing_is_invented_when_there_is_no_nested_message_to_lift(raw):
     from open_webui_openrouter_pipe.core.errors import _unnest_provider_error
 
     assert _unnest_provider_error(raw) is None
+
+
+_JANUARY_CHAT_BODY = json.dumps(
+    {
+        "error": {
+            "code": 400,
+            "message": (
+                "This endpoint's maximum context length is 400000 tokens. However, you "
+                'requested about 564659 tokens. Please reduce the length or use the "middle-out" transform.'
+            ),
+            "metadata": {"provider_name": "anthropic"},
+        }
+    }
+)
+
+_CURRENT_CHAT_BODY = json.dumps(
+    {
+        "error": {
+            "code": 400,
+            "message": (
+                "This endpoint's maximum context length is 400000 tokens. However, you "
+                "requested about 564659 tokens. Please reduce the length or enable context compression."
+            ),
+            "metadata": {"provider_name": "anthropic", "error_type": "context_length_exceeded"},
+        }
+    }
+)
+
+_CURRENT_CHAT_BODY_PHRASE_ONLY = json.dumps(
+    {
+        "error": {
+            "code": 400,
+            "message": "Please reduce the length or enable context compression.",
+            "metadata": {"provider_name": "anthropic"},
+        }
+    }
+)
+
+_CURRENT_RESPONSES_BODY_TYPED_ONLY = json.dumps(
+    {
+        "id": "resp_abc123",
+        "status": "failed",
+        "error": {"code": "invalid_prompt", "message": "The prompt could not be processed."},
+        "error_type": "context_length_exceeded",
+    }
+)
+
+_PROVIDER_TYPE_ONLY_BODY = json.dumps(
+    {
+        "error": {
+            "code": 400,
+            "message": "Provider rejected the request.",
+            "metadata": {
+                "provider_name": "openai",
+                "raw": json.dumps(
+                    {"error": {"message": "Unknown parameter.", "type": "invalid_request_error"}}
+                ),
+            },
+        }
+    }
+)
+
+_UNRELATED_BODY = json.dumps(
+    {"error": {"code": 403, "message": "Your key is not permitted to use this model."}}
+)
+
+
+def _limits_shown_for(body: str) -> bool:
+    from open_webui_openrouter_pipe.core.errors import (
+        _build_error_template_values,
+        _build_openrouter_api_error,
+    )
+
+    error = _build_openrouter_api_error(400, "Bad Request", body)
+    values = _build_error_template_values(
+        error,
+        heading="Anthropic: anthropic/claude-3",
+        diagnostics=[],
+        metrics={"context_limit": 400000, "max_output_tokens": 128000},
+        model_identifier="anthropic/claude-3",
+        normalized_model_id="anthropic.claude-3",
+        api_model_id="anthropic/claude-3",
+    )
+    return values["include_model_limits"]
+
+
+@pytest.mark.parametrize(
+    "body, expected",
+    [
+        pytest.param(_JANUARY_CHAT_BODY, True, id="january-middle-out-phrase-alone"),
+        pytest.param(_CURRENT_CHAT_BODY_PHRASE_ONLY, True, id="current-compression-phrase-alone"),
+        pytest.param(_CURRENT_RESPONSES_BODY_TYPED_ONLY, True, id="responses-typed-code-alone"),
+        pytest.param(_CURRENT_CHAT_BODY, True, id="chat-typed-code-and-current-phrase"),
+        pytest.param(_PROVIDER_TYPE_ONLY_BODY, False, id="provider-invalid-request-error"),
+        pytest.param(_UNRELATED_BODY, False, id="forbidden-key"),
+    ],
+)
+def test_the_model_limits_block_tracks_a_context_overflow_across_both_wordings(body, expected):
+    """A context overflow shows the model's limits whichever era's prose OpenRouter sends.
+
+    The block used to be gated on one literal substring of OpenRouter's own January prose,
+    ``or use the "middle-out"``. OpenRouter renamed the feature to context compression --
+    ``.external/openrouter_docs-2026-02-27/guides/features/message-transforms.md`` says the
+    request fails "suggesting you either reduce the length or enable middle-out compression",
+    and every later snapshot says "enable context compression" -- so that gate silently stopped
+    firing and an over-long prompt was told nothing about the window it had exceeded.
+
+    Each positive row isolates one route to the decision: the January phrase with no typed
+    code, the current phrase with no typed code, and the typed code with neither phrase in the
+    message. Deleting any one route reddens exactly one row. The negative rows hold the gate
+    shut for a provider-side ``invalid_request_error`` and for an unrelated 403, so a gate
+    hardcoded open cannot pass this table either.
+    """
+    assert _limits_shown_for(body) is expected
+
+
+@pytest.mark.parametrize(
+    "body, expected_type",
+    [
+        pytest.param(_CURRENT_CHAT_BODY, "context_length_exceeded", id="chat-metadata-error-type"),
+        pytest.param(
+            _CURRENT_RESPONSES_BODY_TYPED_ONLY,
+            "context_length_exceeded",
+            id="responses-top-level-error-type",
+        ),
+        pytest.param(_PROVIDER_TYPE_ONLY_BODY, None, id="provider-type-is-not-openrouters"),
+        pytest.param(_JANUARY_CHAT_BODY, None, id="no-typed-code-published"),
+    ],
+)
+def test_openrouters_typed_error_code_is_read_from_the_place_each_transport_puts_it(
+    body, expected_type
+):
+    """OpenRouter's canonical ``error_type`` sits in a different field per API skin.
+
+    ``.external/openrouter_docs/api/reference/errors-and-debugging.md`` states it is
+    ``error.metadata.error_type`` on Chat Completions and a top-level ``error_type`` on
+    Responses, "outside the native ``error`` object", because the Responses code set is lossy
+    -- ``context_length_exceeded`` collapses to ``invalid_prompt`` there, so the native code
+    cannot be switched on.
+
+    The provider row is the one that must stay ``None``: ``error.metadata.raw.error.type`` is
+    the upstream provider's own type (``invalid_request_error``), not OpenRouter's, and reading
+    it here would fire the limits block on every malformed-parameter rejection.
+    """
+    from open_webui_openrouter_pipe.core.errors import _build_openrouter_api_error
+
+    error = _build_openrouter_api_error(400, "Bad Request", body)
+    assert error.openrouter_error_type == expected_type
+
+
+def test_the_provider_type_and_openrouters_type_stay_separate_fields():
+    """One payload carries both; conflating them is what the separate field prevents."""
+    from open_webui_openrouter_pipe.core.errors import _build_openrouter_api_error
+
+    body = json.dumps(
+        {
+            "error": {
+                "code": 400,
+                "message": "Context overflow.",
+                "metadata": {
+                    "error_type": "context_length_exceeded",
+                    "raw": json.dumps(
+                        {"error": {"message": "too long", "type": "invalid_request_error"}}
+                    ),
+                },
+            }
+        }
+    )
+    error = _build_openrouter_api_error(400, "Bad Request", body)
+
+    assert error.openrouter_error_type == "context_length_exceeded"
+    assert error.upstream_type == "invalid_request_error"

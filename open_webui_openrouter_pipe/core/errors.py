@@ -117,6 +117,7 @@ class OpenRouterAPIError(RuntimeError):
         openrouter_code: Any | None = None,
         upstream_message: str | None = None,
         upstream_type: str | None = None,
+        openrouter_error_type: str | None = None,
         request_id: str | None = None,
         raw_body: str | None = None,
         metadata: dict[str, Any] | None = None,
@@ -142,6 +143,7 @@ class OpenRouterAPIError(RuntimeError):
         self.openrouter_code = openrouter_code
         self.upstream_message = (upstream_message or "").strip() or None
         self.upstream_type = (upstream_type or "").strip() or None
+        self.openrouter_error_type = (openrouter_error_type or "").strip() or None
         self.request_id = (request_id or "").strip() or None
         self.raw_body = raw_body or ""
         self.metadata = metadata or {}
@@ -268,6 +270,9 @@ def _extract_openrouter_error_details(body_text: str | None) -> dict[str, Any]:
         else None
     ) or (raw_details.get("message") if isinstance(raw_details, dict) else None)
     upstream_type = upstream_error.get("type") if isinstance(upstream_error, dict) else None
+    openrouter_error_type = metadata_dict.get("error_type") or (
+        parsed.get("error_type") if isinstance(parsed, dict) else None
+    )
 
     request_id = (
         metadata_dict.get("request_id")
@@ -289,6 +294,7 @@ def _extract_openrouter_error_details(body_text: str | None) -> dict[str, Any]:
         "openrouter_code": error_section.get("code"),
         "upstream_message": upstream_message,
         "upstream_type": upstream_type,
+        "openrouter_error_type": _normalize_optional_str(openrouter_error_type),
         "request_id": request_id,
         "raw_body": body_text or "",
         "metadata": metadata_dict,
@@ -322,6 +328,7 @@ def _build_openrouter_api_error(
         openrouter_code=details.get("openrouter_code"),
         upstream_message=details.get("upstream_message"),
         upstream_type=details.get("upstream_type"),
+        openrouter_error_type=details.get("openrouter_error_type"),
         request_id=details.get("request_id"),
         raw_body=details.get("raw_body"),
         metadata=metadata_block,
@@ -361,6 +368,15 @@ def _parse_supported_effort_values(error_message: str) -> list[str]:
     return re.findall(r"'([^']+)'", values_str)
 
 
+_CONTEXT_OVERFLOW_ERROR_TYPE = "context_length_exceeded"
+
+_CONTEXT_OVERFLOW_PHRASES = (
+    'or use the "middle-out"',
+    "context compression",
+    "context-compression",
+)
+
+
 def _build_error_template_values(
     error: OpenRouterAPIError,
     *,
@@ -381,7 +397,10 @@ def _build_error_template_values(
     raw_body = (error.raw_body or "").strip()
 
     detail_lower = detail.lower()
-    include_model_limits = "or use the \"middle-out\"" in detail_lower
+    include_model_limits = (
+        error.openrouter_error_type == _CONTEXT_OVERFLOW_ERROR_TYPE
+        or any(phrase in detail_lower for phrase in _CONTEXT_OVERFLOW_PHRASES)
+    )
     context_limit_value = metrics.get("context_limit") if include_model_limits else None
     max_output_tokens_value = metrics.get("max_output_tokens") if include_model_limits else None
     include_model_limits = include_model_limits and bool(

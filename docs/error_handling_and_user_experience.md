@@ -106,9 +106,20 @@ The OpenRouter error formatter supports a larger set of optional values, includi
 - `upstream_type`, `upstream_message`
 - `provider`, `requested_model`, `api_model_id`, `normalized_model_id`
 - `retry_after_seconds`, `rate_limit_type`
+- `include_model_limits`, `context_limit_tokens`, `max_output_tokens`
 - `metadata_json`, `provider_raw_json`, `diagnostics`
 
 Because OpenRouter/provider responses vary, treat these fields as optional and wrap them in `{{#if ...}}` blocks.
+
+### When the model-limits block renders
+
+`include_model_limits` guards the section that prints the model's context window and output cap. It is set when the rejection looks like a context overflow **and** the catalog knows at least one of those two numbers for the model.
+
+A rejection counts as a context overflow when either holds:
+- OpenRouter tags the error with the typed code `context_length_exceeded`. This is read from `error.metadata.error_type` on Chat Completions and from the top-level `error_type` on Responses, the two places OpenRouter documents it. On Responses the native error code is lossy — `context_length_exceeded` collapses into `invalid_prompt` — so the typed field is the only reliable signal there.
+- The message text names the remedy, matched against both the current wording (“context compression”) and the wording OpenRouter used before the feature was renamed (`or use the "middle-out"`).
+
+The provider's own error type (surfaced as `upstream_type`) is deliberately **not** consulted: it carries the upstream vendor's category, such as `invalid_request_error`, which covers far more than context overflows.
 
 ---
 
