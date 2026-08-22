@@ -722,3 +722,104 @@ def test_the_withheld_aspect_ratio_notice_does_not_blame_openrouter():
         f"a withholding nobody else asked for must say who asked for it: "
         f"{_SIZE_CONTRADICTS_THE_RATIO}"
     )
+
+
+_TRIMMING_WORDS = re.compile(r"\btrim\w*\b|\bcompress\w*\b|\bmiddle[-_ ]?out\b|\bcontext window\b", re.I)
+
+
+def _render_rejection_template(*, include_model_limits: bool) -> str:
+    from open_webui_openrouter_pipe.core.config import DEFAULT_OPENROUTER_ERROR_TEMPLATE
+    from open_webui_openrouter_pipe.core.errors import (
+        OpenRouterAPIError,
+        _build_error_template_values,
+    )
+    from open_webui_openrouter_pipe.core.utils import _render_error_template
+
+    error = OpenRouterAPIError(
+        status=400,
+        reason="Bad Request",
+        openrouter_message="This endpoint's maximum context length is 400000 tokens.",
+    )
+    values = _build_error_template_values(
+        error,
+        heading="Anthropic: anthropic/claude-3",
+        diagnostics=[],
+        metrics={},
+        model_identifier="anthropic/claude-3",
+        normalized_model_id=None,
+        api_model_id=None,
+    )
+    values["include_model_limits"] = include_model_limits
+    return _render_error_template(DEFAULT_OPENROUTER_ERROR_TEMPLATE, values)
+
+
+@pytest.mark.parametrize(
+    "status, reason, message",
+    [
+        (403, "Forbidden", "Your key is not permitted to use this model."),
+        (404, "Not Found", "No allowed provider serves this model under your data policy."),
+        (400, "Bad Request", "Only HTTPS URLs are allowed for a video reference."),
+    ],
+)
+def test_an_error_unrelated_to_context_length_is_given_no_trimming_advice(status, reason, message):
+    """The rejected-request template is the fallback for every status without one of its own.
+
+    Everything but 401, 402, 408, 413, 429 and 5xx lands on it -- and the chat orchestrator
+    passes it explicitly, so those statuses land on it too -- which means its unconditional
+    closing line is read by a forbidden key, an unroutable model and a malformed reference URL
+    alike. It closed by telling all of them to ask an admin to enable a control that no longer
+    exists, advice that is both irrelevant to the failure and unfindable in the admin UI.
+    """
+    from open_webui_openrouter_pipe.core.errors import OpenRouterAPIError
+
+    md = OpenRouterAPIError(status=status, reason=reason, openrouter_message=message).to_markdown()
+
+    assert message in md, "the message did not render, so the rest of this proves nothing"
+    found = _TRIMMING_WORDS.search(md)
+    assert found is None, (
+        f"a {status} carrying {message!r} was closed with context-length advice: {found.group(0)!r}"
+    )
+
+
+def test_context_length_advice_renders_only_inside_the_model_limits_block():
+    """Advice about prompt length belongs to the one block a context overflow renders.
+
+    The two renders below are the same error under the block's own guard,
+    ``include_model_limits``, set each way, so they differ by that block alone. Whether the
+    guard fires for a given upstream message is decided in ``core/errors.py`` and is not what
+    this defends; what it defends is that no wording outside the block talks about length.
+    """
+    with_limits = _render_rejection_template(include_model_limits=True)
+    without_limits = _render_rejection_template(include_model_limits=False)
+
+    advice = _TRIMMING_WORDS.search(with_limits)
+    assert advice is not None, "a context overflow is told nothing about how to make it fit"
+    assert with_limits.index("**Model limits:**") < advice.start(), (
+        "the trimming advice escaped the limits block and is unconditional again"
+    )
+    leaked = _TRIMMING_WORDS.search(without_limits)
+    assert leaked is None, (
+        f"an error with no known context limits still carries {leaked.group(0)!r}"
+    )
+
+
+def test_the_context_length_advice_names_the_control_an_admin_can_actually_find():
+    """`AUTO_CONTEXT_TRIMMING` is a Python identifier; no admin can search the panel for it.
+
+    The name is taken from the dashboard's own metadata rather than quoted, so renaming the
+    valve on one surface and not the other reddens this. The retired name this replaced --
+    "the middle-out option" -- was not merely differently worded, it named a control that had
+    been migrated away to OpenRouter's `context-compression` plugin.
+    """
+    pytest.importorskip(
+        "open_webui_openrouter_pipe.plugins.pipe_dashboard",
+        reason="the --no-plugins artifacts omit pipe_dashboard by design",
+    )
+    from open_webui_openrouter_pipe.plugins.pipe_dashboard.config_meta import CONFIG_META
+
+    control = CONFIG_META["AUTO_CONTEXT_TRIMMING"]["title"]
+    assert control in _render_rejection_template(include_model_limits=True), (
+        f"the limits advice does not name {control!r}, the label the config tab shows for the "
+        "control that fixes an over-long prompt"
+    )
+    assert control not in _render_rejection_template(include_model_limits=False)

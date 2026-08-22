@@ -49,7 +49,11 @@ The pipe selects an OpenRouter template based on the HTTP status:
 | `>= 500` | `SERVICE_ERROR_TEMPLATE` |
 | other / default | `OPENROUTER_ERROR_TEMPLATE` |
 
+“Other / default” is every remaining case, including a missing status: `403`, `404`, `422`, a `400` for a malformed reference URL, and a provider moderation refusal all render `OPENROUTER_ERROR_TEMPLATE`. Anything written into that template is therefore read by failures that have nothing in common beyond not having a template of their own, so advice specific to one cause belongs in a `{{#if}}` block rather than in the template's unconditional text.
+
 These templates are used for the `OpenRouterAPIError` path (and for certain HTTP status errors that are converted into an OpenRouter error object by reading the response body best-effort).
+
+**The chat path does not use the table.** The request orchestrator passes `OPENROUTER_ERROR_TEMPLATE` explicitly for every `OpenRouterAPIError` it reports, and an explicit template wins over status selection — so on the main chat path a rejection of *any* status, `401`, `402`, `429` and `5xx` included, renders `OPENROUTER_ERROR_TEMPLATE`. The status-specific templates are reached from the callers that let the formatter choose: the outer request handler, image generation, video generation, and a streaming failure that arrives after output has already been emitted. Setting `OPENROUTER_ERROR_TEMPLATE` to an empty string drops the override and restores status selection on the chat path as well.
 
 ### B) Generic templated errors (network/5xx/internal)
 

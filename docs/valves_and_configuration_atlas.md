@@ -540,7 +540,7 @@ Notes:
 | --- | --- | --- | --- |
 | `SUPPORT_EMAIL` | `str` | `(empty)` | Optional support email address inserted into user-facing error templates. |
 | `SUPPORT_URL` | `str` | `(empty)` | Optional support URL inserted into user-facing error templates. |
-| `OPENROUTER_ERROR_TEMPLATE` | `str` | `built-in default` | Markdown template for OpenRouter 400 responses. Supports Handlebars-style `{{#if var}}...{{/if}}` blocks. |
+| `OPENROUTER_ERROR_TEMPLATE` | `str` | `built-in default` | Markdown template for OpenRouter rejections: any status without a template of its own (`400`, `403`, `404`, `422`, …), plus every status on the chat path, where the orchestrator selects it explicitly. Supports Handlebars-style `{{#if var}}...{{/if}}` blocks; cause-specific advice belongs inside one. |
 | `ENDPOINT_OVERRIDE_CONFLICT_TEMPLATE` | `str` | `built-in default` | Markdown template emitted when a request requires a different OpenRouter endpoint than the one enforced by endpoint override valves. |
 | `DIRECT_UPLOAD_FAILURE_TEMPLATE` | `str` | `built-in default` | Markdown template emitted when OpenRouter Direct Uploads cannot be applied (e.g. incompatible attachment combinations or pre-flight validation failures). |
 | `AUTHENTICATION_ERROR_TEMPLATE` | `str` | `built-in default` | Markdown template for OpenRouter auth failures. |

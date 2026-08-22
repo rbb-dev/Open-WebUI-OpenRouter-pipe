@@ -817,11 +817,13 @@ def test_openrouter_api_error_includes_provider_and_request_details():
 
 
 def test_openrouter_api_error_handles_plain_text_payload():
+    """A body that is not JSON still renders the full template with the body surfaced verbatim."""
     err = _build_openrouter_api_error(400, "Bad Request", "plain text body")
 
     md = err.to_markdown()
     assert "could not process your request" in md
-    assert "middle-out option" in md
+    assert "**Raw provider response:**" in md
+    assert "plain text body" in md
 
 
 def test_openrouter_api_error_includes_moderation_metadata():
