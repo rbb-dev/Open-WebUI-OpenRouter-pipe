@@ -1,10 +1,12 @@
-"""What a published file leaves behind, and what has to be true before it is published.
+"""What a request leaves behind in the message, and what has to be true before it goes.
 
-Every test here defends one of two properties:
+Every test here defends one of three properties:
 
   * a user whose file was uploaded to an anonymous public host has a DURABLE record of
     it -- naming the host and how long it stays -- inside the message Open WebUI stores,
-    not only in a toast that a reload discards; and
+    not only in a toast that a reload discards;
+  * a user whose settings were not all sent has a DURABLE record of which ones and why,
+    in that same message, and it survives a job resumed in a later request; and
   * the upload does not happen at all when the advance warning could not be delivered.
 
 The toast is deliberately not the subject of any assertion below. It is the channel that
@@ -324,6 +326,220 @@ def test_the_record_does_not_hide_the_markers_the_resume_path_reads(kind):
 
     assert adapter._extract_video_job_marker(stored) == "job-7"
     assert adapter._looks_like_final_video_content(stored) is (kind == "final")
+
+
+# ------------------------------------------------- WHAT WAS NOT SENT AT ALL --
+_WITHHELD_CASES = {
+    "one-cause": [("seed", "the request schema does not define it")],
+    "two-causes": [
+        ("resolution", "size already fixes the pixels"),
+        ("aspect_ratio", "size contradicts the ratio"),
+    ],
+}
+
+
+def _adapter():
+    pipe = MagicMock()
+    pipe.logger = logging.getLogger("relay-disclosure")
+    return VideoGenerationAdapter(pipe=pipe, logger=pipe.logger)
+
+
+@pytest.mark.parametrize("case", sorted(_WITHHELD_CASES), ids=sorted(_WITHHELD_CASES))
+def test_what_was_withheld_survives_a_job_that_is_resumed_in_a_later_request(case):
+    """A resumed job rebuilds its message from what was persisted, and replaces it.
+
+    The notice moved off a toast and into the message precisely so a reader who comes
+    back still finds the reason -- and a long-running video job is exactly when they come
+    back. Recovering only the file-host record dropped it on every resume. Two different
+    withheld lists producing two different sentences, so recovering a hardcoded block
+    cannot pass, and the recovered text is compared to the record verbatim rather than
+    merely being non-empty.
+    """
+    adapter = _adapter()
+    withheld = _WITHHELD_CASES[case]
+    record = adapter._withheld_record(withheld)
+    assert record, "precondition: a non-empty withheld list produces a record"
+    persisted = record + "\n" + adapter._build_pending_content(job_id="job-7", model_id="m")
+
+    recovered = adapter._recover_the_withheld_record(persisted)
+
+    assert recovered.strip() == record.strip(), f"the reason was lost on resume: {recovered!r}"
+    for name, reason in withheld:
+        assert name in recovered and reason in recovered, recovered
+
+
+def test_nothing_is_recovered_from_a_message_that_never_said_anything_was_withheld():
+    adapter = _adapter()
+
+    assert adapter._recover_the_withheld_record(
+        adapter._build_pending_content(job_id="j1", model_id="m")
+    ) == ""
+    assert adapter._recover_the_withheld_record("") == ""
+    assert adapter._recover_the_withheld_record(
+        adapter._file_host_record(_valves(), {("video", "litterbox")})
+    ) == ""
+
+
+def test_both_records_recover_from_one_message_and_neither_hides_the_job_marker():
+    """The resume path recovers the two records onto one line, from one stored message.
+
+    Asserting only that the recovered disclosure is non-empty proves nothing: the
+    file-host recovery runs on that same line and would satisfy it while the withheld
+    recovery returned nothing. So each is asserted by its own text. The job marker still
+    has to be readable underneath both, or the resume submits -- and bills -- a second job.
+    """
+    adapter = _adapter()
+    host_record = adapter._file_host_record(_valves(), {("video", "litterbox")})
+    withheld_record = adapter._withheld_record(_WITHHELD_CASES["two-causes"])
+    persisted = (
+        host_record
+        + withheld_record
+        + "\n"
+        + adapter._build_pending_content(job_id="job-9", model_id="m")
+    )
+
+    resumed = adapter._recover_the_file_host_record(persisted)
+    resumed += adapter._recover_the_withheld_record(persisted)
+
+    assert "litterbox" in resumed, resumed
+    assert "resolution" in resumed and "aspect_ratio" in resumed, resumed
+    assert resumed.count("Not sent with this video") == 1, resumed
+    assert adapter._extract_video_job_marker(persisted) == "job-9"
+
+
+@pytest.mark.parametrize("case", sorted(_WITHHELD_CASES), ids=sorted(_WITHHELD_CASES))
+@pytest.mark.asyncio
+async def test_generate_puts_back_what_was_withheld_when_it_resumes_a_running_job(
+    case, monkeypatch, tmp_path
+):
+    """The resume branch of ``generate()`` itself, not the two helpers it calls.
+
+    Every other test of this property calls the helpers directly, and two of them rebuild
+    the very pair of lines the adapter runs -- recover the file-host record, then add the
+    withheld one. A test that re-implements the call site cannot notice the call site being
+    deleted, and deleting it was green across the whole suite.
+
+    So this drives ``generate()``: the stored message is handed back by the persistence
+    double carrying both records and a job marker, the poll is stubbed one seam below at the
+    OpenRouter client, and the assertion is on the text ``generate()`` RETURNS -- which is
+    what Open WebUI writes back into the message. Both records are asserted, so deleting
+    either recovery reddens this. Two withheld lists producing two different sentences, so a
+    constant cannot satisfy both rows, and the expected text is written out here rather than
+    obtained from the code under test.
+    """
+    from open_webui_openrouter_pipe import EncryptedStr, Pipe
+
+    withheld = _WITHHELD_CASES[case]
+    pipe = Pipe()
+    pipe.valves.API_KEY = EncryptedStr("test-api-key")
+    pipe.valves.VIDEO_INITIAL_POLL_DELAY_SECONDS = 0
+    pipe.valves.VIDEO_POLL_INTERVAL_SECONDS = 1
+    pipe.valves.VIDEO_POLL_INTERVAL_MAX_SECONDS = 1
+    adapter = pipe._ensure_video_generation_adapter()
+
+    stored = (
+        adapter._file_host_record(_valves(), {("video", "litterbox")})
+        + adapter._withheld_record(withheld)
+        + "\n"
+        + adapter._build_pending_content(job_id="job-resume", model_id="m")
+    )
+    assert adapter._extract_video_job_marker(stored) == "job-resume", (
+        "precondition: the stored message has to look resumable, or generate() submits anew"
+    )
+
+    class _Persistence:
+        async def load_message_content(self, *, chat_id: str, message_id: str) -> str:
+            return stored
+
+    class _Client:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        async def submit(self, _payload):
+            raise AssertionError("a resumed job must not be submitted a second time")
+
+        async def status(self, job_id, polling_url=None):
+            assert job_id == "job-resume"
+            return {"status": "completed", "usage": {"cost": "0.25"}}
+
+        def content_url(self, job_id: str, index: int = 0) -> str:
+            return f"https://example.test/videos/{job_id}/content"
+
+        def bearer_header(self) -> dict[str, str]:
+            return {"Authorization": "Bearer test"}
+
+    async def _download(url: str, dest_path, **_kwargs):
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        dest_path.write_bytes(MP4)
+        return {"path": dest_path, "mime_type": "video/mp4", "url": url, "size_bytes": len(MP4)}
+
+    async def _upload(*_args, **_kwargs):
+        return "file-1"
+
+    cast(Any, adapter)._persistence = _Persistence()
+    monkeypatch.setattr(
+        "open_webui_openrouter_pipe.integrations.video.OpenRouterVideoClient", _Client
+    )
+    monkeypatch.setattr(pipe, "_create_http_session", lambda *_a, **_k: MagicMock())
+    monkeypatch.setattr(
+        pipe._multimodal_handler, "_download_remote_url_streaming", _download
+    )
+    monkeypatch.setattr(pipe._file_gateway, "upload_to_owui_storage_from_path", _upload)
+
+    try:
+        answered = await adapter.generate(
+            body={"messages": [{"role": "user", "content": "make a video"}]},
+            responses_body=SimpleNamespace(provider={}),
+            valves=pipe.valves,
+            session=None,
+            event_emitter=None,
+            metadata={"chat_id": "chat-1", "message_id": "msg-1", "user_id": "user-1"},
+            user={"id": "user-1"},
+            request=None,
+            user_obj={"id": "user-1"},
+            normalized_model_id="openai.sora-2-pro",
+            api_model_id="openai/sora-2-pro",
+        )
+    finally:
+        await pipe.close()
+
+    assert "/api/v1/files/file-1/content" in answered, (
+        f"the resumed job did not finish, so nothing below is about a resume:\n{answered}"
+    )
+    for name, reason in withheld:
+        assert name in answered, (
+            f"the setting that was not sent is missing from the message a resumed job "
+            f"leaves behind, so the reader never learns {name} went nowhere:\n{answered}"
+        )
+        assert reason in answered, (
+            f"{name} is named without why it was not sent:\n{answered}"
+        )
+    assert answered.count("Not sent with this video") == 1, (
+        f"the record was written more than once on the way through:\n{answered}"
+    )
+    assert "litterbox" in answered, (
+        f"the file-host record was dropped by the same resume, and a user whose file was "
+        f"published to a public host has no durable record of it:\n{answered}"
+    )
+
+
+def test_a_resumed_message_carrying_the_withheld_record_round_trips_through_it_again():
+    """What the resume path writes back has to be recoverable by the NEXT resume.
+
+    A serialization whose end marker glued to the record text rendered as one line and
+    was the reason the block was reshaped; a shape that survives one pass but not two
+    would lose the reason on the second poll of a long job.
+    """
+    adapter = _adapter()
+    record = adapter._withheld_record(_WITHHELD_CASES["one-cause"])
+    first = record + "\n" + adapter._build_pending_content(job_id="job-7", model_id="m")
+
+    once = adapter._recover_the_withheld_record(first)
+    rewritten = once + adapter._build_pending_content(job_id="job-7", model_id="m")
+    twice = adapter._recover_the_withheld_record(rewritten)
+
+    assert twice.strip() == record.strip(), twice
+    assert adapter._extract_video_job_marker(rewritten) == "job-7"
 
 
 # -------------------------------------------------------------- FAIL CLOSED --

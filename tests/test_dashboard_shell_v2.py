@@ -183,6 +183,71 @@ def test_config_live_update_wiring():
     assert "Discard changes?" in html and "cfgArmed" in html
 
 
+def test_a_save_adopts_the_value_the_server_reports_as_the_new_baseline():
+    """Clearing a template box and saving writes the factory text back; the editor has to
+    show THAT, not the blank the admin typed.
+
+    ``config_set`` answers with the values the store now holds, and the server half of this
+    is pinned in ``tests/test_actions.py``. The browser half is this assignment: taking
+    ``edits[n]`` unconditionally leaves the box blank and the diff view claiming the whole
+    template was deleted, until something else forces a reload. Asserting that the response
+    values are merely READ would pass on a dead read, so the identifier the guard binds is
+    carried through into the assignment's own condition and true-branch.
+
+    Every assignment to the baseline is collected and exactly one is required, rather than
+    constraining the first one found. JavaScript takes the last one to run, so "assign a
+    default, then refine it" -- an ordinary refactor -- would otherwise leave this reading a
+    statement that no longer decides anything, with no signal. The count spans any index
+    expression while the constraints stay bound to ``baseline[n]``: a second assignment
+    written under a different name is the same trap, and pinning the name is what keeps a
+    wrong variable in the surviving statement from passing.
+    """
+    import re
+
+    from open_webui_openrouter_pipe.plugins.pipe_dashboard.config_tab_assets import CONFIG_TAB_JS
+
+    body = _js_fn_body(CONFIG_TAB_JS, "commitSave")
+
+    guard = re.search(
+        r"""(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*"""
+        r"""\(\s*r\.values\s*&&\s*typeof\s+r\.values\s*===\s*["']object["']\s*\)""",
+        body,
+    )
+    assert guard, (
+        "commitSave no longer reads the save response's values behind a type guard, so a "
+        f"malformed reply would be indexed as if it were an object:\n{body}"
+    )
+    reported = guard.group(1)
+
+    every = re.findall(r"baseline\[[^\]]*\]\s*=\s*([^;]+);", body)
+    assigns = re.findall(r"baseline\[n\]\s*=\s*([^;]+);", body)
+    assert assigns, f"commitSave no longer sets the editor baseline at all:\n{body}"
+    assert len(every) == 1, (
+        f"commitSave assigns the editor baseline {len(every)} times: "
+        f"{[value.strip() for value in every]}. JavaScript takes the last one to run, and "
+        "everything below constrains a single statement, so a correct-looking expression "
+        "ahead of a wrong one would satisfy it while the wrong one decides what the admin "
+        f"sees. Reduce it to one assignment, or teach this test which of them wins:\n{body}"
+    )
+    rhs = assigns[0].strip()
+
+    assert re.search(
+        rf"(?:hasOwnProperty\.call\(\s*{re.escape(reported)}\s*,\s*n\s*\)|\bn\s+in\s+{re.escape(reported)}\b)",
+        rhs,
+    ), (
+        f"the new baseline is not conditional on {reported!r} carrying that name, so a value "
+        f"the server rewrote on the way in is discarded: baseline[n]={rhs}"
+    )
+    assert re.search(rf"\?\s*{re.escape(reported)}\[n\]\s*:", rhs), (
+        f"the reported branch does not take {reported}[n]; the server's own value never "
+        f"becomes the baseline: baseline[n]={rhs}"
+    )
+    assert rhs.rstrip().endswith("edits[n]"), (
+        "a name the server did not report must fall back to what the admin typed, or an "
+        f"untouched setting loses its baseline: baseline[n]={rhs}"
+    )
+
+
 def test_update_tab_markers():
     html = _build_dashboard_shell("dash-v2")
     config = html.index('data-tab="config"')

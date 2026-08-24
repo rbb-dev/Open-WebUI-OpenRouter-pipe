@@ -1560,9 +1560,55 @@ async def test_make_middleware_stream_emitter_chat_message_content_updates_assis
     assert queue.qsize() == 3
 
 
+def _drain(queue: asyncio.Queue) -> list[Any]:
+    drained: list[Any] = []
+    while not queue.empty():
+        drained.append(queue.get_nowait())
+    return drained
+
+
+def _carries(item: Any, text: str) -> bool:
+    """Whether one queued item carries this text where a reader would find it.
+
+    Both shapes the middleware stream takes are searched: a forwarded ``{"event": ...}``
+    envelope, and an OpenAI-style chunk whose text sits in ``choices[].delta.content``.
+    """
+    if not isinstance(item, dict):
+        return False
+    event = item.get("event")
+    if isinstance(event, dict):
+        data = event.get("data")
+        return isinstance(data, dict) and text in str(data.get("delta") or data.get("content") or "")
+    for choice in item.get("choices") or []:
+        delta = choice.get("delta") if isinstance(choice, dict) else None
+        if isinstance(delta, dict) and text in str(delta.get("content") or ""):
+            return True
+    return False
+
+
 @pytest.mark.asyncio
-async def test_make_middleware_stream_emitter_answer_started_flushes_reasoning(pipe_instance_async):
-    """Test that starting answer flushes reasoning buffer."""
+@pytest.mark.parametrize(
+    ("thought", "answer"),
+    [("Think", "Response"), ("Weighing the options", "Here is what I found")],
+)
+async def test_make_middleware_stream_emitter_forwards_reasoning_then_the_answer(
+    pipe_instance_async, thought, answer
+):
+    """A reasoning event and an answer delta each put their own item on the stream.
+
+    Named for what it measures. Its previous name and docstring described an
+    `answer_started` gate that buffered reasoning and flushed it when the answer began;
+    that mechanism was retired when reasoning moved to native `response.*` output items,
+    and the flag it turned on had been dead ever since.
+
+    Each half is identified by the TEXT it carries, not by the queue growing. Sampling
+    the size after the reasoning event and asserting it then grew cancels the reasoning
+    half out arithmetically: dropping every reasoning event left that green. A count is
+    no better -- one message may enqueue several items, so two is reached by the answer
+    alone.
+
+    Two rows of distinct text, so an emitter that enqueues a fixed item fails one of them.
+    """
     pipe = pipe_instance_async
 
     class _FakeJob:
@@ -1582,16 +1628,24 @@ async def test_make_middleware_stream_emitter_answer_started_flushes_reasoning(p
 
     emitter = pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
-    # Build up reasoning buffer (not enough to emit)
-    await emitter({"type": "reasoning:delta", "data": {"delta": "Think"}})
+    await emitter({"type": "reasoning:delta", "data": {"delta": thought}})
+    reasoning_items = _drain(queue)
 
-    initial_size = queue.qsize()
+    assert [item for item in reasoning_items if _carries(item, thought)], (
+        f"the reasoning event put nothing carrying {thought!r} on the stream, so a reader "
+        f"downstream never sees it: {reasoning_items}"
+    )
 
-    # Start answer - should flush reasoning buffer
-    await emitter({"type": "chat:message", "data": {"delta": "Response", "content": "Response"}})
+    await emitter({"type": "chat:message", "data": {"delta": answer, "content": answer}})
+    answer_items = _drain(queue)
 
-    # Should have flushed status + added chat message
-    assert queue.qsize() > initial_size
+    assert [item for item in answer_items if _carries(item, answer)], (
+        f"the answer delta put nothing carrying {answer!r} on the stream: {answer_items}"
+    )
+    assert not [item for item in answer_items if _carries(item, thought)], (
+        f"the answer delta re-sent the reasoning text; it is forwarded once, when it "
+        f"arrives: {answer_items}"
+    )
 
 
 # -----------------------------------------------------------------------------

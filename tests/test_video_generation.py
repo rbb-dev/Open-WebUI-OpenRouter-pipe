@@ -1260,8 +1260,19 @@ async def test_video_zdr_enforce_rejects_before_video_dispatch(monkeypatch):
                 __tools__={},
             )
 
-        assert await _consume_pipe_result(result) == ""
-        assert any("ZDR_ENFORCE" in str(event) for event in events)
+        cards = [
+            event["data"]["content"]
+            for event in events
+            if event.get("type") == "chat:message" and isinstance(event.get("data"), dict)
+        ]
+        assert cards, f"no card was shown, events were {events}"
+        control = Pipe.Valves.model_fields["ZDR_ENFORCE"].title
+        assert control and control in cards[-1], (
+            f"the card cites the setting as something other than {control!r}, the label the "
+            f"settings screens show for it; a reader cannot look up the source name:\n{cards[-1]}"
+        )
+        # stream=False: the card the user saw is only persisted if it comes back.
+        assert await _consume_pipe_result(result) == cards[-1]
     finally:
         await pipe.close()
 
@@ -1311,8 +1322,12 @@ async def test_video_adapter_terminal_failures_persist_visible_failure(monkeypat
     assert "### Video generation failed" in result
     assert "provider stopped" in result
     delta_events = [e for e in events if e.get("type") == "chat:message:delta"]
-    assert any(e.get("data", {}).get("content") == result for e in delta_events), (
-        f"expected a chat:message:delta with the failure content; got {events!r}"
+    assert "".join(
+        str(e.get("data", {}).get("content", "")) for e in delta_events
+    ) == result, (
+        "Open WebUI builds the stored message by concatenating delta content, so the failure "
+        "card must arrive there whole and exactly once; a card that is only sent on the "
+        f"completion frame, or sent twice, leaves the saved turn wrong. got {events!r}"
     )
     assert pipe._video_message_locks == {}
 
@@ -3210,8 +3225,8 @@ async def test_emit_completion_includes_usage_in_chat_completion_event():
     assert len(completion_events) == 1
     assert completion_events[0]["data"]["usage"] == usage
     delta_events = [e for e in captured if e.get("type") == "chat:message:delta"]
-    assert len(delta_events) == 1
-    assert "usage" not in delta_events[0]["data"]
+    assert "".join(e["data"]["content"] for e in delta_events) == "hello"
+    assert all("usage" not in e["data"] for e in delta_events)
 
 
 @pytest.mark.asyncio
@@ -5456,7 +5471,10 @@ async def test_a_clip_that_cannot_be_stored_is_logged_and_declared_to_the_user(
 
     handler = _Capture()
     adapter.logger.addHandler(handler)
-    monkeypatch.setattr(adapter.logger, "propagate", False, raising=False)
+    # Nothing sets `propagate` here: `Pipe()` above already cleared it via get_logger, so
+    # a monkeypatch taken at this point snapshots the value it is about to write, and its
+    # undo -- ordered after the conftest restore -- hands the next test a logger that
+    # neither emits nor propagates. Every `caplog` assertion after that is vacuous.
 
     class FakeClient(OpenRouterVideoClient):
         async def status(self, job_id, polling_url=None):
@@ -6560,7 +6578,6 @@ async def test_a_rejected_video_reaches_the_user_as_the_operators_error_card(
         api_model_id="openai/sora-2-pro",
     )
 
-    assert result == ""
     cards = [
         str(event.get("data", {}).get("content", ""))
         for event in events
@@ -6568,6 +6585,10 @@ async def test_a_rejected_video_reaches_the_user_as_the_operators_error_card(
     ]
     assert len(cards) == 1, f"expected exactly one error card; got {events!r}"
     card = cards[0]
+    assert result == card, (
+        "with streaming off Open WebUI builds the stored message from this return value alone; "
+        f"an empty string there skips the write entirely and the turn reloads blank. got {result!r}"
+    )
     assert banner in card, card
     assert other_banner not in card, "the status picked the wrong template"
     assert "the input video is shorter than this model accepts" in card

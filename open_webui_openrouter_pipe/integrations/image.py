@@ -14,6 +14,7 @@ from ..core.errors import OpenRouterAPIError
 from ..core.logging_system import SessionLogger
 from ..core.utils import clamp_text, summarise_names
 from ..core.warn_latch import warn_level
+from ..filters.image_filter_renderer import IMAGE_KNOB_TITLES
 from ..storage.multimodal import ADDRESS_CHECK_BUDGET_SECONDS, ADDRESS_CHECK_SECONDS
 from .image_client import OpenRouterImageClient
 from .image_types import (
@@ -40,7 +41,11 @@ from .provider_options import (
     restrict_provider_block,
 )
 
-_NOTE_NAME_LIMIT = 40
+_LABEL_WIDTH = max(
+    len(f"{title} ({name})") for name, (title, _meaning) in IMAGE_KNOB_TITLES.items()
+)
+
+_NOTE_NAME_LIMIT = max(40, _LABEL_WIDTH)
 _NOTE_VALUE_LIMIT = 80
 
 _PROVIDER_KEY_REPORT_LIMIT = 16
@@ -56,6 +61,12 @@ def _clamp(text: Any, limit: int = _NOTE_NAME_LIMIT) -> str:
     request carried.
     """
     return clamp_text(text, limit)
+
+
+def _labelled(name: Any) -> str:
+    title = IMAGE_KNOB_TITLES.get(name, ("", ""))[0] if isinstance(name, str) else ""
+    return f"{title} ({name})" if title and title != name else str(name)
+
 
 _TOP_LEVEL_PARAMS = TOP_LEVEL_PARAMS
 
@@ -117,17 +128,32 @@ def _superseded(name: str, value: Any, reason: str) -> tuple[str, str, str]:
     return (
         "superseded",
         name,
-        f"{name}={_clamp(repr(value), _NOTE_VALUE_LIMIT)} was not sent ({reason})",
+        f"{_labelled(name)}={_clamp(repr(value), _NOTE_VALUE_LIMIT)} was not sent ({reason})",
     )
 
 
-def size_consistency_notes(top_level: dict[str, Any]) -> list[_Note]:
+def size_consistency_notes(
+    top_level: dict[str, Any], declared: dict[str, Any] | None = None
+) -> list[_Note]:
+    size = top_level.get("size")
+    if size is not None:
+        outcome = ImageGenerationAdapter._fit_published(declared, "size", size)
+        if outcome.value is None:
+            top_level.pop("size")
+            return [
+                _Note(
+                    "outside-contract",
+                    "size",
+                    f"{_labelled('size')}={_clamp(repr(size), _NOTE_VALUE_LIMIT)} was "
+                    f"not sent ({outcome.reason})",
+                )
+            ]
     dropped = supersede_size_conflicts(top_level)
     if not dropped:
         return []
     shown_size = _clamp(repr(top_level.get("size")), _NOTE_VALUE_LIMIT)
     return [
-        _Note(*_superseded(name, value, f"size={shown_size} {reason}"))
+        _Note(*_superseded(name, value, f"{_labelled('size')}={shown_size} {reason}"))
         for name, value, reason in dropped
     ]
 
@@ -325,7 +351,8 @@ class ImageGenerationAdapter:
             _Note(
                 "unroutable",
                 "*",
-                f"{summarise_names(narrowing, 2, 20)}: accepted by only some of the "
+                f"{summarise_names([_labelled(n) for n in narrowing], 2, _LABEL_WIDTH)}: "
+                "accepted by only some of the "
                 "companies serving this model, and OpenRouter names none of them for "
                 "routing",
             )
@@ -368,7 +395,7 @@ class ImageGenerationAdapter:
             # `image_config` arrives from the client, so a key need not be a string.
             if not isinstance(key, str) or value is None or value == "":
                 continue
-            shown = _clamp(key)
+            shown = _clamp(_labelled(key))
             if not json_encodable(value):
                 _note(
                     "unencodable",
@@ -390,22 +417,22 @@ class ImageGenerationAdapter:
                 _note(
                     "superseded",
                     name,
-                    f"{shown} was ignored because {name} was set explicitly",
+                    f"{shown} was ignored because {_labelled(name)} was set explicitly",
                 )
                 continue
             if name in _SCHEMA_ONLY_PARAMS and (declared is None or name not in declared):
                 outcome = ImageGenerationAdapter._fit_published(declared, name, value)
                 if outcome.value is None:
                     detail = (
-                        f"it sets {outcome.measured_as}, which {outcome.reason}"
+                        f"it sets {_labelled(outcome.measured_as)}, which {outcome.reason}"
                         if outcome.measured_as
                         else outcome.reason
                     )
                     _note(
                         "outside-contract",
                         name,
-                        f"{name}={_clamp(repr(value), _NOTE_VALUE_LIMIT)} was not sent "
-                        f"({detail})",
+                        f"{_labelled(name)}={_clamp(repr(value), _NOTE_VALUE_LIMIT)} was "
+                        f"not sent ({detail})",
                     )
                     continue
                 top_level[name] = outcome.value
@@ -416,7 +443,8 @@ class ImageGenerationAdapter:
                         _note(
                             "unbounded-multiplier",
                             name,
-                            f"{name} was not sent (it multiplies what the request costs and "
+                            f"{_labelled(name)} was not sent (it multiplies what the request "
+                            "costs and "
                             "this model's published limit could not be read)",
                         )
                         continue
@@ -424,19 +452,21 @@ class ImageGenerationAdapter:
                     top_level[name] = value
                     continue
                 if name not in declared:
-                    _note("not-offered", name, f"{name} is not offered by this model")
+                    _note(
+                        "not-offered", name, f"{_labelled(name)} is not offered by this model"
+                    )
                     continue
                 outcome = ImageGenerationAdapter._fit_published(declared, name, value)
                 if outcome.value is None:
                     _note(
                         "outside-contract",
                         name,
-                        f"{name}={_clamp(repr(value), _NOTE_VALUE_LIMIT)} was not sent "
-                        f"({outcome.reason})",
+                        f"{_labelled(name)}={_clamp(repr(value), _NOTE_VALUE_LIMIT)} was "
+                        f"not sent ({outcome.reason})",
                     )
                     continue
                 if outcome.reason:
-                    _note("clamped", name, f"{name} {outcome.reason}")
+                    _note("clamped", name, f"{_labelled(name)} {outcome.reason}")
                 top_level[name] = outcome.value
             elif key in allowed_passthrough:
                 provider[key] = value
@@ -448,7 +478,7 @@ class ImageGenerationAdapter:
                 )
             else:
                 _note("not-offered", key, f"{shown} is not offered by this model")
-        for note in size_consistency_notes(top_level):
+        for note in size_consistency_notes(top_level, declared):
             _note(note.kind, note.name, note.text)
         unvalidated = [name for name in unvalidated if name in top_level]
         if unvalidated:
@@ -456,7 +486,8 @@ class ImageGenerationAdapter:
                 _Note(
                     "unvalidated",
                     "*",
-                    f"{', '.join(sorted(unvalidated))} went out unchecked (this model's "
+                    f"{', '.join(_labelled(name) for name in sorted(unvalidated))} went out "
+                    "unchecked (this model's "
                     "published limits could not be read, so OpenRouter may reject them)",
                 )
             )
@@ -963,8 +994,8 @@ class ImageGenerationAdapter:
     async def _emit_failure(self, event_emitter: Any, reason: str) -> str:
         content = f"### Image generation failed\n\n{reason}"
         if event_emitter:
-            await self._pipe._event_emitter_handler._emit_completion(
-                event_emitter, content=content, done=True
+            await self._pipe._event_emitter_handler._emit_unstreamed_answer(
+                event_emitter, content=content
             )
         return content
 
@@ -1007,13 +1038,12 @@ class ImageGenerationAdapter:
         except OpenRouterAPIError as exc:
             await self._close_status(event_emitter)
             await self._settle(outcome, valves, user, metadata, user_obj, api_model_id)
-            await self._pipe._ensure_error_formatter()._report_openrouter_error(
+            return await self._pipe._ensure_error_formatter()._report_openrouter_error(
                 exc,
                 event_emitter=event_emitter,
                 normalized_model_id=normalized_model_id,
                 api_model_id=api_model_id,
             )
-            return ""
         except ImageGenerationError as exc:
             self._logger.warning("Image generation failed for %r: %s", api_model_id, exc)
             await self._close_status(event_emitter)
@@ -1257,7 +1287,7 @@ class ImageGenerationAdapter:
                 ),
                 done=True,
             )
-            await self._pipe._event_emitter_handler._emit_completion(
-                event_emitter, content=content, done=True, usage=result.usage or None
+            await self._pipe._event_emitter_handler._emit_unstreamed_answer(
+                event_emitter, content=content, usage=result.usage or None
             )
         return content

@@ -431,7 +431,7 @@ The handler receives the pipe, the resolved OWUI user, and the validated `args` 
 | `echo` | `write` | `{"message": str}` | `{"message": <echoed>}` |
 | `usage_stats` | `read` | `{"range": str, "tz_offset_min": int, "include_tasks": bool}` | The Usage-tab analytics dict (see [Session Tracking & Usage Records](#session-tracking--usage-records)) |
 | `config_get` | `read` | — | Valve specs with current values (secrets masked to a set/not-set flag) and the current config revision |
-| `config_set` | `write` | `{"edits": dict}` | Persists the changed subset and returns the new revision — or a conflict payload when the client's revision was stale |
+| `config_set` | `write` | `{"edits": dict}` | Persists the changed subset and returns the new revision plus the stored value of every valve it wrote, secrets excluded, read back the same way `config_get` reads — or a conflict payload when the client's revision was stale |
 
 `whoami` and `echo` are reference implementations; `usage_stats` powers the Usage tab; `config_get` and `config_set` power the Config tab (see the [Operations Guide](plugins_pipe_dashboard.md#editing-configuration)). A new action is registered by importing its module at plugin load -- the same explicit-import requirement as commands.
 

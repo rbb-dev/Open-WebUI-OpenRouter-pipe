@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from ..streaming.event_emitter import EventEmitter, EventEmitterHandler
 
 from .errors import _resolve_error_model_context
-from .utils import _pretty_json
+from .utils import _pretty_json, _resolve_retry_after_seconds, join_answer_and_card
 
 # Simple fallback template used when no valve template is available.
 # The canonical DEFAULT_OPENROUTER_ERROR_TEMPLATE lives in core/config.py.
@@ -32,7 +32,7 @@ The model provider returned an error:
 {openrouter_message}
 ```
 
-**Model**: {model_slug}
+**Model**: {model_identifier}
 **Error ID**: {error_id}
 """
 
@@ -74,10 +74,10 @@ class ErrorFormatter:
         show_error_message: bool = True,
         show_error_log_citation: bool = False,
         done: bool = False,
-    ):
+    ) -> str:
         if not self._event_emitter_handler:
-            return
-        await self._event_emitter_handler._emit_error_event(
+            return ""
+        return await self._event_emitter_handler._emit_error_event(
             event_emitter,
             error_obj,
             show_error_message=show_error_message,
@@ -93,15 +93,17 @@ class ErrorFormatter:
         variables: dict[str, Any],
         log_message: str,
         log_level: int = logging.ERROR,
-    ):
+        partial_answer: str = "",
+    ) -> str:
         if not self._event_emitter_handler:
-            return
-        await self._event_emitter_handler._emit_templated_error_event(
+            return ""
+        return await self._event_emitter_handler._emit_templated_error_event(
             event_emitter,
             template=template,
             variables=variables,
             log_message=log_message,
             log_level=log_level,
+            partial_answer=partial_answer,
         )
 
     def _build_error_context(self) -> tuple[str, dict[str, Any]]:
@@ -243,59 +245,57 @@ class ErrorFormatter:
         normalized_model_id: str | None,
         api_model_id: str | None,
         usage: dict[str, Any] | None = None,
-        template: str | None = None,
-    ) -> None:
+        partial_answer: str = "",
+    ) -> str:
         """Emit a user-facing markdown message for OpenRouter 400 responses."""
         if getattr(exc, "status", None) in {401, 403}:
             self._pipe._note_auth_failure()
         error_id, context_defaults = self._build_error_context()
-        template_to_use = template or self._select_openrouter_template(exc.status)
-        # Select by presence, not truthiness: a parsed retry_after_seconds of
-        # 0 (expired HTTP-date) must win over the raw date header, otherwise
-        # the template renders "<date>s".
-        retry_after_hint = exc.metadata.get("retry_after_seconds")
-        if retry_after_hint is None:
-            retry_after_hint = exc.metadata.get("retry_after")
+        template_to_use = self._select_openrouter_template(exc.status)
+        retry_after_hint = _resolve_retry_after_seconds(exc.metadata)
         if retry_after_hint is not None and context_defaults.get("retry_after_seconds") is None:
             context_defaults["retry_after_seconds"] = retry_after_hint
         self.logger.warning("[%s] OpenRouter rejected the request: %s", error_id, exc)
-        if event_emitter:
-            model_display, diagnostics, metrics = _resolve_error_model_context(
-                exc,
-                normalized_model_id=normalized_model_id,
-                api_model_id=api_model_id,
+        model_display, diagnostics, metrics = _resolve_error_model_context(
+            exc,
+            normalized_model_id=normalized_model_id,
+            api_model_id=api_model_id,
+        )
+        content = exc.to_markdown(
+            model_label=model_display,
+            diagnostics=diagnostics or None,
+            fallback_model=api_model_id or normalized_model_id,
+            template=template_to_use or _FALLBACK_ERROR_TEMPLATE,
+            metrics=metrics,
+            normalized_model_id=normalized_model_id,
+            api_model_id=api_model_id,
+            context=context_defaults,
+        )
+        shown = join_answer_and_card(partial_answer, content)
+        if not event_emitter:
+            return shown
+        try:
+            await event_emitter(
+                {
+                    "type": "status",
+                    "data": {
+                        "description": "Encountered a provider error. See details below.",
+                        "done": True,
+                    },
+                }
             )
-            content = exc.to_markdown(
-                model_label=model_display,
-                diagnostics=diagnostics or None,
-                fallback_model=api_model_id or normalized_model_id,
-                template=template_to_use or _FALLBACK_ERROR_TEMPLATE,
-                metrics=metrics,
-                normalized_model_id=normalized_model_id,
-                api_model_id=api_model_id,
-                context=context_defaults,
+            await event_emitter({"type": "chat:message", "data": {"content": shown}})
+            await self._pipe._event_emitter_handler._emit_completion(
+                event_emitter,
+                content="",
+                usage=usage or None,
+                done=True,
             )
-            try:
-                await event_emitter(
-                    {
-                        "type": "status",
-                        "data": {
-                            "description": "Encountered a provider error. See details below.",
-                            "done": True,
-                        },
-                    }
-                )
-                await event_emitter({"type": "chat:message", "data": {"content": content}})
-                await self._pipe._event_emitter_handler._emit_completion(
-                    event_emitter,
-                    content="",
-                    usage=usage or None,
-                    done=True,
-                )
-            except Exception:
-                self.logger.exception(
-                    "[%s] Failed to emit OpenRouter error report", error_id
-                )
+        except Exception:
+            self.logger.exception(
+                "[%s] Failed to emit OpenRouter error report", error_id
+            )
+        return shown
 
     # ======================================================================
     # Status Formatting

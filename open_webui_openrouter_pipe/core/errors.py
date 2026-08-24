@@ -30,6 +30,7 @@ from .utils import (
     _normalize_string_list,
     _pretty_json,
     _render_error_template,
+    _resolve_retry_after_seconds,
     _retry_after_seconds,
     _safe_json_loads,
     _unwrap_config_value,
@@ -412,9 +413,7 @@ def _build_error_template_values(
     context = context or {}
     retry_after = context.get("retry_after_seconds")
     if retry_after is None:
-        retry_after = error.metadata.get("retry_after_seconds")
-    if retry_after is None:
-        retry_after = error.metadata.get("retry_after")
+        retry_after = _resolve_retry_after_seconds(error.metadata)
     replacements: dict[str, Any] = {
         "heading": heading,
         "detail": detail,

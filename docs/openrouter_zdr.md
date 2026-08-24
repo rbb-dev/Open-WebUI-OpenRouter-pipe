@@ -36,7 +36,7 @@ Configure these in **Open WebUI → Admin → Functions → [OpenRouter pipe] �
 - **`ALLOW_USER_ZDR_OVERRIDE`**
   - Allows users to request ZDR per chat.
   - Ignored when `ZDR_ENFORCE` is enabled.
-  - If a user's stored `REQUEST_ZDR` value cannot be parsed, the pipe cannot tell whether they opted in, so it enforces ZDR for that request rather than routing without it. A model that is not ZDR-capable is then refused with `Restricted by: ZDR_PREFERENCE_UNREADABLE`, which names the preference rather than the `ZDR_ENFORCE` valve. A failure to *read* the row is different: the preference Open WebUI supplied is used, so one unreadable settings row does not end that user's chat.
+  - If a user's stored `REQUEST_ZDR` value cannot be parsed, the pipe cannot tell whether they opted in, so it enforces ZDR for that request rather than routing without it. A model that is not ZDR-capable is then refused with a `Restricted by` row naming the user's own `Request ZDR` preference rather than the `Enforce ZDR routing` valve, so an operator is not sent to a setting that is switched off. A failure to *read* the row is different: the preference Open WebUI supplied is used, so one unreadable settings row does not end that user's chat.
 
 ---
 

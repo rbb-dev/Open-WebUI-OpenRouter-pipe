@@ -80,14 +80,25 @@ Common event types:
 
 | Event type | Purpose |
 | --- | --- |
-| `chat:message` | Updates the visible assistant message content (streaming text snapshots). |
+| `chat:message` | Sets the visible assistant message to `content`, replacing what is there (whole-text snapshots). |
+| `chat:message:delta` | Appends `content` to the visible assistant message. |
 | `chat:completion` | Final frame that ends the request; may include `usage` and must include `content` (even when empty). |
 | `status` | Progress and warning messages displayed as status updates. |
 | `source` | Normalized citation payloads (documents/metadata/source). |
 | `notification` | Toast-style notifications (info/success/warning/error). |
 
+Which of these survives a page reload depends entirely on whether the turn is streaming, and the two legs do not share a channel:
+
+**Streaming on.** The pipe does not hand its events to Open WebUI as events at all. It returns an async generator, and its own translator converts each event into the OpenAI-style stream chunks Open WebUI's streaming handler accumulates. Both `chat:message` and `chat:message:delta` become answer text there — a delta contributes its `content` verbatim, and a `chat:message` contributes only the part of its snapshot that has not been sent yet, so alternating the two on one turn does not duplicate text. That subtraction is conditional: the translator forwards the remainder **only when the snapshot starts with everything already sent**, and forwards nothing at all when it does not. So a card — an error card, a notice, any block the pipe appends to an answer in progress — goes out as a snapshot of the **whole message**, the answer so far joined to the card, never as the card alone. A bare card is a non-prefix write the moment any text has streamed, and the translator drops it: the user never sees it. Where a card instead reaches Open WebUI as an event rather than through the translator, a bare one is worse than invisible — `chat:message` assigns there, per the table above, so it would overwrite the partial answer rather than follow it. `chat:completion` is **not** answer text: a frame carrying `content` is forwarded out of band, one carrying `error` or `usage` is forwarded as an error or usage record, and a frame carrying none of the three is dropped. So a whole answer sent only as `chat:completion` arrives as no text at all.
+
+**Streaming off.** The translator does not exist; the events go straight to Open WebUI's socket emitter, which forwards them to the browser and writes only a subset to the database. `status`, `message`, `replace`, `embeds`, `files` and `source`/`citation` are written. `chat:message`, `chat:message:delta` and `chat:completion` are **not** — the browser shows them and the database never hears about them. What Open WebUI stores on this leg is the value the pipe RETURNS. An empty return also skips the outlet filters and the follow-up tasks that ride the same branch, so the turn reloads blank *and* the chat never gets a title.
+
+The rule that covers both legs: **an answer must be both shown and returned.** Showing it satisfies the live view on either leg; returning it satisfies persistence with streaming off and costs nothing with streaming on, where the return value is discarded. A card that is only emitted is a card the user loses on reload; a card that is only returned is a card that appears late.
+
 Notes:
-- The streaming loop may emit intermediate `chat:message` frames as content changes, and ends with a `chat:completion` frame.
+- Answer text streams as `chat:message:delta` frames, and the turn ends with a `chat:completion` frame. The whole-message `chat:message` snapshot is the channel for cards, not for incremental text.
+- An answer produced whole rather than streamed — a generated image, a finished video, a help panel, an error card — must go out as `chat:message` or `chat:message:delta`, never as `chat:completion` alone, and must also be the return value. Which of the two depends on what has already been sent: a `chat:message:delta` carries exactly the text appended to the running message and nothing that preceded it, while a `chat:message` carries the running message and the new block together. Neither may carry the new block by itself — a delta that repeats the answer duplicates it on screen, and a snapshot that omits the answer is the non-prefix write the translator drops.
+- With streaming off, the wrapper the non-streaming path puts around the emitter suppresses `chat:message` and `chat:message:delta` outright, because the answer is travelling home as the return value instead. Anything raised inside the response loop that is only emitted as a card is therefore invisible on that leg; it has to come back as the return value to be seen at all.
 - When `SHOW_FINAL_USAGE_STATUS=True`, the pipe formats a final status description using usage/cost/tokens when present.
 
 ---

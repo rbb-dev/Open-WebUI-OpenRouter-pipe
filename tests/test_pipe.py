@@ -3150,8 +3150,16 @@ class TestHandlePipeCallEdgeCases:
             await pipe.close()
 
     @pytest.mark.asyncio
-    async def test_handle_pipe_call_catalog_load_error(self):
-        """Test that _handle_pipe_call handles catalog load errors gracefully."""
+    @pytest.mark.parametrize("detail", ["Configuration error", "Malformed base URL"])
+    async def test_handle_pipe_call_catalog_load_error(self, detail):
+        """A catalog load failure answers the caller with the reason, emitter or no emitter.
+
+        This asserted ``result == ""``, which is what the caller with no chat context
+        actually received -- and Open WebUI's non-streaming handler treats an empty return
+        as "no answer", skipping the message write and every background task with it. Two
+        distinct details, so the returned text has to come from the failure rather than
+        from a constant.
+        """
         pipe = Pipe()
         pipe.valves.API_KEY = EncryptedStr("sk-test-key")
 
@@ -3163,7 +3171,7 @@ class TestHandlePipeCallEdgeCases:
                 # Mock models endpoint to fail
                 mock_http.get(
                     "https://openrouter.ai/api/v1/models",
-                    exception=ValueError("Configuration error"),
+                    exception=ValueError(detail),
                 )
 
                 result = await pipe._handle_pipe_call(
@@ -3178,8 +3186,12 @@ class TestHandlePipeCallEdgeCases:
                     session=session,
                 )
 
-                # Should return empty string on error
-                assert result == ""
+                assert isinstance(result, str) and result.strip(), (
+                    f"a catalog load failure answered with {result!r}"
+                )
+                assert detail in result, (
+                    f"the answer does not carry the reason it failed: {result!r}"
+                )
         finally:
             await pipe.close()
 
@@ -3243,7 +3255,7 @@ class TestHandlePipeCallEdgeCases:
                     session=session,
                 )
 
-                assert result == ""
+                assert result == denied_message
                 assert mock_http.requests == {}
 
             emit_error_spy.assert_awaited_once()
@@ -4183,7 +4195,8 @@ async def test_handle_pipe_call_auth_error_task_fallback(monkeypatch, pipe_insta
 
 
 @pytest.mark.asyncio
-async def test_handle_pipe_call_openrouter_catalog_unavailable(monkeypatch, pipe_instance_async) -> None:
+@pytest.mark.parametrize("surfaced", ["Catalog is down.", "No models could be loaded."])
+async def test_handle_pipe_call_openrouter_catalog_unavailable(monkeypatch, pipe_instance_async, surfaced) -> None:
     pipe = pipe_instance_async
     monkeypatch.setattr(pipe, "_resolve_openrouter_api_key", lambda _valves: ("sk-test", None))
     monkeypatch.setattr(pipe._artifact_store, "_ensure_artifact_store", lambda *_args, **_kwargs: None)
@@ -4198,6 +4211,7 @@ async def test_handle_pipe_call_openrouter_catalog_unavailable(monkeypatch, pipe
 
     async def _emit_error(*_args, **_kwargs):
         calls.append("error")
+        return surfaced
 
     monkeypatch.setattr(pipe._ensure_error_formatter(), "_emit_error", _emit_error)
 
@@ -4215,12 +4229,13 @@ async def test_handle_pipe_call_openrouter_catalog_unavailable(monkeypatch, pipe
         session=_DummySession(),
     )
 
-    assert result == ""
+    assert result == surfaced
     assert calls
 
 
 @pytest.mark.asyncio
-async def test_handle_pipe_call_http_status_error_503(monkeypatch, pipe_instance_async) -> None:
+@pytest.mark.parametrize("surfaced", ["### Service outage", "### Upstream is down"])
+async def test_handle_pipe_call_http_status_error_503(monkeypatch, pipe_instance_async, surfaced) -> None:
     pipe = pipe_instance_async
     monkeypatch.setattr(pipe, "_resolve_openrouter_api_key", lambda _valves: ("sk-test", None))
     monkeypatch.setattr(pipe._artifact_store, "_ensure_artifact_store", lambda *_args, **_kwargs: None)
@@ -4240,6 +4255,7 @@ async def test_handle_pipe_call_http_status_error_503(monkeypatch, pipe_instance
 
     async def _emit_templated_error(*_args, **_kwargs):
         called.append("templated")
+        return surfaced
 
     monkeypatch.setattr(pipe, "_process_transformed_request", _process)
     monkeypatch.setattr(pipe._ensure_error_formatter(), "_emit_templated_error", _emit_templated_error)
@@ -4258,12 +4274,13 @@ async def test_handle_pipe_call_http_status_error_503(monkeypatch, pipe_instance
         session=_DummySession(),
     )
 
-    assert result == ""
+    assert result == surfaced
     assert called
 
 
 @pytest.mark.asyncio
-async def test_handle_pipe_call_http_status_error_429_reports(monkeypatch, pipe_instance_async) -> None:
+@pytest.mark.parametrize("surfaced", ["### Rate limited", "### Slow down"])
+async def test_handle_pipe_call_http_status_error_429_reports(monkeypatch, pipe_instance_async, surfaced) -> None:
     pipe = pipe_instance_async
     monkeypatch.setattr(pipe, "_resolve_openrouter_api_key", lambda _valves: ("sk-test", None))
     monkeypatch.setattr(pipe._artifact_store, "_ensure_artifact_store", lambda *_args, **_kwargs: None)
@@ -4288,6 +4305,7 @@ async def test_handle_pipe_call_http_status_error_429_reports(monkeypatch, pipe_
 
     async def _report_openrouter_error(*_args, **_kwargs):
         called.append("reported")
+        return surfaced
 
     monkeypatch.setattr(pipe, "_process_transformed_request", _process)
     monkeypatch.setattr(pipe._ensure_error_formatter(), "_report_openrouter_error", _report_openrouter_error)
@@ -4306,12 +4324,13 @@ async def test_handle_pipe_call_http_status_error_429_reports(monkeypatch, pipe_
         session=_DummySession(),
     )
 
-    assert result == ""
+    assert result == surfaced
     assert called
 
 
 @pytest.mark.asyncio
-async def test_handle_pipe_call_timeout_and_connect(monkeypatch, pipe_instance_async) -> None:
+@pytest.mark.parametrize("surfaced", ["### Timed out", "### Could not connect"])
+async def test_handle_pipe_call_timeout_and_connect(monkeypatch, pipe_instance_async, surfaced) -> None:
     pipe = pipe_instance_async
     monkeypatch.setattr(pipe, "_resolve_openrouter_api_key", lambda _valves: ("sk-test", None))
     monkeypatch.setattr(pipe._artifact_store, "_ensure_artifact_store", lambda *_args, **_kwargs: None)
@@ -4325,6 +4344,7 @@ async def test_handle_pipe_call_timeout_and_connect(monkeypatch, pipe_instance_a
 
     async def _emit_templated_error(*_args, **_kwargs):
         called.append("templated")
+        return surfaced
 
     async def _raise_timeout(*_args, **_kwargs):
         raise httpx.TimeoutException("timeout")
@@ -4364,13 +4384,14 @@ async def test_handle_pipe_call_timeout_and_connect(monkeypatch, pipe_instance_a
         session=_DummySession(),
     )
 
-    assert result_timeout == ""
-    assert result_connect == ""
+    assert result_timeout == surfaced
+    assert result_connect == surfaced
     assert len(called) == 2
 
 
 @pytest.mark.asyncio
-async def test_handle_pipe_call_reports_openrouter_api_error(monkeypatch, pipe_instance_async) -> None:
+@pytest.mark.parametrize("surfaced", ["### Provider said no", "### Request rejected"])
+async def test_handle_pipe_call_reports_openrouter_api_error(monkeypatch, pipe_instance_async, surfaced) -> None:
     pipe = pipe_instance_async
     monkeypatch.setattr(pipe, "_resolve_openrouter_api_key", lambda _valves: ("sk-test", None))
     monkeypatch.setattr(pipe._artifact_store, "_ensure_artifact_store", lambda *_args, **_kwargs: None)
@@ -4387,6 +4408,7 @@ async def test_handle_pipe_call_reports_openrouter_api_error(monkeypatch, pipe_i
 
     async def _report_openrouter_error(*_args, **_kwargs):
         called.append("reported")
+        return surfaced
 
     monkeypatch.setattr(pipe, "_process_transformed_request", _process)
     monkeypatch.setattr(pipe._ensure_error_formatter(), "_report_openrouter_error", _report_openrouter_error)
@@ -4405,7 +4427,7 @@ async def test_handle_pipe_call_reports_openrouter_api_error(monkeypatch, pipe_i
         session=_DummySession(),
     )
 
-    assert result == ""
+    assert result == surfaced
     assert called
 
 
@@ -4647,14 +4669,21 @@ async def test_pipe_handles_job_failure(monkeypatch):
                 __tools__=None,
             )
 
-            # When HTTP fails, the real pipeline returns empty string and emits error via events
-            assert result == ""
+            # Non-streaming requests wrap the emitter with suppress_chat_messages=True, so
+            # the templated error's chat:message never reaches the browser. The return value
+            # is the only channel left, and Open WebUI gates the whole tail of the turn on
+            # it being non-empty -- so the card has to come back from here. This assertion
+            # read `result == ""` and pinned the silent-failure behaviour as correct.
+            assert isinstance(result, str) and result.strip(), (
+                "the only thing Open WebUI keeps from a non-streaming turn is what the pipe "
+                f"returns; an empty string loses the failure entirely. got {result!r}"
+            )
+            assert "RuntimeError" in result, (
+                f"the card came back without naming what went wrong: {result!r}"
+            )
             assert events, "Expected error events to be emitted"
 
             # Verify error was handled: completion event with done=True must exist.
-            # Note: non-streaming requests wrap the emitter with suppress_chat_messages=True,
-            # so the templated error's chat:message is suppressed. The chat:completion
-            # with done=True still goes through (from the streaming loop's finally block).
             completion_events = [e for e in events if e.get("type") == "chat:completion"]
             assert completion_events, f"Expected chat:completion event, got: {events}"
             assert any(e.get("data", {}).get("done") is True for e in completion_events)
@@ -5797,9 +5826,6 @@ async def test_model_restricted_template_includes_filter_name():
                 __tools__={},
             )
 
-            # Should return empty string (error handled via events)
-            assert result == ""
-
             # Verify error event was emitted with filter name
             # Error is emitted as chat:message with the restriction details
             error_events = [e for e in events if e.get("type") == "chat:message" and "restricted" in e.get("data", {}).get("content", "").lower()]
@@ -5807,6 +5833,10 @@ async def test_model_restricted_template_includes_filter_name():
 
             # Check that the error message mentions the FREE_MODEL_FILTER valve
             error_text = str(error_events[0].get("data", {}).get("content", ""))
+
+            # With stream=False the return value is the only copy Open WebUI persists,
+            # so the card the user was shown has to come back as well as go out.
+            assert result == error_text
             # The error should mention either the filter causing the restriction or show the filter setting
             assert ("FREE_MODEL_FILTER" in error_text or "free" in error_text.lower()), (
                 f"Expected error to mention FREE_MODEL_FILTER, got: {error_text}"

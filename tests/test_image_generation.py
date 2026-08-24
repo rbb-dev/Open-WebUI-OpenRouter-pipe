@@ -2773,6 +2773,72 @@ def test_help_without_a_contract_still_describes_the_model():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("readable", [True, False])
+async def test_a_contract_the_pipe_could_not_read_is_not_reported_as_a_model_with_nothing(
+    readable, monkeypatch
+):
+    """A failed lookup must not be printed to the user as the model's own answer.
+
+    With both auto-install settings off nothing pre-fetches contracts, so every `help`
+    does a live read -- and the read answers with an EMPTY LIST on a network error, a
+    404, a rate limit or a missing key, not with None. That list is not None, so it
+    walked straight past the guard and the reply stated as fact that the model publishes
+    no price and no adjustable settings. Recraft V3 publishes a price and four controls.
+
+    The value fed to the renderer is the one the real reader produces, taken from a
+    client stubbed one seam below the subject -- comparing the renderer against a
+    hand-written `[]` proves nothing about what the reader returns. Both outcomes are
+    driven, so a reply that never makes the claim fails the readable row.
+    """
+    from open_webui_openrouter_pipe import Pipe
+    from open_webui_openrouter_pipe.core.config import EncryptedStr
+    from open_webui_openrouter_pipe.integrations.image_help import _IMAGE_NO_PRICE_LINE
+
+    published = _recorded_endpoint("recraft_recraft-v3")
+
+    class _Contract:
+        async def endpoints(self, _model_id):
+            if not readable:
+                raise RuntimeError("the contract read failed")
+            return published
+
+    pipe = Pipe()
+    pipe.valves.API_KEY = EncryptedStr("test-api-key")
+    adapter = pipe._ensure_image_generation_adapter()
+    monkeypatch.setattr(adapter, "_client", lambda *_a, **_k: _Contract())
+    try:
+        records = await adapter._published_records(object(), pipe.valves, "recraft/recraft-v3")
+    finally:
+        await pipe.close()
+
+    assert bool(records) is readable, (
+        f"precondition: the reader answers {records!r} for readable={readable}"
+    )
+
+    rendered = render_image_help(
+        "recraft/recraft-v3",
+        {"id": "recraft/recraft-v3", "name": "Recraft V3"},
+        endpoint_record=records,
+        dedicated_image_api=True,
+    )
+
+    assert rendered.strip(), "the model description must survive either way"
+    assert (_IMAGE_NO_PRICE_LINE in rendered) is False, (
+        "this model publishes a price of its own, so nothing here may say otherwise: "
+        f"{rendered}"
+    )
+    assert ("publishes no adjustable settings" in rendered) is False, (
+        f"Recraft V3 publishes four controls; the reply denies them: {rendered}"
+    )
+    assert ("## Cost" in rendered) is readable, (
+        f"a price may only be stated when the contract it came from was read: {rendered}"
+    )
+    assert ("## Controls" in rendered) is readable, (
+        f"controls may only be listed when the contract they came from was read: {rendered}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_help_reads_the_contract_itself_when_nothing_cached_it():
     """Filters and help answer different questions.
 
@@ -3984,6 +4050,97 @@ def test_the_emitted_tool_call_never_carries_a_ratio_the_pixel_size_contradicts(
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("typed", "sent"), [("2K", True), ("8K", False)])
+async def test_the_tool_panel_measures_a_size_tier_against_the_four_names(typed, sent):
+    """The size box on the chat tool says a tier is checked, so a tier has to be checked.
+
+    The model driven here publishes no tier list, which is the case the panel describes:
+    its own sentence promises the value is measured against OpenRouter's four names
+    before it goes out. `2K` is one of them and `8K` is not, so one value must survive
+    and the other must be withheld -- neither an unconditional send nor an unconditional
+    drop passes, and no constant satisfies both rows.
+
+    The reporting half is driven end to end rather than assumed: the note the request
+    path produces is handed to the reporter the request path uses, and the assertion is
+    on the notification that reaches the socket.
+    """
+    from open_webui_openrouter_pipe import Pipe
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        build_image_model_filter_spec,
+    )
+    from open_webui_openrouter_pipe.requests.orchestrator import _build_server_tool_entries
+
+    model_id = "google/gemini-2.5-flash-image"
+    spec = build_image_model_filter_spec(
+        model_id,
+        {"id": model_id, "name": "Gemini"},
+        _recorded_endpoint("google_gemini-2.5-flash-image"),
+        dedicated_image_api=True,
+    )
+    assert not dict(spec.enums).get("resolution"), (
+        f"{model_id} publishes tiers, so its panel makes the other promise and this case "
+        "would be measuring the wrong sentence"
+    )
+    module = _image_gen_module(spec, name=f"image_gen_size_tier_{typed}")
+    described = module.Filter.UserValves.model_fields["IMAGE_SIZE"].description or ""
+    assert "checked only against those four names" in described, (
+        "the panel no longer makes the promise this test holds the request path to; "
+        f"it says {described!r}"
+    )
+
+    metadata: dict = {}
+    module.Filter().inlet(
+        {}, metadata, {"valves": module.Filter.UserValves(IMAGE_SIZE=typed)}
+    )
+    entries, superseded = _build_server_tool_entries(
+        metadata["openrouter_pipe"]["server_tools"]
+    )
+    emitted = [e for e in entries if e["type"] == "openrouter:image_generation"]
+    assert len(emitted) == 1, f"one panel must produce one tool entry; got {entries!r}"
+    parameters = emitted[0].get("parameters") or {}
+
+    assert (parameters.get("size") == typed) is sent, (
+        f"{typed} had to be {'sent' if sent else 'withheld'}; the tool call carries "
+        f"{parameters!r}"
+    )
+    assert bool(superseded) is not sent, (
+        f"{typed} was {'sent' if sent else 'withheld'} and the notes say {superseded!r}"
+    )
+    if sent:
+        return
+
+    assert [drawn_by for drawn_by, _note in superseded] == [model_id], (
+        "the note names the wrong model, so the toast blames a model the user did not pick"
+    )
+    pipe = Pipe()
+    events: list[dict] = []
+
+    async def emitter(event):
+        events.append(event)
+
+    try:
+        await pipe._ensure_image_generation_adapter()._report_notes(
+            [note for _drawn_by, note in superseded],
+            api_model_id=model_id,
+            event_emitter=emitter,
+        )
+    finally:
+        await pipe.close()
+
+    told = [
+        event["data"]["content"]
+        for event in events
+        if event.get("type") == "notification"
+        and isinstance(event.get("data"), dict)
+        and isinstance(event["data"].get("content"), str)
+    ]
+    assert told, f"nothing reached the user; the events were {events!r}"
+    assert typed in told[-1], (
+        f"the toast says {told[-1]!r} and never names the value that was withheld"
+    )
+
+
 def _note_cases():
     from open_webui_openrouter_pipe.filters.image_filter_renderer import (
         build_image_model_filter_spec,
@@ -4601,3 +4758,74 @@ def test_a_request_naming_no_size_is_left_exactly_as_the_user_built_it():
 
     assert supersede_size_conflicts(params) == []
     assert params == {"resolution": "2K", "aspect_ratio": "16:9"}
+
+
+@pytest.mark.parametrize(
+    ("slug", "model_id"), EVERY_CONTRACT, ids=[slug for slug, _ in EVERY_CONTRACT]
+)
+def test_the_drawing_model_note_describes_the_panel_that_model_actually_gets(slug, model_id):
+    """The valve that picks the drawing model explains the panel; it has to match it.
+
+    The sentence replaced said the settings offered were the ones that model publishes
+    and that choosing another changes them. The set is fixed at six for every recorded
+    contract, and not one of the forty publishes all six -- what a different model
+    changes is whether each control lists that model's own values or the API's general
+    ones. An admin reading the old sentence and finding a control the model never
+    published goes looking for a bug that is not there.
+
+    Both halves are measured against the RENDERED panel rather than against the
+    sentence: which size control this model actually draws, and whether any control fell
+    back to the API's own values. Sixteen contracts draw Resolution and twenty-four draw
+    Output size, so a note naming one of them regardless fails on the other family.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        build_image_gen_tool_spec,
+        build_image_model_filter_spec,
+        image_gen_model_note,
+        render_image_gen_filter_source,
+    )
+
+    records = _recorded_endpoint(slug)
+    spec = build_image_model_filter_spec(
+        model_id, {"id": model_id}, records, dedicated_image_api=True
+    )
+    assert spec.has_knobs, (
+        f"{model_id} publishes nothing, so this drives one of the empty branches rather "
+        "than the one under test"
+    )
+
+    body = (
+        render_image_gen_filter_source(spec, catalog_match=True, selected_model=model_id)
+        .split("class UserValves(BaseModel):", 1)[1]
+        .split("    def __init__", 1)[0]
+    )
+    titles = [
+        found.strip("'\"") for found in re.findall(r"^                    title=(.+),$", body, re.M)
+    ]
+    drawn, alternative = (
+        ("Resolution", "Output size")
+        if "Resolution" in titles
+        else ("Output size", "Resolution")
+    )
+    assert drawn in titles and alternative not in titles, (
+        f"{model_id} draws {titles}: exactly one of the two size controls must appear"
+    )
+
+    note = image_gen_model_note(spec, catalog_match=True)
+    assert drawn in note and alternative in note, (
+        f"the note names neither the size control {model_id} gets nor the one it does "
+        f"not, so an admin cannot tell why the panel moved: {note!r}"
+    )
+    assert note.index(drawn) < note.index(alternative), (
+        f"the note leads with {alternative}, which this model does not draw: {note!r}"
+    )
+
+    unnarrowed = set(build_image_gen_tool_spec(spec).schema_only)
+    assert unnarrowed, (
+        f"{model_id} narrows all six controls to its own values, which no recorded "
+        "contract did when this was written -- the note's fallback clause is now unproven"
+    )
+    assert "in general" in note, (
+        f"{model_id} draws {sorted(unnarrowed)} with the image API's own values rather "
+        f"than its own, and the note does not say so: {note!r}"
+    )

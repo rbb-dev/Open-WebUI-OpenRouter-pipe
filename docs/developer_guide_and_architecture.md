@@ -59,7 +59,7 @@ At a high level, a request follows this shape:
    - Identifier valves are applied (`SEND_*`), and the outbound request is filtered to the OpenRouter allowlist.
 
 3. **Provider call and streaming**
-   - The pipe calls the OpenRouter Responses API in streaming mode and emits Open WebUI events (`status`, `chat:message`, `chat:completion`, citations, and optional reasoning events).
+   - The pipe calls the OpenRouter Responses API in streaming mode and emits Open WebUI events (`status`, `chat:message:delta` for streamed answer text, `chat:completion`, citations, and optional reasoning events); `chat:message` is reserved for whole-message snapshots that carry a card (see [Streaming Pipeline & Emitters](streaming_pipeline_and_emitters.md)).
 
 4. **Tool-call loop (between Responses calls)**
    - When a Responses run completes, the pipe inspects the returned `output` items.

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, NamedTuple
 
@@ -238,6 +238,16 @@ def _config_snapshot(valves: Any) -> dict[str, Any]:
     return {"valves": specs, "drift": drift(valves_cls)}
 
 
+async def _saved_values(pipe: Any, names: Iterable[str]) -> dict[str, Any]:
+    wanted = set(names)
+    snapshot = _config_snapshot(await _effective_valves(pipe))
+    return {
+        spec["name"]: spec["value"]
+        for spec in snapshot["valves"]
+        if spec["name"] in wanted and not spec["secret"]
+    }
+
+
 @register_action("config_get", permission="read", schema=None)
 async def _config_get(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
     effective = await _effective_valves(pipe)
@@ -276,7 +286,7 @@ async def _config_set(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
         raise RuntimeError("valve update rejected by store")
     rev = getattr(result, "updated_at", None)
     await emit_config_changed(rev)
-    return {"saved": len(edits), "rev": rev}
+    return {"saved": len(edits), "rev": rev, "values": await _saved_values(pipe, edits)}
 
 
 def _update_service_of(pipe: Any) -> Any:

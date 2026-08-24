@@ -36,6 +36,7 @@ dependencies = [
 [project.optional-dependencies]
 test = [
   "aioresponses",
+  "markdown-it-py",
   "pytest",
   "pytest-asyncio",
   "pytest-timeout"

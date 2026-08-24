@@ -236,12 +236,25 @@ RELAY_BLOCK_START = "relay_block_start"
 
 RELAY_BLOCK_END = "relay_block_end"
 
+WITHHELD_BLOCK_START = "withheld_block_start"
+
+WITHHELD_BLOCK_END = "withheld_block_end"
+
 _RELAY_BLOCK_REGION_RE = re.compile(
     r"\[openrouter:v1:" + re.escape(RELAY_BLOCK_START) + r":[^\]]+\]: #"
     r".*?"
     r"\[openrouter:v1:" + re.escape(RELAY_BLOCK_END) + r":[^\]]+\]: #\s*\n?",
     re.DOTALL,
 )
+
+_WITHHELD_BLOCK_REGION_RE = re.compile(
+    r"\[openrouter:v1:" + re.escape(WITHHELD_BLOCK_START) + r":[^\]]+\]: #"
+    r".*?"
+    r"\[openrouter:v1:" + re.escape(WITHHELD_BLOCK_END) + r":[^\]]+\]: #\s*\n?",
+    re.DOTALL,
+)
+
+_WITHHELD_RECORD = "> **Not sent with this video:** {items}\n"
 
 _MAX_INPUT_REFERENCES = 16
 
@@ -406,6 +419,7 @@ class VideoGenerationAdapter:
                 await self._add_user_active_job(user_id, job_id)
                 await self._emit_status(event_emitter, "Resuming video generation job...", done=False, progress=5)
                 resumed_disclosure = self._recover_the_file_host_record(persisted)
+                resumed_disclosure += self._recover_the_withheld_record(persisted)
                 if persisted:
                     from .video_intent import _INTENT_BLOCK_REGION_RE
                     m = _INTENT_BLOCK_REGION_RE.search(persisted)
@@ -655,10 +669,7 @@ class VideoGenerationAdapter:
             await global_semaphore.acquire()
             global_slot_acquired = True
 
-            if withheld and event_emitter:
-                await self._pipe._event_emitter_handler._emit_notification(
-                    event_emitter, self._withheld_notice(withheld), level="warning"
-                )
+            disclosure_block = self._with_the_withheld_record(disclosure_block, withheld)
             await self._emit_status(event_emitter, "Submitting video generation job...", done=False)
 
             client = OpenRouterVideoClient(
@@ -720,13 +731,13 @@ class VideoGenerationAdapter:
             raise
         except OpenRouterAPIError as exc:
             self.logger.warning("Video generation rejected (job_id=%s): %s", job_id, exc)
-            await self._pipe._ensure_error_formatter()._report_openrouter_error(
+            return await self._pipe._ensure_error_formatter()._report_openrouter_error(
                 exc,
                 event_emitter=event_emitter,
                 normalized_model_id=normalized_model_id,
                 api_model_id=api_model_id,
+                partial_answer=disclosure_block,
             )
-            return ""
         except Exception as exc:
             self.logger.exception("Video generation request failed (job_id=%s)", job_id)
             reason = str(exc) or exc.__class__.__name__
@@ -1999,6 +2010,32 @@ class VideoGenerationAdapter:
         found = _RELAY_BLOCK_REGION_RE.search(persisted)
         return found.group(0) if found else ""
 
+    @classmethod
+    def _with_the_withheld_record(
+        cls, block: str, withheld: list[tuple[str, str]]
+    ) -> str:
+        record = cls._withheld_record(withheld)
+        if not record:
+            return block
+        return f"{block}{record}" if block else record
+
+    @classmethod
+    def _withheld_record(cls, withheld: list[tuple[str, str]]) -> str:
+        if not withheld:
+            return ""
+        return (
+            f"{_serialize_kind_marker(WITHHELD_BLOCK_START, '1')}\n"
+            f"\n{_WITHHELD_RECORD.format(items=cls._withheld_notice(withheld))}\n"
+            f"{_serialize_kind_marker(WITHHELD_BLOCK_END, '1')}\n"
+        )
+
+    @staticmethod
+    def _recover_the_withheld_record(persisted: str) -> str:
+        if not isinstance(persisted, str) or not persisted:
+            return ""
+        found = _WITHHELD_BLOCK_REGION_RE.search(persisted)
+        return found.group(0) if found else ""
+
     @staticmethod
     def _file_host_wanted(valves: Any, family: str) -> bool:
         if not bool(getattr(valves, "SEND_MEDIA_VIA_FILE_HOST", False)):
@@ -2738,22 +2775,10 @@ class VideoGenerationAdapter:
         *,
         usage: dict[str, Any] | None = None,
     ) -> None:
-        await self._safe_emit(
+        await self._pipe._event_emitter_handler._emit_unstreamed_answer(
             emitter,
-            {
-                "type": "chat:message:delta",
-                "data": {"content": content},
-            },
-        )
-        completion_data: dict[str, Any] = {"content": content, "done": True}
-        if isinstance(usage, dict) and usage:
-            completion_data["usage"] = usage
-        await self._safe_emit(
-            emitter,
-            {
-                "type": "chat:completion",
-                "data": completion_data,
-            },
+            content=content,
+            usage=usage if isinstance(usage, dict) else None,
         )
 
     async def _safe_emit(self, emitter: EventEmitter | None, event: dict[str, Any]) -> None:

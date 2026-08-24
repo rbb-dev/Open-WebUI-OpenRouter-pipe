@@ -154,7 +154,11 @@ class _FakeFunctions:
         return self.valves
 
     async def update_function_valves_by_id(self, id, valves, db=None):
+        # Open WebUI commits the write, so the very next read returns it. A double that
+        # kept serving the pre-save subset would let a handler read stale values back and
+        # still look correct here.
         self.saved = valves
+        self.valves = valves
         self.rev += 1
         return SimpleNamespace(updated_at=self.rev)
 
@@ -205,6 +209,80 @@ async def test_config_set_persists_edit_and_bumps_rev(fake_functions):
     assert result["rev"] == 1001
     assert set(fake_functions.saved) == {"MAX_CONCURRENT_REQUESTS"}
     assert fake_functions.saved["MAX_CONCURRENT_REQUESTS"] == 250
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["RATE_LIMIT_TEMPLATE", "CONNECTION_ERROR_TEMPLATE"])
+async def test_clearing_a_template_puts_the_original_back_in_the_config_box(fake_functions, name):
+    """Save a mangled template, clear the box, save again -- the box shows the built-in text.
+
+    This is the whole affordance end to end through the real config_set/config_get handlers and a
+    stand-in valve store: what an admin reads back after clearing is the factory wording, ready to
+    edit. Two valves with different factory texts, so a handler that returned one fixed string
+    could not pass both.
+    """
+    factory = Valves.model_fields[name].get_default(call_default_factory=True)
+    pipe = _config_pipe()
+
+    async def box_value():
+        snapshot = await actions.ACTIONS["config_get"].handler(pipe, _user(), {})
+        return {spec["name"]: spec for spec in snapshot["valves"]}[name]["value"]
+
+    await actions.ACTIONS["config_set"].handler(
+        pipe, _user(), {"edits": {name: "MANGLED {oops"}, "rev": fake_functions.rev}
+    )
+    fake_functions.valves = fake_functions.saved
+    assert await box_value() == "MANGLED {oops"
+
+    cleared = await actions.ACTIONS["config_set"].handler(
+        pipe, _user(), {"edits": {name: "   \n  "}, "rev": fake_functions.rev}
+    )
+    fake_functions.valves = fake_functions.saved
+    assert await box_value() == factory
+    assert cleared["values"][name] == factory, (
+        "the save response is the only thing the editor sees before it re-renders; without the "
+        f"restored text in it the box goes blank and the admin thinks nothing happened: {cleared!r}"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "typed", "stored"),
+    [
+        ("MAX_CONCURRENT_REQUESTS", "250", 250),
+        ("MODEL_ID", "anthropic/*", "anthropic/*"),
+    ],
+)
+async def test_a_save_answers_with_the_value_the_store_now_holds(fake_functions, name, typed, stored):
+    """The response carries the coerced, persisted value -- not the raw string that was typed.
+
+    The editor adopts these as its new baseline, so anything the server normalises on the way in
+    has to come back or the box keeps showing what was typed. One numeric valve where the typed
+    string and the stored value differ in TYPE, one string valve where they do not.
+    """
+    pipe = _config_pipe()
+    result = await actions.ACTIONS["config_set"].handler(
+        pipe, _user(), {"edits": {name: typed}, "rev": fake_functions.rev}
+    )
+    assert result["values"] == {name: stored}, result
+
+
+@pytest.mark.asyncio
+async def test_a_save_never_answers_with_a_secret(monkeypatch, fake_functions):
+    """A secret is write-only to the browser; echoing it back would hand it to anyone watching."""
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    pipe = _config_pipe()
+    result = await actions.ACTIONS["config_set"].handler(
+        pipe,
+        _user(),
+        {
+            "edits": {"API_KEY": "sk-brand-new", "MODEL_ID": "anthropic/claude-sonnet-*"},
+            "rev": fake_functions.rev,
+        },
+    )
+    assert "API_KEY" not in result["values"], result
+    assert result["values"] == {"MODEL_ID": "anthropic/claude-sonnet-*"}, result
+    assert "sk-brand-new" not in repr(result), result
 
 
 @pytest.mark.asyncio

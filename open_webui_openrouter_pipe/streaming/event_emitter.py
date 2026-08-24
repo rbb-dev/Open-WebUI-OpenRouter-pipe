@@ -15,7 +15,11 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal
 
 from ..core.logging_system import SessionLogger
-from ..core.utils import _render_error_template, citation_access_stamp
+from ..core.utils import (
+    _render_error_template,
+    citation_access_stamp,
+    join_answer_and_card,
+)
 
 EventEmitter = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -188,7 +192,7 @@ class EventEmitterHandler:
         show_error_message: bool = True,
         show_error_log_citation: bool = False,
         done: bool = False,
-    ) -> None:
+    ) -> str:
         """Log an error and optionally surface it to the UI.
 
         When ``show_error_log_citation`` is true the collected debug logs are
@@ -197,6 +201,7 @@ class EventEmitterHandler:
         """
         error_message = str(error_obj)
         self.logger.error("Error: %s", error_message)
+        shown = error_message if show_error_message else ""
 
         if show_error_message and event_emitter:
             try:
@@ -228,6 +233,8 @@ class EventEmitterHandler:
             else:
                 self.logger.warning("No debug logs found for request_id %s", request_id)
 
+        return shown
+
 
     async def _emit_templated_error_event(
         self,
@@ -237,7 +244,8 @@ class EventEmitterHandler:
         variables: dict[str, Any],
         log_message: str,
         log_level: int = logging.ERROR,
-    ) -> None:
+        partial_answer: str = "",
+    ) -> str:
         """Render and emit an error using the template system.
 
         Automatically enriches variables with:
@@ -264,9 +272,6 @@ class EventEmitterHandler:
             f"[{error_id}] {log_message} (session={enriched_variables['session_id']}, user={enriched_variables['user_id']})"
         )
 
-        if not event_emitter:
-            return
-
         try:
             markdown = _render_error_template(template, enriched_variables)
         except Exception:
@@ -278,10 +283,15 @@ class EventEmitterHandler:
                 f"Please contact your administrator."
             )
 
+        shown = join_answer_and_card(partial_answer, markdown)
+
+        if not event_emitter:
+            return shown
+
         try:
             await event_emitter({
                 "type": "chat:message",
-                "data": {"content": markdown}
+                "data": {"content": shown}
             })
             await event_emitter({
                 "type": "chat:completion",
@@ -289,6 +299,8 @@ class EventEmitterHandler:
             })
         except Exception:
             self.logger.exception("[%s] Failed to emit error message", error_id)
+
+        return shown
 
 
     def _create_error_context(self) -> tuple[str, dict[str, Any]]:
@@ -469,6 +481,31 @@ class EventEmitterHandler:
             self.logger.exception("Failed to emit completion")
 
 
+    async def _emit_unstreamed_answer(
+        self,
+        event_emitter: EventEmitter | None,
+        *,
+        content: str,
+        usage: dict[str, Any] | None = None,
+    ) -> None:
+        if event_emitter is None:
+            return
+
+        try:
+            await event_emitter(
+                {"type": "chat:message:delta", "data": {"content": content}}
+            )
+        except Exception:
+            self.logger.exception("Failed to emit unstreamed answer")
+
+        await self._emit_completion(
+            event_emitter,
+            content=content,
+            done=True,
+            usage=usage or None,
+        )
+
+
     async def _emit_notification(
         self,
         event_emitter: EventEmitter | None,
@@ -587,10 +624,9 @@ class EventEmitterHandler:
             model_id = str(job.body.get("model") or "pipe")
 
         assistant_sent = ""
-        answer_started = False
 
         async def _emit(event: dict[str, Any]) -> None:
-            nonlocal assistant_sent, answer_started
+            nonlocal assistant_sent
             if not isinstance(event, dict):
                 return
 
@@ -618,7 +654,6 @@ class EventEmitterHandler:
                         delta_text = content[len(assistant_sent) :]
                         assistant_sent = content
                 if isinstance(delta_text, str) and delta_text:
-                    answer_started = True
                     await self._put_middleware_stream_item(
                         job,
                         stream_queue,
@@ -630,7 +665,6 @@ class EventEmitterHandler:
                 delta_text = data.get("content")
                 if isinstance(delta_text, str) and delta_text:
                     assistant_sent = assistant_sent + delta_text
-                    answer_started = True
                     await self._put_middleware_stream_item(
                         job,
                         stream_queue,

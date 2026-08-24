@@ -26,8 +26,8 @@ from open_webui_openrouter_pipe.filters.image_filter_renderer import (
     render_image_model_filter_source,
 )
 from tests.test_image_api_path import (  # noqa: F401
-    BASE, _adapter, _Emitter, _KeyPipe, _posted, _StubValves, _user_turn_with_images,
-    _StubResponsesBody,
+    BASE, _adapter, _Emitter, _event_data, _KeyPipe, _posted, _StubValves,
+    _user_turn_with_images, _StubResponsesBody,
 )
 from tests.test_image_generation import _load_filter_from_source
 
@@ -105,7 +105,7 @@ async def test_every_published_value_reaches_the_wire(path):
                 for k, v in (opts or {}).items():
                     flat.setdefault(k, v)
             told = " ".join(
-                str(event.get("content", ""))
+                str(_event_data(event).get("content", ""))
                 for event in result.events
                 if event.get("type") == "notification"
             )

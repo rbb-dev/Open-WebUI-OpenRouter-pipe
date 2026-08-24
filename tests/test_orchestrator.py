@@ -101,7 +101,8 @@ class TestDecodeBase64PrefixEdgeCases:
         # Mock file loading to return empty base64
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=Mock(id="audio123")))
         pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value="")
-        pipe._ensure_error_formatter()._emit_templated_error = AsyncMock()
+        card = "### Upload rejected\n\nempty audio"
+        pipe._ensure_error_formatter()._emit_templated_error = AsyncMock(return_value=card)
 
         result = await orchestrator.process_request(
             body=base_request_body,
@@ -123,8 +124,9 @@ class TestDecodeBase64PrefixEdgeCases:
             features={},
         )
 
-        # Should fail because empty b64 for audio
-        assert result == ""
+        # Should fail because empty b64 for audio, and hand the card back so a
+        # non-streaming turn has something to persist.
+        assert result == card
         pipe._ensure_error_formatter()._emit_templated_error.assert_called()
 
     @pytest.mark.asyncio
@@ -739,7 +741,8 @@ class TestOpenRouterAPIErrorHandling:
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
         pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
         pipe._ensure_reasoning_config_manager()._should_retry_without_reasoning = Mock(return_value=False)
-        pipe._ensure_error_formatter()._report_openrouter_error = AsyncMock()
+        card = "### Provider rejected the request"
+        pipe._ensure_error_formatter()._report_openrouter_error = AsyncMock(return_value=card)
 
         async def mock_streaming_loop(responses_body, *args, **kwargs):
             raise OpenRouterAPIError(
@@ -779,7 +782,7 @@ class TestOpenRouterAPIErrorHandling:
                     features={},
                 )
 
-                assert result == ""
+                assert result == card
                 pipe._ensure_error_formatter()._report_openrouter_error.assert_called_once()
 
     @pytest.mark.asyncio
@@ -1417,7 +1420,8 @@ class TestDecodeBase64EdgeCases:
         mock_file = Mock(id="audio123")
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file))
         pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value="")  # Empty
-        pipe._ensure_error_formatter()._emit_templated_error = AsyncMock()
+        card = "### Upload rejected\n\nunknown audio format"
+        pipe._ensure_error_formatter()._emit_templated_error = AsyncMock(return_value=card)
 
         result = await orchestrator.process_request(
             body=base_request_body,
@@ -1439,8 +1443,9 @@ class TestDecodeBase64EdgeCases:
             features={},
         )
 
-        # Should fail - no format can be determined
-        assert result == ""
+        # Should fail - no format can be determined - and hand the card back so a
+        # non-streaming turn has something to persist.
+        assert result == card
         pipe._ensure_error_formatter()._emit_templated_error.assert_called()
 
     @pytest.mark.asyncio

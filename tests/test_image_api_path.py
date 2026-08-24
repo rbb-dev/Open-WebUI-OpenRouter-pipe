@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import time
 from pathlib import Path
 from typing import Any, cast
@@ -26,6 +27,7 @@ from open_webui_openrouter_pipe.integrations.image_types import (
     ImageGenerationResult,
 )
 from open_webui_openrouter_pipe.models.registry import uses_dedicated_image_api
+from open_webui_openrouter_pipe.streaming.event_emitter import EventEmitterHandler
 
 BASE = "https://openrouter.ai/api/v1"
 
@@ -319,7 +321,7 @@ async def test_a_turn_with_an_image_and_no_caption_is_reported_not_raised():
         "attaching an image with no caption is the ordinary way into image editing; it must "
         f"not escape as an exception. got {content!r}"
     )
-    assert any(event.get("done") for event in emitter.statuses)
+    assert any(_event_data(event).get("done") for event in emitter.statuses)
 
 
 @pytest.mark.parametrize(
@@ -850,28 +852,17 @@ async def test_references_are_omitted_when_the_endpoint_does_not_support_them():
     assert "input_references" not in payload
 
 
+def _event_data(event: Any) -> dict[str, Any]:
+    data = event.get("data") if isinstance(event, dict) else None
+    return data if isinstance(data, dict) else {}
+
+
 class _Emitter:
     def __init__(self):
         self.statuses = []
 
     async def __call__(self, event):
         self.statuses.append(event)
-
-
-class _StubEmitterHandler:
-    async def _emit_status(self, emitter, description, done=False, **_kw):
-        if emitter is not None:
-            await emitter({"type": "status", "description": description, "done": done})
-
-    async def _emit_notification(self, emitter, content="", *, level="info", **_kw):
-        if emitter is not None:
-            await emitter({"type": "notification", "content": content, "level": level})
-
-    async def _emit_completion(self, emitter, content="", done=False, usage=None, **_kw):
-        if emitter is not None:
-            await emitter(
-                {"type": "completion", "content": content, "done": done, "usage": usage}
-            )
 
 
 class _StubGateway:
@@ -987,7 +978,7 @@ async def _posted(
             posts[0].kwargs["json"],
             content,
             list(getattr(gateway, "calls", [])),
-            [str(item.get("description", "")) for item in statuses],
+            [str(_event_data(item).get("description", "")) for item in statuses],
             list(statuses),
             list(getattr(cast(Any, adapter._pipe), "generations", [])),
             dict(posts[0].kwargs.get("headers") or {}),
@@ -1026,7 +1017,7 @@ async def test_references_are_capped_to_the_endpoint_maximum(
 
     assert len(result.payload["input_references"]) == kept
     notes = [
-        str(event.get("content", ""))
+        str(_event_data(event).get("content", ""))
         for event in result.events
         if event.get("type") == "notification"
     ]
@@ -1136,8 +1127,8 @@ async def test_the_saved_file_carries_the_sniffed_container_not_the_declared_one
     assert call["chat_id"] == "chat-1"
     assert call["message_id"] == "msg-1"
     assert result.content == "![Generated image](/api/v1/files/file-1/content)"
-    completions = [e for e in result.events if e.get("type") == "completion"]
-    assert completions and completions[-1]["content"] == result.content
+    completions = [e for e in result.events if e.get("type") == "chat:completion"]
+    assert completions and _event_data(completions[-1])["content"] == result.content
 
 
 class _StubValves:
@@ -1158,15 +1149,20 @@ class _ReportRecorder:
         self.calls: list[dict[str, Any]] = []
 
     async def _report_openrouter_error(self, exc, **kwargs):
+        # The real formatter hands back the card it rendered, and the adapter is required to
+        # return that value; a double that returned None would hide a call site that dropped it.
         self.calls.append({"exc": exc, **kwargs})
+        return f"### card for {getattr(exc, 'status', None)}"
 
 
 class _KeyPipe:
     def __init__(self, key, record_errors: bool = False):
         self._key = key
-        self._event_emitter_handler = _StubEmitterHandler()
         self._file_gateway = _StubGateway()
         self.valves = _StubValves(key)
+        self._event_emitter_handler = EventEmitterHandler(
+            logging.getLogger("test.events"), self.valves, cast(Any, self)
+        )
         self.id = "orpipe"
         self.reports = _ReportRecorder() if record_errors else None
         self.generations: list[dict[str, Any]] = []
@@ -1254,7 +1250,7 @@ async def test_a_missing_api_key_is_reported_to_the_user_not_swallowed():
 
     assert isinstance(result, str)
     assert "API key" in result
-    assert any(e.get("done") for e in emitter.statuses)
+    assert any(_event_data(e).get("done") for e in emitter.statuses)
 
 
 @pytest.mark.asyncio
@@ -1397,8 +1393,8 @@ async def test_usage_from_the_response_reaches_the_completion_event():
         },
     )
 
-    completions = [e for e in result.events if e.get("type") == "completion"]
-    assert completions and completions[-1].get("usage") == {
+    completions = [e for e in result.events if e.get("type") == "chat:completion"]
+    assert completions and _event_data(completions[-1]).get("usage") == {
         "input_tokens": 16,
         "output_tokens": 4175,
         "total_tokens": 4191,
@@ -1547,7 +1543,7 @@ async def test_every_provider_routing_key_the_filter_emits_reaches_the_wire():
     )
     undeliverable = emitted - IMAGE_PROVIDER_KEYS
     assert undeliverable, "this test is vacuous unless the filter writes a chat-only key"
-    notice = " ".join(str(call.get("content", "")) for call in result.events)
+    notice = " ".join(str(_event_data(call).get("content", "")) for call in result.events)
     for key in sorted(undeliverable):
         assert key in notice, (
             f"{key} was withheld but the operator was never told; silence is what makes a "
@@ -1988,7 +1984,8 @@ async def test_request_text_cannot_size_the_log_line_or_the_notification(
         )
 
     notified = max(
-        (len(str(event.get("content", ""))) for event in emitter.statuses), default=0
+        (len(str(_event_data(event).get("content", ""))) for event in emitter.statuses),
+        default=0,
     )
     logged = max((len(r.getMessage()) for r in caplog.records), default=0)
     assert notified < 2000 and logged < 2000, (
@@ -2150,7 +2147,7 @@ async def test_an_unserved_pin_cannot_size_the_note_it_appears_in(pin_length):
         api_model_id="m/x",
     )
 
-    notice = " ".join(str(event.get("content", "")) for event in result.events)
+    notice = " ".join(str(_event_data(event).get("content", "")) for event in result.events)
     assert len(notice) < 1000, (
         "the pin comes from the request, so a note built around it must be bounded by a "
         f"pipe-local constant rather than growing with what was sent. got {len(notice)} bytes"
@@ -2190,7 +2187,7 @@ async def test_a_pin_we_hold_no_contract_for_never_borrows_another_providers_con
         "routing was pinned away from alpha, so options keyed to alpha are dropped by "
         f"OpenRouter. got {options!r}"
     )
-    notice = " ".join(str(e.get("content", "")) for e in result.events)
+    notice = " ".join(str(_event_data(e).get("content", "")) for e in result.events)
     assert "capped at 4" not in notice, (
         "alpha's published maximum belongs to a provider that will not serve this request; "
         f"quoting it tells the user something untrue about their own request. got {notice!r}"
@@ -2204,32 +2201,46 @@ async def test_one_request_never_dispatches_two_contradictory_generation_events(
     pipe = cast(Any, adapter._pipe)
 
     class _FailsOnCompletion:
+        """Drops the connection the way production can actually observe it.
+
+        `_emit_completion` catches `Exception` and logs it, so a `RuntimeError` raised here
+        never leaves the emit helper and the adapter's own handlers never run -- the guard
+        this test exists to protect is not reached at all. `CancelledError` is a
+        `BaseException`, so it passes that `except Exception` and arrives at the adapter's
+        `except asyncio.CancelledError`, which is the branch that calls `_settle`.
+        """
+
         def __init__(self):
             self.statuses = []
             self.fired = False
 
         async def __call__(self, event):
             self.statuses.append(event)
-            if event.get("type") == "completion" and not self.fired:
+            if event.get("type") == "chat:completion" and not self.fired:
                 self.fired = True
-                raise RuntimeError("the browser connection dropped")
+                raise asyncio.CancelledError
 
-    await _posted(
-        adapter,
-        body={},
-        responses_body=_StubResponsesBody(
-            [{"role": "user", "content": [{"type": "input_text", "text": "a leaf"}]}]
-        ),
-        valves=_StubValves("sk-x"),
-        event_emitter=_FailsOnCompletion(),
-        normalized_model_id="m.x",
-        api_model_id="m/x",
-        reply={
-            "data": [{"b64_json": _b64(_png(8, 8)), "media_type": "image/png"}],
-            "usage": {"prompt_tokens": 1, "completion_tokens": 2, "cost": 0.1},
-        },
+    emitter = _FailsOnCompletion()
+    with pytest.raises(asyncio.CancelledError):
+        await _posted(
+            adapter,
+            body={},
+            responses_body=_StubResponsesBody(
+                [{"role": "user", "content": [{"type": "input_text", "text": "a leaf"}]}]
+            ),
+            valves=_StubValves("sk-x"),
+            event_emitter=emitter,
+            normalized_model_id="m.x",
+            api_model_id="m/x",
+            reply={
+                "data": [{"b64_json": _b64(_png(8, 8)), "media_type": "image/png"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 2, "cost": 0.1},
+            },
+        )
+
+    assert emitter.fired, (
+        "the delivery never failed, so nothing here reached the bookkeeping this guards"
     )
-
     statuses = [g.get("status") for g in pipe.generations]
     assert statuses == ["ok"], (
         "the generation succeeded and was reported ok; a later delivery failure must not "
@@ -2426,14 +2437,17 @@ async def test_an_upstream_status_is_reported_through_the_shared_error_formatter
                 api_model_id="m/x",
             )
 
-    assert isinstance(content, str)
+    assert content == f"### card for {status}", (
+        "the adapter must hand back the card the formatter rendered; with streaming off that "
+        f"return value is the entire assistant message. got {content!r}"
+    )
     assert pipe.reports is not None and len(pipe.reports.calls) == 1, (
         "a 4xx must reach the shared error formatter so it renders the right template"
     )
     call = pipe.reports.calls[0]
     assert call["exc"].status == status
     assert call["api_model_id"] == "m/x"
-    assert any(event.get("done") for event in emitter.statuses)
+    assert any(_event_data(event).get("done") for event in emitter.statuses)
 
 
 @pytest.mark.parametrize("order", [("first", "second"), ("second", "first")])
@@ -2920,7 +2934,7 @@ async def test_a_knob_that_cannot_be_keyed_is_reported_not_swallowed(knob):
 
     assert "provider" not in result.payload
     notes = [
-        str(event.get("content", ""))
+        str(_event_data(event).get("content", ""))
         for event in result.events
         if event.get("type") == "notification"
     ]
@@ -3440,7 +3454,7 @@ async def test_a_dropped_knob_notice_arrives_as_a_warning():
     )
 
     notices = [e for e in result.events if e.get("type") == "notification"]
-    assert notices and notices[0].get("level") == "warning", (
+    assert notices and _event_data(notices[0]).get("type") == "warning", (
         "an ignored setting is not informational; it is something the user asked for and did "
         f"not get. got {notices!r}"
     )
@@ -4075,7 +4089,7 @@ async def test_the_previews_a_streamed_generation_delivers_reach_the_user_as_sta
                 api_model_id=model_id,
             )
 
-    said = [str(event.get("description", "")) for event in emitter.statuses]
+    said = [str(_event_data(event).get("description", "")) for event in emitter.statuses]
     assert [line for line in said if "preview" in line] == [
         f"Generating image… preview {index + 1}" for index in range(previews)
     ], f"the previews the stream delivered never reached the chat: {said}"

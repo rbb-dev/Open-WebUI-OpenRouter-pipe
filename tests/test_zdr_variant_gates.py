@@ -466,6 +466,30 @@ async def test_a_broken_valve_row_does_not_end_that_users_chat():
     )
 
 
+def _assert_names_the_users_preference(reported: str) -> None:
+    """The refusal has to point at the user's own answer, not at the admin valve.
+
+    Both causes end in the same card, and only one of them is switched on here.
+    Asserting the label each panel really shows, read at runtime, keeps the two apart
+    without pinning the wording -- and a card that names the admin valve instead sends
+    an operator to a setting that is already off.
+    """
+    from open_webui_openrouter_pipe import Pipe
+
+    theirs = Pipe.UserValves.model_fields["REQUEST_ZDR"].title
+    admins = Pipe.Valves.model_fields["ZDR_ENFORCE"].title
+    assert theirs and admins, "the settings panels show no label for these"
+    assert theirs in reported, (
+        f"the refusal reported {reported!r}, which never names {theirs!r} -- the label the "
+        "user's own panel shows for the answer that could not be read"
+    )
+    assert admins not in reported, (
+        f"the refusal reported {reported!r}, naming {admins!r}. That valve is switched off "
+        "in this test, so it leaves the operator with nothing to check and no way to reach "
+        "the real cause."
+    )
+
+
 @pytest.mark.asyncio
 async def test_an_unparseable_zdr_field_still_enforces_zdr():
     """The opposite arm of the sibling above: here the answer is genuinely lost.
@@ -551,10 +575,114 @@ async def test_an_unparseable_zdr_field_still_enforces_zdr():
         f"anyway: {captured[-1] if captured else None!r}"
     )
     assert reasons, "no restriction was rendered, so the refusal reported nothing"
-    assert reasons[-1] == "ZDR_PREFERENCE_UNREADABLE", (
-        f"the refusal reported {reasons[-1]!r}. ZDR_ENFORCE is switched off in this "
-        "test, so naming it leaves the operator with a valve to check that is already "
-        "off and no way to reach the real cause."
+    _assert_names_the_users_preference(reasons[-1])
+
+
+async def _reported_restriction_for(stored_row: dict) -> str:
+    """Drive one real refusal and hand back the reasons string the card was built from.
+
+    The row is the only thing that varies between calls, and it is stubbed at Open WebUI's
+    own reader -- one seam below `_read_user_valves`, which is what classifies it -- so the
+    whole chain from the stored value to the rendered label runs for real.
+    """
+    import open_webui.models.functions as owf
+    from aioresponses import aioresponses
+
+    from open_webui_openrouter_pipe import Pipe
+    from open_webui_openrouter_pipe.core.config import EncryptedStr
+    from open_webui_openrouter_pipe.core.error_formatter import ErrorFormatter
+
+    class _StoredRow:
+        async def get_user_valves_by_id_and_user_id(self, _id, _user_id, db=None):
+            return dict(stored_row)
+
+    reasons: list[str] = []
+    real_emit = ErrorFormatter._emit_templated_error
+
+    async def _record(self, emitter, *, variables=None, **kw):
+        variables = variables or {}
+        reasons.append(variables.get("restriction_reasons", ""))
+        return await real_emit(self, emitter, variables=variables, **kw)
+
+    original = owf.Functions
+    pipe = Pipe()
+    captured: list[dict] = []
+    try:
+        owf.Functions = _StoredRow()
+        ErrorFormatter._emit_templated_error = _record  # pyright: ignore[reportAttributeAccessIssue]
+        pipe.valves.API_KEY = EncryptedStr("test-api-key")
+        pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
+        pipe.valves.ZDR_ENFORCE = False
+        pipe.valves.ALLOW_USER_ZDR_OVERRIDE = True
+
+        async def _emit(_event):
+            pass
+
+        with aioresponses() as http:
+            http.post("https://openrouter.ai/api/v1/responses",
+                      callback=_smart_callback(captured, "Response"), repeat=True)
+            http.get("https://openrouter.ai/api/v1/models",
+                     payload={"data": [{"id": "openai/gpt-4o", "name": "M"}]}, repeat=True)
+            http.get("https://openrouter.ai/api/v1/endpoints/zdr",
+                     payload={"data": [{"model_id": "openai/gpt-4o-mini"}]}, repeat=True)
+            result = await pipe.pipe(
+                body={"model": "openai/gpt-4o",
+                      "messages": [{"role": "user", "content": "hi"}], "stream": True},
+                __user__={"id": "u1", "valves": Pipe.UserValves()},
+                __request__=None, __event_emitter__=_emit, __event_call__=None,
+                __metadata__={"model": {"id": "openai/gpt-4o"}},
+                __tools__=None, __task__=None, __task_body__=None,
+            )
+            await _consume_stream(result)
+    finally:
+        owf.Functions = original
+        ErrorFormatter._emit_templated_error = real_emit  # pyright: ignore[reportAttributeAccessIssue]
+        await pipe.close()
+
+    assert not captured, (
+        "the model is not ZDR-capable and ZDR was enforced, so nothing should have been "
+        f"sent to OpenRouter: {captured[-1] if captured else None!r}"
+    )
+    assert reasons, "no restriction was rendered, so the refusal reported nothing"
+    return reasons[-1]
+
+
+@pytest.mark.asyncio
+async def test_a_lost_zdr_answer_is_not_reported_as_the_answer_the_user_gave():
+    """The two causes end in the same card, and the card must not merge them.
+
+    One user ticked the box. The other has a stored value that will not parse, so what
+    they chose is unknown and ZDR is enforced to stay on the safe side of the guess.
+    Telling the second user they asked for this hides the only fact that would let them
+    fix it -- their saved answer is damaged -- and sends the operator looking for a
+    preference nobody set.
+
+    Both arms are rendered in one test and compared to EACH OTHER. Each arm on its own
+    only shows that the user's own label is named, and both causes name it, so a single
+    arm passes just as happily when the two are collapsed onto one reason.
+    """
+    from open_webui_openrouter_pipe import Pipe
+
+    chose_it = await _reported_restriction_for({"REQUEST_ZDR": True})
+    lost_it = await _reported_restriction_for({"REQUEST_ZDR": {"not": "a boolean"}})
+
+    _assert_names_the_users_preference(chose_it)
+    _assert_names_the_users_preference(lost_it)
+
+    theirs = Pipe.UserValves.model_fields["REQUEST_ZDR"].title
+    assert theirs, "the user's settings panel shows no label for REQUEST_ZDR"
+    assert chose_it != lost_it, (
+        f"both causes reported {chose_it!r}. A user whose stored answer could not be read "
+        "is being told they chose Zero Data Retention, and there is nothing in the card "
+        "that says otherwise."
+    )
+    assert chose_it == theirs, (
+        f"the user who really did tick the box was told {chose_it!r} rather than the plain "
+        f"label {theirs!r}, so their own setting now reads as a fault"
+    )
+    assert lost_it.startswith(theirs) and len(lost_it) > len(theirs), (
+        f"the lost answer reported {lost_it!r}, which does not extend the label {theirs!r} "
+        "the user's panel shows -- so it names either the wrong setting or no setting"
     )
 
 
@@ -689,9 +817,8 @@ async def test_an_undecodable_user_valve_blob_enforces_zdr(settings, expect_refu
             "the user has a stored valve blob that will not decode, so their REQUEST_ZDR "
             "answer is unknown -- yet the request went to a model that is not ZDR-capable"
         )
-        assert reasons and reasons[-1] == "ZDR_PREFERENCE_UNREADABLE", (
-            f"the refusal reported {reasons[-1] if reasons else None!r}"
-        )
+        assert reasons, "no restriction was rendered, so the refusal reported nothing"
+        _assert_names_the_users_preference(reasons[-1])
     else:
         assert captured, (
             "a user with no undecodable blob was refused; the guard fires for users who "

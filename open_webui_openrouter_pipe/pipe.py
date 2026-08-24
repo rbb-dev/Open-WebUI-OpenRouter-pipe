@@ -150,7 +150,7 @@ from .storage.multimodal import MultimodalHandler
 from .storage.owui_files import OwuiFileGateway
 from .storage.persistence import ArtifactStore
 from .streaming.event_emitter import EventEmitter, EventEmitterHandler
-from .streaming.streaming_core import StreamingHandler
+from .streaming.streaming_core import StreamingHandler, _wrap_event_emitter
 from .tools.tool_executor import _QueuedToolCall, _ToolExecutionContext
 
 if TYPE_CHECKING:
@@ -173,6 +173,40 @@ def _consume_background_task_exception(task: asyncio.Task) -> None:
 
 
 _LIFECYCLE_REGISTRY_KEY = "_openrouter_pipe_lifecycle"
+
+_RESTRICTION_REASON_PHRASES: dict[str, str] = {
+    "not_in_catalog": "the model is not in this pipe's model list",
+    "ZDR_LIST_UNAVAILABLE": (
+        "OpenRouter's Zero Data Retention endpoint list could not be read"
+    ),
+}
+
+_RESTRICTION_REASON_USER_VALVES: dict[str, tuple[str, str]] = {
+    "REQUEST_ZDR": ("REQUEST_ZDR", ""),
+    "ZDR_PREFERENCE_UNREADABLE": ("REQUEST_ZDR", "your saved answer could not be read"),
+}
+
+_RESTRICTION_REASON_FALLBACK = "a restriction configured for this pipe"
+
+
+def _task_visible_channel_emitter(
+    emitter: EventEmitter | None, task: Any
+) -> EventEmitter | None:
+    if emitter is None or not TaskModelAdapter._uses_task_model_adapter(task):
+        return emitter
+    return _wrap_event_emitter(
+        emitter,
+        suppress_chat_messages=True,
+        suppress_completion=True,
+        suppress_status=True,
+    )
+
+
+def _valve_label(model: Any, field_name: str) -> str:
+    fields = getattr(model, "model_fields", None)
+    field = fields.get(field_name) if isinstance(fields, dict) else None
+    title = getattr(field, "title", None)
+    return title if isinstance(title, str) and title else ""
 
 
 class _LifecycleRegistry:
@@ -1314,7 +1348,9 @@ class Pipe:
             if not isinstance(__metadata__, dict):
                 __metadata__ = {}
 
-            safe_event_emitter = self._event_emitter_handler._wrap_safe_event_emitter(__event_emitter__)
+            safe_event_emitter = self._event_emitter_handler._wrap_safe_event_emitter(
+                _task_visible_channel_emitter(__event_emitter__, __task__)
+            )
             user_valves, rejected_user_valves = await self._read_user_valves(__user__)
             for name in rejected_user_valves:
                 level = warn_level(_warned_user_valves, name)
@@ -2339,16 +2375,14 @@ class Pipe:
                 elif isinstance(plugin_result, str):
                     _pcontent = plugin_result
                 if isinstance(_pcontent, str) and _pcontent:
-                    await __event_emitter__(
-                        {"type": "chat:message:delta", "data": {"content": _pcontent}}
+                    await self._event_emitter_handler._emit_unstreamed_answer(
+                        __event_emitter__, content=_pcontent
                     )
-                await __event_emitter__(
-                    {"type": "chat:completion", "data": {"done": True}}
-                )
             return plugin_result
 
         task_name = TaskModelAdapter._task_name(__task__)
         use_task_model_adapter = TaskModelAdapter._uses_task_model_adapter(__task__)
+        __event_emitter__ = _task_visible_channel_emitter(__event_emitter__, __task__)
         if use_task_model_adapter and self._auth_failure_active():
             fallback = self._build_task_fallback_content(task_name)
             return self._build_chat_completion_payload(
@@ -2432,24 +2466,28 @@ class Pipe:
                 with_contracts=False,
             )
         except ValueError as exc:
-            await self._ensure_error_formatter()._emit_error(
+            shown = await self._ensure_error_formatter()._emit_error(
                 __event_emitter__,
                 f"OpenRouter configuration error: {exc}",
                 show_error_message=True,
                 done=True,
             )
-            return ""
+            if use_task_model_adapter:
+                return self._build_task_fallback_content(task_name)
+            return shown
         except Exception as exc:
             available_models = OpenRouterModelRegistry.list_models()
             if not available_models:
-                await self._ensure_error_formatter()._emit_error(
+                shown = await self._ensure_error_formatter()._emit_error(
                     __event_emitter__,
                     "OpenRouter model catalog unavailable. Please retry shortly.",
                     show_error_message=True,
                     done=True,
                 )
                 self.logger.exception("OpenRouter model catalog unavailable")
-                return ""
+                if use_task_model_adapter:
+                    return self._build_task_fallback_content(task_name)
+                return shown
             self.logger.log(
                 warn_level(_warned_pipes_maintenance, f"chat_catalog_refresh:{type(exc).__name__}"),
                 "OpenRouter catalog refresh failed (%s). Serving %d cached model(s).",
@@ -2505,17 +2543,16 @@ class Pipe:
                 rejected_user_valves=rejected_user_valves,
             )
         except OpenRouterAPIError as e:
-            await self._ensure_error_formatter()._report_openrouter_error(
+            shown = await self._ensure_error_formatter()._report_openrouter_error(
                 e,
                 event_emitter=__event_emitter__,
                 normalized_model_id=body.get("model"),
                 api_model_id=None,
             )
-            return ""
 
         # Network timeouts
         except httpx.TimeoutException as e:
-            await self._ensure_error_formatter()._emit_templated_error(
+            shown = await self._ensure_error_formatter()._emit_templated_error(
                 __event_emitter__,
                 template=valves.NETWORK_TIMEOUT_TEMPLATE,
                 variables={
@@ -2524,11 +2561,10 @@ class Pipe:
                 },
                 log_message=f"Network timeout: {e}",
             )
-            return ""
 
         # Connection failures
         except httpx.ConnectError as e:
-            await self._ensure_error_formatter()._emit_templated_error(
+            shown = await self._ensure_error_formatter()._emit_templated_error(
                 __event_emitter__,
                 template=valves.CONNECTION_ERROR_TEMPLATE,
                 variables={
@@ -2537,14 +2573,13 @@ class Pipe:
                 },
                 log_message=f"Connection failed: {e}",
             )
-            return ""
 
         # HTTP 5xx errors
         except httpx.HTTPStatusError as e:
             status_code = e.response.status_code if e.response else None
             reason_phrase = e.response.reason_phrase if e.response else None
             if status_code and status_code >= 500:
-                await self._ensure_error_formatter()._emit_templated_error(
+                shown = await self._ensure_error_formatter()._emit_templated_error(
                     __event_emitter__,
                     template=valves.SERVICE_ERROR_TEMPLATE,
                     variables={
@@ -2553,54 +2588,51 @@ class Pipe:
                     },
                     log_message=f"OpenRouter service error: {status_code} {reason_phrase}",
                 )
-                return ""
-
-            body_text = None
-            if e.response is not None:
-                try:
-                    raw_bytes = await e.response.aread()
-                    body_text = raw_bytes.decode("utf-8", errors="replace") if isinstance(raw_bytes, bytes) else str(raw_bytes)
-                except Exception:
-                    self.logger.debug("Failed to read HTTP error response body", exc_info=True)
-                    body_text = None
-            extra_meta: dict[str, Any] = {}
-            if e.response is not None:
-                _apply_retry_after_metadata(extra_meta, e.response.headers)
-                rate_scope = (
-                    e.response.headers.get("X-RateLimit-Scope")
-                    or e.response.headers.get("x-ratelimit-scope")
+            else:
+                body_text = None
+                if e.response is not None:
+                    try:
+                        raw_bytes = await e.response.aread()
+                        body_text = raw_bytes.decode("utf-8", errors="replace") if isinstance(raw_bytes, bytes) else str(raw_bytes)
+                    except Exception:
+                        self.logger.debug("Failed to read HTTP error response body", exc_info=True)
+                        body_text = None
+                extra_meta: dict[str, Any] = {}
+                if e.response is not None:
+                    _apply_retry_after_metadata(extra_meta, e.response.headers)
+                    rate_scope = (
+                        e.response.headers.get("X-RateLimit-Scope")
+                        or e.response.headers.get("x-ratelimit-scope")
+                    )
+                    if rate_scope:
+                        extra_meta["rate_limit_type"] = rate_scope
+                error = _build_openrouter_api_error(
+                    status=status_code or 0,
+                    reason=reason_phrase or "HTTP error",
+                    body_text=body_text,
+                    requested_model=body.get("model"),
+                    extra_metadata=extra_meta or None,
                 )
-                if rate_scope:
-                    extra_meta["rate_limit_type"] = rate_scope
-            error = _build_openrouter_api_error(
-                status=status_code or 0,
-                reason=reason_phrase or "HTTP error",
-                body_text=body_text,
-                requested_model=body.get("model"),
-                extra_metadata=extra_meta or None,
-            )
-            await self._ensure_error_formatter()._report_openrouter_error(
-                error,
-                event_emitter=__event_emitter__,
-                normalized_model_id=body.get("model"),
-                api_model_id=None,
-            )
-            return ""
+                shown = await self._ensure_error_formatter()._report_openrouter_error(
+                    error,
+                    event_emitter=__event_emitter__,
+                    normalized_model_id=body.get("model"),
+                    api_model_id=None,
+                )
 
         except RequiredInternalFileError as e:
-            await self._ensure_error_formatter()._emit_error(
+            shown = await self._ensure_error_formatter()._emit_error(
                 __event_emitter__,
                 e.user_message,
                 show_error_message=True,
                 done=True,
             )
             self.logger.warning("Required internal file unavailable: %s", e.user_message)
-            return ""
 
         # Generic catch-all
         except Exception as e:
             self.logger.exception("Unexpected error in _handle_pipe_call request processing")
-            await self._ensure_error_formatter()._emit_templated_error(
+            shown = await self._ensure_error_formatter()._emit_templated_error(
                 __event_emitter__,
                 template=valves.INTERNAL_ERROR_TEMPLATE,
                 variables={
@@ -2608,9 +2640,13 @@ class Pipe:
                 },
                 log_message=f"Unexpected error: {e}",
             )
-            return ""
 
-        return result
+        else:
+            return result
+
+        if use_task_model_adapter:
+            return self._build_task_fallback_content(task_name)
+        return shown
 
 
     @timed
@@ -3531,6 +3567,34 @@ class Pipe:
                 reasons.append("ZDR_MODELS_ONLY")
 
         return reasons
+
+    @timed
+    def _model_restriction_labels(
+        self,
+        reasons: list[str],
+        *,
+        valves: Pipe.Valves,
+    ) -> list[str]:
+        labels: list[str] = []
+        for reason in reasons:
+            label = self._restriction_reason_label(reason, valves=valves)
+            if label and label not in labels:
+                labels.append(label)
+        return labels
+
+    def _restriction_reason_label(self, reason: str, *, valves: Pipe.Valves) -> str:
+        named = str(reason or "").split("=", 1)[0]
+        phrase = _RESTRICTION_REASON_PHRASES.get(named)
+        if phrase:
+            return phrase
+        user_valve = _RESTRICTION_REASON_USER_VALVES.get(named)
+        if user_valve is not None:
+            field_name, qualifier = user_valve
+            title = _valve_label(getattr(type(self), "UserValves", None), field_name)
+            if not title:
+                return _RESTRICTION_REASON_FALLBACK
+            return f"{title} ({qualifier})" if qualifier else title
+        return _valve_label(type(valves), named) or _RESTRICTION_REASON_FALLBACK
 
     # 4.3 Core Multi-Turn Handlers
     @no_type_check

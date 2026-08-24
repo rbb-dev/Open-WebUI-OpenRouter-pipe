@@ -81,6 +81,7 @@ from ..core.utils import (
     _serialize_marker,
     _serialize_phase_marker,
     citation_access_stamp,
+    join_answer_and_card,
     merge_usage_stats,
     wrap_code_block,
 )
@@ -102,10 +103,10 @@ from ..requests.sanitizer import _sanitize_request_input
 from ..storage.multimodal import _guess_image_mime_type, image_extension_for_mime
 from ..storage.persistence import normalize_persisted_item
 from ..tools.citation_harvester import BUILTIN_CITATION_TOOLS, harvest_tool_citations
-from .constants import ReasoningStatusThrottle
+from .constants import DEFERRED_REASONING_FLUSH, ReasoningStatusThrottle
 
 # Import EventEmitter type alias
-from .event_emitter import EventEmitter
+from .event_emitter import _UNGUARDED_ATTR, EventEmitter
 from .fusion_embed import (
     FusionDeliberationState,
     FusionDeltaBatcher,
@@ -472,6 +473,7 @@ class StreamingHandler:
         fusion_live_enabled: bool = False,
         event_source: AsyncGenerator[dict[str, Any], None] | None = None,
         outcome_sink: dict[str, Any] | None = None,
+        retry_handoff: dict[str, Any] | None = None,
     ):
         """
         Stream assistant responses incrementally, handling function calls, status updates, and tool usage.
@@ -1064,6 +1066,15 @@ class StreamingHandler:
                 }
             )
 
+        async def _flush_trailing_reasoning() -> None:
+            if event_emitter is None or not thinking_box_enabled:
+                return
+            for reasoning_key in list(reasoning_display):
+                try:
+                    await _emit_reasoning_item(reasoning_key)
+                except Exception:
+                    self.logger.exception("Failed to emit trailing reasoning item")
+
         @timed
         async def _flush_pending(reason: str) -> None:
             """Persist buffered artifacts and emit a warning when the DB fails."""
@@ -1138,7 +1149,7 @@ class StreamingHandler:
 
         async def _append_assistant_hidden_markers(markers: list[str]) -> None:
             """Append hidden markers via the assistant delta stream OWUI persists into output."""
-            nonlocal assistant_message
+            nonlocal assistant_message, retry_barrier_crossed
             if not markers:
                 return
             msg_before = len(assistant_message)
@@ -1146,6 +1157,7 @@ class StreamingHandler:
             marker_delta = assistant_message[msg_before:]
             if marker_delta and body.stream and event_emitter:
                 await event_emitter({"type": "chat:message:delta", "data": {"content": marker_delta}})
+                retry_barrier_crossed = True
 
         def _extract_call_id(item: Any) -> str:
             """Best-effort call_id extraction for tool call/output items."""
@@ -2195,8 +2207,9 @@ class StreamingHandler:
                             self.logger.debug("Custom STREAM_INTERRUPTED_TEMPLATE failed to render; using default", exc_info=True)
                             notice = _render_error_template(DEFAULT_STREAM_INTERRUPTED_TEMPLATE, template_vars)
                         if notice and not fusion_inner_call:
-                            delta = f"\n\n{notice}" if assistant_message else notice
-                            assistant_message = f"{assistant_message}{delta}" if assistant_message else notice
+                            joined = join_answer_and_card(assistant_message, notice)
+                            delta = joined[len(assistant_message):]
+                            assistant_message = joined
                             if event_emitter:
                                 await event_emitter({"type": "chat:message:delta", "data": {"content": delta}})
                     except Exception:
@@ -2275,7 +2288,9 @@ class StreamingHandler:
                 message_count = 0
                 call_items: list[dict[str, Any]] = []
                 invalid_call_outputs: list[dict[str, Any]] = []
-                for item in final_response.get("output", []):
+                for item in final_response.get("output") or []:
+                    if not isinstance(item, dict):
+                        continue
                     item_type = item.get("type")
                     if item_type == "reasoning" and (item.get("encrypted_content") or item.get("signature")):
                         continuation_input_items.append(item)
@@ -2335,7 +2350,7 @@ class StreamingHandler:
                                 call_id,
                             )
 
-                _ordered = final_response.get("output", [])
+                _ordered = final_response.get("output") or []
                 _fc_local = [
                     _j for _j, _o in enumerate(_ordered)
                     if isinstance(_o, dict) and _o.get("type") == "function_call"
@@ -2924,8 +2939,9 @@ class StreamingHandler:
                     level="warning",
                 )
                 fallback = NO_CONTENT_AFTER_TOOLS_FALLBACK
-                delta = f"\n\n{fallback}" if assistant_message else fallback
-                assistant_message = f"{assistant_message}{delta}" if assistant_message else fallback
+                joined = join_answer_and_card(assistant_message, fallback)
+                delta = joined[len(assistant_message):]
+                assistant_message = joined
                 if event_emitter:
                     await event_emitter(
                         {
@@ -2947,24 +2963,28 @@ class StreamingHandler:
                 handed_back_for_retry = True
                 _record_outcome()
                 raise
-            assistant_message = ""
-            await self._pipe._ensure_error_formatter()._report_openrouter_error(
+            reported = await self._pipe._ensure_error_formatter()._report_openrouter_error(
                 exc,
                 event_emitter=event_emitter,
                 normalized_model_id=body.model,
                 api_model_id=getattr(body, "api_model", None),
                 usage=total_usage,
+                partial_answer=assistant_message,
             )
+            if reported:
+                assistant_message = reported
         except RequiredInternalFileError as e:
             error_occurred = True
             session_log_reason = str(e)
-            assistant_message = ""
             cancel_thinking()
-            await self._pipe._ensure_error_formatter()._emit_error(
-                event_emitter,
-                e.user_message,
-                show_error_message=True,
-                done=True,
+            assistant_message = join_answer_and_card(
+                assistant_message,
+                await self._pipe._ensure_error_formatter()._emit_error(
+                    event_emitter,
+                    e.user_message,
+                    show_error_message=True,
+                    done=True,
+                ),
             )
             self.logger.warning("Required internal file unavailable in streaming loop: %s", e.user_message)
         except Exception as e:  # pragma: no cover - network errors
@@ -2973,31 +2993,33 @@ class StreamingHandler:
             self.logger.exception("Unexpected error in streaming loop")
             exc_status = getattr(e, "status", None)
             if isinstance(exc_status, int) and exc_status >= 500:
-                await self._pipe._ensure_error_formatter()._emit_templated_error(
+                reported = await self._pipe._ensure_error_formatter()._emit_templated_error(
                     event_emitter,
                     template=self._pipe.valves.SERVICE_ERROR_TEMPLATE,
                     variables={"status_code": exc_status, "reason": str(e)},
                     log_message=f"Server error in streaming loop: {e}",
+                    partial_answer=assistant_message,
                 )
             else:
-                await self._pipe._ensure_error_formatter()._emit_templated_error(
+                reported = await self._pipe._ensure_error_formatter()._emit_templated_error(
                     event_emitter,
                     template=self._pipe.valves.INTERNAL_ERROR_TEMPLATE,
                     variables={"error_type": type(e).__name__},
                     log_message=f"Unexpected error in streaming loop: {e}",
+                    partial_answer=assistant_message,
                 )
+            if reported:
+                assistant_message = reported
 
         finally:
             cancel_thinking()
             for t in thinking_tasks:
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await t
-            if event_emitter and thinking_box_enabled:
-                for reasoning_key in list(reasoning_display):
-                    try:
-                        await _emit_reasoning_item(reasoning_key)
-                    except Exception:
-                        self.logger.exception("Failed to emit trailing reasoning item")
+            if handed_back_for_retry and retry_handoff is not None:
+                retry_handoff[DEFERRED_REASONING_FLUSH] = _flush_trailing_reasoning
+            else:
+                await _flush_trailing_reasoning()
             surrogate_carry["assistant"] = ""
             surrogate_carry["reasoning"] = ""
 
@@ -3204,7 +3226,7 @@ class StreamingHandler:
 
             if not was_cancelled:
                 await _flush_pending("finalize")
-                if pending_ulids:
+                if pending_ulids and not handed_back_for_retry:
                     await _append_assistant_hidden_markers(
                         [_serialize_marker(ulid) for ulid in pending_ulids]
                     )
@@ -3306,6 +3328,7 @@ class StreamingHandler:
         fusion_live_enabled: bool = False,
         event_source: AsyncGenerator[dict[str, Any], None] | None = None,
         outcome_sink: dict[str, Any] | None = None,
+        retry_handoff: dict[str, Any] | None = None,
     ) -> str | dict[str, Any]:
         """Reuse the streaming loop logic, but honour `stream=False` at the HTTP layer.
 
@@ -3339,6 +3362,7 @@ class StreamingHandler:
             fusion_live_enabled=fusion_live_enabled,
             event_source=event_source,
             outcome_sink=outcome_sink,
+            retry_handoff=retry_handoff,
         )
 
 
@@ -3461,6 +3485,7 @@ def _wrap_event_emitter(
     *,
     suppress_chat_messages: bool = False,
     suppress_completion: bool = False,
+    suppress_status: bool = False,
 ):
     """
     Wrap the given event emitter and optionally suppress specific event types.
@@ -3483,6 +3508,11 @@ def _wrap_event_emitter(
             return
         if suppress_completion and etype == "chat:completion":
             return
+        if suppress_status and etype == "status":
+            return
         await emitter(event)
 
+    inner = getattr(emitter, _UNGUARDED_ATTR, None)
+    if inner is not None:
+        setattr(_wrapped, _UNGUARDED_ATTR, inner)
     return _wrapped

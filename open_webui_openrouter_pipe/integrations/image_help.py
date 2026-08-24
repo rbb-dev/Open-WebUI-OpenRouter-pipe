@@ -786,10 +786,6 @@ def render_image_help(
     so help cannot name a control the chat UI does not draw, which is what a second
     hand-maintained table did until it described seven filters that no longer exist.
     """
-    rendered = _image_render_template((model_id or "").strip(), image_model)
-    if endpoint_record is None:
-        return rendered
-
     from ..filters.image_filter_renderer import (
         _SCHEMA_ONLY_CAVEAT,
         _image_shared_by_some,
@@ -800,11 +796,16 @@ def render_image_help(
     )
     from .image_types import PASSTHROUGH_ENUMS
 
+    rendered = _image_render_template((model_id or "").strip(), image_model)
+    records = _published_records(endpoint_record)
+    if not records:
+        return rendered
+
     spec = build_image_model_filter_spec(
         model_id, image_model, endpoint_record, dedicated_image_api=dedicated_image_api
     )
     lines = [f"{rendered.rstrip()}", ""]
-    lines.extend(_image_cost_section(_published_records(endpoint_record)))
+    lines.extend(_image_cost_section(records))
     lines.extend(["", "## Controls"])
     if not spec.knob_count:
         if spec.published_anything:

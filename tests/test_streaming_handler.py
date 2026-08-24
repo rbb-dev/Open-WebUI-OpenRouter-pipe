@@ -3254,7 +3254,13 @@ class TestAPIErrorHandling:
             user_id="user-123",
         )
 
-        assert result == ""
+        cards = [
+            e["data"]["content"]
+            for e in emitted
+            if e.get("type") == "chat:message" and isinstance(e.get("data"), dict)
+        ]
+        assert cards, f"no card was shown, events were {emitted}"
+        assert result == cards[-1]
 
 
 class TestLoopLimitAndFunctionExecution:
@@ -4890,9 +4896,16 @@ class TestResponseOutputEdgeCases:
 
     @pytest.mark.asyncio
     async def test_response_output_with_non_dict_items(self, monkeypatch, pipe_instance_async):
-        """Test handling of non-dict items in response output."""
+        """A non-dict entry in `response.output` is skipped, not walked into.
+
+        `result == "Hello"` alone did not measure that: the continuation loop called `.get`
+        on the bare string, the `AttributeError` was swallowed by the response loop's
+        catch-all, and the half-built answer came back looking like a clean run. The
+        outcome sink is what tells the two apart -- it records whether the turn failed.
+        """
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
+        sink: dict[str, Any] = {}
 
         events = [
             {"type": "response.output_text.delta", "delta": "Hello"},
@@ -4920,8 +4933,13 @@ class TestResponseOutputEdgeCases:
             tools={},
             session=cast(Any, object()),
             user_id="user-123",
+            outcome_sink=sink,
         )
 
+        assert sink["error_occurred"] is False, (
+            "a string in the output list took the whole turn through the error handler; "
+            f"the loop walked into it instead of skipping it. sink={sink!r}"
+        )
         assert result == "Hello"
 
     @pytest.mark.asyncio
@@ -7553,9 +7571,15 @@ class TestStreamingCoreAdditionalCoverage:
 
     @pytest.mark.asyncio
     async def test_reasoning_details_skips_non_dict_items(self, monkeypatch, pipe_instance_async):
-        """Test reasoning_details extraction skips non-dict items (line 1782-1783)."""
+        """The assistant item's reasoning_details survive non-dict siblings in the same list.
+
+        Asserting only the returned text let this pass while the whole continuation block
+        was aborted by an `AttributeError` on the first string in the list, so nothing was
+        read off the assistant item at all.
+        """
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
+        sink: dict[str, Any] = {}
 
         events = [
             {"type": "response.output_text.delta", "delta": "Hello"},
@@ -7595,9 +7619,23 @@ class TestStreamingCoreAdditionalCoverage:
             tools={},
             session=cast(Any, object()),
             user_id="user-123",
+            outcome_sink=sink,
         )
 
+        assert sink["error_occurred"] is False, (
+            "a string in the output list took the whole turn through the error handler; "
+            f"the loop walked into it instead of skipping it. sink={sink!r}"
+        )
         assert result == "Hello"
+        persisted_reasoning = [
+            entry for entry in persisted_data if "reasoning_details" in (entry.get("data") or {})
+        ]
+        assert persisted_reasoning and persisted_reasoning[-1]["data"]["reasoning_details"] == [
+            {"step": 1}
+        ], (
+            "the assistant item sat behind three non-dict siblings; its reasoning_details "
+            f"never reached the chat row. persisted={persisted_data!r}"
+        )
         monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", original_upsert)
 
     @pytest.mark.asyncio
@@ -8859,8 +8897,15 @@ class TestSegmentStatusError:
             user_id="user-123",
         )
 
-        # Result should be empty due to error
-        assert result == ""
+        # The card the loop showed is also what it hands back: with stream=False
+        # the return value is the only copy Open WebUI persists.
+        cards = [
+            e["data"]["content"]
+            for e in emitted
+            if e.get("type") == "chat:message" and isinstance(e.get("data"), dict)
+        ]
+        assert cards, f"no card was shown, events were {emitted}"
+        assert result == cards[-1]
 
 
 class TestNonAPIErrorReturningFalse:
@@ -8964,9 +9009,15 @@ class TestAnnotationsAndReasoningDetailsExtraction:
 
     @pytest.mark.asyncio
     async def test_final_response_skips_non_dict_items(self, monkeypatch, pipe_instance_async):
-        """Test that non-dict items in final_response output are skipped (lines 1755-1760, 1782-1787)."""
+        """A mixed output list is walked past its non-dict entries rather than into them.
+
+        The returned text was the only thing asserted here, and it is produced before that
+        list is ever read, so it stayed "Hello" whether the list was processed or the turn
+        died on its first element. The outcome sink measures which of the two happened.
+        """
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
+        sink: dict[str, Any] = {}
 
         events = [
             {"type": "response.output_text.delta", "delta": "Hello"},
@@ -9004,8 +9055,13 @@ class TestAnnotationsAndReasoningDetailsExtraction:
             tools={},
             session=cast(Any, object()),
             user_id="user-123",
+            outcome_sink=sink,
         )
 
+        assert sink["error_occurred"] is False, (
+            "a string in the output list took the whole turn through the error handler; "
+            f"the loop walked into it instead of skipping it. sink={sink!r}"
+        )
         assert result == "Hello"
 
 
@@ -10684,6 +10740,7 @@ class TestRequiredInternalFileErrorStreaming:
 
         async def spy_emit_error(event_emitter, error_obj, **kwargs):
             emit_error_calls.append({"error_obj": error_obj, "kwargs": kwargs})
+            return str(error_obj)
 
         async def spy_emit_templated_error(*_args, **kwargs):
             templated_error_calls.append(str(kwargs.get("log_message", "templated")))
@@ -10718,7 +10775,7 @@ class TestRequiredInternalFileErrorStreaming:
         assert not templated_error_calls, (
             f"typed error degraded to generic INTERNAL_ERROR path: {templated_error_calls}"
         )
-        assert result == ""
+        assert result == denial_message
 
 
 class TestAppendOutputBlockEmptySnippet:
@@ -12006,4 +12063,388 @@ async def test_each_artifact_is_persisted_exactly_once_per_turn(
         f"these artifacts were sent to the database more than once: {duplicated}. "
         f"Flushes were {batches!r} — the pending buffer is not being drained, so every "
         "later flush rewrites every earlier artifact."
+    )
+
+
+_RETRYABLE_EFFORT_REJECTION = {
+    "status": 400,
+    "reason": "Bad Request",
+    "upstream_message": (
+        "Invalid reasoning.effort value 'high'. Supported values are: 'low', 'medium'."
+    ),
+    "provider_raw": {
+        "error": {
+            "param": "reasoning.effort",
+            "code": "unsupported_value",
+            "type": "invalid_request_error",
+        }
+    },
+}
+"""The rejection the orchestrator really does retry, so the hand-back arm is coherent.
+
+The status alone decides nothing: the orchestrator retries on reasoning-effort rejections,
+signed-reasoning drops and the reasoning-disable fallback, and renders a card for every
+other status. Driving the hand-back arm with a rejection outside that set described a
+retry that would never happen.
+"""
+
+
+async def _reasoning_then(
+    pipe: Pipe, monkeypatch, *, fail_with_nothing_shown: bool, stream: bool
+) -> tuple[list[dict], bool, dict[str, Any]]:
+    """Produce one thought, then either fail before anything shows or finish cleanly.
+
+    Failing with nothing shown is the hand-back: the loop re-raises so the orchestrator
+    can retry on the same conversation turn. Finishing cleanly with no answer text is the
+    ordinary reasoning-only reply, and the only thing that publishes its thought is the
+    trailing flush this guard sits on -- an answer delta would have flushed it inline, so
+    that arm would not constrain the guard at all.
+
+    The retry channel is supplied because the loop only defers when its caller offers one;
+    called without it -- as the fusion divert path does -- no retry can follow, so the
+    thought is published rather than withheld.
+
+    Both loops are driven from here. The non-streaming leg reaches OpenRouter through a
+    different transport method, so patching the streaming one leaves it hitting the real
+    network; each arm stubs the method its own leg actually calls, one seam below the
+    loop under test, and the loop body runs for real either way.
+    """
+    events: list[dict] = [
+        {"type": "response.created", "response": {"model": "anthropic/claude-opus"}},
+        {
+            "type": "response.reasoning_summary_text.done",
+            "output_index": 0,
+            "item_id": "rs_abandoned",
+            "text": "ABANDONED-THOUGHT",
+        },
+    ]
+
+    async def transport(self, session, request_body, **_kwargs):
+        for event in events:
+            yield event
+        if fail_with_nothing_shown:
+            raise OpenRouterAPIError(**_RETRYABLE_EFFORT_REJECTION)
+        yield {
+            "type": "response.completed",
+            "response": {"output": [], "usage": {"total_tokens": 1}, "model": "anthropic/claude-opus"},
+        }
+
+    monkeypatch.setattr(
+        Pipe,
+        "send_openrouter_streaming_request"
+        if stream
+        else "send_openrouter_nonstreaming_request_as_events",
+        transport,
+    )
+    emitted: list[dict] = []
+
+    async def emitter(event):
+        emitted.append(event)
+
+    handler = pipe._streaming_handler
+    run = handler._run_streaming_loop if stream else handler._run_nonstreaming_loop
+    handoff: dict[str, Any] = {}
+    handed_back = False
+    try:
+        await run(
+            ResponsesBody(model="anthropic/claude-opus", input=[], stream=stream),
+            pipe.valves,
+            emitter,
+            metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"},
+            tools={},
+            session=cast(Any, object()),
+            user_id="user-1",
+            retry_handoff=handoff,
+        )
+    except OpenRouterAPIError:
+        handed_back = True
+    return emitted, handed_back, handoff
+
+
+def _published_thoughts(emitted: list[dict], text: str) -> list[dict]:
+    return [
+        event
+        for event in emitted
+        if event.get("type") == "response.output_item.added"
+        and (event.get("item") or {}).get("type") == "reasoning"
+        and text in json.dumps(event.get("item") or {}, default=str)
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [True, False], ids=["streaming", "non-streaming"])
+@pytest.mark.parametrize(
+    ("fail_with_nothing_shown", "expect_hand_back"),
+    [(True, True), (False, False)],
+    ids=["handed-back-for-retry", "finished-cleanly"],
+)
+async def test_an_attempt_handed_back_for_retry_defers_its_reasoning(
+    pipe_instance_async, monkeypatch, fail_with_nothing_shown, expect_hand_back, stream
+):
+    """A retry may replace the attempt, so its thought is withheld -- and kept, not dropped.
+
+    Reasoning items travel as `response.output_item.added`, which Open WebUI appends to
+    the message's output list and writes to the database at the end of the turn. A retry
+    runs on the SAME turn and the same emitter, so an item the abandoned attempt published
+    is not merely still on screen -- it is saved above the retry's own thinking, and the
+    reader is shown reasoning that produced none of the answer they got.
+
+    Only the caller knows whether a retry follows, so the loop hands the flush back on its
+    retry channel rather than deciding. This pins both halves of that: nothing is published
+    inline, and what was withheld is still on the channel for the caller to run. Discarding
+    it instead -- which is what "not published" alone would accept -- fails the second half.
+
+    Both loops are driven, because the orchestrator hands the same channel to both and
+    only one of them was ever measured. The non-streaming leg wraps the emitter to swallow
+    the two message frames; a reasoning item is neither of those, so it reaches Open WebUI
+    exactly as it does on the streaming leg and severing the channel there saves the
+    abandoned attempt's thinking above the retry's own.
+
+    The clean arm is the opposite case, a reasoning-only reply whose thought only the
+    trailing flush can publish; an answer delta would have flushed it inline, so that arm
+    would not constrain this at all.
+    """
+    from open_webui_openrouter_pipe.streaming.constants import DEFERRED_REASONING_FLUSH
+
+    emitted, handed_back, handoff = await _reasoning_then(
+        pipe_instance_async,
+        monkeypatch,
+        fail_with_nothing_shown=fail_with_nothing_shown,
+        stream=stream,
+    )
+
+    assert handed_back is expect_hand_back, (
+        f"the loop {'re-raised' if handed_back else 'returned normally'}, which is not the "
+        "path this arm is about"
+    )
+
+    published = _published_thoughts(emitted, "ABANDONED-THOUGHT")
+    assert bool(published) is (not expect_hand_back), (
+        f"published {len(published)} completed reasoning item(s) on the "
+        f"{'hand-back' if expect_hand_back else 'clean'} path: {published!r}"
+    )
+
+    deferred = handoff.get(DEFERRED_REASONING_FLUSH)
+    assert (deferred is not None) is expect_hand_back, (
+        f"the retry channel holds {handoff!r} on the "
+        f"{'hand-back' if expect_hand_back else 'clean'} path"
+    )
+    if deferred is not None:
+        await deferred()
+        assert _published_thoughts(emitted, "ABANDONED-THOUGHT"), (
+            "the withheld thought was destroyed rather than deferred: running the flush "
+            f"the loop handed back published nothing. events={[e.get('type') for e in emitted]}"
+        )
+
+
+async def _orchestrated_turn(
+    pipe: Pipe, monkeypatch, *, thought: str, reject_with: dict
+) -> tuple[int, list[dict], str]:
+    """Run one whole turn through the orchestrator, over the real streaming loop.
+
+    Only the transport is stubbed. The retry decision, the streaming loop and the error
+    card are all the production ones, because the question this answers -- whether another
+    attempt follows -- is decided by the orchestrator and by nothing below it.
+    """
+    import logging as _logging
+
+    from open_webui_openrouter_pipe.requests.orchestrator import RequestOrchestrator
+
+    attempts: list[int] = []
+
+    async def streaming(self, session, request_body, **_kwargs):
+        attempts.append(len(attempts) + 1)
+        attempt = len(attempts)
+        yield {"type": "response.created", "response": {"model": "anthropic/claude-opus"}}
+        yield {
+            "type": "response.reasoning_summary_text.done",
+            "output_index": 0,
+            "item_id": f"rs_{attempt}",
+            "text": f"{thought}-{attempt}",
+        }
+        if attempt == 1:
+            raise OpenRouterAPIError(**reject_with)
+        yield {"type": "response.output_text.delta", "delta": "THE ANSWER"}
+        yield {
+            "type": "response.completed",
+            "response": {"output": [], "usage": {"total_tokens": 1}, "model": "anthropic/claude-opus"},
+        }
+
+    monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", streaming)
+    pipe.valves.API_KEY = EncryptedStr("test-api-key")
+    emitted: list[dict] = []
+
+    async def emitter(event):
+        emitted.append(event)
+
+    orchestrator = RequestOrchestrator(pipe, _logging.getLogger("orchestrated-turn"))
+    shown = await orchestrator.process_request(
+        body={
+            "model": "anthropic/claude-opus",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+            "reasoning": {"effort": "high"},
+        },
+        __user__={"id": "user-1"},
+        __request__=None,
+        __event_emitter__=emitter,
+        __event_call__=None,
+        __metadata__={"model": {"id": "anthropic/claude-opus"}, "chat_id": "chat-1", "message_id": "msg-1"},
+        __tools__=None,
+        __task__=None,
+        __task_body__=None,
+        valves=pipe.valves,
+        session=cast(Any, object()),
+        openwebui_model_id="anthropic/claude-opus",
+        pipe_identifier="test-pipe",
+        allowlist_norm_ids=set(),
+        enforced_norm_ids=set(),
+        catalog_norm_ids=set(),
+        features={},
+    )
+    return len(attempts), emitted, str(shown or "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [402, 429])
+@pytest.mark.parametrize("thought", ["WEIGHING-THE-OPTIONS", "CHECKING-THE-UNITS"])
+async def test_a_turn_that_ends_in_a_card_keeps_the_thinking_the_reader_watched(
+    pipe_instance_async, monkeypatch, status, thought
+):
+    """Nothing replaces the attempt, so withholding its thought only deletes it.
+
+    The orchestrator retries three specific rejections -- an unsupported reasoning effort,
+    a rejected signed-reasoning replay, and the reasoning-disable fallback. Every other
+    status ends the turn with a card. On those the reader watched a thought stream and
+    then watched it disappear, replaced by nothing, because the loop withheld it on the
+    strength of re-raising alone.
+
+    Driven through the orchestrator rather than the loop, since the loop cannot know
+    whether another attempt follows. Parametrised over two statuses and two thoughts so
+    neither a fixed answer nor a status list copied into the loop satisfies it, and the
+    order is asserted too: the thought belongs above the card that ended the turn.
+    """
+    attempts, emitted, shown = await _orchestrated_turn(
+        pipe_instance_async,
+        monkeypatch,
+        thought=thought,
+        reject_with={"status": status, "reason": "rejected", "openrouter_message": "rejected"},
+    )
+
+    assert attempts == 1, (
+        f"a {status} produced {attempts} attempt(s); this arm is about the rejections the "
+        "orchestrator does NOT retry"
+    )
+    assert shown.strip(), f"no card came back for a {status}, so this proves nothing"
+
+    published = _published_thoughts(emitted, f"{thought}-1")
+    assert len(published) == 1, (
+        f"the reader watched {thought!r} stream and the turn ended with a card, but "
+        f"{len(published)} completed reasoning item(s) reached them. "
+        f"events={[event.get('type') for event in emitted]}"
+    )
+
+    published_ids = {id(event) for event in published}
+    thought_at = [index for index, event in enumerate(emitted) if id(event) in published_ids]
+    card_at = [
+        index
+        for index, event in enumerate(emitted)
+        if event.get("type") in ("chat:message", "chat:message:delta")
+        and shown in str((event.get("data") or {}).get("content") or "")
+    ]
+    assert card_at, f"the card never reached the emitter; events={[e.get('type') for e in emitted]}"
+    assert thought_at[0] < card_at[0], (
+        f"the thought was published at {thought_at} and the card at {card_at}; the thinking "
+        "that produced nothing has to sit above the failure, not below it"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer", ["THE FIRST ANSWER", "THE SECOND ANSWER"])
+async def test_a_null_output_list_on_the_final_frame_does_not_cost_the_reader_the_turn(
+    pipe_instance_async, monkeypatch, answer
+):
+    """`{"output": null}` is a value, not an absent key, so the `.get` default never runs.
+
+    The round's items are read straight off the terminal frame. Iterating a null there
+    raises, the catch-all around the loop turns it into an internal-error card, and the
+    reader loses the answer that had already streamed to them along with the terminal
+    frame that ends the turn. The two neighbouring reads of the same container in this
+    function already coalesce it; the one that walks the items did not.
+
+    The element-wise guard added alongside does not cover this: it runs per item and
+    never executes when the container itself cannot be iterated.
+    """
+    async def streaming(self, session, request_body, **_kwargs):
+        yield {"type": "response.created", "response": {"model": "anthropic/claude-opus"}}
+        yield {"type": "response.output_text.delta", "delta": answer}
+        yield {
+            "type": "response.completed",
+            "response": {
+                "output": None,
+                "usage": {"total_tokens": 1},
+                "model": "anthropic/claude-opus",
+            },
+        }
+
+    monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", streaming)
+    emitted: list[dict] = []
+
+    async def emitter(event):
+        emitted.append(event)
+
+    result = await pipe_instance_async._streaming_handler._run_streaming_loop(
+        ResponsesBody(model="anthropic/claude-opus", input=[], stream=True),
+        pipe_instance_async.valves,
+        emitter,
+        metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"},
+        tools={},
+        session=cast(Any, object()),
+        user_id="user-1",
+    )
+
+    assert result == answer, (
+        f"the reader's turn came back as {result!r} instead of the answer that streamed to "
+        "them; a null item list turned into an internal-error card"
+    )
+    terminal = [
+        event
+        for event in emitted
+        if event.get("type") == "chat:completion" and (event.get("data") or {}).get("done")
+    ]
+    assert terminal, (
+        f"the turn never got its terminal frame; events={[e.get('type') for e in emitted]}"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("thought", ["WEIGHING-THE-OPTIONS", "CHECKING-THE-UNITS"])
+async def test_a_turn_that_really_retries_shows_only_the_winning_attempts_thinking(
+    pipe_instance_async, monkeypatch, thought
+):
+    """The opposite arm: a retry did run, so the superseded thought must not be kept.
+
+    Both attempts publish a thought on the same turn and the same emitter. Flushing the
+    first would save it above the second, and the reader would be shown reasoning that
+    produced none of the answer they got.
+    """
+    attempts, emitted, shown = await _orchestrated_turn(
+        pipe_instance_async,
+        monkeypatch,
+        thought=thought,
+        reject_with=_RETRYABLE_EFFORT_REJECTION,
+    )
+
+    assert attempts == 2, (
+        f"the orchestrator made {attempts} attempt(s); this arm is about a rejection it "
+        "really does retry"
+    )
+    assert shown == "THE ANSWER", f"the retry did not produce the answer; got {shown!r}"
+
+    assert not _published_thoughts(emitted, f"{thought}-1"), (
+        "the abandoned attempt's thought was saved above the retry's own"
+    )
+    assert len(_published_thoughts(emitted, f"{thought}-2")) == 1, (
+        f"the winning attempt's thought reached the reader "
+        f"{len(_published_thoughts(emitted, f'{thought}-2'))} time(s)"
     )

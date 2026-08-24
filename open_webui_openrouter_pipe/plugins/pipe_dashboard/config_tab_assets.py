@@ -413,7 +413,8 @@ function commitSave(){
     const r=resp&&resp.result;
     if(!resp||resp.error||!r){ inflightSave=false; if(btn){btn.disabled=false;btn.textContent="Save "+names.length;} toast("Save failed"+(resp&&resp.error?": "+resp.error:"")); return; }
     if(r.conflict){ inflightSave=false; $("#modal").classList.remove("show"); if(btn){btn.disabled=false;btn.textContent="Save "+names.length;} showConflict(); return; }
-    names.forEach(n=>{ const v=byName[n]; if(v&&v.secret){v.secret_set=true;} else if(v){baseline[n]=edits[n];} delete edits[n]; });
+    const vals=(r.values&&typeof r.values==="object")?r.values:{};
+    names.forEach(n=>{ const v=byName[n]; if(v&&v.secret){v.secret_set=true;} else if(v){baseline[n]=Object.prototype.hasOwnProperty.call(vals,n)?vals[n]:edits[n];} delete edits[n]; });
     if(r.rev!=null){REV=r.rev;lastSeenRev=r.rev;}
     inflightSave=false;
     invalid.clear(); $("#modal").classList.remove("show"); updateBar();

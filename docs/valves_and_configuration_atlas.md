@@ -190,7 +190,7 @@ Image-output models (Sourceful Riverflow, Black Forest Labs FLUX, ByteDance Seed
 
 | Valve | Type | Default (verified) | Purpose / notes |
 | --- | --- | --- | --- |
-| `ENABLE_OPENROUTER_IMAGE_GENERATION` | `bool` | `True` | Expose OpenRouter native image-output models as chat models. Pure-image-only models (FLUX, Riverflow, Seedream) are discovered via `/api/v1/models?output_modalities=image`. Multimodal text+image models (gpt-5-image, gemini-image variants) stay in the chat catalog and get their own settings panel, like every other image model. Setting this to `False` empties the image model list and clears its refresh timestamp, so pure-image-only models vanish from OWUI's dropdown immediately. |
+| `ENABLE_OPENROUTER_IMAGE_GENERATION` | `bool` | `True` | Expose OpenRouter native image-output models as chat models. Pure-image-only models (FLUX, Riverflow, Seedream) are discovered via `/api/v1/models?output_modalities=image`. Multimodal text+image models (gpt-5-image, gemini-image variants) stay in the chat catalog and get their own settings panel, like every other image model. Setting this to `False` empties the image model list and clears its refresh timestamp on the next model-list build, ahead of the catalogue refresh window, so pure-image-only models are gone from OWUI's dropdown as soon as it is rebuilt rather than after `MODEL_CATALOG_REFRESH_SECONDS`. |
 | `AUTO_INSTALL_IMAGE_FILTERS` | `bool` | `True` | Install and keep up to date one settings panel per image model, offering the settings that model publishes to OpenRouter plus `IMAGE_SIZE`, which every panel carries, and — on models that answer only with a picture — `IMAGE_PROVIDER_OPTIONS_JSON`, `IMAGE_REFERENCE_MODE` and `IMAGE_REFERENCE_URLS`. If a model's settings list cannot be read on a refresh it keeps the settings from its last successful read; a model never read gets no panel at all rather than a guessed set. |
 | `AUTO_ATTACH_IMAGE_FILTERS` | `bool` | `True` | Attach each image model's own settings panel to it, so its settings appear in the chat controls when that model is selected. A single model can opt out with the `disable_image_filter_auto_attach` advanced parameter. |
 | `AUTO_DEFAULT_IMAGE_FILTERS` | `bool` | `True` | Always keep the attached image filters enabled by default on image-output models. Re-asserted on every catalog metadata sync. Setting this to `False` stops new models being defaulted but does not detach panels already marked default — clear those on the model itself. |
@@ -232,7 +232,7 @@ no provider options object, so those three are left off its panel:
 | `IMAGE_PROVIDER_OPTIONS_JSON` | Provider options | `str` (JSON object) | `""` | `provider.options`, keyed by provider slug |
 | `IMAGE_REFERENCE_MODE` | Reference images | `Literal["auto", "latest-only", "none"]` | `"auto"` | which attached images become `input_references` |
 | `IMAGE_REFERENCE_URLS` | Reference image links | `str` (JSON array) | `""` | extra `input_references` entries, placed first |
-| `IMAGE_SIZE` | Output size | `str` | `""` | top-level `size`; exact pixels sent as typed, a tier checked against the model's published `resolution` |
+| `IMAGE_SIZE` | Output size | `str` | `""` | top-level `size`; exact pixels sent as typed, a tier checked against the model's published `resolution` where it publishes one and against OpenRouter's four tier names where it publishes none |
 
 `IMAGE_PROVIDER_OPTIONS_JSON` is the image sibling of
 `VIDEO_PROVIDER_OPTIONS_JSON` and writes the same place the provider routing
@@ -243,9 +243,14 @@ provider on those. `IMAGE_SIZE` is rendered on every model because **no**
 endpoint record publishes a `size` descriptor. OpenRouter documents the two forms
 it takes, and the pipe treats them differently: exact pixels go out as typed,
 because no contract describes pixel sizes, while a tier sets the same thing as
-`resolution` and is therefore measured against the tiers the model publishes —
-a tier the model does not publish, and anything that is neither a tier nor
-pixels, is withheld and named in the chat rather than sent.
+`resolution`. What a tier is measured against then depends on the model.
+Sixteen of the forty recorded models publish a `resolution` list; on those, a
+tier the model does not publish is withheld rather than sent, and named in a
+toast. The other twenty-four publish no such list, so a tier is measured only
+against OpenRouter's own four names and then goes out for the company running
+the model to interpret. Anything that is neither one of those four names nor
+pixels is withheld and named on every model. Open WebUI does not keep a toast
+with the message, so that naming does not survive a reload.
 
 `IMAGE_REFERENCE_MODE` chooses which of the pictures attached to the turn are
 sent as references: `auto` sends every one, oldest first; `latest-only` sends
@@ -256,18 +261,20 @@ Those links go through the same safety gate as every other URL the pipe fetches,
 and a refused link fails the request rather than generating without it. A
 request carries at most 16 references, the request format's own ceiling; where a
 model publishes a lower limit the lower one applies, and anything over it is
-dropped with a note in the chat saying how many and why.
+dropped with a toast saying how many and why. Open WebUI does not keep toasts
+with the message, so that notice is gone once the page reloads.
 
 A provider option whose accepted values OpenRouter publishes renders as a choice
 rather than free text — today that is `moderation` (`auto`, `low`), delivered on
 the six OpenAI image models that name it.
 
 Where a model is served by several providers whose published choices differ, the
-values only some of them accept are still offered, marked on the control; the
-pipe fits the chosen value to whichever company serves the request and tells you
-if that company does not accept it. Measured across all forty recorded
+values only some of them accept are still offered, marked on the control; picking
+one pins the request to the providers that accept it, so it is sent and honoured.
+Where OpenRouter names none of those providers for routing, the value is still
+sent and a warning goes out beforehand. Measured across all forty recorded
 models this affects one value: `4K` for `resolution` on
-`google/gemini-3-pro-image`.
+`google/gemini-3-pro-image`, whose two providers are both named for routing.
 
 The prompt a model receives is the message typed in the chat with the model's
 own system text in front of it, so a Workspace model's house style reaches an
@@ -276,8 +283,10 @@ rather than generating from the system text alone.
 
 Where every provider that could serve a request publishes native streaming, the
 request asks for the streamed form and each preview is reported as a status
-line; vector models stream text rather than pictures and report `Drawing the
-image…` once. Either way the answer is the same finished-image markdown.
+line; a model streaming a text-based format instead of preview pictures — SVG —
+is reported once as `Drawing the image…`. No recorded contract publishes both,
+so today only the six OpenAI image endpoints stream at all and they send
+previews. Either way the answer is the same finished-image markdown.
 
 **Skip-when-default sentinel**: an empty string for text and choice fields, and
 an empty numeric field for numbers, means "not set" and is left out of the
@@ -540,20 +549,22 @@ Notes:
 | --- | --- | --- | --- |
 | `SUPPORT_EMAIL` | `str` | `(empty)` | Optional support email address inserted into user-facing error templates. |
 | `SUPPORT_URL` | `str` | `(empty)` | Optional support URL inserted into user-facing error templates. |
-| `OPENROUTER_ERROR_TEMPLATE` | `str` | `built-in default` | Markdown template for OpenRouter rejections: any status without a template of its own (`400`, `403`, `404`, `422`, …), plus every status on the chat path, where the orchestrator selects it explicitly. Supports Handlebars-style `{{#if var}}...{{/if}}` blocks; cause-specific advice belongs inside one. |
+| `OPENROUTER_ERROR_TEMPLATE` | `str` | `built-in default` | Markdown template for OpenRouter rejections with any status that has no template of its own (`400`, `403`, `404`, `422`, …). Supports Handlebars-style `{{#if var}}...{{/if}}` blocks; cause-specific advice belongs inside one. |
 | `ENDPOINT_OVERRIDE_CONFLICT_TEMPLATE` | `str` | `built-in default` | Markdown template emitted when a request requires a different OpenRouter endpoint than the one enforced by endpoint override valves. |
 | `DIRECT_UPLOAD_FAILURE_TEMPLATE` | `str` | `built-in default` | Markdown template emitted when OpenRouter Direct Uploads cannot be applied (e.g. incompatible attachment combinations or pre-flight validation failures). |
 | `AUTHENTICATION_ERROR_TEMPLATE` | `str` | `built-in default` | Markdown template for OpenRouter auth failures. |
 | `INSUFFICIENT_CREDITS_TEMPLATE` | `str` | `built-in default` | Markdown template for OpenRouter “insufficient credits” failures. |
 | `RATE_LIMIT_TEMPLATE` | `str` | `built-in default` | Markdown template for OpenRouter rate limits. |
 | `SERVER_TIMEOUT_TEMPLATE` | `str` | `built-in default` | Markdown template for upstream/provider timeouts. |
-| `PAYLOAD_TOO_LARGE_TEMPLATE` | `str` | `built-in default` | Markdown template for OpenRouter HTTP 413 responses, when the request payload exceeds the size OpenRouter accepts. Supports `{error_id}`, `{timestamp}`, `{openrouter_code}`, `{openrouter_message}`, `{model_identifier}` and `{support_email}`, plus Handlebars-style `{{#if name}}...{{/if}}` blocks that render only when the value is present. |
+| `PAYLOAD_TOO_LARGE_TEMPLATE` | `str` | `built-in default` | Markdown template for OpenRouter HTTP 413 responses, when the request payload exceeds the size OpenRouter accepts. Supports `{error_id}`, `{timestamp}`, `{openrouter_code}`, `{openrouter_message}`, `{model_identifier}`, `{request_id}` and `{support_email}`, plus Handlebars-style `{{#if name}}...{{/if}}` blocks that render only when the value is present. |
 | `NETWORK_TIMEOUT_TEMPLATE` | `str` | `built-in default` | Markdown template for network timeouts. |
 | `CONNECTION_ERROR_TEMPLATE` | `str` | `built-in default` | Markdown template for connection failures. |
 | `SERVICE_ERROR_TEMPLATE` | `str` | `built-in default` | Markdown template for OpenRouter 5xx errors. |
 | `INTERNAL_ERROR_TEMPLATE` | `str` | `built-in default` | Markdown template for unexpected internal errors. |
 | `MODEL_RESTRICTED_TEMPLATE` | `str` | `built-in default` | Markdown template emitted when the requested model is blocked by `MODEL_ID` and/or model filter valves. |
 | `STREAM_INTERRUPTED_TEMPLATE` | `str` | `built-in default` | Markdown appended when a streamed reply ends without a completion event; partial content is preserved. |
+
+**Note:** Every valve in this table whose name ends in `_TEMPLATE` restores itself: clear the box and save, and the built-in default text is written back for that valve alone, ready to edit again. Whitespace-only counts as cleared, and the restore applies whether the edit is made in the pipe's Config tab or Open WebUI's own Functions valve panel.
 
 **Note:** To customize templates safely, prefer small edits and validate with real error cases. Template variable sets and formatting expectations are described in [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry.md) and [Error Handling & User Experience](error_handling_and_user_experience.md).
 

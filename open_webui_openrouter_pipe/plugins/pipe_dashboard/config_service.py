@@ -7,7 +7,7 @@ from typing import Any
 
 import annotated_types as at
 
-from ...core.config import EncryptedStr
+from ...core.config import EncryptedStr, _is_template_valve
 from .config_meta import CONFIG_META
 
 _UNCATEGORIZED_TOP = "Uncategorized"
@@ -123,7 +123,7 @@ def describe_valves(valves_cls: type) -> list[dict[str, Any]]:
                 "bounds": _bounds(fld),
                 "nullable": nullable,
                 "secret": secret,
-                "is_template": name.endswith("_TEMPLATE"),
+                "is_template": _is_template_valve(name),
                 "default": None if secret else json_safe(fld.get_default(call_default_factory=True)),
             }
         )

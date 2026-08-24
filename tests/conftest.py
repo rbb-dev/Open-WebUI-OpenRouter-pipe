@@ -159,21 +159,103 @@ def _warn_latches() -> dict[str, set | dict | list]:
     return seen
 
 
+def _package_logger():
+    """The logger every open_webui_openrouter_pipe.* record ends at.
+
+    Read from sys.modules rather than named, so the bundled runs -- where the package
+    is imported under a different top-level name -- guard the logger they actually use
+    instead of an empty stand-in that is always healthy.
+    """
+    import logging as _logging
+
+    pkg = sys.modules.get("open_webui_openrouter_pipe")
+    root_name = (getattr(pkg, "__name__", "") or "open_webui_openrouter_pipe").split(".")[0]
+    return _logging.getLogger(root_name)
+
+
+def _package_logger_emits(logger) -> bool:
+    """Whether a record reaching this logger can still get out of it.
+
+    A NullHandler is not a sink. Counting one would satisfy "has a handler" while
+    emitting nothing, which is the exact shape that made the original failure silent;
+    test_a_test_cannot_leave_the_package_logger_deaf asserts the same predicate.
+    """
+    import logging as _logging
+
+    return any(
+        not isinstance(handler, _logging.NullHandler) for handler in logger.handlers
+    )
+
+
+def _repair_package_logger() -> bool:
+    """Make the package logger able to emit again. True if it could not.
+
+    With no handler that can emit, the logger has to propagate or the records die on
+    it -- so propagation is the repair, and adding a handler is not.
+    """
+    logger = _package_logger()
+    if _package_logger_emits(logger) or logger.propagate:
+        return False
+    logger.propagate = True
+    return True
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_teardown(item):
+    """Name the test that left the package logger deaf, at the only point that can see it.
+
+    A fixture finalizer cannot: `monkeypatch`'s undo is ordered after this fixture's,
+    so a value it restores lands last and the guard never observes it. This wrapper's
+    post-yield body runs after EVERY finalizer for the item, which is the first moment
+    the logger's final state for that test is knowable.
+
+    Without it the damage surfaces on some later test, which then fails for a reason
+    that has nothing to do with it -- or, when the deafness only makes an
+    `assert not caplog.records` vacuous, surfaces on nothing at all.
+    """
+    try:
+        result = yield
+    except BaseException:
+        _repair_package_logger()
+        raise
+    if _repair_package_logger():
+        pytest.fail(
+            f"{item.nodeid} left the package logger with no handler that can emit and "
+            "propagate=False, so every open_webui_openrouter_pipe record after it is "
+            "silently discarded and any later `assert not caplog.records` passes for "
+            "the wrong reason. It has been repaired for the tests that follow. The "
+            "usual cause is a `monkeypatch.setattr(..., 'propagate', False)` taken "
+            "when propagate was ALREADY False: the snapshot is the value being "
+            "written, and the undo -- ordered after the restore fixture -- writes it "
+            "back last.",
+            pytrace=False,
+        )
+    return result
+
+
 @pytest.fixture(autouse=True)
 def _restore_package_logger():
-    """Put the package logger back however a test left it.
+    """Leave the package logger able to emit, whatever a test did to it.
 
     get_logger sets propagate=False, so a test that clears the handlers leaves the
     package root with no handlers AND no propagation: every later
     open_webui_openrouter_pipe.* record dies there, and any later
     `assert not caplog.records` passes for the wrong reason. Under the old
     propagate=True the same teardown was harmless.
-    """
-    import logging as _logging
 
-    pkg = sys.modules.get("open_webui_openrouter_pipe")
-    root_name = (getattr(pkg, "__name__", "") or "open_webui_openrouter_pipe").split(".")[0]
-    logger = _logging.getLogger(root_name)
+    REPAIRS rather than replays, at BOTH ends. Teardown alone cannot hold the
+    invariant: this fixture's finalizer is not the last write, because a `monkeypatch`
+    undo is ordered after it and puts back whatever the test snapshotted. Repairing
+    again at setup is what no finalizer ordering can defeat -- whatever the previous
+    test left behind, the next one starts able to emit. The snapshot is taken after
+    that repair, so the teardown cannot reinstate a state the setup rejected.
+
+    Neither end adds a handler. A NullHandler is not a sink -- adding one is what
+    makes this failure silent -- which is the same predicate
+    test_a_test_cannot_leave_the_package_logger_deaf asserts.
+    """
+    logger = _package_logger()
+    _repair_package_logger()
     saved_handlers = list(logger.handlers)
     saved_filters = list(logger.filters)
     saved_propagate = logger.propagate
@@ -183,8 +265,8 @@ def _restore_package_logger():
     finally:
         logger.handlers[:] = saved_handlers
         logger.filters[:] = saved_filters
-        logger.propagate = saved_propagate
         logger.setLevel(saved_level)
+        logger.propagate = saved_propagate if _package_logger_emits(logger) else True
 
 
 @pytest.fixture(autouse=True)

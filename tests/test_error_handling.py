@@ -167,9 +167,9 @@ class TestNetworkTimeoutError:
                         session=session,
                     )
 
-        assert result == ""
         assert len(mock_event_emitter.events) == 2
         content = mock_event_emitter.events[0]["data"]["content"]
+        assert result == content
         assert "⏱️" in content or "Timeout" in content
         assert "Error ID:" in content
 
@@ -215,9 +215,9 @@ class TestConnectionError:
                         session=session,
                     )
 
-        assert result == ""
         assert len(mock_event_emitter.events) == 2
         content = mock_event_emitter.events[0]["data"]["content"]
+        assert result == content
         assert "Connection" in content or "🔌" in content
         assert "Error ID:" in content
 
@@ -269,9 +269,9 @@ class TestServiceError:
                         session=session,
                     )
 
-        assert result == ""
         assert len(mock_event_emitter.events) == 2
         content = mock_event_emitter.events[0]["data"]["content"]
+        assert result == content
         assert "Service Error" in content or "502" in content
         assert "Error ID:" in content
 
@@ -368,9 +368,9 @@ class TestInternalError:
                         session=session,
                     )
 
-        assert result == ""
         assert len(mock_event_emitter.events) == 2
         content = mock_event_emitter.events[0]["data"]["content"]
+        assert result == content
         assert "Unexpected" in content or "⚠️" in content
         assert "Error ID:" in content
         assert "ValueError" in content
@@ -979,6 +979,355 @@ def test_select_openrouter_template_by_status(pipe_instance):
     assert pipe._ensure_error_formatter()._select_openrouter_template(408) == pipe.valves.SERVER_TIMEOUT_TEMPLATE
     assert pipe._ensure_error_formatter()._select_openrouter_template(429) == pipe.valves.RATE_LIMIT_TEMPLATE
     assert pipe._ensure_error_formatter()._select_openrouter_template(400) == pipe.valves.OPENROUTER_ERROR_TEMPLATE
+
+
+_STATUS_HEADINGS = [
+    (401, "Authentication Failed"),
+    (402, "Insufficient Credits"),
+    (408, "OpenRouter Timed Out"),
+    (413, "Request Too Large"),
+    (429, "Rate Limit Exceeded"),
+    (503, "OpenRouter Service Error"),
+    (404, "could not process your request"),
+]
+
+
+async def _chat_path_error_card(pipe, status: int) -> str:
+    """Drive a rejection through the real orchestrator and return the emitted markdown.
+
+    The stub sits one seam BELOW the subject: the streaming loop raises, and the
+    orchestrator's own reporting path runs unmodified. `_lookup_spec` is pinned to an
+    empty spec because the four bundles flatten every module into one namespace, so a
+    patch of the orchestrator's `ModelFamily` is also the one the error formatter reads.
+    """
+    import logging
+    from unittest.mock import AsyncMock, Mock, patch
+
+    import aiohttp
+
+    from open_webui_openrouter_pipe.core.errors import OpenRouterAPIError
+    from open_webui_openrouter_pipe.requests.orchestrator import RequestOrchestrator
+
+    emitted: list[dict[str, Any]] = []
+
+    async def emitter(event):
+        emitted.append(event)
+
+    orchestrator = RequestOrchestrator(pipe, logging.getLogger("test_error_routing"))
+    pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+    pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+    pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+    pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+    pipe._ensure_reasoning_config_manager()._should_retry_without_reasoning = Mock(return_value=False)
+    pipe._ensure_reasoning_config_manager()._should_retry_dropping_signed_reasoning = Mock(return_value=False)
+
+    async def _raise(*_args, **_kwargs):
+        raise OpenRouterAPIError(
+            status=status,
+            reason="rejected",
+            openrouter_message=f"upstream said {status}",
+        )
+
+    pipe._streaming_handler._run_streaming_loop = _raise
+
+    with patch("open_webui_openrouter_pipe.requests.orchestrator.ModelFamily") as family, \
+         patch("open_webui_openrouter_pipe.requests.orchestrator.OpenRouterModelRegistry") as registry:
+        family.base_model.return_value = "openai/gpt-4o"
+        family.supports.return_value = False
+        family.capabilities.return_value = {}
+        family.max_completion_tokens.return_value = None
+        family._lookup_spec.return_value = {}
+        registry.api_model_id.return_value = "openai/gpt-4o"
+        await orchestrator.process_request(
+            body={"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "hi"}], "stream": True},
+            __user__={"id": "user1"},
+            __request__=None,
+            __event_emitter__=emitter,
+            __event_call__=None,
+            __metadata__={},
+            __tools__=None,
+            __task__=None,
+            __task_body__=None,
+            valves=pipe.valves,
+            session=AsyncMock(spec=aiohttp.ClientSession),
+            openwebui_model_id="openai/gpt-4o",
+            pipe_identifier="test-pipe",
+            allowlist_norm_ids={"openai/gpt-4o"},
+            enforced_norm_ids=set(),
+            catalog_norm_ids=set(),
+            features={},
+        )
+    return "\n".join(
+        str(event.get("data", {}).get("content", ""))
+        for event in emitted
+        if event.get("type") == "chat:message"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status, heading", _STATUS_HEADINGS)
+async def test_the_chat_path_renders_the_card_the_status_selects(pipe_instance_async, status, heading):
+    """The template a rejection renders is chosen by its status on every path, chat included.
+
+    The orchestrator used to pass OPENROUTER_ERROR_TEMPLATE explicitly and an explicit
+    template short-circuited selection, so a rate-limited user in an ordinary chat read the
+    generic card while the same 429 from image generation read the rate-limit one. Seven
+    distinct (status, heading) pairs, so no single hardcoded template can satisfy this.
+    """
+    card = await _chat_path_error_card(pipe_instance_async, status)
+    assert heading in card, f"a {status} on the chat path rendered:\n{card}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status, valve",
+    [(429, "RATE_LIMIT_TEMPLATE"), (402, "INSUFFICIENT_CREDITS_TEMPLATE")],
+)
+async def test_a_template_blanked_in_memory_still_renders_a_real_card(
+    pipe_instance_async, status, valve
+):
+    """A blank template reaching the renderer yields the built-in provider-error card, never nothing.
+
+    Constructing Valves restores a blanked template, so this state is only reachable by assigning
+    the attribute directly. The selector passes the blank straight through -- it does not substitute
+    the operator's OPENROUTER_ERROR_TEMPLATE, which would be a second, conflicting meaning for a
+    cleared box -- and the renderer's own guard is what keeps the user from getting an empty turn.
+    Two statuses with two different valves, and a distinctive operator marker in the generic valve
+    that must NOT appear.
+    """
+    pipe = pipe_instance_async
+    marker = f"HOUSE STYLE {status} DO NOT SUBSTITUTE"
+    pipe.valves.OPENROUTER_ERROR_TEMPLATE = marker + " {sanitized_detail}"
+    setattr(pipe.valves, valve, "")
+
+    card = await _chat_path_error_card(pipe, status)
+    assert card.strip(), f"a {status} with a blanked {valve} rendered an empty card"
+    assert "Error ID" in card, f"a {status} with a blanked {valve} rendered:\n{card}"
+    assert marker not in card, (
+        f"a blanked {valve} was silently replaced by OPENROUTER_ERROR_TEMPLATE:\n{card}"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "header, expected",
+    [("45", "**Retry after:** 45s"), ("soon", None), ("", None)],
+)
+async def test_an_unparseable_retry_after_never_reaches_the_user(
+    pipe_instance_async, header, expected
+):
+    """Only whole seconds are rendered; a header the pipe cannot parse renders nothing.
+
+    The template appends a literal "s" to whatever it is handed, so passing the raw header
+    through produced "soons". Parametrised over a parseable and an unparseable value, so a
+    fix that simply drops the line always would fail the first case.
+    """
+    import json as _json
+
+    from open_webui_openrouter_pipe.core import errors as _errors
+    from open_webui_openrouter_pipe.core.utils import _apply_retry_after_metadata
+
+    pipe = pipe_instance_async
+    meta: dict[str, Any] = {}
+    _apply_retry_after_metadata(meta, {"Retry-After": header})
+    error = _errors._build_openrouter_api_error(
+        429,
+        "Too Many Requests",
+        _json.dumps({"error": {"message": "Rate limit exceeded", "code": 429}}),
+        requested_model="openai/gpt-4o",
+        extra_metadata=meta or None,
+    )
+    emitter = _Emitter()
+    await pipe._ensure_error_formatter()._report_openrouter_error(
+        error,
+        event_emitter=emitter,
+        normalized_model_id="openai/gpt-4o",
+        api_model_id="openai/gpt-4o",
+    )
+    card = "\n".join(
+        str(event.get("data", {}).get("content", ""))
+        for event in emitter.events
+        if event.get("type") == "chat:message"
+    )
+    assert "Rate Limit Exceeded" in card, "the rate-limit card did not render at all"
+    if expected is None:
+        assert "Retry after" not in card, f"an unusable Retry-After was shown:\n{card}"
+    else:
+        assert expected in card, f"a parseable Retry-After was not shown:\n{card}"
+
+
+@pytest.mark.parametrize(
+    "meta, expected",
+    [
+        ({"retry_after_seconds": float("inf")}, None),
+        ({"retry_after_seconds": float("-inf")}, None),
+        ({"retry_after_seconds": float("nan")}, None),
+        ({"retry_after": "1e400"}, None),
+        ({"retry_after": "inf"}, None),
+        ({"retry_after": "nan"}, None),
+        ({"retry_after_seconds": 0}, 0),
+        ({"retry_after_seconds": 45}, 45),
+        ({"retry_after": "30"}, 30),
+        ({"retry_after_seconds": -5}, 0),
+        ({"retry_after_seconds": -7.4}, 0),
+        ({"retry_after": -12}, 0),
+        ({"retry_after_seconds": "-5"}, 0),
+        ({"retry_after": "-12"}, 0),
+        ({"retry_after_seconds": float("inf"), "retry_after": "30"}, 30),
+        ({"retry_after_seconds": 0, "retry_after": "Wed, 21 Oct 2015 07:28:00 GMT"}, 0),
+        ({"retry_after_seconds": True}, None),
+        ({"retry_after_seconds": False}, None),
+        ({"retry_after": True}, None),
+        ({"retry_after_seconds": True, "retry_after": "30"}, 30),
+        ({"retry_after_seconds": False, "retry_after": "45"}, 45),
+        ({}, None),
+        ("not a mapping", None),
+    ],
+)
+def test_a_retry_after_the_pipe_cannot_use_becomes_no_retry_at_all(meta, expected):
+    """A non-finite delay is unusable, and rounding one raises rather than returning a number.
+
+    ``round(inf)`` is an OverflowError and ``round(nan)`` a ValueError, and this runs OUTSIDE the
+    try that guards emission -- so a provider body carrying ``Infinity`` (which json.loads accepts
+    verbatim) turned a rate-limit card into a generic internal-error card. Rejecting it here, at
+    the one place a value becomes a number, is what makes the unusable case behave like the
+    unparseable one. Both the numeric route and the header-string route are covered, along with
+    the finite values that must keep working, so a guard that simply dropped every delay fails.
+
+    A delay in the past is the same kind of unusable, and the two routes disagreed about it:
+    the header string was clamped to zero and the number was not, so ``-7`` and ``"-7"`` --
+    the same instruction, differently spelled -- resolved to two different answers and the
+    card told the reader to retry "-7s" ago. Every row pairs a number with the string that
+    spells it, so a clamp on only one route still fails.
+
+    A boolean is a third kind of unusable, and the one Python hides: ``True`` IS an ``int``,
+    so ``round(True)`` is ``1`` and a provider body carrying ``"retry_after_seconds": true``
+    rendered "Retry after: 1s" -- a delay the server never sent, indistinguishable in the card
+    from one it did. Asserting the answer is not a boolean cannot catch that, because ``1``
+    is not a boolean either; the rows below assert the number instead. ``True`` and ``False``
+    are both covered, since a guard keyed on truthiness would let ``False`` through as ``0``.
+    The two mixed rows pin the guard to CONTINUE rather than abort: a boolean in the first key
+    must fall through to the usable delay in the second, not throw the whole lookup away --
+    removing the clause resolves them to 1 and 0, and a clause that returned None resolves
+    them to nothing.
+    """
+    from open_webui_openrouter_pipe.core.utils import _resolve_retry_after_seconds
+
+    assert _resolve_retry_after_seconds(meta) == expected
+
+
+@pytest.mark.parametrize(
+    "header, expected",
+    [("1e400", None), ("inf", None), ("nan", None), ("45", 45), ("soon", None)],
+)
+def test_a_non_finite_retry_after_header_is_never_recorded_as_seconds(header, expected):
+    """The header route must not store a delay it could not turn into a whole number either."""
+    from open_webui_openrouter_pipe.core.utils import _apply_retry_after_metadata
+
+    meta: dict[str, Any] = {}
+    _apply_retry_after_metadata(meta, {"Retry-After": header})
+    assert meta.get("retry_after_seconds") == expected
+    assert meta["retry_after"] == header, "the raw header is kept for diagnostics regardless"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("literal", ["Infinity", "-Infinity", "NaN"])
+async def test_a_provider_sending_an_infinite_retry_after_still_gets_the_right_card(
+    pipe_instance_async, literal
+):
+    """The whole point: an upstream value the pipe cannot use must not cost the user their card.
+
+    The metadata block comes straight off the provider's error body, and JSON's ``Infinity`` and
+    ``NaN`` literals survive json.loads untouched. Driven through the real error builder from raw
+    body text, so the value arrives the way a provider would really send it.
+    """
+    from open_webui_openrouter_pipe.core import errors as _errors
+
+    pipe = pipe_instance_async
+    body_text = (
+        '{"error": {"message": "Rate limit exceeded", "code": 429, '
+        '"metadata": {"retry_after_seconds": ' + literal + "}}}"
+    )
+    error = _errors._build_openrouter_api_error(
+        429, "Too Many Requests", body_text, requested_model="openai/gpt-4o"
+    )
+    emitter = _Emitter()
+    await pipe._ensure_error_formatter()._report_openrouter_error(
+        error,
+        event_emitter=emitter,
+        normalized_model_id="openai/gpt-4o",
+        api_model_id="openai/gpt-4o",
+    )
+    cards = [
+        str(event.get("data", {}).get("content", ""))
+        for event in emitter.events
+        if event.get("type") == "chat:message"
+    ]
+    assert len(cards) == 1, f"the rate-limit card never reached the user: {emitter.events!r}"
+    assert "Rate Limit Exceeded" in cards[0], cards[0]
+    assert "Retry after" not in cards[0], f"a delay the server never sent was invented:\n{cards[0]}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("magnitude", [7, 45])
+async def test_a_retry_after_already_in_the_past_never_tells_the_reader_to_wait_backwards(
+    pipe_instance_async, magnitude
+):
+    """A negative delay reached the reader as "**Retry after:** -7s", an instruction to wait
+    backwards.
+
+    The two spellings of the same instruction took different routes -- the number was rounded
+    with no lower bound while the string went through the header parser, which clamps -- so
+    the same value resolved to two different answers. Each row drives BOTH spellings through
+    the real error builder from raw provider body text and requires them to agree, and pairs
+    them with the SAME magnitude as a positive delay, which must still be shown: a fix that
+    simply stopped rendering the line would pass the first two assertions and fail that one.
+    Two magnitudes, so nothing hardcoded satisfies both rows.
+    """
+    from open_webui_openrouter_pipe.core import errors as _errors
+
+    pipe = pipe_instance_async
+
+    async def _card(raw: str) -> str:
+        body_text = (
+            '{"error": {"message": "Rate limit exceeded", "code": 429, '
+            '"metadata": {"retry_after_seconds": ' + raw + "}}}"
+        )
+        error = _errors._build_openrouter_api_error(
+            429, "Too Many Requests", body_text, requested_model="openai/gpt-4o"
+        )
+        emitter = _Emitter()
+        await pipe._ensure_error_formatter()._report_openrouter_error(
+            error,
+            event_emitter=emitter,
+            normalized_model_id="openai/gpt-4o",
+            api_model_id="openai/gpt-4o",
+        )
+        card = "\n".join(
+            str(event.get("data", {}).get("content", ""))
+            for event in emitter.events
+            if event.get("type") == "chat:message"
+        )
+        assert "Rate Limit Exceeded" in card, f"the card did not render at all:\n{card}"
+        return card
+
+    as_number = await _card(str(-magnitude))
+    as_string = await _card(f'"{-magnitude}"')
+    positive = await _card(str(magnitude))
+
+    def _retry_line(card: str) -> str:
+        return next((line for line in card.splitlines() if "Retry after" in line), "")
+
+    assert f"-{magnitude}s" not in as_number, (
+        f"the reader is told to retry {magnitude} seconds ago:\n{as_number}"
+    )
+    assert _retry_line(as_number) == _retry_line(as_string), (
+        "the same delay spelled as a number and as a string produced two different "
+        f"instructions: {_retry_line(as_number)!r} vs {_retry_line(as_string)!r}"
+    )
+    assert _retry_line(positive) == f"**Retry after:** {magnitude}s", (
+        f"a real delay stopped being shown, so 'no line' proves nothing:\n{positive}"
+    )
 
 
 # =============================================================================

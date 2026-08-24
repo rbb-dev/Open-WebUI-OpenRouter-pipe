@@ -66,6 +66,9 @@ class _EmitterHandler:
     async def _emit_completion(self, emitter, content="", done=False, usage=None, **_kw):
         return None
 
+    async def _emit_unstreamed_answer(self, emitter, *, content, usage=None, **_kw):
+        return None
+
 
 class _Gateway:
     async def resolve_storage_context(self, request, user_obj):

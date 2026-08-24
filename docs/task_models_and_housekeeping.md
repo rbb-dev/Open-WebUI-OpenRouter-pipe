@@ -58,6 +58,25 @@ For housekeeping tasks targeting models the pipe “owns”, the pipe overrides 
 
 Housekeeping tasks are still passed through the same OpenRouter request-field filter (only documented OpenRouter Responses fields are retained; explicit `null` values are dropped).
 
+### Nothing a housekeeping task does reaches the chat message
+
+Open WebUI launches housekeeping tasks with the metadata of the turn that just
+finished, so the event emitter the pipe receives is bound to the **assistant
+message the user is already reading**. Anything written to it lands on that
+answer: a `chat:message` replaces its text outright, a `chat:message:delta`
+appends to it, a `chat:completion` supplies its error banner and its usage
+figures, and a `status` is appended to its status history and stored with it.
+
+For housekeeping tasks the pipe closes all four of those channels for the whole
+job, from the moment the task is recognised through to the reply. A task that
+fails still returns the parseable JSON stub Open WebUI expects — a title, a tag
+list, an empty follow-up list — and the answer on screen is left exactly as the
+model wrote it. Toast notifications are the one channel still open, because Open
+WebUI shows those beside the conversation rather than inside a message.
+
+MOA merged-response synthesis is a visible answer rather than housekeeping, so
+none of this applies to it.
+
 ### Cost snapshots can still be recorded
 
 If the provider returns a `usage` object for the task request, the pipe can emit the same Redis-based cost snapshot telemetry as normal requests (when enabled), scoped to the task’s user.

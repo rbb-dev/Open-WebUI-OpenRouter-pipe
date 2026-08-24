@@ -20,6 +20,7 @@ import hmac
 import inspect
 import json
 import logging
+import math
 import os
 import re
 from collections.abc import Awaitable
@@ -628,9 +629,10 @@ def _retry_after_seconds(value: str | None) -> float | None:
         return None
     try:
         seconds = float(trimmed)
-        return max(0.0, seconds)
     except ValueError:
         pass
+    else:
+        return max(0.0, seconds) if math.isfinite(seconds) else None
     try:
         dt = email.utils.parsedate_to_datetime(trimmed)
         if dt is None:
@@ -659,6 +661,23 @@ def _apply_retry_after_metadata(meta: dict[str, Any], headers: Any) -> None:
     parsed = _retry_after_seconds(retry_after)
     if parsed is not None:
         meta["retry_after_seconds"] = round(parsed)
+
+
+def _resolve_retry_after_seconds(meta: Any) -> int | None:
+    if not isinstance(meta, dict):
+        return None
+    for key in ("retry_after_seconds", "retry_after"):
+        value = meta.get(key)
+        if value is None or isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            if isinstance(value, float) and not math.isfinite(value):
+                continue
+            return round(max(0.0, value))
+        seconds = _retry_after_seconds(str(value))
+        if seconds is not None:
+            return round(seconds)
+    return None
 
 
 # ULID Marker System
@@ -896,3 +915,11 @@ def summarise_names(names: list[str], limit: int = 4, width: int = _TEXT_LIMIT) 
     shown = [clamp_text(name, width) for name in names[:limit]]
     tail = f" and {len(names) - len(shown)} more" if len(names) > len(shown) else ""
     return f"{'; '.join(shown)}{tail}"
+
+
+def join_answer_and_card(answer: str, card: str) -> str:
+    if not card:
+        return answer
+    if not answer:
+        return card
+    return f"{answer}\n\n{card}"

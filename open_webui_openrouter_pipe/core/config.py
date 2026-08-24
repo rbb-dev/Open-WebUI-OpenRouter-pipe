@@ -290,19 +290,30 @@ DEFAULT_CONNECTION_ERROR_TEMPLATE = (
 
 DEFAULT_SERVICE_ERROR_TEMPLATE = (
     "### 🔴 OpenRouter Service Error\n\n"
-    "OpenRouter's servers are experiencing issues.\n\n"
+    "OpenRouter returned a server-side error instead of a reply.\n\n"
     "**Error ID:** `{error_id}`\n"
+    "{{#if request_id}}\n"
+    "**OpenRouter request ID:** `{request_id}`\n"
+    "{{/if}}\n"
     "{{#if status_code}}\n"
-    "**Status:** {status_code} {reason}\n"
+    "**Status:** {status_code}\n"
+    "{{/if}}\n"
+    "{{#if reason}}\n"
+    "**Details:** {reason}\n"
     "{{/if}}\n"
     "{{#if timestamp}}\n"
     "**Time:** {timestamp}\n"
     "{{/if}}\n\n"
-    "This is **not** a problem with your request. The issue is on OpenRouter's side.\n\n"
+    "**What the status means:**\n"
+    "- `502` — the chosen model is down, or it returned something OpenRouter could not read\n"
+    "- `503` — no provider was available that satisfies the routing requirements sent with this request\n"
+    "- any other `5xx` — a fault inside OpenRouter itself\n\n"
     "**What to do:**\n"
-    "- Wait a few minutes and try again\n"
-    "- Check [OpenRouter Status](https://status.openrouter.ai/) for updates\n"
-    "- If the problem persists for more than 15 minutes, contact OpenRouter support\n"
+    "- Retry in a few minutes; a model or provider outage normally clears on its own\n"
+    "- Try a different model, which routes to a different set of providers\n"
+    "- On a `503` that keeps repeating, the blocker is the routing constraints rather than an outage: "
+    "an admin should review `Enforce ZDR routing` and the provider-routing settings for this model\n"
+    "- Check [OpenRouter Status](https://status.openrouter.ai/) for a platform-wide incident\n"
     "{{#if support_email}}\n"
     "\n**Support:** {support_email}\n"
     "{{/if}}\n"
@@ -381,8 +392,11 @@ DEFAULT_DIRECT_UPLOAD_FAILURE_TEMPLATE = (
 
 DEFAULT_AUTHENTICATION_ERROR_TEMPLATE = (
     "### 🔐 Authentication Failed\n\n"
-    "OpenRouter rejected your credentials.\n\n"
+    "This request was not authorised: OpenRouter rejected the pipe's API key, or the pipe could not read one.\n\n"
     "**Error ID:** `{error_id}`\n"
+    "{{#if request_id}}\n"
+    "**OpenRouter request ID:** `{request_id}`\n"
+    "{{/if}}\n"
     "{{#if openrouter_code}}\n"
     "**Status:** {openrouter_code}\n"
     "{{/if}}\n"
@@ -392,10 +406,11 @@ DEFAULT_AUTHENTICATION_ERROR_TEMPLATE = (
     "{{#if timestamp}}\n"
     "**Time:** {timestamp}\n"
     "{{/if}}\n\n"
-    "**What to do:**\n"
-    "1. Verify the API key configured for this pipe\n"
-    "2. Generate a new key at https://openrouter.ai/keys if needed\n"
-    "3. If using OAuth, re-authenticate your session\n"
+    "**What an admin should check:**\n"
+    "1. The `OpenRouter API key` valve in this pipe's settings — a blank or truncated value fails here\n"
+    "2. Whether `WEBUI_SECRET_KEY` changed since that key was saved; the stored value can no longer be decrypted, "
+    "so the key has to be entered again\n"
+    "3. Whether the key itself was disabled or deleted — issue a replacement at https://openrouter.ai/keys\n"
     "{{#if support_email}}\n"
     "\n**Support:** {support_email}\n"
     "{{/if}}\n"
@@ -405,6 +420,9 @@ DEFAULT_INSUFFICIENT_CREDITS_TEMPLATE = (
     "### 💳 Insufficient Credits\n\n"
     "OpenRouter could not run this request because the account is out of credits.\n\n"
     "**Error ID:** `{error_id}`\n"
+    "{{#if request_id}}\n"
+    "**OpenRouter request ID:** `{request_id}`\n"
+    "{{/if}}\n"
     "{{#if openrouter_code}}\n"
     "**Status:** {openrouter_code}\n"
     "{{/if}}\n"
@@ -422,8 +440,9 @@ DEFAULT_INSUFFICIENT_CREDITS_TEMPLATE = (
     "{{/if}}\n\n"
     "**What to do:**\n"
     "- Add credits at https://openrouter.ai/credits\n"
-    "- Review usage at https://openrouter.ai/usage\n"
-    "- Consider enabling auto-recharge to avoid interruptions\n"
+    "- Review what the account has been spending on the Activity page: https://openrouter.ai/activity\n"
+    "- Turn on auto top up so the balance refills before it runs out\n"
+    "- A negative balance blocks the `:free` model variants too; clearing it restores them\n"
     "{{#if support_email}}\n"
     "\n**Support:** {support_email}\n"
     "{{/if}}\n"
@@ -431,8 +450,11 @@ DEFAULT_INSUFFICIENT_CREDITS_TEMPLATE = (
 
 DEFAULT_RATE_LIMIT_TEMPLATE = (
     "### ⏸️ Rate Limit Exceeded\n\n"
-    "OpenRouter is protecting the service because too many requests were made quickly.\n\n"
+    "OpenRouter refused this request because the account has reached one of its request limits.\n\n"
     "**Error ID:** `{error_id}`\n"
+    "{{#if request_id}}\n"
+    "**OpenRouter request ID:** `{request_id}`\n"
+    "{{/if}}\n"
     "{{#if openrouter_code}}\n"
     "**Status:** {openrouter_code}\n"
     "{{/if}}\n"
@@ -446,9 +468,13 @@ DEFAULT_RATE_LIMIT_TEMPLATE = (
     "**Time:** {timestamp}\n"
     "{{/if}}\n\n"
     "**Tips:**\n"
-    "- Back off and retry with exponential delays\n"
-    "- Queue requests or lower parallelism\n"
-    "- Contact OpenRouter if you need higher limits\n"
+    "- Back off and retry with exponential delays, honouring the retry-after value when one is shown\n"
+    "- Queue requests or lower parallelism when the limit is the per-minute one\n"
+    "- `:free` model variants carry their own per-minute and per-day caps. Those caps count every "
+    "`:free` request the account makes, whichever free model it names, so moving to a different free "
+    "model does not lift them; buying credits raises the daily one\n"
+    "- On a paid model the limits differ from model to model, so switching to another paid model "
+    "spreads the load\n"
     "{{#if support_email}}\n"
     "\n**Support:** {support_email}\n"
     "{{/if}}\n"
@@ -456,8 +482,11 @@ DEFAULT_RATE_LIMIT_TEMPLATE = (
 
 DEFAULT_SERVER_TIMEOUT_TEMPLATE = (
     "### 🕒 OpenRouter Timed Out\n\n"
-    "OpenRouter started the request but couldn't finish within its timeout window.\n\n"
+    "OpenRouter cancelled the request: the operation exceeded its time limit before any output was produced.\n\n"
     "**Error ID:** `{error_id}`\n"
+    "{{#if request_id}}\n"
+    "**OpenRouter request ID:** `{request_id}`\n"
+    "{{/if}}\n"
     "{{#if openrouter_code}}\n"
     "**Status:** {openrouter_code}\n"
     "{{/if}}\n"
@@ -478,8 +507,12 @@ DEFAULT_SERVER_TIMEOUT_TEMPLATE = (
 
 DEFAULT_PAYLOAD_TOO_LARGE_TEMPLATE = (
     "### 📦 Request Too Large\n\n"
-    "The request payload exceeds the size limit accepted by OpenRouter.\n\n"
+    "The request payload exceeds the size limit accepted by OpenRouter. This is a cap on how large the "
+    "request itself may be, not on the model's context window.\n\n"
     "**Error ID:** `{error_id}`\n"
+    "{{#if request_id}}\n"
+    "**OpenRouter request ID:** `{request_id}`\n"
+    "{{/if}}\n"
     "{{#if openrouter_code}}\n"
     "**Status:** {openrouter_code}\n"
     "{{/if}}\n"
@@ -493,9 +526,9 @@ DEFAULT_PAYLOAD_TOO_LARGE_TEMPLATE = (
     "**Time:** {timestamp}\n"
     "{{/if}}\n\n"
     "**What to do:**\n"
-    "- Shorten your prompt or reduce the conversation history\n"
-    "- Remove or compress large attachments\n"
-    "- Try a model with a larger context window\n"
+    "- Remove or compress attachments; inlined images, audio and documents dominate the payload size\n"
+    "- Shorten the conversation history, which is resent in full on every turn\n"
+    "- Send large media in its own message rather than alongside a long prompt\n"
     "{{#if support_email}}\n"
     "\n**Support:** {support_email}\n"
     "{{/if}}\n"
@@ -512,13 +545,13 @@ DEFAULT_MODEL_RESTRICTED_TEMPLATE = (
     "- **Restricted by**: {restriction_reasons}\n"
     "{{/if}}\n"
     "{{#if model_id_filter}}\n"
-    "- **MODEL_ID**: `{model_id_filter}`\n"
+    "- **Model allowlist**: `{model_id_filter}`\n"
     "{{/if}}\n"
     "{{#if free_model_filter}}\n"
-    "- **FREE_MODEL_FILTER**: `{free_model_filter}`\n"
+    "- **Free model visibility**: `{free_model_filter}`\n"
     "{{/if}}\n"
     "{{#if tool_calling_filter}}\n"
-    "- **TOOL_CALLING_FILTER**: `{tool_calling_filter}`\n"
+    "- **Tool-calling model filter**: `{tool_calling_filter}`\n"
     "{{/if}}\n\n"
     "Choose an allowed model or ask your admin to update the pipe filters.\n"
 )
@@ -686,9 +719,33 @@ def _detect_runtime_pipe_id(default: str = _DEFAULT_PIPE_ID) -> str:
 
 _PIPE_RUNTIME_ID = _detect_runtime_pipe_id()
 
+def _is_template_valve(name: Any) -> bool:
+    return isinstance(name, str) and name.endswith("_TEMPLATE")
+
 
 class Valves(BaseModel):
     """Global valve configuration shared across sessions."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _restore_blanked_templates(cls, values):
+        if not isinstance(values, Mapping):
+            return values
+        restored: dict[str, Any] | None = None
+        for name, value in values.items():
+            if not _is_template_valve(name) or not isinstance(value, str) or value.strip():
+                continue
+            field = cls.model_fields.get(name)
+            if field is None:
+                continue
+            default = field.get_default(call_default_factory=True)
+            if not isinstance(default, str) or default == value:
+                continue
+            if restored is None:
+                restored = dict(values)
+            restored[name] = default
+        return values if restored is None else restored
+
     # Connection & Auth
     BASE_URL: str = Field(
         default=((os.getenv("OPENROUTER_API_BASE_URL") or "").strip() or "https://openrouter.ai/api/v1"),
@@ -726,6 +783,7 @@ class Valves(BaseModel):
     )
     API_KEY: EncryptedStr = Field(
         default_factory=_default_api_key,
+        title="OpenRouter API key",
         description="Your OpenRouter API key. Defaults to the OPENROUTER_API_KEY environment variable.",
     )
     HTTP_REFERER_OVERRIDE: str = Field(
@@ -846,6 +904,7 @@ class Valves(BaseModel):
     # Models
     MODEL_ID: str = Field(
         default="auto",
+        title="Model allowlist",
         description=(
             "Comma separated OpenRouter model IDs to expose in Open WebUI. "
             "Set to 'auto' to import every available Responses-capable model."
@@ -868,7 +927,7 @@ class Valves(BaseModel):
     )
     FREE_MODEL_FILTER: Literal["all", "only", "exclude"] = Field(
         default="all",
-        title="Free model filter",
+        title="Free model visibility",
         description=(
             "Filter models based on OpenRouter pricing totals. "
             "'all' disables filtering. "
@@ -878,7 +937,7 @@ class Valves(BaseModel):
     )
     TOOL_CALLING_FILTER: Literal["all", "only", "exclude"] = Field(
         default="all",
-        title="Tool calling filter",
+        title="Tool-calling model filter",
         description=(
             "Filter models based on tool-calling capability (supported_parameters includes 'tools' or 'tool_choice'). "
             "'all' disables filtering. "
@@ -888,16 +947,16 @@ class Valves(BaseModel):
     )
     ZDR_MODELS_ONLY: bool = Field(
         default=False,
-        title="ZDR models only",
+        title="Show only ZDR models",
         description=(
             "When enabled, hide models that are not ZDR-capable (based on OpenRouter's /endpoints/zdr list). "
             "A hidden model is also refused if requested directly. It never sends provider.zdr=true -- "
-            "use Enforce ZDR for that -- and filtering is skipped if the ZDR list cannot be loaded, except video models, which have no ZDR endpoints and stay hidden."
+            "use Enforce ZDR routing for that -- and filtering is skipped if the ZDR list cannot be loaded, except video models, which have no ZDR endpoints and stay hidden."
         ),
     )
     ZDR_ENFORCE: bool = Field(
         default=False,
-        title="Enforce ZDR",
+        title="Enforce ZDR routing",
         description=(
             "When enabled, all requests include provider.zdr=true and will be rejected if the selected model "
             "does not have any ZDR endpoints."
@@ -908,7 +967,7 @@ class Valves(BaseModel):
         title="Allow user ZDR override",
         description=(
             "When enabled, users can toggle 'Request ZDR' per chat. "
-            "If Enforce ZDR is enabled, user overrides are ignored."
+            "If Enforce ZDR routing is enabled, user overrides are ignored."
         ),
     )
     VARIANT_MODELS: str = Field(
@@ -987,7 +1046,7 @@ class Valves(BaseModel):
     )
     AUTO_CONTEXT_TRIMMING: bool = Field(
         default=True,
-        title="Auto context trimming",
+        title="Auto-trim overlong prompts",
         description=(
             "When enabled, automatically enables OpenRouter's `context-compression` plugin so long prompts "
             "are trimmed from the middle instead of failing with context errors. Disable if your deployment "
@@ -1280,7 +1339,8 @@ class Valves(BaseModel):
     OPENROUTER_ERROR_TEMPLATE: str = Field(
         default=DEFAULT_OPENROUTER_ERROR_TEMPLATE,
         description=(
-            "Markdown template used when OpenRouter rejects a request with status 400. "
+            "Markdown template used when OpenRouter rejects a request with a status that has no template of its own "
+            "(400, 403, 404, 422, and so on). Clear this box and save to restore this built-in text. "
             "Placeholders such as {heading}, {detail}, {sanitized_detail}, {provider}, {model_identifier}, "
             "{requested_model}, {api_model_id}, {normalized_model_id}, {openrouter_code}, {upstream_type}, "
             "{reason}, {request_id}, {request_id_reference}, {openrouter_message}, {upstream_message}, "
@@ -1310,8 +1370,11 @@ class Valves(BaseModel):
     AUTHENTICATION_ERROR_TEMPLATE: str = Field(
         default=DEFAULT_AUTHENTICATION_ERROR_TEMPLATE,
         description=(
-            "Markdown template for HTTP 401 errors. Available placeholders include {error_id}, {timestamp}, {openrouter_code}, {openrouter_message}, "
-            "{session_id}, {user_id}, {support_email}, {support_url}, plus the shared OpenRouter error-context fields such as {metadata_json}, {provider}, and {request_id}. Only the names listed here are substituted; other fields from the error response are not."
+            "Markdown template for HTTP 401 errors, and for the pipe's own failure to read a usable API key. "
+            "Both cases fill {error_id}, {timestamp}, {session_id}, {user_id}, {support_email}, {support_url}, {openrouter_code} and {openrouter_message}. "
+            "A 401 returned by OpenRouter also fills the shared error-context fields — {request_id}, {provider}, {model_identifier}, {requested_model}, {reason}, {metadata_json} and the rest of the set the rejected-request template lists. "
+            "Nothing is sent when the key itself cannot be read, so on that path those extra fields have no value and any line using one prints the braces verbatim; wrap such a line in {{#if request_id}}...{{/if}} and it is left out instead. "
+            "A name nothing supplies is never substituted, whichever path rendered the card."
         ),
     )
 
@@ -1319,7 +1382,8 @@ class Valves(BaseModel):
         default=DEFAULT_INSUFFICIENT_CREDITS_TEMPLATE,
         description=(
             "Markdown template for HTTP 402 errors when the account is out of credits. Supports {error_id}, {timestamp}, {openrouter_code}, "
-            "{openrouter_message}, {required_cost}, {account_balance}, {support_email}, and other shared context variables."
+            "{openrouter_message}, {request_id}, {required_cost}, {account_balance}, {support_email}, and other shared context variables. "
+            "{request_id} is OpenRouter's own reference for the rejected request, which its support can look up; the built-in text shows it on its own row whenever the rejection carried one."
         ),
     )
 
@@ -1327,7 +1391,8 @@ class Valves(BaseModel):
         default=DEFAULT_RATE_LIMIT_TEMPLATE,
         description=(
             "Markdown template for HTTP 429 rate-limit errors. Use placeholders such as {error_id}, {timestamp}, {openrouter_code}, {retry_after_seconds}, "
-            "{rate_limit_type}, {support_email}, and the standard context variables."
+            "{rate_limit_type}, {request_id}, {support_email}, and the standard context variables. "
+            "{request_id} is OpenRouter's own reference for the rejected request, which its support can look up; the built-in text shows it on its own row whenever the rejection carried one."
         ),
     )
 
@@ -1335,7 +1400,8 @@ class Valves(BaseModel):
         default=DEFAULT_SERVER_TIMEOUT_TEMPLATE,
         description=(
             "Markdown template for HTTP 408 errors returned by OpenRouter (server-side timeout). Supports the common context variables plus "
-            "{openrouter_message}, {openrouter_code}, and support contact placeholders."
+            "{openrouter_message}, {openrouter_code}, {request_id}, and support contact placeholders. "
+            "{request_id} is OpenRouter's own reference for the timed-out request, which its support can look up; the built-in text shows it on its own row whenever the response carried one."
         ),
     )
 
@@ -1343,7 +1409,8 @@ class Valves(BaseModel):
         default=DEFAULT_PAYLOAD_TOO_LARGE_TEMPLATE,
         description=(
             "Markdown template for HTTP 413 errors when the request payload exceeds size limits. Supports {error_id}, {timestamp}, {openrouter_code}, "
-            "{openrouter_message}, {model_identifier}, {support_email}, and other shared context variables."
+            "{openrouter_message}, {model_identifier}, {request_id}, {support_email}, and other shared context variables. "
+            "{request_id} is OpenRouter's own reference for the rejected request, which its support can look up; the built-in text shows it on its own row whenever the rejection carried one."
         ),
     )
 
@@ -1391,6 +1458,7 @@ class Valves(BaseModel):
             "Markdown template for OpenRouter 5xx errors. "
             "Available variables: {error_id}, {status_code}, {reason}, {timestamp}, "
             "{session_id}, {user_id}, {support_email}. "
+            "A 5xx that OpenRouter itself returned also fills {request_id}, its own reference for that request; a 5xx raised by the connection to OpenRouter, or by a failure inside the pipe, carries no such reference and a line using it prints the braces verbatim unless it is wrapped in a conditional. "
             "Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to show them only when that value is set."
         )
     )

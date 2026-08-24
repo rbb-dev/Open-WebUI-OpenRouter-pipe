@@ -10,6 +10,8 @@ REASONING_STATUS_MAX_CHARS = 160
 REASONING_STATUS_MIN_CHARS = 12
 REASONING_STATUS_IDLE_SECONDS = 0.75
 
+DEFERRED_REASONING_FLUSH = "deferred_reasoning_flush"
+
 
 class ReasoningStatusThrottle:
     """Buffers reasoning text deltas and decides when a status update should fire.

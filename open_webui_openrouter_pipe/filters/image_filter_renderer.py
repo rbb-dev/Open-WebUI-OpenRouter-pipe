@@ -379,23 +379,58 @@ _SIZE_TIER_CHECKED = (
     "publishes, and still takes its shape from Aspect ratio."
 )
 
+_SIZE_TIER_CHECKED_NO_RATIO = (
+    "A tier sets the same thing as Resolution and is checked against the tiers this "
+    "model publishes."
+)
+
 _SIZE_TIER_UNCHECKED = (
     "This model publishes no tiers of its own, so a tier is checked only against those "
     "four names and then goes out for the company running the model to interpret. It "
     "still takes its shape from Aspect ratio."
 )
 
+_SIZE_TIER_UNCHECKED_NO_RATIO = (
+    "This model publishes no tiers of its own, so a tier is checked only against those "
+    "four names and then goes out for the company running the model to interpret."
+)
+
 _SIZE_PIXELS_WIN = (
     "Exact pixels settle the picture on their own, so Aspect ratio is not sent alongside "
-    "them unless it is the shape you typed. You are told in the chat whenever it is "
-    "dropped that way."
+    "them unless it is the shape you typed. A toast says so at the time, which Open WebUI "
+    "does not keep with the message: it is gone once the page reloads."
 )
 
 _SIZE_PIXELS_WIN_WITH_TIERS = (
     "Exact pixels settle the picture on their own, so Resolution is not sent alongside "
-    "them, and nor is Aspect ratio unless it is the shape you typed. You are told in the "
-    "chat whenever one of them is dropped that way."
+    "them, and nor is Aspect ratio unless it is the shape you typed. A toast says so at "
+    "the time, which Open WebUI does not keep with the message: it is gone once the page "
+    "reloads."
 )
+
+_SIZE_PIXELS_WIN_WITH_TIERS_NO_RATIO = (
+    "Exact pixels settle the picture on their own, so Resolution is not sent alongside "
+    "them. A toast says so at the time, which Open WebUI does not keep with the message: "
+    "it is gone once the page reloads."
+)
+
+_SIZE_PIXELS_WIN_ALONE = "Exact pixels settle the picture on their own."
+
+_SIZE_MEANING: dict[tuple[bool, bool], tuple[str, str]] = {
+    (True, True): (_SIZE_TIER_CHECKED, _SIZE_PIXELS_WIN_WITH_TIERS),
+    (True, False): (_SIZE_TIER_CHECKED_NO_RATIO, _SIZE_PIXELS_WIN_WITH_TIERS_NO_RATIO),
+    (False, True): (_SIZE_TIER_UNCHECKED, _SIZE_PIXELS_WIN),
+    (False, False): (_SIZE_TIER_UNCHECKED_NO_RATIO, _SIZE_PIXELS_WIN_ALONE),
+}
+
+
+def renders_control(spec: ImageModelFilterSpec, published: str) -> bool:
+    return (
+        any(name == published for name, _values in spec.enums)
+        or any(name == published for name, _low, _high in spec.ranges)
+        or published in spec.supported
+        or published in spec.schema_only
+    )
 
 
 def image_knob_text(name: str, spec: ImageModelFilterSpec) -> tuple[str, str]:
@@ -412,8 +447,7 @@ def image_knob_text(name: str, spec: ImageModelFilterSpec) -> tuple[str, str]:
     if name != "size":
         return title, description
     has_tiers = any(published == "resolution" for published, _values in spec.enums)
-    tier = _SIZE_TIER_CHECKED if has_tiers else _SIZE_TIER_UNCHECKED
-    pixels = _SIZE_PIXELS_WIN_WITH_TIERS if has_tiers else _SIZE_PIXELS_WIN
+    tier, pixels = _SIZE_MEANING[(has_tiers, renders_control(spec, "aspect_ratio"))]
     return title, f"{_SIZE_OPENING} {tier} {pixels}"
 
 
@@ -543,8 +577,9 @@ ALWAYS_ON_VALVE_NAMES = frozenset(name for name, *_rest in ALWAYS_ON_CONTROLS)
 def _image_shared_by_some(values: tuple[Any, ...]) -> str:
     listed = ", ".join(str(value) for value in values)
     return (
-        f"Only some of the companies serving this model accept {listed}; if another one "
-        "takes the request you are told it was not sent."
+        f"Only some of the companies serving this model accept {listed}; choosing one of "
+        "those steers the request to a company that accepts it. Where none of them can "
+        "be singled out for routing, you are warned before the request is sent."
     )
 
 
@@ -1027,20 +1062,35 @@ def image_gen_model_note(spec: ImageModelFilterSpec, *, catalog_match: bool) -> 
             "below offer what OpenRouter's image API accepts in general rather than this "
             "model's own choices. They narrow to its own once it can be read again."
         )
-    if not spec.has_knobs:
-        if spec.published_anything:
-            return (
-                f"{opening} The companies serving {named} accept different settings, so "
-                "only the ones every model carries are offered. It draws with its own "
-                "defaults for the rest."
-            )
-        return (
-            f"{opening} {named} publishes no settings of its own, so only the ones every "
-            "model carries are offered and it draws with its own defaults."
+    sized = (
+        f"Resolution, because {named} publishes a list of size tiers; a model that "
+        "publishes none gets Output size instead"
+        if any(published == "resolution" for published, _values in spec.enums)
+        else (
+            f"Output size, because {named} publishes no list of size tiers; a model that "
+            "publishes one gets Resolution instead"
+        )
+    )
+    if spec.has_knobs:
+        cause = ""
+    elif spec.published_anything:
+        cause = (
+            f" The companies serving {named} accept different settings and none is common "
+            "to all of them, so every one of the six offers the general values here."
+        )
+    else:
+        cause = (
+            f" {named} publishes no settings of its own, so every one of the six offers "
+            "the general values here."
         )
     return (
-        f"{opening} The settings offered to users are the ones {named} publishes; "
-        "choosing another model changes them."
+        f"{opening} The same six settings are offered whichever model is named: Quality, "
+        "Aspect ratio, Background, Output format, Output compression, and one for size -- "
+        f"here {sized}. What changes with the model is what each of the six lets a user "
+        "pick: where it publishes the values it takes, that setting offers exactly those; "
+        "where it publishes nothing, the setting offers what OpenRouter's image API "
+        "accepts in general and the company running the model decides what to do with the "
+        f"value.{cause} Naming another model re-reads all six."
     )
 
 

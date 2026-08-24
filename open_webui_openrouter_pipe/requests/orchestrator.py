@@ -43,6 +43,7 @@ from ..integrations.provider_options import (
 from ..models.registry import ModelFamily, OpenRouterModelRegistry
 from ..storage.owui_files import get_file_by_id, infer_file_mime_type
 from ..storage.users import get_user_by_id
+from ..streaming.constants import DEFERRED_REASONING_FLUSH
 from ..tools.tool_registry import _build_collision_safe_tool_specs_and_registry
 from .fusion_engine import (
     FusionInnerInvocation,
@@ -575,7 +576,7 @@ class RequestOrchestrator:
                 self.logger.warning(
                     "Direct uploads could not be injected into the request", exc_info=True
                 )
-                await self._pipe._ensure_error_formatter()._emit_templated_error(
+                return await self._pipe._ensure_error_formatter()._emit_templated_error(
                     __event_emitter__,
                     template=valves.DIRECT_UPLOAD_FAILURE_TEMPLATE,
                     variables={
@@ -585,7 +586,6 @@ class RequestOrchestrator:
                     log_message="Direct uploads injection failed",
                     log_level=logging.WARNING,
                 )
-                return ""
 
             requires_chat = bool(direct_uploads.get("video"))
             if not requires_chat:
@@ -598,7 +598,7 @@ class RequestOrchestrator:
             if requires_chat:
                 selected, forced = self._pipe._streaming_handler._select_llm_endpoint_with_forced(body.get("model") or "", valves=valves)
                 if forced and selected == "responses":
-                    await self._pipe._ensure_error_formatter()._emit_templated_error(
+                    return await self._pipe._ensure_error_formatter()._emit_templated_error(
                         __event_emitter__,
                         template=valves.ENDPOINT_OVERRIDE_CONFLICT_TEMPLATE,
                         variables={
@@ -610,7 +610,6 @@ class RequestOrchestrator:
                         log_message="Endpoint override conflict for direct uploads",
                         log_level=logging.WARNING,
                     )
-                    return ""
                 endpoint_override = "chat_completions"
 
         preset = body.get("preset")
@@ -626,7 +625,7 @@ class RequestOrchestrator:
         if preset and endpoint_override is None:
             selected, forced = self._pipe._streaming_handler._select_llm_endpoint_with_forced(body.get("model") or "", valves=valves)
             if forced and selected == "responses":
-                await self._pipe._ensure_error_formatter()._emit_templated_error(
+                shown = await self._pipe._ensure_error_formatter()._emit_templated_error(
                     __event_emitter__,
                     template=valves.ENDPOINT_OVERRIDE_CONFLICT_TEMPLATE,
                     variables={
@@ -638,7 +637,9 @@ class RequestOrchestrator:
                     log_message="Endpoint override conflict for preset parameter",
                     log_level=logging.WARNING,
                 )
-                return ""
+                if use_task_model_adapter:
+                    return self._pipe._build_task_fallback_content(task_name)
+                return shown
             endpoint_override = "chat_completions"
             if self.logger.isEnabledFor(logging.DEBUG):
                 self.logger.debug(
@@ -724,13 +725,17 @@ class RequestOrchestrator:
             if is_zdr_capable is False:
                 if use_task_model_adapter:
                     return self._pipe._build_task_fallback_content(task_name)
-                await self._pipe._ensure_error_formatter()._emit_templated_error(
+                return await self._pipe._ensure_error_formatter()._emit_templated_error(
                     __event_emitter__,
                     template=valves.MODEL_RESTRICTED_TEMPLATE,
                     variables={
                         "requested_model": responses_body.model,
                         "normalized_model_id": normalized_model_id,
-                        "restriction_reasons": zdr_reason,
+                        "restriction_reasons": ", ".join(
+                            self._pipe._model_restriction_labels(
+                                [zdr_reason], valves=valves
+                            )
+                        ),
                         "model_id_filter": "",
                         "free_model_filter": "",
                         "tool_calling_filter": "",
@@ -741,17 +746,20 @@ class RequestOrchestrator:
                     ),
                     log_level=logging.WARNING,
                 )
-                return ""
             if is_zdr_capable is None:
                 if use_task_model_adapter:
                     return self._pipe._build_task_fallback_content(task_name)
-                await self._pipe._ensure_error_formatter()._emit_templated_error(
+                return await self._pipe._ensure_error_formatter()._emit_templated_error(
                     __event_emitter__,
                     template=valves.MODEL_RESTRICTED_TEMPLATE,
                     variables={
                         "requested_model": responses_body.model,
                         "normalized_model_id": normalized_model_id,
-                        "restriction_reasons": f"{zdr_reason}_UNAVAILABLE",
+                        "restriction_reasons": ", ".join(
+                            self._pipe._model_restriction_labels(
+                                [zdr_reason, "ZDR_LIST_UNAVAILABLE"], valves=valves
+                            )
+                        ),
                         "model_id_filter": "",
                         "free_model_filter": "",
                         "tool_calling_filter": "",
@@ -762,7 +770,6 @@ class RequestOrchestrator:
                     ),
                     log_level=logging.ERROR,
                 )
-                return ""
 
             existing_provider = responses_body.provider or {}
             if isinstance(existing_provider, dict):
@@ -842,13 +849,15 @@ class RequestOrchestrator:
                 model_id_filter = valves.MODEL_ID
                 free_mode = valves.FREE_MODEL_FILTER
                 tool_mode = valves.TOOL_CALLING_FILTER
-                await self._pipe._ensure_error_formatter()._emit_templated_error(
+                return await self._pipe._ensure_error_formatter()._emit_templated_error(
                     __event_emitter__,
                     template=valves.MODEL_RESTRICTED_TEMPLATE,
                     variables={
                         "requested_model": responses_body.model,
                         "normalized_model_id": normalized_model_id,
-                        "restriction_reasons": ", ".join(reasons) if reasons else "restricted",
+                        "restriction_reasons": ", ".join(
+                            self._pipe._model_restriction_labels(reasons, valves=valves)
+                        ) or "restricted",
                         "model_id_filter": model_id_filter if model_id_filter.lower() != "auto" else "",
                         "free_model_filter": free_mode if free_mode != "all" else "",
                         "tool_calling_filter": tool_mode if tool_mode != "all" else "",
@@ -857,7 +866,6 @@ class RequestOrchestrator:
                         f"Model restricted (requested={responses_body.model}, normalized={normalized_model_id}, reasons={reasons})"
                     ),
                 )
-                return ""
         if not features:
             fallback_caps = (
                 ModelFamily.capabilities(openwebui_model_id or "")
@@ -944,9 +952,8 @@ class RequestOrchestrator:
                     dedicated_image_api=uses_dedicated_image_api(video_spec),
                 )
                 if __event_emitter__:
-                    await __event_emitter__({"type": "chat:message:delta", "data": {"content": help_content}})
-                    await self._pipe._event_emitter_handler._emit_completion(
-                        __event_emitter__, content=help_content, done=True,
+                    await self._pipe._event_emitter_handler._emit_unstreamed_answer(
+                        __event_emitter__, content=help_content,
                     )
                 return help_content
 
@@ -1240,6 +1247,7 @@ class RequestOrchestrator:
         reasoning_retry_attempted = False
         reasoning_effort_retry_attempted = False
         signature_retry_attempted = False
+        retry_handoff: dict[str, Any] = {}
         self.logger.debug(
             "Orchestrator: __request__ type=%s, is_none=%s",
             type(__request__).__name__,
@@ -1262,6 +1270,7 @@ class RequestOrchestrator:
                         pipe_identifier=pipe_identifier,
                         fusion_live_enabled=fusion_live_enabled,
                         outcome_sink=outcome_sink,
+                        retry_handoff=retry_handoff,
                     )
                 return await self._pipe._streaming_handler._run_nonstreaming_loop(
                     responses_body,
@@ -1277,6 +1286,7 @@ class RequestOrchestrator:
                     pipe_identifier=pipe_identifier,
                     fusion_live_enabled=fusion_live_enabled,
                     outcome_sink=outcome_sink,
+                    retry_handoff=retry_handoff,
                 )
             except OpenRouterAPIError as exc:
                 if not reasoning_effort_retry_attempted:
@@ -1360,12 +1370,14 @@ class RequestOrchestrator:
                     )
                     continue
 
-                await self._pipe._ensure_error_formatter()._report_openrouter_error(
+                deferred_flush = retry_handoff.pop(DEFERRED_REASONING_FLUSH, None)
+                if deferred_flush is not None:
+                    await deferred_flush()
+                shown = await self._pipe._ensure_error_formatter()._report_openrouter_error(
                     exc,
                     event_emitter=__event_emitter__,
                     normalized_model_id=responses_body.model,
                     api_model_id=getattr(responses_body, "api_model", None),
-                    template=valves.OPENROUTER_ERROR_TEMPLATE,
                 )
                 await self._pipe._dispatch_plugin_event(
                     "dispatch_on_generation_complete",
@@ -1373,4 +1385,4 @@ class RequestOrchestrator:
                     "failed",
                     request_id=SessionLogger.request_id.get() or "",
                 )
-                return ""
+                return shown

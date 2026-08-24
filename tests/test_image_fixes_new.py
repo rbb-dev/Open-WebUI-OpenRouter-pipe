@@ -21,6 +21,7 @@ from open_webui_openrouter_pipe.requests.fusion_engine import item_text, latest_
 
 from tests.test_image_api_path import (  # noqa: F401
     _Emitter,
+    _event_data,
     _KeyPipe,
     _StubResponsesBody,
     _StubValves,
@@ -148,7 +149,7 @@ async def test_a_region_sharded_slug_is_keyed_and_pinned_by_its_bare_name(sharde
     )
     assert set(result.payload["provider"]["options"]) == {bare}
     assert result.payload["n"] == 2, "the contract was dropped, so n was withheld"
-    notices = " ".join(str(e.get("content", "")) for e in result.events)
+    notices = " ".join(str(_event_data(e).get("content", "")) for e in result.events)
     assert "does not serve this model" not in notices
     assert result.payload["provider"]["only"] == [bare]
 

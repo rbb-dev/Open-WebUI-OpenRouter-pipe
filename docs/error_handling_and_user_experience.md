@@ -53,7 +53,13 @@ The pipe selects an OpenRouter template based on the HTTP status:
 
 These templates are used for the `OpenRouterAPIError` path (and for certain HTTP status errors that are converted into an OpenRouter error object by reading the response body best-effort).
 
-**The chat path does not use the table.** The request orchestrator passes `OPENROUTER_ERROR_TEMPLATE` explicitly for every `OpenRouterAPIError` it reports, and an explicit template wins over status selection — so on the main chat path a rejection of *any* status, `401`, `402`, `429` and `5xx` included, renders `OPENROUTER_ERROR_TEMPLATE`. The status-specific templates are reached from the callers that let the formatter choose: the outer request handler, image generation, video generation, and a streaming failure that arrives after output has already been emitted. Setting `OPENROUTER_ERROR_TEMPLATE` to an empty string drops the override and restores status selection on the chat path as well.
+**Every caller uses the table.** Status selection is the only thing that chooses one of these templates; no call site can pass a template that overrides it. The chat orchestrator, the outer request handler, image generation, video generation, and a streaming failure arriving after output has begun all render the same template for the same status.
+
+**One exception, and it matters for the wording of `AUTHENTICATION_ERROR_TEMPLATE`.** When the pipe cannot read its own OpenRouter API key it renders that template directly. Nothing was sent, so there is no status and no rejection by OpenRouter — the cause is local: the key setting is blank, or the value stored in it was encrypted under a `WEBUI_SECRET_KEY` that has since changed and can no longer be decrypted. The `401` shown on the card in that case is a display value the pipe supplies, not a status any server returned. Wording written for that box therefore has to fit a local configuration fault as well as a key OpenRouter rejected, which is why the built-in text says the request was not authorised "or the pipe could not read one" rather than asserting that OpenRouter refused the credentials. It is the only template in the table above reached this way; `SERVICE_ERROR_TEMPLATE` is also passed explicitly at two call sites, but both are the `>= 500` rows of the table in section B below, so they agree with it rather than override it.
+
+**OpenRouter's own request reference travels with the card.** When a rejection carries one, every template in the table above renders it on its own row, separate from the `error_id` the pipe generates: the pipe's id correlates the pipe's logs, and OpenRouter's is what its support can look up. A rejection that carries none renders no such row. The reference is unavailable on the two paths where no request reached OpenRouter — a key the pipe could not read, and a `5xx` raised by the connection itself or inside the pipe — so a template edited to show it should keep the row inside a conditional, as the built-in text does.
+
+**Clearing a template box and saving restores its built-in text.** Every error template valve behaves this way: leave the box empty (or containing only spaces or newlines), save, and the pipe writes that valve's factory default back, so reopening the Config tab shows the original wording ready to edit again. Only the valve that was cleared is affected. This is how an operator recovers from an edit that went wrong, since the built-in text is not otherwise visible in the interface. The same restore applies when valves are edited through Open WebUI's own Functions valve panel.
 
 ### B) Generic templated errors (network/5xx/internal)
 
@@ -158,6 +164,8 @@ This behavior is intended to convert certain provider-side “configuration mism
 - `MODEL_RESTRICTED_TEMPLATE`
 - `STREAM_INTERRUPTED_TEMPLATE`
 
+Every valve above restores itself: clear its box and save, and the built-in text is written back for that valve alone. A box holding only spaces or newlines counts as cleared.
+
 See [Valves & Configuration Atlas](valves_and_configuration_atlas.md) for defaults and descriptions.
 
 ---
@@ -168,6 +176,7 @@ See [Valves & Configuration Atlas](valves_and_configuration_atlas.md) for defaul
 2. Wrap optional fields in `{{#if ...}}` blocks so missing variables do not render blank or confusing lines.
 3. Keep user-facing messages actionable (what happened, what to do next).
 4. Validate changes by triggering known failure modes in a controlled environment (see “Testing”).
+5. To start over on any one of these valves, clear its box and save. The built-in text for that valve is written back and appears in the box on the next load, ready to edit again; nothing else is changed.
 
 ---
 

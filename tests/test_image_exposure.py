@@ -12,6 +12,7 @@ constant would satisfy at most one row.
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any, cast
@@ -33,6 +34,7 @@ from tests.test_image_api_path import (  # noqa: F401 - shared stubs, one defini
     BASE,
     _adapter,
     _Emitter,
+    _event_data,
     _KeyPipe,
     _posted,
     _StubResponsesBody,
@@ -212,7 +214,7 @@ async def test_a_narrowed_value_is_sent_or_reported_by_the_provider_that_serves(
         api_model_id="m/x",
     )
 
-    notices = " ".join(str(call.get("content", "")) for call in result.events)
+    notices = " ".join(str(_event_data(call).get("content", "")) for call in result.events)
     assert (result.payload.get("resolution") == wanted) is sent
     assert ("resolution" in notices) is not sent
 
@@ -328,8 +330,9 @@ def test_a_refused_tier_size_does_not_evict_the_resolution_that_passed_the_contr
     that always kept `resolution` regardless of what it held cannot satisfy both rows.
     """
     record = _publishes_only_1k_2k()
+    refused = "4K"
     top_level, _provider, notes = ImageGenerationAdapter._split_image_config(
-        {"image_config": {"resolution": tier, "size": "4K"}},
+        {"image_config": {"resolution": tier, "size": refused}},
         allowed_passthrough=frozenset(record.get("allowed_passthrough_parameters") or []),
         record=record,
     )
@@ -338,11 +341,11 @@ def test_a_refused_tier_size_does_not_evict_the_resolution_that_passed_the_contr
         f"the validated tier was thrown away for an unchecked one: {top_level!r}"
     )
     reported = " ".join(note.text for note in notes)
-    assert "size=" in reported and "resolution" in reported, (
-        f"the setting that was not sent has to be named as the one that was not sent: "
-        f"{reported!r}"
+    assert re.search(rf"\bsize\b\)?={refused!r}", reported) and "resolution" in reported, (
+        f"the setting that was not sent has to be named as the one that was not sent, "
+        f"with the value it was refused for: {reported!r}"
     )
-    assert f"resolution={tier!r}" not in reported, (
+    assert not re.search(rf"\bresolution\b\)?={tier!r}", reported), (
         f"the tier that passed the contract was reported as withheld: {reported!r}"
     )
 
@@ -506,7 +509,7 @@ def _gated_adapter(allow: set[str] | None = None) -> tuple[Any, _Gate]:
 
 def _notifications(result: Any) -> str:
     return " ".join(
-        str(event.get("content", ""))
+        str(_event_data(event).get("content", ""))
         for event in result.events
         if event.get("type") == "notification"
     )
@@ -999,7 +1002,7 @@ async def test_a_value_one_provider_alone_accepts_is_pinned_to_a_provider_that_a
         api_model_id="m/x",
     )
 
-    notices = " ".join(str(call.get("content", "")) for call in result.events)
+    notices = " ".join(str(_event_data(call).get("content", "")) for call in result.events)
     assert result.payload.get("resolution") == "4K", (
         "the panel offers 4K because one of this model's companies publishes it, so the "
         f"request must carry it; instead it was dropped with {notices!r}"
@@ -1104,3 +1107,72 @@ async def test_a_reference_the_user_pasted_inline_is_sent_without_being_asked_of
         f"a pasted picture was put through the host gate, which refuses it: {handler.seen}"
     )
     assert [ref["image_url"]["url"] for ref in result.payload["input_references"]] == [inline]
+
+
+_NAMES_A_USER_SEES = {
+    "n": {"type": "range", "min": 1, "max": 4},
+    "aspect_ratio": {"type": "enum", "values": ["1:1"]},
+}
+
+_REFUSED_BY_THAT_CONTRACT = {"n": "lots", "aspect_ratio": "16:9"}
+
+
+def _rendered_title(source: str, valve: str) -> str:
+    block = source.split(f"        {valve}: ", 1)[1].split("\n        )", 1)[0]
+    found = re.search(r"^\s+title=(?P<q>['\"])(?P<title>.*?)(?P=q),$", block, re.M)
+    assert found, f"{valve} is drawn with no title at all:\n{block}"
+    return found.group("title")
+
+
+@pytest.mark.parametrize("published", sorted(_NAMES_A_USER_SEES), ids=sorted(_NAMES_A_USER_SEES))
+def test_a_dropped_setting_is_named_the_way_its_own_control_is_labelled(published):
+    """The toast has to name the control the reader used, not the wire name behind it.
+
+    Someone who set a control labelled "Number of images" and was told `n` was not sent
+    has been handed a name that appears nowhere on their screen; the documentation
+    promises them the label. The wire name is kept alongside because the log record and
+    any upstream rejection carry only that, and a message with one of the two makes the
+    other unsearchable.
+
+    The expected label is read out of the RENDERED filter -- the panel Open WebUI draws --
+    rather than transcribed here, so renaming a control moves the panel and this guard in
+    one commit instead of leaving a guard that passes against a label nobody sees.
+
+    Two controls, because `aspect_ratio` -> "Aspect ratio" is what a hand-rolled
+    underscore-to-space rule would also produce; `n` -> "Number of images" is not, so no
+    such rule and no constant satisfies both rows.
+    """
+    record = {
+        "provider_slug": "vendor",
+        "provider_tag": "vendor",
+        "allowed_passthrough_parameters": [],
+        "supported_parameters": dict(_NAMES_A_USER_SEES),
+    }
+    spec = build_image_model_filter_spec(
+        "vendor/model", {"id": "vendor/model"}, [record], dedicated_image_api=True
+    )
+    label = _rendered_title(render_image_model_filter_source(spec), f"IMAGE_{published.upper()}")
+    assert label != published, (
+        f"{published} is drawn under its own wire name, so this row proves nothing about "
+        "which of the two the message carries"
+    )
+
+    _top_level, _provider, notes = ImageGenerationAdapter._split_image_config(
+        {"image_config": {published: _REFUSED_BY_THAT_CONTRACT[published]}},
+        allowed_passthrough=frozenset(),
+        record=record,
+        records=[record],
+    )
+    reported = " ".join(note.text for note in notes)
+
+    assert reported, (
+        f"{published} was refused by the contract and nothing was reported: notes={notes!r}"
+    )
+    assert label in reported, (
+        f"the message names {published!r} but the control the reader used is labelled "
+        f"{label!r}, which appears nowhere in it: {reported!r}"
+    )
+    assert re.search(rf"\b{re.escape(published)}\b", reported), (
+        f"the wire name is gone, so the log record and the upstream rejection cannot be "
+        f"matched to this message: {reported!r}"
+    )

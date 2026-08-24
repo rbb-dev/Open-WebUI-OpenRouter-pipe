@@ -246,8 +246,14 @@ Pick model selection rules of thumb:
 - **Ultrawide / ultratall layouts (4:1, 1:4, 8:1, 1:8)** → the Gemini
   3.1 Flash Image line: GA, preview and Lite each publish all four. Qwen
   Image 3 and 3 Pro take 4:1 and 1:4.
-- **Tall phone-screen ratios (9:19.5, 9:20) or auto-ratio** → xAI Grok
-  Imagine Image Quality (14-value Grok ratio set).
+- **Tall phone-screen ratios (9:19.5, 9:20)** → xAI Grok Imagine Image
+  Quality (14 ratios) or Seedream 4.5 (18 ratios); those two are the only
+  recorded models publishing them. Seedream 4.5 also reaches 4K and up to
+  10 images a request, Grok 1K/2K and exactly one.
+- **An `auto` ratio, letting the model choose the frame shape** → widely
+  published: the four FLUX.2 variants, both MAI-Image-2.5 models, GPT
+  Image 1/1 Mini/2, every Recraft variant, every Riverflow variant,
+  Seedream 4.5 and Grok Imagine Image Quality all offer it.
 - **Multiple variations per request** → Seedream 4.5 or any of the GPT
   Image models (up to 10 per call), or Qwen Image 3/3 Pro and the Recraft
   variants (up to 6); cost scales linearly. Grok Imagine Image Quality
@@ -286,10 +292,12 @@ Riverflow variants, all 4 FLUX.2 variants, ByteDance Seedream 4.5.
 - **Multimodal dedupe**: if a model has `text` in `output_modalities`,
   `register_image_models` skips it (those stay in the chat catalog).
 - **Master-disable**: setting `ENABLE_OPENROUTER_IMAGE_GENERATION=False`
-  stops the pipe reading the image list at all. Models registered while it
-  was on stay in the picker until the chat catalog next refreshes and
-  rebuilds the registry without them, so they leave within
-  `MODEL_CATALOG_REFRESH_SECONDS`.
+  stops the pipe reading the image list at all, and drops the models
+  registered while it was on. Both happen on the next model-list build —
+  the next time Open WebUI asks the pipe for its models — and the drop runs
+  ahead of the catalogue refresh window, so it does not wait on
+  `MODEL_CATALOG_REFRESH_SECONDS`. The models are already gone from that
+  same model list.
 
 ### Multimodal (text + image)
 
@@ -727,12 +735,15 @@ aesthetic polish is not the goal; otherwise prefer V4.1 Pro.
 xAI's fast, high-fidelity image generation and editing model. Accepts
 text prompts and optional reference images; produces photorealistic
 outputs at 1K or 2K. Best for photoreal scenes, compositional control,
-and workflows that need Grok-only tall phone-screen aspect ratios
-(9:19.5, 9:20, 1:2, 2:1) or an `auto` ratio that lets the model pick
-frame shape from the prompt.
+and workflows that need tall phone-screen aspect ratios (9:19.5, 9:20 —
+Seedream 4.5 is the only other model offering them) or an `auto` ratio
+that lets the model pick frame shape from the prompt.
 
-- `n` fans out 1-10 variations per request — cost scales linearly.
-  Pick n=1 (default) for iteration; bump to 3-5 for exploration.
+- One image per request. Its published contract fixes the number of
+  images at 1, so no **Number of images** control is drawn — asking for
+  several means sending several requests. For variations in a single
+  request use Seedream 4.5 or the GPT Image models (up to 10), or Qwen
+  Image 3/3 Pro and the Recraft variants (up to 6).
 - Multimodal input: pair the prompt with reference images for
   editing/style transfer.
 - Charged per generated image, at a higher rate for 2K than for 1K,
@@ -768,13 +779,20 @@ One control does appear on every per-model panel, because a request carries it
 for any model and no model's published list mentions it:
 
 - **Output size** — either a size tier (`512`, `1K`, `2K`, `4K`) or exact pixels
-  such as `1024x1024`. A tier sets the same thing as **Resolution**, is checked
-  against the tiers that model publishes, and still takes its shape from
-  **Aspect ratio**. Exact pixels settle the picture on their own: no model
+  such as `1024x1024`. A tier sets the same thing as **Resolution** and still
+  takes its shape from **Aspect ratio**; what it is measured against depends on
+  the model. Sixteen of the forty publish a tier list of their own, and on those
+  a tier outside the list is withheld rather than sent, and named. The other
+  twenty-four publish no list, so a tier is measured only against those four
+  names and then goes out for the company running the model to interpret.
+  Anything that is neither one of the four names nor pixels is withheld and named
+  on every model. Exact pixels settle the picture on their own: no model
   publishes a list of pixel sizes, so those go out as typed and the company
   running the model decides — and because they already fix the dimensions,
   **Resolution** is not sent alongside them, nor is **Aspect ratio** unless it is
-  the shape you typed. Anything dropped that way is named in the chat.
+  the shape you typed. Anything dropped that way is named in a toast at the time;
+  Open WebUI does not keep toasts with the message, so it is gone once the page
+  reloads.
 
 Models that answer only with a picture carry three more, for the same reason. A
 model that answers with text as well takes its references from the message
@@ -814,11 +832,14 @@ Other consequences worth knowing:
   settings panel at all rather than a guessed one; it still generates images,
   using its own defaults, and the next refresh retries.
 - **A model served by more than one company offers what they agree on, plus what
-  only some of them take.** Which company serves a given request is decided when
-  you send it. Values they all accept are offered plainly; a value only some of
-  them accept is offered too and says so on the control, and if the company that
-  takes the request will not accept it you are told, rather than getting
-  something else back with no explanation.
+  only some of them take.** Which company serves a given request is normally
+  decided when you send it. Values they all accept are offered plainly; a value
+  only some of them accept is offered too and says so on the control, and
+  choosing it pins the request to the companies that accept it, so it is sent
+  and honoured rather than quietly turning into something else. Where OpenRouter
+  names none of those companies for routing, the value still goes out and a
+  warning says so before it does. Nothing checks afterwards which company served
+  the request, so no message names one.
 - **A provider option with published choices becomes a dropdown.** Where
   OpenRouter documents what a provider option accepts, the control lists those
   values instead of taking free text, so a misspelling cannot reach the wire.
@@ -899,7 +920,7 @@ The cost of each generation is reported on the status line when it finishes.
 - **Reference images** — Which attached images go to the model as references. auto sends every picture in this chat, and where the model takes fewer than you attached the most recent ones are kept; latest-only sends just the most recent; none sends none of them.
 - **Reference image links** — Reference images to use as well as, or instead of, the attached ones: a JSON list of https links or data URLs. These are placed first, so they survive when the model takes fewer references than are on offer.
 - **Aspect ratio** — Frame shape. Choices: 1:1, 4:3, 3:4, 16:9, 9:16, auto.
-- **Output size** — Either a size tier (512, 1K, 2K or 4K) or exact pixels written like 1024x1024. This model publishes no tiers of its own, so a tier is checked only against those four names and then goes out for the company running the model to interpret. It still takes its shape from Aspect ratio. Exact pixels settle the picture on their own, so Aspect ratio is not sent alongside them unless it is the shape you typed. You are told in the chat whenever it is dropped that way. No model publishes a list of pixel sizes, so exact pixels go out as typed and the company running this one decides what to do with them. Empty leaves it unset.
+- **Output size** — Either a size tier (512, 1K, 2K or 4K) or exact pixels written like 1024x1024. This model publishes no tiers of its own, so a tier is checked only against those four names and then goes out for the company running the model to interpret. It still takes its shape from Aspect ratio. Exact pixels settle the picture on their own, so Aspect ratio is not sent alongside them unless it is the shape you typed. A toast says so at the time, which Open WebUI does not keep with the message: it is gone once the page reloads. No model publishes a list of pixel sizes, so exact pixels go out as typed and the company running this one decides what to do with them. Empty leaves it unset.
 - **Number of images** — How many images this request asks for. Accepts 1 to 6.
 - **style** — a setting this model's provider accepts.
 - **controls** — a setting this model's provider accepts.
@@ -983,7 +1004,7 @@ is shared with chat/video catalogs (`MODEL_CATALOG_REFRESH_SECONDS`).
 
 | Valve | Default | Range | Purpose |
 |-------|---------|-------|---------|
-| `ENABLE_OPENROUTER_IMAGE_GENERATION` | `True` | bool | Master kill switch. False removes pure-image-only models from `pipes()` output AND clears them from OWUI's catalog (`register_image_models([])` runs once on the next cycle). Multimodal models stay since they're in the chat catalog. |
+| `ENABLE_OPENROUTER_IMAGE_GENERATION` | `True` | bool | Master kill switch. False drops pure-image-only models from the model list AND clears them from OWUI's catalog on the next model-list build, ahead of the catalogue refresh window, so it does not wait on `MODEL_CATALOG_REFRESH_SECONDS`. Multimodal models stay since they're in the chat catalog. |
 | `AUTO_INSTALL_IMAGE_FILTERS` | `True` | bool | Install and keep current one settings panel per image model, offering exactly what that model publishes. A model whose settings list has never been read gets none; one read before keeps its last successful set. |
 | `AUTO_ATTACH_IMAGE_FILTERS` | `True` | bool | Attach each model's own settings panel to it, so its settings appear in the chat controls when that model is selected. A single model can opt out with the `disable_image_filter_auto_attach` advanced parameter. |
 | `AUTO_DEFAULT_IMAGE_FILTERS` | `True` | bool | Keep attached image filters enabled by default per chat. Re-asserted on every catalog metadata sync. |
@@ -1072,10 +1093,12 @@ meanwhile, using its own defaults.
 
 Some models are served by several companies that do not all accept the
 same values. Rather than hide a value one of them does take, the panel
-offers it and says so on the control. Which company serves a request is
-decided when you send it, so if the one that takes it will not accept
-your choice, the setting is left out and you are told which one it was —
-the picture is still generated with that model's own default for it.
+offers it and says so on the control. Choosing it pins the request to the
+companies that do accept it, so the value is sent and used — you are not
+told anything, because there is nothing to report. Where OpenRouter names
+none of those companies for routing, the value is still sent and a warning
+says so beforehand. If you have pinned a company yourself, your pin wins
+and the value goes to it as typed.
 
 ### A value I typed was rejected as invalid JSON
 
@@ -1092,10 +1115,13 @@ refused rather than sent.
 Some companies render an image in passes and publish that they can send
 it as it goes. Where every company that could serve the request does,
 the request asks for that form and each preview is reported on the
-status line. Vector models draw in text rather than pictures and report
-`Drawing the image…` once instead. Either way the finished image is what
-lands in the chat, and follow-up edits behave exactly as they do
-otherwise.
+status line. A model that draws in text rather than pixels — SVG —
+streams that text instead of preview pictures, and that is reported once
+as `Drawing the image…`. No model published today does both: the only
+endpoints offering the streamed form are OpenAI's, and they send preview
+pictures, so nothing currently reaches that second line. Either way the
+finished image is what lands in the chat, and follow-up edits behave
+exactly as they do otherwise.
 
 If a streamed generation stops before the finished image arrives, it is
 a failed generation and there is nothing to salvage. It costs nothing:
@@ -1146,8 +1172,12 @@ Roughly, in order of who-calls-who:
 pipes()
   ├─ ensure chat catalog loaded
   ├─ ensure video catalog loaded
-  └─ if ENABLE_OPENROUTER_IMAGE_GENERATION:
-        ensure_image_catalog_loaded()
+  └─ ensure_image_catalog_loaded()   <- called on every build; the master
+        valve is checked INSIDE it, not at this call site
+          ├─ if ENABLE_OPENROUTER_IMAGE_GENERATION is off: drop any models
+          │  registered while it was on, then return -- ahead of the TTL
+          │  check, which is why the picker empties on this build rather
+          │  than a TTL later
           ├─ TTL-gated fetch (cache_seconds = MODEL_CATALOG_REFRESH_SECONDS)
           ├─ /api/v1/models?output_modalities=image via OpenRouterImageClient
           ├─ if a filter valve is on, read each model's published contract
@@ -1222,10 +1252,11 @@ from prompt and settings, so its `modalities` is never sent. It is the
 multimodal models, staying on chat completions, that actually carry it.
 
 **Turning the feature off.** With `ENABLE_OPENROUTER_IMAGE_GENERATION` set
-to `False`, `pipes()` stops reading the image catalog. Models registered
-while it was on are dropped when the chat catalog next refreshes and
-rebuilds the registry, so they leave the picker within
-`MODEL_CATALOG_REFRESH_SECONDS` rather than on the next page load.
+to `False`, the pipe stops reading the image catalog and drops the models
+registered while it was on. The drop runs on the next model-list build,
+ahead of the catalogue refresh window, so the models are gone from that
+same model list rather than lingering for up to
+`MODEL_CATALOG_REFRESH_SECONDS`.
 
 Key invariant: **both branches render the same markdown**. Multimodal
 models keep the streaming path that has always handled them, and both
@@ -1361,9 +1392,14 @@ with a picture as well as text.
   `supports_streaming: true` on their endpoint record. Where every
   endpoint that could serve the request publishes it, the pipe asks for
   the streamed form and reports each preview as a status line, so the
-  chat shows movement instead of a spinner. Vector models never emit a
-  preview picture and stream their drawing as text instead; that is
-  reported once as "Drawing the image…". Either way the answer is the
+  chat shows movement instead of a spinner. A model that streams a
+  text-based format instead of preview pictures — SVG — sends text
+  chunks, which OpenRouter's images API documents as its own event; the
+  pipe reports that once as "Drawing the image…". No recorded contract
+  combines the two, because every Recraft vector endpoint publishes
+  `supports_streaming: false`, so nothing reaches that line today; it
+  becomes reachable the day a vendor enables streaming on a vector model.
+  Either way the answer is the
   same `![alt](file_url)` markdown built from the finished image, so
   nothing downstream — including iterative editing — sees a difference.
   A stream that ends before the finished image is a failed generation:
