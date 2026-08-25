@@ -53,9 +53,14 @@ pipe → Valves.
    `first_frame`, and if you attach two and the model supports
    `last_frame`, the second becomes the closing frame.
 6. Type your prompt and press send.
-7. The chat shows a status line ("Submitting", "Polling", "Downloading",
-   "Generated in 35.2s · $0.40"). Generation typically takes 30s–4min
-   depending on the model and duration.
+7. The chat shows a status line while the job runs — submitting, then
+   whatever the provider reports while it works, then downloading — and
+   a closing line when it finishes. Where a charge above zero is
+   reported it lands on that final status line, as long as usage details
+   are on: that is your own Show usage details setting once you have set
+   it, and the site default your administrator chooses until then; with
+   usage details off the line carries the elapsed time alone. Generation
+   typically takes 30s–4min depending on the model and duration.
 8. The final message renders an inline video player. Click play.
 
 ### Model-specific help in chat
@@ -1526,10 +1531,12 @@ The pipe surfaces these in two places:
    wherever in the key that token sits. For a model like this one, where
    every charge is charged by the second, the panel closes with what the
    longest clip it makes can cost at the highest of those rates.
-2. **Final status footer** after generation — shows the actual usage
-   cost from OpenRouter's poll response (e.g. `Generated in 35.2s ·
-   $0.40`). This is the authoritative cost for that specific
-   generation.
+2. **Final status line** after generation — where OpenRouter's poll
+   response carries a charge above zero, that line shows it, as long as
+   usage details are on: that is your own Show usage details setting
+   once you have set it, and the site default your administrator chooses
+   until then. The figure it shows is what that specific generation came
+   to, in place of the published rates above.
 
 SKU key conventions decoded:
 
@@ -1573,8 +1580,6 @@ When generation succeeds, the assistant message contains:
 <video>
 /api/v1/files/<owui_file_id>/content
 </video>
-
-*Generated in <elapsed>s · $<cost>*
 ```
 
 A model that returns more than one clip for a single job gets one
@@ -1596,9 +1601,9 @@ the block into 3 inline tokens (rendering as text) or merges adjacent
 `<video>` blocks into one HTML token (HTMLToken's non-greedy regex then
 matches only the first, hiding the rest).
 
-The trailing `*Generated in ...*` line ends with `\n` — defensive against
-any later concatenation that could smash markers from a follow-up message
-into inline text.
+The message always ends with a newline — defensive against any later
+concatenation that could smash markers from a follow-up message into
+inline text.
 
 The video file itself is stored in Open WebUI's file storage backend
 (local, S3, GCS, or Azure depending on `STORAGE_PROVIDER`), inserted
@@ -1849,11 +1854,11 @@ pipe()
         │     ├─ MIME-sniff against VIDEO_OUTPUT_MIME_ALLOWLIST
         │     ├─ stream-upload to OWUI storage (per-backend: Local/S3/GCS/Azure)
         │     ├─ insert Files row + link to chat
-        │     ├─ build success content (markers + <video> + footer)
+        │     ├─ build success content (markers + <video> blocks)
         │     └─ return VideoLifecycleResult — emits status lines, but never
         │        the message content
         ├─ outer awaits bg task with asyncio.shield (survives client disconnect)
-        ├─ outer emits status footer + chat:completion (the SOLE emit)
+        ├─ outer emits status line + chat:completion (the SOLE emit)
         └─ outer returns content string
               └─ functions.py wraps as SSE chunk, OWUI middleware accumulates,
                  stream finalizer upserts to message DB (one write).

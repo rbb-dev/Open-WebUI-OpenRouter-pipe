@@ -228,8 +228,8 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "best_known_for": (
             "The larger MAI-Image-2.5, served via Azure AI Foundry. Photorealistic "
             "and artistic output, billed by token exactly as the base model is but at "
-            "a higher rate for each picture it makes. The rates below are this "
-            "listing's own — check them against the base model's before picking this "
+            "a higher rate for each picture it makes. This listing publishes rates "
+            "of its own — check them against the base model's before picking this "
             "tier."
         ),
         "tips_and_pitfalls": [
@@ -255,8 +255,9 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "display_name": "Sourceful: Riverflow V2 Pro",
         "best_known_for": (
             "Sourceful's premium tier — pure image-only output with custom "
-            "font rendering and image-to-image super-resolution. Strongest "
-            "for marketing assets requiring exact text rendering at scale."
+            "font rendering (`font_inputs`) and up to ten reference images for "
+            "image-to-image work. Strongest for marketing assets requiring "
+            "exact text rendering at scale."
         ),
         "tips_and_pitfalls": [
             "4.5MB request size limit — pass image URLs instead of base64 to avoid bloat.",
@@ -265,9 +266,9 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
     "sourceful/riverflow-v2-fast": {
         "display_name": "Sourceful: Riverflow V2 Fast",
         "best_known_for": (
-            "Faster, cheaper variant of Riverflow V2 — same Sourceful "
-            "quality and reduced cost. Best for iteration before committing "
-            "to a Pro render."
+            "Faster, cheaper variant of Riverflow V2 — same Sourceful extension "
+            "(`font_inputs`) and the same per-reference charge, at lower quality and "
+            "reduced cost. Best for iteration before committing to a Pro render."
         ),
         "tips_and_pitfalls": [
             "Same caveats as Riverflow V2 Pro: pure-image-only, 4.5MB request limit, image URLs preferred.",
@@ -383,11 +384,11 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         ),
         "tips_and_pitfalls": [
             "PURE-image-only — does NOT output text in chat.",
-            "Every Recraft variant takes `style` and `text_layout`; V3 is the one tuned for long-form text, so it holds full sentences and paragraphs where the others hold short lines.",
+            "V3 is the Recraft tuned for long-form text, so it holds full sentences and paragraphs where the others hold short lines. Like every Recraft variant it takes `style`, `controls` and `text_layout`.",
             "For text rendering: put exact wording in quotes in your prompt AND use `text_layout` to place each line exactly where you want it.",
             "Style names: see https://www.recraft.ai/docs/api-reference/styles. This model draws pixels; for SVG, pick one of the Recraft Vector models.",
             "text_layout: array of {text, bbox} where bbox is 4 [x,y] corners in 0-1 coords (order: TL, TR, BR, BL).",
-            "If you need newer composition or cleaner geometry, V4 and V4.1 offer the same three settings with a different look.",
+            "If you need newer composition or cleaner geometry, V4 and V4.1 offer the same settings with a different look.",
         ],
     },
     "recraft/recraft-v4": {
@@ -404,7 +405,7 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         ),
         "tips_and_pitfalls": [
             "PURE-image-only.",
-            "Takes `style`, `controls` and `text_layout` like every Recraft variant. For long-form text — full sentences and paragraphs — V3 is still the stronger choice.",
+            "Takes `style`, `controls` and `text_layout`, the same settings every Recraft variant takes. For long-form text — full sentences and paragraphs — V3 is still the stronger choice.",
             "Image-to-image: only one input image supported.",
             "V4 limitations (per Recraft): photorealistic human faces and hands can be unreliable; not the right tool for editorial portraiture.",
             "Use V4 for fast iteration and social/web assets; switch to V4 Pro for print-ready finals at 2K.",
@@ -613,7 +614,10 @@ _IMAGE_TOKEN_NOTE = (
 )
 
 _IMAGE_COST_CLOSING = (
-    "The cost of each generation is reported on the status line when it finishes."
+    "Where the company running the model reports a charge above zero, it is shown on the "
+    "status line when it finishes, as long as usage details are on: that is your own Show "
+    "usage details setting once you have set it, and the site default your administrator "
+    "chooses until then."
 )
 
 
@@ -788,11 +792,14 @@ def render_image_help(
     """
     from ..filters.image_filter_renderer import (
         _SCHEMA_ONLY_CAVEAT,
+        DISAGREED_SETTINGS,
+        UNKEYABLE_SETTINGS,
         _image_shared_by_some,
         _published_records,
         always_on_controls,
         build_image_model_filter_spec,
         image_knob_text,
+        named_settings,
     )
     from .image_types import PASSTHROUGH_ENUMS
 
@@ -808,18 +815,31 @@ def render_image_help(
     lines.extend(_image_cost_section(records))
     lines.extend(["", "## Controls"])
     if not spec.knob_count:
-        if spec.published_anything:
+        if spec.unkeyable_passthrough:
             lines.append(
-                "- The companies serving this model publish different settings, so none "
-                "can be offered without knowing which one will take the request. It "
-                "generates with its own defaults."
+                "- "
+                + UNKEYABLE_SETTINGS.format(
+                    named="this model", listed=named_settings(spec)
+                )
+                + "."
+            )
+        elif spec.providers_disagree:
+            lines.append(
+                "- "
+                + DISAGREED_SETTINGS.format(named="this model")
+                + ". Only what they all accept is offered here, so none of this model's "
+                "own settings are listed."
+            )
+        elif spec.published_any_parameter:
+            lines.append(
+                "- Nothing this model publishes here can be offered as a control, so "
+                "nothing below is read from its contract."
             )
         else:
             lines.append(
-                "- This model publishes no adjustable settings, so it generates with its "
-                "own defaults."
+                "- This model publishes no adjustable settings of its own, so nothing "
+                "below is read from its contract."
             )
-        return "\n".join(lines) + "\n"
 
     for _name, _annotation, _default, title, description in always_on_controls(
         spec.dedicated_image_api

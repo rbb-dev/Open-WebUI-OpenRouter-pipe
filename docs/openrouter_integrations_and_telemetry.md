@@ -419,8 +419,10 @@ And: [Web Search (Open WebUI) vs OpenRouter Web Tools](web_search_owui_vs_openro
 
 ## 6. User-visible telemetry (status and usage)
 
-### Final usage status banner
-When `SHOW_FINAL_USAGE_STATUS=True`, the pipe emits a final status message that can include timing, token counts, and OpenRouter cost/usage information when present in the upstream usage payload.
+### Final usage status line
+When `SHOW_FINAL_USAGE_STATUS` resolves True — the reader's own copy where they have set it, otherwise the site default an administrator chooses — the pipe emits a final status line that can include timing, token counts, and any OpenRouter charge above zero the upstream usage payload carries.
+
+The valve exists on both `Valves` and `UserValves`, and the merge overrides only the fields a reader has actually set. A generation reported at exactly zero prints the token counts the reply carried and the timing where that merge resolves True; it prints the timing alone where it resolves False, and also where the reply carried no token counts at all, since only the counters OpenRouter actually sends are ever read.
 
 This is intended as user-visible telemetry and operator troubleshooting signal (not as an authoritative billing record).
 

@@ -327,6 +327,160 @@ class TestRateLimitRetryAfter:
         assert ras != "Wed, 21 Oct 2099 07:28:00 GMT"
 
 
+class TestNonServerHttpErrorDetails:
+    """Everything the non-5xx branch derives besides Retry-After.
+
+    ``TestRateLimitRetryAfter`` reaches this same branch and asserts the two Retry-After
+    keys, which leaves the rest of it unmeasured: reading the response body at all,
+    DECODING those bytes as UTF-8, and carrying the rate-limit scope onto the metadata the
+    card renders from. Each is its own line, and each one, removed, still leaves the error
+    reported exactly once -- so counting the report proves none of them.
+    """
+
+    @staticmethod
+    def _error(body_bytes, scope):
+        from unittest.mock import AsyncMock
+
+        headers = {"Content-Type": "application/json"}
+        if scope is not None:
+            headers["X-RateLimit-Scope"] = scope
+        response = MagicMock()
+        response.status_code = 429
+        response.reason_phrase = "Too Many Requests"
+        # The real type, which is case-insensitive: a plain dict would make the lookup
+        # pass or fail on the spelling the double happened to use rather than on the code.
+        response.headers = httpx.Headers(headers)
+        response.aread = AsyncMock(return_value=body_bytes)
+        return httpx.HTTPStatusError("429", request=MagicMock(), response=response)
+
+    async def _reported(self, pipe, emitter, error):
+        """Drive `_handle_pipe_call` and return the error it handed the reporter.
+
+        Both patches sit one level BELOW the branch under test -- the call that raises, and
+        the reporter it ends at -- so the except arm, the body read, the decode and the
+        header lookup all run for real.
+        """
+        from unittest.mock import AsyncMock
+
+        report_mock = AsyncMock()
+        formatter = pipe._ensure_error_formatter()
+        with aioresponses() as mock_http:
+            mock_http.get(
+                "https://openrouter.ai/api/v1/models",
+                payload={"data": [{"id": "test-model", "name": "Test Model", "pricing": {"prompt": "0", "completion": "0"}}]},
+            )
+            with patch.object(pipe, "_process_transformed_request", side_effect=error), \
+                 patch.object(formatter, "_report_openrouter_error", report_mock):
+                pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
+                pipe.valves.API_KEY = EncryptedStr("test-key")
+                pipe.valves.MODEL_CATALOG_REFRESH_SECONDS = 300
+                async with aiohttp.ClientSession() as session:
+                    await pipe._handle_pipe_call(
+                        body={"model": "test-model"},
+                        __user__={"id": "test-user"},
+                        __request__=MagicMock(),
+                        __event_emitter__=emitter,
+                        __event_call__=None,
+                        __metadata__={"model": {"id": "test-model"}},
+                        __tools__=None,
+                        valves=pipe.valves,
+                        session=session,
+                    )
+        assert report_mock.await_count == 1, (
+            "precondition: the error never reached the reporter, so nothing below is about "
+            "what it carried"
+        )
+        return report_mock.call_args.args[0]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("message", "code"),
+        [("slow down", 429), ("demasiadas peticiones \u2014 espera", 402)],
+        ids=["ascii-body", "non-ascii-body"],
+    )
+    async def test_the_reported_error_carries_what_the_decoded_body_says(
+        self, mock_pipe, mock_event_emitter, message, code
+    ):
+        """The body has to be READ, and read as UTF-8, or the card says nothing useful.
+
+        Two lines are in play. Skipping the read leaves the whole payload unparsed, and the
+        card loses the provider's own sentence. Formatting the bytes instead of decoding
+        them yields a `b'...'` repr, which is not JSON -- so the payload is unparsed again,
+        and the raw body kept for the report is a Python literal rather than what the server
+        sent. ``raw_body`` separates the two, because the repr is visible in it while both
+        produce the same missing message.
+
+        The expectation is what OpenRouter's own parser makes of the correctly decoded
+        bytes, so it cannot drift from the shape the reporter is handed. One ASCII body and
+        one carrying characters outside it, with different messages and different codes, so
+        no constant satisfies both -- and the non-ASCII row is the one a latin-1 or a
+        `str(bytes)` reading mangles rather than merely fails to parse.
+        """
+        import json
+
+        from open_webui_openrouter_pipe.core.errors import _extract_openrouter_error_details
+
+        body_bytes = json.dumps(
+            {"error": {"message": message, "code": code}}, ensure_ascii=False
+        ).encode("utf-8")
+        expected = _extract_openrouter_error_details(body_bytes.decode("utf-8"))
+        assert expected["openrouter_message"] == message and expected["openrouter_code"] == code, (
+            "precondition: the body has to parse from the correct decode, or every "
+            "assertion below compares one absence to another"
+        )
+
+        err = await self._reported(
+            mock_pipe, mock_event_emitter, self._error(body_bytes, "account")
+        )
+
+        assert err.raw_body == body_bytes.decode("utf-8"), (
+            f"the body kept for the report is not what the server sent: {err.raw_body!r}"
+        )
+        assert err.openrouter_message == expected["openrouter_message"], (
+            "the provider's own sentence never reached the card, so the user is told a "
+            f"request failed without being told why: {err.openrouter_message!r}"
+        )
+        assert err.openrouter_code == expected["openrouter_code"], (
+            f"the code the body carried was lost: {err.openrouter_code!r}"
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "scope", ["account", "user", None], ids=["account", "user", "header-absent"]
+    )
+    async def test_the_rate_limit_scope_reaches_the_metadata_only_when_it_was_sent(
+        self, mock_pipe, mock_event_emitter, scope
+    ):
+        """`rate_limit_type` is what the card's `{{#if rate_limit_type}}` block renders from.
+
+        Dropped, the block vanishes and a user throttled on the account's shared quota is
+        given the same card as one throttled on their own -- and goes on retrying against a
+        limit that is not theirs to clear. Invented, the card names a scope the response
+        never carried.
+
+        Two different scopes, so the value cannot be a constant, and the absent header as
+        the third row, so writing one unconditionally cannot pass either. Absence is
+        asserted as the key not being present rather than as a falsy value, because the
+        template branches on presence.
+        """
+        body_bytes = b'{"error": {"message": "slow down", "code": 429}}'
+
+        err = await self._reported(
+            mock_pipe, mock_event_emitter, self._error(body_bytes, scope)
+        )
+
+        if scope is None:
+            assert "rate_limit_type" not in err.metadata, (
+                "a scope the response never sent was written onto the error, and the card "
+                f"now names it: {err.metadata!r}"
+            )
+        else:
+            assert err.metadata.get("rate_limit_type") == scope, (
+                "the response said which quota was hit and the card cannot say so: "
+                f"{err.metadata!r}"
+            )
+
+
 class TestInternalError:
     """Test generic exception handling."""
 

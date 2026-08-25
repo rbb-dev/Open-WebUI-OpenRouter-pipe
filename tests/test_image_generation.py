@@ -2872,6 +2872,17 @@ async def test_help_reads_the_contract_itself_when_nothing_cached_it():
     )
 
 
+def _declares_valve(source: str, name: str) -> bool:
+    """Whether a rendered panel declares *name* as a control, not merely mentions it.
+
+    Every always-on control is named twice in a rendered panel: once where the field is
+    declared and once where the filter reads it back. Searching the whole source for the
+    name is answered by the read-back alone, so a panel that stopped declaring the field
+    still satisfied it.
+    """
+    return re.search(rf"\n\s+{re.escape(name)}: [^\n]*= Field\(", source) is not None
+
+
 @pytest.mark.asyncio
 async def test_a_contract_that_shrinks_to_nothing_replaces_the_old_controls():
     """A model can lose every knob: a provider joins and the intersection empties.
@@ -2879,10 +2890,17 @@ async def test_a_contract_that_shrinks_to_nothing_replaces_the_old_controls():
     Returning early left the previous filter installed, active and attached, so the user
     kept a panel of controls the model no longer accepts and every message carried values
     the request path then rejected.
+
+    What replaces it still has to carry the controls the panel supplies itself rather than
+    the model, which no contract can empty -- help closes every such card by listing them,
+    so a panel rewritten without them promises controls that exist nowhere. Which starting
+    state the model was in is varied where production can still see it, one test along, by
+    driving the same shrunk contract at a model with a row and at a model without one.
     """
     from unittest.mock import AsyncMock, MagicMock
 
     from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import ALWAYS_ON_VALVE_NAMES
 
     wide = {
         "provider_slug": "a",
@@ -2899,7 +2917,6 @@ async def test_a_contract_that_shrinks_to_nothing_replaces_the_old_controls():
     fm._ensure_filter_installed = AsyncMock(
         side_effect=lambda **kw: (written.append(kw["desired_source"]), kw["preferred_id"])[1]
     )
-    fm._image_filter_exists = AsyncMock(return_value=True)
 
     result = await fm._ensure_single_image_filter_function_id(
         model_id="v/m", image_model={"id": "v/m", "name": "M"}, endpoint_record=[wide, disjoint],
@@ -2911,15 +2928,11 @@ async def test_a_contract_that_shrinks_to_nothing_replaces_the_old_controls():
     assert "IMAGE_ASPECT_RATIO" not in written[0], (
         "the control the model no longer accepts must be gone from the stored filter"
     )
-
-    fm._image_filter_exists = AsyncMock(return_value=False)
-    fm._ensure_filter_installed.reset_mock()
-    nothing = await fm._ensure_single_image_filter_function_id(
-        model_id="v/m2", image_model={"id": "v/m2", "name": "M"}, endpoint_record=[wide, disjoint],
-        dedicated_image_api=True,
-    )
-    assert nothing is None, "with nothing installed and nothing to offer, install nothing"
-    assert not fm._ensure_filter_installed.await_count
+    for name in ALWAYS_ON_VALVE_NAMES:
+        assert _declares_valve(written[0], name), (
+            f"{name} is drawn on every image-API panel and help lists it, so the panel "
+            "that replaces the old one must declare it"
+        )
 
 
 
@@ -3530,13 +3543,13 @@ def test_help_says_which_kind_of_nothing_a_model_offers():
 
     disagreeing = build_image_model_filter_spec("v/m", model, [a, b], dedicated_image_api=True)
     assert disagreeing.knob_count == 0, "the intersection is empty"
-    assert disagreeing.published_anything, "but the records did publish something"
+    assert disagreeing.published_any_parameter, "but the records did publish something"
     text = render_image_help("v/m", model, endpoint_record=[a, b], dedicated_image_api=True)
     assert "publish different settings" in text, text
     assert "publishes no adjustable settings" not in text
 
     empty = build_image_model_filter_spec("v/m", model, [{"provider_slug": "a"}], dedicated_image_api=True)
-    assert not empty.published_anything
+    assert not empty.published_any_parameter
     text = render_image_help("v/m", model, endpoint_record=[{"provider_slug": "a"}], dedicated_image_api=True)
     assert "publishes no adjustable settings" in text, text
 
@@ -3778,7 +3791,6 @@ async def test_only_a_contract_that_was_read_may_blank_an_installed_filter(
     pipe = MagicMock()
     manager = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
     manager._ensure_filter_installed = AsyncMock(side_effect=lambda **kw: kw["preferred_id"])
-    manager._image_filter_exists = AsyncMock(return_value=True)
 
     result = await manager._ensure_single_image_filter_function_id(
         model_id="v/m",
@@ -4505,11 +4517,12 @@ async def test_a_contract_that_shrank_to_nothing_overwrites_the_filter_it_left_b
 ):
     """A model that now publishes no knobs must not leave yesterday's controls on screen.
 
-    Nothing to offer and nothing installed means install nothing. But when a filter IS
-    installed, the shrunk contract has to overwrite it -- otherwise the panel keeps
-    writing values the model no longer accepts into every request. The two outcomes turn
-    on whether a row exists, so both are driven here with two model ids, and neither a
-    constant nor a `return None` satisfies all four rows.
+    A shrunk contract that was read has to overwrite the row it left behind -- otherwise
+    the panel keeps writing values the model no longer accepts into every request -- and
+    has to install one where none exists, because the panel carries controls of its own
+    that the model's contract has no say over. Both starting states are driven here with
+    two model ids, so the row the model ends with has to be built from that model's own
+    spec rather than returned from a constant.
     """
     from types import SimpleNamespace
     from unittest.mock import MagicMock
@@ -4519,6 +4532,7 @@ async def test_a_contract_that_shrank_to_nothing_overwrites_the_filter_it_left_b
     from open_webui_openrouter_pipe.core.config import _OPENROUTER_IMAGE_FILTER_MARKER
     from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
     from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        ALWAYS_ON_VALVE_NAMES,
         build_image_model_filter_spec,
     )
 
@@ -4575,15 +4589,19 @@ async def test_a_contract_that_shrank_to_nothing_overwrites_the_filter_it_left_b
         dedicated_image_api=True,
     )
 
-    if already_installed:
-        assert result == spec.function_id, (
-            "a filter is installed for a model whose contract shrank to nothing and it "
-            "was left untouched, so its stale controls stay on screen"
+    assert result == spec.function_id, (
+        "the model ends without a panel of its own, so the controls the panel supplies "
+        "are unreachable and any stale row stays on screen"
+    )
+    assert list(rows) == [spec.function_id], (
+        f"the model must end with exactly one panel under its own id: {sorted(rows)}"
+    )
+    content = rows[spec.function_id].content
+    assert f"IMAGE_FILTER_MODEL_ID = {spec.model_id!r}" in content
+    for name in ALWAYS_ON_VALVE_NAMES:
+        assert _declares_valve(content, name), (
+            f"{name} is drawn on every image-API panel, and the stored row omits it"
         )
-        assert "IMAGE_FILTER_MODEL_ID" in rows[spec.function_id].content
-    else:
-        assert result is None
-        assert rows == {}
 
 
 @pytest.mark.parametrize(
@@ -4828,4 +4846,39 @@ def test_the_drawing_model_note_describes_the_panel_that_model_actually_gets(slu
     assert "in general" in note, (
         f"{model_id} draws {sorted(unnarrowed)} with the image API's own values rather "
         f"than its own, and the note does not say so: {note!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "published"),
+    [("aspect_ratio", True), ("not_a_knob", False)],
+    ids=["a-knob-the-panel-draws", "a-key-only-the-client-sent"],
+)
+def test_a_setting_no_panel_draws_is_named_by_itself_and_not_by_an_empty_title(
+    name, published
+):
+    """``image_config`` arrives from the client, so a key need not be one of the nine.
+
+    Every note about a dropped or clamped setting is written through this one labeller,
+    and an unknown key has no title. Handing the titled shape back regardless renders the
+    note as " (whatever_they_sent) is not offered by this model" -- opening on a space and
+    an empty pair of parentheses, with nothing between them to say what the parentheses
+    are qualifying.
+
+    One name the panel draws and one it does not, so the two expected shapes differ: a
+    labeller that always returns the bare name fails the first row, and one that always
+    returns the titled form fails the second. The titled expectation is read out of
+    ``IMAGE_KNOB_TITLES`` rather than written here, so a retitled control cannot leave
+    this asserting wording that no longer ships. The function is pure; nothing is stubbed.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import IMAGE_KNOB_TITLES
+    from open_webui_openrouter_pipe.integrations.image import _labelled
+
+    assert (name in IMAGE_KNOB_TITLES) is published, (
+        f"precondition: {name!r} has to be {'a published knob' if published else 'absent'}"
+    )
+    expected = f"{IMAGE_KNOB_TITLES[name][0]} ({name})" if published else name
+
+    assert _labelled(name) == expected, (
+        f"a note about {name!r} would read {_labelled(name)!r}"
     )

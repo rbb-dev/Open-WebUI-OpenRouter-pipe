@@ -54,6 +54,8 @@ SYSTEM_PROMPT_ROLES = frozenset({"system", "developer"})
 
 SCHEMA_ONLY_PARAMS: tuple[str, ...] = ("size",)
 
+TIER_EQUIVALENT: dict[str, str] = {"size": "resolution"}
+
 CONTRACT_GATED_PARAMS: tuple[str, ...] = tuple(
     name for name in TOP_LEVEL_PARAMS if name not in SCHEMA_ONLY_PARAMS
 )

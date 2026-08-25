@@ -191,7 +191,7 @@ Image-output models (Sourceful Riverflow, Black Forest Labs FLUX, ByteDance Seed
 | Valve | Type | Default (verified) | Purpose / notes |
 | --- | --- | --- | --- |
 | `ENABLE_OPENROUTER_IMAGE_GENERATION` | `bool` | `True` | Expose OpenRouter native image-output models as chat models. Pure-image-only models (FLUX, Riverflow, Seedream) are discovered via `/api/v1/models?output_modalities=image`. Multimodal text+image models (gpt-5-image, gemini-image variants) stay in the chat catalog and get their own settings panel, like every other image model. Setting this to `False` empties the image model list and clears its refresh timestamp on the next model-list build, ahead of the catalogue refresh window, so pure-image-only models are gone from OWUI's dropdown as soon as it is rebuilt rather than after `MODEL_CATALOG_REFRESH_SECONDS`. |
-| `AUTO_INSTALL_IMAGE_FILTERS` | `bool` | `True` | Install and keep up to date one settings panel per image model, offering the settings that model publishes to OpenRouter plus `IMAGE_SIZE`, which every panel carries, and — on models that answer only with a picture — `IMAGE_PROVIDER_OPTIONS_JSON`, `IMAGE_REFERENCE_MODE` and `IMAGE_REFERENCE_URLS`. If a model's settings list cannot be read on a refresh it keeps the settings from its last successful read; a model never read gets no panel at all rather than a guessed set. |
+| `AUTO_INSTALL_IMAGE_FILTERS` | `bool` | `True` | Install and keep up to date one settings panel per image model, offering the settings that model publishes to OpenRouter plus `Output size`, which every panel carries, and — on models that answer only with a picture — `Provider options`, `Reference images` and `Reference image links`. If a model's settings list cannot be read on a refresh it keeps the settings from its last successful read; a model never read gets no panel at all rather than a guessed set. |
 | `AUTO_ATTACH_IMAGE_FILTERS` | `bool` | `True` | Attach each image model's own settings panel to it, so its settings appear in the chat controls when that model is selected. A single model can opt out with the `disable_image_filter_auto_attach` advanced parameter. |
 | `AUTO_DEFAULT_IMAGE_FILTERS` | `bool` | `True` | Always keep the attached image filters enabled by default on image-output models. Re-asserted on every catalog metadata sync. Setting this to `False` stops new models being defaulted but does not detach panels already marked default — clear those on the model itself. |
 
@@ -507,7 +507,7 @@ reference is in [OpenRouter Provider Routing](openrouter_provider_routing.md).
 | Valve | Type | Default (verified) | Purpose / notes |
 | --- | --- | --- | --- |
 | `USE_MODEL_MAX_OUTPUT_TOKENS` | `bool` | `False` | When enabled **and the request carries no limit of its own**, fills `max_output_tokens` from the provider-advertised `max_completion_tokens` in the catalog; a model that advertises none is left unchanged. Disabled, the pipe adds no limit of its own and provider defaults apply. The valve controls the pipe's automatic value, not the caller's: a `max_tokens` of 1 or above is forwarded unchanged in either state. OpenRouter documents the parameter as "1 or above" and Open WebUI's slider reaches -2, so a value below 1 is sent as no cap — and this valve's automatic ceiling then applies if it is on. |
-| `SHOW_FINAL_USAGE_STATUS` | `bool` | `True` | Includes timing/cost/tokens in the final status message. |
+| `SHOW_FINAL_USAGE_STATUS` | `bool` | `True` | Includes timing and token counts in the final status line, plus the cost of the generation where that cost is above zero; off, the line reports elapsed time alone. |
 | `FINAL_USAGE_STATUS_STYLE` | `Literal["text","icons"]` | `text` | Choose text labels or icons for the final usage status line. |
 | `USAGE_STATUS_ICON_SET` | `str` | `⧗,$,⇅,▲,▼,↺,▽` | CSV icon set for final usage status fields (time,cost,total,input,output,cached,reasoning). Used only when `FINAL_USAGE_STATUS_STYLE="icons"`. |
 
@@ -582,7 +582,7 @@ User valves provide per-user behavior overrides for a subset of settings.
 
 | Valve | Type | Default (verified) | Purpose / notes |
 | --- | --- | --- | --- |
-| `SHOW_FINAL_USAGE_STATUS` | `bool` | `True` | Display tokens, time, and cost at the end of each reply. |
+| `SHOW_FINAL_USAGE_STATUS` | `bool` | `True` | Display tokens, time, and cost at the end of each reply; the cost appears only when it is above zero. |
 | `ENABLE_REASONING` | `bool` | `True` | While the AI works, show its step-by-step reasoning when supported. |
 | `THINKING_OUTPUT_MODE` | `Literal[\"open_webui\", \"status\", \"both\"]` | `open_webui` | Choose where to show the model’s thinking while it works. |
 | `ENABLE_ANTHROPIC_INTERLEAVED_THINKING` | `bool` | `True` | When enabled and the selected model is Anthropic (`anthropic/...` or a `~anthropic/...` router alias), send `x-anthropic-beta: interleaved-thinking-2025-05-14` to opt into Claude interleaved thinking streams. |

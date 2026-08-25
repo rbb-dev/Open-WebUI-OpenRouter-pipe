@@ -100,18 +100,78 @@ def test_the_image_tool_draws_five_shared_controls_plus_exactly_one_size_control
     assert len(titles) == 6, f"{model_id} draws {len(titles)} controls: {titles}"
 
 
+_TIERED_MODELS = frozenset({
+    "bytedance-seed/seedream-4.5",
+    "google/gemini-3-pro-image",
+    "google/gemini-3-pro-image-preview",
+    "google/gemini-3.1-flash-image",
+    "google/gemini-3.1-flash-image-preview",
+    "google/gemini-3.1-flash-lite-image",
+    "krea/krea-2-large",
+    "krea/krea-2-medium",
+    "krea/krea-2-medium-turbo",
+    "qwen/qwen-image-3",
+    "qwen/qwen-image-3-pro",
+    "sourceful/riverflow-v2-fast",
+    "sourceful/riverflow-v2-pro",
+    "sourceful/riverflow-v2.5-fast",
+    "sourceful/riverflow-v2.5-pro",
+    "x-ai/grok-imagine-image-quality",
+})
+
+_TYPED_MODELS = frozenset({
+    "black-forest-labs/flux.2-flex",
+    "black-forest-labs/flux.2-klein-4b",
+    "black-forest-labs/flux.2-max",
+    "black-forest-labs/flux.2-pro",
+    "google/gemini-2.5-flash-image",
+    "microsoft/mai-image-2.5",
+    "microsoft/mai-image-2.5-pro",
+    "openai/gpt-5-image",
+    "openai/gpt-5-image-mini",
+    "openai/gpt-5.4-image-2",
+    "openai/gpt-image-1",
+    "openai/gpt-image-1-mini",
+    "openai/gpt-image-2",
+    "recraft/recraft-v3",
+    "recraft/recraft-v4",
+    "recraft/recraft-v4-pro",
+    "recraft/recraft-v4-pro-vector",
+    "recraft/recraft-v4-vector",
+    "recraft/recraft-v4.1",
+    "recraft/recraft-v4.1-pro",
+    "recraft/recraft-v4.1-pro-vector",
+    "recraft/recraft-v4.1-utility",
+    "recraft/recraft-v4.1-utility-pro",
+    "recraft/recraft-v4.1-vector",
+})
+
+
 def test_which_models_get_resolution_and_which_get_output_size():
-    """Asserted as two SETS, because a count is satisfied by the wrong models."""
+    """Asserted as two SETS, because a count is satisfied by the wrong models.
+
+    The membership is written out in full. An `assert tiered & typed == set()` stood here
+    and could not fail: every recorded model id is distinct and the loop writes each into
+    exactly one of the two sets, so the intersection is empty however the panels render.
+    A count could not fail usefully either -- sixteen and twenty-four are satisfied by any
+    sixteen and any twenty-four. Naming both sets is the only form in which a model moving
+    from one control to the other reddens.
+    """
     tiered, typed = set(), set()
     for slug, model_id in EVERY_CONTRACT:
         _fields, titles = _tool_controls(model_id, _records(slug))
         (tiered if "Resolution" in titles else typed).add(model_id)
 
-    assert tiered & typed == set()
-    assert "google/gemini-3-pro-image" in tiered and "qwen/qwen-image-3" in tiered
-    assert "openai/gpt-image-2" in typed and "recraft/recraft-v3" in typed
-    assert len(tiered) == 16 and len(typed) == 24, (
-        f"the documented split moved: {len(tiered)} tiered / {len(typed)} typed"
+    assert tiered == _TIERED_MODELS, (
+        f"the tiered half moved: {sorted(tiered - _TIERED_MODELS)} joined and "
+        f"{sorted(_TIERED_MODELS - tiered)} left"
+    )
+    assert typed == _TYPED_MODELS, (
+        f"the typed half moved: {sorted(typed - _TYPED_MODELS)} joined and "
+        f"{sorted(_TYPED_MODELS - typed)} left"
+    )
+    assert _TIERED_MODELS & _TYPED_MODELS == frozenset(), (
+        "the two recorded halves overlap, so one of them is mistyped"
     )
 
 
@@ -188,7 +248,7 @@ def test_the_image_gen_note_never_promises_fewer_settings_than_the_panel_draws()
             f"{label} drives the wrong branch of the note: has_knobs={spec.has_knobs}"
         )
         notes[label] = image_gen_model_note(spec, catalog_match=True)
-        published[label] = spec.published_anything
+        published[label] = spec.published_any_parameter
 
         _fields, titles = _tool_controls("vendor/probe", records)
         assert titles, f"{label} drew no controls at all, so this proves nothing"
@@ -207,6 +267,96 @@ def test_the_image_gen_note_never_promises_fewer_settings_than_the_panel_draws()
         "both empty causes now report the same flag, so the note has no way to tell an "
         "operator whether to wait for the providers to agree or to accept that the model "
         "publishes nothing"
+    )
+
+
+def _size_records(published: dict[str, tuple[str, ...] | None]) -> list[dict]:
+    """One record per company, publishing the tier list it was given."""
+    return [
+        {
+            "provider_slug": slug,
+            "provider_tag": slug,
+            "supported_parameters": (
+                {} if values is None else {"resolution": {"type": "enum", "values": list(values)}}
+            ),
+        }
+        for slug, values in published.items()
+    ]
+
+
+_GEN_TIER_CONTRACTS: dict[str, list[dict]] = {
+    "companies-sharing-a-list": _size_records({"alpha": ("1K", "2K"), "beta": ("1K", "2K", "4K")}),
+    "companies-with-different-lists": _size_records({"alpha": ("1K", "2K"), "beta": ("4K",)}),
+    "one-company-with-no-list": _size_records({"alpha": None}),
+}
+
+
+def _rendered_description(body: str, field: str) -> str:
+    """The description Open WebUI will show for one field of the rendered filter."""
+    block = body.split(f"        {field}: ", 1)
+    assert len(block) == 2, f"{field} is not drawn at all:\n{body}"
+    match = re.search(r"^ {20}description=(.+),$", block[1], re.M)
+    assert match is not None, f"{field} carries no description:\n{block[1]}"
+    return cast(str, ast.literal_eval(match.group(1)))
+
+
+@pytest.mark.parametrize("case", sorted(_GEN_TIER_CONTRACTS))
+def test_the_gen_note_and_the_size_field_read_one_classification_of_the_tiers(case):
+    """The note above the panel and the box inside it, on the same rendered filter.
+
+    They classified the same contract twice by different tests: the box asked whether the
+    companies publish tiers between them, the note asked only whether one list survived
+    the intersection. Where the companies publish different lists those answers differ,
+    and the reader was told the model publishes no tiers directly above a box saying a
+    tier is checked against every tier they publish. Both values here are read back off
+    the RENDERED filter -- the title the panel draws and the sentence in the box -- and
+    the three contracts land on three different classifications, so no fixed clause
+    satisfies them.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        _SIZE_MEANING,
+        _valve_name,
+        IMAGE_KNOB_TITLES,
+        gen_tier_clause,
+    )
+    from open_webui_openrouter_pipe.integrations.image_types import TIER_EQUIVALENT
+
+    model_id = "vendor/probe"
+    records = _GEN_TIER_CONTRACTS[case]
+    spec = build_image_model_filter_spec(
+        model_id, {"id": model_id}, records, dedicated_image_api=True
+    )
+    body = _tool_body(model_id, records)
+    _fields, titles = _tool_controls(model_id, records)
+    note = image_gen_model_note(spec, catalog_match=True)
+
+    tiered = IMAGE_KNOB_TITLES[TIER_EQUIVALENT["size"]][0]
+    plain = IMAGE_KNOB_TITLES["size"][0]
+    drawn = [title for title in titles if title in (tiered, plain)]
+    assert drawn == sorted(set(drawn)) and len(drawn) == 1, (
+        f"{case}: the panel draws {drawn}, so there is no one size control to describe"
+    )
+
+    if drawn[0] == tiered:
+        state = "own"
+    else:
+        shown = _rendered_description(body, _valve_name("size"))
+        states = {
+            key for (key, _ratio), (clause, _pixels) in _SIZE_MEANING.items() if clause in shown
+        }
+        assert len(states) == 1, (
+            f"{case}: the box reads as {states or 'none'} of the known classifications: {shown!r}"
+        )
+        state = states.pop()
+
+    clause = gen_tier_clause(state, model_id)
+    assert clause in note, (
+        f"{case}: the panel draws {drawn[0]} and its box reads as {state!r}, and the note "
+        f"above it accounts for the size control differently: {note!r}"
+    )
+    assert clause.startswith(drawn[0]), (
+        f"{case}: the note names {clause.split(',')[0]!r} where the panel draws "
+        f"{drawn[0]!r}"
     )
 
 
@@ -301,11 +451,16 @@ def test_the_output_size_control_describes_both_forms_openrouter_accepts(
         f"the box names Resolution={('Resolution' in block)} while the panel draws it "
         f"={resolution_drawn}; a control the reader cannot see must not be named: {block}"
     )
-    claims_own_tiers = "checked against the tiers this model publishes" in block
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import _SIZE_MEANING
+
+    own_clauses = {
+        clause for (state, _ratio), (clause, _pixels) in _SIZE_MEANING.items() if state == "own"
+    }
+    claims_own_tiers = any(clause in block for clause in own_clauses)
     assert claims_own_tiers is resolution_drawn, (
-        f"the box claims the model's own tiers are checked={claims_own_tiers} while this "
-        f"panel publishes a tier list={resolution_drawn}; where none is published the "
-        f"tier is measured only against OpenRouter's four names: {block}"
+        f"the box claims the model's own limit is checked={claims_own_tiers} while this "
+        f"panel publishes a tier list={resolution_drawn}; where nothing is published for "
+        f"size the tier is measured only against OpenRouter's four names: {block}"
     )
     assert "rather than a tier" not in block
 
@@ -3464,4 +3619,1870 @@ def test_a_card_joined_to_a_partial_answer_renders_as_its_own_block(answer, card
         "the card does not open a block of its own beneath the answer, so the reader is "
         f"shown one run-on paragraph.\njoined:\n{md.render(joined)}\n"
         f"answer then card:\n{md.render(answer) + md.render(card)}"
+    )
+
+
+# ------------------------------------------- A CARD AGREES WITH ITS OWN LIST ---
+def _help_records_by_id() -> dict[str, list[dict]]:
+    """Every recorded contract, keyed by the model id its help card is written for."""
+    found: dict[str, list[dict]] = {}
+    for path in sorted(FIXTURES.glob("openrouter_image_endpoints_*.json")):
+        raw = json.loads(path.read_text())
+        found[raw["id"]] = [r for r in (raw.get("endpoints") or [raw]) if isinstance(r, dict)]
+    assert len(found) > 30, f"only {len(found)} contracts; the card sweep went hollow"
+    return found
+
+
+_HELP_RECORDS = _help_records_by_id()
+
+
+def _help_data() -> dict[str, dict]:
+    from open_webui_openrouter_pipe.integrations.image_help import IMAGE_HELP_BY_MODEL
+
+    return IMAGE_HELP_BY_MODEL
+
+
+_CARDED_MODELS = sorted(set(_help_data()) & set(_HELP_RECORDS))
+
+assert len(_CARDED_MODELS) > 30, (
+    f"only {len(_CARDED_MODELS)} models have both a card and a contract; the sweep is hollow"
+)
+
+_BACKTICKED = re.compile(r"`([^`]+)`")
+
+
+def _card_prose(model_id: str) -> str:
+    entry = _help_data()[model_id]
+    return " ".join([entry.get("best_known_for", ""), *(entry.get("tips_and_pitfalls") or [])])
+
+
+def _card_spec(model_id: str):
+    return build_image_model_filter_spec(
+        model_id, {"id": model_id, "name": model_id}, _HELP_RECORDS[model_id],
+        dedicated_image_api=True,
+    )
+
+
+def _cards_naming_their_settings() -> list[str]:
+    naming = []
+    for model_id in _CARDED_MODELS:
+        published = set(_card_spec(model_id).passthrough)
+        if published and set(_BACKTICKED.findall(_card_prose(model_id))) & published:
+            naming.append(model_id)
+    return naming
+
+
+assert _cards_naming_their_settings(), (
+    "no card names any of its model's published settings, so the subset guard below "
+    "cannot fail on anything and proves nothing"
+)
+
+
+@pytest.mark.parametrize("model_id", _CARDED_MODELS, ids=_CARDED_MODELS)
+def test_no_image_card_names_a_smaller_setting_set_than_the_one_it_prints(model_id):
+    """The prose and the Controls list under it come from the same card; they disagreed.
+
+    One card said its model "takes `style` and `text_layout`" while the list a few lines
+    below it -- built from that model's own published contract -- printed three, and a
+    second sentence on the same card said three. A reader shown two numbers on one card
+    has to guess which is the model.
+
+    Both halves are measured, never asserted as a constant: the published set is read
+    from the recorded contract, and the named set from the rendered card. Naming one
+    published setting means naming all of them, because a partial list reads as a
+    complete one. Parametrised over every recorded model -- three-setting Recraft and
+    the models that publish none among them -- so a hardcoded three fails on the
+    contracts whose answer is zero.
+    """
+    published = set(_card_spec(model_id).passthrough)
+    named = set(_BACKTICKED.findall(_card_prose(model_id))) & published
+
+    assert not named or named == published, (
+        f"{model_id} names {sorted(named)} of the {len(published)} settings its own "
+        f"Controls list prints ({sorted(published)}), so the card contradicts itself"
+    )
+
+
+# ---------------------------- A CARD SELLS ONLY WHAT ITS CONTRACT STILL PUBLISHES ---
+# What is enforceable here is narrower than "the prose is true", and pretending otherwise
+# would be the fake. There is no derivable mapping from an arbitrary English capability
+# noun to the parameter that would implement it. ONE property is derivable, and it is the
+# only one asserted: a setting named in code style is one some recorded contract
+# publishes, and the model whose card names it is the model that publishes it.
+#
+# A guard that read a hyphenated capability ("super-resolution") as qualifying a noun the
+# contract publishes ("resolution") stood here and was removed: its expectation was a
+# human theory about English rather than anything production computes, and it flags
+# "High-resolution counterpart" -- which is true, and is on two Recraft cards today -- on
+# all sixteen recorded models that publish a `resolution` parameter. What went with it: a
+# capability claim that leaves a contract without the prose being corrected is no longer
+# detected by anything, unless the prose names the parameter in backticks.
+_PASSTHROUGH_VOCABULARY = {
+    str(name).lower()
+    for model_id in _CARDED_MODELS
+    for name in _card_spec(model_id).passthrough
+}
+
+assert len(_PASSTHROUGH_VOCABULARY) > 10, (
+    f"only {sorted(_PASSTHROUGH_VOCABULARY)} published across every recorded contract; "
+    "the borrowed-setting guard has almost no vocabulary to catch anything with"
+)
+
+
+@pytest.mark.parametrize("model_id", _CARDED_MODELS, ids=_CARDED_MODELS)
+def test_no_card_writes_a_setting_name_its_own_model_does_not_publish(model_id):
+    """A setting named in backticks on one card is a setting some contract publishes.
+
+    The card that named `font_inputs` was right; the guard beside this one only compares
+    a card against the names its own model publishes, so a card borrowing a neighbour's
+    setting -- the same family, one model that publishes it and one that does not -- is
+    invisible to it. The vocabulary here is every name published by any recorded
+    contract, so borrowing is what it reads.
+
+    Every recorded model is an arm. Of the forty, fifteen publish three settings, three
+    publish eight, sixteen publish one, and six publish none -- and on those six the
+    answer is that naming any of the vocabulary at all is wrong.
+    """
+    published = {str(name).lower() for name in _card_spec(model_id).passthrough}
+    named = {token.strip().lower() for token in _BACKTICKED.findall(_card_prose(model_id))}
+
+    borrowed = sorted((named & _PASSTHROUGH_VOCABULARY) - published)
+    assert not borrowed, (
+        f"the {model_id} card writes {borrowed}, which some other model publishes and "
+        f"this one does not; it publishes {sorted(published) or 'nothing'}"
+    )
+
+
+# ------------------------------------ TWO SURFACES, ONE COMPARISON PER MODEL ---
+_COMPARISON = re.compile(
+    r"\b(same|lower|higher)\b((?:[\s\-]+[A-Za-z`_][\w`.\-]*){1,3})", re.I
+)
+_UNGRADED = frozenset(
+    """the a an and or at in on of for to its it this that with than as but so is are
+    was be by from up one two three four five six same lower higher no not all both
+    each""".split()
+)
+
+
+def _doc_model_sections() -> dict[str, str]:
+    text = (DOCS / "openrouter_image_generation.md").read_text()
+    sections: dict[str, str] = {}
+    for part in re.split(r"^### ", text, flags=re.M)[1:]:
+        marked = re.search(r"^> \*\*id\*\*: `([^`]+)`", part, flags=re.M)
+        if marked:
+            sections[marked.group(1)] = part
+    assert len(sections) > 20, f"only {len(sections)} model sections found in the doc"
+    return sections
+
+
+_DOC_SECTIONS = _doc_model_sections()
+
+
+def _comparisons(text: str) -> dict[str, set[str]]:
+    """Every "same/lower/higher X" verdict, indexed by each thing X could be about.
+
+    The subject is not always the word straight after the comparator: "same Sourceful
+    quality" grades quality, and reading only the adjacent word grades Sourceful and
+    misses the claim entirely -- which is how the regression this guards survived a
+    first attempt at a guard. So the following few words are each indexed, minus the
+    ones that grade nothing.
+    """
+    flattened = re.sub(r"\s+", " ", text.replace("`", "").replace("\n", " "))
+    found: dict[str, set[str]] = {}
+    for comparator, tail in _COMPARISON.findall(flattened):
+        for word in re.findall(r"[A-Za-z][\w.\-]*", tail):
+            subject = word.lower().rstrip(".,;:")
+            if subject in _UNGRADED:
+                continue
+            found.setdefault(subject, set()).add(comparator.lower())
+    return found
+
+
+_DOCUMENTED_CARDS = sorted(set(_help_data()) & set(_DOC_SECTIONS))
+
+
+def _models_comparing_the_same_thing_twice() -> list[str]:
+    return [
+        model_id
+        for model_id in _DOCUMENTED_CARDS
+        if set(_comparisons(_card_prose(model_id))) & set(_comparisons(_DOC_SECTIONS[model_id]))
+    ]
+
+
+assert len(_models_comparing_the_same_thing_twice()) > 5, (
+    "no model is compared on the same subject by both surfaces, so the agreement guard "
+    "below has nothing to disagree about"
+)
+
+
+@pytest.mark.parametrize("model_id", _DOCUMENTED_CARDS, ids=_DOCUMENTED_CARDS)
+def test_the_card_and_the_doc_never_grade_the_same_model_differently(model_id):
+    """"Same quality" on one surface and "lower quality" on the other, for one model.
+
+    A three-part sentence lost its middle line in a refactor and spliced "same Sourceful"
+    onto "quality", turning a cheaper, lower-quality variant into an equal one at less
+    money. The document kept the true wording, so the two surfaces graded the same model
+    opposite ways and nothing noticed.
+
+    Both sides are extracted, never written down here: every "same/lower/higher X" clause
+    on each surface, compared on the subjects both surfaces actually grade. A subject one
+    surface never mentions is out of scope -- that is an omission, not a contradiction --
+    but a subject both name must carry the same verdict on both.
+    """
+    from_card = _comparisons(_card_prose(model_id))
+    from_doc = _comparisons(_DOC_SECTIONS[model_id])
+
+    for subject in sorted(set(from_card) & set(from_doc)):
+        assert from_card[subject] == from_doc[subject], (
+            f"the {model_id} card grades {subject!r} as {sorted(from_card[subject])} and "
+            f"the document grades it {sorted(from_doc[subject])}"
+        )
+
+
+# ------------------------ THE PANEL PROMISE COVERS WHAT THE PANEL ACTUALLY DRAWS ---
+def _install_panels_description() -> str:
+    from open_webui_openrouter_pipe.core.config import Valves
+
+    return Valves.model_fields["AUTO_INSTALL_IMAGE_FILTERS"].description or ""
+
+
+def _panel_titles(model_id: str, records: list[dict] | None, dedicated: bool) -> list[str]:
+    spec = build_image_model_filter_spec(
+        model_id, {"id": model_id, "name": model_id}, records, dedicated_image_api=dedicated
+    )
+    body = render_image_model_filter_source(spec).split("class UserValves(BaseModel):", 1)[1]
+    body = body.split("    def __init__", 1)[0]
+    return [double or single for double, single in _TITLE_PAIR_RE.findall(body)]
+
+
+_TITLE_PAIR_RE = re.compile(r"""^\s+title=(?:"([^"]+)"|'([^']+)'),$""", re.M)
+
+
+def _unpublished_titles(dedicated: bool) -> list[str]:
+    """The controls a panel draws that the model never asked for, read from the renderer."""
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        IMAGE_KNOB_TITLES,
+        always_on_controls,
+    )
+    from open_webui_openrouter_pipe.integrations.image_types import SCHEMA_ONLY_PARAMS
+
+    return [title for _n, _a, _d, title, _desc in always_on_controls(dedicated)] + [
+        IMAGE_KNOB_TITLES[name][0] for name in SCHEMA_ONLY_PARAMS
+    ]
+
+
+def _picture_only_titles() -> list[str]:
+    """The always-on controls production reserves for the picture-only transport.
+
+    Read from the frozenset the renderer filters by, not from the difference between the
+    two calls being compared: that difference is empty exactly when the filtering breaks,
+    which is the case the branch below has to detect.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        _IMAGE_API_ONLY_CONTROLS,
+        ALWAYS_ON_CONTROLS,
+    )
+
+    return [
+        title
+        for name, _a, _d, title, _desc in ALWAYS_ON_CONTROLS
+        if name in _IMAGE_API_ONLY_CONTROLS
+    ]
+
+
+@pytest.mark.parametrize("dedicated", [True, False], ids=["image-api", "chat-route"])
+def test_the_install_panels_valve_names_the_controls_no_model_publishes(dedicated):
+    """The admin was told the panel offers "exactly" what the model publishes. It does not.
+
+    Every panel draws Output size, which no recorded contract publishes, and a model that
+    answers with a picture and nothing else draws three more the panel supplies itself.
+    The description named none of them and claimed exclusivity over the published set, so
+    an admin reading it could not account for a single control on the screen.
+
+    The chat route's unbidden set is a SUBSET of the picture-only one, so "every drawn
+    title is named in the description" is the weaker of the two rows and the chat row
+    added nothing: a helper that ignored its transport argument altogether left both
+    green. What separates them is asserted directly instead -- the picture-only controls
+    are drawn on that transport and are NOT drawn on the chat route -- with the set of
+    them read from production rather than counted here, because the property is WHICH
+    controls each transport draws and not how many.
+
+    A ban on the words "exactly", "only" and "nothing but" stood here and was removed. It
+    was a substring test, so "commonly" failed it for containing "only"; and the words
+    themselves are true of plenty of correct sentences. What survives is the derived half:
+    every control the panel draws unbidden has to be NAMED, which is what an admin reading
+    the description needs in order to account for the screen.
+    """
+    description = _install_panels_description()
+    drawn_without_a_contract = _unpublished_titles(dedicated)
+    assert drawn_without_a_contract, "the renderer draws nothing unbidden; this proves nothing"
+
+    missing = [title for title in drawn_without_a_contract if title not in description]
+    assert not missing, (
+        f"the panel draws {drawn_without_a_contract} whatever the model publishes, and the "
+        f"description never names {missing}: {description!r}"
+    )
+
+    picture_only = _picture_only_titles()
+    assert picture_only, (
+        "production reserves no always-on control for the picture-only transport, so "
+        "neither row here can tell the two transports apart"
+    )
+    drawn = set(drawn_without_a_contract)
+    if dedicated:
+        withheld = sorted(set(picture_only) - drawn)
+        assert not withheld, (
+            f"the picture-only transport is missing {withheld}, which production reserves "
+            f"for it; it draws {drawn_without_a_contract}"
+        )
+    else:
+        leaked = sorted(set(picture_only) & drawn)
+        assert not leaked, (
+            f"the chat route draws {leaked}, which production reserves for the "
+            f"picture-only transport; it draws {drawn_without_a_contract}"
+        )
+
+
+@pytest.mark.parametrize(
+    ("publishes", "typed"),
+    [("1K", "2K"), ("2K", "1K"), ("1K", "1K"), ("1K", "1024x1024")],
+    ids=["tier-not-published", "the-other-way-round", "tier-published", "exact-pixels"],
+)
+def test_the_install_panels_valve_says_what_becomes_of_a_size_a_model_never_published(
+    publishes, typed
+):
+    """The valve said a request can send Output size "whatever the model publishes".
+
+    It cannot. A tier is measured against the model's own published tier list, and one
+    that is not on it never leaves the pipe -- so an admin reading that sentence expects a
+    2K request to reach a model publishing only 1K, and it does not. The Config tab has
+    said so correctly all along, which left two admin surfaces giving opposite answers.
+
+    Whether the value survives is taken from the adapter that decides it, not asserted
+    here. Two of the rows type the same 1K and come out opposite ways -- dropped at a model
+    publishing 2K, kept at a model publishing 1K -- so neither an always-drop nor an
+    always-keep reading of the adapter satisfies both, and neither does a reading that
+    answers on the typed string: what the model published is what decides. What the
+    description must then carry is derived from that outcome.
+    """
+    from open_webui_openrouter_pipe.integrations.image import ImageGenerationAdapter
+    from open_webui_openrouter_pipe.integrations.image_types import SCHEMA_ENUMS
+
+    tiers = SCHEMA_ENUMS["resolution"]
+    assert publishes in tiers, f"{publishes} is not one of the tiers production knows"
+
+    record = {"supported_parameters": {"resolution": {"type": "enum", "values": [publishes]}}}
+    top_level, _provider, _notes = ImageGenerationAdapter._split_image_config(
+        {"image_config": {"size": typed}}, allowed_passthrough=(), record=record
+    )
+    survived = typed in set(top_level.values())
+    assert survived is (typed == publishes or typed not in tiers), (
+        f"a model publishing {publishes} answered {top_level!r} to {typed!r}, so the "
+        "adapter is dropping or keeping everything and the description cannot be checked "
+        "against it"
+    )
+
+    description = _install_panels_description()
+    if survived:
+        assert typed in description or typed in tiers, (
+            f"{typed!r} reaches the model and the description never shows an admin that "
+            f"spelling: {description!r}"
+        )
+        return
+
+    for tier in tiers:
+        assert tier in description, (
+            f"a tier this model never published was dropped, and the description names "
+            f"neither {tier} nor the list an admin has to check against: {description!r}"
+        )
+
+
+@pytest.mark.parametrize("dedicated", [True, False], ids=["image-api", "chat-route"])
+@pytest.mark.parametrize(("slug", "model_id"), EVERY_CONTRACT, ids=[s for s, _ in EVERY_CONTRACT])
+def test_every_recorded_panel_draws_more_than_its_model_publishes(slug, model_id, dedicated):
+    """Measured per contract, so the claim "panel equals contract" can never come back.
+
+    The published half is titled the way the panel titles it -- a typed setting by its
+    own name in words, a provider setting by the raw parameter -- and then asserted to be
+    a STRICT subset of what the panel draws. A panel that ever drew exactly its contract
+    fails on every recorded model at once, on either transport.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import image_knob_text
+
+    records = _records(slug)
+    spec = build_image_model_filter_spec(
+        model_id, {"id": model_id, "name": model_id}, records, dedicated_image_api=dedicated
+    )
+    published = {
+        *(image_knob_text(name, spec)[0] for name, _values in spec.enums),
+        *(image_knob_text(name, spec)[0] for name, _low, _high in spec.ranges),
+        *(image_knob_text(name, spec)[0] for name in spec.supported),
+        *spec.passthrough,
+    }
+    drawn = set(_panel_titles(model_id, records, dedicated))
+    unbidden = set(_unpublished_titles(dedicated))
+
+    assert published, f"{model_id} publishes nothing, so a superset claim proves nothing"
+    assert published < drawn, (
+        f"{model_id} publishes {sorted(published)} and its panel draws {sorted(drawn)}; "
+        "the panel must carry strictly more than the contract for the valve description "
+        "to be readable at all"
+    )
+    assert drawn - published == unbidden, (
+        f"{model_id} draws {sorted(drawn - published)} on top of its contract, and the "
+        f"renderer's always-present set is {sorted(unbidden)}"
+    )
+
+
+# -------------------------------- A COST PROMISE THE READER CAN TURN OFF ---
+# The first version of this guard searched for one phrase, "status line when it
+# finishes". A document said "status footer ... includes the cost of the generation"
+# instead and carried the same unconditional promise straight past it. What follows
+# reads the claim rather than a phrasing: money beside the name of the surface beside
+# any verb of showing. The three vocabularies below are anchored to production by the
+# tests -- the surface word is the tail of the valve that governs it, the money word is
+# the one the builder actually prints, and the setting is read from the setting.
+_GATE_VALVE = "SHOW_FINAL_USAGE_STATUS"
+
+_MONEY_SYMBOL = r"\$\d"
+_MONEY_WORDS = (
+    r"\bcosts?\b|\bcosting\b|\bpric\w*\b|\bcharges?d?\b|\bbill(?:s|ed|ing)?\b"
+    r"|\bfees?\b"
+)
+_MONEY_SYMBOL_RE = re.compile(_MONEY_SYMBOL, re.I)
+_MONEY_WORD_RE = re.compile(_MONEY_WORDS, re.I)
+_MONEY_RE = re.compile(f"{_MONEY_SYMBOL}|{_MONEY_WORDS}", re.I)
+_DISPLAY_RE = re.compile(
+    r"\b(?:show\w*|display\w*|includ\w*|render\w*|appear\w*|print\w*|says?|said|tells?"
+    r"|told|carr(?:y|ies|ied)|lists?|listed|lands?|landed|arriv\w*|report\w*|return\w*"
+    r"|gives?|puts?|adds?|writes?|written|reads?|sits?|holds?|comes?|ends?)\b",
+    re.I,
+)
+_CONDITIONAL_RE = re.compile(
+    r"\b(?:where|wherever|whenever|if|unless|only|as long as|provided)\b", re.I
+)
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+_FENCE_RE = re.compile(r"^\s*```")
+
+
+def _gate_names() -> tuple[str, str]:
+    """The two names a sentence may use for the setting that suppresses the figure."""
+    from open_webui_openrouter_pipe.core.config import UserValves, Valves
+
+    assert _GATE_VALVE in Valves.model_fields and _GATE_VALVE in UserValves.model_fields, (
+        f"{_GATE_VALVE} is not a valve on either model any more; the sweep below is "
+        "pointing readers at a setting that does not exist"
+    )
+    title = UserValves.model_fields[_GATE_VALVE].title
+    assert title, "the setting the cards point a reader at has no user-facing name"
+    return title, _GATE_VALVE
+
+
+def _status_surface_word() -> str:
+    """What the pipe calls the surface, taken from the valve that governs it."""
+    return _GATE_VALVE.rsplit("_", 1)[-1].lower()
+
+
+def _states_a_condition(sentence: str) -> bool:
+    """Whether a sentence qualifies its claim at all.
+
+    Bare "when" is not in the vocabulary. Every shipped cost sentence ends "when it
+    finishes", which dates the figure rather than conditioning it, so counting it made
+    "Show usage details always puts the price on the status line when it finishes" --
+    a flat promise stating the opposite of the truth -- read as conditional.
+    """
+    return bool(_CONDITIONAL_RE.search(sentence))
+
+
+def _names_the_status_surface(sentence: str) -> bool:
+    """Whether a sentence is talking about the surface the figure lands on.
+
+    Two ways, both taken from production: the word the pipe uses for the surface, and the
+    name of the setting that governs it. A valve description is read under its own field
+    name and a table row carries that name in its first column, so neither has to repeat
+    the word for the sweep to know what it is about. Reading the word alone is how
+    "Display tokens, time, and cost at the end of each reply" -- the sentence a reader is
+    shown in their own settings -- stayed invisible to every version of this sweep.
+    """
+    title, identifier = _gate_names()
+    surface = re.compile(rf"\b{_status_surface_word()}\w*\b", re.I)
+    gate = re.compile(rf"{re.escape(title)}|{re.escape(identifier)}", re.I)
+    return bool(surface.search(sentence) or gate.search(sentence))
+
+
+def _promises_a_cost_on_the_status_line(sentence: str) -> bool:
+    return bool(
+        _MONEY_RE.search(sentence)
+        and _names_the_status_surface(sentence)
+        and _DISPLAY_RE.search(sentence)
+    )
+
+
+def _sentences(text: str) -> list[str]:
+    return [part.strip() for part in _SENTENCE_SPLIT.split(text) if part.strip()]
+
+
+def _doc_sentences(path: Path) -> list[tuple[str, bool]]:
+    """Every sentence in a document, each flagged for whether it is a table row.
+
+    Wrapped lines are rejoined first: the sentence that escaped the old guard runs
+    across four lines, and reading a document a line at a time splits claims in half.
+    """
+    found: list[tuple[str, bool]] = []
+    block: list[str] = []
+    fenced = False
+
+    def flush() -> None:
+        if block:
+            joined = " ".join(part.strip() for part in block).strip()
+            block.clear()
+            found.extend((sentence, False) for sentence in _sentences(joined))
+
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        if _FENCE_RE.match(raw):
+            fenced = not fenced
+            flush()
+            continue
+        if fenced:
+            continue
+        stripped = raw.strip()
+        if not stripped:
+            flush()
+            continue
+        if stripped.startswith("|"):
+            flush()
+            found.append((stripped, True))
+            continue
+        if stripped.startswith(("#", "- ", "* ", "> ")):
+            flush()
+            found.append((stripped.lstrip("#-*> ").strip(), False))
+            continue
+        block.append(raw)
+    flush()
+    return found
+
+
+def _rendered_cards() -> dict[str, str]:
+    """Every help card a reader can be shown, rendered the way they are shown it."""
+    from open_webui_openrouter_pipe.integrations.image_help import render_image_help
+    from open_webui_openrouter_pipe.integrations.video_help import render_video_help
+
+    cards: dict[str, str] = {}
+    for slug, model_id in EVERY_CONTRACT:
+        cards[f"image card {model_id}"] = render_image_help(
+            model_id, {"id": model_id, "name": model_id},
+            endpoint_record=_records(slug), dedicated_image_api=True,
+        )
+    catalog = json.loads((FIXTURES / "video_models_catalog.json").read_text())["data"]
+    for model in catalog:
+        cards[f"video card {model['id']}"] = render_video_help(model["id"], model)
+    return cards
+
+
+def _valve_descriptions() -> list[tuple[str, str]]:
+    """(surface, one sentence as a reader meets it) for every description on either model.
+
+    Derived by walking the models, not by naming files. A sweep that reads rendered cards
+    and documents cannot see a valve description at all, and that is where the sentence an
+    administrator reads while deciding whether to switch the figure on was sitting. Each
+    sentence carries its field's name or title, because that is what a reader reads it
+    under, and it is what says which setting the sentence is describing.
+    """
+    from open_webui_openrouter_pipe.core.config import UserValves, Valves
+
+    found: list[tuple[str, str]] = []
+    for model_name, model in (("Valves", Valves), ("UserValves", UserValves)):
+        for field_name, field in model.model_fields.items():
+            label = field.title or field_name
+            for sentence in _sentences((field.description or "").strip()):
+                found.append((f"{model_name}.{field_name}", f"{label}: {sentence}"))
+    return found
+
+
+def _cost_promises() -> list[tuple[str, str, bool]]:
+    """(surface, sentence, whether the surface names the setting itself) per cost claim.
+
+    The third field is true of a table row and of a valve description, both of which carry
+    the setting's name beside the sentence rather than inside it. That spares them the
+    checks about pointing a reader at the switch. It spares them nothing about whether the
+    figure appears at all.
+    """
+    found: list[tuple[str, str, bool]] = []
+    for name, card in _rendered_cards().items():
+        for line in card.splitlines():
+            for sentence in _sentences(line.strip().lstrip("#-*> ").strip()):
+                if _promises_a_cost_on_the_status_line(sentence):
+                    found.append((name, sentence, False))
+    for path in sorted(DOCS.glob("*.md")):
+        for sentence, is_row in _doc_sentences(path):
+            if _promises_a_cost_on_the_status_line(sentence):
+                found.append((path.name, sentence, is_row))
+    for name, sentence in _valve_descriptions():
+        if _promises_a_cost_on_the_status_line(sentence):
+            found.append((name, sentence, True))
+    return found
+
+
+@pytest.mark.parametrize(
+    ("show_usage", "usage"),
+    [
+        (True, {"cost": 0.0412, "input_tokens": 800, "output_tokens": 400}),
+        (False, {"cost": 0.0412, "input_tokens": 800, "output_tokens": 400}),
+        (True, {"input_tokens": 800, "output_tokens": 400}),
+    ],
+    ids=["shown", "switched-off", "no-cost-reported"],
+)
+def test_the_status_line_shows_a_cost_only_when_the_setting_and_the_payload_allow_it(
+    pipe_instance, show_usage, usage
+):
+    """The two ways the promised figure never appears, driven through the real builder.
+
+    Every image card closed by telling the reader the cost lands on the status line when
+    the generation finishes. An administrator, or the reader in their own settings, can
+    switch that line back to a bare elapsed time; and a provider that reports no cost
+    leaves the figure out while the setting is on.
+
+    Three rows, two outcomes, one payload shared by the first two -- a builder that always
+    printed a cost, or never did, fails a row.
+    """
+    valves = pipe_instance.Valves(SHOW_FINAL_USAGE_STATUS=show_usage)
+
+    description = pipe_instance._ensure_error_formatter()._format_final_status_description(
+        elapsed=7.3, total_usage=dict(usage), valves=valves, stream_duration=None
+    )
+
+    expected = show_usage and "cost" in usage
+    assert ("$" in description) is expected, (
+        f"show_usage={show_usage} cost={usage.get('cost')} produced {description!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("sentence", "promises"),
+    [
+        (
+            "The status footer rendered on the assistant message includes the cost of "
+            "the generation in dollars.",
+            True,
+        ),
+        (
+            "Where the company running the model reports a cost, it is shown on the "
+            "status line when it finishes.",
+            True,
+        ),
+        ("The price of a render lands on the final status line.", True),
+        ("Each font you supply: $0.03 per image", False),
+        ("Duration is any integer 1-15 seconds and cost scales linearly per second.", False),
+        ("The status line names the model the request is waiting on.", False),
+    ],
+    ids=[
+        "the-footer-wording-that-escaped",
+        "the-line-wording-the-old-guard-keyed-on",
+        "a-third-wording-neither-guard-was-written-for",
+        "a-published-rate-naming-no-surface",
+        "money-that-never-reaches-the-surface",
+        "the-surface-carrying-no-money",
+    ],
+)
+def test_the_cost_promise_detector_reads_the_claim_and_not_one_phrasing(sentence, promises):
+    """Three ways to make the same promise, three ways to mention money and not make it.
+
+    The guard this replaced searched for the literal "status line when it finishes", so
+    the first row here -- the wording that was live in a document at the time -- was
+    invisible to it while saying exactly the same thing, minus the two conditions.
+
+    Six rows split three-three, so a detector that answers the same way every time fails
+    half of them whichever way it answers.
+    """
+    assert _promises_a_cost_on_the_status_line(sentence) is promises, (
+        f"detector said {(not promises)!r} for {sentence!r}"
+    )
+
+
+def test_the_detector_hunts_the_words_production_actually_uses(pipe_instance):
+    """The vocabularies are anchored to the pipe, not to what this file guesses.
+
+    The money vocabulary has two halves and only one of them scans prose. The symbol
+    half matches the figure itself, which the builder always prints, so asserting the
+    union against the builder was satisfied by the dollar sign alone: relabelling the
+    segment "Spend $" left this green while the WORD half -- the only half a sentence in
+    a document can ever match, since prose never contains "$0.5" -- went stale unnoticed.
+    Each half is therefore asserted separately.
+
+    The text style is asked for by name rather than taken from the default, because the
+    label is what the word half must track whichever style ships as the default.
+    """
+    valves = pipe_instance.Valves(
+        SHOW_FINAL_USAGE_STATUS=True, FINAL_USAGE_STATUS_STYLE="text"
+    )
+    printed = pipe_instance._ensure_error_formatter()._format_final_status_description(
+        elapsed=1.0, total_usage={"cost": 0.5}, valves=valves, stream_duration=None
+    )
+
+    assert _MONEY_WORD_RE.search(printed), (
+        f"the status builder labels the figure in {printed!r}, and the sweep's money "
+        "WORDS match none of that label; prose carries the label and never the figure, "
+        "so every promise in a document would read as talking about nothing"
+    )
+    assert _MONEY_SYMBOL_RE.search(printed), (
+        f"the status builder prints {printed!r} with no figure the symbol half can find"
+    )
+
+    surface = _status_surface_word()
+    speaking = [name for name, card in _rendered_cards().items() if surface in card.lower()]
+    assert speaking, (
+        f"no rendered card calls the surface {surface!r}, which is the word taken from "
+        f"{_GATE_VALVE}; the sweep is looking for a name nothing uses"
+    )
+
+
+@pytest.mark.parametrize(
+    ("sentence", "conditional"),
+    [
+        (
+            "Show usage details always puts the price on the status line when it "
+            "finishes.",
+            False,
+        ),
+        (
+            "The cost of each generation is reported on the status line when it "
+            "finishes.",
+            False,
+        ),
+        (
+            "Where the company running the model reports a charge above zero, it is "
+            "shown on the status line when it finishes, as long as usage details are "
+            "on.",
+            True,
+        ),
+        (
+            "The status line shows a charge only where the provider reported one.",
+            True,
+        ),
+    ],
+    ids=[
+        "always-plus-a-temporal-when",
+        "the-flat-promise-that-shipped-once",
+        "the-wording-that-ships-now",
+        "a-different-conditional-vocabulary",
+    ],
+)
+def test_a_temporal_when_does_not_count_as_a_condition(sentence, conditional):
+    """"when it finishes" says WHEN the figure lands, never WHETHER it lands.
+
+    Both false rows end in that clause and neither qualifies the promise: the first
+    states the opposite of the truth, and the second is the flat wording the sweep
+    below was written to catch. Four rows split two-two, so a predicate answering the
+    same way every time fails half of them whichever way it answers.
+    """
+    assert _states_a_condition(sentence) is conditional, (
+        f"predicate said {(not conditional)!r} for {sentence!r}"
+    )
+
+
+def test_no_surface_promises_a_cost_on_the_status_line_without_naming_the_setting():
+    """Every claim that a cost is shown, wherever worded, carries what suppresses it.
+
+    Two conditions govern the figure and both are invisible to a reader who is only told
+    it appears: the setting can be off, and the provider may report no cost at all. The
+    sweep runs over rendered help cards, every document, and every valve description on
+    both models, sentence by sentence with wrapped lines rejoined, because the claim that
+    escaped the previous guard was a four-line sentence in a document and the one that
+    escaped the guard after it was a valve description no corpus of files could reach.
+
+    A table row and a valve description both carry the setting's name beside the sentence
+    rather than inside it, so only prose is asked for the conditional as well.
+    """
+    title, identifier = _gate_names()
+    promises = _cost_promises()
+
+    surfaces = {name for name, _sentence, _named in promises}
+    assert any(name.startswith(("image card ", "video card ")) for name in surfaces), (
+        f"no rendered card promises a cost at all ({sorted(surfaces)}); the sweep is hollow"
+    )
+    assert len({name for name in surfaces if name.endswith(".md")}) > 1, (
+        f"only {sorted(surfaces)} carry the promise; the document half of the sweep is hollow"
+    )
+    assert any(name.startswith(("Valves.", "UserValves.")) for name in surfaces), (
+        f"no valve description promises a cost ({sorted(surfaces)}); the half of the sweep "
+        "that reads what an administrator is shown while deciding is hollow"
+    )
+
+    for name, sentence, names_itself in promises:
+        assert title in sentence or identifier in sentence, (
+            f"{name} promises a cost on the status line without naming {title!r} (or "
+            f"{identifier}), which a reader can switch off: {sentence!r}"
+        )
+        if not names_itself:
+            assert _states_a_condition(sentence), (
+                f"{name} states the promise flatly, so a reader is never told the figure "
+                f"is conditional at all: {sentence!r}"
+            )
+
+
+# ------------------------ ONE NAME FOR THE SURFACE THE FIGURE LANDS ON ---
+# The sweep above recognises a promise by the NAME of the surface it is made about, so a
+# second name for that surface is a way round it rather than a matter of taste. It is how
+# the last untrue promise got out: a document said "status footer" while the guard of the
+# day searched for "status line". Widening that guard to the surface word alone closed the
+# one wording and left the shape of the hole open -- a name with no surface word in it is
+# still invisible, and the readiness report was carrying one. That last shape is what the
+# sweep below still refuses; the wider bans that once stood beside it are accounted for in
+# its docstring.
+
+
+def _sanctioned_surface_noun() -> str:
+    """The noun production gives this surface, taken from the setting that styles it.
+
+    That setting exists for the appearance of this one surface and names it while saying
+    so, which makes its description the place the product states what the thing is called.
+    The answer then has to turn up in a rendered help card as well, so the name rests on
+    two independent production surfaces and one reworded string cannot move it alone.
+    """
+    from open_webui_openrouter_pipe.core.config import Valves
+
+    surface = _status_surface_word()
+    styled = Valves.model_fields["FINAL_USAGE_STATUS_STYLE"].description or ""
+    found = re.search(rf"\b{surface}\s+([a-z]+)\b", styled, re.I)
+    assert found, (
+        "the setting that styles this surface no longer names it, so there is no "
+        f"production answer to hold a reader's documents to: {styled!r}"
+    )
+    noun = found.group(1).lower()
+    spoken = [
+        name
+        for name, card in _rendered_cards().items()
+        if re.search(rf"\b{surface}\s+{noun}s?\b", card, re.I)
+    ]
+    assert spoken, (
+        f"no rendered card calls it a {surface} {noun!r}, so the name rests on one valve "
+        "description and nothing a reader is actually shown agrees with it"
+    )
+    return noun
+
+
+def test_nothing_a_reader_meets_names_this_surface_without_the_word_the_sweep_keys_on():
+    """A name for this surface with no surface word in it is invisible to the sweep above.
+
+    One shape is refused, and both halves of it are read off production rather than typed
+    here: "final usage" followed by anything that is neither the surface word nor the noun
+    production gives it. That is what "final usage banners" was -- a name for the closing
+    figure's home with no "status" anywhere in it, so no wording of the sentence around it
+    could have brought it to the cost sweep's attention.
+
+    Two wider bans stood here and were removed: the surface word followed by another word
+    for a strip of text ("status footer", "status banner"), and the surface word followed
+    by a word for a mid-reply notice under a "final"/"usage" qualifier ("final status
+    message"). Both were lists of nouns somebody chose -- twenty of them between the two --
+    and BOTH shapes contain the surface word, so the cost sweep above already reads every
+    sentence carrying them. They bought house style, not coverage, and they refused true
+    sentences: "a status bar in the browser chrome" was a failure.
+
+    Text is flattened before it is read, because a hard-wrapped document splits the phrase
+    over two lines and a line-at-a-time scan sees neither half. The corpus is counted
+    before it is judged -- a guard filtering on wording nobody uses any more passes by
+    finding nothing, and the two floors are what stop that.
+    """
+    surface = _status_surface_word()
+    noun = _sanctioned_surface_noun()
+
+    no_surface_word = re.compile(
+        rf"\bfinal\s+usage\s+(?!(?:{surface}|{noun}s?)\b)[a-z]+\b", re.I
+    )
+    sanctioned = re.compile(rf"\b{surface}\s+{noun}s?\b", re.I)
+
+    corpus: list[tuple[str, str]] = [
+        (path.name, path.read_text(encoding="utf-8"))
+        for path in sorted(DOCS.rglob("*.md"))
+    ]
+    corpus += sorted(_rendered_cards().items())
+    corpus += _valve_descriptions()
+
+    speaking: set[str] = set()
+    uses = 0
+    offending: list[str] = []
+    for name, text in corpus:
+        flat = " ".join(text.split())
+        if name.endswith(".md"):
+            counted = len(sanctioned.findall(flat))
+            uses += counted
+            if counted:
+                speaking.add(name)
+        for hit in no_surface_word.finditer(flat):
+            start = max(0, hit.start() - 70)
+            offending.append(f"{name}: ...{flat[start : hit.end() + 70]}...")
+
+    assert uses >= 10, (
+        f"only {uses} mentions of a {surface} {noun!r} across every document; they have "
+        "stopped using the product's name for this surface, so this guard is holding them "
+        "to a phrase they no longer contain and is asserting almost nothing"
+    )
+    assert len(speaking) >= 4, (
+        f"only {sorted(speaking)} name the surface at all; the sweep has narrowed to a "
+        "corner of the documentation and a second name elsewhere would go unread"
+    )
+    assert not offending, (
+        f"production calls this surface a {surface} {noun!r} -- in the setting that styles "
+        "it, and in the cards a reader is shown. These name it without the word "
+        f"{surface!r} in it at all, so the sweep that checks what is promised about this "
+        "surface cannot see the sentence they are in:\n  " + "\n  ".join(offending)
+    )
+
+
+# ------------------- NO TIP POINTS AT A SECTION THAT MAY NOT BE THERE --------
+_HEADING_RE = re.compile(r"^#{2,}\s+(.*\S)\s*$", re.M)
+
+
+def _image_cards_both_ways() -> dict[tuple[str, bool], str]:
+    """Every image card, rendered with a contract and without one.
+
+    A card built with nothing published stops after the description and the tips, so the
+    sections below them are not there to be pointed at.
+    """
+    from open_webui_openrouter_pipe.integrations.image_help import (
+        _IMAGE_PER_MODEL_HELP_DATA,
+        render_image_help,
+    )
+
+    recorded = dict((model_id, slug) for slug, model_id in EVERY_CONTRACT)
+    cards: dict[tuple[str, bool], str] = {}
+    for model_id in _IMAGE_PER_MODEL_HELP_DATA:
+        model = {"id": model_id, "name": model_id}
+        cards[(model_id, False)] = render_image_help(
+            model_id, model, endpoint_record=None, dedicated_image_api=True
+        )
+        slug = recorded.get(model_id)
+        if slug:
+            cards[(model_id, True)] = render_image_help(
+                model_id, model, endpoint_record=_records(slug), dedicated_image_api=True
+            )
+    return cards
+
+
+def test_no_tip_sends_a_reader_to_a_section_the_card_did_not_render():
+    """A tip closed by naming a section that is only there when a contract was read.
+
+    With nothing published the card stops after the tips, so "under Controls below" ran
+    off the end of the page -- and the model most likely to be short of a contract is the
+    one whose tip is trying to explain what it accepts.
+
+    The sections are read out of each rendering and the tips out of the data, so nothing
+    here is typed: rename a heading and the vocabulary follows it. A heading name that is
+    the first half of a hyphenated word is a compound adjective and not a pointer, which
+    is what keeps "Cost-efficient variant" out of it.
+    """
+    from open_webui_openrouter_pipe.integrations.image_help import _IMAGE_PER_MODEL_HELP_DATA
+
+    cards = _image_cards_both_ways()
+    assert cards, "no card rendered at all"
+
+    per_card = {key: set(_HEADING_RE.findall(card)) for key, card in cards.items()}
+    vocabulary = set().union(*per_card.values())
+    assert len(vocabulary) > 1, f"only {vocabulary} was ever rendered; nothing to point at"
+    thin = [key for key, headings in per_card.items() if vocabulary - headings]
+    assert thin, (
+        "every card carries every section, so a tip could not point at a missing one and "
+        "this guard proves nothing"
+    )
+
+    for (model_id, _with_contract), card in cards.items():
+        entry = _IMAGE_PER_MODEL_HELP_DATA[model_id]
+        written = [entry.get("best_known_for", ""), *(entry.get("tips_and_pitfalls") or [])]
+        absent = vocabulary - per_card[(model_id, _with_contract)]
+        for text in written:
+            if not text or text not in card:
+                continue
+            pointed = [
+                heading
+                for heading in absent
+                if re.search(rf"\b{re.escape(heading)}\b(?!-)", text)
+            ]
+            assert not pointed, (
+                f"{model_id} tells the reader about {pointed}, and this rendering of its "
+                f"card has only {sorted(per_card[(model_id, _with_contract)])}: {text!r}"
+            )
+
+
+# ------------------- ONE COMPANY CANNOT DISAGREE WITH ITSELF -----------------
+def _unrenderable_descriptor() -> dict:
+    """A published range no control can be drawn from, built from production's own rule.
+
+    The renderer keeps a range only where its high bound is above its low one, so a bound
+    read back off `SCHEMA_RANGES` and used for both ends is published and undrawable --
+    without this file deciding for itself what "undrawable" means.
+    """
+    from open_webui_openrouter_pipe.integrations.image_types import SCHEMA_RANGES
+
+    low, _high = SCHEMA_RANGES["output_compression"]
+    return {"type": "range", "min": low, "max": low}
+
+
+def _disagreement_contracts() -> dict[str, list[dict]]:
+    from open_webui_openrouter_pipe.integrations.image_types import SCHEMA_ENUMS
+
+    quality, background = SCHEMA_ENUMS["quality"], SCHEMA_ENUMS["background"]
+    stuck = {"output_compression": _unrenderable_descriptor()}
+    return {
+        "one-company": [{"provider_slug": "solo", "supported_parameters": dict(stuck)}],
+        "two-companies-agreeing": [
+            {"provider_slug": "one", "supported_parameters": dict(stuck)},
+            {"provider_slug": "two", "supported_parameters": dict(stuck)},
+        ],
+        "two-companies-disagreeing": [
+            {
+                "provider_slug": "one",
+                "supported_parameters": {
+                    "quality": {"type": "enum", "values": list(quality)}
+                },
+            },
+            {
+                "provider_slug": "two",
+                "supported_parameters": {
+                    "background": {"type": "enum", "values": list(background)}
+                },
+            },
+        ],
+    }
+
+
+def test_the_card_blames_the_companies_only_where_they_actually_differ():
+    """"Did anyone publish" is not "did they differ", and the card said the second.
+
+    A lone company publishing one undrawable descriptor, and two publishing that same one,
+    both produced the sentence that blames the companies for disagreeing -- naming a
+    disagreement that cannot exist with one of them and does not exist with two that
+    match. Only the third contract here is a real disagreement.
+
+    All three end with no controls read from the contract, so the count cannot be what
+    separates them, and the sentences are read out of the rendered card rather than off
+    the flag. The sentence a real disagreement must carry is imported from production
+    rather than reduced to the word "different", so rewording it moves the expectation
+    instead of reddening the suite.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import DISAGREED_SETTINGS
+
+    blame = DISAGREED_SETTINGS.format(named="this model")
+    contracts = _disagreement_contracts()
+    said: dict[str, str] = {}
+    for label, records in contracts.items():
+        spec = build_image_model_filter_spec(
+            "vendor/probe", {"id": "vendor/probe"}, records, dedicated_image_api=True
+        )
+        assert spec.knob_count == 0, (
+            f"{label} draws {spec.knob_count} controls from its contract, so it never "
+            "reaches the sentence under test"
+        )
+        assert spec.published_any_parameter, (
+            f"{label} published nothing at all, which is a different sentence again"
+        )
+        card = _help_text("vendor/probe", records, True)
+        said[label] = card.split("## Controls", 1)[1].splitlines()[1]
+
+    assert said["one-company"] == said["two-companies-agreeing"], (
+        "one company and two that publish the same thing are both told the companies "
+        f"differ, or are told two different things: {said}"
+    )
+    assert said["two-companies-disagreeing"] != said["one-company"], (
+        "companies that genuinely publish different things get the same sentence as a "
+        f"single company, so the reader is never told to expect it to settle: {said}"
+    )
+    for label in ("one-company", "two-companies-agreeing"):
+        assert blame not in said[label], (
+            f"{label} is told the companies serving it differ: {said[label]!r}"
+        )
+    assert blame in said["two-companies-disagreeing"], (
+        f"a real disagreement is not named as one: {said['two-companies-disagreeing']!r}"
+    )
+
+
+# ------------------- BOTH SWITCHES, AND A CHARGE OF NOTHING ------------------
+_REPORTED_COUNTS: dict[str, int] = {"input_tokens": 800, "output_tokens": 400}
+
+
+def _status_with(
+    pipe_instance,
+    *,
+    admin: bool,
+    user: bool | None,
+    cost: float | None,
+    counters: dict[str, int] | None = None,
+) -> str:
+    """The status line the pipe builds, driven through the real user/admin valve merge.
+
+    ``user=None`` is a reader who has never opened their own settings, which is the case
+    the single-gate sentence was written for and the one it gets wrong: nothing of theirs
+    is set, so the administrator's default is what decides.
+
+    ``counters`` is what the reply reported. It defaults to a reply that reported some,
+    which is what every caller below this one drives; ``{}`` is a reply that reported
+    none, which is the shape a generation billed by the picture comes back in.
+    """
+    from open_webui_openrouter_pipe.core.config import UserValves
+
+    user_valves = UserValves() if user is None else UserValves(SHOW_FINAL_USAGE_STATUS=user)
+    merged = pipe_instance._merge_valves(
+        pipe_instance.Valves(SHOW_FINAL_USAGE_STATUS=admin), user_valves
+    )
+    usage: dict[str, Any] = dict(_REPORTED_COUNTS if counters is None else counters)
+    if cost is not None:
+        usage["cost"] = cost
+    return pipe_instance._ensure_error_formatter()._format_final_status_description(
+        elapsed=7.3, total_usage=usage, valves=merged, stream_duration=None
+    )
+
+
+# Two regexes stood here and were removed: one demanded that a cost sentence spell the
+# administrator's default as "administrator" or "site default", the other that it spell
+# the zero case as "above zero", "over zero", "more than zero", "greater than zero" or
+# "non-zero". Neither expectation was computed by anything; each mandated a handful of
+# spellings for one idea, so "your organisation's default" and "shown only when it is not
+# zero" -- both true, both clear -- were failures. Neither had a test of its own. What
+# survives in both tests below is the behaviour they were pretending to police, driven
+# through the production merge and the production builder, plus the derived obligation
+# that a promise names the setting production actually calls it by.
+
+
+@pytest.mark.parametrize("chosen", [True, False], ids=["user-says-on", "user-says-off"])
+def test_every_cost_promise_names_the_switch_that_decides_when_the_reader_has_not_chosen(
+    pipe_instance, chosen
+):
+    """Two valves carry this name, and a reader who has never chosen is governed by neither of the ones we named.
+
+    Only fields the reader actually set override the administrator's, so someone who has
+    never opened their own settings sees their own toggle reading on while the site
+    default decides. They check the switch every card names, find it on, and have nothing
+    left to look at. The administrator's copy has no title of its own, so it can only be
+    described.
+
+    What is asserted is the merge itself: the administrator's copy off and the reader's
+    unset must show no figure, while the reader's explicit choice must be obeyed either
+    way. Both rows of the parameter drive that choice, so a merge answering the same way
+    every time fails one of them. The prose obligation that survives is the derived one --
+    every promise names the setting by the title production gives it.
+
+    The obligation that a sentence ALSO spell out the administrator's default was removed:
+    it required one of two literal wordings, and there is no way to compute from production
+    that a given sentence discloses that fact.
+    """
+    title, identifier = _gate_names()
+    from open_webui_openrouter_pipe.core.config import Valves
+
+    assert Valves.model_fields[identifier].title is None, (
+        "the administrator's copy now has a name of its own, so the cards should point at "
+        "it by that name rather than describing it"
+    )
+
+    unset = _status_with(pipe_instance, admin=False, user=None, cost=0.0412)
+    explicit = _status_with(pipe_instance, admin=False, user=chosen, cost=0.0412)
+    assert ("$" in explicit) is chosen, (
+        f"a reader who set the switch to {chosen} is not obeyed: {explicit!r}"
+    )
+    assert "$" not in unset, (
+        "with the administrator's copy off and nothing of the reader's set, a figure "
+        f"appeared anyway, so there is only one gate after all: {unset!r}"
+    )
+
+    promises = _cost_promises()
+    assert promises, "the sweep found no promise at all; it is hollow"
+    for name, sentence, names_itself in promises:
+        if names_itself:
+            continue
+        assert title in sentence or identifier in sentence, (
+            f"{name} promises a cost without naming {title!r}: {sentence!r}"
+        )
+
+
+@pytest.mark.parametrize("cost", [0, 0.0412], ids=["reported-zero", "reported-a-charge"])
+def test_every_cost_promise_says_a_charge_of_nothing_is_not_shown(pipe_instance, cost):
+    """A generation reported at zero reports a cost, and the line stays empty.
+
+    Free listings, zero-rated routes and credited generations all come back with a cost of
+    zero, and the builder prints a figure only above zero. "Where a cost is reported" is
+    therefore false for exactly those, and the reader is left checking a switch that was
+    never the reason.
+
+    The two rows share every other input, so a builder that answered the same way to both
+    fails one of them: this is where the pipe's own zero-suppression is pinned, and it is
+    pinned nowhere else -- the sibling test above drives a cost present against a cost
+    absent, never a cost of zero.
+
+    The obligation that every cost sentence ALSO spell the zero case as "above zero" (or
+    one of four near-synonyms) was removed. It was a list of spellings for one idea, so
+    "a charge of nothing is not shown" and "never shown for a free generation" failed it
+    while saying exactly the right thing. Nothing computes, from production, whether a
+    given English sentence discloses the zero case; the floor below is what keeps the
+    corpus honest.
+    """
+    printed = _status_with(pipe_instance, admin=True, user=True, cost=cost)
+    shows_a_figure = "$" in printed
+    assert shows_a_figure is (cost > 0), (
+        f"a reported cost of {cost} produced {printed!r}, which is not what the sentences "
+        "under test are being measured against"
+    )
+    if shows_a_figure:
+        return
+
+    promises = _cost_promises()
+    assert promises, "the sweep found no promise at all; it is hollow"
+
+
+# ------------------- A CARD WITH NOTHING PUBLISHED STILL GETS A PANEL --------
+@pytest.mark.parametrize(
+    "contract",
+    ["empty", "recorded"],
+    ids=["publishes-nothing", "publishes-knobs"],
+)
+@pytest.mark.asyncio
+async def test_a_contract_that_was_read_gets_a_panel_whether_or_not_it_names_a_knob(
+    contract,
+):
+    """Help closes the knobless card with four controls; something must draw them.
+
+    The installer used to weigh the knob count, which leaves out the size control and the
+    three the panel supplies itself. A model whose contract reads clean but names no knob
+    scored zero, got no panel, and scored zero again on every refresh after -- so the four
+    controls its card listed existed nowhere, permanently.
+
+    Two arms: a contract that was read and publishes nothing, and one recorded from a live
+    model that publishes plenty. Both were read, so both draw a panel, and an installer
+    that answers on the knob count fails the first while passing the second.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+
+    slug, model_id = EVERY_CONTRACT[0]
+    records = [{"provider_slug": "solo", "supported_parameters": {}}]
+    if contract == "recorded":
+        records = _records(slug)
+
+    spec = build_image_model_filter_spec(
+        "vendor/probe", {"id": "vendor/probe"}, records, dedicated_image_api=True
+    )
+    assert spec.contract_read, "precondition: both arms are contracts that WERE read"
+    assert (spec.knob_count == 0) is (contract == "empty"), (
+        f"the {contract} arm no longer drives the branch it was written for: "
+        f"{spec.knob_count}"
+    )
+
+    pipe = MagicMock()
+    manager = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
+    written: list[str] = []
+    manager._ensure_filter_installed = AsyncMock(
+        side_effect=lambda **kw: (written.append(kw["desired_source"]), kw["preferred_id"])[1]
+    )
+
+    function_id = await manager._ensure_single_image_filter_function_id(
+        model_id="vendor/probe",
+        image_model={"id": "vendor/probe"},
+        endpoint_record=records,
+        dedicated_image_api=True,
+    )
+
+    assert function_id, (
+        f"a {contract} contract that was read leaves the model with no panel at all, "
+        "while its card lists the controls one would carry"
+    )
+    listed = _help_controls("vendor/probe", records, True)
+    body = written[0].split("class UserValves(BaseModel):", 1)[1].split("    def __init__", 1)[0]
+    drawn = [d or q for d, q in _TITLE_PAIR_RE.findall(body)]
+    assert drawn, "the installed panel draws no control, so this proves nothing"
+    missing = [title for title in listed if title not in drawn]
+    assert not missing, (
+        f"help lists {listed} for this model and the panel it gets draws {drawn}, so "
+        f"{missing} is promised and unreachable"
+    )
+
+
+# ------------------- A CARD WITH NOTHING PUBLISHED STILL HAS CONTROLS ON IT ---
+def _help_controls(model_id: str, records: list[dict], dedicated: bool) -> list[str]:
+    from open_webui_openrouter_pipe.integrations.image_help import render_image_help
+
+    rendered = render_image_help(
+        model_id, {"id": model_id, "name": model_id},
+        endpoint_record=records, dedicated_image_api=dedicated,
+    )
+    assert "## Controls" in rendered, rendered
+    listed = rendered.split("## Controls", 1)[1]
+    return [
+        line.split("**")[1]
+        for line in listed.splitlines()
+        if line.startswith("- **") and "**" in line[4:]
+    ]
+
+
+def _help_text(model_id: str, records: list[dict], dedicated: bool) -> str:
+    from open_webui_openrouter_pipe.integrations.image_help import render_image_help
+
+    return render_image_help(
+        model_id, {"id": model_id, "name": model_id},
+        endpoint_record=records, dedicated_image_api=dedicated,
+    )
+
+
+@pytest.mark.parametrize("dedicated", [True, False], ids=["image-api", "chat-route"])
+@pytest.mark.parametrize("label", sorted(_NOTE_CONTRACTS), ids=sorted(_NOTE_CONTRACTS))
+def test_help_names_the_controls_the_panel_draws_even_with_nothing_published(label, dedicated):
+    """The empty branches told the reader the model had no settings and stopped there.
+
+    The count they were gated on leaves out the size control and the always-on ones, all
+    of which the panel still draws -- so on a contract that shrank to nothing, help said
+    "no adjustable settings" above a panel carrying four. The expectation is read off the
+    rendered panel, so it moves with the transport: four controls on a model answering
+    with pictures alone, one on a model answering in chat. No fixed list satisfies both.
+    """
+    records = _NOTE_CONTRACTS[label]
+    spec = build_image_model_filter_spec(
+        "vendor/probe", {"id": "vendor/probe"}, records, dedicated_image_api=dedicated
+    )
+    assert (spec.knob_count == 0) is (label != "publishes-values"), (
+        f"{label} no longer drives the branch it was written for: {spec.knob_count}"
+    )
+
+    body = render_image_model_filter_source(spec).split("class UserValves(BaseModel):", 1)[1]
+    drawn = [d or s for d, s in _TITLE_PAIR_RE.findall(body.split("    def __init__", 1)[0])]
+    assert drawn, f"{label}/{dedicated} draws no control, so this proves nothing"
+
+    named = _help_controls("vendor/probe", records, dedicated)
+    unnamed = [title for title in drawn if title not in named]
+    assert not unnamed, (
+        f"the {label} panel on {'the image API' if dedicated else 'the chat route'} draws "
+        f"{drawn} and help never names {unnamed}; help listed {named}"
+    )
+
+
+def test_the_six_empty_and_full_cards_each_say_something_different():
+    """Three contracts, two transports, six texts -- a constant answer collapses them.
+
+    Waiting for providers to agree and accepting that a model publishes nothing call for
+    different remedies from the reader, and the two transports draw different panels, so
+    no two of the six may read alike.
+    """
+    texts = {
+        (label, dedicated): _help_text("vendor/probe", records, dedicated)
+        for label, records in _NOTE_CONTRACTS.items()
+        for dedicated in (True, False)
+    }
+
+    assert len(set(texts.values())) == len(texts), (
+        "two of these six cards read identically, so the card is not reading its own "
+        f"contract or its own transport: { {k: v[-200:] for k, v in texts.items()} }"
+    )
+
+
+# ------------------- A WORKED EXAMPLE IS THE STRING THAT IS BUILT ------------
+def _worked_example(document: str, anchor: str, filled: dict[str, str]) -> list[str]:
+    """The fenced block a document introduces with *anchor*, its placeholders filled in.
+
+    Read out of the page rather than pasted here, so the comparison below is against what
+    a reader is actually shown.
+    """
+    lines = (DOCS / document).read_text(encoding="utf-8").splitlines()
+    anchored = [index for index, line in enumerate(lines) if anchor in line]
+    assert len(anchored) == 1, (
+        f"{anchor!r} introduces {len(anchored)} passages in {document}, so the example "
+        "this test measures cannot be identified"
+    )
+    rest = lines[anchored[0] + 1 :]
+    opened = next(index for index, line in enumerate(rest) if _FENCE_RE.match(line))
+    closed = next(
+        index for index, line in enumerate(rest[opened + 1 :]) if _FENCE_RE.match(line)
+    )
+    block = rest[opened + 1 : opened + 1 + closed]
+    assert block, f"the example under {anchor!r} in {document} is empty"
+    for token, value in filled.items():
+        assert any(token in line for line in block), (
+            f"the example under {anchor!r} in {document} never shows {token}, so what the "
+            "reader is shown cannot be lined up against a built message"
+        )
+        block = [line.replace(token, value) for line in block]
+    return block
+
+
+@pytest.mark.parametrize(
+    ("job_id", "model_id", "file_id", "elapsed", "cost"),
+    [
+        ("job-abc", "vendor/model-1", "file-xyz", 12.5, 0.42),
+        ("job-42", "other/model-9", "file-77", 3.0, 0.0),
+    ],
+    ids=["one-job", "another-job-billed-nothing"],
+)
+def test_the_video_page_prints_the_message_the_pipe_actually_builds(
+    job_id, model_id, file_id, elapsed, cost
+):
+    """The page printed a closing line of elapsed time and money that is built nowhere.
+
+    A reader was shown a finished message ending "Generated in ... $...", so someone
+    looking for what a clip cost was sent to a line that has never existed in any release
+    and under any setting -- while the figure that does exist lives on the status line and
+    goes away when usage details are off. Nothing noticed, because the page was checked
+    against the shape of the message and never against the message.
+
+    The two rows carry different job, model and file ids, so a block with values typed
+    into it rather than placeholders matches at most one of them; and they carry a
+    different elapsed time and a different charge, one of them nothing, so a block naming
+    either figure cannot match both.
+    """
+    from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
+
+    adapter = VideoGenerationAdapter.__new__(VideoGenerationAdapter)
+    built = adapter._build_success_content(
+        job_id=job_id,
+        model_id=model_id,
+        file_ids=[file_id],
+        elapsed=elapsed,
+        usage={"cost": cost, "total_tokens": 0},
+    )
+
+    shown = _worked_example(
+        "openrouter_video_generation.md",
+        "the assistant message contains",
+        {"<job_id>": job_id, "<model_id>": model_id, "<owui_file_id>": file_id},
+    )
+
+    assert shown == built.splitlines(), (
+        "the video page shows a finished message the pipe does not build; the page has\n"
+        f"  {shown}\nand the message is\n  {built.splitlines()}"
+    )
+
+
+# ------------------- A GENERATION BILLED AT NOTHING, EACH WAY IT LANDS -------
+_FIGURE_RES = {
+    "tokens": re.compile(r"\btokens?\b", re.I),
+    "timing": re.compile(r"\btiming\b|\btimes?\b|\belapsed\b|\bseconds?\b", re.I),
+    "money": re.compile(r"\$|\bcosts?\b|\bcharges?\b|\bmoney\b", re.I),
+}
+_RESOLUTION_RES = {True: re.compile(r"\bTrue\b"), False: re.compile(r"\bFalse\b")}
+
+
+def _figures_in(text: str) -> frozenset[str]:
+    """Which of the three kinds of figure a piece of text carries, or claims to."""
+    return frozenset(kind for kind, pattern in _FIGURE_RES.items() if pattern.search(text))
+
+
+def _merged_gate(pipe_instance, *, admin: bool, user: bool | None) -> bool:
+    """What the two copies of the switch resolve to, decided by the production merge."""
+    from open_webui_openrouter_pipe.core.config import UserValves
+
+    user_valves = UserValves() if user is None else UserValves(SHOW_FINAL_USAGE_STATUS=user)
+    merged = pipe_instance._merge_valves(
+        pipe_instance.Valves(SHOW_FINAL_USAGE_STATUS=admin), user_valves
+    )
+    return bool(merged.SHOW_FINAL_USAGE_STATUS)
+
+
+def _zero_cost_sentence() -> str:
+    """The telemetry page's account of what a generation billed at nothing prints."""
+    document = "openrouter_integrations_and_telemetry.md"
+    found = [
+        sentence
+        for sentence, _row in _doc_sentences(DOCS / document)
+        if "exactly zero" in sentence
+    ]
+    assert len(found) == 1, (
+        f"{document} carries {len(found)} sentences about a generation billed at exactly "
+        "zero, and this test reads one"
+    )
+    return found[0]
+
+
+def _figures_claimed_per_side(sentence: str) -> dict[bool, frozenset[str]]:
+    """What a sentence says is printed on each side of the resolved switch.
+
+    Each clause is read under the resolution it names, so a sentence has to say what
+    happens both ways to be read at all. The sentence this replaced named neither, and
+    attached one outcome to all four ways the two copies can be set.
+    """
+    claimed: dict[bool, frozenset[str]] = {}
+    for clause in re.split(r",\s+and\s+|;\s+", sentence):
+        for side, pattern in _RESOLUTION_RES.items():
+            if pattern.search(clause):
+                claimed[side] = _figures_in(clause)
+    return claimed
+
+
+@pytest.mark.parametrize("cost", [0, 0.0412], ids=["reported-zero", "reported-a-charge"])
+def test_the_telemetry_page_says_what_a_generation_billed_at_nothing_prints_each_way(
+    pipe_instance, cost
+):
+    """The page quantified over four ways the switches can be set and was wrong in two.
+
+    It said a generation reported at exactly zero prints tokens and timing "whichever way
+    both copies are set". Where the merge resolves False the builder returns a bare
+    elapsed time before it ever reads a token counter, so half of those readers are
+    promised counts they will not get -- and the merged value is the whole of the
+    difference, which is what makes the sentence worth having at all.
+
+    Nothing here is typed: the four combinations are put through the production merge and
+    the production builder, each resolution's outcome is read off what was printed, and
+    the page is held to that. The charged row makes the measurement discriminate -- money
+    joins the line there and not in the zero row -- so the same claim cannot satisfy both.
+    """
+    printed: dict[bool, set[frozenset[str]]] = {True: set(), False: set()}
+    for admin in (True, False):
+        for user in (True, False):
+            side = _merged_gate(pipe_instance, admin=admin, user=user)
+            printed[side].add(
+                _figures_in(_status_with(pipe_instance, admin=admin, user=user, cost=cost))
+            )
+
+    assert all(printed.values()), (
+        f"the four ways the two copies can be set reach only {sorted(k for k, v in printed.items() if v)} "
+        "of the two resolutions, so one side of the page's sentence is never measured"
+    )
+    assert all(len(shapes) == 1 for shapes in printed.values()), (
+        f"one resolution printed more than one shape of line, so there is no single "
+        f"outcome for the page to state: {printed}"
+    )
+    measured = {side: next(iter(shapes)) for side, shapes in printed.items()}
+
+    assert ("money" in measured[True]) is (cost > 0), (
+        f"a reported cost of {cost} produced {sorted(measured[True])}, which is not what "
+        "the sentence under test is being measured against"
+    )
+
+    sentence = _zero_cost_sentence()
+    claimed = _figures_claimed_per_side(sentence)
+    assert set(claimed) == {True, False}, (
+        f"the page describes {sorted(claimed)} of the two resolutions, so a reader whose "
+        f"switch resolves the other way is told nothing: {sentence!r}"
+    )
+    assert (claimed[True] == measured[True]) is (cost == 0), (
+        f"the page says a generation billed at nothing prints {sorted(claimed[True])} where "
+        f"the merge resolves True; a cost of {cost} prints {sorted(measured[True])}: {sentence!r}"
+    )
+    if cost == 0:
+        assert claimed[False] == measured[False], (
+            f"the page says {sorted(claimed[False])} where the merge resolves False, and "
+            f"the line prints {sorted(measured[False])}: {sentence!r}"
+        )
+
+
+# ------------------- WHAT A PANEL DRAWS THAT ITS MODEL NEVER PUBLISHED ------
+def _always_drawn_pairs(dedicated: bool) -> list[tuple[str, str]]:
+    """(field, label) for every control a panel carries whatever its model publishes.
+
+    Read off the renderer's own tables rather than listed here, so a control joining or
+    leaving that set moves this expectation with it instead of leaving a list behind.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        IMAGE_KNOB_TITLES,
+        _valve_name,
+        always_on_controls,
+    )
+    from open_webui_openrouter_pipe.integrations.image_types import SCHEMA_ONLY_PARAMS
+
+    pairs = [(name, title) for name, _a, _d, title, _desc in always_on_controls(dedicated)]
+    pairs += [(_valve_name(name), IMAGE_KNOB_TITLES[name][0]) for name in SCHEMA_ONLY_PARAMS]
+    return pairs
+
+
+def _panel_pairs(model_id: str, records: list[dict], dedicated: bool) -> list[tuple[str, str]]:
+    """(field, label) for every control the installed panel really draws, in order."""
+    body = _panel_body(model_id, records, dedicated)
+    fields = [name for name, _annotation in _FIELD_RE.findall(body)]
+    labels = [double or single for double, single in _TITLE_PAIR_RE.findall(body)]
+    assert len(fields) == len(labels), (
+        f"{model_id} renders {len(fields)} fields and {len(labels)} labels, so no field "
+        f"can be paired with the name it is drawn under:\n{body}"
+    )
+    return list(zip(fields, labels))
+
+
+def _panel_body(model_id: str, records: list[dict], dedicated: bool) -> str:
+    spec = build_image_model_filter_spec(
+        model_id, {"id": model_id, "name": model_id}, records, dedicated_image_api=dedicated
+    )
+    source = render_image_model_filter_source(spec)
+    return source.split("class UserValves(BaseModel):", 1)[1].split("    def __init__", 1)[0]
+
+
+@pytest.mark.parametrize("dedicated", [True, False], ids=["image-api", "chat-route"])
+def test_every_recorded_panel_carries_the_controls_no_contract_asks_for(dedicated):
+    """The set an administrator is promised on every panel, measured on every panel.
+
+    The valve row describing this promised four controls beyond whatever the model
+    publishes: an output size on all of them, and three more on a model that answers with
+    a picture and no text. Nothing had ever rendered a panel to check that the four are
+    drawn, under those names, on the models the promise quantifies over.
+
+    Both halves are read from production -- the expected pairs off the renderer's tables,
+    the drawn pairs out of the source that is installed -- so the two arms differ by which
+    controls the transport is entitled to. The picture-only three are asserted ABSENT on
+    the chat route rather than merely not-required, because a helper that ignored its
+    transport argument would otherwise leave both arms green.
+    """
+    expected = _always_drawn_pairs(dedicated)
+    assert expected, "the renderer draws nothing unbidden, so this measures nothing"
+    reserved = set(_always_drawn_pairs(True)) - set(_always_drawn_pairs(False))
+    assert reserved, (
+        "production reserves no control for the picture-only transport, so neither arm "
+        "here can tell the two transports apart"
+    )
+
+    absent: dict[str, list[tuple[str, str]]] = {}
+    leaked: dict[str, list[str]] = {}
+    for slug, model_id in EVERY_CONTRACT:
+        drawn = _panel_pairs(model_id, _records(slug), dedicated)
+        missing = [pair for pair in expected if pair not in drawn]
+        if missing:
+            absent[model_id] = missing
+        if not dedicated:
+            names = {name for name, _label in drawn} | {label for _name, label in drawn}
+            found = sorted(
+                token
+                for pair in reserved
+                for token in pair
+                if token in names
+            )
+            if found:
+                leaked[model_id] = found
+
+    assert not absent, (
+        "these recorded models get a panel that never draws a control the valve promises "
+        f"every panel carries: {absent}"
+    )
+    assert not leaked, (
+        "these models answer with text as well, and their panel draws controls production "
+        f"reserves for the models that answer only with a picture: {leaked}"
+    )
+
+
+# ------------------- WHERE EACH GROUP OF CONTROLS LANDS IN THE HELP LIST -----
+def _listed_controls(model_id: str, records: list[dict], dedicated: bool) -> list[str]:
+    """The control entries of a rendered card, in the order a reader meets them."""
+    listed = _help_controls(model_id, records, dedicated)
+    assert listed, f"the {model_id} card lists no control at all, so order proves nothing"
+    return listed
+
+
+def _published_groups(model_id: str, records: list[dict], dedicated: bool) -> dict[str, list[str]]:
+    """The labels of what the model published, split into the groups help renders in turn."""
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import image_knob_text
+
+    spec = build_image_model_filter_spec(
+        model_id, {"id": model_id, "name": model_id}, records, dedicated_image_api=dedicated
+    )
+    return {
+        "choices": [image_knob_text(name, spec)[0] for name, _values in spec.enums],
+        "rest": (
+            [image_knob_text(name, spec)[0] for name, _low, _high in spec.ranges]
+            + [image_knob_text(name, spec)[0] for name in spec.supported]
+            + list(spec.passthrough)
+        ),
+    }
+
+
+@pytest.mark.parametrize("dedicated", [True, False], ids=["image-api", "chat-route"])
+def test_the_help_list_orders_its_groups_the_way_the_page_describes(dedicated):
+    """The page put the always-present controls "above" the published ones. One of them is not.
+
+    Provider options, Reference images and Reference image links do head the list. Output
+    size does not: it is rendered after the published lists of choices and before
+    everything else the model publishes, which the page's own worked example shows a few
+    lines above the sentence that contradicted it.
+
+    Positions are asserted by INDEX, not by membership: every label checked here is in the
+    list under either ordering, so a membership test cannot see the two groups swap. Each
+    group's labels are read off the same spec the card is rendered from, so a model that
+    publishes different things moves the expectation rather than the assertion.
+    """
+    unbidden = [label for _name, label in _always_drawn_pairs(dedicated)]
+    heads = [label for _name, label in _always_drawn_pairs(dedicated)
+             if (_name, label) in set(_always_drawn_pairs(True)) - set(_always_drawn_pairs(False))]
+    sized = [label for label in unbidden if label not in heads]
+    assert len(sized) == 1, f"the panel carries {sized} on every transport, and this reads one"
+
+    wrong: dict[str, str] = {}
+    exercised = {"heads": 0, "choices": 0, "rest": 0}
+    for slug, model_id in EVERY_CONTRACT:
+        records = _records(slug)
+        listed = _listed_controls(model_id, records, dedicated)
+        groups = _published_groups(model_id, records, dedicated)
+        assert groups["choices"], f"{model_id} publishes no list of choices, so it cannot rank"
+        at = {label: listed.index(label) for label in listed}
+        missing = [
+            label
+            for label in (*heads, *sized, *groups["choices"], *groups["rest"])
+            if label not in at
+        ]
+        assert not missing, f"the {model_id} card never lists {missing}; it lists {listed}"
+
+        size_at = at[sized[0]]
+        first_choice = min(at[label] for label in groups["choices"])
+        exercised["choices"] += 1
+        if heads:
+            exercised["heads"] += 1
+            if max(at[label] for label in heads) > first_choice:
+                wrong[model_id] = (
+                    f"the controls the panel supplies sit at "
+                    f"{sorted(at[label] for label in heads)} and the published choices "
+                    f"start at {first_choice}"
+                )
+                continue
+        if size_at < first_choice:
+            wrong[model_id] = (
+                f"{sized[0]} sits at {size_at}, above the published choices at {first_choice}"
+            )
+            continue
+        if groups["rest"]:
+            exercised["rest"] += 1
+            follows = min(at[label] for label in groups["rest"])
+            if follows < size_at:
+                wrong[model_id] = (
+                    f"{sized[0]} sits at {size_at}, below the rest of what the model "
+                    f"publishes at {follows}"
+                )
+
+    assert not wrong, f"these cards list their groups in another order: {wrong}"
+    assert exercised["choices"] > 30 and exercised["rest"] > 30, (
+        f"only {exercised} contracts reached the comparisons, so the sweep went hollow"
+    )
+    assert (exercised["heads"] > 30) is dedicated, (
+        f"the transport no longer decides whether the panel supplies controls: {exercised}"
+    )
+
+
+# ------------------- A REPLY THAT REPORTED NO COUNTS AT ALL ------------------
+def _status_parts(line: str) -> set[str]:
+    """The figures a status line is built from, split on the separator that joins them."""
+    return set(line.split(" | "))
+
+
+def test_a_reply_that_reported_no_counts_gets_no_counts_on_the_line(pipe_instance):
+    """The page said the switch decides whether counts are printed. The payload decides too.
+
+    A generation billed at nothing was described as printing tokens and timing wherever
+    the merge resolves True. The builder appends a token figure only for counters the
+    reply actually carried, and a reply carrying a charge and no counters -- which is what
+    the image path produces, since the converter copies only the keys OpenRouter sent --
+    leaves the True side with the timing alone.
+
+    Nothing is matched against a word. The line the builder printed for a reply carrying
+    counts is compared against the line it printed for a reply carrying none, and the part
+    that separates them is identified by moving the reported counts and seeing which part
+    moves. A counter parser that answered zero for a count nobody reported would put a
+    token figure on the no-count line, and the proper-subset assertion is what refuses it;
+    asserting only that a token figure appears where counts were reported would not.
+    """
+    counted = _status_with(pipe_instance, admin=True, user=True, cost=0)
+    other = _status_with(
+        pipe_instance, admin=True, user=True, cost=0,
+        counters={"input_tokens": 801, "output_tokens": 400},
+    )
+    uncounted = _status_with(pipe_instance, admin=True, user=True, cost=0, counters={})
+    off_counted = _status_with(pipe_instance, admin=False, user=False, cost=0)
+    off_uncounted = _status_with(pipe_instance, admin=False, user=False, cost=0, counters={})
+
+    assert len(_status_parts(counted)) > 1, (
+        f"the builder joins its figures some other way now, so {counted!r} cannot be "
+        "taken apart and every comparison below is between whole lines"
+    )
+    assert off_counted == off_uncounted, (
+        "with the merge resolving False the two replies print different lines, so the "
+        f"switch is not the whole of that side after all: {off_counted!r} / {off_uncounted!r}"
+    )
+    assert _status_parts(uncounted) < _status_parts(counted), (
+        "a reply that reported no counts prints a figure a reply that reported some does "
+        f"not, so the line is carrying something nobody reported: {uncounted!r} against "
+        f"{counted!r}"
+    )
+
+    dropped = _status_parts(counted) - _status_parts(uncounted)
+    moved = _status_parts(counted) - _status_parts(other)
+    assert moved, (
+        f"changing the reported counts changed nothing on the line: {counted!r} and "
+        f"{other!r} are built from the same parts, so no part of it is the counts"
+    )
+    assert moved <= dropped, (
+        f"the parts that move with the reported counts are {sorted(moved)} and the parts "
+        f"a reply reporting none loses are {sorted(dropped)}; the counts are surviving a "
+        "reply that never carried them"
+    )
+
+
+# ------------------- THE PRICED SECTIONS ARE NOT ALWAYS IN THE REPLY ---------
+_REFERENCE_PRICED_MODELS = ("sourceful/riverflow-v2-pro", "sourceful/riverflow-v2-fast")
+
+_DOLLARS_RE = re.compile(r"\$([0-9]+(?:\.[0-9]+)?)")
+
+
+def _help_headings(text: str) -> list[str]:
+    return [line.strip() for line in text.splitlines() if line.startswith("#")]
+
+
+def _help_bodies(text: str) -> dict[str, list[str]]:
+    bodies: dict[str, list[str]] = {}
+    heading = ""
+    for line in text.splitlines():
+        if line.startswith("#"):
+            heading = line.strip()
+            bodies[heading] = []
+        elif heading:
+            bodies[heading].append(line)
+    return bodies
+
+
+def _published_amounts(records: list[dict]) -> list[float]:
+    """Every rate the recorded contract publishes, in the unit it publishes them in."""
+    amounts: list[float] = []
+    for record in records:
+        for item in record.get("pricing") or []:
+            assert item.get("unit") == "image", (
+                f"this contract now prices something per {item.get('unit')!r}, which the "
+                "figures below would have to be converted for"
+            )
+            amounts.append(float(item["cost_usd"]))
+    return amounts
+
+
+@pytest.mark.parametrize("model_id", _REFERENCE_PRICED_MODELS)
+def test_the_priced_help_sections_are_gone_when_the_contract_was_not_read(model_id):
+    """The page named a section of the reply that is not always in the reply.
+
+    Both of these models publish a per-reference and a per-font rate, and the page quotes
+    them and says where in the reply to find them. When the contract cannot be read the
+    reply stops after the description and tips, so a reader whose reply came back short
+    could not tell "nothing is charged for references" from "the contract was not read".
+
+    The figures are lifted out of the recorded contract and compared against the ones the
+    reply prints, so no rate is typed here; the two models publish different sets, so a
+    figure hard-coded into the renderer satisfies at most one of them. The two renderings
+    are asserted to DIFFER, which is what the early return produces -- without that, a
+    reply that carried the section unconditionally would satisfy every other assertion.
+    """
+    slug = next(s for s, mid in EVERY_CONTRACT if mid == model_id)
+    records = _records(slug)
+
+    read = _help_text(model_id, records, True)
+    unread = _help_text(model_id, [], True)
+
+    present, absent = set(_help_headings(read)), set(_help_headings(unread))
+    assert absent < present, (
+        f"the {model_id} reply is the same shape whether or not its contract was read, so "
+        f"there is no condition for the page to state: {sorted(present)} / {sorted(absent)}"
+    )
+    conditional = present - absent
+
+    published = _published_amounts(records)
+    assert len(set(published)) > 1, (
+        f"{model_id} publishes {published}, which one repeated figure would satisfy"
+    )
+
+    bodies = _help_bodies(read)
+    priced = {
+        heading: sorted(float(found) for found in _DOLLARS_RE.findall("\n".join(lines)))
+        for heading, lines in bodies.items()
+        if _DOLLARS_RE.search("\n".join(lines))
+    }
+    assert len(priced) == 1, (
+        f"the {model_id} reply quotes figures under {sorted(priced)}, and the page names one"
+    )
+    heading, shown = next(iter(priced.items()))
+    assert heading in conditional, (
+        f"{heading} survives a contract that could not be read, so the page's condition is "
+        f"not the one that governs it; only {sorted(conditional)} depend on the contract"
+    )
+    assert shown == sorted(published), (
+        f"{heading} shows {shown} and the recorded contract publishes {sorted(published)}"
     )

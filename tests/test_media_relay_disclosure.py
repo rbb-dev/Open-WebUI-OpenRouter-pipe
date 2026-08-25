@@ -196,9 +196,23 @@ def test_the_permanent_host_warning_also_reads_correctly_in_both_numbers(
 
 
 def test_nothing_is_recorded_when_nothing_was_published():
-    """An inline attachment never leaves this server, and must not be reported as if it had."""
+    """An inline attachment never leaves this server, and must not be reported as if it had.
+
+    Both records are asserted, because the adapter runs both producers on EVERY job: a
+    withheld producer that stopped returning "" for an empty list would stamp a complete
+    marker block carrying an empty "not sent" notice onto every clip -- and the resume path
+    would faithfully recover and re-persist it. The comparison is to "" exactly rather than
+    to the absence of any particular wording, which a rewording defeats and a marker-only
+    block satisfies.
+    """
     assert VideoGenerationAdapter._file_host_record(_valves(), set()) == ""
     assert VideoGenerationAdapter._with_the_file_host_record("KEEP", _valves(), set()) == "KEEP"
+    assert VideoGenerationAdapter._withheld_record([]) == "", (
+        "an empty withheld list produced a record, so every job that withheld nothing gets "
+        "a notice saying something was not sent"
+    )
+    assert VideoGenerationAdapter._with_the_withheld_record("KEEP", []) == "KEEP"
+    assert VideoGenerationAdapter._with_the_withheld_record("", []) == ""
 
 
 @pytest.mark.parametrize("existing", ["", "PRIOR-BLOCK\n"])
@@ -342,6 +356,36 @@ def _adapter():
     pipe = MagicMock()
     pipe.logger = logging.getLogger("relay-disclosure")
     return VideoGenerationAdapter(pipe=pipe, logger=pipe.logger)
+
+
+@pytest.mark.parametrize("existing", ["", "PRIOR-BLOCK\n"])
+@pytest.mark.parametrize("case", sorted(_WITHHELD_CASES), ids=sorted(_WITHHELD_CASES))
+def test_the_withheld_record_joins_the_block_instead_of_replacing_it(case, existing):
+    """A job can both relay a file to a public host AND withhold a reference.
+
+    ``generate()`` builds the file-host disclosure first and hands it to this seam as
+    ``block``; the withheld record is added on top of it. A production
+    ``return record`` passes the empty-prior-block row and drops the sentence saying the
+    clip left this server -- from the very message Open WebUI persists, on precisely the
+    job that had the most to disclose. So the non-empty prior block is parametrised
+    alongside the empty one, and the assertion is that the block still LEADS the result.
+
+    The expected record is produced by calling the adapter's own ``_withheld_record``
+    rather than written out here, so this cannot drift from the wording that ships; two
+    withheld lists produce two different sentences, so no constant satisfies every row.
+    """
+    withheld = _WITHHELD_CASES[case]
+    record = VideoGenerationAdapter._withheld_record(withheld)
+    assert record, "precondition: a non-empty withheld list produces a record"
+
+    block = VideoGenerationAdapter._with_the_withheld_record(existing, withheld)
+
+    assert block.startswith(existing), (
+        f"the disclosure that was already in the block was displaced: {block!r}"
+    )
+    assert record in block, f"the withheld record is not in the block: {block!r}"
+    for name, reason in withheld:
+        assert name in block and reason in block, block
 
 
 @pytest.mark.parametrize("case", sorted(_WITHHELD_CASES), ids=sorted(_WITHHELD_CASES))
@@ -649,3 +693,65 @@ def test_the_wrapper_keeps_a_handle_on_the_emitter_it_wrapped():
     wrapped = cast(Any, handler._wrap_safe_event_emitter(_socket))
     assert unguarded_emitter(wrapped) is _socket
     assert unguarded_emitter(_socket) is _socket
+
+
+@pytest.mark.parametrize("suppress_status", [True, False], ids=["suppressing", "passing"])
+@pytest.mark.asyncio
+async def test_a_dead_socket_is_still_reported_dead_through_the_suppressing_proxy(
+    suppress_status,
+):
+    """The second wrapper has to hand the raw socket on, or fail-closed fails open.
+
+    A non-stream request runs the streaming loop behind a proxy that swallows selected
+    event types. That proxy is built around the already-guarded emitter, whose guard
+    swallows transport errors on purpose. Unless the proxy re-publishes the handle on the
+    pre-guard socket, `_emit_notification` reaches the guard, the guard eats the failure,
+    and the notifier answers True for a user who was told nothing -- and the callers that
+    refuse to upload a private file unheard go ahead and upload it.
+
+    The socket is the only stub; both wrappers and the notifier run for real. Driven with
+    the proxy suppressing and not suppressing, because a proxy that only forwards the
+    handle on one configuration leaves the other open.
+    """
+    from open_webui_openrouter_pipe.streaming.streaming_core import _wrap_event_emitter
+
+    pipe = MagicMock()
+    handler = EventEmitterHandler(
+        logger=logging.getLogger("relay-disclosure"), valves=Valves(), pipe_instance=pipe,
+    )
+
+    async def _dead(_event):
+        raise RuntimeError("socket is gone")
+
+    guarded = handler._wrap_safe_event_emitter(_dead)
+    proxied = cast(Any, _wrap_event_emitter(guarded, suppress_status=suppress_status))
+
+    assert await handler._emit_notification(proxied, "a clip is going out") is False, (
+        "the notifier reported a dead socket as delivered, so a caller that refuses to "
+        "act unheard acts anyway"
+    )
+    assert unguarded_emitter(proxied) is _dead, (
+        "the proxy dropped the handle on the pre-guard socket, which is how the answer "
+        "above goes wrong"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_suppressing_proxy_still_reports_a_live_socket_as_delivered():
+    """The other outcome from the same path, so a bare `return False` cannot pass."""
+    from open_webui_openrouter_pipe.streaming.streaming_core import _wrap_event_emitter
+
+    pipe = MagicMock()
+    handler = EventEmitterHandler(
+        logger=logging.getLogger("relay-disclosure"), valves=Valves(), pipe_instance=pipe,
+    )
+    seen: list[dict] = []
+
+    async def _alive(event):
+        seen.append(event)
+
+    guarded = handler._wrap_safe_event_emitter(_alive)
+    proxied = cast(Any, _wrap_event_emitter(guarded, suppress_status=True))
+
+    assert await handler._emit_notification(proxied, "a clip is going out") is True
+    assert seen, "the notification never reached the socket"

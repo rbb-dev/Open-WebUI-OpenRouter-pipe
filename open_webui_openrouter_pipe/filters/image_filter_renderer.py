@@ -32,6 +32,7 @@ from ..integrations.image_types import (
     SCHEMA_ENUMS,
     SCHEMA_ONLY_PARAMS,
     SCHEMA_RANGES,
+    TIER_EQUIVALENT,
     TOP_LEVEL_PARAMS,
 )
 from ..integrations.provider_options import CHAT_PROVIDER_KEYS
@@ -89,12 +90,11 @@ class ImageModelFilterSpec:
     dotted_id: str = ""
     contract_read: bool = False
     dedicated_image_api: bool = True
-    published_anything: bool = False
-    """Whether any record published a renderable setting, before agreement was applied.
-
-    A knobless spec has two causes that read very differently: the model offers nothing,
-    or its providers publish different things and nothing survives the intersection.
-    """
+    published_any_parameter: bool = False
+    providers_disagree: bool = False
+    unkeyable_passthrough: tuple[str, ...] = ()
+    publishes_size_tiers: bool = False
+    publishes_size_descriptor: bool = False
     enums: tuple[tuple[str, tuple[Any, ...]], ...] = ()
     narrowed: tuple[tuple[str, tuple[Any, ...]], ...] = ()
     schema_only: tuple[str, ...] = ()
@@ -107,6 +107,10 @@ class ImageModelFilterSpec:
     number, so the control is a number with no published bounds.
     """
     passthrough: tuple[str, ...] = ()
+
+    @property
+    def passthrough_unaddressable(self) -> bool:
+        return bool(self.unkeyable_passthrough)
 
     @property
     def knob_count(self) -> int:
@@ -237,13 +241,21 @@ def _agreed_passthrough(records: list[dict]) -> tuple[str, ...]:
     A record with no provider slug cannot carry a provider option at all -- the adapter
     drops the whole block -- so one such record means no passthrough control is offered.
     """
+    if any(_unaddressable(record) for record in records):
+        return ()
+    return _shared_passthrough(records)
+
+
+def _unaddressable(record: dict) -> bool:
+    slug = record.get("provider_slug")
+    return not isinstance(slug, str) or not slug.strip()
+
+
+def _shared_passthrough(records: list[dict]) -> tuple[str, ...]:
     if not records:
         return ()
     per_record: list[set[str]] = []
     for record in records:
-        slug = record.get("provider_slug")
-        if not isinstance(slug, str) or not slug.strip():
-            return ()
         names = record.get("allowed_passthrough_parameters")
         if not isinstance(names, list):
             return ()
@@ -251,6 +263,52 @@ def _agreed_passthrough(records: list[dict]) -> tuple[str, ...]:
     shared = set.intersection(*per_record) if per_record else set()
     first = records[0].get("allowed_passthrough_parameters") or []
     return tuple(name for name in first if isinstance(name, str) and name in shared)
+
+
+_SIZE_TIER_SOURCES: tuple[str, ...] = ("size", TIER_EQUIVALENT["size"])
+
+_SIZE_TIERS: tuple[str, ...] = SCHEMA_ENUMS[TIER_EQUIVALENT["size"]]
+
+
+def _record_tiers(record: dict) -> tuple[Any, ...]:
+    supported = record.get("supported_parameters")
+    declared = supported if isinstance(supported, dict) else {}
+    for name in _SIZE_TIER_SOURCES:
+        descriptor = declared.get(name)
+        if not isinstance(descriptor, dict):
+            continue
+        if descriptor.get("type") != "enum":
+            return ()
+        return tuple(value for value in _descriptor_enum(descriptor) if value in _SIZE_TIERS)
+    return ()
+
+
+def _publishes_size_tiers(records: list[dict]) -> bool:
+    return sum(1 for record in records if _record_tiers(record)) > 1
+
+
+def _publishes_size_descriptor(records: list[dict]) -> bool:
+    for record in records:
+        supported = record.get("supported_parameters")
+        declared = supported if isinstance(supported, dict) else {}
+        if any(isinstance(declared.get(name), dict) for name in _SIZE_TIER_SOURCES):
+            return True
+    return False
+
+
+def _acceptable_passthrough(names: tuple[str, ...], taken: set[str]) -> tuple[str, ...]:
+    accepted: list[str] = []
+    for name in names:
+        if (
+            name in TOP_LEVEL_PARAMS
+            or name in _NOT_A_KNOB
+            or not RENDERABLE_FIELD_NAME_RE.fullmatch(name)
+            or _valve_name(name) in taken
+        ):
+            continue
+        taken.add(_valve_name(name))
+        accepted.append(name)
+    return tuple(accepted)
 
 
 def build_image_model_filter_spec(
@@ -272,9 +330,55 @@ def build_image_model_filter_spec(
     display = str(model.get("name") or canonical).strip() or canonical
 
     records = _published_records(endpoint_record)
-    declared = _agreed_parameters(records)
+    enums, narrowed, ranges, supported_names, schema_only, taken = _panel_knobs(records)
+    # `taken` grows as names are accepted, so two published names differing only in case
+    # cannot both render: they produce one field, and the second write would put a
+    # parameter on the wire that the user was never shown a control for.
+    passthrough = _acceptable_passthrough(_agreed_passthrough(records), set(taken))
+    addressable = _acceptable_passthrough(_shared_passthrough(records), set(taken))
+    unaddressable = () if passthrough else addressable
+    drew_nothing_together = not (enums or ranges or supported_names or passthrough)
+    apart = [_renderable_names([record]) for record in records] if len(records) > 1 else []
 
-    enums: list[tuple[str, tuple[str, ...]]] = []
+    return ImageModelFilterSpec(
+        model_id=canonical,
+        display_name=display,
+        function_id=sanitize_image_filter_id(canonical),
+        marker=f"{_OPENROUTER_IMAGE_FILTER_MARKER}:{canonical}",
+        dotted_id=sanitize_model_id(canonical.lstrip("~")).casefold(),
+        contract_read=endpoint_record is not None,
+        dedicated_image_api=dedicated_image_api,
+        published_any_parameter=any(
+            isinstance((record.get("supported_parameters") or {}), dict)
+            and any(
+                name in TOP_LEVEL_PARAMS and name not in _NOT_A_KNOB
+                for name in (record.get("supported_parameters") or {})
+            )
+            or bool(record.get("allowed_passthrough_parameters"))
+            for record in records
+        ),
+        providers_disagree=drew_nothing_together and any(apart) and not unaddressable,
+        unkeyable_passthrough=unaddressable,
+        publishes_size_tiers=_publishes_size_tiers(records),
+        publishes_size_descriptor=_publishes_size_descriptor(records),
+        enums=tuple(enums),
+        narrowed=tuple(narrowed),
+        schema_only=schema_only,
+        ranges=tuple(ranges),
+        supported=tuple(supported_names),
+        passthrough=passthrough,
+    )
+
+
+def _renderable_knobs(
+    declared: dict[str, dict],
+) -> tuple[
+    list[tuple[str, tuple[Any, ...]]],
+    list[tuple[str, tuple[Any, ...]]],
+    list[tuple[str, int, int]],
+    list[str],
+]:
+    enums: list[tuple[str, tuple[Any, ...]]] = []
     narrowed: list[tuple[str, tuple[Any, ...]]] = []
     ranges: list[tuple[str, int, int]] = []
     supported_names: list[str] = []
@@ -297,59 +401,33 @@ def build_image_model_filter_spec(
                 ranges.append((name, low, high))
         elif kind == "boolean":
             supported_names.append(name)
+    return enums, narrowed, ranges, supported_names
 
-    typed = {name for name, _ in enums} | {name for name, _, _ in ranges} | set(supported_names)
-    schema_only = tuple(name for name in SCHEMA_ONLY_PARAMS if name not in typed)
 
-    taken = set(ALWAYS_ON_VALVE_NAMES) | {
-        _valve_name(name)
-        for name in (
-            *(n for n, _ in enums),
-            *(n for n, _, _ in ranges),
-            *supported_names,
-            *schema_only,
-        )
-    }
-    # `taken` grows as names are accepted, so two published names differing only in case
-    # cannot both render: they produce one field, and the second write would put a
-    # parameter on the wire that the user was never shown a control for.
-    accepted: list[str] = []
-    for name in _agreed_passthrough(records):
-        if (
-            name in TOP_LEVEL_PARAMS
-            or name in _NOT_A_KNOB
-            or not RENDERABLE_FIELD_NAME_RE.fullmatch(name)
-            or _valve_name(name) in taken
-        ):
-            continue
-        taken.add(_valve_name(name))
-        accepted.append(name)
-    passthrough = tuple(accepted)
+def _panel_knobs(
+    records: list[dict],
+) -> tuple[
+    list[tuple[str, tuple[Any, ...]]],
+    list[tuple[str, tuple[Any, ...]]],
+    list[tuple[str, int, int]],
+    list[str],
+    tuple[str, ...],
+    set[str],
+]:
+    enums, narrowed, ranges, supported_names = _renderable_knobs(_agreed_parameters(records))
+    drawn = {name for name, _ in enums} | {name for name, _, _ in ranges} | set(supported_names)
+    schema = tuple(name for name in SCHEMA_ONLY_PARAMS if name not in drawn)
+    claimed = {_valve_name(name) for name in (*drawn, *schema)} | set(ALWAYS_ON_VALVE_NAMES)
+    return enums, narrowed, ranges, supported_names, schema, claimed
 
-    return ImageModelFilterSpec(
-        model_id=canonical,
-        display_name=display,
-        function_id=sanitize_image_filter_id(canonical),
-        marker=f"{_OPENROUTER_IMAGE_FILTER_MARKER}:{canonical}",
-        dotted_id=sanitize_model_id(canonical.lstrip("~")).casefold(),
-        contract_read=endpoint_record is not None,
-        dedicated_image_api=dedicated_image_api,
-        published_anything=any(
-            isinstance((record.get("supported_parameters") or {}), dict)
-            and any(
-                name in TOP_LEVEL_PARAMS and name not in _NOT_A_KNOB
-                for name in (record.get("supported_parameters") or {})
-            )
-            or bool(record.get("allowed_passthrough_parameters"))
-            for record in records
-        ),
-        enums=tuple(enums),
-        narrowed=tuple(narrowed),
-        schema_only=schema_only,
-        ranges=tuple(ranges),
-        supported=tuple(supported_names),
-        passthrough=passthrough,
-    )
+
+def _renderable_names(records: list[dict]) -> set[str]:
+    enums, _narrowed, ranges, supported_names, _schema_only, taken = _panel_knobs(records)
+    names = {name for name, _values in enums}
+    names |= {name for name, _low, _high in ranges}
+    names |= set(supported_names)
+    names |= set(_acceptable_passthrough(_agreed_passthrough(records), taken))
+    return names
 
 
 _IMAGE_KNOB_TITLE_OVERRIDES = {
@@ -375,13 +453,26 @@ _SIZE_OPENING = (
 )
 
 _SIZE_TIER_CHECKED = (
-    "A tier sets the same thing as Resolution, is checked against the tiers this model "
-    "publishes, and still takes its shape from Aspect ratio."
+    "This model publishes its own limit on output size, so a tier is checked against "
+    "that. It still takes its shape from Aspect ratio."
 )
 
 _SIZE_TIER_CHECKED_NO_RATIO = (
-    "A tier sets the same thing as Resolution and is checked against the tiers this "
-    "model publishes."
+    "This model publishes its own limit on output size, so a tier is checked against "
+    "that."
+)
+
+_SIZE_TIER_SPLIT = (
+    "A tier is checked against every tier the companies serving this model publish "
+    "between them, and where only some of them take the one you pick the request goes to "
+    "a company that does -- or a note says why it could not. It still takes its shape "
+    "from Aspect ratio."
+)
+
+_SIZE_TIER_SPLIT_NO_RATIO = (
+    "A tier is checked against every tier the companies serving this model publish "
+    "between them, and where only some of them take the one you pick the request goes to "
+    "a company that does -- or a note says why it could not."
 )
 
 _SIZE_TIER_UNCHECKED = (
@@ -416,11 +507,18 @@ _SIZE_PIXELS_WIN_WITH_TIERS_NO_RATIO = (
 
 _SIZE_PIXELS_WIN_ALONE = "Exact pixels settle the picture on their own."
 
-_SIZE_MEANING: dict[tuple[bool, bool], tuple[str, str]] = {
-    (True, True): (_SIZE_TIER_CHECKED, _SIZE_PIXELS_WIN_WITH_TIERS),
-    (True, False): (_SIZE_TIER_CHECKED_NO_RATIO, _SIZE_PIXELS_WIN_WITH_TIERS_NO_RATIO),
-    (False, True): (_SIZE_TIER_UNCHECKED, _SIZE_PIXELS_WIN),
-    (False, False): (_SIZE_TIER_UNCHECKED_NO_RATIO, _SIZE_PIXELS_WIN_ALONE),
+_SIZE_PUBLISHED_LIST = (
+    "The output sizes this model publishes; it takes no others, so neither a tier nor "
+    "exact pixels can be typed here."
+)
+
+_SIZE_MEANING: dict[tuple[str, bool], tuple[str, str]] = {
+    ("own", True): (_SIZE_TIER_CHECKED, _SIZE_PIXELS_WIN_WITH_TIERS),
+    ("own", False): (_SIZE_TIER_CHECKED_NO_RATIO, _SIZE_PIXELS_WIN_WITH_TIERS_NO_RATIO),
+    ("split", True): (_SIZE_TIER_SPLIT, _SIZE_PIXELS_WIN),
+    ("split", False): (_SIZE_TIER_SPLIT_NO_RATIO, _SIZE_PIXELS_WIN_ALONE),
+    ("none", True): (_SIZE_TIER_UNCHECKED, _SIZE_PIXELS_WIN),
+    ("none", False): (_SIZE_TIER_UNCHECKED_NO_RATIO, _SIZE_PIXELS_WIN_ALONE),
 }
 
 
@@ -433,21 +531,30 @@ def renders_control(spec: ImageModelFilterSpec, published: str) -> bool:
     )
 
 
+def drawn_tier_state(spec: ImageModelFilterSpec) -> str:
+    if renders_control(spec, TIER_EQUIVALENT["size"]):
+        return "own"
+    return "split" if spec.publishes_size_tiers else "none"
+
+
+def tier_state(spec: ImageModelFilterSpec) -> str:
+    drawn = drawn_tier_state(spec)
+    if drawn == "none" and spec.publishes_size_descriptor:
+        return "own"
+    return drawn
+
+
 def image_knob_text(name: str, spec: ImageModelFilterSpec) -> tuple[str, str]:
     """The title and the meaning of one control, as this model's own contract makes it.
-
-    ``size`` is the one whose meaning changes with the contract rather than only its
-    values: a tier is measured against the model's own published list where there is
-    one, and against nothing but OpenRouter's four names where there is not -- which is
-    24 of the 40 recorded contracts. The panel that renders the box also drops the
-    Resolution control in exactly that case, so naming Resolution there would name a
-    control the reader cannot see.
     """
     title, description = IMAGE_KNOB_TITLES.get(name, (name, ""))
     if name != "size":
         return title, description
-    has_tiers = any(published == "resolution" for published, _values in spec.enums)
-    tier, pixels = _SIZE_MEANING[(has_tiers, renders_control(spec, "aspect_ratio"))]
+    if any(published == name for published, _values in spec.enums):
+        return title, _SIZE_PUBLISHED_LIST
+    ratio = renders_control(spec, "aspect_ratio")
+    tier = _SIZE_MEANING[(tier_state(spec), ratio)][0]
+    pixels = _SIZE_MEANING[(drawn_tier_state(spec), ratio)][1]
     return title, f"{_SIZE_OPENING} {tier} {pixels}"
 
 
@@ -1016,15 +1123,18 @@ def image_gen_tool_wire_keys() -> dict[str, str]:
 
 def build_image_gen_tool_spec(spec: ImageModelFilterSpec) -> ImageModelFilterSpec:
     published = dict(spec.enums)
-    tiers = published.get("resolution", ())
+    sized = next(
+        ((source, published[source]) for source in _SIZE_TIER_SOURCES if published.get(source)),
+        None,
+    )
     enums: list[tuple[str, tuple[Any, ...]]] = []
     ranges: list[tuple[str, int, int]] = []
     schema_only: list[str] = []
     published_ranges = {name: (low, high) for name, low, high in spec.ranges}
     for name in IMAGE_GEN_TOOL_PARAMS:
         if name == "size":
-            if tiers:
-                enums.append(("resolution", tiers))
+            if sized is not None:
+                enums.append(sized)
             else:
                 schema_only.append("size")
             continue
@@ -1046,6 +1156,43 @@ def build_image_gen_tool_spec(spec: ImageModelFilterSpec) -> ImageModelFilterSpe
     )
 
 
+GEN_TIER_CLAUSES: dict[str, str] = {
+    "own": (
+        "{tiered}, because {named} publishes a list of size tiers; a model that publishes "
+        "none gets {plain} instead"
+    ),
+    "split": (
+        "{plain}, because the companies serving {named} publish different lists of size "
+        "tiers and share none; a model whose companies share one gets {tiered} instead"
+    ),
+    "none": (
+        "{plain}, because {named} publishes no list of size tiers; a model that publishes "
+        "one gets {tiered} instead"
+    ),
+}
+
+DISAGREED_SETTINGS = (
+    "The companies serving {named} publish different settings and share none of them"
+)
+
+UNKEYABLE_SETTINGS = (
+    "The companies serving {named} do share {listed}, but OpenRouter does not name one "
+    "of them to key a setting to, so none of those settings can be offered here"
+)
+
+
+def named_settings(spec: ImageModelFilterSpec) -> str:
+    return ", ".join(spec.unkeyable_passthrough)
+
+
+def gen_tier_clause(state: str, named: str) -> str:
+    return GEN_TIER_CLAUSES[state].format(
+        named=named,
+        tiered=IMAGE_KNOB_TITLES[TIER_EQUIVALENT["size"]][0],
+        plain=IMAGE_KNOB_TITLES["size"][0],
+    )
+
+
 def image_gen_model_note(spec: ImageModelFilterSpec, *, catalog_match: bool) -> str:
     named = spec.model_id or "no model"
     opening = "Which OpenRouter model draws the picture."
@@ -1062,21 +1209,23 @@ def image_gen_model_note(spec: ImageModelFilterSpec, *, catalog_match: bool) -> 
             "below offer what OpenRouter's image API accepts in general rather than this "
             "model's own choices. They narrow to its own once it can be read again."
         )
-    sized = (
-        f"Resolution, because {named} publishes a list of size tiers; a model that "
-        "publishes none gets Output size instead"
-        if any(published == "resolution" for published, _values in spec.enums)
-        else (
-            f"Output size, because {named} publishes no list of size tiers; a model that "
-            "publishes one gets Resolution instead"
-        )
-    )
+    sized = gen_tier_clause(drawn_tier_state(build_image_gen_tool_spec(spec)), named)
     if spec.has_knobs:
         cause = ""
-    elif spec.published_anything:
+    elif spec.unkeyable_passthrough:
         cause = (
-            f" The companies serving {named} accept different settings and none is common "
-            "to all of them, so every one of the six offers the general values here."
+            " Every one of the six offers the general values here. "
+            f"{UNKEYABLE_SETTINGS.format(named=named, listed=named_settings(spec))}."
+        )
+    elif spec.providers_disagree:
+        cause = (
+            f" {DISAGREED_SETTINGS.format(named=named)}, so every one of the six offers "
+            "the general values here."
+        )
+    elif spec.published_any_parameter:
+        cause = (
+            f" Nothing {named} publishes can be offered as a choice of its own, so every "
+            "one of the six offers the general values here."
         )
     else:
         cause = (

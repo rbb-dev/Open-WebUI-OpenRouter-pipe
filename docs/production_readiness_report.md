@@ -208,7 +208,7 @@ Related docs: [Streaming Pipeline & Emitters](streaming_pipeline_and_emitters.md
 
 Optional operator-visible and downstream telemetry includes:
 
-- user-visible final usage banners (valve-gated),
+- user-visible final usage status lines (valve-gated),
 - optional Redis export of cost snapshots (valve-gated; see `COSTS_REDIS_DUMP`),
 - request identifier emission for attribution (valve-gated; see identifier valves).
 

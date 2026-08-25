@@ -902,7 +902,6 @@ async def _installed_user_valves(model_id: str, contract: list[dict[str, Any]]):
 
     manager._ensure_filter_installed = AsyncMock(side_effect=_capture)
     manager._retire_variant_image_filters = AsyncMock(return_value=None)
-    manager._image_filter_exists = AsyncMock(return_value=False)
 
     await manager.ensure_openrouter_image_filter_function_ids(
         OpenRouterModelRegistry.list_models()
@@ -1175,4 +1174,770 @@ def test_a_dropped_setting_is_named_the_way_its_own_control_is_labelled(publishe
     assert re.search(rf"\b{re.escape(published)}\b", reported), (
         f"the wire name is gone, so the log record and the upstream rejection cannot be "
         f"matched to this message: {reported!r}"
+    )
+
+
+# =============================================================================
+# 9 - the size box, and the reason a panel gives for being empty
+# =============================================================================
+
+
+def _tier_records(published: dict[str, tuple[str, ...]]) -> list[dict[str, Any]]:
+    """One endpoint record per company, each publishing the tiers it was given."""
+    return [
+        {
+            "provider_slug": slug,
+            "provider_tag": slug,
+            "supported_parameters": (
+                {"resolution": {"type": "enum", "values": list(values)}} if values else {}
+            ),
+        }
+        for slug, values in published.items()
+    ]
+
+
+def _empty_list_records(slugs: tuple[str, ...]) -> list[dict[str, Any]]:
+    """A company publishing a tier list with nothing in it, which is not a tier list."""
+    return [
+        {
+            "provider_slug": slug,
+            "provider_tag": slug,
+            "supported_parameters": {"resolution": {"type": "enum", "values": []}},
+        }
+        for slug in slugs
+    ]
+
+
+_TIER_CONTRACTS: dict[str, list[dict[str, Any]]] = {
+    "one-list-they-all-share": _tier_records({"alpha": ("1K", "2K"), "beta": ("1K", "2K", "4K")}),
+    "no-list-they-all-share": _tier_records({"alpha": ("1K", "2K"), "beta": ("4K",)}),
+    "no-list-at-all": _tier_records({"alpha": ()}),
+    "one-company-with-a-list": _tier_records({"alpha": ("1K", "2K")}),
+    "one-list-with-nothing-in-it": _empty_list_records(("alpha",)),
+    "two-lists-with-nothing-in-them": _empty_list_records(("alpha", "beta")),
+}
+
+
+def _routing_clauses() -> set[str]:
+    """Every sentence the panel uses for tiers split across companies, as shipped.
+
+    Taken from the meaning table by the state it is keyed under, so renaming the strings
+    or reordering the table leaves this reading the same sentences.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import _SIZE_MEANING
+
+    return {
+        clause
+        for (state, _ratio), (clause, _pixels) in _SIZE_MEANING.items()
+        if state == "split"
+    }
+
+
+def _tiers_one_company_admits(record: dict[str, Any]) -> tuple[str, ...]:
+    """The tiers this company's own published list lets through, measured by the adapter.
+
+    A tier that survives without being measured against anything is not evidence of a
+    published list, so the fit has to report both: a value that came back and the name it
+    was measured as.
+    """
+    from open_webui_openrouter_pipe.integrations.image_types import SCHEMA_ENUMS, TIER_EQUIVALENT
+
+    declared = record.get("supported_parameters") or {}
+    admitted = []
+    for tier in SCHEMA_ENUMS[TIER_EQUIVALENT["size"]]:
+        fitted = ImageGenerationAdapter._fit_published(declared, "size", tier)
+        if fitted.value is not None and fitted.measured_as:
+            admitted.append(tier)
+    return tuple(admitted)
+
+
+@pytest.mark.parametrize("case", sorted(_TIER_CONTRACTS))
+def test_the_size_box_describes_the_check_the_request_will_actually_make(case):
+    """The box said a tier goes out unchecked while the request checked it and dropped it.
+
+    The panel picked its sentence from the tiers every company shares and the request
+    measures against the tiers any of them publishes. Those differ the moment two
+    companies publish disjoint lists, and the reader was told 512 would be sent for a
+    model that refuses it. The expectation here is read off the request path itself so it
+    cannot be restated wrongly, and the contracts disagree about it, so no single sentence
+    satisfies them all. A list with nothing in it is published and admits nothing, which
+    is why the count is taken from what a tier gets through rather than from what a record
+    carries -- and why the sentence promising the tier travels is owed to the request
+    letting one through unmeasured rather than to no company publishing a list, which is
+    also true of a company publishing one that admits nothing.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        IMAGE_KNOB_TITLES,
+        image_knob_text,
+        renders_control,
+    )
+
+    records = _TIER_CONTRACTS[case]
+    spec = build_image_model_filter_spec("v/m", {"id": "v/m"}, records, dedicated_image_api=True)
+
+    admitted = {
+        str(record.get("provider_tag")): _tiers_one_company_admits(record) for record in records
+    }
+    publishing = [company for company, tiers in admitted.items() if tiers]
+
+    assert spec.publishes_size_tiers is (len(publishing) > 1), (
+        f"{case}: the spec says publishes_size_tiers={spec.publishes_size_tiers} while the "
+        f"request path lets a tier through the published list of {publishing}: {admitted}"
+    )
+
+    _title, description = image_knob_text("size", spec)
+    says_unchecked = any(clause in description for clause in _passage_clauses())
+    _carried, unmeasured = _tiers_the_request_carries(records)
+    assert says_unchecked is bool(unmeasured), (
+        f"{case}: the box says the tier is checked against nothing but OpenRouter's four "
+        f"names and then travels, and the request path lets {list(unmeasured)} of the four "
+        f"through without measuring it against anything {publishing or 'this model'} "
+        f"published: {description!r}"
+    )
+    tiered_title = IMAGE_KNOB_TITLES["resolution"][0]
+    assert (tiered_title in description) is renders_control(spec, "resolution"), (
+        f"{case}: the box names a {tiered_title} control this panel does not draw: "
+        f"{description!r}"
+    )
+
+
+@pytest.mark.parametrize("case", sorted(_TIER_CONTRACTS))
+def test_the_size_box_promises_routing_only_where_two_companies_publish_a_list(case):
+    """The split wording promises a check across companies and a request routed to one.
+
+    It was chosen for any record carrying anything under size or resolution, so a single
+    company publishing a list nothing can satisfy -- an empty one, or a bound measured as
+    a number -- got a sentence promising the request would be steered to a company that
+    takes the tier, with no second company to steer it to. Whether the promise is true is
+    read off the request path per company, and the drawn field decides whether the box is
+    the one making it, so neither half of the expectation is restated here.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        _valve_name,
+        image_knob_text,
+    )
+    from open_webui_openrouter_pipe.integrations.image_types import TIER_EQUIVALENT
+
+    records = _TIER_CONTRACTS[case]
+    spec = build_image_model_filter_spec("v/m", {"id": "v/m"}, records, dedicated_image_api=True)
+    publishing = [record for record in records if _tiers_one_company_admits(record)]
+
+    drawn = set(re.findall(r"^ {8}(IMAGE_[A-Z0-9_]+):", render_image_model_filter_source(spec), re.M))
+    tiers_have_their_own_control = _valve_name(TIER_EQUIVALENT["size"]) in drawn
+
+    _title, description = image_knob_text("size", spec)
+    promises_routing = any(clause in description for clause in _routing_clauses())
+
+    assert promises_routing is (len(publishing) > 1 and not tiers_have_their_own_control), (
+        f"{case}: the box promises the request is steered to a company that takes the "
+        f"tier, and {len(publishing)} of {len(records)} companies publish a list a tier "
+        f"gets through (a control of their own is drawn: {tiers_have_their_own_control}): "
+        f"{description!r}"
+    )
+
+
+@pytest.mark.parametrize(("tier", "sent"), [("4K", True), ("512", False)])
+@pytest.mark.asyncio
+async def test_a_tier_only_one_company_publishes_travels_as_the_size_box_promises(tier, sent):
+    """The promise the split wording makes, put on the wire.
+
+    ``4K`` is published by one of the two companies and ``512`` by neither. The box says a
+    tier is checked against every tier they publish between them and that the request goes
+    to a company that takes it, so one of these must be sent and pinned and the other
+    refused. Both rows are asserted, so a request path that sent everything or nothing
+    cannot pass.
+    """
+    records = _TIER_CONTRACTS["no-list-they-all-share"]
+    adapter = _adapter(_KeyPipe("sk-x"))
+    adapter._endpoint_cache["m/x"] = (time.monotonic(), records)
+
+    result = await _posted(
+        adapter,
+        body={"image_config": {"size": tier}},
+        responses_body=_StubResponsesBody(
+            [{"role": "user", "content": [{"type": "input_text", "text": "a leaf"}]}]
+        ),
+        valves=_StubValves("sk-x"),
+        event_emitter=_Emitter(),
+        normalized_model_id="m.x",
+        api_model_id="m/x",
+    )
+
+    notices = " ".join(str(_event_data(call).get("content", "")) for call in result.events)
+    assert (result.payload.get("size") == tier) is sent, (
+        f"size={tier!r} was {'dropped' if sent else 'sent'} against the box's promise; "
+        f"payload={result.payload!r} notices={notices!r}"
+    )
+    if sent:
+        publishing = sorted(
+            str(record["provider_tag"])
+            for record in records
+            if tier in ((record["supported_parameters"].get("resolution") or {}).get("values") or [])
+        )
+        assert result.payload.get("provider", {}).get("only") == publishing, (
+            f"{tier!r} went out unpinned, so OpenRouter may route it to a company that does "
+            f"not publish it; provider={result.payload.get('provider')!r}"
+        )
+
+
+_EMPTY_PANEL_CONTRACTS: dict[str, list[dict[str, Any]]] = {
+    "same-setting-one-company-unnamed": [
+        {"provider_slug": "acme", "provider_tag": "acme", "allowed_passthrough_parameters": ["steps"]},
+        {"provider_tag": "brand", "allowed_passthrough_parameters": ["steps"]},
+    ],
+    "different-settings-both-companies-named": [
+        {"provider_slug": "acme", "provider_tag": "acme", "allowed_passthrough_parameters": ["steps"]},
+        {"provider_slug": "brand", "provider_tag": "brand", "allowed_passthrough_parameters": ["cfg"]},
+    ],
+}
+
+
+_DISAGREEMENT_CONTRACTS: dict[str, list[dict[str, Any]]] = {
+    "the-same-setting-the-panel-already-carries": [
+        {
+            "provider_slug": slug,
+            "provider_tag": slug,
+            "allowed_passthrough_parameters": ["reference_mode"],
+        }
+        for slug in ("acme", "brand")
+    ],
+    "settings-with-different-names": [
+        {"provider_slug": "acme", "provider_tag": "acme", "allowed_passthrough_parameters": ["steps"]},
+        {"provider_slug": "brand", "provider_tag": "brand", "allowed_passthrough_parameters": ["cfg"]},
+    ],
+    "one-setting-with-values-they-do-not-share": [
+        {
+            "provider_slug": slug,
+            "provider_tag": slug,
+            "supported_parameters": {"quality": {"type": "enum", "values": [value]}},
+            "allowed_passthrough_parameters": [],
+        }
+        for slug, value in (("acme", "low"), ("brand", "high"))
+    ],
+}
+
+
+@pytest.mark.parametrize("case", sorted(_DISAGREEMENT_CONTRACTS))
+def test_companies_are_called_disagreeing_only_where_their_own_panels_differ(case):
+    """A setting the panel already carries was counted as a disagreement about it.
+
+    Whether a company's setting can be offered is one rule, and it was written twice: the
+    copy driving this flag left out the check against names the panel supplies itself, so
+    two companies publishing the identical setting were reported as wanting different
+    things. The expectation is the filter each company would get on its own, rendered and
+    compared -- a company that would be given the same panel is not disagreeing with
+    anyone. One contract expects no disagreement and two expect one, and one of those two
+    publishes the same name with values they do not share, which is a real disagreement
+    that no comparison of names alone would catch.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        DISAGREED_SETTINGS,
+        image_gen_model_note,
+    )
+
+    records = _DISAGREEMENT_CONTRACTS[case]
+    spec = build_image_model_filter_spec("v/m", {"id": "v/m"}, records, dedicated_image_api=True)
+    assert spec.knob_count == 0, f"{case} was meant to draw nothing, got {spec.knob_count}"
+
+    alone = {
+        render_image_model_filter_source(
+            build_image_model_filter_spec("v/m", {"id": "v/m"}, [record], dedicated_image_api=True)
+        )
+        for record in records
+    }
+    would_be_given_different_panels = len(alone) > 1
+
+    assert spec.providers_disagree is would_be_given_different_panels, (
+        f"{case}: providers_disagree={spec.providers_disagree} while the companies would "
+        f"be given {len(alone)} distinct panel(s) of their own"
+    )
+    note = image_gen_model_note(spec, catalog_match=True)
+    blames_a_difference = DISAGREED_SETTINGS.format(named=spec.model_id) in note
+    assert blames_a_difference is would_be_given_different_panels, (
+        f"{case}: the note sends the reader looking for a difference between panels that "
+        f"are the same: {note!r}"
+    )
+
+
+@pytest.mark.parametrize("case", sorted(_EMPTY_PANEL_CONTRACTS))
+def test_an_empty_panel_blames_disagreement_only_where_the_companies_disagree(case):
+    """Two companies advertising the identical setting were reported as disagreeing.
+
+    The shared set is emptied by a record with no provider slug just as it is by a record
+    naming something else, because a setting cannot be keyed to a company OpenRouter does
+    not name. Only the second is a disagreement, and telling a reader the companies want
+    different things sends them looking for a difference that is not there. The two
+    contracts here expect opposite sentences on both surfaces, so neither sentence can be
+    emitted unconditionally. Both sentences are imported from production rather than
+    reduced to a fragment of themselves ("different settings", "does not name one of
+    them"), so rewording either one moves the expectation instead of reddening the suite.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        DISAGREED_SETTINGS,
+        UNKEYABLE_SETTINGS,
+        _renderable_names,
+        image_gen_model_note,
+        named_settings,
+    )
+    from open_webui_openrouter_pipe.integrations.image_help import render_image_help
+
+    records = _EMPTY_PANEL_CONTRACTS[case]
+    spec = build_image_model_filter_spec("v/m", {"id": "v/m"}, records, dedicated_image_api=True)
+    assert spec.knob_count == 0, f"{case} was meant to draw nothing, got {spec.knob_count}"
+
+    apart_if_all_were_named = [
+        _renderable_names([{**record, "provider_slug": record.get("provider_slug") or "named"}])
+        for record in records
+    ]
+    would_render_differently = len({frozenset(names) for names in apart_if_all_were_named}) > 1
+
+    assert spec.providers_disagree is would_render_differently, (
+        f"{case}: providers_disagree={spec.providers_disagree} while the records would "
+        f"render {apart_if_all_were_named} apart once every company is named"
+    )
+    assert spec.passthrough_unaddressable is not would_render_differently, (
+        f"{case}: passthrough_unaddressable={spec.passthrough_unaddressable} does not match "
+        f"what the records render apart: {apart_if_all_were_named}"
+    )
+
+    help_text = render_image_help("v/m", {"id": "v/m"}, endpoint_record=records, dedicated_image_api=True)
+    note = image_gen_model_note(spec, catalog_match=True)
+    listed = named_settings(spec)
+    for surface, text, named in (("help", help_text, "this model"), ("model note", note, spec.model_id)):
+        blame = DISAGREED_SETTINGS.format(named=named)
+        unnamed = UNKEYABLE_SETTINGS.format(named=named, listed=listed)
+        assert (blame in text) is would_render_differently, (
+            f"{case}: the {surface} blames a disagreement that is not there: {text!r}"
+        )
+        assert (unnamed in text) is not would_render_differently, (
+            f"{case}: the {surface} blames an unnamed company wrongly: {text!r}"
+        )
+
+
+_WITHHELD_CONTRACTS: dict[str, tuple[str, ...]] = {
+    "one-setting": ("steps",),
+    "two-settings": ("steps", "cfg_scale"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_WITHHELD_CONTRACTS))
+def test_every_setting_withheld_for_want_of_a_named_company_is_named(case):
+    """Two withheld settings were reported as one, and neither surface said which.
+
+    Both messages were written for a single setting, so a contract sharing two told the
+    reader one was missing and left them to guess which control they were looking for.
+    The names are the ones the contract published, and the two rows publish different
+    numbers of them, so no fixed sentence can name every one of both.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import image_gen_model_note
+    from open_webui_openrouter_pipe.integrations.image_help import render_image_help
+
+    published = _WITHHELD_CONTRACTS[case]
+    records: list[dict[str, Any]] = [
+        {"provider_tag": tag, "allowed_passthrough_parameters": list(published)}
+        for tag in ("acme", "brand")
+    ]
+    spec = build_image_model_filter_spec("v/m", {"id": "v/m"}, records, dedicated_image_api=True)
+    assert spec.passthrough_unaddressable and not spec.passthrough, (
+        f"{case} was meant to reach the withheld branch: passthrough={spec.passthrough}"
+    )
+
+    surfaces = {
+        "model note": image_gen_model_note(spec, catalog_match=True),
+        "help card": render_image_help(
+            "v/m", {"id": "v/m"}, endpoint_record=records, dedicated_image_api=True
+        ),
+    }
+    vocabulary = {name for names in _WITHHELD_CONTRACTS.values() for name in names}
+    for surface, text in surfaces.items():
+        assert {name for name in vocabulary if name in text} == set(published), (
+            f"{case}: the {surface} withholds {published} and names "
+            f"{sorted(name for name in vocabulary if name in text)}, so a reader cannot "
+            f"tell which control is missing: {text!r}"
+        )
+
+
+_ROUTED_CARD_CONTRACTS: dict[str, list[dict[str, Any]]] = {
+    "companies-with-different-settings": [
+        {
+            "provider_slug": slug,
+            "provider_tag": slug,
+            "supported_parameters": {
+                "resolution": {"type": "enum", "values": [tier]},
+                "quality": {"type": "enum", "values": [quality]},
+            },
+        }
+        for slug, tier, quality in (("alpha", "1K", "low"), ("beta", "4K", "high"))
+    ],
+    "companies-that-publish-nothing": [
+        {"provider_slug": slug, "provider_tag": slug, "supported_parameters": {}}
+        for slug in ("alpha", "beta")
+    ],
+}
+
+
+@pytest.mark.parametrize("case", sorted(_ROUTED_CARD_CONTRACTS))
+def test_a_card_never_both_routes_a_size_and_says_routing_is_impossible(case):
+    """One card gave two accounts of the same mechanism, and one of them was false.
+
+    The disagreed settings were said to be unofferable "without knowing which one will
+    take the request", while the size bullet below promised the request goes to a company
+    that takes the tier -- and the adapter does pin one, for any top-level value, not only
+    a size. Whether it pins is measured here rather than assumed, and the account of the
+    disagreement is read from the string both surfaces are built from, so restoring an
+    impossibility claim is a divergence rather than a wording change. One contract routes
+    and blames a disagreement and the other does neither, so a fixed card fails a row.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        DISAGREED_SETTINGS,
+        image_gen_model_note,
+    )
+    from open_webui_openrouter_pipe.integrations.image_help import render_image_help
+
+    records = _ROUTED_CARD_CONTRACTS[case]
+    spec = build_image_model_filter_spec("v/m", {"id": "v/m"}, records, dedicated_image_api=True)
+    assert not spec.knob_count, f"{case} was meant to draw nothing, got {spec.knob_count}"
+
+    provider: dict[str, Any] = {}
+    ImageGenerationAdapter._pin_accepting_providers(provider, records, {"size": "4K"})
+    takes_it = sorted(
+        str(record["provider_tag"])
+        for record in records
+        if "4K" in ((record["supported_parameters"].get("resolution") or {}).get("values") or ["4K"])
+    )
+    expected_pin = takes_it if 0 < len(takes_it) < len(records) else None
+    assert provider.get("only") == expected_pin, (
+        f"{case}: the request was steered to {provider.get('only')!r} where the companies "
+        f"taking 4K are {takes_it}"
+    )
+
+    card = render_image_help(
+        "v/m", {"id": "v/m"}, endpoint_record=records, dedicated_image_api=True
+    )
+    routes_the_pick = expected_pin is not None
+    assert any(clause in card for clause in _routing_clauses()) is routes_the_pick, (
+        f"{case}: the card promises the pick is routed while the adapter pinned "
+        f"{provider.get('only')!r}:\n{card}"
+    )
+    for surface, text, named in (
+        ("help card", card, "this model"),
+        ("model note", image_gen_model_note(spec, catalog_match=True), spec.model_id),
+    ):
+        assert (DISAGREED_SETTINGS.format(named=named) in text) is spec.providers_disagree, (
+            f"{case}: the {surface} accounts for the disagreement in its own words while "
+            f"the same surface promises the request is routed to a company that accepts "
+            f"the pick: {text!r}"
+        )
+
+
+@pytest.mark.parametrize(("slug", "keyed"), [("acme", True), (None, False)])
+@pytest.mark.asyncio
+async def test_a_setting_withheld_for_want_of_a_company_is_one_the_request_cannot_key(slug, keyed):
+    """The panel's account of an unnamed company, checked against the request's own.
+
+    The control is withheld because the adapter has no slug to key the provider block
+    under and drops the value. Dropping the slug requirement so the control renders again
+    would put a box on screen that nothing carries, so the two must be asserted together:
+    where the panel offers the setting the request carries it, and where it does not the
+    request says why.
+    """
+    record: dict[str, Any] = {
+        "provider_tag": "acme",
+        "allowed_passthrough_parameters": ["steps"],
+    }
+    if slug is not None:
+        record["provider_slug"] = slug
+    records = [record]
+
+    spec = build_image_model_filter_spec("v/m", {"id": "v/m"}, records, dedicated_image_api=True)
+    assert ("steps" in spec.passthrough) is keyed, (
+        f"the panel offers steps={('steps' in spec.passthrough)} with provider_slug={slug!r}"
+    )
+    assert spec.passthrough_unaddressable is not keyed
+
+    adapter = _adapter(_KeyPipe("sk-x"))
+    adapter._endpoint_cache["m/x"] = (time.monotonic(), records)
+    result = await _posted(
+        adapter,
+        body={"image_config": {"steps": 8}},
+        responses_body=_StubResponsesBody(
+            [{"role": "user", "content": [{"type": "input_text", "text": "a leaf"}]}]
+        ),
+        valves=_StubValves("sk-x"),
+        event_emitter=_Emitter(),
+        normalized_model_id="m.x",
+        api_model_id="m/x",
+    )
+
+    options = (result.payload.get("provider") or {}).get("options") or {}
+    carried = options.get("acme", {}).get("steps")
+    notices = " ".join(str(_event_data(call).get("content", "")) for call in result.events)
+    assert (carried == 8) is keyed, (
+        f"provider_slug={slug!r} carried steps={carried!r}; payload={result.payload!r}"
+    )
+    assert ("does not name the company" in notices) is not keyed, (
+        f"provider_slug={slug!r} produced notices {notices!r}"
+    )
+
+
+# =============================================================================
+# 10 - the generation panel draws the same size control the model's own does
+# =============================================================================
+
+
+_SIZE_SHAPE_CONTRACTS: list[tuple[str, tuple[str, ...], str]] = [
+    ("size", ("1024x1024", "512x512"), "999x999"),
+    ("resolution", ("1K", "2K"), "3K"),
+]
+
+
+def _published_size_records(published: str, values: tuple[str, ...]) -> list[dict[str, Any]]:
+    return [
+        {
+            "provider_slug": "alpha",
+            "provider_tag": "alpha",
+            "supported_parameters": {published: {"type": "enum", "values": list(values)}},
+        }
+    ]
+
+
+def _carried_by_the_model_panel(spec: Any, valve: str, typed: str, tag: str) -> bool:
+    """What the model's own filter puts into ``image_config`` for one typed value."""
+    module = _load_filter_from_source(render_image_model_filter_source(spec), tag)
+    body: dict[str, Any] = {"model": spec.model_id}
+    module.Filter().inlet(
+        body, {}, {"valves": module.Filter.UserValves(**{valve: typed})}
+    )
+    return typed in (body.get("image_config") or {}).values()
+
+
+def _carried_by_the_gen_panel(spec: Any, valve: str, typed: str, tag: str) -> bool:
+    """What the generation panel puts into the image_generation tool call."""
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
+        render_image_gen_filter_source,
+    )
+
+    module = _load_filter_from_source(
+        render_image_gen_filter_source(spec, catalog_match=True, selected_model=spec.model_id),
+        tag,
+    )
+    metadata: dict[str, Any] = {}
+    module.Filter().inlet(
+        {"model": spec.model_id},
+        metadata,
+        {"valves": module.Filter.UserValves(**{valve: typed})},
+    )
+    tools = (metadata.get(PIPE_META) or {}).get("server_tools") or {}
+    return typed in (tools.get("image_generation") or {}).values()
+
+
+@pytest.mark.parametrize(
+    ("published", "values", "unpublished"),
+    _SIZE_SHAPE_CONTRACTS,
+    ids=[published for published, _values, _unpublished in _SIZE_SHAPE_CONTRACTS],
+)
+def test_the_generation_panel_draws_the_size_control_the_models_own_panel_draws(
+    published, values, unpublished
+):
+    """One contract publishes ``size``; the other publishes ``resolution``.
+
+    The generation panel picked its size control by reading the ``resolution`` entry
+    alone, so a contract publishing ``size`` was invisible to it: the model's own panel
+    drew a closed list of the sizes that model takes while the generation panel drew a
+    free-text box whose help text offered four tiers the request path then refused,
+    because a declared ``size`` is matched straight against the published list.
+
+    The shape of each control is read off the RENDERED filters rather than asserted as a
+    literal: both are loaded the way Open WebUI loads one and run, and a value the
+    contract does not publish either survives into the request (free text) or does not
+    (a closed list). A published value must survive both, so a panel that dropped
+    everything could not pass. Two contracts, and only one of them was broken, so a
+    constant answer satisfies at most one row.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import _valve_name
+
+    records = _published_size_records(published, values)
+    spec = build_image_model_filter_spec(
+        "v/m", {"id": "v/m", "name": "v/m"}, records, dedicated_image_api=True
+    )
+    valve = _valve_name(published)
+    tag = f"size_shape_{published}"
+
+    kept = values[0]
+    assert _carried_by_the_model_panel(spec, valve, kept, f"{tag}_own_kept"), (
+        f"the model's own panel dropped {kept!r}, which {published} publishes, so neither "
+        "panel carries anything and the comparison below proves nothing"
+    )
+    assert _carried_by_the_gen_panel(spec, valve, kept, f"{tag}_gen_kept"), (
+        f"the generation panel dropped {kept!r}, which {published} publishes"
+    )
+
+    own_takes_anything = _carried_by_the_model_panel(
+        spec, valve, unpublished, f"{tag}_own_free"
+    )
+    gen_takes_anything = _carried_by_the_gen_panel(spec, valve, unpublished, f"{tag}_gen_free")
+
+    assert gen_takes_anything is own_takes_anything, (
+        f"{published} is published as a list of {values}: the model's own panel carries "
+        f"the unpublished {unpublished!r}={own_takes_anything} and the generation panel "
+        f"carries it={gen_takes_anything}, so one of them offers a value the other -- and "
+        "the request path -- refuses"
+    )
+
+
+# =============================================================================
+# 11 - the size box against a tier descriptor published but unusable
+# =============================================================================
+
+
+def _one_company_publishing(declared: dict[str, Any]) -> list[dict[str, Any]]:
+    return [{"provider_slug": "alpha", "provider_tag": "alpha", "supported_parameters": declared}]
+
+
+_UNUSABLE_TIER_CONTRACTS: dict[str, list[dict[str, Any]]] = {
+    "an-empty-list": _one_company_publishing(
+        {"resolution": {"type": "enum", "values": []}}
+    ),
+    "a-numeric-range": _one_company_publishing(
+        {"resolution": {"type": "range", "min": 1, "max": 4}}
+    ),
+    "a-range-under-the-other-name": _one_company_publishing(
+        {"size": {"type": "range", "min": 1, "max": 4}}
+    ),
+    "a-usable-list": _one_company_publishing(
+        {"resolution": {"type": "enum", "values": ["1K", "2K"]}}
+    ),
+    "nothing-of-its-own": _one_company_publishing({}),
+}
+
+
+def _tiers_the_request_carries(records: list[dict[str, Any]]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The tiers this contract lets onto the wire, and those it never measured.
+
+    Both come from the request path: the split the adapter performs on a request
+    carrying one tier, and the fit that split consults for the name it measured against.
+    """
+    from open_webui_openrouter_pipe.integrations.image_types import SCHEMA_ENUMS, TIER_EQUIVALENT
+
+    declared = ImageGenerationAdapter._union_declared(records)
+    carried: list[str] = []
+    unmeasured: list[str] = []
+    for tier in SCHEMA_ENUMS[TIER_EQUIVALENT["size"]]:
+        top_level, _provider, _notes = ImageGenerationAdapter._split_image_config(
+            {"image_config": {"size": tier}},
+            allowed_passthrough=frozenset(),
+            record=records[0],
+            records=records,
+        )
+        if top_level.get("size") != tier:
+            continue
+        carried.append(tier)
+        if not ImageGenerationAdapter._fit_published(declared, "size", tier).measured_as:
+            unmeasured.append(tier)
+    return tuple(carried), tuple(unmeasured)
+
+
+def _passage_clauses() -> set[str]:
+    """Every sentence the panel uses for a model that measures a tier against nothing.
+
+    Read out of the meaning table by the state it is keyed under, so renaming the
+    constants or reordering the table leaves this reading the same sentences.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import _SIZE_MEANING
+
+    return {clause for (state, _ratio), (clause, _pixels) in _SIZE_MEANING.items() if state == "none"}
+
+
+def _tier_sentence(description: str) -> str:
+    """The one sentence the box uses to say what a tier is measured against.
+
+    The longest of the table's clauses that the box carries: the pair for a panel with
+    an Aspect ratio control and one without share an opening, so the shorter is a prefix
+    of the longer and matching alone would find both.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import _SIZE_MEANING
+
+    carried = {
+        clause
+        for (_state, _ratio), (clause, _pixels) in _SIZE_MEANING.items()
+        if clause in description
+    }
+    assert carried, f"the box says nothing about what a tier is measured against: {description!r}"
+    return max(carried, key=len)
+
+
+@pytest.mark.parametrize("case", sorted(_UNUSABLE_TIER_CONTRACTS))
+def test_the_size_box_promises_a_tier_travels_only_where_one_actually_does(case):
+    """A descriptor can be published and still admit nothing: an empty list, or a bound.
+
+    The box read those as publishing nothing and promised the tier would go out for the
+    company running the model to interpret, while the request path measured it against
+    that very descriptor and dropped it -- so nothing went out, and the panel said it
+    would. What each contract does is computed here by putting a request carrying one
+    tier through the adapter, and the sentence that makes the promise is taken from the
+    panel's own meaning table rather than named, so the two halves cannot be restated to
+    agree with each other.
+    """
+    records = _UNUSABLE_TIER_CONTRACTS[case]
+    spec = build_image_model_filter_spec("v/m", {"id": "v/m"}, records, dedicated_image_api=True)
+    carried, unmeasured = _tiers_the_request_carries(records)
+
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import image_knob_text
+
+    _title, description = image_knob_text("size", spec)
+    promises_passage = any(clause in description for clause in _passage_clauses())
+
+    assert promises_passage is bool(unmeasured), (
+        f"{case}: the box promises a tier goes out for the company to interpret="
+        f"{promises_passage}, and the request path lets {list(unmeasured)} through "
+        f"without measuring it against anything this model published: {description!r}"
+    )
+    assert not promises_passage or carried, (
+        f"{case}: the box promises the tier travels and the request path carries none of "
+        f"the four: {description!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    "case", sorted(set(_UNUSABLE_TIER_CONTRACTS) - {"a-usable-list", "nothing-of-its-own"})
+)
+def test_a_tier_the_model_refuses_outright_is_described_as_measured_not_as_passed_on(case):
+    """Three contracts the request path refuses every tier for, one sentence between them.
+
+    Two publish a descriptor that yields no values a tier can match -- an empty list, and
+    a bound the fit reads as a number -- and one publishes the bound under `size` rather
+    than `resolution`. The adapter treats all three alike: it measures the tier against
+    what was published and drops it. The box has to describe them alike too, and the
+    sentence it must use is the one it already gives a model that publishes a list a tier
+    is measured against, read off the RENDERED box for such a model rather than named.
+    """
+    from open_webui_openrouter_pipe.filters.image_filter_renderer import image_knob_text
+
+    records = _UNUSABLE_TIER_CONTRACTS[case]
+    spec = build_image_model_filter_spec("v/m", {"id": "v/m"}, records, dedicated_image_api=True)
+    carried, _unmeasured = _tiers_the_request_carries(records)
+    assert not carried, (
+        f"{case}: the request path carries {list(carried)}, so this is not the contract "
+        "this test was set up around"
+    )
+
+    measured = build_image_model_filter_spec(
+        "v/m", {"id": "v/m"}, _UNUSABLE_TIER_CONTRACTS["a-usable-list"], dedicated_image_api=True
+    )
+    unmeasured_spec = build_image_model_filter_spec(
+        "v/m",
+        {"id": "v/m"},
+        _UNUSABLE_TIER_CONTRACTS["nothing-of-its-own"],
+        dedicated_image_api=True,
+    )
+    measured_sentence = _tier_sentence(image_knob_text("size", measured)[1])
+    assert measured_sentence != _tier_sentence(image_knob_text("size", unmeasured_spec)[1]), (
+        "a model that measures a tier and one that does not are given the same sentence, "
+        "so the comparison below would hold whatever the box said"
+    )
+
+    assert _tier_sentence(image_knob_text("size", spec)[1]) == measured_sentence, (
+        f"{case}: the request path measures a tier against what this model published and "
+        f"drops it, exactly as it does for a published list, and the box describes the "
+        f"two differently: {image_knob_text('size', spec)[1]!r}"
     )

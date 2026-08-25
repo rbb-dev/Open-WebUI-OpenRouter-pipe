@@ -1,9 +1,9 @@
 """RED TEAM regression: a tier reaches routing the same way whichever control set it.
 
 `size` accepting a tier is the pipe's own documented equivalence -- IMAGE_SIZE's help text
-says "A tier ... sets the same thing as Resolution, is checked against the tiers this model
-publishes". `_split_image_config` honours it (it validates a tier `size` against the
-`resolution` descriptor). `_records_accepting` does not, so the provider pin that keeps a
+says a tier "is checked against" whatever limit the model publishes for output size.
+`_split_image_config` honours it (it validates a tier `size` against the `resolution`
+descriptor). `_records_accepting` does not, so the provider pin that keeps a
 narrowed tier away from a provider that lacks it is applied for one spelling and not the
 other.
 

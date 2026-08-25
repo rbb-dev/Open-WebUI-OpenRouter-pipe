@@ -1126,7 +1126,10 @@ def _render_template(
         pricing_section = (
             f"\n\n{_VIDEO_COST_HEADING}\n"
             f"{pricing_block}\n\n"
-            "The cost of a clip is reported on the status line when it finishes."
+            "Where the company running the model reports a charge above zero, it is "
+            "shown on the status line when it finishes, as long as usage details are on: "
+            "that is your own Show usage details setting once you have set it, and the "
+            "site default your administrator chooses until then."
         )
 
     tips = data.get("tips_and_pitfalls") or []

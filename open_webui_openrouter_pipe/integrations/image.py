@@ -20,6 +20,7 @@ from .image_client import OpenRouterImageClient
 from .image_types import (
     SCHEMA_ENUMS,
     SCHEMA_ONLY_PARAMS,
+    TIER_EQUIVALENT,
     TOP_LEVEL_PARAMS,
     GeneratedImage,
     ImageGenerationError,
@@ -83,8 +84,6 @@ _BILLING_MULTIPLIERS = frozenset({"n"})
 _LEGACY_PARAM_NAMES = {
     "image_size": "resolution",
 }
-
-_TIER_EQUIVALENT = {"size": "resolution"}
 
 _warned_image_endpoints: set[str] = set()
 
@@ -276,7 +275,7 @@ class ImageGenerationAdapter:
         if name in known:
             fitted, reason = ImageGenerationAdapter._fit_descriptor(known[name], value)
             return _Fitted(fitted, reason, name)
-        equivalent = _TIER_EQUIVALENT.get(name)
+        equivalent = TIER_EQUIVALENT.get(name)
         if not equivalent or pixel_size(value) is not None:
             return _Fitted(value, "", "")
         tiers = SCHEMA_ENUMS.get(equivalent, ())

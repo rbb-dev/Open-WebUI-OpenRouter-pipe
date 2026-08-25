@@ -1622,7 +1622,7 @@ class Valves(BaseModel):
     )
     SHOW_FINAL_USAGE_STATUS: bool = Field(
         default=True,
-        description="When True, the final status message includes elapsed time, cost, and token usage.",
+        description="When True, the final status line includes elapsed time, token usage, and the cost of the generation, with the cost shown only when it is above zero; when False, that status line reports elapsed time alone.",
     )
     FINAL_USAGE_STATUS_STYLE: Literal["text", "icons"] = Field(
         default="text",
@@ -1769,11 +1769,18 @@ class Valves(BaseModel):
     AUTO_INSTALL_IMAGE_FILTERS: bool = Field(
         default=True,
         description=(
-            "Install and keep up to date one settings panel per image model, offering "
-            "exactly the settings that model tells OpenRouter it accepts -- so nobody is "
-            "shown an aspect ratio their model rejects. If a model's settings list cannot "
-            "be read on a refresh, it keeps the settings from the last successful read; a "
-            "model never read offers none rather than a guessed set."
+            "Install and keep up to date one settings panel per image model, built from "
+            "the settings that model tells OpenRouter it accepts -- so nobody is shown an "
+            "aspect ratio their model rejects. Alongside those, every panel carries "
+            "Output size: a size tier typed there is checked against the tiers that model "
+            "publishes, or against 512, 1K, 2K and 4K where it publishes none, and a tier "
+            "the model does not list is dropped before the request goes out, while exact "
+            "pixels such as 1024x1024 travel as typed. A model that answers with a picture "
+            "and no text carries three more the panel supplies rather than the model: "
+            "Provider options, Reference images and Reference image links. If a model's "
+            "settings list cannot be read on a refresh, it keeps the settings from the "
+            "last successful read; a model never read gets no panel at all rather than a "
+            "guessed set."
         ),
     )
     AUTO_ATTACH_IMAGE_FILTERS: bool = Field(
@@ -2190,7 +2197,7 @@ class UserValves(BaseModel):
     SHOW_FINAL_USAGE_STATUS: bool = Field(
         default=True,
         title="Show usage details",
-        description="Display tokens, time, and cost at the end of each reply.",
+        description="Display tokens, time, and cost at the end of each reply; the cost appears only when it is above zero.",
     )
     ENABLE_REASONING: bool = Field(
         default=True,

@@ -438,8 +438,9 @@ picture.
 > **id**: `sourceful/riverflow-v2-pro` · **pure-image-only**
 
 Sourceful's premium tier — pure image-only output with custom font
-rendering and image-to-image super-resolution. Strongest for marketing
-assets requiring exact text rendering at scale.
+rendering (`font_inputs`) and up to ten reference images for
+image-to-image work. Strongest for marketing assets requiring exact text
+rendering at scale.
 
 - **PURE-image-only** — does NOT output text.
 - **4.5MB request size limit** — pass image URLs instead of base64 to
@@ -903,17 +904,17 @@ Recraft's typography champion — the only AI image model that can render long-f
 
 ## Tips & pitfalls
 - PURE-image-only — does NOT output text in chat.
-- Every Recraft variant takes `style` and `text_layout`; V3 is the one tuned for long-form text, so it holds full sentences and paragraphs where the others hold short lines.
+- V3 is the Recraft tuned for long-form text, so it holds full sentences and paragraphs where the others hold short lines. Like every Recraft variant it takes `style`, `controls` and `text_layout`.
 - For text rendering: put exact wording in quotes in your prompt AND use `text_layout` to place each line exactly where you want it.
 - Style names: see https://www.recraft.ai/docs/api-reference/styles. This model draws pixels; for SVG, pick one of the Recraft Vector models.
 - text_layout: array of {text, bbox} where bbox is 4 [x,y] corners in 0-1 coords (order: TL, TR, BR, BL).
-- If you need newer composition or cleaner geometry, V4 and V4.1 offer the same three settings with a different look.
+- If you need newer composition or cleaner geometry, V4 and V4.1 offer the same settings with a different look.
 
 ## Cost
 
 - Each image it makes: $0.04 per image
 
-The cost of each generation is reported on the status line when it finishes.
+Where the company running the model reports a charge above zero, it is shown on the status line when it finishes, as long as usage details are on: that is your own Show usage details setting once you have set it, and the site default your administrator chooses until then.
 
 ## Controls
 - **Provider options** — Extra settings for the company that runs this model, as a JSON object keyed by its OpenRouter name. Use it for anything this panel does not already offer. Empty sends nothing.
@@ -927,14 +928,16 @@ The cost of each generation is reported on the status line when it finishes.
 - **text_layout** — a setting this model's provider accepts.
 ```
 
-The `## Controls` section is read from the model's own published
-settings, so it lists that model's choices and no others. A model that
-publishes none says so rather than showing an empty section. It covers the
-published settings, and above them the always-present controls that model
-carries — Output size on every model, plus Provider options, Reference images
-and Reference image links on the ones that answer only with a picture. Where a
-value is accepted by only some of the companies serving the model, both the
-panel and this list offer it and say so.
+The `## Controls` section covers the settings that model publishes
+together with the ones every panel carries whatever it publishes. A model
+that publishes none of its own says so rather than showing an empty
+section. On a model that answers only with a picture, Provider options,
+Reference images and Reference image links head the list, ahead of
+anything the model publishes. Output size comes after the published lists
+of choices and before the rest of what the model publishes — its number
+ranges and the settings named after what the company running it accepts.
+Where a value is accepted by only some of the companies serving the model,
+both the panel and this list offer it and say so.
 
 The `## Cost` section comes from the same record and is read fresh every
 time you ask, so it follows OpenRouter's rates without a new release.
@@ -979,20 +982,31 @@ the chat, surviving page reload.
 
 ## Pricing and cost display
 
-Pricing is pulled live from the OpenRouter catalog via the standard
-chat catalog refresh path (`MODEL_CATALOG_REFRESH_SECONDS` TTL). The
-status footer rendered on the assistant message includes the cost of
-the generation in dollars, derived from `prompt_tokens` /
-`completion_tokens` × the model's per-token rates.
+Rates come from each model's own published contract, refreshed on the
+shared catalog TTL (`MODEL_CATALOG_REFRESH_SECONDS`). OpenRouter states
+them per image, per megapixel or per token depending on the model, so
+there is no one formula behind every image charge: a per-image or
+per-megapixel model is not billed from token counts at all.
 
-For multimodal models (GPT-5 Image, Gemini Image), image output counts
-as completion tokens — the cost is bundled. For pure-image-only models
-(FLUX, Sourceful, Seedream), token-based pricing applies via OpenRouter's
-standard usage accounting.
+Where the company running the model reports a charge above zero for the
+generation, it is shown on the status line when it finishes, as long as
+usage details are on: that is your own Show usage details setting once
+you have set it, and the site default your administrator chooses until
+then; with usage details off, that line carries the elapsed time alone.
+The amount is the one OpenRouter returns with the generation rather than
+one this pipe works out, and it arrives as a single total, not a
+per-item breakdown.
 
-On Riverflow V2 Pro and V2 Fast, each reference image you supply adds
-$0.20 and each font file $0.03. These appear in the cost breakdown if
-you use those features.
+On Riverflow V2 Pro and V2 Fast, the published contract prices each
+reference image you supply at $0.20 and each font file at $0.03, and the
+`help` reply lists both on their own lines under `## Cost`. That section
+is in the reply only when the model's contract could be read for it —
+either it was already held from building that model's panel, or it was
+fetched there and then, which happens only while
+`ENABLE_OPENROUTER_IMAGE_GENERATION` is on. When neither holds, the reply
+stops after the description and tips: no `## Cost` and no `## Controls` at
+all. So a reply naming no reference charge means the contract was not
+read, not that references are free.
 
 ---
 
@@ -1005,7 +1019,7 @@ is shared with chat/video catalogs (`MODEL_CATALOG_REFRESH_SECONDS`).
 | Valve | Default | Range | Purpose |
 |-------|---------|-------|---------|
 | `ENABLE_OPENROUTER_IMAGE_GENERATION` | `True` | bool | Master kill switch. False drops pure-image-only models from the model list AND clears them from OWUI's catalog on the next model-list build, ahead of the catalogue refresh window, so it does not wait on `MODEL_CATALOG_REFRESH_SECONDS`. Multimodal models stay since they're in the chat catalog. |
-| `AUTO_INSTALL_IMAGE_FILTERS` | `True` | bool | Install and keep current one settings panel per image model, offering exactly what that model publishes. A model whose settings list has never been read gets none; one read before keeps its last successful set. |
+| `AUTO_INSTALL_IMAGE_FILTERS` | `True` | bool | Install and keep current one settings panel per image model, built from what that model publishes. Every panel also carries `Output size`, where a tier is checked against the tiers that model publishes -- or against `512`, `1K`, `2K` and `4K` where it publishes none -- while exact pixels such as `1024x1024` travel as typed; and a model that answers with a picture and no text carries `Provider options`, `Reference images` and `Reference image links` on top of that. A model whose settings list has never been read gets no panel; one read before keeps its last successful set. |
 | `AUTO_ATTACH_IMAGE_FILTERS` | `True` | bool | Attach each model's own settings panel to it, so its settings appear in the chat controls when that model is selected. A single model can opt out with the `disable_image_filter_auto_attach` advanced parameter. |
 | `AUTO_DEFAULT_IMAGE_FILTERS` | `True` | bool | Keep attached image filters enabled by default per chat. Re-asserted on every catalog metadata sync. |
 

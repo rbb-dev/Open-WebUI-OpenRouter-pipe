@@ -1320,18 +1320,6 @@ class FilterManager:
         await self._retire_variant_image_filters()
         return installed
 
-    async def _image_filter_exists(self, function_id: str) -> bool:
-        """Whether a filter row is already installed under this id."""
-        try:
-            from open_webui.models.functions import Functions
-
-            return await Functions.get_function_by_id(function_id) is not None
-        except Exception as exc:
-            self.logger.debug(
-                "Could not check for an existing filter %r: %s", function_id, exc, exc_info=True
-            )
-            return False
-
     async def _retire_variant_image_filters(self) -> None:
         """Deactivate image filters left over from the fixed-variant design.
 
@@ -1382,13 +1370,7 @@ class FilterManager:
         spec = build_image_model_filter_spec(
             model_id, image_model, endpoint_record, dedicated_image_api=dedicated_image_api
         )
-        if spec.knob_count == 0 and (
-            not spec.contract_read or not await self._image_filter_exists(spec.function_id)
-        ):
-            # Nothing to offer and nothing already installed, so install nothing. If a
-            # filter IS installed, fall through and overwrite it: a contract that shrank
-            # to nothing must not leave the previous controls on screen, writing values
-            # the model no longer accepts into every request.
+        if not spec.contract_read:
             return None
 
         # Built with the same expression the renderer emits, not a reconstruction of it.

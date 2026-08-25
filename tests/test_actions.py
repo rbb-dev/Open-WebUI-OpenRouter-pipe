@@ -247,6 +247,80 @@ async def test_clearing_a_template_puts_the_original_back_in_the_config_box(fake
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "names",
+    [
+        ("RATE_LIMIT_TEMPLATE", "AUTHENTICATION_ERROR_TEMPLATE"),
+        ("CONNECTION_ERROR_TEMPLATE", "SERVER_TIMEOUT_TEMPLATE", "PAYLOAD_TOO_LARGE_TEMPLATE"),
+    ],
+    ids=["two-boxes", "three-boxes"],
+)
+async def test_clearing_several_templates_in_one_save_puts_every_original_back(
+    fake_functions, names
+):
+    """Fourteen template boxes, one Save button -- clearing several is ONE admin action.
+
+    The test above clears one name per run, so a restore that can carry only ONE name
+    through a single validation passes it: each parametrised case is a separate save. This
+    is the same affordance with every box blanked in a SINGLE ``config_set`` payload, which
+    is the shape the editor actually sends.
+
+    Two things are asserted, because they fail at different sizes. What the store is left
+    holding fails as soon as two boxes are cleared: a name whose value now equals its
+    factory text is not part of the custom subset at all, so a blank persisted under one of
+    those names is a customisation nobody made. What the boxes READ BACK survives two
+    because the read reconstructs the valves from the stored subset, and a lone blank in
+    that subset gets restored on the way through -- the fault is laundered by the very
+    reconstruction that hides it. Three cleared boxes leave two blanks stored, one of them
+    outlives the read, and an admin looks at an empty box.
+
+    Every expectation is read from that valve's own field default, and the two rows name
+    five different templates, so no fixed string satisfies them.
+    """
+    factories = {
+        name: Valves.model_fields[name].get_default(call_default_factory=True)
+        for name in names
+    }
+    assert len(set(factories.values())) == len(names), (
+        "precondition: the factory texts have to differ, or one constant passes them all"
+    )
+    pipe = _config_pipe()
+    mangled = {name: f"MANGLED {{{index}" for index, name in enumerate(names)}
+
+    async def box_values():
+        snapshot = await actions.ACTIONS["config_get"].handler(pipe, _user(), {})
+        by_name = {spec["name"]: spec for spec in snapshot["valves"]}
+        return {name: by_name[name]["value"] for name in names}
+
+    await actions.ACTIONS["config_set"].handler(
+        pipe, _user(), {"edits": dict(mangled), "rev": fake_functions.rev}
+    )
+    assert await box_values() == mangled, "precondition: every box holds the edited text"
+
+    cleared = await actions.ACTIONS["config_set"].handler(
+        pipe,
+        _user(),
+        {"edits": {name: "   \n  " for name in names}, "rev": fake_functions.rev},
+    )
+
+    for name in names:
+        assert fake_functions.saved.get(name, factories[name]) == factories[name], (
+            f"{name} was cleared, so it is back at its factory text and is no longer a "
+            f"customisation -- but the store was left holding {fake_functions.saved.get(name)!r} "
+            "for it, and the next process to read that row without rebuilding the valves "
+            "gets a blank error template"
+        )
+    assert await box_values() == factories, (
+        "an admin who cleared these boxes in one save does not get all of them back; a box "
+        "keeps the blank it was given, and the error it formats goes out empty"
+    )
+    assert cleared["values"] == factories, (
+        "the save response is the only thing the editor sees before it re-renders; a name "
+        f"missing its restored text goes blank on screen: {cleared!r}"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("name", "typed", "stored"),
     [
         ("MAX_CONCURRENT_REQUESTS", "250", 250),
