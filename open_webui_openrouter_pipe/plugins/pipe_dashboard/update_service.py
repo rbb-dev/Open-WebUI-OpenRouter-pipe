@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import importlib.metadata
 import logging
 import sys
 import time
@@ -58,6 +59,23 @@ class UpdateError(Exception):
 
 def _now() -> float:
     return time.time()
+
+
+def _owui_version() -> str:
+    try:
+        from open_webui.env import VERSION
+
+        current = str(VERSION or "")
+    except Exception:
+        logger.debug("update: open_webui.env.VERSION unavailable", exc_info=True)
+        current = ""
+    if current and current != "0.0.0":
+        return current
+    try:
+        return str(importlib.metadata.version("open-webui") or "")
+    except Exception:
+        logger.debug("update: open-webui distribution version unavailable", exc_info=True)
+        return ""
 
 
 def _files_model() -> Any:
@@ -512,15 +530,17 @@ class UpdateService:
 
         required = str(frontmatter.get("required_open_webui_version", "") or "")
         if required:
+            from packaging.version import InvalidVersion, Version
+
             try:
-                from open_webui.env import VERSION as owui_version
-            except Exception:
-                logger.debug(
-                    "update: OWUI compatibility gate skipped (open_webui.env.VERSION unavailable)",
-                    exc_info=True,
-                )
-                owui_version = ""
-            if owui_version and self._version_gt(required, str(owui_version)):
+                Version(required)
+            except InvalidVersion as exc:
+                raise UpdateError(
+                    "validation_failed",
+                    f"frontmatter required_open_webui_version {required!r} is not a version",
+                ) from exc
+            owui_version = _owui_version()
+            if owui_version and self._version_gt(required, owui_version):
                 raise UpdateError(
                     "incompatible_owui",
                     f"release needs Open WebUI >= {required}, running {owui_version}",

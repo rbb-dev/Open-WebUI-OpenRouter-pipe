@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import importlib.metadata
 import sys
 import time
 import types
@@ -352,6 +353,125 @@ async def test_fetch_rejects_incompatible_owui(svc, fake_functions, fake_http, m
     with pytest.raises(us.UpdateError) as exc:
         await svc.fetch_and_validate(asset, require_newer=True)
     assert exc.value.code == "incompatible_owui"
+
+
+def _running_owui(monkeypatch, version):
+    owe = sys.modules.get("open_webui.env")
+    if owe is None:
+        owe = types.ModuleType("open_webui.env")
+        monkeypatch.setitem(sys.modules, "open_webui.env", owe)
+    monkeypatch.setattr(owe, "VERSION", version, raising=False)
+
+
+class _NoDistribution:
+    """Sentinel: the `open-webui` distribution has no recoverable version."""
+
+
+def _installed_dist_version(monkeypatch, value):
+    """Patch `importlib.metadata.version` -- one seam BELOW `_owui_version`.
+
+    Patching `_owui_version` itself would stop its body from running, so both of the
+    Fix-1 mutations (return env.VERSION unconditionally / return the metadata value
+    unconditionally) would stay green. Other distributions still resolve for real, so
+    nothing else that asks `importlib.metadata` during the test is disturbed.
+    """
+    if value is None:
+        return
+    real = importlib.metadata.version
+
+    def _version(name, *args, **kwargs):
+        if name != "open-webui":
+            return real(name, *args, **kwargs)
+        if value is _NoDistribution:
+            raise importlib.metadata.PackageNotFoundError("open-webui")
+        return value
+
+    monkeypatch.setattr(importlib.metadata, "version", _version)
+
+
+_OWUI_GATE_ARMS = [
+    pytest.param("0.9.1", "0.9.0", None, "0.9.0", id="refuses-just-below-the-floor"),
+    pytest.param("0.9.1", "0.9.1", None, None, id="allows-exactly-at-the-floor"),
+    pytest.param("0.9.1", "0.10.2", None, None, id="allows-above-the-floor"),
+    pytest.param("0.10.0", "0.9.9", None, "0.9.9", id="refuses-though-string-order-says-allow"),
+    pytest.param("0.9.1", "0.0.0", "0.11.0", None, id="recovers-and-allows"),
+    pytest.param("0.9.1", "0.0.0", "0.6.5", "0.6.5", id="recovers-and-blocks"),
+    pytest.param("0.9.1", "0.9.0", "0.11.0", "0.9.0", id="env-version-wins-over-metadata"),
+    pytest.param("99.0.0", "", _NoDistribution, None, id="undetermined-allows"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("required", "env_version", "dist_version", "refuses_as"), _OWUI_GATE_ARMS)
+async def test_the_owui_gate_refuses_exactly_when_the_running_version_is_below_the_floor(
+    svc, monkeypatch, required, env_version, dist_version, refuses_as
+):
+    """refuse <=> Version(required) > Version(running), at every ordering.
+
+    The gate had one test, pinned one point BELOW the boundary, and the allow side was
+    covered only incidentally by tests that happened to run with VERSION = "0.10.2".
+    Swapping the condition to `not self._version_gt(...)` -- which locks out every host
+    running EXACTLY the floor -- left all 122 tests in this file green. The boundary arm
+    and the `0.10.0` vs `0.9.9` arm are what close that: a negation fails the first, a
+    lexicographic compare fails the second, and a constant fails whichever it is not.
+
+    `_validate_content(require_newer=False)` is called directly so the MIN_UPDATE_VERSION
+    floor and the downgrade guard are out of the way -- the Open WebUI branch is then the
+    only thing that can decide the outcome, and a future MIN_UPDATE_VERSION bump cannot
+    silently re-couple these arms to it.
+
+    `refuses_as` is the running version the refusal must NAME, not merely a boolean: the
+    sentinel arms are otherwise satisfied by a gate that never recovered and refused on
+    "0.0.0" instead.
+    """
+    _running_owui(monkeypatch, env_version)
+    _installed_dist_version(monkeypatch, dist_version)
+    content = GOOD_HEADER.replace(
+        "required_open_webui_version: 0.9.1", f"required_open_webui_version: {required}"
+    )
+
+    if refuses_as is None:
+        out = await svc._validate_content(content, require_newer=False)
+        assert out["required_open_webui_version"] == required
+        return
+
+    with pytest.raises(us.UpdateError) as exc:
+        await svc._validate_content(content, require_newer=False)
+    assert exc.value.code == "incompatible_owui"
+    assert required in exc.value.message, (
+        f"the refusal does not name the required floor: {exc.value.message!r}"
+    )
+    assert refuses_as in exc.value.message, (
+        f"the refusal names the wrong running version: {exc.value.message!r} should "
+        f"report {refuses_as!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_fetch_rejects_unparseable_required_owui_version(
+    svc, fake_functions, fake_http, monkeypatch
+):
+    """A floor `packaging` cannot parse must raise, not disable the gate fleet-wide.
+
+    `_version_gt` swallows InvalidVersion and answers False, so a frontmatter floor
+    written as a RANGE (`>=0.9.1`) or with a wildcard (`0.9.x`) made the gate silently
+    never fire -- on any host, for that release. This is the only enforcement of
+    `required_open_webui_version` on the self-update path, so the failure is total and
+    invisible. Running 0.6.5 is well below the intended floor: an unvalidated gate lets
+    it through, which is what makes the outcome here decisive.
+    """
+    _running_owui(monkeypatch, "0.6.5")
+    content = GOOD_HEADER.replace(
+        "required_open_webui_version: 0.9.1", "required_open_webui_version: >=0.9.1"
+    ).encode()
+    asset = _asset(content)
+    fake_http.bytes_map[asset["browser_download_url"]] = content
+    with pytest.raises(us.UpdateError) as exc:
+        await svc.fetch_and_validate(asset, require_newer=False)
+    assert exc.value.code == "validation_failed"
+    assert ">=0.9.1" in exc.value.message, (
+        f"the refusal came from a different guard: {exc.value.message!r}"
+    )
 
 
 @pytest.mark.asyncio

@@ -23,6 +23,7 @@ import importlib.metadata
 from pathlib import Path
 
 import pytest
+from packaging.version import InvalidVersion, Version
 
 _OUR_PKG = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 
@@ -245,6 +246,33 @@ def _manifest_floor() -> str | None:
         if line.startswith("required_open_webui_version:"):
             return line.split(":", 1)[1].strip()
     return None
+
+
+def test_manifest_floor_is_a_version_the_updater_can_parse() -> None:
+    """The shipped floor is an artifact promise, so check the artifact -- not this box.
+
+    `_version_parts` scrapes digits and defaults a non-numeric chunk to 0, so it reads
+    `0.9.x` as (0, 9, 0) and every check that consults it stays green. The self-updater
+    parses this same literal with `packaging.version.Version` and refuses the whole
+    release when it does not parse, so an unparseable floor ships a bundle that no host
+    can install and no host can roll back through.
+
+    Deliberately NOT asserted: that the floor equals some value, or that it is at or
+    below the locally installed Open WebUI. Both are properties of a developer's machine
+    rather than of the artifact, and raising the floor is a normal, intended edit.
+    """
+    floor = _manifest_floor()
+    assert floor, f"no `required_open_webui_version:` in {_MANIFEST}"
+    try:
+        Version(floor)
+    except InvalidVersion:
+        pytest.fail(
+            f"`required_open_webui_version: {floor}` in {_MANIFEST} is not a version "
+            "`packaging` can parse. The self-updater validates this literal before the "
+            "compatibility gate and refuses the release outright, so shipping it would "
+            "make the bundle uninstallable everywhere. Write a bare version, not a "
+            "range or a wildcard."
+        )
 
 
 @pytest.mark.skipif(_BASE is None, reason="open_webui is not installed")
