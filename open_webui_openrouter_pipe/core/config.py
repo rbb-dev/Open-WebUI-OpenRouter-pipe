@@ -1718,7 +1718,7 @@ class Valves(BaseModel):
     )
     ENABLE_SUBAGENT: bool = Field(
         default=True,
-        description="Enable the OpenRouter Subagent server tool (delegate tasks to a cheaper worker model). When disabled, subagent toggles are hidden from users.",
+        description="Enable the OpenRouter Subagent server tool (delegate tasks to a worker model an admin chooses). When disabled, subagent toggles are hidden from users.",
     )
     ENABLE_SEARCH_MODELS: bool = Field(
         default=True,

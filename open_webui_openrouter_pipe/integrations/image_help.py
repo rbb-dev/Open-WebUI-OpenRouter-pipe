@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import math
-from typing import Any, NamedTuple
+from typing import Any
+
+OPENROUTER_PRICING = "What a model charges is on OpenRouter's pricing page."
 
 _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
     "openai/gpt-5-image": {
@@ -13,19 +14,19 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         ),
         "tips_and_pitfalls": [
             "Multimodal output: model decides when to emit images based on prompt — be explicit (\"Generate an image of...\") for reliability.",
-            "Pricing follows GPT-5 chat token economics; image output is included in completion tokens.",
+            "Images arrive inside the completion itself, so they land in the same turn as the text rather than as a separate step.",
         ],
     },
     "openai/gpt-5-image-mini": {
         "display_name": "OpenAI: GPT-5 Image Mini",
         "best_known_for": (
-            "Cost-efficient variant of GPT-5 Image with the same multimodal "
+            "The lighter GPT-5 Image, with the same multimodal "
             "text+image output. Best for high-volume image generation, "
-            "drafts, and iteration where premium-tier quality isn't required."
+            "drafts, and iteration where top-tier quality isn't required."
         ),
         "tips_and_pitfalls": [
             "Same prompting style as GPT-5 Image — be explicit about wanting images in the prompt.",
-            "Lower cost-per-token than GPT-5 Image; ideal for prototyping and bulk runs.",
+            "Ideal for prototyping and bulk runs.",
         ],
     },
     "openai/gpt-5.4-image-2": {
@@ -54,26 +55,26 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
     "google/gemini-3-pro-image-preview": {
         "display_name": "Google: Nano Banana Pro (Gemini 3 Pro Image Preview)",
         "best_known_for": (
-            "Premium tier of Gemini 3 with native image output. Highest "
+            "The top tier of Gemini 3 with native image output. Highest "
             "fidelity Gemini image model OpenRouter exposes; best for hero "
             "shots and high-detail outputs."
         ),
         "tips_and_pitfalls": [
-            "Premium variant — higher cost than Flash; reserve for finals.",
+            "Top-of-the-line variant — reserve for finals.",
             "Multimodal text+image output.",
         ],
     },
     "google/gemini-3.1-flash-image-preview": {
         "display_name": "Google: Nano Banana 2 (Gemini 3.1 Flash Image Preview)",
         "best_known_for": (
-            "Cost-optimized Gemini 3.1 with native image output, four extra "
+            "The fast Gemini 3.1 with native image output, four extra "
             "aspect ratios (1:4, 4:1, 1:8, 8:1) for ultrawide and tall layouts, "
-            "and a 512 low-res tier for cheap iteration. This line is the only "
+            "and a 512 low-res tier for quick iteration. This line is the only "
             "one offering all four ratios, though Qwen Image 3 publishes 1:4 and "
             "4:1; the 512 tier is on this model and the GA release, not the Lite."
         ),
         "tips_and_pitfalls": [
-            "512 renders far fewer pixels than 1K, and this model bills by token, so an iteration pass at 512 costs materially less.",
+            "512 renders far fewer pixels than 1K — enough to settle composition and framing before you commit to a full-size render.",
         ],
     },
     "openrouter/auto": {
@@ -107,8 +108,7 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "best_known_for": (
             "The larger Qwen Image 3. Same fine-detail and small-text strengths "
             "with more world knowledge behind them, so prompts that lean on real "
-            "places, products or conventions come out closer to right. Costs more "
-            "per image than the base model."
+            "places, products or conventions come out closer to right."
         ),
         "tips_and_pitfalls": [
             "Worth the step up when the prompt depends on knowing something, not just rendering it.",
@@ -133,7 +133,7 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "best_known_for": (
             "Krea's balanced model and the sensible default of the family. Heavier "
             "post-training gives stable, consistent output across a wide range of "
-            "prompts at a lower cost than Krea 2 Large."
+            "prompts."
         ),
         "tips_and_pitfalls": [
             "The most predictable of the three Krea models — good for work that has to look consistent across a set.",
@@ -168,8 +168,8 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
     "openai/gpt-image-1-mini": {
         "display_name": "OpenAI: GPT Image 1 Mini",
         "best_known_for": (
-            "The cheaper, faster GPT Image 1. Same API and the same controls, at "
-            "reduced latency and cost. Best for volume work and for iterating "
+            "The faster GPT Image 1. Same API and the same controls, at reduced "
+            "latency. Best for volume work and for iterating "
             "before committing to the full model."
         ),
         "tips_and_pitfalls": [
@@ -198,14 +198,14 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         ),
         "tips_and_pitfalls": [
             "Give it the reasoning to do: describe what the image must be true about, not only what it should look like.",
-            "The slowest and priciest Gemini image model; use Flash for iteration and come here for the final.",
+            "The slowest Gemini image model; use Flash for iteration and come here for the final.",
         ],
     },
     "google/gemini-3.1-flash-image": {
         "display_name": "Google: Nano Banana 2 (Gemini 3.1 Flash Image)",
         "best_known_for": (
             "Google's latest generation-and-editing model, delivering close to "
-            "Pro-level quality at Flash speed and price. The general-purpose "
+            "Pro-level quality at Flash speed. The general-purpose "
             "recommendation in the Gemini image line."
         ),
         "tips_and_pitfalls": [
@@ -215,7 +215,7 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
     "google/gemini-3.1-flash-lite-image": {
         "display_name": "Google: Nano Banana 2 Lite (Gemini 3.1 Flash Lite Image)",
         "best_known_for": (
-            "The fastest and cheapest Gemini image model, built for high-velocity "
+            "The fastest Gemini image model, built for high-velocity "
             "pipelines and rapid visual exploration. Best when you want many "
             "options quickly and will refine the winner elsewhere."
         ),
@@ -227,13 +227,11 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "display_name": "Microsoft: MAI-Image-2.5 Pro",
         "best_known_for": (
             "The larger MAI-Image-2.5, served via Azure AI Foundry. Photorealistic "
-            "and artistic output, billed by token exactly as the base model is but at "
-            "a higher rate for each picture it makes. This listing publishes rates "
-            "of its own — check them against the base model's before picking this "
-            "tier."
+            "and artistic output with more headroom on complex scenes than the base "
+            "model holds. It is a listing of its own, separate from the base model. "
+            f"{OPENROUTER_PRICING}"
         ),
         "tips_and_pitfalls": [
-            "Token-priced rather than per-image, so long prompts cost proportionally more.",
             "Accepts reference images alongside the prompt for editing and guidance.",
         ],
     },
@@ -243,18 +241,16 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Microsoft's high-quality image generation model served via Azure "
             "AI Foundry — photorealistic and artistic output from text prompts "
             "with optional reference-image input. Best for general-purpose "
-            "photoreal work on Azure-backed infrastructure, billed by token "
-            "rather than by picture."
+            "photoreal work on Azure-backed infrastructure."
         ),
         "tips_and_pitfalls": [
-            "Token-priced rather than per-image, so a long prompt costs more than a short one for the same picture.",
             "Multimodal input: accepts reference images alongside the text prompt for editing/guidance.",
         ],
     },
     "sourceful/riverflow-v2-pro": {
         "display_name": "Sourceful: Riverflow V2 Pro",
         "best_known_for": (
-            "Sourceful's premium tier — pure image-only output with custom "
+            "Sourceful's top tier — pure image-only output with custom "
             "font rendering (`font_inputs`) and up to ten reference images for "
             "image-to-image work. Strongest for marketing assets requiring "
             "exact text rendering at scale."
@@ -266,9 +262,9 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
     "sourceful/riverflow-v2-fast": {
         "display_name": "Sourceful: Riverflow V2 Fast",
         "best_known_for": (
-            "Faster, cheaper variant of Riverflow V2 — same Sourceful extension "
-            "(`font_inputs`) and the same per-reference charge, at lower quality and "
-            "reduced cost. Best for iteration before committing to a Pro render."
+            "Faster variant of Riverflow V2 — same Sourceful extension "
+            "(`font_inputs`), at lower quality. Best for iteration before "
+            "committing to a Pro render."
         ),
         "tips_and_pitfalls": [
             "Same caveats as Riverflow V2 Pro: pure-image-only, 4.5MB request limit, image URLs preferred.",
@@ -282,12 +278,11 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "a unified text-to-image and image-to-image family. Best for "
             "top-tier control and quality-sensitive outputs: brand assets, "
             "marketing finals, and work that benefits from the new 2.5 "
-            "self-scoring and background controls. Priced per image, rising "
-            "with the output size you ask for."
+            "self-scoring and background controls."
         ),
         "tips_and_pitfalls": [
             "PURE-image-only — does NOT output text.",
-            "Pricing is dynamic: the published per-image rate is a starting point, and the final charge is settled per job from the processing it actually took.",
+            OPENROUTER_PRICING,
         ],
     },
     "sourceful/riverflow-v2.5-fast": {
@@ -296,8 +291,7 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "The speed-optimized variant of Sourceful's Riverflow 2.5 lineup "
             "— best for production deployments and latency-critical "
             "workflows. Same unified text-to-image and image-to-image family "
-            "as Pro, and it keeps the 2.5 background choice, at a fraction of "
-            "the cost and with the charge settled per job at completion. It is "
+            "as Pro, and it keeps the 2.5 background choice. It is "
             "the narrower listing of the two: pictures come back as JPEG only, "
             "the largest size is 2K rather than 4K, and it takes fewer reference "
             "pictures per request. Switch to Pro when you need PNG or WebP, a 4K "
@@ -311,7 +305,7 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
     "black-forest-labs/flux.2-pro": {
         "display_name": "Black Forest Labs: FLUX.2 Pro",
         "best_known_for": (
-            "Black Forest Labs' premium FLUX.2 model — pure-image-only with "
+            "Black Forest Labs' flagship FLUX.2 model — pure-image-only with "
             "strong photorealism and prompt adherence. Best for high-quality "
             "deliverables. Supports seed for deterministic generation."
         ),
@@ -331,31 +325,31 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "tips_and_pitfalls": [
             "PURE-image-only — does NOT output text.",
             "Seed enables deterministic regeneration.",
-            "Most expensive FLUX tier — use for finals only.",
+            "Use for finals only.",
         ],
     },
     "black-forest-labs/flux.2-flex": {
         "display_name": "Black Forest Labs: FLUX.2 Flex",
         "best_known_for": (
-            "Mid-tier FLUX.2 balancing quality and cost. Pure-image-only "
+            "Mid-tier FLUX.2, sitting between Pro and Klein 4B. Pure-image-only "
             "with seed support. Best for general production work."
         ),
         "tips_and_pitfalls": [
             "PURE-image-only.",
-            "Seed support; balanced cost-quality vs Pro/Max.",
+            "Seed support; balanced quality vs Pro/Max.",
         ],
     },
     "black-forest-labs/flux.2-klein-4b": {
         "display_name": "Black Forest Labs: FLUX.2 Klein 4B",
         "best_known_for": (
-            "Smallest FLUX.2 variant (4B parameters) — lowest cost in the "
-            "FLUX lineup. Pure-image-only with seed support. Best for high-"
+            "Smallest FLUX.2 variant (4B parameters). Pure-image-only with "
+            "seed support. Best for high-"
             "volume / draft work."
         ),
         "tips_and_pitfalls": [
             "PURE-image-only — does NOT output text.",
-            "Seed support; cheapest FLUX tier.",
-            "Quality trades against cost — use for iteration, not finals.",
+            "Seed support.",
+            "Fine detail is where the smaller model shows — use for iteration, not finals.",
         ],
     },
     "bytedance-seed/seedream-4.5": {
@@ -414,18 +408,16 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
     "recraft/recraft-v4-pro": {
         "display_name": "Recraft: Recraft V4 Pro",
         "best_known_for": (
-            "Premium V4 — same design taste at a higher resolution. Outputs at 2048x2048 "
+            "The high-resolution V4 — same design taste, larger output. Outputs at 2048x2048 "
             "(~4 megapixels), ~30s/image. Built for print-ready work where fine "
             "detail matters: magazine layouts, posters, billboards, packaging, "
             "editorial illustration. Same prompt accuracy and creative judgment "
             "as V4 but with sharper geometry, finer textures, and better "
-            "anatomy/realism in complex compositions. Billed at a flat rate "
-            "per image on OpenRouter."
+            "anatomy/realism in complex compositions."
         ),
         "tips_and_pitfalls": [
             "PURE-image-only.",
             "~3x slower than V4 due to higher resolution — reserve for finals, not iteration.",
-            "Flat per-image fee rather than per-token, so prompt length does not change what a render costs.",
             "Image-to-image: only one input image supported.",
             "Same human-subject limitations as V4; not ideal for portraiture.",
         ],
@@ -453,7 +445,7 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Vector (SVG) variant of V4 — same design taste at ~1K equivalent "
             "detail, output as scalable SVG markup. Best for logos, icons, flat "
             "illustrations, and any asset destined for vector editing or "
-            "infinite scaling. Faster and cheaper than V4 Pro Vector for "
+            "infinite scaling. Faster than V4 Pro Vector for "
             "iteration; reserve Pro Vector for finals."
         ),
         "tips_and_pitfalls": [
@@ -478,7 +470,7 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Drop-in successor to V4 — try V4.1 first; fall back to V4 if its aesthetic doesn't suit a specific brand.",
             "Image-to-image: only one input image supported.",
             "Same human-subject limitations as V4; not ideal for portraiture.",
-            "For general-purpose / cost-sensitive work without aesthetic emphasis, prefer the V4.1 Utility variants.",
+            "For general-purpose work without aesthetic emphasis, prefer the V4.1 Utility variants.",
         ],
     },
     "recraft/recraft-v4.1-pro": {
@@ -518,8 +510,7 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "best_known_for": (
             "Recraft's general-purpose V4.1 variant — drops the aesthetic-tuning "
             "bias of the regular V4.1 in exchange for broader subject coverage. "
-            "It costs the same per image as the regular V4.1, so the choice "
-            "between them is about the look you want, not the bill. Best for "
+            "The choice between them is about the look you want. Best for "
             "spot illustrations, diagrams, placeholder/stock imagery, and any "
             "work where 'on-brand aesthetics' is not the goal. 1024x1024 raster "
             "output."
@@ -529,7 +520,7 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Pick Utility over regular V4.1 when you need versatility, not aesthetic polish.",
             "Image-to-image: only one input image supported.",
             "Same human-subject limitations as V4.1.",
-            "Utility and regular V4.1 are priced the same per image, so switch on the look you want — regular V4.1 for its aesthetic tuning, or V4.1 Pro when you need print resolution.",
+            "Switch on the look you want — regular V4.1 for its aesthetic tuning, or V4.1 Pro when you need print resolution.",
         ],
     },
     "recraft/recraft-v4.1-utility-pro": {
@@ -537,7 +528,7 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "best_known_for": (
             "High-resolution counterpart to V4.1 Utility — 2048x2048 (~4 MP) "
             "general-purpose raster output. Same versatility / non-aesthetic "
-            "bias as the base Utility variant, with 2x the resolution for "
+            "bias as the base Utility variant, at a resolution built for "
             "larger placements. Use for general-purpose finals where aesthetic "
             "polish is not the goal."
         ),
@@ -555,7 +546,7 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Vector (SVG) variant of V4.1 — V4.1's aesthetic tuning, ~1K "
             "equivalent detail, true `<svg>` output. Best for aesthetic-driven "
             "logos, icon sets, and flat illustrations destined for vector "
-            "editing. Faster/cheaper than V4.1 Pro Vector for iteration."
+            "editing. Faster than V4.1 Pro Vector for iteration."
         ),
         "tips_and_pitfalls": [
             "Output is SVG, not PNG/JPEG — scales infinitely without quality loss.",
@@ -577,163 +568,13 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         ),
         "tips_and_pitfalls": [
             "Multimodal input: pair the prompt with reference images for editing/style transfer.",
-            "Charged per generated image, at a higher rate for 2K than for 1K, and reference images you supply are charged on top.",
+            "2K carries more detail than 1K; draft at 1K and switch up once the framing is settled.",
         ],
     },
 }
 
 # Public re-export name (mirror of VIDEO_HELP_BY_MODEL convention).
 IMAGE_HELP_BY_MODEL = _IMAGE_PER_MODEL_HELP_DATA
-
-
-_IMAGE_BILLABLE_LABELS: tuple[tuple[str, str], ...] = (
-    ("output_image", "Each image it makes"),
-    ("input_image", "Each image you supply"),
-    ("input_reference", "Each reference you supply"),
-    ("input_font", "Each font you supply"),
-    ("input_text", "Your prompt text"),
-)
-
-_IMAGE_PRICE_UNITS: tuple[tuple[str, str, int], ...] = (
-    ("image", "per image", 1),
-    ("megapixel", "per megapixel", 1),
-    ("token", "per million tokens", 1000000),
-)
-
-_IMAGE_VARIANT_ORDER: tuple[str, ...] = ("", "1k", "2k", "4k")
-
-_IMAGE_NO_PRICE_LINE = (
-    "OpenRouter publishes no price for this model. Check what it charges on OpenRouter "
-    "before running a batch."
-)
-
-_IMAGE_TOKEN_NOTE = (
-    "This model bills by token rather than by picture, and how many tokens a picture "
-    "comes to is not published, so what one image costs cannot be worked out from these "
-    "rates."
-)
-
-_IMAGE_COST_CLOSING = (
-    "Where the company running the model reports a charge above zero, it is shown on the "
-    "status line when it finishes, as long as usage details are on: that is your own Show "
-    "usage details setting once you have set it, and the site default your administrator "
-    "chooses until then."
-)
-
-
-class _ImageCharge(NamedTuple):
-    order: tuple[int, int]
-    label: str
-    price: str
-    provider: str
-    per_token: bool
-
-
-def _image_amount_text(amount: float) -> str:
-    text = f"{amount:.10f}".rstrip("0")
-    if text.endswith("."):
-        return text + "00"
-    if len(text.split(".", 1)[1]) < 2:
-        return text + "0"
-    return text
-
-
-def _image_cost_number(value: Any) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
-        return None
-    try:
-        amount = float(value)
-    except (TypeError, ValueError):
-        return None
-    return amount if math.isfinite(amount) and amount >= 0 else None
-
-
-def _image_price_text(unit: str, amount: float) -> str:
-    for name, label, factor in _IMAGE_PRICE_UNITS:
-        if unit == name:
-            return f"${_image_amount_text(amount * factor)} {label}"
-    return ""
-
-
-def _image_provider_name(record: dict[str, Any]) -> str:
-    for key in ("provider_name", "provider_slug"):
-        value = record.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return ""
-
-
-def _image_unnamed_charge(billable: str, unit: str) -> str:
-    named = billable or "an item it does not name"
-    priced = unit or "a unit it does not state"
-    return (
-        f'OpenRouter publishes a charge for "{named}" here, priced in "{priced}". Check '
-        "this model's rates on OpenRouter for what that comes to."
-    )
-
-
-def _image_charges(records: list[dict[str, Any]]) -> tuple[list[_ImageCharge], list[str]]:
-    labels = dict(_IMAGE_BILLABLE_LABELS)
-    ranked = [name for name, _ in _IMAGE_BILLABLE_LABELS]
-    charges: list[_ImageCharge] = []
-    unnamed: list[str] = []
-    for record in records:
-        published = record.get("pricing")
-        if not isinstance(published, list):
-            continue
-        provider = _image_provider_name(record)
-        for item in published:
-            if not isinstance(item, dict):
-                continue
-            billable = str(item.get("billable") or "").strip().lower()
-            unit = str(item.get("unit") or "").strip().lower()
-            variant = str(item.get("variant") or "").strip().lower()
-            amount = _image_cost_number(item.get("cost_usd"))
-            price = _image_price_text(unit, amount) if amount is not None else ""
-            label = labels.get(billable, "")
-            if not label or not price:
-                unnamed.append(_image_unnamed_charge(billable, unit))
-                continue
-            tier = (
-                _IMAGE_VARIANT_ORDER.index(variant)
-                if variant in _IMAGE_VARIANT_ORDER
-                else len(_IMAGE_VARIANT_ORDER)
-            )
-            charges.append(
-                _ImageCharge(
-                    (ranked.index(billable), tier),
-                    f"{label} ({variant.upper()})" if variant else label,
-                    price,
-                    provider,
-                    unit == "token",
-                )
-            )
-    return charges, unnamed
-
-
-def _image_price_lines(charges: list[_ImageCharge]) -> list[str]:
-    lines: list[str] = []
-    for label in dict.fromkeys(charge.label for charge in sorted(charges, key=lambda c: c.order)):
-        offered: dict[str, list[str]] = {}
-        for charge in charges:
-            if charge.label == label:
-                offered.setdefault(charge.price, []).append(charge.provider)
-        if len(offered) == 1:
-            lines.append(f"- {label}: {next(iter(offered))}")
-            continue
-        for price, providers in offered.items():
-            serving = ", ".join(sorted({name for name in providers if name}))
-            lines.append(f"- {label}: {price} via {serving}" if serving else f"- {label}: {price}")
-    return lines
-
-
-def _image_cost_section(records: list[dict[str, Any]]) -> list[str]:
-    charges, unnamed = _image_charges(records)
-    body = [*_image_price_lines(charges), *unnamed] if (charges or unnamed) else [_IMAGE_NO_PRICE_LINE]
-    if any(charge.per_token for charge in charges):
-        body.extend(["", _IMAGE_TOKEN_NOTE])
-    body.extend(["", _IMAGE_COST_CLOSING])
-    return ["## Cost", "", *body]
 
 
 def _image_render_template(model_id: str, image_model: dict[str, Any] | None) -> str:
@@ -811,9 +652,7 @@ def render_image_help(
     spec = build_image_model_filter_spec(
         model_id, image_model, endpoint_record, dedicated_image_api=dedicated_image_api
     )
-    lines = [f"{rendered.rstrip()}", ""]
-    lines.extend(_image_cost_section(records))
-    lines.extend(["", "## Controls"])
+    lines = [f"{rendered.rstrip()}", "", "## Controls"]
     if not spec.knob_count:
         if spec.unkeyable_passthrough:
             lines.append(

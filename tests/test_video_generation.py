@@ -9,7 +9,6 @@ import time
 import json
 import logging
 import sys
-from decimal import Decimal
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any, cast
@@ -2080,93 +2079,6 @@ def test_video_passthrough_naming_consistency_across_renderer_help_and_catalog()
     )
 
 
-def test_video_help_renders_pricing_live_from_pricing_skus():
-    """Each figure on screen is the figure this model publishes, for every model.
-
-    Two rates were typed in here by hand, and one of them -- `kling-video-o1` at
-    $0.0896/s -- was a quarter under what OpenRouter charges by the time it was read.
-    A literal cannot notice that; reading every published rate back out of every model's
-    own help can, and it is what the assertion does now.
-
-    The comparison is numeric rather than textual because the panel normalises how a
-    figure is written -- `0.1120` and `0.112` are the same rate, and one model publishing
-    a trailing zero must not make its panel disagree with an identically-priced sibling.
-    A truncated figure is still caught: `0.000004` is not equal to `0.0000042`.
-    """
-    published = {
-        model_id: {
-            key: value
-            for key, value in (model.get("pricing_skus") or {}).items()
-            if "cents_per" not in key
-        }
-        for model_id, model in VIDEO_BY_ID.items()
-    }
-    quoted = {rate for rates in published.values() for rate in rates.values()}
-    assert len(quoted) > 1, "one rate across the catalogue cannot tell a constant from a lookup"
-
-    for model_id, model in VIDEO_BY_ID.items():
-        if not model.get("pricing_skus"):
-            continue
-        rendered = render_video_help(model_id, model)
-        assert "**Cost** (as OpenRouter publishes it for this model)" in rendered, model_id
-        on_screen = {Decimal(shown) for shown in re.findall(r"\$(\d+(?:\.\d+)?)", rendered)}
-        for key, rate in published[model_id].items():
-            assert Decimal(str(rate)) in on_screen, (
-                f"{model_id} publishes {key}={rate!r}; the help must quote that figure, "
-                "not one typed alongside it"
-            )
-
-
-def _amounts_on_screen(rendered: str) -> set[str]:
-    """Every money figure the panel prints, as whole tokens.
-
-    Matching `"$0.112" in rendered` is satisfied by a panel printing `$0.1120`, which is
-    the exact defect these cases exist to catch, so the comparison is against complete
-    tokens rather than against substrings of the rendering.
-    """
-    return set(re.findall(r"\$\d+(?:\.\d+)?", rendered))
-
-
-@pytest.mark.parametrize(
-    ("model_id", "published", "on_screen"),
-    [
-        ("kwaivgi/kling-video-o1", "0.1120", "$0.112"),
-        ("kwaivgi/kling-v3.0-pro", "0.112", "$0.112"),
-        ("alibaba/wan-2.7", "0.1", "$0.10"),
-        ("bytedance/seedance-2.0-fast", "0.000002475", "$0.000002475"),
-        ("bytedance/seedance-2.0", "0.0000077", "$0.0000077"),
-    ],
-)
-def test_video_help_writes_every_rate_the_same_way(model_id, published, on_screen):
-    """Two models charging the same amount must print the same amount.
-
-    `kling-video-o1` publishes `0.1120` and `kling-v3.0-pro` publishes `0.112`; before
-    the ceiling line's formatter was applied to the rates as well, the first printed
-    `$0.1120` two lines above its own `$1.12` ceiling. Rounding is not an option: the
-    token rates run to nine decimal places, and a six-place formatter turns
-    `0.000002475` into `0.000002`, understating what OpenRouter charges by a fifth.
-    """
-    model = VIDEO_BY_ID[model_id]
-    assert published in [str(rate) for rate in model["pricing_skus"].values()], (
-        "the fixture must publish this figure, or the case proves nothing"
-    )
-    assert on_screen in _amounts_on_screen(render_video_help(model_id, model))
-
-
-def test_two_models_charging_the_same_rate_print_it_the_same_way():
-    """The catalogue writes one of them with a trailing zero. The panels must not."""
-    o1 = VIDEO_BY_ID["kwaivgi/kling-video-o1"]
-    pro = VIDEO_BY_ID["kwaivgi/kling-v3.0-pro"]
-    published_o1 = o1["pricing_skus"]["duration_seconds"]
-    published_pro = pro["pricing_skus"]["duration_seconds"]
-    assert published_o1 != published_pro, "identical strings would make this vacuous"
-    assert Decimal(published_o1) == Decimal(published_pro), "and so would different rates"
-    o1_lines = render_video_help("kwaivgi/kling-video-o1", o1).splitlines()
-    pro_lines = render_video_help("kwaivgi/kling-v3.0-pro", pro).splitlines()
-    assert "- per second: $0.112" in o1_lines
-    assert "- per second: $0.112" in pro_lines
-
-
 @pytest.mark.parametrize(
     ("model_id", "line"),
     [
@@ -2188,38 +2100,6 @@ def test_video_help_leaves_non_numeric_capability_lists_in_published_order():
     assert "- Resolutions: 480p, 720p, 1080p, 4K" in rendered
 
 
-@pytest.mark.parametrize(
-    ("model_id", "expected"),
-    [
-        ("kwaivgi/kling-v3.0-pro", "rates for 480p and 1080p here, which are not sizes this model offers"),
-        ("kwaivgi/kling-v3.0-std", "rates for 480p and 1080p here, which are not sizes this model offers"),
-        ("openai/sora-2-pro", "a rate for 1024p here, which is not a size this model offers"),
-        ("alibaba/wan-2.6", "a rate for 480p here, which is not a size this model offers"),
-    ],
-)
-def test_video_help_says_when_a_priced_tier_is_not_on_offer(model_id, expected):
-    """The cost block quotes rates for sizes the model's own list does not carry.
-
-    Kling v3.0 offers 720p and nothing else, yet OpenRouter prices 480p and 1080p for
-    it; Sora 2 Pro offers 720p and 1080p and is priced for 1024p. A reader who takes
-    the cost block as a menu picks a tier the model will not produce.
-    """
-    model = VIDEO_BY_ID[model_id]
-    rendered = render_video_help(model_id, model)
-    assert expected in rendered
-    assert "the resolutions listed above are the ones you can pick" in rendered
-
-
-@pytest.mark.parametrize(
-    "model_id",
-    ["bytedance/seedance-2.0", "google/veo-3.1-fast", "x-ai/grok-imagine-video-1.5"],
-)
-def test_video_help_stays_quiet_when_every_priced_tier_is_on_offer(model_id):
-    rendered = render_video_help(model_id, VIDEO_BY_ID[model_id])
-    assert "which is not a size this model offers" not in rendered
-    assert "which are not sizes this model offers" not in rendered
-
-
 @pytest.mark.parametrize("model_id", sorted(VIDEO_BY_ID))
 def test_curated_display_names_match_the_name_the_catalogue_publishes(model_id):
     """The fallback name and the name on screen must be the same name.
@@ -2232,23 +2112,6 @@ def test_curated_display_names_match_the_name_the_catalogue_publishes(model_id):
     published = VIDEO_BY_ID[model_id].get("name")
     assert published, "the fixture must name the model for this to mean anything"
     assert VIDEO_HELP_BY_MODEL[model_id]["display_name"] == published
-
-
-def test_video_help_pricing_section_omitted_when_no_skus():
-    minimal_model = {
-        "id": "test/synthetic",
-        "name": "Test: Synthetic",
-        "supported_durations": [4],
-        "supported_aspect_ratios": ["16:9"],
-        "supported_resolutions": ["720p"],
-        "supported_frame_images": [],
-        "generate_audio": False,
-        "seed": False,
-        "allowed_passthrough_parameters": [],
-        "pricing_skus": {},
-    }
-    rendered = render_video_help("test/synthetic", minimal_model)
-    assert "**Cost**" not in rendered
 
 
 def test_video_help_includes_typed_valve_descriptions_per_model():
@@ -2276,322 +2139,31 @@ def test_video_help_includes_typed_valve_descriptions_per_model():
     assert "`Seed`" not in sora_help
 
 
-def test_video_help_sku_unit_formatter_known_keys():
-    from open_webui_openrouter_pipe.integrations.video_help import _sku_unit
-    assert _sku_unit("duration_seconds").label == "per second"
-    assert _sku_unit("duration_seconds_with_audio").label == "per second (with audio)"
-    assert _sku_unit("duration_seconds_with_audio_4k").label == "per second (with audio, 4K)"
-    assert _sku_unit("video_tokens").label == "per video token"
-    assert _sku_unit("video_tokens_without_audio").label == "per video token (without audio)"
-    assert _sku_unit("text_to_video_duration_seconds_720p").label == "per second (text-to-video, 720p)"
-    assert _sku_unit("image_to_video_duration_seconds_1080p").label == "per second (image-to-video, 1080p)"
-    assert _sku_unit("cents_per_second_output").label == "per output second"
-    assert _sku_unit("cents_per_second_video_continuation_720p").label == (
-        "per second of continued video (720p)"
-    )
-    assert _sku_unit("reference_images").label == "per reference image"
-    assert _sku_unit("video_tokens_4k_with_video_input").label == (
-        "per video token (4K with video input)"
-    ), "one model lists both, so the two must spell the tier the same way"
+def test_no_video_price_reaches_a_user_at_all():
+    """A rate a reader is shown goes stale in silence, whoever supplied it.
 
+    Prose figures were the first shape of that: eight typed into these descriptions, two
+    of them totals worked out by hand from a rate. Reading them out of the catalogue
+    instead only moved the problem -- a rate on screen is still a rate somebody has to
+    keep true, and the answer is that help quotes none.
 
-def _video_model(**published: Any) -> dict[str, Any]:
-    """A catalogue row carrying only what the panel reads."""
-    model = {
-        "id": "test/priced",
-        "name": "Test: Priced",
-        "supported_durations": [4],
-        "supported_aspect_ratios": ["16:9"],
-        "supported_resolutions": ["720p"],
-        "supported_frame_images": [],
-        "generate_audio": False,
-        "seed": False,
-        "allowed_passthrough_parameters": [],
-    }
-    model.update(published)
-    return model
-
-
-def _money_on_the_line(rendered: str, needle: str) -> list[str]:
-    """Every dollar amount on the one line that mentions `needle`.
-
-    Substring assertions cannot tell `$0.10` from `$0.109`, and cents-to-dollars bugs
-    land exactly there. Comparing whole tokens on one line can.
-    """
-    lines = [line for line in rendered.splitlines() if needle in line]
-    assert len(lines) == 1, f"{needle!r} appears on {len(lines)} lines"
-    return re.findall(r"\$\d+(?:\.\d+)?", lines[0])
-
-
-@pytest.mark.parametrize(
-    ("published_cents", "dollars"),
-    [("56", "$0.56"), ("125", "$1.25")],
-)
-def test_a_minimum_charge_is_read_in_cents_and_kept_out_of_the_rate_list(published_cents, dollars):
-    """`runway/aleph-2` publishes `minimum_cents_per_generation`, and both halves bit.
-
-    The cents-to-dollars conversion was gated on the key *starting* `cents_per`, so a
-    floor whose key carries the token in the middle rendered at a hundred times its real
-    figure; and a floor is not a rate, so bulleting it beside per-second rates invites
-    the reader to add it to them.
-    """
-    rendered = render_video_help(
-        "test/priced",
-        _video_model(
-            pricing_skus={
-                "cents_per_second_output": "28",
-                "minimum_cents_per_generation": published_cents,
-            }
-        ),
-    )
-    assert _money_on_the_line(rendered, "Minimum charge per generation") == [dollars]
-    assert f"- per generation: {dollars}" not in rendered, "a floor is not a rate bullet"
-    assert f"${published_cents}" not in rendered, "the value is published in cents"
-    assert _money_on_the_line(rendered, "per output second") == ["$0.28"]
-    assert "per minimum cents per generation" not in rendered
-
-
-def test_a_charge_this_panel_cannot_name_is_marked_rather_than_invented():
-    """The vocabulary is OpenRouter's and it grows.
-
-    Turning any unrecognised key into "per <the rest of the key>" is what produced "per
-    minimum cents per generation", and it would produce the next one too.
-    """
-    rendered = render_video_help(
-        "test/priced",
-        _video_model(pricing_skus={"duration_seconds": "0.10", "storage_gigabyte_month": "0.02"}),
-    )
-    assert _money_on_the_line(rendered, "per second") == ["$0.10"]
-    assert _money_on_the_line(rendered, "storage_gigabyte_month") == ["$0.02"]
-    assert '"storage_gigabyte_month" at $0.02' in rendered, rendered
-    assert "per storage gigabyte month" not in rendered
-    assert "- per storage" not in rendered
-
-
-@pytest.mark.parametrize(
-    ("skus", "cheapest_looking"),
-    [
-        ({"video_tokens": "0.000007", "video_tokens_4k": "0.000004"}, "$0.000004"),
-        ({"video_tokens": "0.0000024", "video_tokens_4k": "0.0000012"}, "$0.0000012"),
-    ],
-)
-def test_a_per_token_model_says_a_clip_price_cannot_be_derived(skus, cheapest_looking):
-    """4K carries the smallest per-token number and the largest bill.
-
-    The count of tokens a clip uses is not published anywhere in the catalogue, so the
-    panel cannot convert seconds to money, and the rates do not rank the settings. Saying
-    that is the only honest thing available; printing the numbers alone reads backwards.
-    """
-    rendered = render_video_help("test/priced", _video_model(pricing_skus=skus))
-    assert cheapest_looking in rendered, "the published rates are still shown"
-    assert "does not publish how many tokens a clip uses" in rendered, rendered
-    assert "do not compare with each other" in rendered
-
-    seconds = render_video_help("test/priced", _video_model(pricing_skus={"duration_seconds": "0.10"}))
-    assert "does not publish how many tokens a clip uses" not in seconds, (
-        "a per-second model has no such caveat and must not carry it"
-    )
-
-
-def test_the_base_unit_table_resolves_the_longest_token_first():
-    """Ordering is the whole mechanism: the table is scanned in source order.
-
-    An alphabetiser or a merge that reordered these pairs would silently relabel keys,
-    which no rendering test would catch on today's vocabulary.
-    """
-    from open_webui_openrouter_pipe.integrations.video_help import _SKU_BASE_LABELS
-
-    assert isinstance(_SKU_BASE_LABELS, tuple), "a dict would let a formatter reorder it"
-    tokens = [token for token, _ in _SKU_BASE_LABELS]
-    for position, token in enumerate(tokens):
-        for later in tokens[position + 1:]:
-            assert not later.startswith(token) or later == token, (
-                f"{later!r} can never match: {token!r} precedes it and is a prefix of it"
-            )
-
-
-def test_no_video_price_reaches_a_user_that_did_not_come_from_a_contract():
-    """Prose prices go stale in silence and cannot be corrected by a catalogue refresh.
-
-    Eight were typed into these descriptions, two of them totals worked out by hand from
-    a rate. Every one of the eight was still right on the day it was measured, which is
-    exactly the trap: the same habit put a figure in the model table that OpenRouter had
-    since raised by a quarter, and nothing anywhere said so. Without a contract the panel
-    now says nothing about money at all.
+    The catalogued row is driven as well as the bare one, and it is the row that carries
+    every published SKU, so a panel that reads `pricing_skus` back onto the page fails
+    here rather than passing on an input that never had a figure in it.
     """
     import re
 
-    for model_id in VIDEO_HELP_BY_MODEL:
-        rendered = render_video_help(model_id, {"id": model_id, "name": model_id})
-        assert not re.search(r"\$\s*\d", rendered), f"{model_id} quotes a price of its own"
-
-    priced = render_video_help(
-        "alibaba/wan-2.7",
-        _video_model(
-            id="alibaba/wan-2.7",
-            supported_durations=[10],
-            pricing_skus={"duration_seconds": "0.10"},
-        ),
-    )
-    assert "- per second: $0.10" in priced, "with a contract, the published rate is shown"
-
-
-@pytest.mark.parametrize(
-    ("rate", "seconds", "ceiling"),
-    [("0.168", 15, "$2.52"), ("0.126", 15, "$1.89"), ("0.50", 20, "$10.00")],
-)
-def test_the_longest_clip_total_is_worked_out_from_the_published_rate(rate, seconds, ceiling):
-    """Two totals used to be typed into the tips: "~$2.52 (0.168 x 15)" and "~$1.89".
-
-    Both were right when written and nothing would have reported it when they stopped
-    being. No token count is involved -- the rate and the duration list are both
-    published -- so this is arithmetic the panel can do itself and can never get wrong.
-    The cheaper rate is published first, so a reader that takes the first rate it meets
-    instead of the dearest produces a number that is too small.
-    """
-    rendered = render_video_help(
-        "test/priced",
-        _video_model(
-            supported_durations=[3, seconds // 2, seconds],
-            pricing_skus={"duration_seconds": "0.05", "duration_seconds_with_audio": rate},
-        ),
-    )
-    assert f"The longest clip this model makes is {seconds} seconds" in rendered, rendered
-    assert f"no one clip can cost more than {ceiling}." in rendered, rendered
-
-
-@pytest.mark.parametrize(
-    ("extra_key", "extra_value"),
-    [
-        ("cents_per_image_input", "0.2"),
-        ("minimum_cents_per_generation", "56"),
-        ("reference_images", "0.04"),
-        ("video_tokens", "0.000007"),
-        ("storage_gigabyte_month", "0.02"),
-    ],
-)
-def test_no_clip_total_is_offered_when_part_of_the_bill_is_not_by_the_second(
-    extra_key, extra_value
-):
-    """Seconds times a rate prices only the part of the bill that is charged by seconds.
-
-    `x-ai/grok-imagine-video` charges for each image you supply, `runway/aleph-2`
-    publishes a floor, `minimax/hailuo-3` charges per reference image, the Seedance
-    family bills by token, and the vocabulary keeps growing. Printing a per-second total
-    beside any of those states a clip's cost as less than it is.
-    """
-    rendered = render_video_help(
-        "test/priced",
-        _video_model(
-            supported_durations=[15],
-            pricing_skus={"duration_seconds": "0.10", extra_key: extra_value},
-        ),
-    )
-    assert "no one clip can cost more than" not in rendered, rendered
-    assert "- per second: $0.10" in rendered, "the per-second rate is still published"
-
-    alone = render_video_help(
-        "test/priced",
-        _video_model(supported_durations=[15], pricing_skus={"duration_seconds": "0.10"}),
-    )
-    assert "no one clip can cost more than $1.50." in alone, alone
-
-
-def test_a_clip_total_for_a_cents_priced_model_is_worked_out_in_dollars():
-    """`black-forest-labs/flux-3-video` publishes its per-second rates in cents.
-
-    The total has to be built from the dollars figure on screen, not from the number in
-    the catalogue: multiplying the published `29` would bill a twenty-second clip at a
-    hundred times its price, and it would disagree with the bullet directly above it.
-    """
-    rendered = render_video_help(
-        "test/priced",
-        _video_model(
-            supported_durations=[20],
-            pricing_skus={
-                "cents_per_second_output": "17",
-                "cents_per_second_output_1080p": "29",
-            },
-        ),
-    )
-    assert "- per output second (1080p): $0.29" in rendered, rendered
-    assert "no one clip can cost more than $5.80." in rendered, rendered
-    assert "$580" not in rendered, "the published figure is in cents"
-
-
-@pytest.mark.parametrize(
-    ("key", "published"),
-    [
-        ("duration_seconds", "nan"),
-        ("duration_seconds", "Infinity"),
-        ("duration_seconds", "priceless"),
-        ("cents_per_second_output", "nan"),
-    ],
-)
-def test_a_rate_that_is_not_a_finite_number_never_becomes_a_total(key, published):
-    """A figure the panel cannot read is not one it can multiply.
-
-    None of these has ever been published, and that is the point of checking them: the
-    total is the first thing here that compares and multiplies money, and a decimal NaN
-    raises on comparison rather than coming out wrong. The panel still shows whatever
-    OpenRouter sent -- withholding a published charge would be worse than an odd one.
-    """
-    rendered = render_video_help(
-        "test/priced",
-        _video_model(supported_durations=[10], pricing_skus={key: published}),
-    )
-    assert "no one clip can cost more than" not in rendered, rendered
-    assert f"${published}" in rendered, "the panel still shows what OpenRouter published"
-
-
-def test_a_model_that_publishes_no_durations_gets_no_clip_total():
-    """Half the arithmetic is missing, so the panel does the honest thing and stops."""
-    rendered = render_video_help(
-        "test/priced",
-        _video_model(supported_durations=[], pricing_skus={"duration_seconds": "0.10"}),
-    )
-    assert "no one clip can cost more than" not in rendered, rendered
-    assert "- per second: $0.10" in rendered
-
-
-def test_the_clip_total_keeps_every_digit_the_rate_carries():
-    """`alibaba/happyhorse-1.1` at 15 seconds comes to $1.917, not $1.92.
-
-    Rounding money to cents is how a published $0.014 per megapixel became $0.01 on the
-    image side -- a 30% understatement that nothing else in the suite would notice.
-    """
-    rendered = render_video_help(
-        "test/priced",
-        _video_model(
-            supported_durations=[15], pricing_skus={"duration_seconds_1080p": "0.1278"}
-        ),
-    )
-    assert "more than $1.917." in rendered, rendered
-
-
-def test_charging_by_the_second_is_read_from_the_base_unit_table():
-    """The flag rides on the resolved base token, not on a second list of key names.
-
-    A hardcoded key list would miss `cents_per_second_output` the day OpenRouter adds a
-    tier suffix to it, and would go on claiming a total for a model that had moved off
-    per-second billing entirely.
-    """
-    from open_webui_openrouter_pipe.integrations.video_help import (
-        _SKU_BASE_LABELS,
-        _SKU_PER_SECOND_BASES,
-        _sku_unit,
-    )
-
-    known = {token for token, _ in _SKU_BASE_LABELS}
-    assert _SKU_PER_SECOND_BASES <= known, (
-        "a per-second base the label table cannot resolve is unreachable"
-    )
-    for token in _SKU_PER_SECOND_BASES:
-        assert _sku_unit(token).per_second is True, token
-    assert _sku_unit("cents_per_second_output_1080p").per_second is True
-    assert _sku_unit("video_tokens").per_second is False
-    assert _sku_unit("reference_images").per_second is False
-    assert _sku_unit("storage_gigabyte_month").per_second is False
+    census = 0
+    for model_id, model in VIDEO_BY_ID.items():
+        assert model.get("pricing_skus"), f"{model_id} publishes no rate to leak"
+        for supplied in ({"id": model_id, "name": model_id}, model):
+            rendered = render_video_help(model_id, supplied)
+            assert VIDEO_HELP_BY_MODEL[model_id]["best_known_for"] in rendered, (
+                f"{model_id} did not render its own card, so this proves nothing"
+            )
+            assert not re.search(r"\$\s*\d", rendered), f"{model_id} quotes a price"
+            census += 1
+    assert census >= 2 * len(VIDEO_HELP_BY_MODEL), "the sweep skipped curated models"
 
 
 def test_video_filter_spec_seed_and_audio_gates_use_top_level_fields():

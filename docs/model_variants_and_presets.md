@@ -137,7 +137,7 @@ VARIANT_MODELS = "anthropic/claude-sonnet-4.5:extended,deepseek/deepseek-r1:thin
 
 #### `:extended` - Extended Context
 - **Purpose:** Access larger context window versions of models
-- **Considerations:** May have higher costs per token
+- **Considerations:** Priced separately from the base model — what a model charges is on OpenRouter's pricing page
 - **Best for:** Long document analysis, multi-document reasoning, extensive context retention
 - **Example:** `anthropic/claude-sonnet-4.5:extended`
 - **Reference:** [OpenRouter Extended Variant Docs](https://openrouter.ai/docs/guides/routing/model-variants/extended)
@@ -329,7 +329,7 @@ Unit test `test_api_model_id_with_variant()` in [tests/test_variant_models.py](.
 ```
 VARIANT_MODELS = "meta-llama/llama-3.2-3b-instruct:free,qwen/qwen-2.5-7b-instruct:free"
 ```
-↳ Provides cost-effective options for testing
+↳ Pins the `:free` variants OpenRouter publishes for these models
 
 **For production deployments:**
 ```

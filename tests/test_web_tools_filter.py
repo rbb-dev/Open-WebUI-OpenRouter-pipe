@@ -10,6 +10,7 @@ test guarantees the two never drift.
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -242,3 +243,119 @@ def test_every_standalone_filter_matches_its_generator(filename, renderer, kwarg
         "copy you changed, apply it to the other -- users get one or the other "
         "depending on whether they installed it by hand or let the pipe do it."
     )
+
+
+# ---------------------------------------------------------------------------
+# THE WORKER MODEL IS THE OPERATOR'S CHOICE, SO NO SURFACE MAY RANK IT
+#
+# The subagent was described as delegating to a "cheaper worker model" on seven
+# surfaces at once -- the pipe valve, the generated filter, the standalone filter, the
+# dashboard detail, the atlas, the server-tools doc and the README. Nothing held them
+# in agreement except the standalone/embedded parity above, which covers two of the
+# seven, so restoring the claim anywhere else reddened nothing.
+#
+# It was never true to begin with. `SUBAGENT_MODEL` is an admin valve: the worker is
+# whatever an admin sets, and empty means the chat's own model. The pipe cannot know
+# what either charges, and what a model charges is OpenRouter's to publish.
+
+_PRICE_WORDS = frozenset(
+    """
+    price prices pricing priced pricier priciest
+    cost costs costed costing costly costlier costliest
+    cheap cheaper cheapest cheaply expensive
+    bill bills billed billing charge charges charged fee fees rate rates
+    pay pays paid spend spends spent
+    surcharge surcharges discount discounts affordable premium economics
+    dollar dollars
+    """.split()
+)
+"""The vocabulary of `tests/test_help_command_routing.py::_MONEY_WORDS`, applied here.
+
+That ban owns the help-card corpus and reads nothing outside it. These are different
+surfaces with a different exemption -- there the shared pointer at OpenRouter is stripped
+whole, here only the sentences that describe the worker model are read at all -- so the
+sweeps stay separate and the word list is shared by copy.
+"""
+
+_SENTENCE = re.compile(r"(?<=[.!?])\s+")
+_ATLAS = Path(__file__).resolve().parents[1] / "docs" / "valves_and_configuration_atlas.md"
+_SERVER_TOOLS_DOC = Path(__file__).resolve().parents[1] / "docs" / "openrouter_server_tools.md"
+_README = Path(__file__).resolve().parents[1] / "README.md"
+
+
+def _worker_model_claim() -> str:
+    """What the pipe says the subagent delegates to, read from the valve, not restated.
+
+    Reading it rather than listing it is what makes the agreement test below a real
+    guard: reword the valve and every other surface must be reworded to match, but
+    reword it back to a ranking and the sweep after it reads the ranking and fails.
+    """
+    from open_webui_openrouter_pipe.core.config import Valves
+
+    description = Valves.model_fields["ENABLE_SUBAGENT"].description or ""
+    claim = description.partition("delegate tasks to ")[2].partition(")")[0].strip()
+    assert claim, (
+        "ENABLE_SUBAGENT no longer says what it delegates tasks to, so nothing below "
+        f"knows what the other surfaces must agree with: {description!r}"
+    )
+    return claim
+
+
+def _subagent_surfaces() -> dict[str, str]:
+    """Every text a reader can meet the subagent through."""
+    pytest.importorskip(
+        "open_webui_openrouter_pipe.plugins.pipe_dashboard",
+        reason="the --no-plugins artifacts omit pipe_dashboard by design",
+    )
+    from open_webui_openrouter_pipe.core.config import Valves
+    from open_webui_openrouter_pipe.plugins.pipe_dashboard.config_meta import CONFIG_META
+
+    meta = CONFIG_META["ENABLE_SUBAGENT"]
+    return {
+        "Valves.ENABLE_SUBAGENT": Valves.model_fields["ENABLE_SUBAGENT"].description or "",
+        "the generated filter": FilterManager.render_openrouter_web_tools_filter_source(),
+        "filters/openrouter_web_tools.py": _STANDALONE_PATH.read_text(encoding="utf-8"),
+        "the Config tab": f"{meta['title']}. {meta['detail']}",
+        "the valves atlas": _ATLAS.read_text(encoding="utf-8"),
+        "the server tools doc": _SERVER_TOOLS_DOC.read_text(encoding="utf-8"),
+        "the README": _README.read_text(encoding="utf-8"),
+    }
+
+
+def test_every_surface_agrees_on_what_the_subagent_delegates_to():
+    """Seven surfaces, one claim, and until now nothing made them move together."""
+    claim = _worker_model_claim()
+    surfaces = _subagent_surfaces()
+    assert len(surfaces) >= 7, f"only {len(surfaces)} surfaces swept; the sweep went hollow"
+
+    missing = sorted(where for where, text in surfaces.items() if claim not in text)
+    assert not missing, (
+        f"ENABLE_SUBAGENT says the subagent delegates to {claim!r} and these surfaces do "
+        f"not say the same thing: {missing}. A reader meets whichever one they open."
+    )
+
+
+def test_no_surface_puts_a_price_on_the_model_the_subagent_delegates_to():
+    """An admin picks the worker, so the pipe cannot know what it charges relative to anything.
+
+    Only the sentences about the worker model are read. The tool spends on an extra model
+    call and `SERVER_TOOLS_MAX_COST_USD` bounds it -- both facts about what the pipe does,
+    both ours to state, and neither a claim about what a model charges.
+    """
+    claim = _worker_model_claim()
+    offenders: list[str] = []
+    read = 0
+    for where, text in _subagent_surfaces().items():
+        for line in text.splitlines():
+            for sentence in _SENTENCE.split(line):
+                if claim not in sentence and "worker" not in sentence.lower():
+                    continue
+                read += 1
+                found = sorted(
+                    {w for w in re.findall(r"[A-Za-z]+", sentence.lower()) if w in _PRICE_WORDS}
+                )
+                if found:
+                    offenders.append(f"{where}: {found} in {sentence.strip()[:160]!r}")
+
+    assert read >= 7, f"only {read} sentences describe the worker model; the sweep went hollow"
+    assert not offenders, "\n".join(offenders)

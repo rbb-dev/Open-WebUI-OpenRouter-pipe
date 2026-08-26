@@ -88,9 +88,10 @@ image model returns a curated model-specific help blurb covering:
 
 - What the model is best known for
 - Tips and pitfalls (how to prompt, when to use vs alternatives)
-- What OpenRouter charges for it right now
 - The controls this model publishes and what they do, listed together
   with the always-present ones above that this model carries
+
+It quotes no prices: what a model charges is on OpenRouter's pricing page.
 
 This is the fastest way to learn a model without leaving the chat. Try
 it on each image model — the answers are different for every one (the auto-router `openrouter/auto` is a routing layer rather than a generator).
@@ -185,35 +186,35 @@ TTL is shared with the video and chat catalogs.
 
 ## Image models
 
-| Model id | Display name | Output | Cost rate |
-|----------|--------------|:----:|-----------|
+| Model id | Display name | Output | Best known for |
+|----------|--------------|:----:|----------------|
 | `black-forest-labs/flux.2-flex` | Black Forest Labs: FLUX.2 Flex | image only | Mid-tier FLUX.2 |
-| `black-forest-labs/flux.2-klein-4b` | Black Forest Labs: FLUX.2 Klein 4B | image only | Smallest, cheapest FLUX |
+| `black-forest-labs/flux.2-klein-4b` | Black Forest Labs: FLUX.2 Klein 4B | image only | Smallest FLUX.2 (4B parameters); draft and volume work |
 | `black-forest-labs/flux.2-max` | Black Forest Labs: FLUX.2 Max | image only | Highest FLUX.2 tier |
-| `black-forest-labs/flux.2-pro` | Black Forest Labs: FLUX.2 Pro | image only | Premium FLUX.2 |
+| `black-forest-labs/flux.2-pro` | Black Forest Labs: FLUX.2 Pro | image only | Flagship FLUX.2; photorealism and prompt adherence |
 | `bytedance-seed/seedream-4.5` | ByteDance Seed: Seedream 4.5 | image only | Image-only with sampling controls |
 | `google/gemini-2.5-flash-image` | Google: Nano Banana (Gemini 2.5 Flash Image) | text + image | Standard Gemini multimodal |
 | `google/gemini-3-pro-image` | Google: Nano Banana Pro (Gemini 3 Pro Image) | text + image | Most capable Gemini image model |
-| `google/gemini-3-pro-image-preview` | Google: Nano Banana Pro (Gemini 3 Pro Image Preview) | text + image | Premium Gemini 3 with image |
+| `google/gemini-3-pro-image-preview` | Google: Nano Banana Pro (Gemini 3 Pro Image Preview) | text + image | Top tier of Gemini 3 with native image output |
 | `google/gemini-3.1-flash-image` | Google: Nano Banana 2 (Gemini 3.1 Flash Image) | text + image | Pro-level quality at Flash speed |
-| `google/gemini-3.1-flash-image-preview` | Google: Nano Banana 2 (Gemini 3.1 Flash Image Preview) | text + image | Cost-optimized; 512 tier for cheap iteration |
-| `google/gemini-3.1-flash-lite-image` | Google: Nano Banana 2 Lite (Gemini 3.1 Flash Lite Image) | text + image | Fastest, cheapest Gemini image model |
+| `google/gemini-3.1-flash-image-preview` | Google: Nano Banana 2 (Gemini 3.1 Flash Image Preview) | text + image | Fast Gemini 3.1; 512 tier for quick iteration |
+| `google/gemini-3.1-flash-lite-image` | Google: Nano Banana 2 Lite (Gemini 3.1 Flash Lite Image) | text + image | Fastest Gemini image model |
 | `krea/krea-2-large` | Krea: Krea 2 Large | image only | Rawer, less house-styled output |
 | `krea/krea-2-medium` | Krea: Krea 2 Medium | image only | Krea's balanced default |
 | `krea/krea-2-medium-turbo` | Krea: Krea 2 Medium Turbo | image only | Distilled Krea 2 Medium for fast iteration |
-| `microsoft/mai-image-2.5` | Microsoft: MAI-Image-2.5 | image only | Token-priced via Azure AI Foundry |
-| `microsoft/mai-image-2.5-pro` | Microsoft: MAI-Image-2.5 Pro | image only | Larger MAI-Image-2.5; token-priced via Azure |
-| `openai/gpt-5-image` | OpenAI: GPT-5 Image | text + image | GPT-5 chat token economics |
-| `openai/gpt-5-image-mini` | OpenAI: GPT-5 Image Mini | text + image | Cheaper GPT-5 Image tier |
+| `microsoft/mai-image-2.5` | Microsoft: MAI-Image-2.5 | image only | Photoreal work served via Azure AI Foundry |
+| `microsoft/mai-image-2.5-pro` | Microsoft: MAI-Image-2.5 Pro | image only | Larger MAI-Image-2.5, served via Azure |
+| `openai/gpt-5-image` | OpenAI: GPT-5 Image | text + image | Flagship multimodal; text and inline images per turn |
+| `openai/gpt-5-image-mini` | OpenAI: GPT-5 Image Mini | text + image | Lighter GPT-5 Image, same multimodal output |
 | `openai/gpt-5.4-image-2` | OpenAI: GPT-5.4 Image 2 | text + image | Updated GPT-5.4 generation |
 | `openai/gpt-image-1` | OpenAI: GPT Image 1 | image only | Up to 16 reference images for edits |
-| `openai/gpt-image-1-mini` | OpenAI: GPT Image 1 Mini | image only | Cheaper, faster GPT Image 1 |
+| `openai/gpt-image-1-mini` | OpenAI: GPT Image 1 Mini | image only | Faster GPT Image 1 at reduced latency |
 | `openai/gpt-image-2` | OpenAI: GPT Image 2 | image only | OpenAI's newest image model |
 | `qwen/qwen-image-3` | Qwen: Qwen Image 3 | image only | Text and detail down to ~10px |
 | `qwen/qwen-image-3-pro` | Qwen: Qwen Image 3 Pro | image only | Larger Qwen 3 with more world knowledge |
 | `recraft/recraft-v3` | Recraft: Recraft V3 | image only | Typography champion; tuned for long-form text |
 | `recraft/recraft-v4` | Recraft: Recraft V4 | image only | Design-taste rebuild; 1024x1024; ~10s/image |
-| `recraft/recraft-v4-pro` | Recraft: Recraft V4 Pro | image only | Print-ready 2048x2048 (~30s/image); flat per-image fee |
+| `recraft/recraft-v4-pro` | Recraft: Recraft V4 Pro | image only | Print-ready 2048x2048 (~30s/image) |
 | `recraft/recraft-v4-pro-vector` | Recraft: Recraft V4 Pro Vector | image only | High-fidelity SVG finals |
 | `recraft/recraft-v4-vector` | Recraft: Recraft V4 Vector | image only | True SVG output; scales without quality loss |
 | `recraft/recraft-v4.1` | Recraft: Recraft V4.1 | image only | Aesthetic refresh of V4; 1024x1024; ~10s/image |
@@ -222,11 +223,11 @@ TTL is shared with the video and chat catalogs.
 | `recraft/recraft-v4.1-utility` | Recraft: Recraft V4.1 Utility | image only | General-purpose (non-aesthetic) tier; 1024x1024 |
 | `recraft/recraft-v4.1-utility-pro` | Recraft: Recraft V4.1 Utility Pro | image only | General-purpose at 2048x2048 |
 | `recraft/recraft-v4.1-vector` | Recraft: Recraft V4.1 Vector | image only | V4.1 aesthetics, SVG output |
-| `sourceful/riverflow-v2-fast` | Sourceful: Riverflow V2 Fast | image only | Faster, cheaper Sourceful |
-| `sourceful/riverflow-v2-pro` | Sourceful: Riverflow V2 Pro | image only | Premium Sourceful tier |
-| `sourceful/riverflow-v2.5-fast` | Sourceful: Riverflow V2.5 Fast | image only | Cheapest Riverflow tier; settled per job |
-| `sourceful/riverflow-v2.5-pro` | Sourceful: Riverflow V2.5 Pro | image only | Premium Riverflow tier; settled per job |
-| `x-ai/grok-imagine-image-quality` | SpaceXAI: Grok Imagine Image Quality | image only | Per generated image; 2K dearer than 1K |
+| `sourceful/riverflow-v2-fast` | Sourceful: Riverflow V2 Fast | image only | Faster Riverflow V2, at lower quality |
+| `sourceful/riverflow-v2-pro` | Sourceful: Riverflow V2 Pro | image only | Sourceful's top tier; custom font rendering |
+| `sourceful/riverflow-v2.5-fast` | Sourceful: Riverflow V2.5 Fast | image only | Speed-optimized Riverflow 2.5; JPEG, up to 2K |
+| `sourceful/riverflow-v2.5-pro` | Sourceful: Riverflow V2.5 Pro | image only | Most powerful Riverflow 2.5; brand and marketing finals |
+| `x-ai/grok-imagine-image-quality` | SpaceXAI: Grok Imagine Image Quality | image only | Photoreal 1K/2K; 14 ratios including tall phone screens |
 
 Pick model selection rules of thumb:
 
@@ -256,11 +257,11 @@ Pick model selection rules of thumb:
   Seedream 4.5 and Grok Imagine Image Quality all offer it.
 - **Multiple variations per request** → Seedream 4.5 or any of the GPT
   Image models (up to 10 per call), or Qwen Image 3/3 Pro and the Recraft
-  variants (up to 6); cost scales linearly. Grok Imagine Image Quality
+  variants (up to 6). Grok Imagine Image Quality
   makes one image per request, so it draws no such control.
-- **Cheap iteration** → Gemini 3.1 Flash Image Preview at 512 (far
-  fewer pixels than 1K on a token-billed model), FLUX.2 Klein 4B,
-  Riverflow V2.5 Fast, or Recraft V4.1 Utility.
+- **Fast iteration and drafts** → Gemini 3.1 Flash Image Preview at 512
+  (far fewer pixels than 1K), FLUX.2 Klein 4B, Riverflow V2.5 Fast, or
+  Recraft V4.1 Utility.
 - **Photorealism / hero shots** → FLUX.2 Pro/Max, Riverflow V2.5 Pro,
   Gemini 3 Pro Image, Recraft V4.1 Pro, or Microsoft MAI-Image-2.5.
 - **Color-palette-driven design (corporate brand colors)** → any
@@ -322,9 +323,9 @@ Lite (Gemini 3.1 Flash Lite Image) and MAI-Image-2.5 Pro have no entry
 below yet.
 
 Every model answers `help`, written up here or not. Send `help` in a chat
-with the model and the reply describes it, prints what it charges, and
-lists the controls its own panel draws. Skip to a model that matches your
-use case, or read them all to get a feel for the catalog.
+with the model and the reply describes it and lists the controls its own
+panel draws. Skip to a model that matches your use case, or read them all
+to get a feel for the catalog.
 
 ### OpenAI: GPT-5 Image
 
@@ -338,21 +339,20 @@ generation where you want commentary alongside the visual.
   prompt — be explicit ("Generate an image of...") for reliability.
 - **Already in chat catalog** — its own settings panel attaches like any
   other image model's.
-- **Pricing follows GPT-5 chat token economics**; image output is
-  included in completion tokens.
+- **Images arrive inside the completion itself**, so they land in the
+  same turn as the text rather than as a separate step.
 
 ### OpenAI: GPT-5 Image Mini
 
 > **id**: `openai/gpt-5-image-mini` · **multimodal**
 
-Cost-efficient variant of GPT-5 Image with the same multimodal
-text+image output. Best for high-volume image generation, drafts, and
-iteration where premium-tier quality isn't required.
+The lighter GPT-5 Image, with the same multimodal text+image output.
+Best for high-volume image generation, drafts, and iteration where
+top-tier quality isn't required.
 
 - Same prompting style as GPT-5 Image — be explicit about wanting
   images in the prompt.
-- Lower cost-per-token than GPT-5 Image; ideal for prototyping and
-  bulk runs.
+- Ideal for prototyping and bulk runs.
 - Its settings panel carries whatever this model publishes; type `help` to
   it to see the list.
 
@@ -383,20 +383,20 @@ output. Outputs both text and image.
 
 > **id**: `google/gemini-3-pro-image-preview` · **multimodal**
 
-Premium tier of Gemini 3 with native image output. Highest fidelity
+The top tier of Gemini 3 with native image output. Highest fidelity
 Gemini image model OpenRouter exposes; best for hero shots and
 high-detail outputs.
 
-- Premium variant — higher cost than Flash; reserve for finals.
+- Top-of-the-line variant — reserve for finals.
 - Multimodal text+image output.
 
 ### Google: Nano Banana 2 (Gemini 3.1 Flash Image Preview)
 
 > **id**: `google/gemini-3.1-flash-image-preview` · **multimodal**
 
-Cost-optimized Gemini 3.1 with native image output, four extra aspect
+The fast Gemini 3.1 with native image output, four extra aspect
 ratios (1:4, 4:1, 1:8, 8:1) for ultrawide and tall layouts, and a 512
-low-res tier for cheap iteration. The Gemini 3.1 Flash Image line is the
+low-res tier for quick iteration. The Gemini 3.1 Flash Image line is the
 only one offering all four ratios — Qwen Image 3 and 3 Pro publish 1:4
 and 4:1 — and the 512 tier is on this model and the GA release, not on
 the Lite.
@@ -425,11 +425,8 @@ OpenRouter to pick rather than committing to a specific provider.
 Microsoft's high-quality image generation model served via Azure AI
 Foundry — photorealistic and artistic output from text prompts with
 optional reference-image input. Best for general-purpose photoreal
-work on Azure-backed infrastructure, billed by token rather than by
-picture.
+work on Azure-backed infrastructure.
 
-- Token-priced rather than per-image, so a long prompt costs more than
-  a short one for the same picture.
 - Multimodal input: accepts reference images alongside the text prompt
   for editing/guidance.
 
@@ -437,7 +434,7 @@ picture.
 
 > **id**: `sourceful/riverflow-v2-pro` · **pure-image-only**
 
-Sourceful's premium tier — pure image-only output with custom font
+Sourceful's top tier — pure image-only output with custom font
 rendering (`font_inputs`) and up to ten reference images for
 image-to-image work. Strongest for marketing assets requiring exact text
 rendering at scale.
@@ -450,9 +447,9 @@ rendering at scale.
 
 > **id**: `sourceful/riverflow-v2-fast` · **pure-image-only**
 
-Faster, cheaper variant of Riverflow V2 — same Sourceful extension
-(`font_inputs`) and the same per-reference charge, at lower quality and
-reduced cost. Best for iteration before committing to a Pro render.
+Faster variant of Riverflow V2 — same Sourceful extension
+(`font_inputs`), at lower quality. Best for iteration before committing
+to a Pro render.
 
 - Same caveats as Riverflow V2 Pro: pure-image-only, 4.5MB request
   limit, image URLs preferred.
@@ -467,13 +464,10 @@ The most powerful variant of Sourceful's Riverflow 2.5 lineup — a
 unified text-to-image and image-to-image family. Best for top-tier
 control and quality-sensitive outputs: brand assets, marketing finals,
 and work that benefits from the new 2.5 self-scoring and background
-controls. Priced per image, rising with the output size you ask for.
+controls.
 
 - Publishes a **Background** choice (auto, transparent or opaque) and
   an output format, alongside 1K, 2K and 4K sizes.
-- Pricing is dynamic: the published per-image rate is a starting point,
-  and the final charge is settled per job from the processing it
-  actually took.
 
 ### Sourceful: Riverflow V2.5 Fast
 
@@ -481,8 +475,7 @@ controls. Priced per image, rising with the output size you ask for.
 
 The speed-optimized variant of Sourceful's Riverflow 2.5 lineup — best
 for production deployments and latency-critical workflows. Same unified
-text-to-image and image-to-image family as Pro, at a fraction of the
-cost, with the charge settled per job at completion. It is the narrower
+text-to-image and image-to-image family as Pro. It is the narrower
 of the two listings.
 
 - PURE-image-only — does NOT output text.
@@ -497,7 +490,7 @@ of the two listings.
 
 > **id**: `black-forest-labs/flux.2-pro` · **pure-image-only**
 
-Black Forest Labs' premium FLUX.2 model — pure-image-only with strong
+Black Forest Labs' flagship FLUX.2 model — pure-image-only with strong
 photorealism and prompt adherence. Best for high-quality deliverables.
 **Supports seed for deterministic generation.**
 
@@ -516,29 +509,29 @@ where Pro isn't enough.
 
 - PURE-image-only — does NOT output text.
 - Seed enables deterministic regeneration.
-- Most expensive FLUX tier — use for finals only.
+- Use for finals only.
 
 ### Black Forest Labs: FLUX.2 Flex
 
 > **id**: `black-forest-labs/flux.2-flex` · **pure-image-only**
 
-Mid-tier FLUX.2 balancing quality and cost. Pure-image-only with seed
-support. Best for general production work.
+Mid-tier FLUX.2, sitting between Pro and Klein 4B. Pure-image-only with
+seed support. Best for general production work.
 
 - PURE-image-only.
-- Seed support; balanced cost-quality vs Pro/Max.
+- Seed support; balanced quality vs Pro/Max.
 
 ### Black Forest Labs: FLUX.2 Klein 4B
 
 > **id**: `black-forest-labs/flux.2-klein-4b` · **pure-image-only**
 
-Smallest FLUX.2 variant (4B parameters) — lowest cost in the FLUX
-lineup. Pure-image-only with seed support. Best for high-volume / draft
-work.
+Smallest FLUX.2 variant (4B parameters). Pure-image-only with seed
+support. Best for high-volume / draft work.
 
 - PURE-image-only — does NOT output text.
-- Seed support; cheapest FLUX tier.
-- Quality trades against cost — use for iteration, not finals.
+- Seed support.
+- Fine detail is where the smaller model shows — use for iteration, not
+  finals.
 
 ### ByteDance Seed: Seedream 4.5
 
@@ -602,7 +595,7 @@ iteration on branded assets.
 
 > **id**: `recraft/recraft-v4-pro` · **pure-image-only**
 
-Premium V4 — same design taste, 2x resolution. Outputs at 2048x2048
+The high-resolution V4 — same design taste, 2x resolution. Outputs at 2048x2048
 (~4 megapixels), ~30s/image. Built for print-ready work where fine
 detail matters: magazine layouts, posters, billboards, packaging,
 editorial illustration. Same prompt accuracy and creative judgment as
@@ -613,8 +606,6 @@ anatomy/realism in complex compositions.
 - Same three settings as V4: `style`, `controls` and `text_layout`.
 - ~3x slower than V4 due to higher resolution — reserve for finals,
   not iteration.
-- **Flat per-image fee** rather than per-token, so prompt length does
-  not change what a render costs.
 - Image-to-image: only one input image supported.
 - Same human-subject limitations as V4.
 
@@ -645,7 +636,7 @@ final logo/brand deliverables.
 
 - Same SVG caveats as V4 Vector (graphic prompts, undocumented color
   steering, rasterised i2i input).
-- Higher fidelity, slower, costlier than V4 Vector — reserve for finals.
+- Higher fidelity and slower than V4 Vector — reserve for finals.
 
 ### Recraft: Recraft V4.1
 
@@ -663,8 +654,8 @@ almost-but-not-quite-right aesthetically. Same speed envelope as V4
 - Drop-in successor to V4 — try V4.1 first; fall back to V4 if its
   aesthetic doesn't suit a specific brand.
 - Image-to-image: only one input image supported.
-- For general-purpose / cost-sensitive work without aesthetic emphasis,
-  prefer the V4.1 Utility variants.
+- For general-purpose work without aesthetic emphasis, prefer the V4.1
+  Utility variants.
 
 ### Recraft: Recraft V4.1 Pro
 
@@ -686,7 +677,7 @@ V4.1 for iteration, V4.1 Pro for finals.
 Vector (SVG) variant of V4.1 — V4.1's aesthetic tuning with ~1K
 equivalent detail and true `<svg>` output. Best for aesthetic-driven
 logos, icon sets, and flat illustrations destined for vector editing.
-Faster/cheaper than V4.1 Pro Vector for iteration.
+Faster than V4.1 Pro Vector for iteration.
 
 - Same SVG caveats as the V4 vector variants.
 - Use V4.1 Vector for iteration; V4.1 Pro Vector for finals.
@@ -714,9 +705,8 @@ illustrations, diagrams, placeholder/stock imagery, and any work where
 
 - Pick Utility over regular V4.1 when you need versatility, not polish.
 - Same three settings as V4.1: `style`, `controls` and `text_layout`.
-- Utility and regular V4.1 are priced the same per image, so switch on
-  the look you want — regular V4.1 for its aesthetic tuning, or V4.1 Pro
-  when you need print resolution.
+- Switch on the look you want — regular V4.1 for its aesthetic tuning,
+  or V4.1 Pro when you need print resolution.
 
 ### Recraft: Recraft V4.1 Utility Pro
 
@@ -747,8 +737,8 @@ that lets the model pick frame shape from the prompt.
   Image 3/3 Pro and the Recraft variants (up to 6).
 - Multimodal input: pair the prompt with reference images for
   editing/style transfer.
-- Charged per generated image, at a higher rate for 2K than for 1K,
-  and reference images you supply are charged on top.
+- 2K carries more detail than 1K; draft at 1K and switch up once the
+  framing is settled.
 
 ---
 
@@ -887,15 +877,12 @@ Typing the literal word `help` (no other text — case does not matter,
 exactly four characters) in a chat against any image model returns a
 curated help blurb for that specific model.
 
-Help is the model's curated description, followed by what it charges and a
-control list read from that model's own published settings.
+Help is the model's curated description followed by a control list read from
+that model's own published settings. It quotes no prices: for what a model
+costs, look it up on OpenRouter's pricing page.
 
 The reply below is for `recraft/recraft-v3`, reproducible from the contract recorded in
-this project's own test data for that model. **The money in it is an
-illustration, not a quote**: the live reply reads the rate from OpenRouter at
-the moment you ask, and the figure below was captured from one snapshot. For
-what a model costs today, run `help` against it or look it up on OpenRouter's
-pricing page.
+this project's own test data for that model.
 
 ```
 # Recraft: Recraft V3
@@ -909,12 +896,6 @@ Recraft's typography champion — the only AI image model that can render long-f
 - Style names: see https://www.recraft.ai/docs/api-reference/styles. This model draws pixels; for SVG, pick one of the Recraft Vector models.
 - text_layout: array of {text, bbox} where bbox is 4 [x,y] corners in 0-1 coords (order: TL, TR, BR, BL).
 - If you need newer composition or cleaner geometry, V4 and V4.1 offer the same settings with a different look.
-
-## Cost
-
-- Each image it makes: $0.04 per image
-
-Where the company running the model reports a charge above zero, it is shown on the status line when it finishes, as long as usage details are on: that is your own Show usage details setting once you have set it, and the site default your administrator chooses until then.
 
 ## Controls
 - **Provider options** — Extra settings for the company that runs this model, as a JSON object keyed by its OpenRouter name. Use it for anything this panel does not already offer. Empty sends nothing.
@@ -938,22 +919,6 @@ of choices and before the rest of what the model publishes — its number
 ranges and the settings named after what the company running it accepts.
 Where a value is accepted by only some of the companies serving the model,
 both the panel and this list offer it and say so.
-
-The `## Cost` section comes from the same record and is read fresh every
-time you ask, so it follows OpenRouter's rates without a new release.
-Each published charge is one line naming what is charged for — the
-images it makes, the images you supply, references, fonts, your prompt
-text — and the rate, in the unit OpenRouter states: per image, per
-megapixel, or per million tokens. A tier such as 1K, 2K or 4K gets its
-own line, because choosing a tier chooses a price. Where several
-companies serve the model and publish different figures, each line names
-the company. A token-billed model carries a note that the token count of
-a picture is not published, so the price of one image cannot be worked
-out from the rate. A charge whose unit is not one of the three gets a
-line saying so and pointing at OpenRouter, rather than a made-up
-conversion. A model that publishes no price says so rather than showing
-an empty section; three of the forty do (`krea/krea-2-large`,
-`krea/krea-2-medium`, `krea/krea-2-medium-turbo`).
 
 If a model isn't in the curated dataset (newly added by OpenRouter
 between catalog refreshes, for example), `help` falls back to the
@@ -982,31 +947,25 @@ the chat, surviving page reload.
 
 ## Pricing and cost display
 
-Rates come from each model's own published contract, refreshed on the
-shared catalog TTL (`MODEL_CATALOG_REFRESH_SECONDS`). OpenRouter states
-them per image, per megapixel or per token depending on the model, so
-there is no one formula behind every image charge: a per-image or
-per-megapixel model is not billed from token counts at all.
+No rate is quoted anywhere in this pipe. Nothing in the `help` reply, in
+a model's panel, or on this page states what a model charges: rates move
+whenever OpenRouter moves them, and a figure written down anywhere else
+goes stale without saying so. OpenRouter's own pricing page is the one
+place to read them.
 
-Where the company running the model reports a charge above zero for the
-generation, it is shown on the status line when it finishes, as long as
-usage details are on: that is your own Show usage details setting once
-you have set it, and the site default your administrator chooses until
-then; with usage details off, that line carries the elapsed time alone.
-The amount is the one OpenRouter returns with the generation rather than
-one this pipe works out, and it arrives as a single total, not a
-per-item breakdown.
+What is reported is what a generation actually came to. Where the company
+running the model reports a charge above zero for the generation, it is
+shown on the status line when it finishes, as long as usage details are
+on: that is your own Show usage details setting once you have set it, and
+the site default your administrator chooses until then; with usage
+details off, that line carries the elapsed time alone. The amount is the
+one OpenRouter returns with the generation rather than one this pipe
+works out, and it arrives as a single total, not a per-item breakdown.
 
-On Riverflow V2 Pro and V2 Fast, the published contract prices each
-reference image you supply at $0.20 and each font file at $0.03, and the
-`help` reply lists both on their own lines under `## Cost`. That section
-is in the reply only when the model's contract could be read for it —
-either it was already held from building that model's panel, or it was
-fetched there and then, which happens only while
-`ENABLE_OPENROUTER_IMAGE_GENERATION` is on. When neither holds, the reply
-stops after the description and tips: no `## Cost` and no `## Controls` at
-all. So a reply naming no reference charge means the contract was not
-read, not that references are free.
+Some models charge for more than the picture — a reference image you
+supply or a font file can each carry their own charge. Those land in the
+same single total, so a status line lower than you expected is not
+evidence that the extras were free.
 
 ---
 

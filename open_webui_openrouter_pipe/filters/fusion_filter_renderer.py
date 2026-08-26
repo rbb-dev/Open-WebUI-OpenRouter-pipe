@@ -127,9 +127,9 @@ class Filter:
             default="",
             title="Preset",
             description=(
-                "Curated Fusion panel + judge bundle. 'general-high' = the strongest "
-                "frontier trio with a frontier judge; 'general-budget' = a fast low-cost "
-                "trio with the same frontier judge; 'general-fast' = the same low-cost "
+                "Curated Fusion panel + judge bundle, named <task>-<tier>. 'general-high' "
+                "= a frontier trio with a frontier judge; 'general-budget' = a faster "
+                "trio with the same frontier judge; 'general-fast' = that same faster "
                 "trio with a quicker judge (lowest latency). Empty = general-high. "
                 "Explicit panel/judge below override a preset."
             ),
@@ -139,7 +139,7 @@ class Filter:
             title="Panel models (comma-separated)",
             description=(
                 "1-8 model IDs that answer in parallel, comma-separated, e.g. "
-                "'anthropic/claude-opus-latest, openai/gpt-latest'. Each model adds cost. "
+                "'anthropic/claude-opus-latest, openai/gpt-latest'. Each model adds a call. "
                 "Empty = use the preset / Fusion default panel."
             ),
         )
@@ -171,10 +171,10 @@ class Filter:
                 "On the dedicated fusion models this switch has no effect: deliberation is "
                 "guaranteed on both engines (the OpenRouter engine via tool_choice="
                 "'required'; the internal engine always deliberates). It matters only "
-                "when an admin has attached this filter to a "
-                "non-fusion model (ALLOW_ON_NON_FUSION_MODELS). There — Off (default): the "
-                "model decides whether the prompt needs the multi-model panel (cheaper; some "
-                "replies answer directly). On: force the panel to run every message. Only "
+                "when an admin has attached this filter to a non-fusion model "
+                "(ALLOW_ON_NON_FUSION_MODELS). There — Off (default): the model decides "
+                "whether the prompt needs the multi-model panel, so some replies answer "
+                "directly with no panel run. On: force the panel every message. Only "
                 "reliable when Fusion is the only tool in the request; other tool "
                 "integrations let the model satisfy the forcing with a different tool."
             ),

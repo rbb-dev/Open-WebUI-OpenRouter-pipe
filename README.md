@@ -54,7 +54,7 @@ Two engines, one switch: OpenRouter's hosted Fusion, or the pipe's built-in engi
 Drop in images, PDFs, audio, video. The pipe figures out what each model supports — `/responses` vs `/chat/completions`, file vs RAG, streaming vs not.
 
 🔧 **OpenRouter Server Tools**
-Web Search, Web Fetch, Datetime, **Advisor** (let a model consult a higher-intelligence model mid-answer), **Subagent** (delegate self-contained sub-tasks to a cheaper, faster worker model), and **Model Search** (let the model browse OpenRouter's catalog) — OpenRouter's server-side tools (run on their infrastructure, not yours, no client-side code). Any model can call them. Bundled into one toggleable filter; calls render as styled cards with citations, with a per-request cost cap to bound the agent loop.
+Web Search, Web Fetch, Datetime, **Advisor** (let a model consult a higher-intelligence model mid-answer), **Subagent** (delegate self-contained sub-tasks to a worker model an admin chooses), and **Model Search** (let the model browse OpenRouter's catalog) — OpenRouter's server-side tools (run on their infrastructure, not yours, no client-side code). Any model can call them. Bundled into one toggleable filter; calls render as styled cards with citations, with a per-request cost cap to bound the agent loop.
 
 🛡️ **Zero Data Retention (ZDR) Controls**
 Filter to ZDR-only models. Enforce ZDR routing when privacy demands it. Video models always treated as not-ZDR.

@@ -72,7 +72,8 @@ video model returns a research-grounded model-specific help blurb covering:
 - Output capabilities (durations, aspect ratios, resolutions, frames, audio, seed)
 - Every filter knob exposed for this model and what it does
 - 3–4 tips and pitfalls
-- Live pricing rates pulled from the OpenRouter catalog
+
+It quotes no rates: what a model charges is on OpenRouter's pricing page.
 
 This is the fastest way to learn a model without leaving the chat. Try
 it on each video model — the answers are different for every one.
@@ -140,7 +141,7 @@ an admin explicitly grants access via Admin → Models → [video model row]
 → Access. The pipe's auto-attach and auto-default behaviour fully
 prepares the model row beforehand (filter wired, defaulted on, ready to
 generate), so the per-model access grant is the only manual step
-required. This is intentional policy — video generation is expensive
+required. This is intentional policy — video generation is heavyweight
 enough that operators usually want admin-curated access.
 
 **Auto-default re-assert.** The per-model filter is re-defaulted to
@@ -155,44 +156,39 @@ See [Configuration valves](#configuration-valves-admin) for the full list of vid
 
 ## Video models
 
-| Model id | Display name | Best for | Audio | Seed | Frames | What drives the cost |
-|----------|--------------|----------|:----:|:----:|:------:|-----------|
-| `google/veo-3.1` | Google: Veo 3.1 | Flagship hero shots; best prompt adherence; native synchronised audio with ~120ms lip-sync; up to 4K. | ✅ | ✅ | first + last | Per second; more with audio, more again at 4K |
-| `google/veo-3.1-fast` | Google: Veo 3.1 Fast | Drafting/iteration of Veo 3.1 quality at roughly a third to a half the cost; A/B-testing concepts; image-to-video. | ✅ | ✅ | first + last | Per second; more with audio, more again at 4K |
-| `google/veo-3.1-lite` | Google: Veo 3.1 Lite | Cheapest Veo tier; high-volume / batch / consumer-app integrations; same speed as Fast at a lower rate per second. | ✅ | ✅ | first + last | Per second; more with audio, more at 1080p |
-| `kwaivgi/kling-video-o1` | Kling: Video O1 | Cinematic film-grade clips, character/identity consistency, physics-aware human motion. No deterministic seed. | ✅ | ❌ | first + last | Per second, one flat rate |
-| `kwaivgi/kling-v3.0-pro` | Kling: Video v3.0 Pro | Premium tier of Kling v3.0 — higher visual quality and motion fidelity than Standard; granular 3–15s clips; first/last-frame anchoring. New `cfg_scale` knob. No deterministic seed. | ✅ | ❌ | first + last | Per second; more with audio |
-| `kwaivgi/kling-v3.0-std` | Kling: Video v3.0 Standard | Cost-efficient tier of Kling v3.0 — same capability matrix as Pro at ~75% per-second cost; granular 3–15s clips; first/last-frame anchoring. New `cfg_scale` knob. No deterministic seed. | ✅ | ❌ | first + last | Per second; more with audio |
-| `minimax/hailuo-2.3` | MiniMax: Hailuo 2.3 | State-of-the-art human physics and emotional micro-expressions; fluid + cloth + fire dynamics. **Silent — no audio.** | ❌ | — | first only | Per second, one flat rate |
-| `minimax/hailuo-3` | MiniMax: H3 | Lightweight open-weights model for instruction-guided edits and controlled content; the one that renders legible text and brand marks. 2K only. | ✅ | ❌ | first + last | Per second, plus a charge per reference image |
-| `alibaba/wan-2.7` | Alibaba: Wan 2.7 | Image-grid reference control, generated lip-sync across languages, FLF2V. Tuned for character-led narrative. Clip and voice references are published but not declared as input, so they are not offered. | ✅ | ✅ | first + last | Per second, one flat rate |
-| `alibaba/wan-2.6` | Alibaba: Wan 2.6 | Cheaper Wan tier with multi-shot storyboarding, 24fps, dialogue + lip-sync, shot_type cinematography. **First-frame only.** | ✅ | ✅ | first only | Per second; varies by mode and resolution |
-| `bytedance/seedance-1-5-pro` | ByteDance: Seedance 1.5 Pro | First Dual-Branch DiT with native unified video+audio, multilingual lip-sync, 21 exact pixel sizes. | ✅ | ✅ | first + last | Per video token; more with audio |
-| `bytedance/seedance-2.0` | ByteDance: Seedance 2.0 | Universal Reference (text + 9 images + 3 video/audio), best character consistency for branded/series content. | ✅ | ✅ | first + last | Per video token; varies by resolution and video input |
-| `bytedance/seedance-2.0-fast` | ByteDance: Seedance 2.0 Fast | Speed-optimised Seedance 2.0; cheaper per token; 480p/720p only; ideal for drafts and bulk pipelines. | ✅ | ✅ | first + last | Per video token; less with video input |
-| `bytedance/seedance-2.5` | ByteDance: Seedance 2.5 | Longest single take in the catalogue at 30s; long-form storytelling, reference-driven generation, editing and extending existing clips. 480p/720p. | ✅ | ✅ | first + last | Per video token; less with video input |
-| `openai/sora-2-pro` | OpenAI: Sora 2 Pro | Physics-accurate motion + world-state persistence across multi-shot sequences. 20s clips. **Text-only — no frame images.** | ✅ | ❌ | none | Per second; more at 1080p |
-| `x-ai/grok-imagine-video` | SpaceXAI: Grok Imagine Video | Fast iteration with per-second duration control (any integer 1–15s, 24fps); 7 aspect ratios; image-to-video via first frame. | — | — | first only | Per second by resolution, plus a flat charge per supplied image |
-| `x-ai/grok-imagine-video-1.5` | SpaceXAI: Grok Imagine Video 1.5 | Same per-second granularity and seven framings, now up to 1080p, so drafting cheap and finishing sharp is one control change. No provider parameters at all. | — | — | first only | Per second by resolution, plus a flat charge per supplied image |
-| `black-forest-labs/flux-3-video` | Black Forest Labs: FLUX.3 Video | Keyframe-driven shots with opening and closing stills, and continuation of an existing clip so long sequences can be built a segment at a time. Up to 20s at 1080p. | ✅ | ❌ | first + last | Per second by resolution; a higher rate again for continuing an existing clip |
-| `runway/gen-4.5` | Runway: Gen-4.5 | Cinematic text- and image-to-video with strong motion and close prompt adherence; deliberately narrow — 720p, 16:9 or 9:16, 2–10s. | ❌ | ✅ | first only | Per second, one flat rate |
-| `runway/aleph-2` | Runway: Aleph 2.0 | In-context **video editor**: applies an instruction across footage you attach while leaving the rest untouched. Length and size come from your clip, not from a control. | ❌ | ✅ | none | Per second, with a published minimum per job |
-| `alibaba/happyhorse-1.1` | Alibaba: HappyHorse 1.1 | Unusually wide framing range — the usual five plus ultrawide 21:9 and tall 9:21 — in 3–15s clips at 720p or 1080p. Cheaper 1080p than 1.0. | — | ✅ | first only | Per second by resolution |
-| `alibaba/happyhorse-1.0` | Alibaba: HappyHorse 1.0 | The first HappyHorse tier, same controls and framings as 1.1; reach for it only to pin 1.0's exact generation behaviour. | — | ✅ | first only | Per second by resolution |
+| Model id | Display name | Best for | Audio | Seed | Frames |
+|----------|--------------|----------|:----:|:----:|:------:|
+| `google/veo-3.1` | Google: Veo 3.1 | Flagship hero shots; best prompt adherence; native synchronised audio with ~120ms lip-sync; up to 4K. | ✅ | ✅ | first + last |
+| `google/veo-3.1-fast` | Google: Veo 3.1 Fast | Drafting/iteration at close to Veo 3.1 quality; A/B-testing concepts; image-to-video. | ✅ | ✅ | first + last |
+| `google/veo-3.1-lite` | Google: Veo 3.1 Lite | Lightest Veo tier; high-volume / batch / consumer-app integrations; same speed as Fast. | ✅ | ✅ | first + last |
+| `kwaivgi/kling-video-o1` | Kling: Video O1 | Cinematic film-grade clips, character/identity consistency, physics-aware human motion. No deterministic seed. | ✅ | ❌ | first + last |
+| `kwaivgi/kling-v3.0-pro` | Kling: Video v3.0 Pro | Top tier of Kling v3.0 — higher visual quality and motion fidelity than Standard; granular 3–15s clips; first/last-frame anchoring. New `cfg_scale` knob. No deterministic seed. | ✅ | ❌ | first + last |
+| `kwaivgi/kling-v3.0-std` | Kling: Video v3.0 Standard | Standard tier of Kling v3.0 — same capability matrix as Pro; granular 3–15s clips; first/last-frame anchoring. New `cfg_scale` knob. No deterministic seed. | ✅ | ❌ | first + last |
+| `minimax/hailuo-2.3` | MiniMax: Hailuo 2.3 | State-of-the-art human physics and emotional micro-expressions; fluid + cloth + fire dynamics. **Silent — no audio.** | ❌ | — | first only |
+| `minimax/hailuo-3` | MiniMax: H3 | Lightweight open-weights model for instruction-guided edits and controlled content; the one that renders legible text and brand marks. 2K only. | ✅ | ❌ | first + last |
+| `alibaba/wan-2.7` | Alibaba: Wan 2.7 | Image-grid reference control, generated lip-sync across languages, FLF2V. Tuned for character-led narrative. Clip and voice references are published but not declared as input, so they are not offered. | ✅ | ✅ | first + last |
+| `alibaba/wan-2.6` | Alibaba: Wan 2.6 | Feature-rich Wan tier with multi-shot storyboarding, 24fps, dialogue + lip-sync, shot_type cinematography. **First-frame only.** | ✅ | ✅ | first only |
+| `bytedance/seedance-1-5-pro` | ByteDance: Seedance 1.5 Pro | First Dual-Branch DiT with native unified video+audio, multilingual lip-sync, 21 exact pixel sizes. | ✅ | ✅ | first + last |
+| `bytedance/seedance-2.0` | ByteDance: Seedance 2.0 | Universal Reference (text + 9 images + 3 video/audio), best character consistency for branded/series content. | ✅ | ✅ | first + last |
+| `bytedance/seedance-2.0-fast` | ByteDance: Seedance 2.0 Fast | Speed-optimised Seedance 2.0; 480p/720p only; ideal for drafts and bulk pipelines. | ✅ | ✅ | first + last |
+| `bytedance/seedance-2.5` | ByteDance: Seedance 2.5 | Longest single take in the catalogue at 30s; long-form storytelling, reference-driven generation, editing and extending existing clips. 480p/720p. | ✅ | ✅ | first + last |
+| `openai/sora-2-pro` | OpenAI: Sora 2 Pro | Physics-accurate motion + world-state persistence across multi-shot sequences. 20s clips. **Text-only — no frame images.** | ✅ | ❌ | none |
+| `x-ai/grok-imagine-video` | SpaceXAI: Grok Imagine Video | Fast iteration with per-second duration control (any integer 1–15s, 24fps); 7 aspect ratios; image-to-video via first frame. | — | — | first only |
+| `x-ai/grok-imagine-video-1.5` | SpaceXAI: Grok Imagine Video 1.5 | Same per-second granularity and seven framings, now up to 1080p, so drafting rough and finishing sharp is one control change. No provider parameters at all. | — | — | first only |
+| `black-forest-labs/flux-3-video` | Black Forest Labs: FLUX.3 Video | Keyframe-driven shots with opening and closing stills, and continuation of an existing clip so long sequences can be built a segment at a time. Up to 20s at 1080p. | ✅ | ❌ | first + last |
+| `runway/gen-4.5` | Runway: Gen-4.5 | Cinematic text- and image-to-video with strong motion and close prompt adherence; deliberately narrow — 720p, 16:9 or 9:16, 2–10s. | ❌ | ✅ | first only |
+| `runway/aleph-2` | Runway: Aleph 2.0 | In-context **video editor**: applies an instruction across footage you attach while leaving the rest untouched. Length and size come from your clip, not from a control. | ❌ | ✅ | none |
+| `alibaba/happyhorse-1.1` | Alibaba: HappyHorse 1.1 | Unusually wide framing range — the usual five plus ultrawide 21:9 and tall 9:21 — in 3–15s clips at 720p or 1080p; 1.1 refines 1.0 with the same controls. | — | ✅ | first only |
+| `alibaba/happyhorse-1.0` | Alibaba: HappyHorse 1.0 | The first HappyHorse tier, same controls and framings as 1.1; reach for it only to pin 1.0's exact generation behaviour. | — | ✅ | first only |
 
 A `—` in the Audio or Seed column means OpenRouter publishes nothing
 either way for that model. The control is still offered, and whatever the
 model does by default is what you get — so test one short clip rather than
 assuming.
 
-This table says what a model's price *depends on*, not what it charges.
-The charges themselves change whenever OpenRouter changes them, so they
-are never written down here: send `help` in a video chat to see the
-model's current rates, or look the model up on OpenRouter's pricing page.
-
 Pick model selection rules of thumb:
 
-- **Speed + cost matters most** → Veo 3.1 Lite (cheapest), Seedance 2.0 Fast (token-priced bulk), Grok Imagine Video (per-second billing with 1-second granularity, so a short draft stays short on the bill).
+- **Speed matters most** → Veo 3.1 Lite, Seedance 2.0 Fast, or Grok Imagine Video, whose 1-second duration granularity lets a draft be as short as you ask for.
 - **Hero shot for client work** → Veo 3.1 (full) or Seedance 2.0.
 - **Multi-shot story with consistent characters** → Wan 2.7 or Seedance 2.0.
 - **Dialogue / lip-sync** → Wan 2.7 or Seedance 1.5 Pro, both generating the voice from your prompt. No model in this catalog declares audio input, so conditioning on a voice you supply is not available through the pipe.
@@ -204,7 +200,7 @@ Pick model selection rules of thumb:
 - **Legible text or a brand mark in shot** → H3, which is built for controlled rendering rather than free-running scenes.
 - **Ultrawide framing (21:9)** → nine models offer it: both HappyHorse tiers, all four Seedance, FLUX.3 Video, H3 and Aleph 2.0.
 - **Very tall framing (9:21)** → five: both HappyHorse tiers and Seedance 1.5 Pro, 2.0 and 2.0 Fast. Seedance 2.5 does not publish it.
-- **No audio needed (cheapest path)** → Hailuo 2.3, Gen-4.5 and Aleph 2.0 are silent, or set `Audio = off` on Veo Lite.
+- **No audio needed** → Hailuo 2.3, Gen-4.5 and Aleph 2.0 are silent, or set `Audio = off` on Veo Lite.
 
 ---
 
@@ -213,8 +209,8 @@ Pick model selection rules of thumb:
 This section is a written-up companion to the in-chat `help` command, not a
 copy of what it prints. It covers what each model is for and how to prompt
 it. `help` covers that too, and then adds what the model can output, the
-controls its panel draws, and what it charges — all read from OpenRouter
-when you ask, so where the two disagree, `help` is the one that is current.
+controls its panel draws — all read from OpenRouter when you ask, so
+where the two disagree, `help` is the one that is current.
 Skip to a model that matches your use case, or read them all to get a feel
 for the catalog. The descriptions draw on what OpenRouter publishes about
 each model together with public research on its reputation, papers, and
@@ -230,8 +226,8 @@ hero shots, and cinematic sequences. Its standout trait is jointly-diffused
 native audio: dialogue, SFX, and ambience are generated alongside the
 video in a single pass with lip-sync within roughly 120ms. Compared to
 Fast and Lite, the full tier delivers sharper motion, stronger prompt
-adherence, finer texture/lighting detail, and access to 4K output, at a
-higher cost per second. It also leads MovieGenBench evaluations on
+adherence, finer texture/lighting detail, and access to 4K output. It also leads
+MovieGenBench evaluations on
 overall preference and prompt-following accuracy.
 
 **Tips & pitfalls**
@@ -257,12 +253,10 @@ overall preference and prompt-following accuracy.
 
 > **id**: `google/veo-3.1-fast`
 
-The speed-and-cost-optimised tier of Veo 3.1, generating 4-, 6-, or
-8-second clips up to 4K with native synchronised audio at roughly 2× the
-speed and a fraction of the price of full Veo 3.1. Editor blind tests put
-quality within ~1–8% of the full tier while every published rate is lower —
-by 70% with audio, 50% at 4K with audio, 50% without audio and 38% at 4K
-without — making
+The speed-optimised tier of Veo 3.1, generating 4-, 6-, or 8-second
+clips up to 4K with native synchronised audio, rendering faster than
+full Veo 3.1. Editor blind tests
+put its quality close to the full tier's, making
 it the workhorse choice for drafting, A/B-testing creative concepts,
 batch ad and social content, and image-to-video work where dialogue and
 SFX must land in sync.
@@ -278,8 +272,7 @@ SFX must land in sync.
   aspect/lighting causes identity pops.
 - Audio is generated from prompt cues — describe ambient sound,
   dialogue, and SFX explicitly, otherwise you get generic ambience;
-  turning audio off both saves cost and avoids out-of-sync lip movement
-  on talking heads.
+  turning audio off avoids out-of-sync lip movement on talking heads.
 - At 8s, faces and logos can drift partway through. Lock with reference
   text, reuse a seed when iterating, and use the negative prompt to
   exclude common failures ("no text overlays, no extra fingers, no
@@ -289,12 +282,10 @@ SFX must land in sync.
 
 > **id**: `google/veo-3.1-lite`
 
-Google's most cost-effective Veo 3.1 tier, positioned for high-volume
-video applications and rapid iteration where cost-per-clip is the
-deciding factor. Unlike Veo 3.1 Fast, it does not sacrifice generation
-speed for the lower price — it matches Fast's latency at a lower rate
-per second — making it the go-to pick for batch pipelines, social
-automation, and consumer-app integrations. Tradeoffs: a hard cap at
+Google's lightest Veo 3.1 tier, positioned for high-volume video
+applications and rapid iteration. It matches Veo 3.1 Fast's latency —
+making it the go-to pick for batch pipelines, social automation, and
+consumer-app integrations. Tradeoffs: a hard cap at
 1080p (no 4K), no video extension, and slightly less polished visual
 fidelity, but it retains native synchronised audio.
 
@@ -346,13 +337,13 @@ aerial) matters.
 
 > **id**: `kwaivgi/kling-v3.0-pro`
 
-Kuaishou's premium tier of Kling v3.0 and the highest-quality Kling SKU
+Kuaishou's top tier of Kling v3.0 and the highest-quality Kling SKU
 here — sharper detail, stronger character consistency and richer motion
 than Standard. Clips run 3 to 15 seconds at 720p in 16:9, 9:16 or 1:1,
 with both endpoints anchorable and native audio. Best for hero shots,
-marketing deliverables and pre-vis where quality matters more than cost.
-Pro and Standard publish an identical knob set; the difference is output
-quality and the per-second rate, so iterate on Standard and finish here.
+marketing deliverables and pre-vis where quality is the priority. Pro
+and Standard publish an identical knob set; the difference is output
+quality, so iterate on Standard and finish here.
 
 **Tips & pitfalls**
 
@@ -365,8 +356,6 @@ quality and the per-second rate, so iterate on Standard and finish here.
 - `cfg_scale` is new in v3.0 and absent from the older O1 SKU. Leave it at
   0 for the provider default, or raise it when the prompt must be followed
   strictly at the cost of creative variation.
-- Audio carries its own higher per-second rate. Send `help` for the
-  current figures.
 
 ---
 
@@ -374,11 +363,11 @@ quality and the per-second rate, so iterate on Standard and finish here.
 
 > **id**: `kwaivgi/kling-v3.0-std`
 
-The cost-efficient tier of Kling v3.0, with exactly the same capability
+The standard tier of Kling v3.0, with exactly the same capability
 surface as Pro — 3-to-15-second clips at 720p in 16:9, 9:16 or 1:1, both
-endpoints anchorable, native audio — at a lower per-second rate. Best for
-prompt iteration, drafts and bulk runs where throughput and cost matter
-more than the last few percent of polish.
+endpoints anchorable, native audio. Best for prompt iteration, drafts
+and bulk runs where throughput matters more than the last few percent of
+polish.
 
 **Tips & pitfalls**
 
@@ -419,8 +408,8 @@ ink-wash looks.
   physics strengths.
 - `prompt_optimizer` rewrites/expands your prompt for better adherence;
   turn it off only when you have a deliberately precise prompt.
-  `fast_pretreatment` speeds up that step at a small quality cost —
-  useful for batch runs, otherwise leave at default.
+  `fast_pretreatment` runs that same step more quickly with a small loss
+  of quality — handy for batch runs, otherwise leave it alone.
 
 ### Alibaba: Wan 2.7
 
@@ -462,11 +451,11 @@ shots — at the cost of weaker fast-motion physics than Seedance 2.0.
 Alibaba's most feature-rich video generation model (Dec 2025), supporting
 10+ unified visual creation capabilities (text-to-video, image-to-video,
 reference-to-video, voiceover, action generation, role-play, editing) on
-a 14B-parameter MoE architecture. Best known for affordable multi-shot
+a 14B-parameter MoE architecture. Best known for multi-shot
 1080p @ 24fps generation with synchronised native audio (multi-speaker
 dialogue, lip-sync, voice/music conditioning) and intelligent multi-shot
 narrative storyboarding that holds character and lighting consistency
-across cuts. Pick 2.6 over 2.7 when you want the cheaper, well-tuned
+across cuts. Pick 2.6 over 2.7 when you want the well-tuned
 generation pipeline; pick 2.7 only if you specifically need last-frame
 control, 9-grid input, instruction-based editing, or stronger physics.
 
@@ -481,9 +470,8 @@ control, 9-grid input, instruction-based editing, or stronger physics.
   removed in 2.7. For multi-shot scripts, write scene-timed segments in
   the prompt itself.
 - Use `enable_prompt_expansion` (LLM-based prompt rewriter) for short
-  or terse prompts — it adds cinematographic detail "for free" without
-  consuming your budget; turn it OFF when you've already crafted a
-  long, precise prompt.
+  or terse prompts — it adds camera and lighting detail for you; turn it
+  OFF when you've already crafted a long, precise prompt.
 - Audio reference files must be 3–30s, WAV/MP3, max 15 MB; clips longer
   than the video get truncated and shorter clips leave a silent tail.
   Two-speaker dialogue tends to collapse to one dominant voice —
@@ -498,16 +486,15 @@ in a single unified pass, using a 4.5B-parameter Dual-Branch Diffusion
 Transformer with a cross-modal joint module that locks phonemes to
 visemes and physics events to audio spikes at millisecond precision.
 Pick 1.5 Pro over Seedance 2.0 when you want the older,
-production-validated audio-visual workflow at materially lower cost; it
-offers 1080p output, the wider 4–12s duration window, and reliable
+production-validated audio-visual workflow; it offers 1080p output, the
+wider 4–12s duration window, and reliable
 multilingual lip-sync (Mandarin, English, Japanese, Korean, Spanish, plus
 dialects).
 
 **Tips & pitfalls**
 
-- Audio doubles the bill: `video_tokens` with audio is ~2× without
-  audio, so toggle Audio off for silent B-roll, layout passes, or
-  anything you'll dub later.
+- Toggle Audio off for silent B-roll, layout passes, or anything you'll
+  dub later.
 - Use 1.5 Pro for short, repeatable clips with simple camera work and
   known-good prompts; switch to 2.0 only when you need richer multimodal
   references, 4K output, or longer 15s shots — 1.5 Pro caps at 1080p
@@ -555,24 +542,22 @@ the full 2.0 variant is the production-quality choice with native audio
 
 > **id**: `bytedance/seedance-2.0-fast`
 
-ByteDance's speed-and-cost-optimised variant of the Seedance 2.0 family,
-built on the same unified multimodal architecture but using distillation
-and accelerated sampling to cut generation time at a lower published
-token rate than standard Seedance 2.0. Best known for cinematic 480p/720p
+ByteDance's speed-optimised variant of the Seedance 2.0 family, built on
+the same unified multimodal architecture but using distillation and
+accelerated sampling to cut generation time relative to standard
+Seedance 2.0. Best known for cinematic 480p/720p
 output with native audio synchronised in a single pass, support for
 text-to-video, image-to-video with first/last frame control, and
 multimodal reference-to-video, plus very wide aspect-ratio coverage
-including 21:9 cinematic and 9:21. OpenRouter bills it via video tokens,
-so cost scales with pixels × seconds.
+including 21:9 cinematic and 9:21.
 
 **Tips & pitfalls**
 
 - Use Fast for drafting, prompt iteration, and bulk pipelines; switch
   to standard Seedance 2.0 for hero shots — Fast trades a small amount
-  of motion refinement and detail for a lower published token rate.
-- Token math means doubling resolution or duration roughly multiplies
-  cost; a 720p 10s clip costs far more than a 480p 5s draft, so iterate
-  small first.
+  of motion refinement and detail for the shorter generation time.
+- Iterate at 480p and a short duration first, then commit to the
+  full-size take.
 - This OpenRouter listing does not expose `negative_prompt` and caps at
   720p — for 1080p or text-prompted negatives you need the standard
   2.0 model or another provider.
@@ -622,24 +607,20 @@ SpaceXAI's fast text-, image-, and reference-conditioned video generator,
 producing short clips at 24fps in 480p or 720p across seven aspect
 ratios. Its standout differentiator is how short it will go: any
 integer from 1 to 15 seconds, starting at 1 — the lowest floor in the
-catalog, where the next shortest models start at 2. Charged per output
-second by resolution with a small surcharge per input image, it is one
-of the cheapest paths to video in the catalog and well suited to rapid
-iteration and high-volume production.
+catalog, where the next shortest models start at 2. That makes it well
+suited to rapid iteration and high-volume production.
 
 **Tips & pitfalls**
 
-- Duration is any integer 1–15 seconds — cost scales linearly per
-  second, so a 3s draft costs a fifth of a 15s final.
-- Resolution drives price: 480p is the cheaper iteration tier, 720p the
-  finishing tier. There is no 1080p/4K tier.
+- Duration is any integer 1–15 seconds, so a draft can be as short as a
+  single second.
+- Two resolutions only: 480p for iteration and 720p for finishing. There
+  is no 1080p/4K tier.
 - **Silent — no audio generation.** Pair with external audio in post if
   needed.
 - Single-frame conditioning only: `first_frame` is supported,
   `last_frame` is not. Use Veo 3.1 or Kling if you need both endpoints
   locked.
-- Image conditioning adds a small flat charge per input image on top of
-  the per-second cost.
 - No negative prompt — this model accepts no provider parameters at all.
 - OpenRouter publishes nothing either way about audio or a seed here. Both
   controls are offered and the model's own behaviour decides, so try one
@@ -653,8 +634,9 @@ iteration and high-volume production.
 
 The successor tier, built for the same fast iteration and adding a 1080p
 finishing resolution the original stops short of. Duration is any whole
-number of seconds from 1 to 15, so a two-second draft costs what two
-seconds cost rather than rounding up to a preset. Seven framings — more
+number of seconds from 1 to 15, so you can draft an idea as a two-second
+clip and only commit to a full-length take once the prompt is right.
+Seven framings — more
 than most models — including the 3:2 and 2:3 photographic shapes its
 neighbours skip. Works from a text prompt alone or from a supplied
 opening still, and accepts no provider parameters at all, which makes it
@@ -662,13 +644,10 @@ one of the simplest models here to drive.
 
 **Tips & pitfalls**
 
-- Draft at 480p and one or two seconds; the per-second rate at 1080p is
-  several times the 480p one and the composition reads clearly enough at
-  the low tier to judge.
+- Draft at 480p and one or two seconds; the composition reads clearly
+  enough at the low tier to judge before committing to 1080p.
 - 3:2 and 2:3 are worth remembering when a clip has to sit alongside
   photography.
-- Supplying a starting image is charged as an extra on top of the clip,
-  so reuse one deliberately rather than attaching a set.
 - No provider parameters exist to fall back on — everything has to come
   from the prompt and the controls.
 - Nothing is published either way about audio or a seed. Both controls
@@ -696,8 +675,6 @@ a time instead of being asked for in one go. Clips run 5 to 20 seconds at
 - Build long sequences as a chain of continuations rather than one very
   long request — each segment stays sharper and you can redirect between
   them.
-- Continuation is charged at its own, higher rate than fresh footage.
-  Check `help` before planning a long chain.
 - No deterministic seed, so an idea you like cannot be re-rolled exactly.
   Save the clip you want before iterating on the prompt.
 - `safety_tolerance` and `version` are the two provider parameters, both
@@ -719,15 +696,12 @@ twelve exact canvas sizes if you need to pin dimensions.
 
 **Tips & pitfalls**
 
-- The 30-second ceiling is the reason to pick this model; under 10 seconds
-  another model will usually cost less for the same result.
+- The 30-second ceiling is the reason to pick this model; if your shot is
+  under 10 seconds another model will usually cover it.
 - Lock a seed before refining — over a half-minute clip an unseeded re-roll
   changes far more than the line you edited.
 - Long clips reward one continuous action described plainly over a list of
   cuts. Ask for a scene, not a sequence of shots.
-- Billed by video token, not by the second, and how many tokens a clip uses
-  is not published — a longer or larger clip can cost much more than its
-  duration suggests.
 - `watermark`, `req_key` and `output_format` are the provider parameters.
 
 ---
@@ -750,9 +724,10 @@ across six framings from ultrawide 21:9 to vertical 9:16, in clips of 5 to
   over atmosphere.
 - Put any text you need rendered in quotes exactly as it should appear,
   capitalisation included.
-- Every clip is 2K, so there is no cheaper resolution to draft at. Keep
+- Every clip is 2K, so there is no lower resolution to draft at. Keep
   drafts short instead and lengthen once the prompt is right.
-- Reference images are charged per image on top of the per-second rate.
+- Trim the reference set to the images that are doing work; each extra one
+  is another thing the model has to reconcile.
 - No deterministic seed, so an exact re-run is not available.
 - `aigc_watermark` is the single provider parameter.
 
@@ -782,8 +757,9 @@ from a control here; the eight framings it publishes run from 21:9 down to
   pass for the second change and you keep the ability to reject either.
 - There is no duration, resolution or size control — trim the footage to
   what you want before sending it.
-- Short jobs are billed at a published minimum, so batch small corrections
-  into one pass where you can.
+- Batch small corrections into a single pass where you can, rather than
+  sending a string of one-second fixes. What a model charges is on
+  OpenRouter's pricing page.
 - `contentModeration` and `keyframes` are the provider parameters.
 
 ---
@@ -822,8 +798,7 @@ unusually wide aspect-ratio range: the usual 16:9 / 9:16 / 1:1 / 4:3 / 3:4
 plus ultrawide 21:9 and tall 9:21. That makes it a fit for cinematic
 letterbox shots and full-bleed vertical formats the 8-second-capped models
 cannot cover in one clip. First-frame conditioning and a seed for
-reproducible runs. 1.1 refines 1.0 with the same controls at a lower 1080p
-price.
+reproducible runs. 1.1 refines 1.0 with the same controls.
 
 **Tips & pitfalls**
 
@@ -847,13 +822,12 @@ price.
 The first HappyHorse tier: the same wide aspect-ratio range including
 ultrawide 21:9 and tall 9:21, 3-to-15-second clips at 720p or 1080p,
 first-frame conditioning and seed control. Largely superseded by 1.1,
-which prices 1080p lower for the same controls — reach for 1.0 only when
-you need to pin the exact 1.0 generation behaviour.
+which refines it with the same controls — reach for 1.0 only when you
+need to pin the exact 1.0 generation behaviour.
 
 **Tips & pitfalls**
 
-- Prefer 1.1 for new work; it matches 1.0's controls and resolutions at a
-  lower 1080p price.
+- Prefer 1.1 for new work; it matches 1.0's controls and resolutions.
 - Front-load a single clear shot and keep to one idea per clip;
   multi-subject action remains a weak spot.
 - Anchor the opening with a first-frame image and reuse a seed across
@@ -889,13 +863,13 @@ admin turns `VIDEO_INTENT_ENABLED` off, all four disappear from the filter.
 
 | Knob | Type | Values | Notes |
 |------|------|--------|-------|
-| Duration | Literal | 4, 6, 8 | Cost scales per second. |
+| Duration | Literal | 4, 6, 8 | Three fixed lengths; no values in between. |
 | Aspect ratio | Literal | 16:9, 9:16 | Native composition (no crop). |
-| Resolution | Literal | 720p, 1080p, 4K (full + Fast); 720p, 1080p (Lite) | 4K carries the highest per-second rate on the full and Fast tiers. |
+| Resolution | Literal | 720p, 1080p, 4K (full + Fast); 720p, 1080p (Lite) | 4K is on the full and Fast tiers only; Lite caps at 1080p. |
 | Size | Literal | from `supported_sizes` in catalog | Exact pixel dimensions; used when you need a specific canvas. |
 | Frames | Literal | auto / none / first_only / first_last | first/last requires both images attached. |
 | Negative prompt | str | free text | Routed via `negativePrompt` passthrough. |
-| Audio (`generate_audio`) | Literal | model_default / on / off | Off cuts price ~50% but loses signature joint-diffusion soundtrack. |
+| Audio (`generate_audio`) | Literal | model_default / on / off | Off loses the signature joint-diffusion soundtrack. |
 | Seed | int | 0 = model default; otherwise 32-bit integer | Same prompt + seed yields a near-identical clip. |
 | Person generation | Literal | "" / allow_all / allow_adult / dont_allow / disallow | Safety gate. `dont_allow` is the Gemini API spelling, `disallow` the Vertex AI one. EU/UK/CH/MENA only allow `allow_adult`. |
 | Conditioning scale | float | 0.0 = default; 0.0–1.0 | Bounds and behaviour are unsourced — Google documents no `conditioningScale` on any Veo surface. |
@@ -906,7 +880,7 @@ admin turns `VIDEO_INTENT_ENABLED` off, all four disappear from the filter.
 
 | Knob | Type | Values | Notes |
 |------|------|--------|-------|
-| Duration | Literal | 5, 10 | Linear pricing. |
+| Duration | Literal | 5, 10 | Two fixed lengths. |
 | Aspect ratio | Literal | 16:9, 9:16, 1:1 | Square output uses 720×720. |
 | Resolution | Literal | 720p only | Single tier. |
 | Size | Literal | 1280×720, 720×1280, 720×720 | |
@@ -921,17 +895,17 @@ admin turns `VIDEO_INTENT_ENABLED` off, all four disappear from the filter.
 
 | Knob | Type | Values | Notes |
 |------|------|--------|-------|
-| Duration | Literal | 3–15 (any integer) | Cost scales per second. |
+| Duration | Literal | 3–15 (any integer) | Any whole number of seconds in range. |
 | Aspect ratio | Literal | 16:9, 9:16, 1:1 | |
 | Resolution | Literal | 720p | The only tier published. |
 | Size | Literal | 1280×720, 720×1280, 720×720 | |
 | Frames | Literal | auto / none / first_only / first_last | Both endpoints can be locked. |
 | Negative prompt | str | free text | Kling honours these strongly. |
 | CFG scale | float | 0 = provider default | New in v3.0; higher follows the prompt more strictly. |
-| Audio (`generate_audio`) | Literal | model_default / on / off | Carries its own higher per-second rate. |
+| Audio (`generate_audio`) | Literal | model_default / on / off | Native audio generated in the same pass as the picture. |
 | Provider options JSON | str | raw JSON | |
 
-**No seed knob** (`seed: false`). Both tiers publish an identical knob set; only the per-second rate differs.
+**No seed knob** (`seed: false`). Both tiers publish an identical knob set; the difference is output quality.
 
 ### MiniMax: Hailuo 2.3
 
@@ -944,7 +918,7 @@ admin turns `VIDEO_INTENT_ENABLED` off, all four disappear from the filter.
 | Frames | Literal | auto / none / first_only | **No `first_last`** — Hailuo 2.3 dropped last-frame support. |
 | Provider options JSON | str | raw JSON | |
 | Prompt optimizer | Literal | model_default / on / off | MiniMax server-side prompt rewriter. |
-| Fast pretreatment | Literal | model_default / on / off | Quicker optimiser pass; small quality cost. |
+| Fast pretreatment | Literal | model_default / on / off | Quicker optimiser pass; small loss of quality. |
 | Seed | int | ≥ 0 | The catalog says nothing either way (`seed: null`), so the control is offered; left at `0` nothing is sent and MiniMax's own behaviour applies. |
 
 **No audio knob** (`generate_audio: false`). **No negative prompt.**
@@ -988,7 +962,7 @@ admin turns `VIDEO_INTENT_ENABLED` off, all four disappear from the filter.
 
 | Knob | Type | Values (varies by variant) | Notes |
 |------|------|----------------------------|-------|
-| Duration | Literal | 4–15 (Fast/2.0); 4–12 (1.5 Pro) | Token-priced. |
+| Duration | Literal | 4–15 (Fast/2.0); 4–12 (1.5 Pro) | Any whole number of seconds in range. |
 | Aspect ratio | Literal | 1:1, 3:4, 9:16, 4:3, 16:9, 21:9, 9:21 (+ 9:21 on 1.5 Pro) | Widest aspect coverage. |
 | Resolution | Literal | 480p, 720p (Fast); 480p, 720p, 1080p, 4K (2.0); 480p, 720p, 1080p (1.5 Pro) | Only 2.0 reaches 4K. |
 | Size | Literal | 13 (2.0 Fast); 25 (2.0); 21 (1.5 Pro); 12 (2.5) | 2.0 publishes the most exact pixel sizes of any catalog model. |
@@ -1007,7 +981,7 @@ admin turns `VIDEO_INTENT_ENABLED` off, all four disappear from the filter.
 |------|------|--------|-------|
 | Duration | Literal | 4, 8, 12, 16, 20 | 20s clips; only Seedance 2.5 goes longer. |
 | Aspect ratio | Literal | 16:9, 9:16 | No square / cinematic widescreen. |
-| Resolution | Literal | 720p, 1080p | 720p is the cheaper per-second tier. |
+| Resolution | Literal | 720p, 1080p | 1080p is the finishing tier. |
 | Size | Literal | 4 dimensions | |
 | Audio (`generate_audio`) | Literal | model_default / on / off | Native dialogue, SFX, ambience — Sora's signature. |
 | Provider options JSON | str | raw JSON | |
@@ -1020,9 +994,9 @@ admin turns `VIDEO_INTENT_ENABLED` off, all four disappear from the filter.
 
 | Knob | Type | Values | Notes |
 |------|------|--------|-------|
-| Duration | Literal | 1–15 (any integer) | 1-second granularity, shared with the 1.5 tier. Cost scales per second. |
+| Duration | Literal | 1–15 (any integer) | 1-second granularity, shared with the 1.5 tier. |
 | Aspect ratio | Literal | 16:9, 9:16, 1:1, 4:3, 3:4, 3:2, 2:3 | Seven framings; Aleph 2 publishes these plus 21:9. |
-| Resolution | Literal | 480p, 720p | Resolution drives the per-second SKU; 480p is the cheaper of the two. |
+| Resolution | Literal | 480p, 720p | 480p for drafts, 720p for finishing. |
 | Size | Literal | 14 dimensions | e.g. 854×480, 1280×720, 720×1280, 480×480. |
 | Frames | Literal | first only | Image-to-video via first frame; no last frame. |
 | Audio | Literal | model default / on / off | Offered because nothing is published either way; the model's own behaviour decides. |
@@ -1037,9 +1011,9 @@ admin turns `VIDEO_INTENT_ENABLED` off, all four disappear from the filter.
 
 | Knob | Type | Values | Notes |
 |------|------|--------|-------|
-| Duration | Literal | 1–15 (any integer) | 1-second granularity. Cost scales per second. |
+| Duration | Literal | 1–15 (any integer) | 1-second granularity. |
 | Aspect ratio | Literal | 16:9, 9:16, 1:1, 4:3, 3:4, 3:2, 2:3 | Same seven framings as the original tier. |
-| Resolution | Literal | 480p, 720p, 1080p | Adds the 1080p finishing tier. Resolution drives the per-second SKU. |
+| Resolution | Literal | 480p, 720p, 1080p | Adds the 1080p finishing tier. |
 | Frames | Literal | first only | Image-to-video via first frame; no last frame. |
 | Audio | Literal | model default / on / off | Offered because nothing is published either way. |
 | Seed | int | 0 = model default | Offered because nothing is published either way. |
@@ -1053,16 +1027,16 @@ admin turns `VIDEO_INTENT_ENABLED` off, all four disappear from the filter.
 
 | Knob | Type | Values | Notes |
 |------|------|--------|-------|
-| Duration | Literal | 5–20 (any integer) | Cost scales per second. |
+| Duration | Literal | 5–20 (any integer) | Any whole number of seconds in range. |
 | Aspect ratio | Literal | 21:9, 16:9, 4:3, 1:1, 3:4, 9:16 | |
-| Resolution | Literal | 720p, 1080p | Resolution drives the per-second SKU. |
+| Resolution | Literal | 720p, 1080p | 1080p is the finishing tier. |
 | Frames | Literal | first only, first + last | Both endpoints can be locked. |
 | Audio | Literal | model default / on / off | |
 | `safety_tolerance` | str | free text | Provider parameter; no values published. |
 | `version` | str | free text | Provider parameter; no values published. |
 | Provider options JSON | str | raw JSON | |
 
-**No seed knob** (`seed: false`). **No size knob** (no fixed dimensions published). Continuing an existing clip is billed at its own, higher per-second rate.
+**No seed knob** (`seed: false`). **No size knob** (no fixed dimensions published).
 
 ---
 
@@ -1070,12 +1044,12 @@ admin turns `VIDEO_INTENT_ENABLED` off, all four disappear from the filter.
 
 | Knob | Type | Values | Notes |
 |------|------|--------|-------|
-| Duration | Literal | 4–30 (any integer) | Longest single take in the catalog. Billed by token, not by the second. |
+| Duration | Literal | 4–30 (any integer) | Longest single take in the catalog. |
 | Aspect ratio | Literal | 16:9, 4:3, 1:1, 3:4, 9:16, 21:9 | |
 | Resolution | Literal | 480p, 720p | |
 | Size | Literal | 12 dimensions | e.g. 1280×720, 960×960, 720×1280, 1470×630. |
 | Frames | Literal | first only, first + last | |
-| Audio | Literal | model default / on / off | The published per-token rate is the same with or without audio. |
+| Audio | Literal | model default / on / off | Generated alongside the picture in a single pass. |
 | Seed | int | 0 = model default | |
 | Watermark | Literal | model default / on / off | Provider branding overlay. |
 | `req_key` | str | free text | Provider-side request identifier. |
@@ -1088,15 +1062,15 @@ admin turns `VIDEO_INTENT_ENABLED` off, all four disappear from the filter.
 
 | Knob | Type | Values | Notes |
 |------|------|--------|-------|
-| Duration | Literal | 5–15 (any integer) | Cost scales per second. |
+| Duration | Literal | 5–15 (any integer) | Any whole number of seconds in range. |
 | Aspect ratio | Literal | 21:9, 16:9, 4:3, 1:1, 3:4, 9:16 | |
-| Resolution | Literal | 2K | The only tier published; there is no cheaper one to draft at. |
+| Resolution | Literal | 2K | The only tier published; there is no lower one to draft at. |
 | Frames | Literal | first only, first + last | |
 | Audio | Literal | model default / on / off | |
 | `aigc_watermark` | str | free text | Provider parameter; no values published. |
 | Provider options JSON | str | raw JSON | |
 
-**No seed knob** (`seed: false`). **No size knob** (no fixed dimensions published). Reference images are charged per image on top of the per-second rate.
+**No seed knob** (`seed: false`). **No size knob** (no fixed dimensions published).
 
 ---
 
@@ -1104,7 +1078,7 @@ admin turns `VIDEO_INTENT_ENABLED` off, all four disappear from the filter.
 
 | Knob | Type | Values | Notes |
 |------|------|--------|-------|
-| Duration | Literal | 2–10 (any integer) | Cost scales per second, one flat rate. |
+| Duration | Literal | 2–10 (any integer) | Any whole number of seconds in range. |
 | Aspect ratio | Literal | 16:9, 9:16 | Landscape or portrait only. |
 | Resolution | Literal | 720p | The only tier published. |
 | Size | Literal | 1280×720, 720×1280 | |
@@ -1127,7 +1101,7 @@ admin turns `VIDEO_INTENT_ENABLED` off, all four disappear from the filter.
 | `keyframes` | str | free text | Provider parameter; show a moment rather than describing it. |
 | Provider options JSON | str | raw JSON | |
 
-**No duration, resolution, size or frames knob.** This is an in-context editor: the clip you attach sets the length and the dimensions of the result, so none of those are published and none are drawn. **No audio knob** (`generate_audio: false`). A published minimum per generation means a very short job costs the same as a somewhat longer one.
+**No duration, resolution, size or frames knob.** This is an in-context editor: the clip you attach sets the length and the dimensions of the result, so none of those are published and none are drawn. **No audio knob** (`generate_audio: false`).
 
 ---
 
@@ -1135,9 +1109,9 @@ admin turns `VIDEO_INTENT_ENABLED` off, all four disappear from the filter.
 
 | Knob | Type | Values | Notes |
 |------|------|--------|-------|
-| Duration | Literal | 3–15 (any integer) | Cost scales per second. |
+| Duration | Literal | 3–15 (any integer) | Any whole number of seconds in range. |
 | Aspect ratio | Literal | 16:9, 9:16, 1:1, 4:3, 3:4, 21:9, 9:21 | The only models offering tall 9:21. |
-| Resolution | Literal | 720p, 1080p | Resolution drives the per-second SKU; 1.1 prices 1080p lower than 1.0. |
+| Resolution | Literal | 720p, 1080p | 1080p is the finishing tier. |
 | Size | Literal | 14 dimensions | e.g. 1920×1080, 1080×1920, 2520×1080, 1080×2520. |
 | Frames | Literal | first only | No last frame. |
 | Audio | Literal | model default / on / off | Offered because nothing is published either way. |
@@ -1319,21 +1293,18 @@ generation job and returns the model's help blurb directly:
   model because they are pipe behaviour.
 - **Tips & pitfalls**: 3–4 practical bullets — what works, what fails,
   prompt patterns.
-- **Cost** (live): every published rate as a readable bullet (e.g. `per
-  second (with audio, 4K)` followed by its figure), with any minimum
-  charge on its own line rather than among the rates, a note whenever the
-  model is billed per video token, and a line naming any charge whose
-  unit the panel does not recognise instead of inventing one for it.
-  Where every charge a model publishes is charged by the second, the
-  panel also works out what its longest clip can cost, at the highest
-  rate it publishes. Models that also charge per supplied image, per
-  reference, per job or per token get no such total, because seconds
-  times a rate would price only part of the bill.
+
+The blurb quotes no rates. What a model charges is on OpenRouter's pricing
+page, which is the only copy of it that cannot go stale. What a particular
+generation was billed is reported on the status line when it finishes, as
+long as usage details are on: that is your own Show usage details setting
+once you have set it, and the site default your administrator chooses
+until then.
 
 The written-up part of each blurb ships with the pipe; everything about
-capabilities and money is read from the catalog at the moment you ask. So
-if OpenRouter changes a rate, the next `help` shows the new one — nothing
-has to be updated or redeployed for that.
+capabilities is read from the catalog at the moment you ask. So a model
+that gains a resolution shows it on the next `help` — nothing has to be
+updated or redeployed for that.
 
 ---
 
@@ -1508,64 +1479,18 @@ pin. On the image endpoint `only` *is* accepted, so there the pin decides.
 
 ## Pricing and cost display
 
-OpenRouter publishes per-SKU rates in each model's catalog `pricing_skus`
-dict. A model billed by the second, with audio and 4K tiers, publishes
-something shaped like this — the figures below are made up to show the
-shape, not a quote of any model's price:
+No rate is quoted anywhere in this pipe. Nothing in the `help` reply, in a
+model's filter, or on this page states what a model charges. OpenRouter's
+pricing page is the one place to read them, and it is the only copy that
+cannot go stale: a figure written down anywhere else stops being true on
+the day OpenRouter changes it, and nothing reports that day.
 
-```json
-"pricing_skus": {
-  "duration_seconds_with_audio": "0.40",
-  "duration_seconds_without_audio": "0.20",
-  "duration_seconds_with_audio_4k": "0.60",
-  "duration_seconds_without_audio_4k": "0.40"
-}
-```
-
-The pipe surfaces these in two places:
-
-1. **In-chat `help` command** — bullets each rate as "per second (with
-   audio, 4K): $0.60" for the block above. Read live from the catalog
-   every time `help` is invoked. A value whose key carries `cents_per` is
-   published in cents and is converted to dollars before display,
-   wherever in the key that token sits. For a model like this one, where
-   every charge is charged by the second, the panel closes with what the
-   longest clip it makes can cost at the highest of those rates.
-2. **Final status line** after generation — where OpenRouter's poll
-   response carries a charge above zero, that line shows it, as long as
-   usage details are on: that is your own Show usage details setting
-   once you have set it, and the site default your administrator chooses
-   until then. The figure it shows is what that specific generation came
-   to, in place of the published rates above.
-
-SKU key conventions decoded:
-
-| Suffix / prefix | Meaning |
-|------------------|---------|
-| `duration_seconds` | Per second of video |
-| `video_tokens` | Per video token (Seedance pricing model) |
-| `second_output` / `video_output_second` | Per second of output |
-| `second_video_continuation` | Per second of video continued from an earlier clip |
-| `reference_images` | Per reference image supplied |
-| `_with_audio` / `_without_audio` | With or without generated audio |
-| `_4k` / `_1080p` / `_720p` / `_480p` | Resolution-tiered SKU |
-| `text_to_video_` / `image_to_video_` | Generation mode (Wan 2.6) |
-| `cents_per` anywhere in the key | The value is in cents, not dollars |
-| `minimum_` prefix | A floor per job, not a rate — shown on its own line |
-
-A per-video-token model (the Seedance family) publishes a rate but no
-token count, so seconds cannot be converted to a price and the rates do
-not compare with one another: 4K carries the *smallest* per-token number
-on `bytedance/seedance-2.0` while costing far more per second of output
-than 480p. The panel says so rather than printing a table that reads
-backwards, and points at OpenRouter's pricing page for the real figure.
-
-Prices are read live every call — never baked into static help text — so
-OpenRouter rate updates surface without a new bundle. That is why no
-figure of money appears in a model's written description, and why this
-page describes what a model's price depends on rather than quoting it:
-a number typed into prose cannot be corrected by a catalogue refresh, and
-nothing reports the day it stops being true.
+What is reported is what a generation actually came to. Where OpenRouter's
+poll response carries a charge above zero, the **final status line** shows
+it, as long as usage details are on: that is your own Show usage details
+setting once you have set it, and the site default your administrator
+chooses until then. The figure is what that specific generation was
+billed, not a rate.
 
 ---
 
@@ -1907,7 +1832,8 @@ Key files:
   — work out what the turn is asking for before a job is submitted; see
   [the intent classifier document](openrouter_video_intent_classifier.md).
 - [`integrations/video_help.py`](../open_webui_openrouter_pipe/integrations/video_help.py)
-  — per-model help blurbs + live pricing renderer.
+  — per-model help blurbs, with the capability lines and the control list
+  read from the live catalog row.
 - [`integrations/video_types.py`](../open_webui_openrouter_pipe/integrations/video_types.py)
   — `VideoLifecycleResult`, `DownloadedVideo` dataclasses.
 - [`integrations/provider_options.py`](../open_webui_openrouter_pipe/integrations/provider_options.py)

@@ -4329,10 +4329,10 @@ def test_the_detector_hunts_the_words_production_actually_uses(pipe_instance):
     )
 
     surface = _status_surface_word()
-    speaking = [name for name, card in _rendered_cards().items() if surface in card.lower()]
+    speaking = [name for name, sentence in _valve_descriptions() if surface in sentence.lower()]
     assert speaking, (
-        f"no rendered card calls the surface {surface!r}, which is the word taken from "
-        f"{_GATE_VALVE}; the sweep is looking for a name nothing uses"
+        f"no valve description calls the surface {surface!r}, which is the word taken "
+        f"from {_GATE_VALVE}; the sweep is looking for a name nothing uses"
     )
 
 
@@ -4397,9 +4397,6 @@ def test_no_surface_promises_a_cost_on_the_status_line_without_naming_the_settin
     promises = _cost_promises()
 
     surfaces = {name for name, _sentence, _named in promises}
-    assert any(name.startswith(("image card ", "video card ")) for name in surfaces), (
-        f"no rendered card promises a cost at all ({sorted(surfaces)}); the sweep is hollow"
-    )
     assert len({name for name in surfaces if name.endswith(".md")}) > 1, (
         f"only {sorted(surfaces)} carry the promise; the document half of the sweep is hollow"
     )
@@ -4436,13 +4433,16 @@ def _sanctioned_surface_noun() -> str:
 
     That setting exists for the appearance of this one surface and names it while saying
     so, which makes its description the place the product states what the thing is called.
-    The answer then has to turn up in a rendered help card as well, so the name rests on
-    two independent production surfaces and one reworded string cannot move it alone.
+    The answer then has to turn up under a DIFFERENT setting as well, so the name rests on
+    two independent production strings and one rewording cannot move it alone. It used to
+    rest on a rendered help card for its second surface; help quotes no money now, so no
+    card mentions this surface at all.
     """
     from open_webui_openrouter_pipe.core.config import Valves
 
+    styled_by = "FINAL_USAGE_STATUS_STYLE"
     surface = _status_surface_word()
-    styled = Valves.model_fields["FINAL_USAGE_STATUS_STYLE"].description or ""
+    styled = Valves.model_fields[styled_by].description or ""
     found = re.search(rf"\b{surface}\s+([a-z]+)\b", styled, re.I)
     assert found, (
         "the setting that styles this surface no longer names it, so there is no "
@@ -4451,12 +4451,13 @@ def _sanctioned_surface_noun() -> str:
     noun = found.group(1).lower()
     spoken = [
         name
-        for name, card in _rendered_cards().items()
-        if re.search(rf"\b{surface}\s+{noun}s?\b", card, re.I)
+        for name, sentence in _valve_descriptions()
+        if not name.endswith(f".{styled_by}")
+        and re.search(rf"\b{surface}\s+{noun}s?\b", sentence, re.I)
     ]
     assert spoken, (
-        f"no rendered card calls it a {surface} {noun!r}, so the name rests on one valve "
-        "description and nothing a reader is actually shown agrees with it"
+        f"only {styled_by} calls it a {surface} {noun!r}, so the name rests on one string "
+        "and rewording that one string moves what every document is held to"
     )
     return noun
 
@@ -5398,91 +5399,4 @@ def test_a_reply_that_reported_no_counts_gets_no_counts_on_the_line(pipe_instanc
         f"the parts that move with the reported counts are {sorted(moved)} and the parts "
         f"a reply reporting none loses are {sorted(dropped)}; the counts are surviving a "
         "reply that never carried them"
-    )
-
-
-# ------------------- THE PRICED SECTIONS ARE NOT ALWAYS IN THE REPLY ---------
-_REFERENCE_PRICED_MODELS = ("sourceful/riverflow-v2-pro", "sourceful/riverflow-v2-fast")
-
-_DOLLARS_RE = re.compile(r"\$([0-9]+(?:\.[0-9]+)?)")
-
-
-def _help_headings(text: str) -> list[str]:
-    return [line.strip() for line in text.splitlines() if line.startswith("#")]
-
-
-def _help_bodies(text: str) -> dict[str, list[str]]:
-    bodies: dict[str, list[str]] = {}
-    heading = ""
-    for line in text.splitlines():
-        if line.startswith("#"):
-            heading = line.strip()
-            bodies[heading] = []
-        elif heading:
-            bodies[heading].append(line)
-    return bodies
-
-
-def _published_amounts(records: list[dict]) -> list[float]:
-    """Every rate the recorded contract publishes, in the unit it publishes them in."""
-    amounts: list[float] = []
-    for record in records:
-        for item in record.get("pricing") or []:
-            assert item.get("unit") == "image", (
-                f"this contract now prices something per {item.get('unit')!r}, which the "
-                "figures below would have to be converted for"
-            )
-            amounts.append(float(item["cost_usd"]))
-    return amounts
-
-
-@pytest.mark.parametrize("model_id", _REFERENCE_PRICED_MODELS)
-def test_the_priced_help_sections_are_gone_when_the_contract_was_not_read(model_id):
-    """The page named a section of the reply that is not always in the reply.
-
-    Both of these models publish a per-reference and a per-font rate, and the page quotes
-    them and says where in the reply to find them. When the contract cannot be read the
-    reply stops after the description and tips, so a reader whose reply came back short
-    could not tell "nothing is charged for references" from "the contract was not read".
-
-    The figures are lifted out of the recorded contract and compared against the ones the
-    reply prints, so no rate is typed here; the two models publish different sets, so a
-    figure hard-coded into the renderer satisfies at most one of them. The two renderings
-    are asserted to DIFFER, which is what the early return produces -- without that, a
-    reply that carried the section unconditionally would satisfy every other assertion.
-    """
-    slug = next(s for s, mid in EVERY_CONTRACT if mid == model_id)
-    records = _records(slug)
-
-    read = _help_text(model_id, records, True)
-    unread = _help_text(model_id, [], True)
-
-    present, absent = set(_help_headings(read)), set(_help_headings(unread))
-    assert absent < present, (
-        f"the {model_id} reply is the same shape whether or not its contract was read, so "
-        f"there is no condition for the page to state: {sorted(present)} / {sorted(absent)}"
-    )
-    conditional = present - absent
-
-    published = _published_amounts(records)
-    assert len(set(published)) > 1, (
-        f"{model_id} publishes {published}, which one repeated figure would satisfy"
-    )
-
-    bodies = _help_bodies(read)
-    priced = {
-        heading: sorted(float(found) for found in _DOLLARS_RE.findall("\n".join(lines)))
-        for heading, lines in bodies.items()
-        if _DOLLARS_RE.search("\n".join(lines))
-    }
-    assert len(priced) == 1, (
-        f"the {model_id} reply quotes figures under {sorted(priced)}, and the page names one"
-    )
-    heading, shown = next(iter(priced.items()))
-    assert heading in conditional, (
-        f"{heading} survives a contract that could not be read, so the page's condition is "
-        f"not the one that governs it; only {sorted(conditional)} depend on the contract"
-    )
-    assert shown == sorted(published), (
-        f"{heading} shows {shown} and the recorded contract publishes {sorted(published)}"
     )

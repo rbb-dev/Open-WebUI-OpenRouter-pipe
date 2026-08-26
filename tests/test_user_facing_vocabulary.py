@@ -66,7 +66,6 @@ BANNED_KEYS = (
     "supported_aspect_ratios",
     "supported_frame_images",
     "supported_sizes",
-    "pricing_skus",
     "passthrough",
 )
 

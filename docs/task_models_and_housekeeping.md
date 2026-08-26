@@ -6,7 +6,7 @@
 
 Open WebUI can issue two different kinds of requests through `__task__`:
 
-- **Housekeeping tasks** such as generating a chat title, tags, follow-ups, queries, autocomplete, emoji, or image prompts. These should be fast, inexpensive, and low-risk.
+- **Housekeeping tasks** such as generating a chat title, tags, follow-ups, queries, autocomplete, emoji, or image prompts. These should be fast, short, and low-risk.
 - **MOA merged-response synthesis** (`moa_response_generation`), which is user-visible and should behave like a normal chat response.
 
 The pipe treats these categories differently.
@@ -96,7 +96,7 @@ If the provider returns a `usage` object for the task request, the pipe can emit
 
 Housekeeping tasks run frequently. The safest approach is to configure housekeeping to use a **dedicated task model configuration** that is:
 
-- Low-latency and cost-efficient for short outputs.
+- Low-latency for short outputs.
 - Configured to produce concise strings (titles/tags/summaries) rather than long prose.
 - Not dependent on external tools or plugins (task requests do not execute tool loops).
 
@@ -110,7 +110,7 @@ If you need tasks to be as fast as possible, reduce `TASK_MODEL_REASONING_EFFORT
 |---|---|---|
 | Tasks often return `[Task error] ...` | Provider errors or repeated request failures in the housekeeping task adapter | Check backend logs for `Task model attempt ... failed` (DEBUG gives full stack traces). |
 | Task outputs are overly verbose | Housekeeping prompt/model configuration encourages long-form responses | Tune the task prompt/model configuration for short outputs; consider lowering `TASK_MODEL_REASONING_EFFORT`. |
-| Tasks are unexpectedly expensive | Housekeeping is targeting a high-cost model or generating long outputs | Confirm the configured task model and review `usage`/cost snapshots (if enabled). |
+| Housekeeping is running up unexpected spend | Housekeeping runs on every chat, so the task model it targets and the length of what that model produces both drive the total | Confirm the configured task model and review `usage`/cost snapshots (if enabled). What a model charges is on OpenRouter's pricing page. |
 | Housekeeping tasks bypass the model allowlist unexpectedly | The request is using the housekeeping task adapter path | Treat this as expected behavior; if you need strict enforcement, control task model selection at the Open WebUI admin/config level. |
 | MOA ignores housekeeping task settings | `moa_response_generation` now uses normal chat semantics | This is expected; MOA keeps the selected chat model and normal chat features. |
 

@@ -2783,7 +2783,7 @@ async def test_a_contract_the_pipe_could_not_read_is_not_reported_as_a_model_wit
     does a live read -- and the read answers with an EMPTY LIST on a network error, a
     404, a rate limit or a missing key, not with None. That list is not None, so it
     walked straight past the guard and the reply stated as fact that the model publishes
-    no price and no adjustable settings. Recraft V3 publishes a price and four controls.
+    no adjustable settings. Recraft V3 publishes four controls.
 
     The value fed to the renderer is the one the real reader produces, taken from a
     client stubbed one seam below the subject -- comparing the renderer against a
@@ -2792,7 +2792,6 @@ async def test_a_contract_the_pipe_could_not_read_is_not_reported_as_a_model_wit
     """
     from open_webui_openrouter_pipe import Pipe
     from open_webui_openrouter_pipe.core.config import EncryptedStr
-    from open_webui_openrouter_pipe.integrations.image_help import _IMAGE_NO_PRICE_LINE
 
     published = _recorded_endpoint("recraft_recraft-v3")
 
@@ -2823,15 +2822,8 @@ async def test_a_contract_the_pipe_could_not_read_is_not_reported_as_a_model_wit
     )
 
     assert rendered.strip(), "the model description must survive either way"
-    assert (_IMAGE_NO_PRICE_LINE in rendered) is False, (
-        "this model publishes a price of its own, so nothing here may say otherwise: "
-        f"{rendered}"
-    )
     assert ("publishes no adjustable settings" in rendered) is False, (
         f"Recraft V3 publishes four controls; the reply denies them: {rendered}"
-    )
-    assert ("## Cost" in rendered) is readable, (
-        f"a price may only be stated when the contract it came from was read: {rendered}"
     )
     assert ("## Controls" in rendered) is readable, (
         f"controls may only be listed when the contract they came from was read: {rendered}"
@@ -3566,157 +3558,39 @@ def _priced_record(pricing: Any, **extra: Any) -> dict[str, Any]:
     return record
 
 
-def _cost_block(rendered: str) -> str:
-    assert "## Cost" in rendered, rendered
-    return rendered.split("## Cost", 1)[1].split("## Controls", 1)[0]
+def test_no_price_reaches_a_user_at_all():
+    """A rate a reader is shown goes stale in silence, whoever supplied it.
 
+    Prose figures were the first shape of that: eight hardcoded into the descriptions,
+    one quoting a model's reference-image charge as its generation charge and another its
+    cheapest of three rates. Reading them out of the contract instead only moved the
+    problem -- a rate on screen is still a rate somebody has to keep true, and the answer
+    is that help quotes none.
 
-@pytest.mark.parametrize(
-    ("pricing", "expected"),
-    [
-        (
-            [{"billable": "output_image", "unit": "image", "cost_usd": 0.25}],
-            "- Each image it makes: $0.25 per image",
-        ),
-        (
-            [{"billable": "output_image", "unit": "megapixel", "cost_usd": 0.014}],
-            "- Each image it makes: $0.014 per megapixel",
-        ),
-    ],
-)
-def test_help_prices_a_generation_from_the_contract_it_already_holds(pricing, expected):
-    """The record that builds the controls also carries the price, and it was dropped.
-
-    A user asking a model what it can do was told everything except what it costs, while
-    the video sibling answered in full -- and the only image prices on screen were typed
-    into prose by hand, one of them quoting the reference-image charge as the generation
-    charge.
+    Every curated model is rendered twice, and the second rendering is handed a contract
+    that publishes two different figures in two different units, so a panel that reads
+    published pricing back onto the page fails here rather than passing on an input that
+    never carried a figure at all.
     """
-    rendered = render_image_help(
-        "v/m", {"id": "v/m", "name": "M"}, endpoint_record=_priced_record(pricing),
-        dedicated_image_api=True,
+    published = _priced_record(
+        [
+            {"billable": "output_image", "unit": "image", "cost_usd": 0.25},
+            {"billable": "input_reference", "unit": "megapixel", "cost_usd": 0.014},
+        ]
     )
-    assert expected in _cost_block(rendered)
-
-
-@pytest.mark.parametrize(
-    ("cost_usd", "expected"),
-    [(0.00012, "$120.00 per million tokens"), (5e-06, "$5.00 per million tokens")],
-)
-def test_a_token_priced_model_is_quoted_per_million_and_says_what_is_unknowable(cost_usd, expected):
-    """Per-token figures are unreadable at their own scale, and do not price a picture.
-
-    Twelve zeroes after the point tells a user nothing; the per-million form is the same
-    published number. What it still cannot say is what one image comes to, because the
-    token count of an image is published nowhere.
-    """
-    block = _cost_block(
-        render_image_help(
-            "v/m",
-            {"id": "v/m", "name": "M"},
-            endpoint_record=_priced_record(
-                [{"billable": "output_image", "unit": "token", "cost_usd": cost_usd}]
-            ),
-            dedicated_image_api=True,
-        )
-    )
-    assert expected in block
-    assert "how many tokens a picture comes to is not published" in block
-
-    per_image = _cost_block(
-        render_image_help(
-            "v/m",
-            {"id": "v/m", "name": "M"},
-            endpoint_record=_priced_record(
-                [{"billable": "output_image", "unit": "image", "cost_usd": 0.25}]
-            ),
-            dedicated_image_api=True,
-        )
-    )
-    assert "not published" not in per_image, "a per-image model has no such caveat"
-
-
-@pytest.mark.parametrize("published", [[], None])
-def test_help_says_a_model_publishes_no_price_rather_than_showing_nothing(published):
-    """Three of the forty publish an empty array, and silence reads as a broken panel."""
-    record = _priced_record(published) if published is not None else {"provider_slug": "krea"}
-    block = _cost_block(
-        render_image_help("krea/krea-2-large", {"id": "krea/krea-2-large", "name": "K"}, endpoint_record=record, dedicated_image_api=True)
-    )
-    assert "OpenRouter publishes no price for this model" in block
-    assert "$" not in block
-
-
-@pytest.mark.parametrize(
-    ("tier_cost", "expected"),
-    [(0.33, "- Each image it makes (4K): $0.33 per image"), (0.17, "- Each image it makes (4K): $0.17 per image")],
-)
-def test_a_tier_that_changes_the_price_gets_its_own_line(tier_cost, expected):
-    """A variant is a control the user sets, so it is a price the user chooses."""
-    block = _cost_block(
-        render_image_help(
-            "v/m",
-            {"id": "v/m", "name": "M"},
-            endpoint_record=_priced_record(
-                [
-                    {"billable": "output_image", "unit": "image", "cost_usd": 0.15},
-                    {"billable": "output_image", "unit": "image", "cost_usd": tier_cost, "variant": "4k"},
-                ]
-            ),
-            dedicated_image_api=True,
-        )
-    )
-    assert "- Each image it makes: $0.15 per image" in block
-    assert expected in block
-
-
-def test_the_companies_serving_a_model_are_named_only_where_they_charge_differently():
-    """Which company takes the request is decided after it leaves.
-
-    Printing the first record's figure would be a guess; printing two undifferentiated
-    lines would look like a mistake. So they are named exactly when they disagree.
-    """
-    agreeing = [
-        _priced_record([{"billable": "output_image", "unit": "token", "cost_usd": 0.00012}],
-                       provider_name="Google Vertex", provider_slug="google-vertex/global"),
-        _priced_record([{"billable": "output_image", "unit": "token", "cost_usd": 0.00012}],
-                       provider_name="Google AI Studio", provider_slug="google-ai-studio/global"),
-    ]
-    block = _cost_block(render_image_help("v/m", {"id": "v/m", "name": "M"}, endpoint_record=agreeing, dedicated_image_api=True))
-    assert block.count("- Each image it makes") == 1, block
-    assert "Google Vertex" not in block
-
-    differing = [
-        _priced_record([{"billable": "output_image", "unit": "token", "cost_usd": 0.00012}],
-                       provider_name="Google Vertex", provider_slug="google-vertex/global"),
-        _priced_record([{"billable": "output_image", "unit": "token", "cost_usd": 0.00024}],
-                       provider_name="Google AI Studio", provider_slug="google-ai-studio/global"),
-    ]
-    block = _cost_block(render_image_help("v/m", {"id": "v/m", "name": "M"}, endpoint_record=differing, dedicated_image_api=True))
-    assert "$120.00 per million tokens via Google Vertex" in block, block
-    assert "$240.00 per million tokens via Google AI Studio" in block
-
-
-def test_no_price_reaches_a_user_that_did_not_come_from_a_contract():
-    """Prose prices go stale in silence and cannot be corrected by a catalogue refresh.
-
-    Eight were hardcoded into the descriptions; one quoted a model's reference-image
-    charge as its generation charge, and another quoted its cheapest of three rates as
-    the price. Without a contract the panel now says nothing about money at all.
-    """
+    census = 0
     for model_id in IMAGE_HELP_BY_MODEL:
-        rendered = render_image_help(model_id, {"id": model_id, "name": model_id}, dedicated_image_api=True)
-        assert not re.search(r"\$\s*\d", rendered), f"{model_id} quotes a price of its own"
-
-    priced = render_image_help(
-        "recraft/recraft-v4-pro",
-        {"id": "recraft/recraft-v4-pro", "name": "Recraft V4 Pro"},
-        endpoint_record=_priced_record(
-            [{"billable": "output_image", "unit": "image", "cost_usd": 0.25}]
-        ),
-        dedicated_image_api=True,
-    )
-    assert "$0.25 per image" in priced, "with a contract, the published price is shown"
+        model = {"id": model_id, "name": model_id}
+        for record in (None, published):
+            rendered = render_image_help(
+                model_id, model, endpoint_record=record, dedicated_image_api=True
+            )
+            assert IMAGE_HELP_BY_MODEL[model_id]["display_name"] in rendered, (
+                f"{model_id} did not render its own card, so this proves nothing"
+            )
+            assert not re.search(r"\$\s*\d", rendered), f"{model_id} quotes a price"
+            census += 1
+    assert census == 2 * len(IMAGE_HELP_BY_MODEL), "the sweep skipped a curated model"
 
 
 @pytest.mark.parametrize(

@@ -14,8 +14,8 @@ permission-gated per user, with every call cost-attributed. Each model streams i
 thinking into the live panel as it works. And where hosted Fusion loses the entire run to one
 dropped stream, the built-in engine marks the failed panelist and completes the run.
 
-> **Cost:** Fusion bills the sum of every underlying call — roughly **4–5× a single completion**, and
-> it scales with panel size. Treat it as an expensive feature.
+> **Fan-out:** Fusion runs every underlying call — roughly **4–5× a single completion**, and
+> it scales with panel size. What a model charges is on OpenRouter's pricing page.
 
 ## The "OpenRouter Fusion" filter
 
@@ -67,7 +67,7 @@ the **valve** is the underlying `UserValves` field name).
 
 | Valve | UI title | Maps to | Notes |
 |-------|----------|---------|-------|
-| `FUSION_PRESET` | Preset | `preset` | `general-high` (frontier trio + frontier judge), `general-budget` (low-cost trio + frontier judge), or `general-fast` (low-cost trio + quicker judge). Empty = `general-high`. Explicit panel/judge below override a preset. |
+| `FUSION_PRESET` | Preset | `preset` | `general-high` (frontier trio + frontier judge), `general-budget` (faster trio + frontier judge), or `general-fast` (that same faster trio + quicker judge). Empty = `general-high`. Explicit panel/judge below override a preset. |
 | `FUSION_ANALYSIS_MODELS` | Panel models (comma-separated) | `analysis_models` | 1–8 model IDs answering in parallel. More than 8 is rejected with a clear error. Empty = preset/default panel. |
 | `FUSION_JUDGE_MODEL` | Judge model | `model` | Model that reviews the panel and writes the analysis. Empty = the preset's judge. |
 | `FUSION_MAX_TOOL_CALLS` | Max tool calls per model | `max_tool_calls` | Tool budget per inner model, 1–16 (`0` = default 8). On the OpenRouter engine this caps web-search/fetch steps; on the internal engine it is a hard per-model cap on individual tool invocations (knowledge bases, tool servers, web tools alike — excess calls are skipped) and also bounds tool rounds. |
@@ -129,8 +129,8 @@ strict five-key JSON analysis; if it fails validation twice the run degrades to
 no-analysis mode (panel answers stay usable, synthesis proceeds from the raw drafts).
 The final answer is written by the preset's judge model from the panel drafts plus the
 analysis. Preset rosters are engine constants: `general-high` = the self-updating
-`~…-latest` quality trio judged by an Opus-class model; `general-budget` = a low-cost
-trio with the same judge; `general-fast` = the same trio with a Sonnet-class judge.
+`~…-latest` frontier trio judged by an Opus-class model; `general-budget` = a faster
+trio with the same judge; `general-fast` = that same faster trio with a Sonnet-class judge.
 Note: `FORCE_*` provider-glob valves match model IDs literally, so tilde aliases only
 match patterns written with the leading `~`.
 

@@ -21,6 +21,7 @@ from aioresponses import aioresponses
 
 from open_webui_openrouter_pipe import EncryptedStr, Pipe
 from open_webui_openrouter_pipe.filters.video_filter_renderer import build_video_filter_spec
+from open_webui_openrouter_pipe.integrations.image_help import OPENROUTER_PRICING
 from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
 from open_webui_openrouter_pipe.integrations.video_help import (
     VIDEO_HELP_BY_MODEL,
@@ -322,34 +323,54 @@ def test_image_help_offers_every_value_its_own_panel_offers(fixture, model_id, d
     )
 
 
-_MONEY_WORDS = re.compile(
-    r"\b(pric\w*|cost\w*|cheap\w*|expensive|bill|bills|billed|billing|rate|rates|"
-    r"charge\w*|spend\w*|paid|pay|per[- ]second|per[- ]token|per[- ]image)\b",
-    re.I,
+_MONEY_WORDS = frozenset(
+    """
+    price prices pricing priced pricier priciest
+    cost costs costed costing costly costlier costliest
+    cheap cheaper cheapest cheaply expensive
+    bill bills billed billing charge charges charged fee fees rate rates
+    pay pays paid spend spends spent
+    surcharge surcharges discount discounts affordable premium economics
+    dollar dollars
+    """.split()
 )
+"""Every word these tables have used to say what something is worth in money.
 
-_CURRENCY = re.compile(r"\$\s*\d")
+What a model charges is OpenRouter's to publish and to change, so the property is not
+"no figure" or "no comparison" but "no money vocabulary at all". A word ban would be the
+wrong shape for open documentation, where these words carry other senses; this corpus is
+one table this project writes, so a word here belongs to the card that uses it.
 
-_MAGNITUDES = (
-    ("a percentage", re.compile(r"\d\s*%")),
-    ("a multiplier", re.compile(r"\d(?:\.\d+)?\s*[×x](?![\dx])")),
-    ("a magnitude in words", re.compile(
-        r"\b(half again|twice|double\w*|triple\w*|order of magnitude)\b", re.I
-    )),
-)
+Read off the corpus rather than invented: every entry was in these cards, plus the
+inflections a rewrite reaches for next. `free` is deliberately absent -- its thirteen
+uses are `free-text`, `classifier-free` and `free-running`, none about money -- and so
+are `per-second`, `per-token` and `per-image`, which are units. A unit needs one of the
+words above to say what is being measured, which is why banning the words catches
+"billed per second" and still lets a card write "24 frames per second".
+"""
+
+_CURRENCY = re.compile(r"[$£€¥]\s*\d")
 
 
-def _price_claims(text: str) -> list[str]:
-    """Every way a curated string can state money the catalogue is free to change."""
-    found: list[str] = []
-    currency = _CURRENCY.search(text)
-    if currency:
-        found.append(f"a currency amount ({currency.group(0)!r})")
-    if _MONEY_WORDS.search(text):
-        for name, pattern in _MAGNITUDES:
-            hit = pattern.search(text)
-            if hit:
-                found.append(f"{name} ({hit.group(0)!r})")
+def _money_vocabulary(text: str) -> list[str]:
+    """Every money word in one string, with the pointer at OpenRouter removed first.
+
+    That one shared sentence is the only place the corpus may name money, and it names no
+    figure, no direction and no comparison -- it hands the question to the company that
+    owns the answer. Stripping the sentence rather than exempting a word is what keeps
+    this a ban: a card carrying the pointer AND a price of its own still fails on the
+    price.
+
+    Split on letters so a hyphenated compound is read as its parts: `cost-optimised`,
+    `Token-priced` and `speed-and-cost-optimised` are how the removed positioning labels
+    were written, and a whole-token match would have walked past all three.
+    """
+    stripped = text.replace(OPENROUTER_PRICING, "")
+    found = sorted(
+        {word for word in re.findall(r"[A-Za-z]+", stripped.lower()) if word in _MONEY_WORDS}
+    )
+    if _CURRENCY.search(stripped):
+        found.append("a currency figure")
     return found
 
 
@@ -367,73 +388,147 @@ def _curated_strings(value: Any) -> Iterator[str]:
 @pytest.mark.parametrize(
     ("text", "flagged"),
     [
-        pytest.param("Billed at $0.12 per second of output.", True, id="currency"),
+        pytest.param("Billed at $0.12 per second of output.", True, id="a-currency-figure"),
         pytest.param(
-            "Chooses 720p or 1080p; 1080p costs roughly 50% more per second.",
+            "Selects 720p, 1080p, or 4K, which also sets the rate you are charged "
+            "(720p cheapest, 4K most expensive) and how long the render takes.",
             True,
-            id="percentage-of-a-cost",
+            id="a-direction-across-one-model-s-own-tiers",
         ),
         pytest.param(
-            "Same controls as Standard but at roughly 1.33× the per-second price.",
+            "Google DeepMind's speed-and-cost-optimised tier of Veo 3.1.",
             True,
-            id="multiplier-of-a-price",
+            id="a-positioning-label",
         ),
         pytest.param(
-            "Pricing is per-second of output and half again as much with audio on.",
+            "Duration is any integer 1-15 seconds and cost scales linearly per second.",
             True,
-            id="magnitude-in-words",
+            id="the-shape-of-the-billing",
         ),
         pytest.param(
-            "Audio doubles the bill for the same clip.", True, id="doubles-the-bill"
+            "Pricing is dynamic: the published per-image rate is a starting point.",
+            True,
+            id="a-billing-rule-with-no-figure-in-it",
         ),
         pytest.param(
-            "Pins exact pixel dimensions, 1920×1080 or 2048x2048; the rate is unchanged.",
+            "Same capability matrix as Standard, at a lower per-second rate than Pro.",
+            True,
+            id="a-comparison-against-another-listing",
+        ),
+        pytest.param(
+            "Thinking Mode improves coherence with weaker fast-motion physics than "
+            "Seedance 2.0.",
             False,
-            id="dimensions-are-not-a-multiplier",
+            id="a-trade-off-worded-without-the-money-metaphor",
+        ),
+        pytest.param(
+            "Free-text list of things to exclude, and classifier-free guidance strength.",
+            False,
+            id="free-is-not-a-money-word-here",
+        ),
+        pytest.param(
+            "Multi-shot 1080p at 24 frames per second with synchronised native audio.",
+            False,
+            id="a-unit-of-measure-is-not-a-price",
+        ),
+        pytest.param(
+            "Pins exact pixel dimensions, 1920x1080 or 2048x2048.",
+            False,
+            id="dimensions-are-not-figures-of-money",
         ),
         pytest.param(
             "~3x slower than V4 due to the higher resolution.",
             False,
             id="a-magnitude-about-something-other-than-money",
         ),
-        pytest.param(
-            "1080p is billed at a higher per-second rate, listed below.",
-            False,
-            id="a-direction-cannot-go-stale",
-        ),
-        pytest.param("Frame shape: 16:9, 9:16, or 21:9.", False, id="ratios-are-framings"),
+        pytest.param(OPENROUTER_PRICING, False, id="the-pointer-at-openrouter-itself"),
     ],
 )
-def test_the_price_claim_scanner_sees_every_form_it_is_meant_to(text, flagged):
-    """The guard it replaces matched `$` and a digit, and nothing else.
+def test_the_money_word_ban_reads_the_vocabulary_and_not_one_phrasing(text, flagged):
+    """Twelve rows split six-six, so a detector answering the same way every time fails.
 
-    Every relative claim walked past it: "1.33×", "~33% more", "half again as much with
-    audio on". Those are the same defect as the sixteen currency literals this changeset
-    removed -- correct on the day they were typed, wrong after a reprice, and silent
-    either way -- so the scanner has to see a multiplier, a percentage and a magnitude
-    written out in words. It stays quiet for a magnitude that is not about money, and for
-    a direction ("a higher rate"), which survives any reprice.
+    The guard this replaces was a hundred lines: a lexicon built from every display name
+    in both catalogues, a comparative arm, a superlative arm, a magnitude arm, and a
+    scope test deciding whether the other side of a comparison was a second listing or
+    one of the model's own tiers. All of that existed to allow "720p is the cheaper of
+    the two" while refusing "cheaper than Pro". The decision that a card states no price
+    of any kind removes the distinction the machinery was drawn to make, and with it the
+    machinery.
     """
-    assert bool(_price_claims(text)) is flagged, _price_claims(text)
+    assert bool(_money_vocabulary(text)) is flagged, _money_vocabulary(text)
 
 
-def test_no_curated_help_text_states_a_price_the_catalogue_can_move():
-    """The panel renders money from the contract; the curated tables must not.
+def _every_curated_surface() -> list[tuple[str, str]]:
+    """Both halves: the tables as written, and every card as a reader receives it.
 
-    Scanned over the tables rather than over one rendering of them: a knob description is
-    only rendered when the model publishes that capability, so the rendered-output guards
-    in the two generation test modules never see the gated ones at all.
+    A knob description is only rendered where the model publishes that capability, so a
+    sweep over renderings alone never reads the gated ones. A rendering carries text no
+    table holds -- the shared control descriptions, the four intent knobs, the passthrough
+    line -- so a sweep over the tables alone never reads those. Neither half covers the
+    other.
     """
-    from open_webui_openrouter_pipe.integrations.image_help import IMAGE_HELP_BY_MODEL
-    from open_webui_openrouter_pipe.integrations.video_help import VIDEO_HELP_BY_MODEL
+    from open_webui_openrouter_pipe.integrations.image_help import (
+        IMAGE_HELP_BY_MODEL,
+        render_image_help,
+    )
+    from open_webui_openrouter_pipe.integrations.video_help import _INTENT_KNOB_DESCRIPTIONS
 
-    offenders: list[str] = []
-    for table in (VIDEO_HELP_BY_MODEL, IMAGE_HELP_BY_MODEL):
+    surfaces: list[tuple[str, str]] = []
+    for label, table in (("image", IMAGE_HELP_BY_MODEL), ("video", VIDEO_HELP_BY_MODEL)):
         for model_id, data in table.items():
-            for text in _curated_strings(data):
-                for claim in _price_claims(text):
-                    offenders.append(f"{model_id}: {claim} in {text[:120]!r}")
+            surfaces.extend(
+                (f"{label} table {model_id}", text) for text in _curated_strings(data)
+            )
+    surfaces.extend(
+        ("intent table", text) for text in _curated_strings(_INTENT_KNOB_DESCRIPTIONS)
+    )
+    for model_id, model in VIDEO_BY_ID.items():
+        surfaces.append((f"video card {model_id}", render_video_help(model_id, model)))
+    for model_id in IMAGE_HELP_BY_MODEL:
+        name = model_id.replace("/", "_")
+        path = Path(__file__).resolve().parent / "fixtures" / (
+            f"openrouter_image_endpoints_{name}.json"
+        )
+        surfaces.append((
+            f"image card {model_id}",
+            render_image_help(
+                model_id,
+                {"id": model_id, "name": model_id},
+                endpoint_record=_image_records(model_id) if path.exists() else None,
+                dedicated_image_api=True,
+            ),
+        ))
+    return surfaces
 
+
+def test_no_curated_help_string_names_money_at_all():
+    """No card says what a thing costs, how it is billed, or how its price compares.
+
+    Two passes before this one took out the currency figures and then the comparisons
+    against other listings, and each time what was left still told a reader about money:
+    "720p cheapest, 4K most expensive", "Cost-optimized Gemini 3.1", "cost scales
+    linearly per second". A direction between one model's own tiers survives a reprice,
+    which is why the earlier guard allowed it -- but surviving a reprice was never the
+    point. Pricing is OpenRouter's, and a card that positions itself on price is doing
+    OpenRouter's job with none of its information.
+    """
+    surfaces = _every_curated_surface()
+    assert len(surfaces) > 400, f"only {len(surfaces)} surfaces; the sweep went hollow"
+    assert any(
+        card.startswith("### ") or card.startswith("# ")
+        for where, card in surfaces
+        if where.endswith("card") or " card " in where
+    ), "no card rendered, so half this sweep is reading nothing"
+    assert any(OPENROUTER_PRICING in text for _where, text in surfaces), (
+        "nothing uses the pointer, so the one exemption above is never exercised and a "
+        "card could smuggle a price through it unnoticed"
+    )
+
+    offenders = [
+        f"{where}: {_money_vocabulary(text)} in {text[:140]!r}"
+        for where, text in surfaces
+        if _money_vocabulary(text)
+    ]
     assert not offenders, "\n".join(offenders)
 
 

@@ -139,7 +139,7 @@ class Filter:
         )
         SUBAGENT: bool = Field(
             default=False,
-            description="Enable the OpenRouter subagent tool (delegate tasks to a cheaper worker model).",
+            description="Enable the OpenRouter subagent tool (delegate tasks to a worker model an admin chooses).",
         )
         SEARCH_MODELS: bool = Field(
             default=False,

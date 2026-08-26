@@ -854,7 +854,7 @@ def _render_purpose_built_fields(spec: VideoFilterSpec) -> list[str]:
                 f"VIDEO_RESOLUTION: Literal[{literals}] = Field(\n"
                 '            default="",\n'
                 '            title="Resolution",\n'
-                '            description="How much detail the clip is rendered at, which usually drives what it costs. Blank lets the model pick.",\n'
+                '            description="How much detail the clip is rendered at. Blank lets the model pick.",\n'
                 "        )"
             )
         )

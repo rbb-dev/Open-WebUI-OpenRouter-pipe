@@ -608,7 +608,7 @@ class FilterManager:
             user_valves_fields.append(
                 '        SUBAGENT: bool = Field(\n'
                 '            default=False,\n'
-                '            description="Enable the OpenRouter subagent tool (delegate tasks to a cheaper worker model).",\n'
+                '            description="Enable the OpenRouter subagent tool (delegate tasks to a worker model an admin chooses).",\n'
                 '        )'
             )
         if enable_search_models:
