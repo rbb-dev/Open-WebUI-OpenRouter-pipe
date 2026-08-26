@@ -81,14 +81,16 @@ jobs:
           PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || git rev-list --max-parents=0 HEAD)
 
           # Generate commit list with links
-          NOTES=$(git log --pretty=format:"- [\`%h\`](https://github.com/${{ github.repository }}/commit/%H) %s" ${PREV_TAG}..HEAD)
+          NOTES=$(git log --pretty=format:"- [\`%h\`](https://github.com/${{ github.repository }}/commit/%H) %s" "${PREV_TAG}..HEAD")
 
           # Handle multi-line output for GitHub Actions
-          echo "notes<<EOF" >> $GITHUB_OUTPUT
-          echo "## Changes" >> $GITHUB_OUTPUT
-          echo "" >> $GITHUB_OUTPUT
-          echo "$NOTES" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          {
+            echo "notes<<EOF"
+            echo "## Changes"
+            echo ""
+            echo "$NOTES"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       # Create versioned release on tag push (v2.0.3, v2.1.0, etc.)
       - name: Create versioned release
