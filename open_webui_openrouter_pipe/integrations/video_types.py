@@ -14,6 +14,10 @@ class VideoGenerationError(RuntimeError):
     pass
 
 
+class VideoGenerationStalled(VideoGenerationError):
+    pass
+
+
 @dataclass(slots=True)
 class VideoGenerationResult:
 

@@ -1551,6 +1551,13 @@ At end-of-stream, OWUI's stream finalizer overwrites the message with
 the final success/failure content (a full replacement, not an append),
 so the pending marker is cleanly replaced — no flash, no duplication.
 
+The marker is keyed on the assistant `message_id`, so only an action that
+re-invokes the pipe *under the same message id* reaches the resume path.
+Open WebUI's **Continue Response** does (it re-sends the existing
+assistant message id); **Regenerate** does not — it mints a fresh
+`uuid4` as a sibling under the same user message, so it starts a new,
+separately billed job.
+
 Every time `pipe()` is invoked for a video chat:
 
 1. The adapter looks up the assistant message and scans for an existing
@@ -1589,6 +1596,10 @@ What does NOT survive:
   provider-specific window (typically days). Resuming a too-old job
   returns an `expired` terminal status which the adapter renders as a
   visible failure block.
+
+A job that goes silent past `VIDEO_MAX_POLL_TIME_SECONDS` is *not* a
+failure: the adapter persists pending content carrying the same marker,
+so Continue Response on that message resumes the identical job.
 
 `Pipe.close()` cancels in-process video lifecycle tasks during pipe
 restart or OWUI shutdown. OpenRouter does not expose a cancel endpoint
@@ -1638,7 +1649,7 @@ Functions → OpenRouter pipe → Valves.
 | `VIDEO_POLL_INTERVAL_SECONDS` | `5.0` | 1.0–60.0 | Base polling interval. |
 | `VIDEO_POLL_BACKOFF_FACTOR` | `1.2` | 1.0–4.0 | Multiplier applied to the interval after each non-terminal poll. |
 | `VIDEO_POLL_INTERVAL_MAX_SECONDS` | `20.0` | 1.0–120.0 | Cap on the polling interval after backoff. |
-| `VIDEO_MAX_POLL_TIME_SECONDS` | `600` | 30–7200 | Max wall-clock time before failing the lifecycle with a timeout error. |
+| `VIDEO_MAX_POLL_TIME_SECONDS` | `1800` | 30–7200 | Max time a job may go silent — reset by every status check that reports the job still running. On expiry the card is persisted as still running, not failed. Floored at `VIDEO_POLL_INTERVAL_MAX_SECONDS` + the HTTP read timeout. |
 | `VIDEO_STATUS_POLL_MAX_ERRORS` | `5` | 1–25 | Tolerable consecutive transient poll errors before failing. |
 | `REMOTE_VIDEO_MAX_SIZE_MB` | `500` | 1–2048 | Max downloaded video size; oversized aborts streaming. Bounds the generated video only, never an attachment. |
 | `VIDEO_DOWNLOAD_CHUNK_SIZE` | `1048576` | 65536–8388608 | Chunk size in bytes for streaming download. |
@@ -1654,8 +1665,9 @@ Tuning hints:
   `MAX_CONCURRENT_VIDEO_GENS` (process-wide cap) but keep
   `MAX_CONCURRENT_VIDEO_GENS_PER_USER` low (per-user fairness). Watch
   memory pressure — each lifecycle pins a temp file ~50 MB to ~500 MB.
-- **Long jobs** (Sora 20s clips): bump `VIDEO_MAX_POLL_TIME_SECONDS` to
-  e.g. `1200` (20 min) so jobs don't time out before completion.
+- **Long jobs** (Sora 20s clips): no change needed.
+  `VIDEO_MAX_POLL_TIME_SECONDS` bounds silence, not duration, so a render
+  that keeps reporting progress runs to completion at any length.
 - **Slow networks** to OpenRouter: bump `VIDEO_POLL_INTERVAL_MAX_SECONDS`
   to reduce poll storm.
 - **Smaller storage budgets**: lower `REMOTE_VIDEO_MAX_SIZE_MB` to

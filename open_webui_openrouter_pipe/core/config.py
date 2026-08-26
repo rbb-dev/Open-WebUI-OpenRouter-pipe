@@ -1872,10 +1872,21 @@ class Valves(BaseModel):
         description="Maximum interval between video generation status polls.",
     )
     VIDEO_MAX_POLL_TIME_SECONDS: int = Field(
-        default=600,
+        default=1800,
         ge=30,
         le=7200,
-        description="Maximum wall-clock time to wait for a video generation job before persisting a timeout error.",
+        description=(
+            "How long a video generation job may go without a word from OpenRouter before "
+            "this stops watching it. The clock restarts every time a status check comes "
+            "back saying the job is still running, so a slow render is never cut off for "
+            "taking a long time \u2014 only one that has gone quiet is. When it does run "
+            "out the chat keeps the job's card and says the render is still going at "
+            "OpenRouter: nothing is cancelled and OpenRouter still bills the job, and the "
+            "person can press Continue Response on that message to pick it back up. The "
+            "wait is never allowed to be shorter than a single status check can take, so "
+            "anything below `Maximum poll interval` plus the HTTP read timeout is raised "
+            "to that."
+        ),
     )
     VIDEO_STATUS_POLL_MAX_ERRORS: int = Field(
         default=5,

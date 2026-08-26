@@ -87,7 +87,12 @@ from .video_intent import (
     resolve_intent_user_setting,
     should_emit_confirmation_footer,
 )
-from .video_types import DownloadedVideo, VideoGenerationError, VideoLifecycleResult
+from .video_types import (
+    DownloadedVideo,
+    VideoGenerationError,
+    VideoGenerationStalled,
+    VideoLifecycleResult,
+)
 
 _warned_provider_slug_guess: set[str] = set()
 
@@ -226,6 +231,41 @@ _COULD_NOT_SAY_IT_FIRST = (
     "read it, and this chat could not be told that before it happened. Nothing was "
     "uploaded. Reload the chat and send it again."
 )
+
+_VIDEO_IS_STILL_RUNNING = (
+    "OpenRouter is still working on this video. Nothing came back from the job for "
+    "{waited}, so this message stopped waiting for it. The job was not cancelled and is "
+    "still billed."
+)
+
+_VIDEO_CAN_BE_PICKED_BACK_UP = (
+    " Press Continue Response on this message to pick this same job back up; Regenerate "
+    "starts a fresh job under a new message instead."
+)
+
+_VIDEO_IS_STILL_RUNNING_STATUS = "Video generation is still running at OpenRouter."
+
+_VIDEO_GENERATION_FAILED_STATUS = "No video was produced."
+
+
+def _spoken_duration(seconds: float) -> str:
+    if seconds < 120:
+        return f"{round(seconds)} seconds"
+    return f"{round(seconds / 60)} minutes"
+
+
+def _video_stall_window(valves: Any) -> float:
+    total = getattr(valves, "HTTP_TOTAL_TIMEOUT_SECONDS", None)
+    one_request = float(total) if total else float(getattr(valves, "HTTP_SOCK_READ_SECONDS", 0) or 0)
+    return max(
+        float(valves.VIDEO_MAX_POLL_TIME_SECONDS),
+        float(valves.VIDEO_POLL_INTERVAL_MAX_SECONDS) + one_request,
+    )
+
+
+def _video_still_running_note(window: float) -> str:
+    return _VIDEO_IS_STILL_RUNNING.format(waited=_spoken_duration(window))
+
 
 _FILE_HOST_RECORD = (
     "> **Your {kind} {was} uploaded to {host}.** Anyone holding the link can open "
@@ -744,7 +784,7 @@ class VideoGenerationAdapter:
             content = self._build_failure_content(job_id=job_id, model_id=api_model_id, reason=reason)
             if disclosure_block:
                 content = disclosure_block + "\n" + content
-            await self._emit_status(event_emitter, "Video generation failed.", done=True)
+            await self._emit_status(event_emitter, _VIDEO_GENERATION_FAILED_STATUS, done=True)
             await self._emit_completion(event_emitter, content)
             return content
         finally:
@@ -1067,6 +1107,38 @@ class VideoGenerationAdapter:
                 )
             )
             raise
+        except VideoGenerationStalled as exc:
+            self.logger.warning("Video job %s outlasted its status window: %s", job_id, exc)
+            elapsed = max(0.0, time.monotonic() - started_at)
+            note = str(exc)
+            if is_linkable_chat(chat_id):
+                note += _VIDEO_CAN_BE_PICKED_BACK_UP
+            content = self._build_pending_content(
+                job_id=job_id, model_id=api_model_id, note=note
+            )
+            if disclosure_block:
+                content = disclosure_block + "\n" + content
+            description = _VIDEO_IS_STILL_RUNNING_STATUS
+            await self._emit_status(event_emitter, description, done=True)
+            await self._record_what_it_cost(
+                usage=usage,
+                billing=billing,
+                valves=valves,
+                user_id=user_id,
+                api_model_id=api_model_id,
+                user_obj=user_obj,
+            )
+            return VideoLifecycleResult(
+                content=content,
+                status_description=description,
+                usage=usage,
+                job_id=job_id,
+                file_id=file_id,
+                failed=failed,
+                elapsed=elapsed,
+                model_id=api_model_id,
+                output_mime=output_mime,
+            )
         except Exception as exc:
             self.logger.exception("Video lifecycle failed (job_id=%s)", job_id)
             failed = True
@@ -1075,7 +1147,7 @@ class VideoGenerationAdapter:
             content = self._build_failure_content(job_id=job_id, model_id=api_model_id, reason=reason)
             if disclosure_block:
                 content = disclosure_block + "\n" + content
-            description = f"Video generation failed: {reason}"
+            description = _VIDEO_GENERATION_FAILED_STATUS
             await self._emit_status(event_emitter, description, done=True)
             await self._record_what_it_cost(
                 usage=usage,
@@ -1158,7 +1230,8 @@ class VideoGenerationAdapter:
         interval = float(valves.VIDEO_POLL_INTERVAL_SECONDS)
         max_interval = float(valves.VIDEO_POLL_INTERVAL_MAX_SECONDS)
         backoff = float(valves.VIDEO_POLL_BACKOFF_FACTOR)
-        deadline = time.monotonic() + int(valves.VIDEO_MAX_POLL_TIME_SECONDS)
+        stall_window = _video_stall_window(valves)
+        deadline = time.monotonic() + stall_window
         consecutive_errors = 0
         last_emit_status = ""
         last_emit_progress = -1
@@ -1180,7 +1253,7 @@ class VideoGenerationAdapter:
         polling_url = ""
         while True:
             if time.monotonic() > deadline:
-                raise VideoGenerationError("Video generation timed out before OpenRouter reported completion.")
+                raise VideoGenerationStalled(_video_still_running_note(stall_window))
             try:
                 payload = await client.status(job_id, polling_url=polling_url)
                 consecutive_errors = 0
@@ -1198,6 +1271,7 @@ class VideoGenerationAdapter:
                 if status in self.TERMINAL_SUCCESS:
                     await self._emit_status(event_emitter, "Video generation completed.", done=False, progress=100)
                 return payload
+            deadline = time.monotonic() + stall_window
             progress = 5 if status == "pending" else 50
             await _maybe_emit(status, progress)
             await asyncio.sleep(min(interval, max_interval))
@@ -2693,11 +2767,13 @@ class VideoGenerationAdapter:
             markers += "\n"
         return f"{markers}### Video generation failed\n\n{reason}"
 
-    def _build_pending_content(self, *, job_id: str, model_id: str) -> str:
+    def _build_pending_content(
+        self, *, job_id: str, model_id: str, note: str = "Video generation is running..."
+    ) -> str:
         return (
             f"{_serialize_kind_marker(self.JOB_MARKER_KIND, job_id)}\n"
             f"{_serialize_kind_marker(self.MODEL_MARKER_KIND, model_id)}\n\n"
-            "Video generation is running..."
+            f"{note}"
         )
 
     def _extract_video_job_marker(self, content: str) -> str:

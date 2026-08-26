@@ -37,6 +37,7 @@ from open_webui_openrouter_pipe.integrations.video_help import VIDEO_HELP_BY_MOD
 from open_webui_openrouter_pipe.integrations.video_types import (
     DownloadedVideo,
     VideoGenerationError,
+    VideoGenerationStalled,
     VideoLifecycleResult,
 )
 from open_webui_openrouter_pipe.models.registry import ModelFamily, OpenRouterModelRegistry
@@ -2842,7 +2843,7 @@ def test_video_defaults_match_plan():
     assert valves.MAX_CONCURRENT_VIDEO_GENS == 2
     assert valves.MAX_CONCURRENT_VIDEO_GENS_PER_USER == 2
     assert valves.REMOTE_VIDEO_MAX_SIZE_MB == 500
-    assert valves.VIDEO_MAX_POLL_TIME_SECONDS == 600
+    assert valves.VIDEO_MAX_POLL_TIME_SECONDS == 1800
     assert valves.VIDEO_FRAME_TOTAL_MAX_BYTES == 50 * 1024 * 1024
 
 
@@ -6874,4 +6875,489 @@ async def test_the_relay_records_its_verdict_where_the_link_is_minted(link, fami
 
     assert vetted == {link: True}, (
         f"the minted link never reached the verdict record: {vetted!r} for refs {refs!r}"
+    )
+
+
+class _SimulatedClock:
+    """A monotonic clock the poll loop's own sleeps advance.
+
+    Simulated rather than real because the windows under test are minutes long. It only
+    ever moves forward, so nothing that reads `time.monotonic` while it is installed sees
+    time run backwards.
+    """
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.now = start
+
+    def monotonic(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.now += float(seconds)
+
+
+def _install_simulated_clock(monkeypatch) -> _SimulatedClock:
+    import open_webui_openrouter_pipe.integrations.video as video_module
+
+    clock = _SimulatedClock()
+    monkeypatch.setattr(video_module.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(video_module.asyncio, "sleep", clock.sleep)
+    return clock
+
+
+def _sentences(text: str) -> list[str]:
+    """The statements a card actually makes, as the card itself wrote them."""
+    out: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip().lstrip("#").strip()
+        if not stripped or stripped.startswith("[openrouter:"):
+            continue
+        for part in re.split(r"(?<=[.!?])\s+", stripped):
+            candidate = part.strip()
+            if len(candidate) >= 15:
+                out.append(candidate)
+    return out
+
+
+@pytest.mark.parametrize(
+    ("window_valve", "poll_interval", "polls"),
+    [(30, 1.0, 90), (600, 20.0, 90)],
+)
+@pytest.mark.asyncio
+async def test_a_job_that_keeps_reporting_progress_outlives_the_silence_window(
+    monkeypatch, window_valve, poll_interval, polls
+):
+    """A healthy job is not killed by a clock, however long it takes.
+
+    The window is a stall timer: it restarts on every status check that answers with a
+    non-terminal status. The two rows run for three times their own configured window,
+    which a single deadline fixed before the loop could not survive.
+    """
+    import open_webui_openrouter_pipe.integrations.video as video_module
+
+    pipe = Pipe()
+    adapter = VideoGenerationAdapter(pipe=pipe, logger=_test_logger())
+    clock = _install_simulated_clock(monkeypatch)
+    pipe.valves.VIDEO_INITIAL_POLL_DELAY_SECONDS = 0
+    pipe.valves.VIDEO_MAX_POLL_TIME_SECONDS = window_valve
+    pipe.valves.VIDEO_POLL_INTERVAL_SECONDS = poll_interval
+    pipe.valves.VIDEO_POLL_INTERVAL_MAX_SECONDS = poll_interval
+    pipe.valves.VIDEO_POLL_BACKOFF_FACTOR = 1.0
+    pipe.valves.HTTP_SOCK_READ_SECONDS = 1
+    window = video_module._video_stall_window(pipe.valves)
+
+    seen: list[float] = []
+
+    class FakeClient:
+        async def status(self, _job_id, polling_url=None):
+            seen.append(clock.monotonic())
+            if len(seen) >= polls:
+                return {"status": "completed"}
+            return {"status": "processing"}
+
+    started = clock.monotonic()
+    payload = await adapter._poll_until_terminal(
+        cast(Any, FakeClient()), "job-1", pipe.valves, None
+    )
+    ran_for = clock.monotonic() - started
+
+    assert payload["status"] == "completed"
+    assert len(seen) == polls, (
+        f"the loop stopped after {len(seen)} of {polls} polls; a job that kept answering "
+        "was abandoned"
+    )
+    assert ran_for > window * 2, (
+        f"the job only ran {ran_for}s against a {window}s window, so surviving it proves "
+        "nothing"
+    )
+
+
+@pytest.mark.parametrize("window_valve", [30, 600])
+@pytest.mark.asyncio
+async def test_a_job_that_stops_answering_ends_the_poll_loop_as_a_stall(
+    monkeypatch, window_valve
+):
+    """Silence past the window raises the stall, and says how long the silence was.
+
+    The error budget is set far above the number of attempts this makes, so the guard
+    that fires can only be the stall timer. The message is compared against the note the
+    production helpers render from these same valves, over two windows -- a fixed string
+    cannot satisfy both.
+    """
+    import open_webui_openrouter_pipe.integrations.video as video_module
+
+    pipe = Pipe()
+    adapter = VideoGenerationAdapter(pipe=pipe, logger=_test_logger())
+    clock = _install_simulated_clock(monkeypatch)
+    pipe.valves.VIDEO_INITIAL_POLL_DELAY_SECONDS = 0
+    pipe.valves.VIDEO_MAX_POLL_TIME_SECONDS = window_valve
+    pipe.valves.VIDEO_POLL_INTERVAL_SECONDS = 1.0
+    pipe.valves.VIDEO_POLL_INTERVAL_MAX_SECONDS = 1.0
+    pipe.valves.VIDEO_STATUS_POLL_MAX_ERRORS = 25
+    pipe.valves.HTTP_SOCK_READ_SECONDS = 1
+    window = video_module._video_stall_window(pipe.valves)
+
+    attempts: list[int] = []
+
+    class SilentClient:
+        async def status(self, _job_id, polling_url=None):
+            attempts.append(len(attempts))
+            clock.now += window + 1
+            raise TimeoutError("the status endpoint never answered")
+
+    with pytest.raises(VideoGenerationStalled) as stalled:
+        await adapter._poll_until_terminal(
+            cast(Any, SilentClient()), "job-1", pipe.valves, None
+        )
+
+    assert str(stalled.value) == video_module._video_still_running_note(window)
+    assert len(attempts) < int(pipe.valves.VIDEO_STATUS_POLL_MAX_ERRORS), (
+        f"{len(attempts)} attempts against an error budget of "
+        f"{pipe.valves.VIDEO_STATUS_POLL_MAX_ERRORS} -- the error guard ended this, not "
+        "the stall timer"
+    )
+
+
+@pytest.mark.parametrize(
+    ("max_interval", "sock_read"), [(120.0, 300), (20.0, 600)]
+)
+def test_the_silence_window_outlasts_a_single_status_check(max_interval, sock_read):
+    """The floor: the shortest legal window is still longer than one poll can take.
+
+    `VIDEO_MAX_POLL_TIME_SECONDS` accepts 30 while a poll may legally sleep 120 and then
+    wait out a 300s read timeout, so the configured number alone can be shorter than the
+    interval between two consecutive answers -- and a healthy job would die on the clock.
+    """
+    import open_webui_openrouter_pipe.integrations.video as video_module
+
+    valves = Pipe.Valves()
+    valves.VIDEO_MAX_POLL_TIME_SECONDS = 30
+    valves.VIDEO_POLL_INTERVAL_MAX_SECONDS = max_interval
+    valves.HTTP_SOCK_READ_SECONDS = sock_read
+    valves.HTTP_TOTAL_TIMEOUT_SECONDS = None
+
+    assert video_module._video_stall_window(valves) >= max_interval + sock_read
+
+
+def test_the_default_silence_window_does_not_pre_empt_the_error_budget():
+    """Two guards, and the slower one must not eat the faster one's allowance.
+
+    `VIDEO_STATUS_POLL_MAX_ERRORS` is the guard for "the API is not answering". A window
+    shorter than that budget's own worst case would fire first and silently redefine the
+    error tolerance as "however many errors fit in the window".
+    """
+    valves = Pipe.Valves()
+    worst_case = float(valves.VIDEO_STATUS_POLL_MAX_ERRORS) * (
+        float(valves.VIDEO_POLL_INTERVAL_MAX_SECONDS) + float(valves.HTTP_SOCK_READ_SECONDS)
+    )
+
+    assert float(valves.VIDEO_MAX_POLL_TIME_SECONDS) >= worst_case, (
+        f"the default window of {valves.VIDEO_MAX_POLL_TIME_SECONDS}s fires before the "
+        f"error budget's {worst_case}s worst case"
+    )
+
+
+async def _run_stalling_lifecycle(
+    monkeypatch, pipe, adapter, *, window_valve=600, chat_id="chat-stall"
+):
+    import open_webui_openrouter_pipe.integrations.video as video_module
+
+    clock = _install_simulated_clock(monkeypatch)
+    pipe.valves.VIDEO_INITIAL_POLL_DELAY_SECONDS = 0
+    pipe.valves.VIDEO_MAX_POLL_TIME_SECONDS = window_valve
+    pipe.valves.VIDEO_POLL_INTERVAL_SECONDS = 1.0
+    pipe.valves.VIDEO_POLL_INTERVAL_MAX_SECONDS = 1.0
+    pipe.valves.VIDEO_STATUS_POLL_MAX_ERRORS = 25
+    pipe.valves.HTTP_SOCK_READ_SECONDS = 1
+    window = video_module._video_stall_window(pipe.valves)
+
+    class SilentClient(OpenRouterVideoClient):
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def status(self, job_id, polling_url=None):
+            clock.now += window + 1
+            raise TimeoutError("the status endpoint never answered")
+
+        def bearer_header(self):
+            return {"Authorization": "Bearer test"}
+
+    monkeypatch.setattr(video_module, "OpenRouterVideoClient", SilentClient)
+    monkeypatch.setattr(pipe, "_create_http_session", lambda *_a, **_k: _FakeSession([]))
+
+    semaphore = asyncio.Semaphore(1)
+    await semaphore.acquire()
+    message_lock = asyncio.Lock()
+    await message_lock.acquire()
+    events: list[dict[str, Any]] = []
+
+    async def emitter(event):
+        events.append(event)
+
+    result = await adapter._run_lifecycle_after_submit(
+        key=(chat_id, "msg-stall"),
+        job_id="job-stall",
+        api_model_id="openai/sora-2-pro",
+        normalized_model_id="openai.sora-2-pro",
+        valves=pipe.valves,
+        event_emitter=emitter,
+        user={"id": "user-1"},
+        user_obj={"id": "user-1"},
+        chat_id=chat_id,
+        message_id="msg-stall",
+        request=None,
+        user_id="user-1",
+        global_semaphore=semaphore,
+        message_lock=message_lock,
+        started_at=clock.monotonic(),
+    )
+    return result, events, window
+
+
+@pytest.mark.asyncio
+async def test_a_stall_is_persisted_as_a_running_job_not_as_a_failure(monkeypatch, caplog):
+    """The card the user keeps must be the one the resume path can act on.
+
+    A failure card ends the job: it carries the "failed" heading, which the resume path
+    reads as final and refuses to re-poll. A pending card carries the same job marker and
+    is not final, so Continue Response on that message picks the identical job back up.
+    """
+    import open_webui_openrouter_pipe.integrations.video as video_module
+
+    pipe = Pipe()
+    pipe.valves.API_KEY = EncryptedStr("test")
+    adapter = VideoGenerationAdapter(pipe=pipe, logger=_test_logger())
+
+    with caplog.at_level(logging.DEBUG, logger="tests.video_generation"):
+        result, _events, window = await _run_stalling_lifecycle(monkeypatch, pipe, adapter)
+
+    assert result.content == adapter._build_pending_content(
+        job_id="job-stall",
+        model_id="openai/sora-2-pro",
+        note=video_module._video_still_running_note(window)
+        + video_module._VIDEO_CAN_BE_PICKED_BACK_UP,
+    )
+    assert adapter._extract_video_job_marker(result.content) == "job-stall"
+    assert adapter._looks_like_final_video_content(result.content) is False, (
+        "a stalled job that reads as final can never be resumed"
+    )
+    assert result.failed is False
+
+    ours = [r for r in caplog.records if r.name == "tests.video_generation"]
+    assert [r.levelno for r in ours] == [logging.WARNING], (
+        f"a stall is an expected outcome, not a crash: {[(r.levelname, r.getMessage()) for r in ours]}"
+    )
+    assert ours[0].exc_info is None, "the stall record carried a stack trace"
+    assert "job-stall" in ours[0].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_the_stall_states_itself_once_across_the_status_and_the_card(monkeypatch):
+    """The status line vanishes and the card persists, so the card carries the statement.
+
+    Every statement the card makes is counted across both surfaces together; restating
+    any of them in the status line makes one of them appear twice.
+    """
+    pipe = Pipe()
+    pipe.valves.API_KEY = EncryptedStr("test")
+    adapter = VideoGenerationAdapter(pipe=pipe, logger=_test_logger())
+
+    result, events, _window = await _run_stalling_lifecycle(monkeypatch, pipe, adapter)
+
+    emitted = [
+        str(event.get("data", {}).get("description", ""))
+        for event in events
+        if event.get("type") == "status"
+    ]
+    assert result.status_description in emitted
+    surfaces = "\n".join([*emitted, result.content])
+    said = _sentences(result.content)
+    assert said, "the card said nothing, so counting its statements proves nothing"
+    twice = [line for line in said if surfaces.count(line) != 1]
+    assert not twice, f"these are stated more than once across status and card: {twice}"
+
+
+@pytest.mark.parametrize("terminal", ["failed", "expired"])
+@pytest.mark.asyncio
+async def test_a_terminal_failure_still_produces_a_failure_card(
+    monkeypatch, caplog, terminal
+):
+    """The regression this change could plausibly cause: a real failure going quiet.
+
+    `expired` is OpenRouter terminating its own stuck job, which is exactly the outcome
+    the stall branch must NOT absorb.
+    """
+    import open_webui_openrouter_pipe.integrations.video as video_module
+
+    pipe = Pipe()
+    pipe.valves.API_KEY = EncryptedStr("test")
+    pipe.valves.VIDEO_INITIAL_POLL_DELAY_SECONDS = 0
+    pipe.valves.VIDEO_POLL_INTERVAL_SECONDS = 0
+    pipe.valves.VIDEO_POLL_INTERVAL_MAX_SECONDS = 0
+    adapter = VideoGenerationAdapter(pipe=pipe, logger=_test_logger())
+    payload = {"status": terminal, "error": f"the provider said {terminal}"}
+
+    class TerminalClient(OpenRouterVideoClient):
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def status(self, job_id, polling_url=None):
+            return dict(payload)
+
+        def bearer_header(self):
+            return {"Authorization": "Bearer test"}
+
+    monkeypatch.setattr(video_module, "OpenRouterVideoClient", TerminalClient)
+    monkeypatch.setattr(pipe, "_create_http_session", lambda *_a, **_k: _FakeSession([]))
+
+    semaphore = asyncio.Semaphore(1)
+    await semaphore.acquire()
+    message_lock = asyncio.Lock()
+    await message_lock.acquire()
+    events: list[dict[str, Any]] = []
+
+    async def emitter(event):
+        events.append(event)
+
+    with caplog.at_level(logging.DEBUG, logger="tests.video_generation"):
+        result = await adapter._run_lifecycle_after_submit(
+            key=("chat-term", "msg-term"),
+            job_id="job-term",
+            api_model_id="openai/sora-2-pro",
+            normalized_model_id="openai.sora-2-pro",
+            valves=pipe.valves,
+            event_emitter=emitter,
+            user={"id": "user-1"},
+            user_obj={"id": "user-1"},
+            chat_id="chat-term",
+            message_id="msg-term",
+            request=None,
+            user_id="user-1",
+            global_semaphore=semaphore,
+            message_lock=message_lock,
+            started_at=time.monotonic(),
+        )
+
+    reason = adapter._status_failure_reason(dict(payload), terminal)
+    assert result.content == adapter._build_failure_content(
+        job_id="job-term", model_id="openai/sora-2-pro", reason=reason
+    )
+    assert result.failed is True
+    assert adapter._looks_like_final_video_content(result.content) is True
+
+    ours = [r for r in caplog.records if r.name == "tests.video_generation"]
+    assert [r.levelno for r in ours] == [logging.ERROR], (
+        f"a real failure still owes one exception record: {[r.levelname for r in ours]}"
+    )
+    assert ours[0].exc_info is not None
+
+    emitted = [
+        str(event.get("data", {}).get("description", ""))
+        for event in events
+        if event.get("type") == "status"
+    ]
+    surfaces = "\n".join([*emitted, result.content])
+    twice = [line for line in _sentences(result.content) if surfaces.count(line) != 1]
+    assert not twice, f"these are stated more than once across status and card: {twice}"
+
+
+@pytest.mark.parametrize("budget", [2, 7])
+@pytest.mark.asyncio
+async def test_consecutive_poll_errors_still_give_up_at_the_configured_maximum(
+    monkeypatch, budget
+):
+    """The other regression: the stall branch must not swallow the error budget.
+
+    Two budgets, because a loop that gave up after a fixed number of attempts would
+    satisfy either one alone. The clock never moves, so the stall timer cannot be what
+    ends this.
+    """
+    pipe = Pipe()
+    adapter = VideoGenerationAdapter(pipe=pipe, logger=_test_logger())
+    _install_simulated_clock(monkeypatch)
+    pipe.valves.VIDEO_INITIAL_POLL_DELAY_SECONDS = 0
+    pipe.valves.VIDEO_POLL_INTERVAL_SECONDS = 0
+    pipe.valves.VIDEO_POLL_INTERVAL_MAX_SECONDS = 0
+    pipe.valves.VIDEO_STATUS_POLL_MAX_ERRORS = budget
+
+    attempts: list[int] = []
+
+    class BrokenClient:
+        async def status(self, _job_id, polling_url=None):
+            attempts.append(len(attempts))
+            raise OSError("connection reset")
+
+    with pytest.raises(OSError):
+        await adapter._poll_until_terminal(
+            cast(Any, BrokenClient()), "job-1", pipe.valves, None
+        )
+
+    assert len(attempts) == budget
+
+
+def test_the_stall_is_its_own_error_so_the_lifecycle_can_tell_it_apart():
+    """It must still be catchable as the base error, or every existing handler changes."""
+    assert issubclass(VideoGenerationStalled, VideoGenerationError)
+    assert VideoGenerationStalled is not VideoGenerationError
+
+
+@pytest.mark.parametrize("configured", [900, 3600])
+def test_the_silence_window_is_the_one_the_operator_configured(configured):
+    """Both rows sit above the floor, so the configured number is what must come back.
+
+    Two of them: a window that ignored the valve and answered with a constant would
+    satisfy either row on its own.
+    """
+    import open_webui_openrouter_pipe.integrations.video as video_module
+
+    valves = Pipe.Valves()
+    valves.VIDEO_MAX_POLL_TIME_SECONDS = configured
+    valves.VIDEO_POLL_INTERVAL_MAX_SECONDS = 20.0
+    valves.HTTP_SOCK_READ_SECONDS = 300
+    valves.HTTP_TOTAL_TIMEOUT_SECONDS = None
+
+    assert video_module._video_stall_window(valves) == float(configured)
+
+
+def test_the_still_running_note_reports_the_window_it_was_built_from():
+    """Two windows, two notes. A note that named a fixed duration would collapse them."""
+    import open_webui_openrouter_pipe.integrations.video as video_module
+
+    brief = video_module._video_still_running_note(30.0)
+    patient = video_module._video_still_running_note(1800.0)
+
+    assert brief != patient
+    assert video_module._spoken_duration(30.0) in brief
+    assert video_module._spoken_duration(1800.0) in patient
+
+
+@pytest.mark.parametrize("chat_id", ["chat-stall", "temporary:abc", "channel:abc", "local:abc"])
+@pytest.mark.asyncio
+async def test_the_stall_only_offers_a_resume_where_the_marker_can_be_stored(
+    monkeypatch, chat_id
+):
+    """Telling someone to press a button that cannot work is worse than saying nothing.
+
+    The marker lives in the stored message, and the chat kinds this pipe already refuses
+    to link files against are exactly the ones with no stored message. The offer is
+    compared against that same predicate rather than a second list of prefixes.
+    """
+    import open_webui_openrouter_pipe.integrations.video as video_module
+    from open_webui_openrouter_pipe.storage.owui_files import is_linkable_chat
+
+    pipe = Pipe()
+    pipe.valves.API_KEY = EncryptedStr("test")
+    adapter = VideoGenerationAdapter(pipe=pipe, logger=_test_logger())
+
+    result, _events, window = await _run_stalling_lifecycle(
+        monkeypatch, pipe, adapter, chat_id=chat_id
+    )
+
+    offered = video_module._VIDEO_CAN_BE_PICKED_BACK_UP in result.content
+    assert offered is is_linkable_chat(chat_id), (
+        f"{chat_id!r} can{'' if is_linkable_chat(chat_id) else 'not'} carry the marker, "
+        f"and the card {'does not offer' if not offered else 'offers'} a resume"
+    )
+    assert video_module._video_still_running_note(window) in result.content, (
+        "every stall must still say the job is running, resumable or not"
     )
