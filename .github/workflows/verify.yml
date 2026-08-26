@@ -4,14 +4,27 @@ name: Verify
 # rather than each carrying a copy: bundle.yml needed its own because `publish` cannot
 # gate on a job in another workflow, and the two copies had already drifted apart in the
 # revision that created them.
+#
+# Split into one `build` job and a five-way `test` matrix. The five suites used to run
+# back to back in a single job: measured on a fast workstation the package suite alone is
+# ~153s and the flat bundled suite ~137s, so five of them is ~12 minutes there, and a
+# 2-core `ubuntu-latest` runner is slower still -- enough to reach the job cap before the
+# install, the bundler, ruff and pyright are even counted. The modes are independent, so
+# they run on five machines instead of one after another. Nothing is dropped: the matrix
+# runs the same five commands, with the same flags, that the sequential step ran.
+#
+# `build` remains the ONLY place the bundler runs. Every test job downloads the artifact
+# it uploaded, and so does bundle.yml's `Build` job, so the bundles that get published are
+# byte-for-byte the bundles the suite ran against -- an earlier shape rebuilt them
+# elsewhere and nothing compared the two.
 on:
   workflow_call:
 
 jobs:
-  verify:
-    name: Tests & Type Check
+  build:
+    name: Lint, Bundle & Type Check
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -62,28 +75,16 @@ jobs:
           pyright open_webui_openrouter_pipe_bundled_no_plugins.py
           pyright open_webui_openrouter_pipe_bundled_compressed_no_plugins.py
 
-      - name: Run tests
+      # Byte-compilation is a syntax check over files that do not vary by test mode, so it
+      # belongs here rather than five times over in the matrix. Same files, same command.
+      - name: Byte-compile source, tests and bundles
         run: |
           source .venv/bin/activate
           python -m compileall open_webui_openrouter_pipe tests filters open_webui_openrouter_pipe_bundled.py open_webui_openrouter_pipe_bundled_compressed.py open_webui_openrouter_pipe_bundled_no_plugins.py open_webui_openrouter_pipe_bundled_compressed_no_plugins.py
 
-          # Run the test suite in 5 modes:
-          # 1) Normal package imports (on-disk modules)
-          # 2) Bundled flat monolith
-          # 3) Bundled compressed monolith
-          # 4) Bundled flat, no plugins (plugin tests self-skip via importorskip)
-          # 5) Bundled compressed, no plugins
-          echo "==> pytest (package imports)"
-          PYTHONPATH=. pytest tests -q --timeout=60 --timeout-method=thread
-          echo "==> pytest (bundled flat: open_webui_openrouter_pipe_bundled.py)"
-          OWUI_PIPE_BUNDLE_PATH=open_webui_openrouter_pipe_bundled.py PYTHONPATH=. pytest tests -q --timeout=60 --timeout-method=thread
-          echo "==> pytest (bundled compressed: open_webui_openrouter_pipe_bundled_compressed.py)"
-          OWUI_PIPE_BUNDLE_PATH=open_webui_openrouter_pipe_bundled_compressed.py PYTHONPATH=. pytest tests -q --timeout=60 --timeout-method=thread
-          echo "==> pytest (bundled flat, no plugins: open_webui_openrouter_pipe_bundled_no_plugins.py)"
-          OWUI_PIPE_BUNDLE_PATH=open_webui_openrouter_pipe_bundled_no_plugins.py PYTHONPATH=. pytest tests -q --timeout=60 --timeout-method=thread
-          echo "==> pytest (bundled compressed, no plugins: open_webui_openrouter_pipe_bundled_compressed_no_plugins.py)"
-          OWUI_PIPE_BUNDLE_PATH=open_webui_openrouter_pipe_bundled_compressed_no_plugins.py PYTHONPATH=. pytest tests -q --timeout=60 --timeout-method=thread
-
+      # Uploaded before the suite runs rather than after it, because the matrix is what
+      # consumes it. `bundle.yml` only reaches its Build job when this whole workflow has
+      # succeeded, so a bundle that failed the gate is still never published.
       - name: Upload the verified bundles
         uses: actions/upload-artifact@v4
         with:
@@ -94,3 +95,81 @@ jobs:
             open_webui_openrouter_pipe_bundled_no_plugins.py
             open_webui_openrouter_pipe_bundled_compressed_no_plugins.py
           retention-days: 1
+
+  test:
+    name: Tests (${{ matrix.mode }})
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      # Report every mode. A defect that shows up only under the compressed bundle is a
+      # different diagnosis from one that shows up everywhere, and cancelling the siblings
+      # on the first red hides which of the two it is.
+      fail-fast: false
+      matrix:
+        include:
+          # 1) Normal package imports (on-disk modules)
+          - mode: package imports
+            bundle: ""
+          # 2) Bundled flat monolith
+          - mode: bundled flat
+            bundle: open_webui_openrouter_pipe_bundled.py
+          # 3) Bundled compressed monolith
+          - mode: bundled compressed
+            bundle: open_webui_openrouter_pipe_bundled_compressed.py
+          # 4) Bundled flat, no plugins (plugin tests self-skip via importorskip)
+          - mode: bundled flat, no plugins
+            bundle: open_webui_openrouter_pipe_bundled_no_plugins.py
+          # 5) Bundled compressed, no plugins
+          - mode: bundled compressed, no plugins
+            bundle: open_webui_openrouter_pipe_bundled_compressed_no_plugins.py
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # After the checkout, never before it: the bundles are gitignored, and
+      # actions/checkout cleans untracked files out of the workspace by default, so a
+      # download placed ahead of it would be deleted again.
+      #
+      # Downloaded, not rebuilt. Every mode -- including the package mode, whose suite
+      # still reads all four artifacts off disk -- tests the exact bytes `build` produced,
+      # type-checked and uploaded.
+      - name: Download the verified bundles
+        uses: actions/download-artifact@v4
+        with:
+          name: verified-bundles-${{ github.run_id }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      # Deliberately identical to the build job's install, including pyright and ruff:
+      # the suite itself shells out to pyright, and skips that check when pyright is
+      # absent. Trimming the install here would turn a gate green by silently skipping it.
+      - name: Create venv and install dependencies
+        run: |
+          uv venv .venv
+          # Install CPU-only PyTorch first (saves ~5GB, much faster)
+          uv pip install --python .venv/bin/python torch --index-url https://download.pytorch.org/whl/cpu
+          # Install open-webui and project dependencies, including the test extra
+          uv pip install --python .venv/bin/python open-webui -e ".[test]"
+          uv pip install --python .venv/bin/python pyright==1.1.408 cairosvg pyzipper ruff==0.16.0
+
+      - name: Run tests
+        env:
+          OWUI_PIPE_BUNDLE_PATH: ${{ matrix.bundle }}
+        run: |
+          source .venv/bin/activate
+          # The package mode has to run with the variable ABSENT rather than empty. The
+          # conftest loader happens to treat "" as "no bundle", but a matrix cell cannot
+          # omit an env key, and nothing obliges the next reader of this variable to agree.
+          # Unsetting it makes this job's environment identical to the sequential run it
+          # replaces.
+          [ -n "$OWUI_PIPE_BUNDLE_PATH" ] || unset OWUI_PIPE_BUNDLE_PATH
+          PYTHONPATH=. pytest tests -q --timeout=60 --timeout-method=thread
