@@ -9,9 +9,9 @@ the rules below are what keep that from happening by accident.
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
-import subprocess
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
 import pytest
 from aioresponses import CallbackResult, aioresponses
+from PIL import Image
 
 from open_webui_openrouter_pipe.core.config import Valves
 from open_webui_openrouter_pipe.integrations import media_relay
@@ -291,13 +292,9 @@ async def test_a_reference_kind_is_offered_only_where_the_model_declares_it(
     )
     import base64
 
-    PAIR = base64.b64encode(
-        subprocess.run(
-            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
-             "-i", "color=c=red:s=512x512", "-frames:v", "1", "-f", "image2", "-c:v", "png", "-"],
-            capture_output=True, check=True,
-        ).stdout
-    ).decode()
+    pair_png = io.BytesIO()
+    Image.new("RGB", (512, 512), (255, 0, 0)).save(pair_png, format="PNG")
+    PAIR = base64.b64encode(pair_png.getvalue()).decode()
 
     async def _bytes(file_obj, *_args, **_kwargs):
         return PAIR if str(file_obj.id).startswith("pair") else base64.b64encode(payload).decode()
