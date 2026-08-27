@@ -22,6 +22,38 @@ PROCESS_START = time.monotonic()
 _warned_collectors: set[str] = set()
 
 
+TRANSPORT_SESSION_STATES = ("none", "active", "closed")
+
+
+def collect_transport_session_state(pipe: Any) -> str:
+    reader = getattr(getattr(pipe, "_multimodal_handler", None), "transport_session_state", None)
+    if not callable(reader):
+        return "none"
+    try:
+        state = reader()
+        if state not in TRANSPORT_SESSION_STATES:
+            raise ValueError(state)
+    except ValueError:
+        _level = warn_level(_warned_collectors, 'transport_session_domain')
+        logger.log(
+            _level,
+            "pipe_dashboard: the vetted transport reported a session state this "
+            "dashboard cannot render; it will be reported as not yet opened",
+            exc_info=True,
+        )
+        return "none"
+    except (AttributeError, TypeError, RuntimeError):
+        _level = warn_level(_warned_collectors, 'transport_session_state')
+        logger.log(
+            _level,
+            "pipe_dashboard: cannot read the vetted transport's session state; the "
+            "dashboard will report it as not yet opened",
+            exc_info=True,
+        )
+        return "none"
+    return state
+
+
 def _safe_int(value: Any) -> int:
     try:
         return int(value)

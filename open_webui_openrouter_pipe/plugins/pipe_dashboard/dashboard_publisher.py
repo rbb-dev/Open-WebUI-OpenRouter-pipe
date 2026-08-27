@@ -31,6 +31,7 @@ from ._collectors import (
     collect_queues,
     collect_rate_limits,
     collect_sessions,
+    collect_transport_session_state,
     collect_video_pool,
 )
 from .dashboard_socket import (
@@ -100,12 +101,8 @@ _PD_SLOW_MIN_INTERVAL = 30.0
 _PD_REAUTH_EVERY = 15
 
 
-def _worker_health(pipe: Any) -> dict[str, int]:
-    http = getattr(pipe, "_http_session", None)
-    try:
-        http_ok = 1 if (http is not None and not http.closed) else 0
-    except AttributeError:
-        http_ok = 0
+def _worker_health(pipe: Any) -> dict[str, Any]:
+    http_state = collect_transport_session_state(pipe)
     rss = 0
     try:
         import psutil
@@ -119,7 +116,7 @@ def _worker_health(pipe: Any) -> dict[str, int]:
     return {
         "init": 1 if getattr(pipe, "_initialized", False) else 0,
         "wf": 1 if getattr(pipe, "_warmup_failed", False) else 0,
-        "http": http_ok,
+        "http": http_state,
         "r": 1 if getattr(pipe, "_redis_client", None) is not None else 0,
         "rss": rss,
     }

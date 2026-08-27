@@ -24,6 +24,7 @@ from ._collectors import (
     collect_queues,
     collect_rate_limits,
     collect_sessions,
+    collect_transport_session_state,
     collect_video_pool,
 )
 from .formatters import (
@@ -183,7 +184,6 @@ def collect_medium_stats(pipe: Pipe) -> dict[str, Any]:
     valves = getattr(pipe, "valves", None)
     slm = getattr(pipe, "_session_log_manager", None)
     worker = getattr(slm, "_worker_thread", None) if slm else None
-    http = getattr(pipe, "_http_session", None)
 
     logging_enabled = getattr(valves, "SESSION_LOG_STORE_ENABLED", False) if valves else False
     if not logging_enabled:
@@ -209,7 +209,7 @@ def collect_medium_stats(pipe: Pipe) -> dict[str, Any]:
         "initialized": getattr(pipe, "_initialized", False),
         "startup_complete": getattr(pipe, "_startup_checks_complete", False),
         "warmup_failed": getattr(pipe, "_warmup_failed", False),
-        "http_session": "active" if (http and not http.closed) else "closed" if http else "none",
+        "http_session": collect_transport_session_state(pipe),
         "logging_enabled": logging_enabled,
         "log_worker": log_worker,
         "log_buffers": log_buffers,

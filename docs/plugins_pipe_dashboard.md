@@ -107,7 +107,7 @@ The Health tab tracks the pipe's live load:
 
 The System tab covers readiness and infrastructure:
 
-- **Readiness** — initialization state, HTTP session, the session-logging worker, log-buffer RAM usage, and pipe-level Redis with a liveness ping. The session-logging worker reads **Idle** until the first record is persisted, which is its normal starting state.
+- **Readiness** — initialization state, HTTP session, the session-logging worker, log-buffer RAM usage, and pipe-level Redis with a liveness ping. The session-logging worker reads **Idle** until the first record is persisted, which is its normal starting state. The HTTP session is the address-vetting transport the model-icon, maker-profile and self-update fetches share; it reads **Idle** until the first of those runs, **Active** once its pool is open, and **Closed** after shutdown.
 - **Artifact DB** — the database write-pool backlog and the database circuit-breaker states.
 - **Workers** — per worker: PID, uptime, active-request count, last-seen age, and a status badge (Active, Stale, or Warmup failed). This card appears in every deployment.
 

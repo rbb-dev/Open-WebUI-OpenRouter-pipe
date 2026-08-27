@@ -88,8 +88,8 @@ def _make_mock_pipe():
     pipe._initialized = True
     pipe._startup_checks_complete = True
     pipe._warmup_failed = False
-    pipe._http_session = Mock()
-    pipe._http_session.closed = False
+    pipe._multimodal_handler = Mock()
+    pipe._multimodal_handler.transport_session_state.return_value = "active"
     pipe._redis_enabled = False
     pipe._redis_client = None
 
@@ -595,7 +595,7 @@ class TestGracefulNoneSubsystems:
         pipe = Mock()
         pipe.valves = None
         pipe._session_log_manager = None
-        pipe._http_session = None
+        pipe._multimodal_handler = None
         pipe._initialized = False
         pipe._startup_checks_complete = False
         pipe._warmup_failed = False
@@ -968,6 +968,124 @@ class _HostileVideoPipe:
         raise TypeError("task map unavailable")
 
 
+class _HostileTransportHandler:
+    """A multimodal handler whose transport state cannot be read."""
+
+    def transport_session_state(self):
+        raise RuntimeError("transport state unavailable")
+
+
+class _HostileTransportPipe:
+    _multimodal_handler = _HostileTransportHandler()
+
+
+class _UnknownStateTransportHandler:
+    """A handler reporting a state that is outside the dashboard's vocabulary."""
+
+    def __init__(self, state: str = "idle") -> None:
+        self.state = state
+
+    def transport_session_state(self):
+        return self.state
+
+
+class _UnknownStateTransportPipe:
+    def __init__(self, state: str = "idle") -> None:
+        self._multimodal_handler = _UnknownStateTransportHandler(state)
+
+
+@pytest.mark.asyncio
+async def test_the_health_indicator_reads_the_session_the_process_actually_has(
+    pipe_instance_async,
+):
+    """Three states, off the transport that exists.
+
+    Both readers keyed on `pipe._http_session`, which is only ever assigned inside
+    `_ensure_async_subsystems_initialized` -- a method with no non-test caller. So the
+    dashboard's HTTP indicator was a constant on every worker: "none" in the panel and 0
+    in the published slice, whatever the process was doing. The transport that DOES exist
+    is the vetted one, a pool of its own that both readers were blind to.
+
+    Driven through the real handler in all three states rather than asserted against a
+    mock, because the defect was precisely that the attribute being read was never
+    written. "Absent" is kept distinct from "closed": a worker that has not fetched
+    anything yet is idle, not broken.
+    """
+    import contextlib
+
+    from open_webui_openrouter_pipe.plugins.pipe_dashboard.dashboard_publisher import (
+        _worker_health,
+    )
+    from open_webui_openrouter_pipe.plugins.pipe_dashboard.runtime_metrics import (
+        collect_medium_stats,
+    )
+
+    pipe = pipe_instance_async
+
+    def _states():
+        return (
+            collect_medium_stats(pipe)["health"]["http_session"],
+            _worker_health(pipe)["http"],
+        )
+
+    assert _states() == ("none", "none")
+
+    with contextlib.suppress(Exception):
+        await pipe._multimodal_handler._fetch_image_as_data_url(
+            "https://cdn.example.com/icon.png"
+        )
+    assert _states() == ("active", "active"), _states()
+
+    await pipe._multimodal_handler.aclose()
+    assert _states() == ("closed", "closed"), _states()
+
+
+@pytest.mark.parametrize("state", ["idle", "retiring"])
+def test_a_state_the_dashboard_cannot_render_is_substituted_and_said_out_loud(
+    state, caplog
+):
+    """`TRANSPORT_SESSION_STATES` is a second copy of a vocabulary the handler owns.
+
+    Nothing links the two: `transport_session_state` gaining a fourth state would have
+    been filtered to "none" here, and the panel would have rendered Idle for a worker
+    that was doing something else, with no line in any log to notice it by. The filter
+    itself has to stay -- `_worker_health(pipe)["http"]` is `json.dumps`-ed inside an
+    `except Exception: logger.debug(...)`, so passing an unserialisable value through
+    would silently drop the whole worker's slice -- so the fix is to announce the
+    substitution, not to stop substituting.
+
+    Two distinct unknown states, so a hardcoded "none" in the collector satisfies the
+    return value and still fails the record. The offending value is asserted in the
+    record's text rather than the message, because it travels as the raised value: a
+    diagnostic that says a state was unknown without saying which one cannot be acted
+    on.
+    """
+    import logging
+
+    from open_webui_openrouter_pipe.plugins.pipe_dashboard import _collectors
+
+    _collectors._warned_collectors.clear()
+    try:
+        with caplog.at_level(logging.WARNING, logger=_collectors.logger.name):
+            verdict = _collectors.collect_transport_session_state(
+                _UnknownStateTransportPipe(state)
+            )
+    finally:
+        _collectors._warned_collectors.clear()
+
+    records = [r for r in caplog.records if r.name == _collectors.logger.name]
+
+    assert verdict == "none", (
+        f"{state!r} reached the dashboard payload; a value outside the vocabulary is "
+        "what json.dumps has to be protected from"
+    )
+    assert len(records) == 1, records
+    assert state in caplog.text, (
+        "the warning does not say which state was unknown, so nobody can tell whether "
+        "the handler grew a state or the reader is broken"
+    )
+
+
 def _collector_causes() -> tuple[set[str], list[str]]:
     """Every `warn_level(_warned_collectors, ...)` cause key, read from the module's AST.
 
@@ -985,12 +1103,24 @@ def _collector_causes() -> tuple[set[str], list[str]]:
     return warn_level_causes(_collectors, "_warned_collectors")
 
 
+# (driver, the value the collector substitutes when the read fails). The fallback is
+# carried rather than assumed to be 0: `transport_session_state` reports a STRING, and a
+# table hardcoding 0 could only cover it by leaving it out -- which is the omission this
+# table exists to make visible.
 _COLLECTOR_DRIVERS = {
-    "safe_int": lambda c: c._safe_int(_HostileValue()),
-    "waiter_count": lambda c: c._waiter_count(_HostileWaiters()),
-    "semaphore_active": lambda c: c._semaphore_active(_HostileValue(), 4),
-    "video_active": lambda c: c.collect_video_pool(_HostileVideoPipe())["active"],
-    "auth_failures": lambda c: _drive_hostile_auth_failures(c),
+    "safe_int": (lambda c: c._safe_int(_HostileValue()), 0),
+    "waiter_count": (lambda c: c._waiter_count(_HostileWaiters()), 0),
+    "semaphore_active": (lambda c: c._semaphore_active(_HostileValue(), 4), 0),
+    "video_active": (lambda c: c.collect_video_pool(_HostileVideoPipe())["active"], 0),
+    "auth_failures": (lambda c: _drive_hostile_auth_failures(c), 0),
+    "transport_session_state": (
+        lambda c: c.collect_transport_session_state(_HostileTransportPipe()),
+        "none",
+    ),
+    "transport_session_domain": (
+        lambda c: c.collect_transport_session_state(_UnknownStateTransportPipe()),
+        "none",
+    ),
 }
 
 
@@ -1058,7 +1188,7 @@ def test_each_collector_fallback_is_reported_once(label, caplog):
 
     from open_webui_openrouter_pipe.plugins.pipe_dashboard import _collectors
 
-    call = _COLLECTOR_DRIVERS[label]
+    call, fallback = _COLLECTOR_DRIVERS[label]
     _collectors._warned_collectors.clear()
 
     def _warnings():
@@ -1070,9 +1200,9 @@ def test_each_collector_fallback_is_reported_once(label, caplog):
 
     try:
         with caplog.at_level(logging.WARNING, logger=_collectors.logger.name):
-            assert call(_collectors) == 0, (
-                f"{label} did not fall back to 0, so this test never reached the "
-                "diagnostic it exists to check"
+            assert call(_collectors) == fallback, (
+                f"{label} did not fall back to {fallback!r}, so this test never reached "
+                "the diagnostic it exists to check"
             )
             first = list(_warnings())
             for _ in range(4):
@@ -1082,8 +1212,8 @@ def test_each_collector_fallback_is_reported_once(label, caplog):
         _collectors._warned_collectors.clear()
 
     assert len(first) == 1, (
-        f"{label} substituted 0 and emitted {len(first)} warnings; the dashboard would "
-        "show a placeholder number with no indication it is one"
+        f"{label} substituted {fallback!r} and emitted {len(first)} warnings; the "
+        "dashboard would show a placeholder with no indication it is one"
     )
     assert len(total) == 1, (
         f"{label} warned {len(total)} times over five calls. The latch is not holding, "

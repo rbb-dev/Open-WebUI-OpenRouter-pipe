@@ -792,9 +792,13 @@ def _make_mock_pipe():
     pipe._redis_enabled = False
     pipe._request_queue = None
     pipe._catalog_manager = None
-    pipe._http_session = None
+    pipe._multimodal_handler = None
     return pipe
 ```
+
+The readiness collectors read the HTTP-session state off `pipe._multimodal_handler`,
+which owns the address-vetting transport, so a mock pipe that needs a non-idle reading
+gives it a handler whose `transport_session_state()` returns `active` or `closed`.
 
 ### Writing Command Tests
 
