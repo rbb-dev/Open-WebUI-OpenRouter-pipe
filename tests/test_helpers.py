@@ -1236,7 +1236,11 @@ def test_detect_runtime_pipe_id_from_module_prefix(monkeypatch):
 
 
 def test_detect_runtime_pipe_id_default(monkeypatch):
-    monkeypatch.setitem(ow.__dict__, "__name__", "open_webui_openrouter_pipe.pipe")
+    # The reader is core/config.py's own globals(), which is what the sibling above
+    # patches. Pointing this at the package __init__ patched a module the function never
+    # reads AND broke the lazy __getattr__, which resolves submodules relative to
+    # __name__: the test failed when it was the only node collected.
+    monkeypatch.setitem(ow_config.__dict__, "__name__", "open_webui_openrouter_pipe.pipe")
     assert ow._detect_runtime_pipe_id("fallback") == "fallback"
 
 
