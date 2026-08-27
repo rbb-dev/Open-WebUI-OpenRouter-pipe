@@ -194,7 +194,7 @@ class TestMissingImagingLibraries:
                             http.get(url, body=payload, headers={"Content-Type": mime})
                         for _ in range(4):
                             assert (
-                                await handler._fetch_image_as_data_url(session, url)
+                                await handler._fetch_image_as_data_url(url)
                                 is None
                             ), (
                                 f"the conversion succeeded with {blocked} unimportable, "

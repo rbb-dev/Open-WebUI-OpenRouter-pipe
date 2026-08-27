@@ -31,6 +31,7 @@ from ..core.config import (
 
 # Import status messages
 from ..core.errors import RequiredInternalFileError, StatusMessages
+from ..core.url_scheme import is_cleartext_http_url, is_http_or_https_url
 
 # Import utility functions
 from ..core.utils import (
@@ -516,7 +517,7 @@ async def transform_messages_to_input(
                         return None
 
                     if (
-                        url.startswith("http://")
+                        is_cleartext_http_url(url)
                         and not is_internal_file_url(url)
                         and not pipe._multimodal_handler._is_insecure_http_allowed(url)
                     ):
@@ -583,7 +584,7 @@ async def transform_messages_to_input(
                                 show_error_message=False
                             )
 
-                    elif url.startswith(("http://", "https://")) and not is_internal_file_url(url):
+                    elif is_http_or_https_url(url) and not is_internal_file_url(url):
                         try:
                             downloaded = await pipe._multimodal_handler._download_remote_url(url)
                             if downloaded:
@@ -801,10 +802,10 @@ async def transform_messages_to_input(
                                     show_error_message=False
                                 )
 
-                        elif file_data.startswith(("http://", "https://")) and not is_internal_file_url(file_data):
+                        elif is_http_or_https_url(file_data) and not is_internal_file_url(file_data):
                             try:
                                 remote_url = file_data
-                                if remote_url.startswith("http://") and not pipe._multimodal_handler._is_insecure_http_allowed(remote_url):
+                                if is_cleartext_http_url(remote_url) and not pipe._multimodal_handler._is_insecure_http_allowed(remote_url):
                                     pipe.logger.error("Blocked insecure HTTP file_data URL by default: %s", remote_url)
                                     await pipe._ensure_error_formatter()._emit_error(
                                         event_emitter,
@@ -875,10 +876,10 @@ async def transform_messages_to_input(
                                     f"Failed to save base64 file URL: {exc}",
                                     show_error_message=False
                                 )
-                        elif file_url.startswith(("http://", "https://")) and not is_internal_file_url(file_url):
+                        elif is_http_or_https_url(file_url) and not is_internal_file_url(file_url):
                             try:
                                 name_hint = filename or file_url.split("/")[-1].split("?")[0]
-                                if file_url.startswith("http://") and not pipe._multimodal_handler._is_insecure_http_allowed(file_url):
+                                if is_cleartext_http_url(file_url) and not pipe._multimodal_handler._is_insecure_http_allowed(file_url):
                                     pipe.logger.error("Blocked insecure HTTP file_url by default: %s", file_url)
                                     await pipe._ensure_error_formatter()._emit_error(
                                         event_emitter,
@@ -918,7 +919,7 @@ async def transform_messages_to_input(
 
                     if (
                         isinstance(file_data, str)
-                        and file_data.startswith("http://")
+                        and is_cleartext_http_url(file_data)
                         and not is_internal_file_url(file_data)
                         and not pipe._multimodal_handler._is_insecure_http_allowed(file_data)
                     ):
@@ -936,7 +937,7 @@ async def transform_messages_to_input(
 
                     if (
                         isinstance(file_url, str)
-                        and file_url.startswith("http://")
+                        and is_cleartext_http_url(file_url)
                         and not is_internal_file_url(file_url)
                         and not pipe._multimodal_handler._is_insecure_http_allowed(file_url)
                     ):
@@ -1146,7 +1147,7 @@ async def transform_messages_to_input(
                     if isinstance(audio_payload, str):
                         sanitized = audio_payload.strip()
                         lowercase = sanitized.lower()
-                        if lowercase.startswith(("http://", "https://")):
+                        if is_http_or_https_url(sanitized):
                             pipe.logger.warning("Audio payload rejected: remote URLs are not supported.")
                             await pipe._ensure_error_formatter()._emit_error(
                                 event_emitter,
@@ -1263,7 +1264,7 @@ async def transform_messages_to_input(
                         )
 
                     if (
-                        url.startswith("http://")
+                        is_cleartext_http_url(url)
                         and not pipe._multimodal_handler._is_insecure_http_allowed(url)
                     ):
                         pipe.logger.error("Blocked insecure HTTP video URL by default: %s", url)
@@ -1304,7 +1305,7 @@ async def transform_messages_to_input(
                             StatusMessages.VIDEO_YOUTUBE,
                             done=False
                         )
-                    elif url.startswith(("http://", "https://")):
+                    elif is_http_or_https_url(url):
                         if not await pipe._multimodal_handler._is_safe_url(url):
                             pipe.logger.error(f"SSRF protection blocked video URL: {url}")
                             await pipe._ensure_error_formatter()._emit_error(

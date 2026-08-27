@@ -66,6 +66,7 @@ from ..core.logging_system import SessionLogger
 
 # Import timing instrumentation
 from ..core.timing_logger import timed, timing_mark
+from ..core.url_scheme import is_http_or_https_url
 
 # Imports from core.utils
 from ..core.utils import (
@@ -424,6 +425,7 @@ class StreamingHandler:
         valves: Any,
         model_registry: Any,
         pipe_instance: Any,
+        valves_owner: Any | None = None,
     ):
         """Initialize StreamingHandler with dependencies.
 
@@ -434,9 +436,15 @@ class StreamingHandler:
             pipe_instance: Reference to parent Pipe instance for helper methods
         """
         self.logger = logger
-        self.valves = valves
+        self._valves = valves
+        self._valves_owner = valves_owner
         self._model_registry = model_registry
         self._pipe = pipe_instance
+
+    @property
+    def valves(self) -> Any:
+        live = getattr(self._valves_owner, "valves", None)
+        return self._valves if live is None else live
 
     def _audit_orphan_tool_cards(
         self,
@@ -715,7 +723,7 @@ class StreamingHandler:
                         return f"/api/v1/files/{stored}/content"
                     return None
                 return None
-            if text.startswith(("http://", "https://")):
+            if is_http_or_https_url(text):
                 downloaded = await self._pipe._multimodal_handler._download_remote_url(text)
                 if downloaded:
                     stored = await _persist_generated_image(downloaded["data"], downloaded["mime_type"])

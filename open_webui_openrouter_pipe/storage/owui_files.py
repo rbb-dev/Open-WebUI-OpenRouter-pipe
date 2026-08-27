@@ -30,6 +30,7 @@ from starlette.datastructures import Headers
 from ..core.config import _INTERNAL_FILE_ID_PATTERN
 from ..core.errors import RequiredInternalFileError
 from ..core.timing_logger import timed
+from ..core.url_scheme import is_absolute_url
 from ..core.warn_latch import warn_level
 
 try:
@@ -508,7 +509,7 @@ def is_internal_file_url(url: str) -> bool:
     """True only for relative Open WebUI file paths (/api/v1/files/...); absolute URLs are external."""
     if not isinstance(url, str):
         return False
-    if url.startswith(("http://", "https://")):
+    if is_absolute_url(url):
         return False
     return "/api/v1/files/" in url
 
@@ -516,13 +517,19 @@ def is_internal_file_url(url: str) -> bool:
 class OwuiFileGateway:
     """Stateful gateway for authorized, backend-agnostic OWUI file storage I/O."""
 
-    def __init__(self, logger, valves):
+    def __init__(self, logger, valves, valves_owner=None):
         self.logger = logger
-        self.valves = valves
+        self._valves = valves
+        self._valves_owner = valves_owner
         self._storage_user_cache = None
         self._storage_user_lock = None
         self._storage_role_warning_emitted = False
         self._user_insert_param_names = None
+
+    @property
+    def valves(self):
+        live = getattr(self._valves_owner, "valves", None)
+        return self._valves if live is None else live
 
     def validate_base64_size(self, b64_data: str) -> bool:
         """Validate base64 data size is within configured limits.

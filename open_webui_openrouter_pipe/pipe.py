@@ -119,6 +119,7 @@ from .core.errors import (
     _build_openrouter_api_error,
 )
 from .core.logging_system import SessionLogger, resolve_level
+from .core.url_scheme import is_http_or_https_url
 from .core.utils import (
     _apply_retry_after_metadata,
     _await_if_needed,
@@ -394,6 +395,7 @@ class Pipe:
             logger=self.logger,
             valves=self.valves,
             pipe_instance=self,
+            valves_owner=self,
         )
 
         self._artifact_store = ArtifactStore(
@@ -403,9 +405,12 @@ class Pipe:
             emit_notification_callback=self._event_emitter_handler._emit_notification,
             tool_context_var=Pipe._TOOL_CONTEXT,
             user_id_context_var=SessionLogger.user_id,
+            valves_owner=self,
         )
 
-        self._file_gateway = OwuiFileGateway(logger=self.logger, valves=self.valves)
+        self._file_gateway = OwuiFileGateway(
+            logger=self.logger, valves=self.valves, valves_owner=self
+        )
         self._multimodal_handler: MultimodalHandler = MultimodalHandler(
             logger=self.logger,
             valves=self.valves,
@@ -413,12 +418,14 @@ class Pipe:
             artifact_store=None,
             emit_status_callback=None,
             file_gateway=self._file_gateway,
+            valves_owner=self,
         )
         self._streaming_handler: StreamingHandler = StreamingHandler(
             logger=self.logger,
             valves=self.valves,
             model_registry=OpenRouterModelRegistry,
             pipe_instance=self,
+            valves_owner=self,
         )
         self._catalog_manager: ModelCatalogManager | None = None
         self._error_formatter: ErrorFormatter | None = None
@@ -521,6 +528,7 @@ class Pipe:
                 valves=self.valves,
                 model_registry=OpenRouterModelRegistry,
                 pipe_instance=self,
+                valves_owner=self,
             )
 
         if not self._event_emitter_handler:
@@ -528,6 +536,7 @@ class Pipe:
                 logger=self.logger,
                 valves=self.valves,
                 pipe_instance=self,
+                valves_owner=self,
             )
 
         self._initialized = True
@@ -889,6 +898,7 @@ class Pipe:
                     logger=self.logger,
                     valves=self.valves,
                     pipe_instance=self,
+                    valves_owner=self,
                 )
             self._error_formatter = ErrorFormatter(
                 pipe=self,
@@ -1366,7 +1376,7 @@ class Pipe:
             http_referer_override = (valves.HTTP_REFERER_OVERRIDE or "").strip()
             referer_override_invalid = bool(
                 http_referer_override
-                and not http_referer_override.startswith(("http://", "https://"))
+                and not is_http_or_https_url(http_referer_override)
             )
             if referer_override_invalid and not wants_stream:
                 await self._event_emitter_handler._emit_notification(
@@ -1839,6 +1849,11 @@ class Pipe:
             self._http_session = None
             if self._multimodal_handler:
                 self._multimodal_handler.set_http_session(None)
+
+        handler = getattr(self, "_multimodal_handler", None)
+        if handler is not None:
+            with contextlib.suppress(Exception):
+                await handler.aclose()
 
         if self._cleanup_task:
             self._cleanup_task.cancel()

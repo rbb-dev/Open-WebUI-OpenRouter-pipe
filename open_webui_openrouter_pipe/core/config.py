@@ -34,6 +34,7 @@ from .fusion_defaults import (
     DEFAULT_FUSION_PANEL_SYSTEM_PROMPT,
     DEFAULT_FUSION_SYNTHESIS_SYSTEM_PROMPT,
 )
+from .url_scheme import is_http_or_https_url
 from .warn_latch import warn_level
 
 try:
@@ -69,6 +70,7 @@ _OPENROUTER_FRONTEND_MODELS_URL = "https://openrouter.ai/api/frontend/v1/catalog
 _OPENROUTER_MODEL_ENDPOINTS_URL_TEMPLATE = "https://openrouter.ai/api/v1/models/{slug}/endpoints"
 _OPENROUTER_SITE_URL = "https://openrouter.ai"
 _MAX_MODEL_PROFILE_IMAGE_BYTES = 2 * 1024 * 1024
+_MAX_MODEL_PROFILE_IMAGE_PIXELS = 25_000_000
 _MAX_OPENROUTER_ID_CHARS = 128
 _MAX_OPENROUTER_METADATA_PAIRS = 16
 _MAX_OPENROUTER_METADATA_KEY_CHARS = 64
@@ -876,7 +878,7 @@ class Valves(BaseModel):
     )
     ENABLE_SSRF_PROTECTION: bool = Field(
         default=True,
-        description="Enable SSRF (Server-Side Request Forgery) protection for remote URL downloads. When enabled, blocks requests to private IP ranges (localhost, 192.168.x.x, 10.x.x.x, etc.) to prevent internal network probing. HTTP is disabled by default; see ALLOW_INSECURE_HTTP_* for explicit opt-in.",
+        description="Enable SSRF (Server-Side Request Forgery) protection for remote URL downloads. When enabled, a remote address is fetched only if it is provably globally routable, so loopback, 10.x/172.16.x/192.168.x, link-local, carrier-grade NAT (100.64.0.0/10 -- also Tailscale's default range) and IPv6 site-local are all refused, as is any range the registries do not mark as globally routable. IPv6 addresses that wrap an IPv4 one (::ffff:, 6to4, Teredo, NAT64) are judged on the address they carry. HTTP is disabled by default; see ALLOW_INSECURE_HTTP_* for explicit opt-in.",
     )
     ALLOW_INSECURE_HTTP: bool = Field(
         default=False,
@@ -2330,7 +2332,7 @@ def parse_user_valves(
 def _select_openrouter_http_referer(valves: Any | None) -> str:
     """Select HTTP referer for OpenRouter requests, with optional valve override."""
     override = valves.HTTP_REFERER_OVERRIDE if valves else ""
-    if override and override.startswith(("http://", "https://")):
+    if override and is_http_or_https_url(override):
         return override
     return _OPENROUTER_REFERER
 

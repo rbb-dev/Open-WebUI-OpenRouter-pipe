@@ -9643,6 +9643,63 @@ class TestMaterializeImageFromStr:
         assert result == "Done"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("scheme", ["https", "HTTPS", "hTTps", "http", "HTTP"])
+    async def test_materialize_downloads_a_generated_image_whatever_the_scheme_is_typed_as(
+        self, monkeypatch, pipe_instance_async, scheme
+    ):
+        """A generated image arriving as a URL is pulled down and re-hosted in Open WebUI
+        so the chat does not depend on the provider's CDN staying up.
+
+        The branch that does it tested `text.startswith(("http://", "https://"))` on the
+        raw string, so a provider answering `HTTPS://` had its URL stored in the message
+        verbatim and nothing was ever fetched. Schemes are case-insensitive, so five
+        spellings run and every one of them must reach the downloader -- a production
+        edit that downloads nothing, or one that downloads unconditionally, cannot
+        satisfy this alongside `test_materialize_data_url_invalid_returns_none` above.
+        """
+        pipe = pipe_instance_async
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+        url = f"{scheme}://cdn.example.test/generated.png"
+        seen: list[str] = []
+
+        async def _spy(_self, requested, *args, **kwargs):
+            seen.append(requested)
+            return None
+
+        monkeypatch.setattr(
+            "open_webui_openrouter_pipe.storage.multimodal.MultimodalHandler._download_remote_url",
+            _spy,
+        )
+
+        events = [
+            {
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "image_generation_call",
+                    "status": "completed",
+                    "result": url,
+                },
+            },
+            {"type": "response.completed", "response": {"output": [], "usage": {}}},
+        ]
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body,
+            pipe.valves,
+            None,
+            metadata={"model": {"id": "test"}},
+            tools={},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+
+        assert seen == [url], (
+            f"{url!r} was never fetched, so the generated image lives only on the "
+            f"provider's host; downloader saw {seen!r}"
+        )
+
+    @pytest.mark.asyncio
     async def test_materialize_data_url_invalid_returns_none(self, monkeypatch, pipe_instance_async):
         """Test invalid data URL returns None (line 303)."""
         pipe = pipe_instance_async

@@ -39,12 +39,10 @@ class ReasoningConfigManager:
         """Initialize the ReasoningConfigManager.
 
         Args:
-            pipe: Reference to parent Pipe instance for accessing valves
             logger: Logger instance for diagnostic output
         """
         self._pipe = pipe
         self.logger = logger
-        self.valves = pipe.valves
 
     def _apply_reasoning_preferences(self, responses_body: ResponsesBody, valves: Pipe.Valves) -> None:
         """Automatically request reasoning traces when supported and enabled."""

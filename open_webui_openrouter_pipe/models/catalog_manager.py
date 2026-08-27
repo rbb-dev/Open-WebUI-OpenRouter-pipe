@@ -1019,7 +1019,6 @@ class ModelCatalogManager:
     @timed
     async def _build_maker_profile_image_mapping(
         self,
-        session: aiohttp.ClientSession,
         maker_ids: Iterable[str],
     ) -> dict[str, str]:
         unique = sorted({(m or "").strip() for m in maker_ids if (m or "").strip()})
@@ -1031,7 +1030,7 @@ class ModelCatalogManager:
 
         async def _fetch_maker_profile_image(maker_id: str) -> None:
             async with semaphore:
-                image_url = await self._pipe._multimodal_handler._fetch_maker_profile_image_url(session, maker_id)
+                image_url = await self._pipe._multimodal_handler._fetch_maker_profile_image_url(maker_id)
                 if image_url:
                     results[maker_id] = image_url
 
@@ -1142,7 +1141,6 @@ class ModelCatalogManager:
                         missing_makers.add(maker_id)
                 if missing_makers:
                     maker_mapping = await self._build_maker_profile_image_mapping(
-                        session,
                         missing_makers,
                     )
 
@@ -1167,7 +1165,7 @@ class ModelCatalogManager:
 
                     async def _fetch_image_data_url(url: str) -> None:
                         async with fetch_semaphore:
-                            data_url = await self._pipe._multimodal_handler._fetch_image_as_data_url(session, url)
+                            data_url = await self._pipe._multimodal_handler._fetch_image_as_data_url(url)
                             if data_url:
                                 url_to_data[url] = data_url
 

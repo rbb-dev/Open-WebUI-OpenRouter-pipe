@@ -123,6 +123,7 @@ class EventEmitterHandler:
         valves: Any,
         pipe_instance: Any,
         event_emitter: EventEmitter | None = None,
+        valves_owner: Any | None = None,
     ):
         """Initialize EventEmitterHandler.
         
@@ -133,9 +134,15 @@ class EventEmitterHandler:
             event_emitter: Optional event emitter from Open WebUI
         """
         self.logger = logger
-        self.valves = valves
+        self._valves = valves
+        self._valves_owner = valves_owner
         self._pipe = pipe_instance
         self._event_emitter = event_emitter
+
+    @property
+    def valves(self) -> Any:
+        live = getattr(self._valves_owner, "valves", None)
+        return self._valves if live is None else live
 
     async def _emit_status(
         self,

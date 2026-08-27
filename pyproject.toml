@@ -30,7 +30,8 @@ dependencies = [
   "pydantic-core",
   "pyzipper",
   "sqlalchemy",
-  "tenacity"
+  "tenacity",
+  "yarl"
 ]
 
 [project.optional-dependencies]

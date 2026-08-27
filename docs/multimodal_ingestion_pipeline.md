@@ -145,7 +145,7 @@ Remote downloads are used for images and for files when re-hosting is enabled. T
 
 | Valve | Default (verified) | What it controls |
 | --- | --- | --- |
-| `ENABLE_SSRF_PROTECTION` | `True` | Blocks remote downloads to private/internal network ranges. HTTPS-only defaults still apply even if SSRF protection is disabled. |
+| `ENABLE_SSRF_PROTECTION` | `True` | Fetches only addresses that are provably globally routable, so private/internal ranges, carrier-grade NAT and IPv6 site-local are all refused. HTTPS-only defaults still apply even if SSRF protection is disabled. |
 | `ALLOW_INSECURE_HTTP` | `False` | Allow plaintext HTTP remote URLs when explicitly enabled. HTTP is disabled by default. |
 | `ALLOW_INSECURE_HTTP_HOSTS` | `""` | Comma-separated list of hosts or host:port entries allowed for plaintext HTTP. Exact match only (no wildcards). Empty means no HTTP allowed. |
 | `REMOTE_DOWNLOAD_MAX_RETRIES` | `3` | Retry attempts for remote downloads. |

@@ -36,6 +36,7 @@ EXPECTED_LATCHES = {
     "_warned_pipes_maintenance",
     "_warned_plugin_dispatch",
     "_warned_provider_slug_guess",
+    "_warned_proxy_env",
     "_warned_chat_provider_keys",
     "_warned_queue_backlog",
     "_warned_responses_chunk_parse",

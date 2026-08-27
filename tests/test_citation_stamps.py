@@ -8,7 +8,7 @@ exactly where nobody is looking.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import os
 
@@ -504,8 +504,9 @@ def test_the_installed_filters_guard_their_open_webui_import():
 
     from open_webui_openrouter_pipe.pipe import Pipe
 
-    manager = FilterManager.__new__(FilterManager)
-    manager.valves = Pipe.Valves()
+    manager = cast("Any", FilterManager.__new__(FilterManager))
+    manager._pipe = None
+    manager._valves = Pipe.Valves()
 
     # Discovered, not enumerated. The previous version listed five renderers by hand
     # while the package renders several, so the fusion and provider-routing templates

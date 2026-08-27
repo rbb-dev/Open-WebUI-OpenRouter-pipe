@@ -15,8 +15,13 @@ import pytest
 pytest.importorskip("open_webui_openrouter_pipe.plugins.pipe_dashboard")
 
 from open_webui_openrouter_pipe.plugins.pipe_dashboard import update_service as us
+from tests.vetting_helpers import vetting, vetting_handler
 
 PID = "open_webui_openrouter_pipe"
+
+# Bound before any fixture can monkeypatch the module attribute: the tests that
+# drive the real transport must not get `fake_http`'s stand-in.
+REAL_HTTP_GET_BYTES = us._http_get_bytes
 
 
 async def _wait_for(predicate, *, timeout: float = 5.0) -> bool:
@@ -70,7 +75,22 @@ def _valves(**over):
 
 
 def _pipe(**valve_over):
-    return SimpleNamespace(id=PID, valves=_valves(**valve_over), _http_session=None)
+    """A stand-in pipe carrying the real address gate.
+
+    `fetch_and_validate` hands the pipe's multimodal handler to the transport, which is
+    where the address is vetted and the connection pinned. A real handler is cheap and
+    keeps the code under test on its production path; the tests that stub the transport
+    never reach it, and the ones that do not are testing exactly this.
+    """
+    vetting = valve_over.pop("_multimodal_handler", "default")
+    if vetting == "default":
+        vetting = vetting_handler()
+    return SimpleNamespace(
+        id=PID,
+        valves=_valves(**valve_over),
+        _http_session=None,
+        _multimodal_handler=vetting,
+    )
 
 
 class _FakeFunctions:
@@ -155,16 +175,21 @@ def _release(tag="v2.7.0", assets=None, body="## Changes\n- fix", published="202
 
 @pytest.fixture()
 def fake_http(monkeypatch):
-    state = SimpleNamespace(json_map={}, bytes_map={}, json_calls=[], bytes_calls=[])
+    state = SimpleNamespace(
+        json_map={}, bytes_map={}, json_calls=[], bytes_calls=[],
+        bytes_vetting=[], json_vetting=[]
+    )
 
-    async def _get_json(session, url, *, timeout=15.0):
+    async def _get_json(url, *, vetting, timeout=15.0):
         state.json_calls.append(url)
+        state.json_vetting.append(vetting)
         if url in state.json_map:
             return state.json_map[url]
         return 404, None, {}
 
-    async def _get_bytes(session, url, *, timeout=60.0, cap=us._PD_UPDATE_SIZE_CAP):
+    async def _get_bytes(url, *, vetting, timeout=60.0, cap=us._PD_UPDATE_SIZE_CAP):
         state.bytes_calls.append(url)
+        state.bytes_vetting.append(vetting)
         data = state.bytes_map[url]
         if len(data) > cap:
             raise us.UpdateError("validation_failed", "size cap exceeded")
@@ -239,6 +264,198 @@ def test_detect_mode_package(monkeypatch):
 
 
 # ── fetch_and_validate ───────────────────────────────────────────────────────
+
+
+class _RefusingSession:
+    """Any request at all is a failure: the address never got past the gate.
+
+    It RECORDS first and raises second, and the tests assert on the record. Raising
+    alone signals nothing here: `_http_get_bytes` catches `Exception` and re-raises it as
+    `UpdateError("offline", ...)`, which is exactly what a real refusal produces -- so
+    with `_hop_is_refused` neutered to `return False` this file reported 136 passed while
+    a GET went out to `169.254.169.254`.
+    """
+
+    closed = False
+
+    def __init__(self) -> None:
+        self.requested: list[str] = []
+
+    def get(self, url, **_kwargs):
+        self.requested.append(str(url))
+        raise AssertionError(f"an outbound request was issued for {url!r}")
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_fetch_hands_the_transport_the_pipes_address_gate(
+    fake_functions, fake_http, flat_module
+):
+    """The vetting is not optional and not re-implemented here.
+
+    `fetch_and_validate` no longer checks a string and then hands the URL to a client
+    that resolves it again -- it passes the gate itself to the transport, which vets and
+    pins every hop. This pins that the object arriving at the transport is the pipe's.
+    """
+    content = GOOD_HEADER.encode()
+    asset = _asset(content)
+    fake_http.bytes_map[asset["browser_download_url"]] = content
+    pipe = _pipe()
+    service = us.UpdateService(lambda: pipe)
+
+    out = await service.fetch_and_validate(asset, require_newer=True)
+
+    assert out == content.decode("utf-8")
+    assert fake_http.bytes_calls == [asset["browser_download_url"]]
+    assert fake_http.bytes_vetting == [pipe._multimodal_handler]
+
+
+@pytest.mark.parametrize(
+    "variable",
+    ["https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY"],
+)
+def test_a_proxied_deployment_is_told_the_self_update_will_not_use_its_proxy(
+    monkeypatch, caplog, variable
+):
+    """The transport dropped `trust_env`, and the loss was silent.
+
+    Both update fetches used to build their own `ClientSession(trust_env=True)`, and that
+    was not a fallback -- `Pipe._http_session` is only assigned inside
+    `_ensure_async_subsystems_initialized`, which nothing in production calls, so the
+    `own = ...` branch was the ONLY path. On a deployment that reaches github.com through
+    a proxy the update check now fails at connect, and it fails with no log at all:
+    `_auto_tick` records `_auto_last` and returns a backoff, `offline` is transient, and
+    the backoff tops out at 7200s. The dashboard's Updates tab is the only surface.
+
+    Restoring `trust_env` is not the fix -- a proxy resolves the release host itself, so
+    the address the gate validated is not the address dialled, and this is the one path
+    that writes executable code into the OWUI function row. Making the loss VISIBLE is.
+
+    Latched, and driven twice: an operator who cannot act on a warning printed once a
+    tick will filter it out, and a warning that never repeats at any level is the defect
+    `warn_level` exists for. The record has to name the variable, because "a proxy is
+    configured" is not actionable and `HTTPS_PROXY` is.
+    """
+    import logging
+
+    for name in us._PROXY_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(variable, "http://proxy.internal:3128")
+    us._warned_proxy_env.clear()
+    service = us.UpdateService(lambda: _pipe())
+    try:
+        with caplog.at_level(logging.DEBUG, logger=us.logger.name):
+            service._require_vetting()
+            service._require_vetting()
+        records = [r for r in caplog.records if r.name == us.logger.name]
+    finally:
+        us._warned_proxy_env.clear()
+
+    warnings = [r for r in records if r.levelno >= logging.WARNING]
+    repeats = [r for r in records if r.levelno == logging.DEBUG]
+    assert len(warnings) == 1, [r.getMessage() for r in warnings]
+    assert len(repeats) == 1, [r.getMessage() for r in repeats]
+    assert variable in warnings[0].getMessage(), warnings[0].getMessage()
+
+
+def test_an_unproxied_deployment_is_not_warned_about_a_proxy(monkeypatch, caplog):
+    """The other row, so a warning emitted unconditionally fails.
+
+    Without it the check above is satisfied by logging every time `_require_vetting`
+    runs, which would put a proxy warning in front of every operator who has no proxy.
+    """
+    import logging
+
+    for name in us._PROXY_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    us._warned_proxy_env.clear()
+    service = us.UpdateService(lambda: _pipe())
+    try:
+        with caplog.at_level(logging.DEBUG, logger=us.logger.name):
+            service._require_vetting()
+        records = [r for r in caplog.records if r.name == us.logger.name]
+    finally:
+        us._warned_proxy_env.clear()
+
+    assert records == [], [r.getMessage() for r in records]
+
+
+@pytest.mark.asyncio
+async def test_fetch_refuses_when_the_pipe_has_no_address_gate(
+    fake_functions, fake_http, flat_module
+):
+    """A pipe without a multimodal handler must not download unvetted, and must not
+    permanently skip the release either."""
+    content = GOOD_HEADER.encode()
+    asset = _asset(content)
+    fake_http.bytes_map[asset["browser_download_url"]] = content
+    pipe = _pipe(_multimodal_handler=None)
+    service = us.UpdateService(lambda: pipe)
+
+    with pytest.raises(us.UpdateError) as exc:
+        await service.fetch_and_validate(asset, require_newer=True)
+
+    assert exc.value.code in us._TRANSIENT_CODES
+    assert fake_http.bytes_calls == []
+
+
+@pytest.mark.asyncio
+async def test_an_unfetchable_asset_address_is_transient_and_never_skips_the_version(
+    auto, monkeypatch
+, vetting):
+    """An address that cannot be vetted is 'could not reach it', not 'this release is bad'.
+
+    `_is_safe_url` answers False for a blocked address AND for a resolver that timed
+    out or failed, so mapping that to a permanent code retires the version on this
+    worker for ever -- `_auto_skip` is only ever cleared by a successful apply, which
+    can never happen for a version that is skipped. The code fed to `_auto_tick` here is
+    not a literal: it is read off the exception a real refusal produces, so the two
+    halves cannot drift apart.
+    """
+    handler = vetting()
+    session = _RefusingSession()
+    handler._vetted_http_session = session
+    with pytest.raises(us.UpdateError) as raised:
+        await REAL_HTTP_GET_BYTES(
+            "https://169.254.169.254/latest/meta-data/", vetting=handler
+        )
+    refusal_code = raised.value.code
+
+    assert session.requested == [], (
+        f"the link-local address was fetched: {session.requested}. The UpdateError "
+        "raised above is what an unvetted request produces too, so the code alone "
+        "cannot tell a refusal from a completed round trip."
+    )
+
+    async def _fail(args, **kw):
+        raise us.UpdateError(refusal_code, "address refused")
+
+    monkeypatch.setattr(auto.svc, "apply", _fail)
+    delays = [await auto.svc._auto_tick() for _ in range(2)]
+
+    assert refusal_code in us._TRANSIENT_CODES, refusal_code
+    assert auto.svc._auto_skip == {}, (
+        f"{refusal_code} put the version in the permanent skip map; a resolver outage "
+        "would retire that release on this worker for the life of the process"
+    )
+    assert delays == list(us._PD_UPDATE_BACKOFF[:2])
+
+
+@pytest.mark.asyncio
+async def test_a_bad_asset_is_still_skipped_rather_than_retried_for_ever(auto, monkeypatch):
+    """The other half: broadening the transient set to cure the bug above would stop
+    the auto loop ever giving up on a genuinely bad release."""
+
+    async def _fail(args, **kw):
+        raise us.UpdateError("validation_failed", "frontmatter id is wrong")
+
+    monkeypatch.setattr(auto.svc, "apply", _fail)
+    await auto.svc._auto_tick()
+
+    assert "validation_failed" not in us._TRANSIENT_CODES
+    assert list(auto.svc._auto_skip) == ["2.7.0"]
 
 
 @pytest.mark.asyncio
@@ -1018,9 +1235,9 @@ def wired(svc, fake_functions, fake_http, fake_storage, monkeypatch):
 
     orig_bytes = us._http_get_bytes
 
-    async def _bytes_spy(session, url, **kw):
+    async def _bytes_spy(url, **kw):
         events.append("download")
-        return await orig_bytes(session, url, **kw)
+        return await orig_bytes(url, **kw)
 
     monkeypatch.setattr(us, "_http_get_bytes", _bytes_spy)
 
@@ -1078,9 +1295,9 @@ async def test_apply_stale_rev_at_entry(svc, wired):
 async def test_apply_rev_recheck_trips_after_download(svc, wired, monkeypatch):
     orig = us._http_get_bytes
 
-    async def _bump_during_download(session, url, **kw):
+    async def _bump_during_download(url, **kw):
         wired.functions.row.updated_at += 7
-        return await orig(session, url, **kw)
+        return await orig(url, **kw)
 
     monkeypatch.setattr(us, "_http_get_bytes", _bump_during_download)
     rev = wired.functions.row.updated_at
@@ -1536,7 +1753,7 @@ async def test_auto_yanked_release_never_applies_never_pauses(auto, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_http_get_bytes_streaming_cap_aborts():
+async def test_http_get_bytes_streaming_cap_aborts(vetting):
     class _Content:
         async def iter_chunked(self, size):
             for _ in range(3):
@@ -1559,9 +1776,184 @@ async def test_http_get_bytes_streaming_cap_aborts():
         def get(self, url, **kw):
             return _Resp()
 
+        async def close(self):
+            self.closed = True
+
+    handler = vetting()
+    handler._vetted_http_session = _Session()
     with pytest.raises(us.UpdateError) as exc:
-        await us._http_get_bytes(_Session(), "https://x/y.py")
+        await REAL_HTTP_GET_BYTES("https://x/y.py", vetting=handler)
     assert exc.value.code == "validation_failed"
+
+
+@pytest.mark.asyncio
+async def test_http_get_json_streaming_cap_aborts(vetting):
+    """The release metadata was read with `await resp.json(content_type=None)`.
+
+    That buffers the whole body, bounded only by the 15s deadline, and `_vetted_get`
+    follows `Location` -- so the body is chosen by whatever the redirect landed on. The
+    sibling on the same transport already had a streaming cap.
+
+    `served` is the honest measure: a caller that refuses only after buffering the lot
+    reads every byte.
+    """
+    served = 0
+
+    class _Content:
+        async def iter_chunked(self, size):
+            nonlocal served
+            for _ in range(8):
+                served += size
+                yield b"x" * size
+
+    class _Resp:
+        status = 200
+        headers: dict[str, str] = {}
+        content = _Content()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _Session:
+        closed = False
+
+        def get(self, url, **kw):
+            return _Resp()
+
+        async def close(self):
+            self.closed = True
+
+    handler = vetting()
+    handler._vetted_http_session = _Session()
+    with pytest.raises(us.UpdateError) as exc:
+        await us._http_get_json("https://x/latest", vetting=handler, cap=64 * 1024)
+
+    assert exc.value.code == "validation_failed"
+    assert served <= 64 * 1024 + 64 * 1024, served
+
+
+@pytest.mark.asyncio
+async def test_http_get_json_declared_oversize_reads_no_body(vetting):
+    """A truthful Content-Length is the early-out; the running total is the guard."""
+    served = 0
+
+    class _Content:
+        async def iter_chunked(self, size):
+            nonlocal served
+            served += size
+            yield b"x" * size
+
+    class _Resp:
+        status = 200
+        headers = {"Content-Length": str(64 * 1024 * 1024)}
+        content = _Content()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _Session:
+        closed = False
+
+        def get(self, url, **kw):
+            return _Resp()
+
+        async def close(self):
+            self.closed = True
+
+    handler = vetting()
+    handler._vetted_http_session = _Session()
+    with pytest.raises(us.UpdateError) as exc:
+        await us._http_get_json("https://x/latest", vetting=handler)
+
+    assert exc.value.code == "validation_failed"
+    assert served == 0
+
+
+@pytest.mark.asyncio
+async def test_an_empty_200_body_is_no_payload_rather_than_a_parse_error(vetting):
+    """`resp.json()` answered None for an empty body, and `_fetch_latest` turns that into
+    "GitHub returned HTTP 200". Reading the bytes here must not swap that for a JSON
+    decode message the operator cannot act on.
+    """
+
+    class _Content:
+        async def iter_chunked(self, size):
+            yield b"   "
+
+    class _Resp:
+        status = 200
+        headers = {"Content-Type": "application/json"}
+        content = _Content()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _Session:
+        closed = False
+
+        def get(self, url, **kw):
+            return _Resp()
+
+        async def close(self):
+            self.closed = True
+
+    handler = vetting()
+    handler._vetted_http_session = _Session()
+    status, payload, _headers = await us._http_get_json(
+        "https://x/latest", vetting=handler
+    )
+
+    assert (status, payload) == (200, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tag", ["v2.6.9", "v3.0.0"])
+async def test_http_get_json_still_parses_a_release_document(vetting, tag):
+    """The cap must not be a refusal of every document. Two tags, so a constant fails."""
+
+    class _Content:
+        async def iter_chunked(self, size):
+            payload = f'{{"tag_name": "{tag}"}}'.encode()
+            for start in range(0, len(payload), size):
+                yield payload[start : start + size]
+
+    class _Resp:
+        status = 200
+        headers = {"Content-Type": "application/json"}
+        content = _Content()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _Session:
+        closed = False
+
+        def get(self, url, **kw):
+            return _Resp()
+
+        async def close(self):
+            self.closed = True
+
+    handler = vetting()
+    handler._vetted_http_session = _Session()
+    status, payload, _headers = await us._http_get_json(
+        "https://x/latest", vetting=handler
+    )
+
+    assert status == 200
+    assert payload == {"tag_name": tag}
 
 
 @pytest.mark.asyncio
@@ -2152,7 +2544,7 @@ def test_pipe_init_attaches_registry_last():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("configured", [True, object()])
 @pytest.mark.parametrize("fetch", ["_http_get_bytes", "_http_get_json"])
-async def test_the_update_fetch_uses_the_resolved_ssl_setting(monkeypatch, configured, fetch):
+async def test_the_update_fetch_uses_the_resolved_ssl_setting(monkeypatch, configured, fetch, vetting):
     """Certificate verification is the only thing binding an update to GitHub.
 
     The release digest is read from the same response the download is checked against,
@@ -2170,26 +2562,19 @@ async def test_the_update_fetch_uses_the_resolved_ssl_setting(monkeypatch, confi
     """
     seen: dict = {}
 
-    async def _empty_chunks():
-        return
-        yield b""
+    async def _body_chunks():
+        yield b"{}"
 
     class _Resp:
         status = 200
         headers: dict[str, str] = {}
-        content = SimpleNamespace(iter_chunked=lambda _size: _empty_chunks())
+        content = SimpleNamespace(iter_chunked=lambda _size: _body_chunks())
 
         async def __aenter__(self):
             return self
 
         async def __aexit__(self, *exc):
             return False
-
-        async def json(self, **_kw):
-            return {}
-
-        async def text(self):
-            return ""
 
     class _Session:
         closed = False
@@ -2198,8 +2583,13 @@ async def test_the_update_fetch_uses_the_resolved_ssl_setting(monkeypatch, confi
             seen.update(kw)
             return _Resp()
 
+        async def close(self):
+            self.closed = True
+
     monkeypatch.setattr(us, "_client_ssl", lambda: configured)
-    await getattr(us, fetch)(_Session(), "https://example.test/asset.py")
+    handler = vetting()
+    handler._vetted_http_session = _Session()
+    await getattr(us, fetch)("https://example.test/asset.py", vetting=handler)
 
     assert "ssl" in seen, (
         f"{fetch} issued its request with no ssl argument at all, so aiohttp's default "

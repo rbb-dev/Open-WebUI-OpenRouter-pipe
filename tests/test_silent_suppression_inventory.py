@@ -79,7 +79,11 @@ _EXPECTED: dict[str, int] = {
     "logging/session_log_manager.py": 21,
     "media/frame_extraction.py": 2,
     "models/catalog_manager.py": 2,
-    "pipe.py": 19,
+    # 19th: `MultimodalHandler.aclose()` during shutdown, closing the vetted transport's
+    # session and its decode pool. It sits among the teardown steps either side of it,
+    # all of which suppress for the same reason: a failure here has no consequence
+    # beyond itself, and letting it out would skip the cleanup that follows.
+    "pipe.py": 20,
     "requests/transformer.py": 2,
     "storage/persistence.py": 3,
     "streaming/streaming_core.py": 2,

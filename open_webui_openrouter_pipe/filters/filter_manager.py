@@ -108,8 +108,13 @@ class FilterManager:
             logger: Logger instance for this manager
         """
         self._pipe = pipe
-        self.valves = valves
+        self._valves = valves
         self.logger = logger
+
+    @property
+    def valves(self) -> Any:
+        live = getattr(self._pipe, "valves", None)
+        return self._valves if live is None else live
 
 
     @staticmethod

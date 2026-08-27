@@ -443,6 +443,9 @@ def test_transform_drops_a_set_shaped_user_content():
         ("http://images.example.test/a.png", False, "", False),
         ("http://images.example.test/a.png", True, "images.example.test", True),
         ("https://images.example.test/a.png", False, "", True),
+        ("HTTP://images.example.test/a.png", False, "", False),
+        ("HTTP://images.example.test/a.png", True, "images.example.test", True),
+        ("HTTPS://images.example.test/a.png", False, "", True),
     ],
 )
 async def test_an_insecure_http_image_url_is_dropped_unless_allowed(
@@ -459,6 +462,10 @@ async def test_an_insecure_http_image_url_is_dropped_unless_allowed(
     Three rows on purpose. The blocking row alone is satisfied by a production edit
     that drops every image; the allowed and https rows are what make it a gate rather
     than a wall.
+
+    Each row runs twice, once with the scheme upper-cased. Schemes are case-insensitive
+    (RFC 3986 3.1) but every site here compared raw prefixes, so `HTTP://` skipped the
+    gate entirely and the lower-case rows alone reported the whole thing green.
     """
     pipe = pipe_instance_async
     pipe.valves.ALLOW_INSECURE_HTTP = allow

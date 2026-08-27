@@ -117,12 +117,61 @@ Other schemes are rejected.
 ### SSRF guard behavior
 
 When `ENABLE_SSRF_PROTECTION=True` (default):
-- The pipe blocks remote fetches to private/internal address ranges (loopback, RFC1918, link-local, multicast, reserved, and unspecified ranges).
+- The pipe fetches an address only when it is provably globally routable. Everything else is refused, rather than only the ranges someone remembered to list: loopback, RFC1918, link-local, multicast, reserved and unspecified are refused, and so are carrier-grade NAT (`100.64.0.0/10`, which is also Tailscale's default range), IPv6 site-local (`fec0::/10`) and any address that is simply not marked as globally routable. A future range added to the registries is refused the day it is registered rather than the day someone updates a list here.
+- IPv6 forms that carry an IPv4 address inside them are judged on the addresses they carry: `::ffff:`-mapped, 6to4 (`2002::/16`), Teredo (`2001::/32`) and the NAT64 well-known prefix (`64:ff9b::/96`). `2002:7f00:1::` is 6to4 for `127.0.0.1` and is refused for that reason; `2002:808:808::` carries a public address and is allowed. A form that carries more than one address is allowed only when EVERY address it carries would be allowed on its own: a Teredo address encodes the tunnel server as well as the client, both chosen by whoever wrote the address, so `2001:0:7f00:1::f7f7:f7f7` — server `127.0.0.1`, client `8.8.8.8` — is refused for the server.
 - Downloads that fail SSRF checks are rejected and logged; the pipe proceeds without crashing the request.
 
 When `ENABLE_SSRF_PROTECTION=False`:
 - The pipe may attempt to fetch internal URLs reachable from your Open WebUI environment. Only disable SSRF protection with a clear threat model and compensating controls.
 HTTPS-only defaults still apply even if SSRF protection is disabled.
+
+### Address validation and redirects
+
+Validation and connection are the same decision, so the pipe does not check a URL and
+then let the HTTP client resolve the name again:
+
+- The model-icon, maker-profile and self-update fetches share one transport, which owns
+  its HTTP connection pool. Name resolution for that pool goes through the SSRF gate, so
+  the addresses the gate approved are the addresses the pipe dials. A name that answers
+  with a public address for the check and a private one a moment later cannot steer the
+  connection, because there is no second lookup for it to answer.
+- The URL keeps its hostname, so TLS certificate verification, SNI and the connection
+  pool all key on the name the caller asked for.
+- The host is read with the same parser the connection is built from, so the gate and
+  the connector cannot disagree about what the URL names. This matters because the
+  internationalised-name rules the HTTP client applies map several Unicode codepoints to
+  `.`, and a host written with one of them is an ordinary name to one parser and an IP
+  literal to the other. The pipe reads the dialled host, not the literal text.
+- That transport does not use an HTTP proxy from the environment. A proxy resolves the
+  name itself, so an address this pipe validated would not be the address dialled. If a
+  proxy variable is set (`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY` or their lowercase
+  spellings), the pipe logs one warning naming it, because on a deployment that can only
+  reach GitHub through that proxy the self-update check will fail to connect and the
+  Updates tab is the only other place that is reported.
+- Remote file, image and video downloads take a different path: they do not follow
+  redirects at all, and they pin the validated address into the request.
+- The three transport fetches do follow redirects, up to a small fixed number of hops.
+  Every hop is validated the same way as the first, covering both the release metadata
+  and the release asset in the self-update flow. A redirect to a private or internal
+  address is refused before the connection is attempted. The transport is taken per
+  HOP, not per chain, so a chain that is already in flight when the valve changes does
+  not finish under the setting it started with: the origin decides how long to hold a
+  hop open, which would otherwise be how long the old setting lasted.
+- Turning `ENABLE_SSRF_PROTECTION` back on takes effect on the next hop, which is the
+  next request or the rest of a redirect chain already under way. The transport is
+  REBUILT when the valve changes: the old session is closed and a new
+  connection pool, a new address cache and a new resolver are created together. Clearing
+  the address cache alone was not enough, because a keep-alive connection opened while
+  the gate was off is reused without consulting any resolver, and an answer from a lookup
+  that was already in flight lands in the cache after it has been cleared.
+
+### What a blocked address is recorded as
+
+A refused address is logged with the host, the port that was targeted and the resolved
+IP that failed the check, at WARNING the first time and DEBUG on repeats, with the
+warning repeating after a cooldown rather than latching for the life of the worker. The
+query string is deliberately not recorded: this gate is reached for any image, file or
+video URL pasted into a chat, and those can carry credentials.
 
 ### Additional mitigations for downloads
 
@@ -130,6 +179,14 @@ Even when a URL passes SSRF checks, downloads are constrained by:
 - `REMOTE_FILE_MAX_SIZE_MB` (and optional Open WebUI RAG upload caps)
 - `REMOTE_DOWNLOAD_*` retry/time budget valves
 - `BASE64_MAX_SIZE_MB` and `VIDEO_MAX_SIZE_MB` for certain inline/base64 payloads
+
+The three transport fetches carry their own fixed caps, because none of them is
+operator-configurable and each follows redirects, so the body is chosen by whatever the
+last hop was: the model icon, the maker profile page and the self-update metadata and
+asset are each read in chunks against a running total and abandoned once it is passed. A
+declared `Content-Length` over the cap is refused before any body is read, but it is only
+an early-out — a chunked response declares nothing, and the running total is what
+enforces the limit.
 
 Recommended operator action:
 - Keep SSRF protection enabled.

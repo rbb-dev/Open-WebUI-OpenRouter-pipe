@@ -368,10 +368,10 @@ async def test_build_maker_profile_image_mapping_empty_input(pipe_instance_async
 
     session = pipe._create_http_session()
     try:
-        result = await pipe._ensure_catalog_manager()._build_maker_profile_image_mapping(session, [])
+        result = await pipe._ensure_catalog_manager()._build_maker_profile_image_mapping([])
         assert result == {}
 
-        result = await pipe._ensure_catalog_manager()._build_maker_profile_image_mapping(session, [None, "", "  "])
+        result = await pipe._ensure_catalog_manager()._build_maker_profile_image_mapping([None, "", "  "])
         assert result == {}
     finally:
         await session.close()
@@ -384,7 +384,7 @@ async def test_build_maker_profile_image_mapping_deduplicates_makers(pipe_instan
     pipe._ensure_catalog_manager()
     call_count = 0
 
-    async def mock_fetch(session, maker_id):
+    async def mock_fetch(maker_id):
         nonlocal call_count
         call_count += 1
         return f"https://example.com/{maker_id}.png"
@@ -394,7 +394,7 @@ async def test_build_maker_profile_image_mapping_deduplicates_makers(pipe_instan
     session = pipe._create_http_session()
     try:
         result = await pipe._ensure_catalog_manager()._build_maker_profile_image_mapping(
-            session, ["openai", "openai", "anthropic", "openai"]
+            ["openai", "openai", "anthropic", "openai"]
         )
         assert call_count == 2
         assert len(result) == 2
@@ -408,7 +408,7 @@ async def test_build_maker_profile_image_mapping_handles_none_results(pipe_insta
     pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
 
-    async def mock_fetch(session, maker_id):
+    async def mock_fetch(maker_id):
         if maker_id == "anthropic":
             return None
         return f"https://example.com/{maker_id}.png"
@@ -418,7 +418,7 @@ async def test_build_maker_profile_image_mapping_handles_none_results(pipe_insta
     session = pipe._create_http_session()
     try:
         result = await pipe._ensure_catalog_manager()._build_maker_profile_image_mapping(
-            session, ["openai", "anthropic"]
+            ["openai", "anthropic"]
         )
         assert "openai" in result
         assert "anthropic" not in result

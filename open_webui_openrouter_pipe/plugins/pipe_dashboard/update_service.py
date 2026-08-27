@@ -12,14 +12,23 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import importlib.metadata
+import json
 import logging
+import os
 import sys
 import time
 from typing import Any
 
 from ...core.utils import _await_if_needed
+from ...core.warn_latch import warn_level
 
 logger = logging.getLogger(__name__)
+
+_PROXY_ENV_VARS = (
+    "https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY",
+)
+
+_warned_proxy_env: set[str] = set()
 
 FUNCTION_ID = "open_webui_openrouter_pipe"
 DEFAULT_REPO = "rbb-dev/Open-WebUI-OpenRouter-pipe"
@@ -32,6 +41,8 @@ _PD_UPDATE_LEADER_TTL_S = 30 * 60
 _PD_UPDATE_LEADER_RENEW_S = 10 * 60
 _PD_UPDATE_FOLLOWER_POLL_S = 60 * 60.0
 _PD_UPDATE_SIZE_CAP = 8 * 1024 * 1024
+
+_PD_UPDATE_JSON_CAP = 2 * 1024 * 1024
 _PD_UPDATE_NOTES_CAP = 20 * 1024
 _PD_UPDATE_AUTO_INTERVAL = 6 * 3600.0
 _PD_UPDATE_AUTO_JITTER = (300.0, 900.0)
@@ -150,66 +161,61 @@ def _client_ssl() -> Any:
         return True
 
 
-async def _http_get_json(session: Any, url: str, *, timeout: float = 15.0) -> tuple[int, Any, dict]:
-    import aiohttp
+async def _capped_read(resp: Any, cap: int) -> bytes:
+    declared = resp.headers.get("Content-Length")
+    if declared is not None and declared.isdigit() and int(declared) > cap:
+        raise UpdateError("validation_failed", "asset exceeds the size cap")
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in resp.content.iter_chunked(64 * 1024):
+        total += len(chunk)
+        if total > cap:
+            raise UpdateError("validation_failed", "asset exceeds the size cap")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
-    own = None
+
+async def _http_get_json(
+    url: str,
+    *,
+    vetting: Any,
+    timeout: float = 15.0,
+    cap: int = _PD_UPDATE_JSON_CAP,
+) -> tuple[int, Any, dict]:
     try:
-        if session is None or getattr(session, "closed", False):
-            own = aiohttp.ClientSession(trust_env=True)
-            session = own
-        client_timeout = aiohttp.ClientTimeout(total=timeout)
-        async with session.get(
-            url, timeout=client_timeout, allow_redirects=True, ssl=_client_ssl()
+        async with vetting._vetted_get(
+            url, total_seconds=timeout, ssl=_client_ssl()
         ) as resp:
             headers = {k: v for k, v in resp.headers.items()}
             payload = None
             if resp.status == 200:
-                payload = await resp.json(content_type=None)
+                body = (await _capped_read(resp, cap)).strip()
+                payload = json.loads(body) if body else None
             return resp.status, payload, headers
     except UpdateError:
         raise
     except Exception as exc:
         raise UpdateError("offline", str(exc)) from exc
-    finally:
-        if own is not None:
-            await own.close()
 
 
 async def _http_get_bytes(
-    session: Any, url: str, *, timeout: float = 60.0, cap: int = _PD_UPDATE_SIZE_CAP
+    url: str,
+    *,
+    vetting: Any,
+    timeout: float = 60.0,
+    cap: int = _PD_UPDATE_SIZE_CAP,
 ) -> bytes:
-    import aiohttp
-
-    own = None
     try:
-        if session is None or getattr(session, "closed", False):
-            own = aiohttp.ClientSession(trust_env=True)
-            session = own
-        client_timeout = aiohttp.ClientTimeout(total=timeout)
-        async with session.get(
-            url, timeout=client_timeout, allow_redirects=True, ssl=_client_ssl()
+        async with vetting._vetted_get(
+            url, total_seconds=timeout, ssl=_client_ssl()
         ) as resp:
             if resp.status != 200:
                 raise UpdateError("offline", f"download failed with HTTP {resp.status}")
-            declared = resp.headers.get("Content-Length")
-            if declared is not None and declared.isdigit() and int(declared) > cap:
-                raise UpdateError("validation_failed", "asset exceeds the size cap")
-            chunks: list[bytes] = []
-            total = 0
-            async for chunk in resp.content.iter_chunked(64 * 1024):
-                total += len(chunk)
-                if total > cap:
-                    raise UpdateError("validation_failed", "asset exceeds the size cap")
-                chunks.append(chunk)
-            return b"".join(chunks)
+            return await _capped_read(resp, cap)
     except UpdateError:
         raise
     except Exception as exc:
         raise UpdateError("offline", str(exc)) from exc
-    finally:
-        if own is not None:
-            await own.close()
 
 
 class UpdateService:
@@ -301,8 +307,24 @@ class UpdateService:
                 return {"mode": "bundle", "compressed": False}
         return {"mode": "package", "compressed": False}
 
-    def _session(self) -> Any:
-        return getattr(self._pipe(), "_http_session", None)
+    def _require_vetting(self) -> Any:
+        vetting = getattr(self._pipe(), "_multimodal_handler", None)
+        if vetting is None:
+            raise UpdateError("offline", "the pipe's address vetting is unavailable")
+        for name in _PROXY_ENV_VARS:
+            if (os.environ.get(name) or "").strip():
+                logger.log(
+                    warn_level(_warned_proxy_env, name),
+                    "update: %s is set but the self-update transport does not use an "
+                    "HTTP proxy, because a proxy resolves the release host itself and "
+                    "the address this pipe validated would not be the address dialled. "
+                    "If github.com is only reachable through that proxy, the update "
+                    "check and the download will fail to connect and the dashboard's "
+                    "Updates tab is the only place it is reported.",
+                    name,
+                )
+                break
+        return vetting
 
 
     @staticmethod
@@ -353,7 +375,8 @@ class UpdateService:
 
     async def _fetch_latest(self, repo: str) -> dict[str, Any]:
         status, payload, headers = await _http_get_json(
-            self._session(), f"https://api.github.com/repos/{repo}/releases/latest"
+            f"https://api.github.com/repos/{repo}/releases/latest",
+            vetting=self._require_vetting(),
         )
         if status == 200 and isinstance(payload, dict):
             return payload
@@ -492,7 +515,7 @@ class UpdateService:
         if not digest.startswith("sha256:"):
             raise UpdateError("digest_mismatch", "release asset carries no sha256 digest")
 
-        data = await _http_get_bytes(self._session(), url)
+        data = await _http_get_bytes(url, vetting=self._require_vetting())
         actual = hashlib.sha256(data).hexdigest()
         if actual != digest.removeprefix("sha256:"):
             raise UpdateError("digest_mismatch", "downloaded bytes do not match the release digest")

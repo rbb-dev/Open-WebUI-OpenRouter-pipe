@@ -9,7 +9,7 @@ from __future__ import annotations
 import inspect
 import os
 from types import ModuleType
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from aioresponses import aioresponses
@@ -2756,8 +2756,9 @@ def _render_installed_filter(name: str) -> str:
     )
     from open_webui_openrouter_pipe.pipe import Pipe as _Pipe
 
-    manager = FilterManager.__new__(FilterManager)
-    manager.valves = _Pipe.Valves()
+    manager = cast("Any", FilterManager.__new__(FilterManager))
+    manager._pipe = None
+    manager._valves = _Pipe.Valves()
 
     kwargs = dict(_INSTALLED_FILTER_RENDERER_ARGS[name])
     if name in ("render_image_model_filter_source", "render_image_gen_filter_source"):
@@ -2989,9 +2990,9 @@ async def test_a_row_that_will_never_be_updated_says_so_once(
     fm_module._warned_stale_filter_rows.clear()
 
     logger = logging.getLogger(f"stale-row-test.{valve}")
-    manager = FilterManager(
-        pipe=MagicMock(), valves=SimpleNamespace(**{valve: False}), logger=logger
-    )
+    pipe = MagicMock()
+    pipe.valves = SimpleNamespace(**{valve: False})
+    manager = FilterManager(pipe=pipe, valves=pipe.valves, logger=logger)
 
     async def _install():
         return await manager._ensure_filter_installed(
@@ -3053,11 +3054,9 @@ async def test_a_row_that_is_already_current_says_nothing(caplog, monkeypatch):
     fm_module._warned_stale_filter_rows.clear()
 
     logger = logging.getLogger("stale-row-test.current")
-    manager = FilterManager(
-        pipe=MagicMock(),
-        valves=SimpleNamespace(AUTO_INSTALL_IMAGE_FILTERS=False),
-        logger=logger,
-    )
+    pipe = MagicMock()
+    pipe.valves = SimpleNamespace(AUTO_INSTALL_IMAGE_FILTERS=False)
+    manager = FilterManager(pipe=pipe, valves=pipe.valves, logger=logger)
     with caplog.at_level(logging.DEBUG, logger=logger.name):
         await manager._ensure_filter_installed(
             desired_source="FRESH = 1\n",

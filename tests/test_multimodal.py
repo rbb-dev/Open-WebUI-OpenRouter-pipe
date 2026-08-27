@@ -2128,7 +2128,7 @@ class TestFetchImageAsDataUrl:
     async def test_returns_none_for_empty_url(self, pipe_instance_async):
         """Should return None for empty URL."""
         async with aiohttp.ClientSession() as session:
-            result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(session, "")
+            result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url("")
             assert result is None
 
     @pytest.mark.asyncio
@@ -2136,7 +2136,7 @@ class TestFetchImageAsDataUrl:
         """Should return existing data URL as-is."""
         async with aiohttp.ClientSession() as session:
             data_url = "data:image/png;base64,AAAA"
-            result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(session, data_url)
+            result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(data_url)
             assert result == data_url
 
     @pytest.mark.asyncio
@@ -2144,7 +2144,7 @@ class TestFetchImageAsDataUrl:
         """Should prepend https: for protocol-relative URLs."""
         async with aiohttp.ClientSession() as session:
             result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(
-                session, "//nonexistent.example.com/img.png"
+                "//nonexistent.example.com/img.png"
             )
             assert result is None
 
@@ -2153,7 +2153,7 @@ class TestFetchImageAsDataUrl:
         """Should prepend site URL for relative paths starting with /."""
         async with aiohttp.ClientSession() as session:
             result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(
-                session, "/some/path/icon.png"
+                "/some/path/icon.png"
             )
             assert result is None
 
@@ -2162,7 +2162,7 @@ class TestFetchImageAsDataUrl:
         """Should prepend site URL for paths without leading slash."""
         async with aiohttp.ClientSession() as session:
             result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(
-                session, "path/to/icon.png"
+                "path/to/icon.png"
             )
             assert result is None
 
@@ -2184,7 +2184,7 @@ class TestFetchImageAsDataUrl:
                 with patch.dict(sys.modules, {"cairosvg": None}):
                     with patch("builtins.__import__", side_effect=ImportError("No cairosvg")):
                         result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(
-                            session, "https://openrouter.ai/icon.svg"
+                            "https://openrouter.ai/icon.svg"
                         )
 
                 assert result is None or result.startswith("data:")
@@ -2209,7 +2209,7 @@ class TestFetchImageAsDataUrl:
 
                 with patch.dict(sys.modules, {"cairosvg": mock_cairosvg}):
                     result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(
-                        session, "https://openrouter.ai/bad-icon.svg"
+                        "https://openrouter.ai/bad-icon.svg"
                     )
 
                 assert result is None or result.startswith("data:")
@@ -2237,7 +2237,7 @@ class TestFetchImageAsDataUrl:
                     sys.modules["PIL.Image"] = None
 
                     result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(
-                        session, "https://openrouter.ai/photo.jpg"
+                        "https://openrouter.ai/photo.jpg"
                     )
                 finally:
                     if original_pil is not None:
@@ -2267,7 +2267,7 @@ class TestFetchImageAsDataUrl:
                 )
 
                 result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(
-                    session, "https://openrouter.ai/icon.gif"
+                    "https://openrouter.ai/icon.gif"
                 )
 
                 assert result is None or result.startswith("data:image/png;base64,")
@@ -2288,7 +2288,7 @@ class TestFetchImageAsDataUrl:
                 )
 
                 result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(
-                    session, "https://openrouter.ai/test-icon.png"
+                    "https://openrouter.ai/test-icon.png"
                 )
 
                 assert result is None or result.startswith("data:")
@@ -2309,7 +2309,7 @@ class TestFetchImageAsDataUrl:
                 )
 
                 result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(
-                    session, "https://openrouter.ai/large-icon.png"
+                    "https://openrouter.ai/large-icon.png"
                 )
 
                 assert result is None
@@ -2328,7 +2328,7 @@ class TestFetchImageAsDataUrl:
                 )
 
                 result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(
-                    session, "https://openrouter.ai/document.pdf"
+                    "https://openrouter.ai/document.pdf"
                 )
 
                 assert result is None
@@ -2346,7 +2346,7 @@ class TestFetchImageAsDataUrl:
                 )
 
                 result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(
-                    session, "https://openrouter.ai/missing.png"
+                    "https://openrouter.ai/missing.png"
                 )
 
                 assert result is None
@@ -2359,14 +2359,14 @@ class TestFetchMakerProfileImageUrl:
     async def test_returns_none_for_empty_maker_id(self, pipe_instance_async):
         """Should return None for empty maker ID."""
         async with aiohttp.ClientSession() as session:
-            result = await pipe_instance_async._multimodal_handler._fetch_maker_profile_image_url(session, "")
+            result = await pipe_instance_async._multimodal_handler._fetch_maker_profile_image_url("")
             assert result is None
 
     @pytest.mark.asyncio
     async def test_returns_none_for_whitespace_maker_id(self, pipe_instance_async):
         """Should return None for whitespace-only maker ID."""
         async with aiohttp.ClientSession() as session:
-            result = await pipe_instance_async._multimodal_handler._fetch_maker_profile_image_url(session, "   ")
+            result = await pipe_instance_async._multimodal_handler._fetch_maker_profile_image_url("   ")
             assert result is None
 
     @pytest.mark.asyncio
@@ -2383,7 +2383,7 @@ class TestFetchMakerProfileImageUrl:
                 )
 
                 result = await pipe_instance_async._multimodal_handler._fetch_maker_profile_image_url(
-                    session, "test-maker"
+                    "test-maker"
                 )
 
                 assert result is None or isinstance(result, str)
@@ -2411,7 +2411,7 @@ class TestFetchMakerProfileImageUrl:
                 )
 
                 result = await pipe_instance_async._multimodal_handler._fetch_maker_profile_image_url(
-                    session, "test-maker"
+                    "test-maker"
                 )
 
                 assert result == "https://example.com/maker-avatar.png"
@@ -2429,7 +2429,7 @@ class TestFetchMakerProfileImageUrl:
                 )
 
                 result = await pipe_instance_async._multimodal_handler._fetch_maker_profile_image_url(
-                    session, "nonexistent-maker"
+                    "nonexistent-maker"
                 )
 
                 assert result is None
@@ -2450,7 +2450,7 @@ class TestFetchMakerProfileImageUrl:
                 )
 
                 result = await pipe_instance_async._multimodal_handler._fetch_maker_profile_image_url(
-                    session, "maker-no-image"
+                    "maker-no-image"
                 )
 
                 assert result is None
@@ -4328,7 +4328,7 @@ class TestFetchImageSVGEdgeCases:
 
                 with patch.dict(sys.modules, {"cairosvg": mock_cairosvg}):
                     result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(
-                        session, "https://openrouter.ai/bad-svg.svg"
+                        "https://openrouter.ai/bad-svg.svg"
                     )
 
                 assert result is None
@@ -4354,7 +4354,7 @@ class TestFetchImageSVGEdgeCases:
 
                 with patch.dict(sys.modules, {"cairosvg": mock_cairosvg}):
                     result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(
-                        session, "https://openrouter.ai/good-svg.svg"
+                        "https://openrouter.ai/good-svg.svg"
                     )
 
                 # Should succeed and return data URL
@@ -4382,46 +4382,256 @@ class TestFetchImageSVGEdgeCases:
 
                 with patch.dict(sys.modules, {"cairosvg": mock_cairosvg}):
                     result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(
-                        session, "https://openrouter.ai/huge-svg.svg"
+                        "https://openrouter.ai/huge-svg.svg"
                     )
 
                 assert result is None
 
 
-class TestFetchMakerProfileNonStringHTML:
-    """Tests for non-string HTML response in maker profile fetch."""
+class TestValvesAfterOpenWebUiRebindsThem:
+    """The handler must read the valves the pipe holds NOW."""
 
     @pytest.mark.asyncio
-    async def test_non_string_html_response(self, pipe_instance_async):
-        """Should return None when HTML response is not a string."""
-        from contextlib import asynccontextmanager
+    async def test_the_gate_sees_a_valve_open_webui_rebound(self, pipe_instance_async):
+        """`functions.py` does `function_module.valves = Valves(**saved)`.
 
-        class MockResponse:
+        That is a REBIND of the attribute, not a mutation of the object, and Open WebUI
+        runs it on every model list and every chat completion. `MultimodalHandler` stored
+        the object it was constructed with, so eight valves -- the two HTTP-allowlist
+        ones, the SSRF switch, the connect timeout, three retry settings and the size
+        limit -- were read off a snapshot the operator's saved configuration never
+        reached.
+
+        Driven as BEHAVIOUR through three phases rather than as identity, because
+        `handler.valves is pipe.valves` is satisfied by returning a constant that happens
+        to be the right object; only a gate that answers differently before and after the
+        rebind proves the value arrived. The third phase rebinds back, so a handler that
+        latched onto the second object fails too.
+        """
+        pipe = pipe_instance_async
+        handler = pipe._multimodal_handler
+        valves_type = type(pipe).Valves
+
+        assert handler.valves is pipe.valves
+        assert await handler._is_safe_url("https://127.0.0.1/x") is False
+
+        pipe.valves = valves_type(ENABLE_SSRF_PROTECTION=False)
+        assert handler.valves is pipe.valves
+        assert await handler._is_safe_url("https://127.0.0.1/x") is True
+
+        pipe.valves = valves_type(ENABLE_SSRF_PROTECTION=True)
+        assert await handler._is_safe_url("https://127.0.0.1/x") is False
+
+    @pytest.mark.asyncio
+    async def test_the_http_allowlist_sees_a_rebound_valve(self, pipe_instance_async):
+        """The same rebind, on the pair that decides whether plaintext HTTP is allowed."""
+        pipe = pipe_instance_async
+        handler = pipe._multimodal_handler
+        valves_type = type(pipe).Valves
+        url = "http://cdn.example.com/i.png"
+
+        assert handler._is_insecure_http_allowed(url) is False
+
+        pipe.valves = valves_type(
+            ALLOW_INSECURE_HTTP=True, ALLOW_INSECURE_HTTP_HOSTS="cdn.example.com"
+        )
+        assert handler._is_insecure_http_allowed(url) is True
+
+        pipe.valves = valves_type(
+            ALLOW_INSECURE_HTTP=True, ALLOW_INSECURE_HTTP_HOSTS="other.example.com"
+        )
+        assert handler._is_insecure_http_allowed(url) is False
+
+    def test_a_handler_built_without_an_owner_keeps_the_valves_it_was_given(self):
+        """The standalone construction the test helpers use must still work."""
+        import logging
+        from types import SimpleNamespace
+
+        from open_webui_openrouter_pipe.storage.multimodal import MultimodalHandler
+
+        valves = SimpleNamespace(ENABLE_SSRF_PROTECTION=True)
+        handler = MultimodalHandler(logging.getLogger("tests.owner"), valves)
+
+        assert handler.valves is valves
+        valves.ENABLE_SSRF_PROTECTION = False
+        assert handler.valves.ENABLE_SSRF_PROTECTION is False
+
+
+class TestNoSubsystemKeepsAValveSnapshot:
+    """The ratchet for the whole class, not just the handler the panel named."""
+
+    @staticmethod
+    def _holders(pipe, original):
+        return {
+            name
+            for name in dir(pipe)
+            if name.startswith("_")
+            and getattr(pipe, name, None) is not pipe
+            and getattr(getattr(pipe, name, None), "valves", None) is original
+        }
+
+    @staticmethod
+    def _lazy_factories(pipe):
+        """Every `_ensure_*` the pipe can build with no arguments and no event loop."""
+        import inspect
+
+        found = []
+        for name in dir(pipe):
+            if not name.startswith("_ensure_"):
+                continue
+            factory = getattr(pipe, name, None)
+            if not callable(factory) or inspect.iscoroutinefunction(factory):
+                continue
+            try:
+                parameters = inspect.signature(factory).parameters.values()
+            except (TypeError, ValueError):
+                continue
+            if any(p.default is p.empty and p.kind is not p.VAR_KEYWORD and p.kind is not p.VAR_POSITIONAL for p in parameters):
+                continue
+            found.append(name)
+        return found
+
+    def test_every_subsystem_holding_the_pipes_valves_reads_them_live(
+        self, pipe_instance
+    ):
+        """Open WebUI REBINDS `Pipe.valves`; a subsystem that stored the object goes deaf.
+
+        Enumerated rather than listed, so a subsystem added later is covered the day it
+        is written. Measured before the fix: `_artifact_store`, `_event_emitter_handler`,
+        `_file_gateway`, `_multimodal_handler` and `_streaming_handler` all went stale,
+        and between them read the SSRF switch, the HTTP allowlist, the base64 size limit,
+        the fallback storage identity, the support links and the artifact cleanup budget
+        off a snapshot the operator's saved configuration never reached.
+
+        Two rebinds, not one, so a subsystem that latched onto the SECOND object fails
+        too.
+
+        Every lazy subsystem is BUILT before the enumeration runs, and that is the whole
+        difference between this check and the one it replaces. A fresh `Pipe` holds
+        `None` in the slot of everything created by an `_ensure_*` factory, so a snapshot
+        taken there is invisible: the enumeration saw the five eager subsystems and
+        reported clean while `ErrorFormatter` served seven operator-edited error
+        templates, `FilterManager` served six `AUTO_INSTALL_*` gates and rendered filter
+        source, and `ReasoningConfigManager` carried a copy of its own, all from a
+        generation Open WebUI had already replaced. The boundary was exactly
+        lazy-versus-eager, which is not a property of anything -- it is where the fixture
+        happened to stop.
+
+        The factories are enumerated too, and the enumeration is asserted to have ADDED
+        holders. Naming the three would leave the fourth written next week invisible
+        again, and a forcing loop that silently matched nothing would put this check back
+        where it started with no test failing to say so.
+        """
+        pipe = pipe_instance
+        original = pipe.valves
+        lazy = self._lazy_factories(pipe)
+        before = self._holders(pipe, original)
+        for name in lazy:
+            getattr(pipe, name)()
+        holders = self._holders(pipe, original)
+
+        assert before < holders, (
+            f"building the {len(lazy)} lazy subsystems ({lazy}) added no valve holder, "
+            f"so this check is enumerating a half-built pipe: {sorted(before)}"
+        )
+        assert len(holders) >= 8, sorted(holders)
+
+        for _round in range(2):
+            pipe.valves = type(pipe).Valves()
+            stale = [
+                name
+                for name in holders
+                if getattr(getattr(pipe, name), "valves", None) is not pipe.valves
+            ]
+            assert not stale, (
+                f"{stale} kept the valves object they were constructed with, so every "
+                "setting they read comes from a snapshot Open WebUI replaced"
+            )
+
+
+class TestFetchMakerProfileOversizePage:
+    """Tests for the byte cap on the maker page."""
+
+    @pytest.mark.asyncio
+    async def test_a_page_over_the_cap_is_treated_as_empty_and_said_so(
+        self, pipe_instance_async
+    ):
+        """A maker page bigger than the cap must be refused, and refused out loud.
+
+        This replaces a test for a `not isinstance(html, str)` branch that no longer
+        exists: the body is read as bytes and decoded here, so it is a `str` by
+        construction and the branch was unreachable. What CAN still happen is a body
+        chosen by whoever the redirect landed on, which `await resp.text()` buffered
+        whole.
+
+        The double is installed as the transport's OWN session, because
+        `_fetch_maker_profile_image_url` does not take one. `requested` is asserted, so a
+        refused ADDRESS cannot pass for a refused SIZE, and the WARNING is asserted,
+        because "returned None" is what a network failure looks like too.
+        """
+        import logging
+
+        from open_webui_openrouter_pipe.storage.multimodal import _MAKER_PAGE_MAX_BYTES
+
+        served = 0
+
+        class _Content:
+            async def iter_chunked(self, size):
+                nonlocal served
+                while served <= _MAKER_PAGE_MAX_BYTES:
+                    served += size
+                    yield b"x" * size
+
+        class _Response:
             status = 200
+            headers: dict[str, str] = {}
+            content = _Content()
 
             def raise_for_status(self):
-                pass
+                return None
 
-            async def text(self):
-                # This tests line 1333-1339
-                return b"<html></html>"
+            async def __aenter__(self):
+                return self
 
-        @asynccontextmanager
-        async def mock_get(url, **kwargs):
-            yield MockResponse()
+            async def __aexit__(self, *_exc):
+                return False
 
-        # Use a real session but override get
-        async with aiohttp.ClientSession() as session:
-            original_get = session.get
-            session.get = mock_get
-            try:
-                result = await pipe_instance_async._multimodal_handler._fetch_maker_profile_image_url(
-                    session, "test-maker-bytes"
-                )
-                assert result is None
-            finally:
-                session.get = original_get
+        class _Session:
+            closed = False
 
+            def __init__(self):
+                self.requested: list[str] = []
+
+            def get(self, url, **_kwargs):
+                self.requested.append(str(url))
+                return _Response()
+
+            async def close(self):
+                self.closed = True
+
+        handler = pipe_instance_async._multimodal_handler
+        session = _Session()
+        handler._vetted_http_session = session
+        records: list[logging.LogRecord] = []
+
+        class _Recorder(logging.Handler):
+            def emit(self, record):
+                records.append(record)
+
+        recorder = _Recorder(level=logging.DEBUG)
+        handler.logger.addHandler(recorder)
+        try:
+            result = await handler._fetch_maker_profile_image_url("test-maker-huge")
+        finally:
+            handler.logger.removeHandler(recorder)
+
+        assert result is None
+        assert session.requested == ["https://openrouter.ai/test-maker-huge"], (
+            session.requested
+        )
+        assert [
+            r.levelno for r in records if "maker page exceeds" in r.getMessage()
+        ] == [logging.WARNING], [r.getMessage() for r in records]
 
 class TestEnsureStorageUserCacheInsideLock:
     """Test for cache check inside lock after waiting."""

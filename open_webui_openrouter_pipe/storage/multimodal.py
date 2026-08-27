@@ -13,27 +13,34 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import ipaddress
 import logging
 import re
+import socket
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import quote, urlparse, urlunparse
+from urllib.parse import quote, urljoin, urlparse
 
 # External dependencies
 import aiohttp
 import httpx
+from aiohttp.abc import AbstractResolver, ResolveResult
 from tenacity import (
     AsyncRetrying,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
 )
+from yarl import URL as _DialledURL
 
 # Internal imports
 from ..core.config import (
     _MAX_MODEL_PROFILE_IMAGE_BYTES,
+    _MAX_MODEL_PROFILE_IMAGE_PIXELS,
     _OPENROUTER_SITE_URL,
     _REMOTE_FILE_MAX_SIZE_DEFAULT_MB,
 )
@@ -44,8 +51,8 @@ from ..core.errors import (
     _RetryWait,
 )
 from ..core.timing_logger import timed
+from ..core.url_scheme import is_http_or_https_url
 from ..core.warn_latch import warn_level
-from .owui_files import is_internal_file_url
 
 if TYPE_CHECKING:
     from .owui_files import OwuiFileGateway
@@ -56,6 +63,93 @@ if TYPE_CHECKING:
 ADDRESS_CHECK_SECONDS = 5.0
 
 ADDRESS_CHECK_BUDGET_SECONDS = 20.0
+
+_ICON_DOWNLOAD_CHUNK_BYTES = 64 * 1024
+
+_ICON_FETCH_TIMEOUT_SECONDS = 15.0
+
+_MAKER_PAGE_FETCH_TIMEOUT_SECONDS = 15.0
+
+_MAKER_PAGE_MAX_BYTES = 4 * 1024 * 1024
+
+_MAX_VETTED_REDIRECTS = 5
+
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+
+_DNS_WARN_LATCH_MAX_HOSTS = 256
+
+_ADDRESS_WARN_COOLDOWN_SECONDS = 300.0
+
+_ICON_DECODE_WORKERS = 2
+
+_VETTED_CONNECTION_LIMIT = 20
+
+_VETTED_CONNECTION_LIMIT_PER_HOST = 10
+
+_VETTED_DNS_CACHE_SECONDS = 300
+
+
+async def _capped_body(resp: Any, cap: int) -> bytes | None:
+    declared = (resp.headers.get("Content-Length") or "").strip()
+    if declared.isdigit() and int(declared) > cap:
+        return None
+    buffer = bytearray()
+    async for chunk in resp.content.iter_chunked(_ICON_DOWNLOAD_CHUNK_BYTES):
+        if len(buffer) + len(chunk) > cap:
+            return None
+        buffer.extend(chunk)
+    return bytes(buffer)
+
+
+class UnfetchableAddress(Exception):
+    def __init__(self, url: str) -> None:
+        super().__init__(f"address is not fetchable: {url}")
+        self.url = url
+
+
+class _AddressRefused(OSError):
+    pass
+
+
+class _IconPixelBudgetExceeded(Exception):
+    pass
+
+
+class _VettedResolver(AbstractResolver):
+    def __init__(self, handler: MultimodalHandler, protection: bool) -> None:
+        self._handler = handler
+        self._protection = protection
+        self._fallback = aiohttp.ThreadedResolver()
+
+    async def resolve(
+        self,
+        host: str,
+        port: int = 0,
+        family: socket.AddressFamily = socket.AF_INET,
+    ) -> list[ResolveResult]:
+        if not self._protection:
+            return await self._fallback.resolve(host, port, family=family)
+        ips = await asyncio.wait_for(
+            asyncio.to_thread(self._handler._validated_ips_for_host, host, port),
+            timeout=ADDRESS_CHECK_SECONDS,
+        )
+        if not ips:
+            raise _AddressRefused(f"address is not fetchable: {host}")
+        return [
+            {
+                "hostname": host,
+                "host": ip,
+                "port": port,
+                "family": socket.AF_INET6 if ":" in ip else socket.AF_INET,
+                "proto": 0,
+                "flags": socket.AI_NUMERICHOST,
+            }
+            for ip in ips
+        ]
+
+    async def close(self) -> None:
+        await self._fallback.close()
+
 
 _IMAGE_EXTENSIONS = frozenset(
     {
@@ -96,6 +190,30 @@ def image_extension_for_mime(mime_type: str | None) -> str:
         ext = (mime_type.split("/")[-1] or "png").split("+")[0]
     ext = _IMAGE_EXTENSION_ALIASES.get(ext, ext)
     return ext if ext in _IMAGE_EXTENSIONS else "png"
+
+
+def _icon_png_bytes(data: bytes) -> bytes:
+    from PIL import Image
+
+    measured = image_pixel_size(data)
+    if measured is None:
+        if _decodes_during_open(data):
+            raise _IconPixelBudgetExceeded
+    elif measured[0] * measured[1] > _MAX_MODEL_PROFILE_IMAGE_PIXELS:
+        raise _IconPixelBudgetExceeded
+
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            if image.width * image.height > _MAX_MODEL_PROFILE_IMAGE_PIXELS:
+                raise _IconPixelBudgetExceeded
+            image.load()
+            if image.mode not in ("RGB", "RGBA"):
+                image = image.convert("RGBA")
+            output = io.BytesIO()
+            image.save(output, format="PNG")
+            return output.getvalue()
+    except (Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
+        raise _IconPixelBudgetExceeded from exc
 
 
 def _guess_image_mime_type(url: str, content_type: str | None, data: bytes) -> str | None:
@@ -150,6 +268,112 @@ def _guess_image_mime_type(url: str, content_type: str | None, data: bytes) -> s
     return None
 
 
+_ICO_PREFIXES = (b"\x00\x00\x01\x00", b"\x00\x00\x02\x00")
+
+_ICO_MAX_FRAMES = 64
+
+_BMP_INFO_HEADER_BYTES = 40
+
+
+def _decodes_during_open(data: bytes) -> bool:
+    return isinstance(data, (bytes, bytearray)) and bytes(data[:4]) in _ICO_PREFIXES
+
+
+def _skips_the_resolver(host: str) -> bool:
+    return bool(host) and (":" in host or host.replace(".", "").isdigit())
+
+
+_FETCHABLE_SCHEMES = frozenset({"http", "https"})
+
+
+_V6_SITE_LOCAL = ipaddress.IPv6Network("fec0::/10")
+
+_V6_6TO4 = ipaddress.IPv6Network("2002::/16")
+
+_V6_TEREDO = ipaddress.IPv6Network("2001::/32")
+
+_V6_NAT64 = ipaddress.IPv6Network("64:ff9b::/96")
+
+
+def _embedded_ipv4(ip: ipaddress.IPv6Address) -> tuple[ipaddress.IPv4Address, ...]:
+    found: tuple[ipaddress.IPv4Address | None, ...] = ()
+    mapped = ip.ipv4_mapped
+    if mapped is not None:
+        found = (mapped,)
+    elif ip in _V6_6TO4:
+        found = (ip.sixtofour,)
+    elif ip in _V6_NAT64:
+        found = (ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF),)
+    elif ip in _V6_TEREDO:
+        found = ip.teredo or ()
+    return tuple(carried for carried in found if carried is not None)
+
+
+def _address_refusal(
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> str | None:
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip in _V6_SITE_LOCAL:
+            return "site-local"
+        embedded = _embedded_ipv4(ip)
+        if embedded:
+            for carried in embedded:
+                reason = _address_refusal(carried)
+                if reason is not None:
+                    return reason
+            return None
+    if ip.is_loopback:
+        return "loopback"
+    if ip.is_link_local:
+        return "link-local"
+    if ip.is_multicast:
+        return "multicast"
+    if ip.is_unspecified:
+        return "unspecified"
+    if ip.is_private:
+        return "private"
+    if ip.is_reserved:
+        return "reserved"
+    if not ip.is_global:
+        return "not globally routable"
+    return None
+
+
+def _ico_pixel_size(raw: bytes) -> tuple[int, int] | None:
+    if len(raw) < 22:
+        return None
+    count = int.from_bytes(raw[4:6], "little")
+    if count < 1 or count > _ICO_MAX_FRAMES:
+        return None
+    best: tuple[int, int] | None = None
+    for index in range(count):
+        entry = 6 + index * 16
+        if entry + 16 > len(raw):
+            return None
+        offset = int.from_bytes(raw[entry + 12 : entry + 16], "little")
+        frame = raw[offset : offset + _BMP_INFO_HEADER_BYTES]
+        if frame.startswith(b"\x89PNG\r\n\x1a\n"):
+            embedded = image_pixel_size(raw[offset : offset + 32])
+            if embedded is None:
+                return None
+            side = embedded
+        elif len(frame) >= 16 and int.from_bytes(frame[0:4], "little") == 12:
+            width = int.from_bytes(frame[4:6], "little")
+            height = int.from_bytes(frame[6:8], "little")
+            side = (width, height // 2)
+        elif len(frame) >= 16 and int.from_bytes(frame[0:4], "little") > 12:
+            width = int.from_bytes(frame[4:8], "little")
+            height = int.from_bytes(frame[8:12], "little")
+            if frame[11] == 0xFF:
+                height = 2**32 - height
+            side = (width, height // 2)
+        else:
+            return None
+        if best is None or side[0] * side[1] > best[0] * best[1]:
+            best = side
+    return best
+
+
 def image_pixel_size(data: bytes) -> tuple[int, int] | None:
     if not isinstance(data, (bytes, bytearray)) or len(data) < 16:
         return None
@@ -157,6 +381,9 @@ def image_pixel_size(data: bytes) -> tuple[int, int] | None:
 
     if raw.startswith(b"\x89PNG\r\n\x1a\n") and raw[12:16] == b"IHDR":
         return (int.from_bytes(raw[16:20], "big"), int.from_bytes(raw[20:24], "big"))
+
+    if _decodes_during_open(raw):
+        return _ico_pixel_size(raw)
 
     if raw.startswith(b"RIFF") and raw[8:12] == b"WEBP":
         chunk = raw[12:16]
@@ -278,6 +505,7 @@ class MultimodalHandler:
         artifact_store: Any | None = None,
         emit_status_callback: Callable | None = None,
         file_gateway: OwuiFileGateway | None = None,
+        valves_owner: Any | None = None,
     ):
         """Initialize the MultimodalHandler with dependencies from Pipe.
 
@@ -290,12 +518,30 @@ class MultimodalHandler:
             file_gateway: Optional OwuiFileGateway for authorized OWUI file I/O
         """
         self.logger = logger
-        self.valves = valves
+        self._valves = valves
+        self._valves_owner = valves_owner
         self._http_session = http_session
         self._artifact_store = artifact_store
         self._emit_status_callback = emit_status_callback
         self._file_gateway: OwuiFileGateway | None = file_gateway
         self._warned_missing_imaging: set[str] = set()
+        self._warned_dns_failures: dict[str, float] = {}
+        self._warned_blocked_hosts: dict[str, float] = {}
+        self._vetted_http_session: aiohttp.ClientSession | None = None
+        self._decode_pool: ThreadPoolExecutor | None = None
+        self._transport_closed = False
+        self._vetted_protection: bool | None = None
+        self._vetted_loop: asyncio.AbstractEventLoop | None = None
+        self._vetted_lock: asyncio.Lock | None = None
+        self._vetted_lock_loop: asyncio.AbstractEventLoop | None = None
+
+    @property
+    def valves(self) -> Any:
+        owner = self._valves_owner
+        if owner is None:
+            return self._valves
+        live = getattr(owner, "valves", None)
+        return self._valves if live is None else live
 
     def set_http_session(self, session: aiohttp.ClientSession | None) -> None:
         """Set or clear the HTTP session for remote downloads."""
@@ -373,7 +619,7 @@ class MultimodalHandler:
             ...     print(f"MIME type: {result['mime_type']}")
         """
         url = (url or "").strip()
-        if not url.lower().startswith(("http://", "https://")):
+        if not is_http_or_https_url(url):
             return None
 
         pinned = await self._prepare_pinned_request(url)
@@ -505,7 +751,7 @@ class MultimodalHandler:
         extra_headers: dict[str, str] | None = None,
     ) -> dict[str, Any] | None:
         url = (url or "").strip()
-        if not url.lower().startswith(("http://", "https://")):
+        if not is_http_or_https_url(url):
             return None
         pinned = await self._prepare_pinned_request(url)
         if pinned is None:
@@ -723,11 +969,18 @@ class MultimodalHandler:
 
     def _is_insecure_http_allowed(self, url: str) -> bool:
         """Return True when an http:// URL is explicitly allowed by valves."""
-        parsed = urlparse(url)
+        try:
+            parsed = _DialledURL(url)
+        except ValueError:
+            self.logger.warning("URL cannot be parsed: %s", url)
+            return False
         scheme = (parsed.scheme or "").lower()
-        if scheme != "http":
-            return True
-        if is_internal_file_url(url):
+        if scheme not in _FETCHABLE_SCHEMES:
+            self.logger.warning(
+                "Blocked URL whose scheme is neither http nor https: %s", url
+            )
+            return False
+        if scheme == "https":
             return True
         if not self.valves.ALLOW_INSECURE_HTTP:
             self.logger.warning(
@@ -743,15 +996,11 @@ class MultimodalHandler:
                 url,
             )
             return False
-        host = (parsed.hostname or "").lower().rstrip(".")
+        host = (parsed.raw_host or "").lower().rstrip(".")
         if not host:
             self.logger.warning("HTTP URL has no hostname: %s", url)
             return False
-        try:
-            port = parsed.port or 80
-        except ValueError:
-            self.logger.warning("HTTP URL has invalid port: %s", url)
-            return False
+        port = parsed.explicit_port or 80
         for allowed_host, allowed_port in allowlist:
             if host == allowed_host and (allowed_port is None or allowed_port == port):
                 return True
@@ -779,34 +1028,46 @@ class MultimodalHandler:
             return []
         return self._resolve_validated_ips(url)
 
+    def _latched_warn_level(
+        self, latch: set[str] | dict[str, float], cause: str
+    ) -> int:
+        if len(latch) >= _DNS_WARN_LATCH_MAX_HOSTS:
+            latch.clear()
+        return warn_level(latch, cause, cooldown_s=_ADDRESS_WARN_COOLDOWN_SECONDS)
+
+    def _parsed_target(self, url: str) -> tuple[str, int | None] | None:
+        try:
+            parsed = _DialledURL(url)
+            port = parsed.port
+        except ValueError:
+            self.logger.warning("URL cannot be parsed: %s", url)
+            return None
+        host = parsed.raw_host
+        if not host:
+            self.logger.warning("URL has no hostname: %s", url)
+            return None
+        return (host, port)
+
     def _resolve_validated_ips(self, url: str) -> list[str] | None:
         """Resolve the URL's host and return every resolved IP (as strings) iff
         ALL of them are public addresses; return None if resolution fails or ANY
         address targets a private/reserved range.
-
-        Single source of truth for SSRF address validation. Returning the
-        validated IPs lets the download path PIN the connection to one of them
-        (see _build_pinned_request), closing the DNS-rebinding TOCTOU gap where
-        httpx would otherwise re-resolve the host at connect time and reach a
-        different (private) IP than the one validated here. Conservative by
-        design: a host resolving to a mix of public and private IPs is rejected
-        outright, since the connection could be steered to the private one.
         """
+        target = self._parsed_target(url)
+        if target is None:
+            return None
+        return self._validated_ips_for_host(target[0], target[1])
+
+    def _validated_ips_for_host(
+        self, host: str, port: int | None = None
+    ) -> list[str] | None:
         try:
-            import ipaddress
-            import socket
-            from ipaddress import IPv4Address, IPv6Address
-
-            parsed = urlparse(url)
-            host = parsed.hostname
-            if not host:
-                self.logger.warning(f"URL has no hostname: {url}")
-                return None
-
-            ip_objects: list[IPv4Address | IPv6Address] = []
+            ip_objects: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
             seen_ips: set[str] = set()
 
-            def _record_ip(candidate: IPv4Address | IPv6Address) -> None:
+            def _record_ip(
+                candidate: ipaddress.IPv4Address | ipaddress.IPv6Address,
+            ) -> None:
                 comp = candidate.compressed
                 if comp not in seen_ips:
                     seen_ips.add(comp)
@@ -824,7 +1085,11 @@ class MultimodalHandler:
                 try:
                     addrinfo = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
                 except (socket.gaierror, UnicodeError):
-                    self.logger.warning(f"DNS resolution failed for: {host}")
+                    self.logger.log(
+                        self._latched_warn_level(self._warned_dns_failures, host),
+                        "DNS resolution failed for: %s",
+                        host,
+                    )
                     return None
                 except (OSError, TypeError, ValueError):  # pragma: no cover - defensive guard
                     self.logger.exception("Unexpected DNS error for %s", host)
@@ -846,28 +1111,26 @@ class MultimodalHandler:
                 return None
 
             for ip in ip_objects:
-                if ip.is_private:
-                    reason = "private"
-                elif ip.is_loopback:
-                    reason = "loopback"
-                elif ip.is_link_local:
-                    reason = "link-local"
-                elif ip.is_multicast:
-                    reason = "multicast"
-                elif ip.is_reserved:
-                    reason = "reserved"
-                elif ip.is_unspecified:
-                    reason = "unspecified"
-                else:
+                reason = _address_refusal(ip)
+                if reason is None:
                     continue
 
-                self.logger.warning(f"Blocked SSRF attempt to {reason} IP: {url} ({ip})")
+                self.logger.log(
+                    self._latched_warn_level(
+                        self._warned_blocked_hosts, f"{host}:{port}"
+                    ),
+                    "Blocked SSRF attempt to %s IP: %s port %s (%s)",
+                    reason,
+                    host,
+                    port,
+                    ip,
+                )
                 return None
 
             return [ip.compressed for ip in ip_objects]
 
         except Exception:
-            self.logger.exception("URL safety validation failed for %s", url)
+            self.logger.exception("Address validation failed for %s", host)
             return None
 
     def _build_pinned_request(
@@ -883,20 +1146,12 @@ class MultimodalHandler:
         sni_hostname extension makes the TLS handshake present/verify the
         original hostname (httpcore: server_hostname = sni_hostname or host).
         """
-        parsed = urlparse(url)
-        host = parsed.hostname or ""
-        ip_host = f"[{ip}]" if ":" in ip else ip
-        userinfo = ""
-        if parsed.username:
-            userinfo = parsed.username
-            if parsed.password:
-                userinfo += f":{parsed.password}"
-            userinfo += "@"
-        netloc = f"{userinfo}{ip_host}"
-        if parsed.port:
-            netloc = f"{netloc}:{parsed.port}"
-        request_url = urlunparse(parsed._replace(netloc=netloc))
-        host_header = f"{host}:{parsed.port}" if parsed.port else host
+        parsed = _DialledURL(url)
+        host = parsed.raw_host or ""
+        port = parsed.explicit_port
+        request_url = str(_DialledURL(url, encoded=True).with_host(ip))
+        literal = f"[{host}]" if ":" in host else host
+        host_header = f"{literal}:{port}" if port else literal
         headers = {"Host": host_header}
         extensions: dict[str, Any] = {}
         if (parsed.scheme or "").lower() == "https":
@@ -914,12 +1169,178 @@ class MultimodalHandler:
         resolved+validated exactly once and the connection is pinned to a
         validated IP, so httpx cannot re-resolve to a rebound private address.
         """
-        ips = await asyncio.to_thread(self._request_ips_blocking, url)
+        try:
+            ips = await asyncio.wait_for(
+                asyncio.to_thread(self._request_ips_blocking, url),
+                timeout=ADDRESS_CHECK_SECONDS,
+            )
+        except TimeoutError:
+            self.logger.warning(
+                "Address check for %s did not finish within %.1fs; treating it as unsafe",
+                url, ADDRESS_CHECK_SECONDS,
+            )
+            return None
         if ips is None:
             return None
         if not ips:
             return (url, {}, {})
         return self._build_pinned_request(url, ips[0])
+
+    def _vetted_loop_is_stale(self) -> bool:
+        bound = self._vetted_loop
+        if bound is None:
+            return False
+        if bound.is_closed():
+            return True
+        try:
+            return asyncio.get_running_loop() is not bound
+        except RuntimeError:
+            return False
+
+    async def _retire_vetted_session(self) -> None:
+        session = self._vetted_http_session
+        bound = self._vetted_loop
+        self._vetted_http_session = None
+        self._vetted_loop = None
+        if session is None or session.closed:
+            return
+        if bound is not None and not bound.is_closed():
+            try:
+                if bound is not asyncio.get_running_loop():
+                    return
+            except RuntimeError:
+                return
+        await session.close()
+
+    def _vetted_transport_lock(self) -> asyncio.Lock:
+        running = asyncio.get_running_loop()
+        if self._vetted_lock is None or self._vetted_lock_loop is not running:
+            self._vetted_lock = asyncio.Lock()
+            self._vetted_lock_loop = running
+        return self._vetted_lock
+
+    async def _vetted_session(self, url: str = "") -> aiohttp.ClientSession:
+        async with self._vetted_transport_lock():
+            if self._transport_closed:
+                raise UnfetchableAddress(url)
+            protection = bool(self.valves.ENABLE_SSRF_PROTECTION)
+            session = self._vetted_http_session
+            if (
+                session is not None
+                and not session.closed
+                and not self._vetted_loop_is_stale()
+                and (self._vetted_protection is None or protection == self._vetted_protection)
+            ):
+                self._vetted_protection = protection
+                return session
+            await self._retire_vetted_session()
+            connector = aiohttp.TCPConnector(
+                resolver=_VettedResolver(self, protection),
+                limit=_VETTED_CONNECTION_LIMIT,
+                limit_per_host=_VETTED_CONNECTION_LIMIT_PER_HOST,
+                ttl_dns_cache=_VETTED_DNS_CACHE_SECONDS,
+            )
+            session = aiohttp.ClientSession(connector=connector)
+            self._vetted_http_session = session
+            self._vetted_protection = protection
+            self._vetted_loop = asyncio.get_running_loop()
+            return session
+
+    def _hop_is_refused(self, url: str) -> bool:
+        target = self._parsed_target(url)
+        if target is None:
+            return True
+        if not self._is_insecure_http_allowed(url):
+            return True
+        if not self.valves.ENABLE_SSRF_PROTECTION:
+            return False
+        host = target[0]
+        if not _skips_the_resolver(host):
+            return False
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            self.logger.warning("Address-shaped host is not an address: %s", url)
+            return True
+        return self._validated_ips_for_host(host, target[1]) is None
+
+    def _joined_hop(self, target: str, location: str) -> str | None:
+        try:
+            return urljoin(target, location)
+        except ValueError:
+            self.logger.warning("Redirect target cannot be parsed: %s", location)
+            return None
+
+    @asynccontextmanager
+    async def _vetted_get(
+        self,
+        url: str,
+        *,
+        total_seconds: float,
+        **kwargs: Any,
+    ) -> AsyncIterator[Any]:
+        caller_headers = dict(kwargs.pop("headers", None) or {})
+        request_timeout = kwargs.pop("timeout", None) or aiohttp.ClientTimeout(
+            total=total_seconds
+        )
+        target = url
+        async with asyncio.timeout(total_seconds):
+            for _hop in range(_MAX_VETTED_REDIRECTS + 1):
+                if self._hop_is_refused(target):
+                    raise UnfetchableAddress(target)
+                session = await self._vetted_session(target)
+                connected = False
+                try:
+                    async with session.get(
+                        target,
+                        headers=caller_headers,
+                        allow_redirects=False,
+                        timeout=request_timeout,
+                        **kwargs,
+                    ) as response:
+                        connected = True
+                        location = response.headers.get("Location")
+                        if response.status in _REDIRECT_STATUSES and location:
+                            joined = self._joined_hop(target, location)
+                            if joined is None:
+                                raise UnfetchableAddress(location)
+                            target = joined
+                            continue
+                        yield response
+                        return
+                except aiohttp.ClientConnectorError as exc:
+                    if connected or not isinstance(exc.os_error, _AddressRefused):
+                        raise
+                    raise UnfetchableAddress(target) from exc
+        raise UnfetchableAddress(target)
+
+    async def _run_decode(self, func: Callable[..., Any], *args: Any) -> Any:
+        if self._transport_closed:
+            raise RuntimeError("the model-icon decode pool is closed")
+        pool = self._decode_pool
+        if pool is None:
+            pool = ThreadPoolExecutor(
+                max_workers=_ICON_DECODE_WORKERS, thread_name_prefix="or-icon-decode"
+            )
+            self._decode_pool = pool
+        return await asyncio.get_running_loop().run_in_executor(pool, func, *args)
+
+    def transport_session_state(self) -> str:
+        if self._transport_closed:
+            return "closed"
+        session = self._vetted_http_session
+        if session is None or self._vetted_loop_is_stale():
+            return "none"
+        return "closed" if session.closed else "active"
+
+    async def aclose(self) -> None:
+        async with self._vetted_transport_lock():
+            self._transport_closed = True
+            await self._retire_vetted_session()
+        pool = self._decode_pool
+        self._decode_pool = None
+        if pool is not None:
+            pool.shutdown(wait=False, cancel_futures=True)
 
     def _is_youtube_url(self, url: str | None) -> bool:
         """Check if URL is a valid YouTube video URL.
@@ -982,15 +1403,10 @@ class MultimodalHandler:
 
 
     @timed
-    async def _fetch_image_as_data_url(
-        self,
-        session: aiohttp.ClientSession,
-        url: str,
-    ) -> str | None:
+    async def _fetch_image_as_data_url(self, url: str) -> str | None:
         """Fetch image from URL and convert to data URL.
 
         Args:
-            session: aiohttp session for HTTP requests
             url: Image URL (supports relative URLs)
 
         Returns:
@@ -1009,17 +1425,26 @@ class MultimodalHandler:
             url = f"{_OPENROUTER_SITE_URL}/{url.lstrip('/')}"
 
         try:
-            async with session.get(url) as resp:
+            async with self._vetted_get(
+                url, total_seconds=_ICON_FETCH_TIMEOUT_SECONDS
+            ) as resp:
                 resp.raise_for_status()
-                data = await resp.read()
-                if len(data) > _MAX_MODEL_PROFILE_IMAGE_BYTES:
+                capped = await _capped_body(resp, _MAX_MODEL_PROFILE_IMAGE_BYTES)
+                if capped is None:
                     self.logger.debug(
-                        "Skipping oversized model icon (%d bytes, url=%s)",
-                        len(data),
+                        "Skipping model icon over %d bytes (url=%s)",
+                        _MAX_MODEL_PROFILE_IMAGE_BYTES,
                         url,
                     )
                     return None
+                data = capped
                 content_type = resp.headers.get("Content-Type")
+        except UnfetchableAddress as exc:
+            self.logger.debug("Refusing model icon address: %s", exc)
+            return None
+        except aiohttp.ClientResponseError as exc:
+            self.logger.debug("Failed to download model icon (url=%s): %s", url, exc)
+            return None
         except Exception as exc:
             self.logger.debug(
                 "Failed to download model icon (url=%s): %s", url, exc, exc_info=True
@@ -1049,10 +1474,12 @@ class MultimodalHandler:
                 return None
 
             try:
-                png_bytes = cairosvg.svg2png(
-                    bytestring=data,
-                    output_width=250,
-                    output_height=250,
+                png_bytes = await self._run_decode(
+                    lambda: cairosvg.svg2png(
+                        bytestring=data,
+                        output_width=250,
+                        output_height=250,
+                    )
                 )
             except Exception as exc:
                 self.logger.debug(
@@ -1082,8 +1509,8 @@ class MultimodalHandler:
             return f"data:image/png;base64,{encoded}"
 
         try:
-            from PIL import Image
-        except Exception as exc:
+            png_bytes = await self._run_decode(_icon_png_bytes, data)
+        except ImportError as exc:
             _level = warn_level(self._warned_missing_imaging, 'pillow')
             self.logger.log(
                 _level,
@@ -1093,15 +1520,15 @@ class MultimodalHandler:
                 exc_info=True,
             )
             return None
-
-        try:
-            with Image.open(io.BytesIO(data)) as image:
-                image.load()
-                if image.mode not in ("RGB", "RGBA"):
-                    image = image.convert("RGBA")
-                output = io.BytesIO()
-                image.save(output, format="PNG")
-                png_bytes = output.getvalue()
+        except _IconPixelBudgetExceeded:
+            self.logger.debug(
+                "Skipping model icon not provably within the %d pixel budget "
+                "(%d bytes, url=%s)",
+                _MAX_MODEL_PROFILE_IMAGE_PIXELS,
+                len(data),
+                url,
+            )
+            return None
         except Exception as exc:
             self.logger.debug(
                 "Failed to convert model icon to PNG (url=%s): %s", url, exc, exc_info=True
@@ -1130,15 +1557,10 @@ class MultimodalHandler:
         return f"data:image/png;base64,{encoded}"
 
     @timed
-    async def _fetch_maker_profile_image_url(
-        self,
-        session: aiohttp.ClientSession,
-        maker_id: str,
-    ) -> str | None:
+    async def _fetch_maker_profile_image_url(self, maker_id: str) -> str | None:
         """Fetch OpenRouter maker profile image URL from their page.
 
         Args:
-            session: aiohttp session for HTTP requests
             maker_id: Maker identifier
 
         Returns:
@@ -1149,23 +1571,25 @@ class MultimodalHandler:
             return None
         url = f"{_OPENROUTER_SITE_URL}/{quote(maker_id)}"
         try:
-            async with session.get(url) as resp:
+            async with self._vetted_get(
+                url, total_seconds=_MAKER_PAGE_FETCH_TIMEOUT_SECONDS
+            ) as resp:
                 resp.raise_for_status()
-                html = await resp.text()
+                capped = await _capped_body(resp, _MAKER_PAGE_MAX_BYTES)
         except Exception as exc:
             self.logger.debug(
                 "OpenRouter maker page fetch failed (maker=%s): %s", maker_id, exc, exc_info=True
             )
             return None
 
-        if not isinstance(html, str):
+        if capped is None:
             self.logger.warning(
-                "OpenRouter maker page returned non-string content type '%s' (maker=%s); treating as empty.",
-                type(html).__name__,
+                "OpenRouter maker page exceeds %d bytes (maker=%s); treating as empty.",
+                _MAKER_PAGE_MAX_BYTES,
                 maker_id,
             )
             return None
-        return _extract_openrouter_og_image(html)
+        return _extract_openrouter_og_image(capped.decode("utf-8", errors="replace"))
 
 
     def _parse_data_url(self, data_url: str) -> dict[str, Any] | None:

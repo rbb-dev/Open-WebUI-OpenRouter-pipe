@@ -60,7 +60,10 @@ class ErrorFormatter:
         self._pipe = pipe
         self._event_emitter_handler = event_emitter_handler
         self.logger = logger
-        self.valves = pipe.valves
+
+    @property
+    def valves(self) -> Any:
+        return self._pipe.valves
 
     # ======================================================================
     # Error Emission Methods

@@ -210,6 +210,7 @@ class ArtifactStore:
         emit_notification_callback: Callable | None = None,
         tool_context_var: ContextVar | None = None,
         user_id_context_var: ContextVar | None = None,
+        valves_owner: Any | None = None,
     ):
         """Initialize the ArtifactStore with dependencies from Pipe.
 
@@ -223,7 +224,8 @@ class ArtifactStore:
         """
         self.id = pipe_id
         self.logger = logger
-        self.valves = valves
+        self._valves = valves
+        self._valves_owner = valves_owner
         self._emit_notification = emit_notification_callback
         self._TOOL_CONTEXT = tool_context_var
         self._user_id_context = user_id_context_var
@@ -233,6 +235,11 @@ class ArtifactStore:
         self._initialize_redis_state()
         self._initialize_database_state()
         self._initialize_cleanup_state()
+
+    @property
+    def valves(self) -> Any:
+        live = getattr(self._valves_owner, "valves", None)
+        return self._valves if live is None else live
 
     def _initialize_encryption_state(self):
         """Initialize encryption and compression state."""
