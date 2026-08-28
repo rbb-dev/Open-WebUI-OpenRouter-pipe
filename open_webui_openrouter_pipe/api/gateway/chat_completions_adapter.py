@@ -591,6 +591,20 @@ class ChatCompletionsAdapter:
                             break
                     break
 
+        if reasoning_item_id is not None:
+            reasoning_text = "".join(reasoning_text_parts).strip()
+            reasoning_item: dict[str, Any] = {
+                "type": "reasoning",
+                "id": reasoning_item_id,
+                "status": "completed",
+                "content": [{"type": "reasoning_text", "text": reasoning_text}] if reasoning_text else [],
+                "summary": [{"type": "summary_text", "text": reasoning_summary_text}] if reasoning_summary_text else [],
+            }
+            yield {
+                "type": "response.output_item.done",
+                "item": reasoning_item,
+            }
+
         if tool_calls_by_index and tool_calls_completed:
             for index in sorted(tool_calls_by_index.keys()):
                 current = tool_calls_by_index[index]
@@ -606,20 +620,6 @@ class ChatCompletionsAdapter:
                         "arguments": current.get("arguments") or "",
                     },
                 }
-
-        if reasoning_item_id is not None:
-            reasoning_text = "".join(reasoning_text_parts).strip()
-            reasoning_item: dict[str, Any] = {
-                "type": "reasoning",
-                "id": reasoning_item_id,
-                "status": "completed",
-                "content": [{"type": "reasoning_text", "text": reasoning_text}] if reasoning_text else [],
-                "summary": [{"type": "summary_text", "text": reasoning_summary_text}] if reasoning_summary_text else [],
-            }
-            yield {
-                "type": "response.output_item.done",
-                "item": reasoning_item,
-            }
 
         assistant_text = "".join(assistant_text_parts)
         if not assistant_text:
