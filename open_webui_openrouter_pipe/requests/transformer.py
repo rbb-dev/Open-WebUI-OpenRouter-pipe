@@ -355,6 +355,7 @@ async def transform_messages_to_input(
         """Strip hidden transport markers from non-assistant free text."""
         return strip_hidden_marker_lines(text)
 
+    missing_artifact_markers: list[str] = []
     for idx, msg in enumerate(messages):
         raw_role = msg.get("role")
         role = (raw_role or "").lower()
@@ -1583,7 +1584,7 @@ async def transform_messages_to_input(
                 if segment["type"] == "marker":
                     artifact_payload = db_artifacts.get(segment["marker"])
                     if artifact_payload is None:
-                        logger.warning("Missing artifact %s for chat_id=%s message_id=%s", segment["marker"], chat_id, msg_id)
+                        missing_artifact_markers.append(segment["marker"])
                         continue
                     if (
                         artifact_payload.get("type") == "reasoning"
@@ -1677,6 +1678,16 @@ async def transform_messages_to_input(
                         "arguments": args_text,
                     }
                 )
+
+    if missing_artifact_markers:
+        distinct_missing = sorted(set(missing_artifact_markers))
+        logger.warning(
+            "Missing %d artifact(s) across %d marker reference(s) for chat_id=%s: %s",
+            len(distinct_missing),
+            len(missing_artifact_markers),
+            chat_id,
+            distinct_missing,
+        )
 
     openai_input = _reinterleave_reasoning_by_anchor(openai_input)
 

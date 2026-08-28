@@ -21,7 +21,11 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
+import logging
+
 import pytest
+
+from tests.log_capture import emitted
 
 from open_webui_openrouter_pipe import Pipe
 from open_webui_openrouter_pipe.core.errors import RequiredInternalFileError
@@ -752,6 +756,42 @@ class TestAssistantMessages:
 # =============================================================================
 # Turn Computation Tests
 # =============================================================================
+
+
+class TestMissingArtifactReporting:
+    """One warning per request, counting distinct artifacts and total references."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("markers", "expected_distinct", "expected_references"),
+        [
+            (["0001H74WE6NX0KKR9ZC7"], 1, 1),
+            (
+                [
+                    "0001H74WE6NX0KKR9ZC7",
+                    "0001H74WE6NX0KKR9ZC8",
+                    "0001H74WE6NX0KKR9ZC7",
+                ],
+                2,
+                3,
+            ),
+        ],
+        ids=["one-marker", "two-distinct-three-references"],
+    )
+    async def test_missing_artifacts_are_reported_once_per_request(
+        self, pipe_instance, caplog, markers, expected_distinct, expected_references
+    ):
+        body = "\n".join(f"[{marker}]: #" for marker in markers)
+        messages = [{"role": "assistant", "content": f"Answer text.\n{body}\n"}]
+
+        with caplog.at_level(logging.WARNING):
+            await transform_messages_to_input(pipe_instance, messages)
+
+        records = emitted(caplog, level=logging.WARNING, containing="Missing")
+        assert len(records) == 1
+        message = records[0].getMessage()
+        assert f"Missing {expected_distinct} artifact(s)" in message
+        assert f"{expected_references} marker reference(s)" in message
 
 
 class TestTurnComputation:
