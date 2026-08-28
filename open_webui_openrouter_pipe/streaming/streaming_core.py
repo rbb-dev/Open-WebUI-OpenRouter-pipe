@@ -10,6 +10,7 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import copy
 import datetime
 import inspect
 import json
@@ -526,6 +527,9 @@ class StreamingHandler:
         emitted_tool_call_items: set[str] = set()
         emitted_tool_output_items: set[str] = set()
         emitted_response_output_items = False
+        emitted_output_items: list[dict[str, Any]] = []
+        seeded_output_items: list[dict[str, Any]] | None = None
+        recorded_message_chars = 0
         incomplete_warning_emitted = False
         tool_loops_executed = False
         assistant_len_before_tool_loops = 0
@@ -850,6 +854,79 @@ class StreamingHandler:
                     current += "\n"
             return f"{current}{snippet}\n"
 
+        async def _capture_seeded_output() -> list[dict[str, Any]]:
+            nonlocal seeded_output_items
+            if seeded_output_items is not None:
+                return seeded_output_items
+            seeded_output_items = []
+            if chat_id and message_id and Chats is not None:
+                try:
+                    stored = await Chats.get_message_by_id_and_message_id(
+                        str(chat_id), str(message_id)
+                    )
+                except Exception:
+                    self.logger.debug(
+                        "Could not read seeded output items (chat_id=%s message_id=%s)",
+                        chat_id,
+                        message_id,
+                        exc_info=True,
+                    )
+                    return seeded_output_items
+                prior = (stored or {}).get("output")
+                if isinstance(prior, list):
+                    seeded_output_items = [
+                        copy.deepcopy(entry) for entry in prior if isinstance(entry, dict)
+                    ]
+            return seeded_output_items
+
+        def _flush_recorded_message() -> None:
+            nonlocal recorded_message_chars
+            pending = assistant_message[recorded_message_chars:]
+            if not pending:
+                return
+            recorded_message_chars = len(assistant_message)
+            emitted_output_items.append({
+                "type": "message",
+                "id": f"msg-{uuid.uuid4().hex}",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": pending}],
+            })
+
+        async def _record_output_item(item: dict[str, Any]) -> None:
+            await _capture_seeded_output()
+            _flush_recorded_message()
+            recorded = copy.deepcopy(item)
+            item_id = recorded.get("id")
+            if item_id:
+                for index, existing in enumerate(emitted_output_items):
+                    if existing.get("id") == item_id:
+                        emitted_output_items[index] = recorded
+                        return
+            emitted_output_items.append(recorded)
+
+        def _terminal_output_items() -> list[dict[str, Any]]:
+            resolved: list[dict[str, Any]] = []
+            for entry in emitted_output_items:
+                item = copy.deepcopy(entry)
+                if item.get("type") == "function_call":
+                    call_id = item.get("call_id") or item.get("id")
+                    if item.get("status") not in {"completed", "failed", "rejected"}:
+                        item["status"] = (
+                            "completed" if call_id in emitted_tool_output_items else "failed"
+                        )
+                resolved.append(item)
+            trailing = assistant_message[recorded_message_chars:]
+            if trailing:
+                resolved.append({
+                    "type": "message",
+                    "id": f"msg-{uuid.uuid4().hex}",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": trailing}],
+                })
+            return (seeded_output_items or []) + resolved
+
         async def _emit_tool_start(
             *,
             call_id: str,
@@ -871,16 +948,18 @@ class StreamingHandler:
                 return effective_id
             emitted_tool_call_items.add(effective_id)
             emitted_response_output_items = True
+            call_item: dict[str, Any] = {
+                "type": "function_call",
+                "id": effective_id,
+                "call_id": effective_id,
+                "name": name,
+                "arguments": arguments,
+                "status": status,
+            }
+            await _record_output_item(call_item)
             await event_emitter({
                 "type": "response.output_item.added",
-                "item": {
-                    "type": "function_call",
-                    "id": effective_id,
-                    "call_id": effective_id,
-                    "name": name,
-                    "arguments": arguments,
-                    "status": status,
-                },
+                "item": call_item,
             })
             return effective_id
 
@@ -915,6 +994,7 @@ class StreamingHandler:
                 output_item["files"] = files
             if embeds:
                 output_item["embeds"] = embeds
+            await _record_output_item(output_item)
             await event_emitter({"type": "response.output_item.added", "item": output_item})
 
         def _normalize_surrogate_chunk(text: str, bucket: str) -> str:
@@ -1059,18 +1139,20 @@ class StreamingHandler:
             state["emitted"] = True
             reasoning_stream_completed.add(key)
             emitted_response_output_items = True
+            reasoning_item: dict[str, Any] = {
+                "type": "reasoning",
+                "id": item_id,
+                "summary": [{"type": "summary_text", "text": text}],
+                "status": "completed",
+                "started_at": state["wall_open"],
+                "ended_at": time.time(),
+                "duration": duration,
+            }
+            await _record_output_item(reasoning_item)
             await event_emitter(
                 {
                     "type": "response.output_item.added",
-                    "item": {
-                        "type": "reasoning",
-                        "id": item_id,
-                        "summary": [{"type": "summary_text", "text": text}],
-                        "status": "completed",
-                        "started_at": state["wall_open"],
-                        "ended_at": time.time(),
-                        "duration": duration,
-                    },
+                    "item": reasoning_item,
                 }
             )
 
@@ -3176,6 +3258,7 @@ class StreamingHandler:
                         "content": [{"type": "output_text", "text": assistant_message}],
                     }
                     try:
+                        await _record_output_item(fusion_answer_item)
                         await event_emitter({
                             "type": "response.output_item.added",
                             "item": fusion_answer_item,
@@ -3240,6 +3323,20 @@ class StreamingHandler:
                     )
 
             if (not error_occurred) and (not was_cancelled):
+                if emitted_output_items and event_emitter:
+                    try:
+                        await event_emitter({
+                            "type": "response.completed",
+                            "response": {"output": _terminal_output_items()},
+                        })
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        self.logger.warning(
+                            "Could not publish the terminal output array; tool calls and "
+                            "reasoning may be missing from this turn's stored history",
+                            exc_info=True,
+                        )
                 self._audit_orphan_tool_cards(emitted_tool_call_items, emitted_tool_output_items)
                 if terminal:
                     final_content = None if emitted_response_output_items else assistant_message

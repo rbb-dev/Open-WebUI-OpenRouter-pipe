@@ -365,19 +365,70 @@ class TestAnswerAndWireIntegrity:
         assert "Hello world." in deltas
 
     @pytest.mark.asyncio
-    async def test_response_completed_never_forwarded(self, monkeypatch, pipe_instance_async):
-        """N5: forwarding response.completed would let OWUI wipe the output array."""
+    async def test_upstream_response_completed_is_never_forwarded(
+        self, monkeypatch, pipe_instance_async
+    ):
+        """N5: the upstream array is a stub; forwarding it would wipe OWUI's output."""
         pipe = pipe_instance_async
         clock = _install_clock(monkeypatch)
         valves = pipe.valves.model_copy(update={"THINKING_OUTPUT_MODE": "open_webui"})
+        upstream_stub = [{"type": "message"}]
         steps = [
             (0.0, {"type": "response.output_item.added", "item": {"type": "reasoning", "id": "rs-1"}}),
             (1.0, {"type": "response.reasoning_text.delta", "item_id": "rs-1", "delta": "Thought."}),
             (1.0, {"type": "response.output_text.delta", "delta": "Answer."}),
-            (0.0, {"type": "response.completed", "response": {"output": [{"type": "message"}], "usage": {}}}),
+            (0.0, {"type": "response.completed",
+                   "response": {"output": upstream_stub, "usage": {}}}),
         ]
         emitted = await _run(pipe, valves, steps, clock, monkeypatch)
-        assert _events_of(emitted, "response.completed") == []
+        for event in _events_of(emitted, "response.completed"):
+            published = (event.get("response") or {}).get("output") or []
+            assert published != upstream_stub
+            text = "".join(
+                part.get("text", "")
+                for item in published
+                if item.get("type") == "message"
+                for part in (item.get("content") or [])
+            )
+            assert "Answer." in text
+
+    @pytest.mark.asyncio
+    async def test_published_output_array_carries_every_emitted_item(
+        self, monkeypatch, pipe_instance_async
+    ):
+        """The terminal array must be a superset of what OWUI could assemble alone."""
+        pipe = pipe_instance_async
+        clock = _install_clock(monkeypatch)
+        valves = pipe.valves.model_copy(
+            update={"THINKING_OUTPUT_MODE": "open_webui", "SHOW_TOOL_CARDS": True}
+        )
+        steps = [
+            (0.0, {"type": "response.output_text.delta", "delta": "Checking. "}),
+            (0.2, {"type": "response.output_item.added",
+                   "item": {"type": "openrouter:web_search", "id": "ws-1"}}),
+            (1.0, {"type": "response.output_item.done",
+                   "item": {"type": "openrouter:web_search", "id": "ws-1", "action": {}}}),
+            (0.2, {"type": "response.output_text.delta", "delta": "It is 22 degrees."}),
+            (0.0, {"type": "response.completed", "response": {"output": [], "usage": {}}}),
+        ]
+        emitted = await _run(pipe, valves, steps, clock, monkeypatch)
+        completions = _events_of(emitted, "response.completed")
+        assert completions
+        published = (completions[-1].get("response") or {}).get("output") or []
+        for item in _events_of(emitted, "response.output_item.added"):
+            item_id = (item.get("item") or {}).get("id")
+            assert any(entry.get("id") == item_id for entry in published)
+        text = "".join(
+            part.get("text", "")
+            for entry in published
+            if entry.get("type") == "message"
+            for part in (entry.get("content") or [])
+        )
+        assert text == "Checking. It is 22 degrees."
+        calls = [e for e in published if e.get("type") == "function_call"]
+        assert calls and all(
+            e.get("status") in {"completed", "failed", "rejected"} for e in calls
+        )
 
 
 class TestRetireDriftGuard:
