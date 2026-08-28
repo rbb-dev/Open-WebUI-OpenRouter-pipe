@@ -323,3 +323,29 @@ async def test_chat_persisted_reasoning_replays_before_its_own_call(
         )
     assert next(i for i, txt in texts if txt == "FINAL") > fc_idx[-1], types
     assert not any(k.startswith("_anchor") for it in result for k in it), types
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("n_rounds", [1, 2], ids=["one-round", "two-rounds"])
+async def test_chat_persisted_reasoning_carries_the_signature_the_provider_sent(
+    pipe_instance_async, monkeypatch, n_rounds
+):
+    """Persisted unsigned, Anthropic's sanitizer drops the whole span on replay.
+
+    The signing back-fill in `_run_streaming_loop` reads `signature`,
+    `encrypted_content` and `format` off each `reasoning` item in
+    `response.completed.output`. The chat adapter used to fold reasoning into
+    `message.reasoning_details` only, so `output` held no reasoning item at all and the
+    back-fill matched nothing -- every chat-transport row went to the store unsigned.
+
+    Each round streams its own `sig-<text>`, so the expected values differ per row and a
+    constant cannot satisfy the assertion.
+    """
+    payloads = await _persist_via_chat(pipe_instance_async, monkeypatch, n_rounds)
+
+    reasoning = [p for p in payloads if p.get("type") == "reasoning"]
+    assert len(reasoning) == n_rounds + 1
+
+    expected = [f"sig-PRE{i}" for i in range(n_rounds)] + ["sig-FINAL"]
+    assert [p.get("signature") for p in reasoning] == expected
+    assert all(p.get("format") == "anthropic-claude-v1" for p in reasoning)

@@ -600,6 +600,17 @@ class ChatCompletionsAdapter:
                 "content": [{"type": "reasoning_text", "text": reasoning_text}] if reasoning_text else [],
                 "summary": [{"type": "summary_text", "text": reasoning_summary_text}] if reasoning_summary_text else [],
             }
+            for detail in _final_reasoning_details():
+                detail_type = detail.get("type")
+                if detail_type == "reasoning.text":
+                    for field in ("signature", "format"):
+                        value = detail.get(field)
+                        if isinstance(value, str) and value and field not in reasoning_item:
+                            reasoning_item[field] = value
+                elif detail_type == "reasoning.encrypted":
+                    data = detail.get("data")
+                    if isinstance(data, str) and data and "encrypted_content" not in reasoning_item:
+                        reasoning_item["encrypted_content"] = data
             yield {
                 "type": "response.output_item.done",
                 "item": reasoning_item,
