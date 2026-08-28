@@ -1733,6 +1733,63 @@ class TestMarkerBasedArtifactReplay:
         assert len(result) >= 2
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("with_tool_calls", [False, True], ids=["no-tool-calls", "with-tool-calls"])
+    @pytest.mark.parametrize("artifact_kind", ["reasoning", "function_call"], ids=["reasoning", "function_call"])
+    async def test_markers_are_replayed_even_when_open_webui_supplies_tool_calls(
+        self, pipe_instance, with_tool_calls, artifact_kind
+    ):
+        """Open WebUI merges content and tool_calls into one message; both must be handled.
+
+        Gating replay on the absence of tool_calls did two things at once: it sent the
+        hidden ULID upstream as literal assistant text, and it skipped the artifact loader
+        entirely, so every reasoning block on that turn was silently dropped. The real
+        invariant is narrower -- a call Open WebUI already supplies must not also arrive
+        from an artifact -- so only those item types are skipped.
+        """
+        marker = self.VALID_MARKER
+        second = self.SECOND_MARKER
+        call_id = "call-abc"
+
+        async def loader(chat_id, message_id, markers):
+            if artifact_kind == "reasoning":
+                return {marker: {"type": "reasoning", "id": "rs-1",
+                                 "content": [{"type": "reasoning_text", "text": "thought"}]}}
+            return {
+                marker: {"type": "function_call", "id": "fc-1", "call_id": call_id,
+                         "name": "lookup", "arguments": "{}"},
+                second: {"type": "function_call_output", "id": "fco-1", "call_id": call_id,
+                         "output": [{"type": "input_text", "text": "ok"}]},
+            }
+
+        body = f"Answer text.\n[{marker}]: #"
+        if artifact_kind == "function_call":
+            body += f"\n[{second}]: #"
+        message = {"role": "assistant", "content": body}
+        if with_tool_calls:
+            message["tool_calls"] = [{
+                "id": call_id, "type": "function",
+                "function": {"name": "lookup", "arguments": "{}"},
+            }]
+
+        result = await transform_messages_to_input(
+            pipe_instance, [message],
+            chat_id="test_chat", openwebui_model_id="test_model", artifact_loader=loader,
+        )
+
+        blob = json.dumps(result)
+        assert f"[{marker}]: #" not in blob, "the hidden marker reached the provider payload"
+
+        calls = [i for i in result if i.get("type") == "function_call"
+                 and i.get("call_id") == call_id]
+        assert len(calls) <= 1, f"the call was injected {len(calls)} times"
+        if with_tool_calls:
+            assert len(calls) == 1
+        if artifact_kind == "reasoning":
+            assert any(i.get("type") == "reasoning" for i in result), (
+                "the artifact loader was skipped, so this turn's reasoning was dropped"
+            )
+
+    @pytest.mark.asyncio
     async def test_phase_markers_inserted_before_marker_artifacts(self, pipe_instance):
         """Phase-marked text replays before persisted artifacts."""
         marker_reasoning = self.VALID_MARKER

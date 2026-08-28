@@ -1545,7 +1545,7 @@ async def transform_messages_to_input(
                 chunk_items[-1]["reasoning_details"] = msg_reasoning_details
             openai_input.extend(chunk_items)
 
-        if (not msg_tool_calls) and contains_marker(assistant_text):
+        if contains_marker(assistant_text):
             segments = split_text_by_markers(assistant_text)
             markers = [seg["marker"] for seg in segments if seg.get("type") == "marker"]
 
@@ -1599,6 +1599,17 @@ async def transform_messages_to_input(
                             pipe.logger.debug(
                                 "Skipping %s artifact when rebuilding provider context (not replayable).",
                                 item_type,
+                            )
+                            continue
+                        if msg_tool_calls and item_type in {
+                            "function_call",
+                            "function_call_output",
+                        }:
+                            pipe.logger.debug(
+                                "Skipping %s artifact; Open WebUI supplied this turn's calls "
+                                "(chat_id=%s)",
+                                item_type,
+                                chat_id,
                             )
                             continue
                         if (
