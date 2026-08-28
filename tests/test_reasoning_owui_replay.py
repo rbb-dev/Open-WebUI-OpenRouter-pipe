@@ -1,7 +1,7 @@
-"""Keystone end-to-end replay: pipe emit stream -> OWUI 0.10.2 output assembly.
+"""Keystone end-to-end replay: pipe emit stream -> OWUI 0.11.1 output assembly.
 
 This test proves that the events the pipe emits, when consumed by Open WebUI
-0.10.2's ACTUAL output-assembly logic, yield a correct final ``output`` array:
+0.11.1's ACTUAL output-assembly logic, yield a correct final ``output`` array:
 distinct completed reasoning items, intact tool cards, and an intact answer
 message.
 
@@ -18,28 +18,37 @@ It works in two layers:
    ``.external/open-webui/backend/open_webui/utils/middleware.py`` — we do NOT
    import ``open_webui`` (conftest stubs it). The vendored pieces are:
      * ``deep_merge``                       (middleware.py ~403-421)
-     * ``handle_responses_streaming_event`` (middleware.py ~424-750)
-     * ``_process_value_chunk``             (middleware.py ~4361-4479 — the
-       running-content / reasoning-close / inside-tag-block / trailing-message
-       logic that lives inline inside ``stream_body_handler`` and cannot be
-       imported in isolation)
-     * ``_finalize_output``                 (middleware.py ~4547-4573 post-loop
-       cleanup: empty-trailing-message pop + last-reasoning close)
+     * ``handle_responses_streaming_event`` (middleware.py ~597-900, including
+       0.11.1's ``.added`` trichotomy: replace on matching id/call_id, insert at
+       an in-range ``output_index``, otherwise append)
+     * ``tag_output_handler``               (middleware.py 4219-4496 verbatim,
+       dedented to module level; its two closure dicts ``tag_scan_positions`` /
+       ``tag_boundary_positions`` become module globals reset per assembly)
+     * ``_start_tag_pattern``               (middleware.py 240-243)
+     * ``DEFAULT_REASONING_TAGS`` / ``DEFAULT_SOLUTION_TAGS`` /
+       ``DEFAULT_CODE_INTERPRETER_TAGS`` (middleware.py 225-237)
+     * ``_process_value_chunk``             (the running-content / reasoning-close
+       / inside-tag-block / trailing-message logic that lives inline inside
+       ``stream_body_handler`` and cannot be imported in isolation)
+     * ``_finalize_output``                 (post-loop cleanup: empty-trailing-
+       message pop + last-reasoning close)
    ``output_id`` is replaced with a deterministic counter-based stand-in
    producing ``r_<n>`` / ``msg_<n>`` (the real one returns ``prefix_<hex>``;
    only the shape matters for assembly).
 
+   ``owui_assemble`` takes ``detect_reasoning_tags`` so both sides of OWUI's
+   ``DETECT_REASONING_TAGS`` gate (``middleware.py:4580``, an identity check
+   against literal ``False``) can be exercised.
+
 DEVIATIONS from the vendored OWUI logic (intentional, per task scope):
-  * The base64 image conversion (middleware.py ~4389-4398, guarded by
+  * The base64 image conversion (guarded by
     ``ENABLE_CHAT_RESPONSE_BASE64_IMAGE_URL_CONVERSION``) is omitted — no
     base64 in this data.
-  * ``tag_output_handler`` (middleware.py ~4481-4499) is NOT implemented — the
-    task places OWUI's ``<think>`` tag-splitting out of scope. Case C asserts
-    that, because the pipe never routes the literal tag through a reasoning
-    item, the answer text survives verbatim in the message item even without
-    tag handling.
-  * ``ENABLE_REALTIME_CHAT_SAVE`` DB persistence (middleware.py ~4504+) is
-    omitted — not output-building.
+  * ``ENABLE_REALTIME_CHAT_SAVE`` DB persistence is omitted — not
+    output-building.
+  * The fusion answer path is not exercised here; fusion resets
+    ``assistant_message`` and emits its own message item, so its interaction
+    with the pipe's terminal ``response.completed`` array is uncovered.
 """
 # pyright: reportArgumentType=false, reportOptionalSubscript=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportCallIssue=false
 
