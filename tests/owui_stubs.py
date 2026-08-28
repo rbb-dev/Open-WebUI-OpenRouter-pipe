@@ -116,6 +116,9 @@ def _install_open_webui_stubs() -> None:
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
 
+        def model_dump(self):
+            return dict(self)
+
     class _Models:
         @staticmethod
         async def get_model_by_id(_model_id):

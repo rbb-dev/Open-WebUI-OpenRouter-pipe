@@ -267,7 +267,7 @@ async def test_claim_pipe_model_metadata_sync_merges_existing_capabilities(monke
                 base_model_id=None,
                 name="Existing",
                 meta=existing_meta,
-                params=ModelParams(),
+                params=ModelParams(reasoning_tags=False),
                 access_grants=[],
                 is_active=True,
             )

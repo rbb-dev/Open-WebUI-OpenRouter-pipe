@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
@@ -50,6 +50,22 @@ from .registry import ModelFamily, OpenRouterModelRegistry
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
+
+
+def _params_as_mapping(existing: Any) -> dict[str, Any]:
+    if existing is None:
+        return {}
+    dump = getattr(existing, "model_dump", None)
+    source: Any = dump() if callable(dump) else existing
+    if not isinstance(source, Mapping):
+        return {}
+    return {str(key): value for key, value in source.items()}
+
+
+def _params_without_tag_scanning(params_cls: Any, existing: Any) -> Any:
+    data = _params_as_mapping(existing)
+    data["reasoning_tags"] = data.get("reasoning_tags", False)
+    return params_cls(**data)
 
 
 def _dedupe_preserve_order(entries: list[str]) -> list[str]:
@@ -1697,7 +1713,7 @@ class ModelCatalogManager:
                 base_model_id=model.base_model_id,
                 name=model.name,
                 meta=meta_obj,
-                params=model.params if model.params else ModelParams(),
+                params=_params_without_tag_scanning(ModelParams, model.params),
                 access_payload=self._resolve_model_access_payload(
                     model_obj=model,
                     supports_access_control=supports_access_control,
@@ -2177,7 +2193,10 @@ class ModelCatalogManager:
                     meta_dict[_PIPE_METADATA_KEY] = pipe_meta
                     meta_updated = True
 
-            if not meta_updated:
+            existing_tags = _params_as_mapping(
+                getattr(existing, "params", None)
+            ).get("reasoning_tags")
+            if not meta_updated and existing_tags is False:
                 return
 
             meta_obj = ModelMeta(**meta_dict)
@@ -2188,7 +2207,7 @@ class ModelCatalogManager:
                 base_model_id=existing.base_model_id,
                 name=existing.name,
                 meta=meta_obj,
-                params=existing.params if existing.params else ModelParams(),
+                params=_params_without_tag_scanning(ModelParams, existing.params),
                 access_payload=self._resolve_model_access_payload(
                     model_obj=existing,
                     supports_access_control=supports_access_control,
@@ -2275,7 +2294,7 @@ class ModelCatalogManager:
                 return
 
             meta_obj = ModelMeta(**meta_dict)
-            params_obj = ModelParams()
+            params_obj = _params_without_tag_scanning(ModelParams, None)
 
             access_mode = self._pipe.valves.NEW_MODEL_ACCESS_CONTROL
             access_payload = self._default_new_model_access_payload(

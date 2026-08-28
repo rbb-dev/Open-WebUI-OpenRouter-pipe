@@ -18,7 +18,7 @@ def _make_existing_model(model_id: str, meta: dict, params: dict | None = None):
         base_model_id=None,
         name="Example",
         meta=ModelMeta(**meta),
-        params=params or {},
+        params={"reasoning_tags": False, **(params or {})},
         access_grants=[],
         is_active=True,
     )

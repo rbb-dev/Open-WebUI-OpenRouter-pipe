@@ -44,7 +44,7 @@ def _make_existing_model(model_id: str, *, meta: dict, params: dict | None = Non
         base_model_id=None,
         name="Example",
         meta=ModelMeta(**meta),
-        params=params or {},
+        params={"reasoning_tags": False, **(params or {})},
         access_grants=[],
         is_active=True,
     )
@@ -1082,6 +1082,40 @@ async def test_update_existing_model_no_changes_skips_update(pipe_instance_async
 
 
 @pytest.mark.asyncio
+async def test_a_row_missing_the_scanner_verdict_is_updated_even_with_current_metadata(
+    pipe_instance_async,
+) -> None:
+    """A row without `reasoning_tags` is out of date, exactly like stale capabilities.
+
+    Every other reason the sync writes a row is a metadata condition that has drifted.
+    A missing scanner verdict is the same kind of drift: Open WebUI's tag scanner is
+    still running on that model and can still truncate an answer at a literal `<think>`.
+    The write happens once -- afterwards the row carries the verdict and the sync reads
+    it back and returns early.
+    """
+    pipe = pipe_instance_async
+    pipe._ensure_catalog_manager()
+    model_id = "test_pipe.openai.gpt-4o"
+
+    existing = _make_existing_model(model_id, meta={"capabilities": {"vision": True}})
+    existing.params = {"temperature": 0.7}
+    update_mock = AsyncMock()
+
+    with patch("open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=existing)), \
+         patch("open_webui.models.models.Models.update_model_by_id", new=update_mock):
+        await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
+            model_id, "GPT-4o", {"vision": True}, None, True, False,
+        )
+
+    update_mock.assert_called_once()
+    written = update_mock.call_args[0][1].params
+    written = written if isinstance(written, dict) else written.model_dump()
+    assert written["reasoning_tags"] is False
+    assert written["temperature"] == 0.7
+
+
+
+@pytest.mark.asyncio
 async def test_update_existing_model_updates_profile_image(pipe_instance_async) -> None:
     """Updates profile image when different from existing."""
     pipe = pipe_instance_async
@@ -1877,7 +1911,12 @@ async def test_insert_new_model_with_openrouter_pipe_capabilities(pipe_instance_
 
 @pytest.mark.asyncio
 async def test_update_existing_model_with_existing_params(pipe_instance_async) -> None:
-    """Updates model preserving existing params."""
+    """Updates model preserving existing params, and stamps the scanner verdict.
+
+    Open WebUI's `<think>`-tag scanner has no true positives on a pipe model -- the pipe
+    emits reasoning as native output items -- so every row the sync touches carries
+    `reasoning_tags: False` alongside whatever the operator set.
+    """
     pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     model_id = "test_pipe.openai.gpt-4o"
@@ -1910,7 +1949,11 @@ async def test_update_existing_model_with_existing_params(pipe_instance_async) -
 
     update_mock.assert_called_once()
     updated_form = update_mock.call_args[0][1]
-    assert updated_form.params == {"temperature": 0.7, "max_tokens": 1000}
+    assert updated_form.params == {
+        "temperature": 0.7,
+        "max_tokens": 1000,
+        "reasoning_tags": False,
+    }
 
 
 @pytest.mark.asyncio
@@ -2565,7 +2608,7 @@ def _make_existing_model(model_id: str, *, meta: dict, params: dict | None = Non
         base_model_id=None,
         name="Example",
         meta=ModelMeta(**meta),
-        params=params or {},
+        params={"reasoning_tags": False, **(params or {})},
         access_grants=[],
         is_active=True,
     )
@@ -4683,3 +4726,64 @@ async def test_the_sync_asks_the_predicate_rather_than_its_own_or_chain(
         "_sync_model_metadata_to_owui did not consult syncs_owui_models, so its gate and "
         "the predicate it was extracted from can drift apart again"
     )
+
+
+class TestTagScannerIsDisabledOnEveryModelRow:
+    """Open WebUI's `<think>`-tag scanner has no true positives on a pipe model.
+
+    The pipe emits reasoning as native output items, so the scanner can only ever
+    false-positive -- and when it does, it truncates the answer at the tag and swallows
+    the rest of the turn. `reasoning_tags: False` on the model row turns it off, and
+    `middleware.py` reads that with an identity check, so only the literal False works.
+    """
+
+    @pytest.mark.parametrize(
+        ("existing", "expected"),
+        [
+            (None, False),
+            ({}, False),
+            ({"temperature": 0.5}, False),
+            ({"reasoning_tags": ["<a>", "</a>"]}, ["<a>", "</a>"]),
+            ({"reasoning_tags": False}, False),
+        ],
+        ids=["absent", "empty", "other-params", "operator-set", "already-disabled"],
+    )
+    def test_the_row_carries_a_scanner_verdict(self, existing, expected):
+        from open_webui.models.models import ModelParams
+
+        from open_webui_openrouter_pipe.models.catalog_manager import (
+            _params_without_tag_scanning,
+        )
+
+        source = None if existing is None else ModelParams(**existing)
+        result = _params_without_tag_scanning(ModelParams, source).model_dump()
+        assert result["reasoning_tags"] == expected
+
+    def test_an_unrelated_param_survives_the_seeding(self):
+        from open_webui.models.models import ModelParams
+
+        from open_webui_openrouter_pipe.models.catalog_manager import (
+            _params_without_tag_scanning,
+        )
+
+        source = ModelParams(temperature=0.7, top_p=0.9)
+        result = _params_without_tag_scanning(ModelParams, source).model_dump()
+        assert result["temperature"] == 0.7
+        assert result["top_p"] == 0.9
+        assert result["reasoning_tags"] is False
+
+    def test_the_seeded_value_is_the_false_singleton(self):
+        """`DETECT_REASONING_TAGS = reasoning_tags_param is not False` -- an identity check.
+
+        0, "" and None are all falsy and all leave the scanner running. Only the literal
+        False disables it, so the assertion has to be `is`, not `==`.
+        """
+        from open_webui.models.models import ModelParams
+
+        from open_webui_openrouter_pipe.models.catalog_manager import (
+            _params_without_tag_scanning,
+        )
+
+        value = _params_without_tag_scanning(ModelParams, None).model_dump()["reasoning_tags"]
+        assert value is False
+        assert (value is not False) is False
