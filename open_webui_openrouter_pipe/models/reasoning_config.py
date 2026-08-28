@@ -257,7 +257,7 @@ class ReasoningConfigManager:
                 continue
             lowered = message.lower()
             if ("signature" in lowered and "thinking" in lowered) or (
-                "thinking block" in lowered and "cannot be modified" in lowered
+                "thinking" in lowered and "cannot be modified" in lowered
             ):
                 is_signature_error = True
                 break

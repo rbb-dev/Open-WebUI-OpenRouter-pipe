@@ -304,6 +304,37 @@ def _signature_error() -> OpenRouterAPIError:
     )
 
 
+@pytest.mark.parametrize(
+    ("upstream", "heals"),
+    [
+        ("messages.1.content.0: Invalid `signature` in `thinking` block", True),
+        (
+            "messages.1.content.1: `thinking` or `redacted_thinking` blocks in the latest "
+            "assistant message cannot be modified. These blocks must remain as they were "
+            "in the original response.",
+            True,
+        ),
+        ("messages.1.content.0: image exceeds the maximum size", False),
+    ],
+)
+def test_the_self_heal_matches_the_text_anthropic_actually_sends(pipe_instance, upstream, heals):
+    """The verbatim production string must trip S1, not just the signature wording.
+
+    Anthropic writes "`thinking` or `redacted_thinking` blocks", so the contiguous
+    substring "thinking block" never appears and the arm that was meant to catch a
+    modified-blocks 400 was unreachable. Three rows with two distinct verdicts, so no
+    constant answer satisfies them.
+    """
+    mgr = pipe_instance._ensure_reasoning_config_manager()
+    body = ResponsesBody(model="anthropic/claude-sonnet-4.6", input=[
+        {"type": "reasoning", "id": "r1",
+         "content": [{"type": "reasoning_text", "text": "x"}], "signature": "S"},
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+    ])
+    error = OpenRouterAPIError(status=400, reason="Bad Request", upstream_message=upstream)
+    assert mgr._should_retry_dropping_signed_reasoning(error, body) is heals
+
+
 def test_signature_error_strips_reasoning_items_and_details_then_retries(pipe_instance):
     mgr = pipe_instance._ensure_reasoning_config_manager()
     body = ResponsesBody(model="anthropic/claude-sonnet-4.6", input=[
