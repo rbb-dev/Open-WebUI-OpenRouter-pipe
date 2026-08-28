@@ -430,6 +430,69 @@ class TestAnswerAndWireIntegrity:
             e.get("status") in {"completed", "failed", "rejected"} for e in calls
         )
 
+        kinds = [e.get("type") for e in published]
+        first_call = kinds.index("function_call")
+        lead = "".join(
+            part.get("text", "")
+            for entry in published[:first_call]
+            if entry.get("type") == "message"
+            for part in (entry.get("content") or [])
+        )
+        tail = "".join(
+            part.get("text", "")
+            for entry in published[first_call:]
+            if entry.get("type") == "message"
+            for part in (entry.get("content") or [])
+        )
+        assert lead == "Checking. "
+        assert tail == "It is 22 degrees."
+
+
+class TestFailedToolCardsStillReachHistory:
+    """A tool that failed must still be replayable, not silently dropped."""
+
+    @pytest.mark.asyncio
+    async def test_an_incomplete_tool_card_is_published_at_a_terminal_status(
+        self, monkeypatch, pipe_instance_async
+    ):
+        """`_server_tool_status` returns "incomplete" for a failed call, and Open WebUI's
+        converter only pairs a call with its result when the call sits at completed,
+        failed or rejected. Published verbatim, a failed tool round vanishes from the
+        replayed history entirely -- the model never learns the tool was tried.
+        """
+        pipe = pipe_instance_async
+        clock = _install_clock(monkeypatch)
+        valves = pipe.valves.model_copy(
+            update={"THINKING_OUTPUT_MODE": "open_webui", "SHOW_TOOL_CARDS": True}
+        )
+        steps = [
+            (0.0, {"type": "response.output_item.added",
+                   "item": {"type": "openrouter:web_search", "id": "ws-1"}}),
+            (1.0, {"type": "response.output_item.done",
+                   "item": {"type": "openrouter:web_search", "id": "ws-1",
+                            "action": {}, "httpStatus": 503}}),
+            (0.2, {"type": "response.output_text.delta", "delta": "That failed."}),
+            (0.0, {"type": "response.completed", "response": {"output": [], "usage": {}}}),
+        ]
+        emitted = await _run(pipe, valves, steps, clock, monkeypatch)
+
+        live = [
+            (event.get("item") or {}).get("status")
+            for event in _events_of(emitted, "response.output_item.added")
+            if (event.get("item") or {}).get("type") == "function_call"
+        ]
+        assert live == ["incomplete"]
+
+        completions = _events_of(emitted, "response.completed")
+        assert completions
+        published = (completions[-1].get("response") or {}).get("output") or []
+        calls = [e for e in published if e.get("type") == "function_call"]
+        assert calls, "the failed call must still be in the published array"
+        assert all(e.get("status") in {"completed", "failed", "rejected"} for e in calls), (
+            f"published statuses {[e.get('status') for e in calls]} include one Open WebUI "
+            f"will not pair with its result"
+        )
+
 
 class TestRetireDriftGuard:
     """T7: the legacy reasoning wire vocabulary must not return."""

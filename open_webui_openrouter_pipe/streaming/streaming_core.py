@@ -1248,6 +1248,15 @@ class StreamingHandler:
             if marker_delta and body.stream and event_emitter:
                 await event_emitter({"type": "chat:message:delta", "data": {"content": marker_delta}})
                 retry_barrier_crossed = True
+            else:
+                self.logger.warning(
+                    "Committed artifact row(s) left unaddressed: the marker delta was not "
+                    "published (reason=%s chat_id=%s markers=%s)",
+                    "no_delta" if not marker_delta
+                    else ("not_streaming" if not body.stream else "no_emitter"),
+                    chat_id,
+                    markers,
+                )
 
         def _extract_call_id(item: Any) -> str:
             """Best-effort call_id extraction for tool call/output items."""
@@ -3315,9 +3324,20 @@ class StreamingHandler:
                 except Exception:
                     self.logger.warning("Failed to persist terminal fusion snapshot", exc_info=True)
 
-            if not was_cancelled:
+            if was_cancelled or handed_back_for_retry:
+                if pending_ulids:
+                    self.logger.warning(
+                        "An abandoned turn left %d committed artifact row(s) with no marker "
+                        "addressing them; they are unreachable until retention removes them "
+                        "(reason=%s chat_id=%s ulids=%s)",
+                        len(pending_ulids),
+                        "cancelled" if was_cancelled else "retry_handback",
+                        chat_id,
+                        list(pending_ulids),
+                    )
+            else:
                 await _flush_pending("finalize")
-                if pending_ulids and not handed_back_for_retry:
+                if pending_ulids:
                     await _append_assistant_hidden_markers(
                         [_serialize_marker(ulid) for ulid in pending_ulids]
                     )

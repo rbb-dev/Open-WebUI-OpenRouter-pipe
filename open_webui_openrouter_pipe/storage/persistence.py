@@ -1646,6 +1646,13 @@ class ArtifactStore:
         if not (self._session_factory and self._item_model):
             return
         with _db_session(self._session_factory) as session:
+            doomed = [
+                str(getattr(row, "id", "") or "")
+                for row in session.query(self._item_model)
+                .filter(self._item_model.created_at < cutoff)
+                .all()
+            ]
+            doomed = [row_id for row_id in doomed if row_id]
             deleted = (
                 session.query(self._item_model)
                 .filter(self._item_model.created_at < cutoff)
@@ -1653,7 +1660,14 @@ class ArtifactStore:
             )
             session.commit()
             if deleted:
-                self.logger.debug("Cleanup removed %s rows older than %s", deleted, cutoff)
+                self.logger.info(
+                    "Retention removed %s artifact row(s) last read before %s "
+                    "(ulid_range=%s..%s)",
+                    deleted,
+                    cutoff,
+                    min(doomed) if doomed else None,
+                    max(doomed) if doomed else None,
+                )
 
 
     def _db_breaker_allows(self, user_id: str) -> bool:

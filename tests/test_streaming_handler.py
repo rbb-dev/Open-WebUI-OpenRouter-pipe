@@ -23,6 +23,7 @@ All tests use real Pipe() instances with HTTP mocked at boundaries.
 
 from __future__ import annotations
 
+import logging
 import asyncio
 import base64
 import json
@@ -12505,3 +12506,103 @@ async def test_a_turn_that_really_retries_shows_only_the_winning_attempts_thinki
         f"the winning attempt's thought reached the reader "
         f"{len(_published_thoughts(emitted, f'{thought}-2'))} time(s)"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("artifact_count", [1, 3], ids=["one-row", "three-rows"])
+@pytest.mark.parametrize(
+    ("exit_kind", "fail_with_nothing_shown"),
+    [("retry_handback", True), ("finished", False)],
+    ids=["handed-back-for-retry", "finished-cleanly"],
+)
+async def test_an_abandoned_turn_leaves_no_unaddressed_artifact_rows(
+    pipe_instance_async, monkeypatch, artifact_count, exit_kind, fail_with_nothing_shown
+):
+    """A committed row is addressed by a marker, or it is deleted. Never neither.
+
+    The abandoned attempt cannot publish markers: on a retry the next attempt runs on the
+    same turn and the same message, so its own markers would join the abandoned ones and
+    the tool round would replay twice. Deleting is the only outcome that leaves the store
+    consistent, and the retry re-mints whatever it needs.
+    """
+    from tests.test_persistence import _install_fake_store, _make_row
+
+    pipe = pipe_instance_async
+    rows = _install_fake_store(pipe)
+
+    def delete_sync(ids):
+        doomed = set(ids)
+        rows[:] = [row for row in rows if getattr(row, "id", None) not in doomed]
+
+    monkeypatch.setattr(pipe._artifact_store, "_delete_artifacts_sync", delete_sync)
+    await pipe._artifact_store._db_persist(
+        [_make_row("chat-other", "msg-other", {"type": "reasoning", "id": "keep"})]
+    )
+    assert len(rows) == 1
+
+    events: list[dict] = [{"type": "response.created", "response": {"model": "anthropic/claude-opus"}}]
+    for index in range(artifact_count):
+        events.append({
+            "type": "response.output_item.done",
+            "item": {
+                "type": "reasoning",
+                "id": f"rs-{index}",
+                "status": "completed",
+                "content": [{"type": "reasoning_text", "text": f"THOUGHT-{index}"}],
+                "encrypted_content": f"enc-{index}",
+            },
+        })
+    if not fail_with_nothing_shown:
+        events.append({"type": "response.output_text.delta", "delta": "Answer."})
+
+    async def transport(self, session, request_body, **_kwargs):
+        for event in events:
+            yield event
+        if fail_with_nothing_shown:
+            raise OpenRouterAPIError(**_RETRYABLE_EFFORT_REJECTION)
+        yield {
+            "type": "response.completed",
+            "response": {"output": [], "usage": {"total_tokens": 1},
+                         "model": "anthropic/claude-opus"},
+        }
+
+    monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", transport)
+
+    emitted: list[dict] = []
+
+    async def emitter(event):
+        emitted.append(event)
+
+    try:
+        await pipe._streaming_handler._run_streaming_loop(
+            ResponsesBody(model="anthropic/claude-opus", input=[], stream=True),
+            pipe.valves,
+            emitter,
+            metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"},
+            tools={},
+            session=cast(Any, object()),
+            user_id="user-1",
+            retry_handoff={},
+        )
+    except OpenRouterAPIError:
+        pass
+
+    this_turn = [r for r in rows if getattr(r, "message_id", None) == "msg-1"]
+    other_turn = [r for r in rows if getattr(r, "message_id", None) == "msg-other"]
+    marker_text = "".join(
+        (event.get("data") or {}).get("content", "")
+        for event in emitted
+        if event.get("type") == "chat:message:delta"
+    )
+
+    assert len(other_turn) == 1, "another turn's artifacts must never be touched"
+
+    if exit_kind == "retry_handback":
+        assert this_turn == [], (
+            f"{len(this_turn)} row(s) survived an abandoned turn that published no "
+            f"marker for them; the retry re-mints its own, so these are unreachable"
+        )
+    else:
+        assert len(this_turn) == artifact_count
+        unaddressed = [r for r in this_turn if getattr(r, "id", "") not in marker_text]
+        assert unaddressed == [], f"{len(unaddressed)} committed row(s) have no marker"
