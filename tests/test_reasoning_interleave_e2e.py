@@ -245,3 +245,151 @@ async def test_e2e_invariant_matrix(monkeypatch, pipe_instance_async,
     if persist_reasoning in {"next_reply", "conversation"} and payloads:
         replayed = types.count("reasoning")
         assert replayed == len(payloads), f"reasoning lost ({replayed}/{len(payloads)})! {ctx}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reasoning_first", "expected"),
+    [
+        (True, ["message", "reasoning", "message", "message"]),
+        (False, ["message", "message", "reasoning", "message"]),
+    ],
+    ids=["reasoning-before-the-answer", "reasoning-after-the-answer"],
+)
+async def test_e2e_a_no_tool_turn_replays_reasoning_where_it_was_generated(
+    monkeypatch, pipe_instance_async, reasoning_first, expected
+):
+    """Every marker is appended at the tail, so position is lost unless it is recorded.
+
+    On a turn with no tool call there is no ordinal to anchor to, and both shapes store
+    byte-identical content: the answer, then the markers. The text ordinal stamped at
+    persist time is the only thing that separates them, and the two rows here differ
+    ONLY in when the reasoning arrived -- so a constant answer cannot satisfy both.
+    """
+    pipe = pipe_instance_async
+    valves = pipe.valves.model_copy(update={"PERSIST_REASONING_TOKENS": "conversation"})
+    reasoning_event = {
+        "type": "response.output_item.done",
+        "item": {
+            "id": "rs-1", "type": "reasoning", "status": "completed",
+            "content": [{"type": "reasoning_text", "text": "THOUGHT"}],
+            "summary": [], "signature": "SIG-1",
+        },
+    }
+    text_event = {"type": "response.output_text.delta", "delta": "The answer."}
+    ordered = [reasoning_event, text_event] if reasoning_first else [text_event, reasoning_event]
+
+    async def streaming(self, session, request_body, **_kwargs):
+        for event in ordered:
+            yield event
+        yield {"type": "response.completed", "response": {"output": [], "usage": {}}}
+
+    captured: list[dict] = []
+
+    def fake_row(chat_id, message_id, model_id, payload):
+        captured.append(payload)
+        return {"payload": payload, "item_type": payload.get("type")}
+
+    async def fake_persist(rows):
+        return [generate_item_id() for _ in rows]
+
+    monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", streaming)
+    monkeypatch.setattr(pipe._artifact_store, "_make_db_row", fake_row)
+    monkeypatch.setattr(pipe._artifact_store, "_db_persist", fake_persist)
+
+    await pipe._streaming_handler._run_streaming_loop(
+        ResponsesBody(model="anthropic/claude-opus-4.8", input=[], stream=True),
+        valves, None,
+        metadata={"model": {"id": "anthropic/claude-opus-4.8"}, "chat_id": "c1", "message_id": "m1"},
+        tools={}, session=cast(Any, object()), user_id="u1",
+    )
+
+    payloads = [p for p in captured if p.get("type") == "reasoning"]
+    assert len(payloads) == 1
+
+    marker = generate_item_id()
+    artifacts = {marker: payloads[0]}
+
+    async def loader(_chat_id, _message_id, ulids):
+        return {u: artifacts[u] for u in ulids if u in artifacts}
+
+    replayed = await transform_messages_to_input(
+        pipe,
+        [
+            {"role": "user", "content": "q1"},
+            {"role": "assistant", "message_id": "m1",
+             "content": "The answer.\n\n" + _serialize_marker(marker)},
+            {"role": "user", "content": "q2"},
+        ],
+        chat_id="c1", openwebui_model_id="owui", artifact_loader=loader,
+        model_id="anthropic/claude-opus-4.8", valves=valves,
+    )
+
+    assert [i.get("type") for i in replayed] == expected
+    assert not _anchor_leaked(replayed)
+    assert replayed[expected.index("reasoning")].get("signature") == "SIG-1"
+
+
+@pytest.mark.asyncio
+async def test_e2e_hoisted_reasoning_never_jumps_the_system_prompt(
+    monkeypatch, pipe_instance_async
+):
+    """Regions are delimited by USER messages, so a system prompt shares the region.
+
+    Anchoring on "the first message item" rather than "the first ASSISTANT message
+    item" places the turn's reasoning ahead of the system prompt -- a different
+    conversation from the one the model was given.
+    """
+    pipe = pipe_instance_async
+    valves = pipe.valves.model_copy(update={"PERSIST_REASONING_TOKENS": "conversation"})
+
+    async def streaming(self, session, request_body, **_kwargs):
+        yield {"type": "response.output_item.done", "item": {
+            "id": "rs-1", "type": "reasoning", "status": "completed",
+            "content": [{"type": "reasoning_text", "text": "THOUGHT"}],
+            "summary": [], "signature": "SIG-1"}}
+        yield {"type": "response.output_text.delta", "delta": "The answer."}
+        yield {"type": "response.completed", "response": {"output": [], "usage": {}}}
+
+    captured: list[dict] = []
+
+    def fake_row(chat_id, message_id, model_id, payload):
+        captured.append(payload)
+        return {"payload": payload, "item_type": payload.get("type")}
+
+    async def fake_persist(rows):
+        return [generate_item_id() for _ in rows]
+
+    monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", streaming)
+    monkeypatch.setattr(pipe._artifact_store, "_make_db_row", fake_row)
+    monkeypatch.setattr(pipe._artifact_store, "_db_persist", fake_persist)
+
+    await pipe._streaming_handler._run_streaming_loop(
+        ResponsesBody(model="anthropic/claude-opus-4.8", input=[], stream=True),
+        valves, None,
+        metadata={"model": {"id": "anthropic/claude-opus-4.8"}, "chat_id": "c1", "message_id": "m1"},
+        tools={}, session=cast(Any, object()), user_id="u1",
+    )
+
+    payload = next(p for p in captured if p.get("type") == "reasoning")
+    marker = generate_item_id()
+
+    async def loader(_chat_id, _message_id, ulids):
+        return {marker: payload} if marker in ulids else {}
+
+    replayed = await transform_messages_to_input(
+        pipe,
+        [
+            {"role": "system", "content": "SYSTEM PROMPT"},
+            {"role": "assistant", "message_id": "m1",
+             "content": "The answer.\n\n" + _serialize_marker(marker)},
+        ],
+        chat_id="c1", openwebui_model_id="owui", artifact_loader=loader,
+        model_id="anthropic/claude-opus-4.8", valves=valves,
+    )
+
+    roles = [(i.get("type"), i.get("role")) for i in replayed]
+    assert roles[0] == ("message", "system"), (
+        f"reasoning was placed ahead of the system prompt: {roles}"
+    )
+    assert [t for t, _ in roles] == ["message", "reasoning", "message"]

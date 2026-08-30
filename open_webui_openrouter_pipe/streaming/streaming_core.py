@@ -74,6 +74,7 @@ from ..core.utils import (
     REASONING_ANCHOR_SEQ_KEY,
     REASONING_FOLLOWING_ORDINAL_KEY,
     REASONING_PRECEDING_ORDINAL_KEY,
+    REASONING_TEXT_ORDINAL_KEY,
     SERVER_TOOL_FAILURE_STATUSES,
     SERVER_TOOL_IN_FLIGHT_STATUSES,
     SERVER_TOOL_SUCCESS_STATUSES,
@@ -566,6 +567,8 @@ class StreamingHandler:
             "seq": 0,
             "calls_seen": 0,
             "stream_calls": 0,
+            "text_chunks": 0,
+            "chars_at_last_chunk": 0,
             "awaiting": [],
         }
         total_usage: dict[str, Any] = {}
@@ -1859,6 +1862,10 @@ class StreamingHandler:
                             phase_marker = _phase_marker_for_output_item(item)
                             if phase_marker:
                                 await _append_assistant_hidden_markers([phase_marker])
+                                reasoning_anchor_state["text_chunks"] += 1
+                                reasoning_anchor_state["chars_at_last_chunk"] = len(
+                                    assistant_message
+                                )
                             continue
 
                         should_persist = False
@@ -1881,8 +1888,18 @@ class StreamingHandler:
                                 if item_type == "reasoning":
                                     normalized_item[REASONING_ANCHOR_SEQ_KEY] = reasoning_anchor_state["seq"]
                                     reasoning_anchor_state["seq"] += 1
+                                    _text_ordinal = reasoning_anchor_state["text_chunks"] + (
+                                        1
+                                        if len(assistant_message)
+                                        > reasoning_anchor_state["chars_at_last_chunk"]
+                                        else 0
+                                    )
                                     reasoning_anchor_state["awaiting"].append(
-                                        (normalized_item, reasoning_anchor_state["stream_calls"])
+                                        (
+                                            normalized_item,
+                                            reasoning_anchor_state["stream_calls"],
+                                            _text_ordinal,
+                                        )
                                     )
                                 row = self._pipe._artifact_store._make_db_row(
                                     chat_id, message_id, openwebui_model, normalized_item
@@ -2490,7 +2507,7 @@ class StreamingHandler:
                             _signed_by_id[_rid] = _carried
                 _stream_total = reasoning_anchor_state["stream_calls"]
                 _stream_consistent = _stream_total == _calls_seen + len(_fc_local)
-                for _idx, (_pending_reasoning, _stream_pos) in enumerate(reasoning_anchor_state["awaiting"]):
+                for _idx, (_pending_reasoning, _stream_pos, _text_pos) in enumerate(reasoning_anchor_state["awaiting"]):
                     _pending_id = _pending_reasoning.get("id")
                     if _pending_id and _pending_id in _signed_by_id:
                         _pending_reasoning.update(_signed_by_id[_pending_id])
@@ -2513,6 +2530,8 @@ class StreamingHandler:
                         _pending_reasoning[REASONING_FOLLOWING_ORDINAL_KEY] = _ordinal
                     elif _mode == "preceding":
                         _pending_reasoning[REASONING_PRECEDING_ORDINAL_KEY] = _ordinal
+                    else:
+                        _pending_reasoning[REASONING_TEXT_ORDINAL_KEY] = _text_pos
                 reasoning_anchor_state["awaiting"] = []
                 reasoning_anchor_state["calls_seen"] = _calls_seen + len(_fc_local)
 

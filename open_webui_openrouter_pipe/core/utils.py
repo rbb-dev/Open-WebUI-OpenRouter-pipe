@@ -56,10 +56,12 @@ _PHASE_MARKER_VALUES = frozenset({"commentary", "final_answer", "null"})
 REASONING_ANCHOR_SEQ_KEY = "_anchor_seq"
 REASONING_FOLLOWING_ORDINAL_KEY = "_anchor_following_call_ordinal"
 REASONING_PRECEDING_ORDINAL_KEY = "_anchor_preceding_call_ordinal"
+REASONING_TEXT_ORDINAL_KEY = "_anchor_text_ordinal"
 REASONING_ANCHOR_KEYS = (
     REASONING_ANCHOR_SEQ_KEY,
     REASONING_FOLLOWING_ORDINAL_KEY,
     REASONING_PRECEDING_ORDINAL_KEY,
+    REASONING_TEXT_ORDINAL_KEY,
 )
 
 

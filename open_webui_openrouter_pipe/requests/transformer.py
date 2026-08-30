@@ -39,6 +39,7 @@ from ..core.utils import (
     REASONING_ANCHOR_SEQ_KEY,
     REASONING_FOLLOWING_ORDINAL_KEY,
     REASONING_PRECEDING_ORDINAL_KEY,
+    REASONING_TEXT_ORDINAL_KEY,
     _extract_plain_text_content,
     contains_marker,
     split_text_by_markers,
@@ -108,10 +109,13 @@ def _reinterleave_region(region: list[dict[str, Any]]) -> list[dict[str, Any]]:
             following = it.get(REASONING_FOLLOWING_ORDINAL_KEY)
             preceding = it.get(REASONING_PRECEDING_ORDINAL_KEY)
             stripped = _strip_reasoning_anchor_keys(it)
+            text_ordinal = it.get(REASONING_TEXT_ORDINAL_KEY)
             if isinstance(following, int):
                 movable.append((seq, stripped, "before", following))
             elif isinstance(preceding, int):
                 movable.append((seq, stripped, "after", preceding))
+            elif isinstance(text_ordinal, int):
+                movable.append((seq, stripped, "text", text_ordinal))
             else:
                 skeleton.append(stripped)
         elif isinstance(it, dict):
@@ -140,6 +144,11 @@ def _reinterleave_region(region: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 remaining_outputs.pop(j)
                 break
 
+    msg_items = [
+        (i, e) for i, e in enumerate(skeleton)
+        if isinstance(e, dict) and e.get("type") == "message" and e.get("role") == "assistant"
+    ]
+
     inserts_before: dict[int, list[tuple[int, dict[str, Any]]]] = {}
     inserts_after: dict[int, list[tuple[int, dict[str, Any]]]] = {}
     for seq, item, mode, ordinal in sorted(movable, key=lambda a: a[0]):
@@ -147,6 +156,10 @@ def _reinterleave_region(region: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if mode == "before":
             if 0 <= ordinal < len(fc_items):
                 pos = fc_items[ordinal][0]
+            bucket = inserts_before
+        elif mode == "text":
+            if 0 <= ordinal < len(msg_items):
+                pos = msg_items[ordinal][0]
             bucket = inserts_before
         else:
             if ordinal in output_index_for_call:
