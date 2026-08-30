@@ -18,6 +18,8 @@ from typing import Any, cast
 
 import pytest
 
+import open_webui_openrouter_pipe.streaming.streaming_core as streaming_core_mod
+
 from open_webui_openrouter_pipe import Pipe, ResponsesBody
 from open_webui_openrouter_pipe.streaming import streaming_core
 
@@ -528,6 +530,135 @@ class TestFailedToolCardsStillReachHistory:
         calls = [e for e in published if e.get("type") == "function_call"]
         assert calls, "the call must be in the published array"
         assert [e.get("status") for e in calls] == [expected]
+
+
+class TestSeededHistoryIsHealed:
+    """A tool call stranded by an earlier turn must be repaired, not carried forward."""
+
+    @staticmethod
+    def _seed(monkeypatch, output):
+        class _Chats:
+            @staticmethod
+            async def get_message_by_id_and_message_id(_chat_id, _message_id):
+                return {"output": output}
+
+        monkeypatch.setattr(streaming_core_mod, "Chats", _Chats)
+
+    @staticmethod
+    async def _run_with_chat(pipe, valves, steps, clock, monkeypatch) -> list[dict]:
+        body = ResponsesBody(model="test/model", input=[], stream=True)
+        monkeypatch.setattr(
+            Pipe, "send_openrouter_streaming_request", _make_timed_stream(steps, clock)
+        )
+        emitted: list[dict] = []
+
+        async def emitter(event):
+            emitted.append(event)
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body,
+            valves,
+            emitter,
+            metadata={"model": {"id": "test"}, "chat_id": "c-1", "message_id": "m-1"},
+            tools={},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+        return emitted
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("result_status", "expected"),
+        [("completed", "completed"), ("incomplete", "failed")],
+    )
+    async def test_a_paired_seeded_call_is_resolved_from_its_result(
+        self, monkeypatch, pipe_instance_async, result_status, expected
+    ):
+        """The pipe rewrites the whole stored array every turn, so it must heal what it
+        reads back -- otherwise a call stranded once stays stranded for the chat's life.
+        """
+        pipe = pipe_instance_async
+        clock = _install_clock(monkeypatch)
+        valves = pipe.valves.model_copy(update={"THINKING_OUTPUT_MODE": "open_webui"})
+        self._seed(monkeypatch, [
+            {"type": "function_call", "id": "old-1", "call_id": "old-1",
+             "name": "t", "arguments": "{}", "status": "in_progress"},
+            {"type": "function_call_output", "id": "fco-old", "call_id": "old-1",
+             "output": [{"type": "input_text", "text": "x"}], "status": result_status},
+        ])
+        steps = [
+            (0.0, {"type": "response.output_item.added", "item": {"type": "reasoning", "id": "rs-1"}}),
+            (1.0, {"type": "response.reasoning_text.delta", "item_id": "rs-1", "delta": "Thinking. "}),
+            (0.2, {"type": "response.output_text.delta", "delta": "Hi."}),
+            (0.0, {"type": "response.completed", "response": {"output": [], "usage": {}}}),
+        ]
+        emitted = await self._run_with_chat(pipe, valves, steps, clock, monkeypatch)
+
+        completions = _events_of(emitted, "response.completed")
+        assert completions
+        published = (completions[-1].get("response") or {}).get("output") or []
+        calls = [e for e in published if e.get("type") == "function_call"]
+        assert [e.get("status") for e in calls] == [expected]
+
+    @pytest.mark.asyncio
+    async def test_an_unpaired_seeded_call_is_left_alone(
+        self, monkeypatch, pipe_instance_async
+    ):
+        """Without a result there is no evidence of an outcome, so inventing one would
+        tell the model a tool succeeded when nothing ever came back.
+        """
+        pipe = pipe_instance_async
+        clock = _install_clock(monkeypatch)
+        valves = pipe.valves.model_copy(update={"THINKING_OUTPUT_MODE": "open_webui"})
+        self._seed(monkeypatch, [
+            {"type": "function_call", "id": "old-2", "call_id": "old-2",
+             "name": "t", "arguments": "{}", "status": "in_progress"},
+        ])
+        steps = [
+            (0.0, {"type": "response.output_item.added", "item": {"type": "reasoning", "id": "rs-1"}}),
+            (1.0, {"type": "response.reasoning_text.delta", "item_id": "rs-1", "delta": "Thinking. "}),
+            (0.2, {"type": "response.output_text.delta", "delta": "Hi."}),
+            (0.0, {"type": "response.completed", "response": {"output": [], "usage": {}}}),
+        ]
+        emitted = await self._run_with_chat(pipe, valves, steps, clock, monkeypatch)
+
+        completions = _events_of(emitted, "response.completed")
+        assert completions
+        published = (completions[-1].get("response") or {}).get("output") or []
+        calls = [e for e in published if e.get("type") == "function_call"]
+        assert [e.get("status") for e in calls] == ["in_progress"]
+
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("held_status", ["queued", "pending", "requires_approval"])
+    async def test_a_call_awaiting_approval_is_never_resolved(
+        self, monkeypatch, pipe_instance_async, held_status
+    ):
+        """Open WebUI runs its own tool-approval queue keyed on these statuses. Settling
+        one here would steal the call out of that queue and the approval would never fire.
+        """
+        pipe = pipe_instance_async
+        clock = _install_clock(monkeypatch)
+        valves = pipe.valves.model_copy(update={"THINKING_OUTPUT_MODE": "open_webui"})
+        self._seed(monkeypatch, [
+            {"type": "function_call", "id": "held-1", "call_id": "held-1",
+             "name": "t", "arguments": "{}", "status": held_status},
+            {"type": "function_call_output", "id": "fco-held", "call_id": "held-1",
+             "output": [{"type": "input_text", "text": "x"}], "status": "completed"},
+        ])
+        steps = [
+            (0.0, {"type": "response.output_item.added", "item": {"type": "reasoning", "id": "rs-1"}}),
+            (1.0, {"type": "response.reasoning_text.delta", "item_id": "rs-1", "delta": "Thinking. "}),
+            (0.2, {"type": "response.output_text.delta", "delta": "Hi."}),
+            (0.0, {"type": "response.completed", "response": {"output": [], "usage": {}}}),
+        ]
+        emitted = await self._run_with_chat(pipe, valves, steps, clock, monkeypatch)
+
+        completions = _events_of(emitted, "response.completed")
+        assert completions
+        published = (completions[-1].get("response") or {}).get("output") or []
+        calls = [e for e in published if e.get("type") == "function_call"]
+        assert [e.get("status") for e in calls] == [held_status]
 
 
 class TestRetireDriftGuard:

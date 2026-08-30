@@ -47,6 +47,7 @@ SERVER_TOOL_IN_FLIGHT_STATUSES = frozenset({"in_progress", "generating", "search
 SERVER_TOOL_SUCCESS_STATUSES = frozenset({"completed"}) | SERVER_TOOL_EXTRA_SUCCESS
 SERVER_TOOL_FAILURE_STATUSES = frozenset({"incomplete", "failed"})
 OWUI_SETTLED_CALL_STATUSES = frozenset({"completed", "failed", "rejected"})
+OWUI_UNRESOLVABLE_CALL_STATUSES = frozenset({"pending", "queued", "requires_approval", "rejected"})
 
 
 def owui_call_status(result_status: str | None) -> str:

@@ -71,6 +71,7 @@ from ..core.url_scheme import is_http_or_https_url
 
 # Imports from core.utils
 from ..core.utils import (
+    OWUI_UNRESOLVABLE_CALL_STATUSES,
     REASONING_ANCHOR_SEQ_KEY,
     REASONING_FOLLOWING_ORDINAL_KEY,
     REASONING_PRECEDING_ORDINAL_KEY,
@@ -910,19 +911,24 @@ class StreamingHandler:
             emitted_output_items.append(recorded)
 
         def _terminal_output_items() -> list[dict[str, Any]]:
+            seeded = seeded_output_items or []
+            combined = seeded + emitted_output_items
             result_status_by_call_id: dict[str, Any] = {}
-            for entry in emitted_output_items:
+            for entry in combined:
                 if entry.get("type") != "function_call_output":
                     continue
                 result_id = entry.get("call_id")
                 if isinstance(result_id, str) and result_id:
                     result_status_by_call_id[result_id] = entry.get("status")
             resolved: list[dict[str, Any]] = []
-            for entry in emitted_output_items:
+            for index, entry in enumerate(combined):
                 item = copy.deepcopy(entry)
                 if item.get("type") == "function_call":
                     call_id = item.get("call_id") or item.get("id")
-                    item["status"] = owui_call_status(result_status_by_call_id.get(call_id))
+                    resolvable = item.get("status") not in OWUI_UNRESOLVABLE_CALL_STATUSES
+                    addressable = index >= len(seeded) or call_id in result_status_by_call_id
+                    if resolvable and addressable:
+                        item["status"] = owui_call_status(result_status_by_call_id.get(call_id))
                 resolved.append(item)
             trailing = assistant_message[recorded_message_chars:]
             if trailing:
@@ -933,7 +939,7 @@ class StreamingHandler:
                     "status": "completed",
                     "content": [{"type": "output_text", "text": trailing}],
                 })
-            return (seeded_output_items or []) + resolved
+            return resolved
 
         async def _emit_tool_start(
             *,
@@ -3366,21 +3372,27 @@ class StreamingHandler:
                         [_serialize_marker(ulid) for ulid in pending_ulids]
                     )
 
+            if (
+                (not handed_back_for_retry)
+                and (not was_cancelled)
+                and emitted_output_items
+                and event_emitter
+            ):
+                try:
+                    await event_emitter({
+                        "type": "response.completed",
+                        "response": {"output": _terminal_output_items()},
+                    })
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    self.logger.warning(
+                        "Could not publish the terminal output array; tool calls and "
+                        "reasoning may be missing from this turn's stored history",
+                        exc_info=True,
+                    )
+
             if (not error_occurred) and (not was_cancelled):
-                if emitted_output_items and event_emitter:
-                    try:
-                        await event_emitter({
-                            "type": "response.completed",
-                            "response": {"output": _terminal_output_items()},
-                        })
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception:
-                        self.logger.warning(
-                            "Could not publish the terminal output array; tool calls and "
-                            "reasoning may be missing from this turn's stored history",
-                            exc_info=True,
-                        )
                 self._audit_orphan_tool_cards(emitted_tool_call_items, emitted_tool_output_items)
                 if terminal:
                     final_content = None if emitted_response_output_items else assistant_message
