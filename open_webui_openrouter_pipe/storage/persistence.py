@@ -79,6 +79,10 @@ _PAYLOAD_HEADER_SIZE = 1
 
 _REDIS_FLUSH_CHANNEL = "db-flush"
 
+
+class ArtifactStoreUnavailable(RuntimeError):
+    pass
+
 # Type alias for Redis client
 if TYPE_CHECKING:
     from redis.asyncio import Redis as _RedisClient
@@ -285,6 +289,7 @@ class ArtifactStore:
 
         self._redis_enabled = False
         self._redis_client: _RedisClient | None = None
+        self._flush_blocked_cycles: int = 0
         self._redis_listener_task: asyncio.Task | None = None
         self._redis_flush_task: asyncio.Task | None = None
         self._redis_ready_task: asyncio.Task | None = None
@@ -336,6 +341,7 @@ class ArtifactStore:
             and self._item_model is not None
             and self._session_factory is not None
             and self._engine is not None
+            and self._db_executor is not None
         ):
             return
 
@@ -852,11 +858,28 @@ class ArtifactStore:
             "payload": payload,
         }
 
+    def _existing_ids_sync(self, identifiers: list[str]) -> list[str]:
+        if not identifiers or not self._item_model or not self._session_factory:
+            return []
+        model = self._item_model
+        with _db_session(self._session_factory) as session:
+            found = session.query(model).filter(model.id.in_(identifiers)).all()
+        present: list[str] = []
+        for row in found:
+            identifier = getattr(row, "id", None)
+            if isinstance(identifier, str) and identifier:
+                present.append(identifier)
+        return present
+
     @timed
     def _db_persist_sync(self, rows: list[dict[str, Any]]) -> list[str]:
         """Persist prepared rows once; intentionally no automatic retry logic."""
-        if not rows or not self._item_model or not self._session_factory:
+        if not rows:
             return []
+        if not self._item_model or not self._session_factory:
+            raise ArtifactStoreUnavailable(
+                f"artifact store was torn down mid-flight; {len(rows)} row(s) were not written"
+            )
 
         cleanup_rows = False
         try:
@@ -1058,9 +1081,36 @@ class ArtifactStore:
             return []
 
     @timed
+    async def _ack_rows_present_after_duplicate(
+        self, rows: list[dict[str, Any]], loop: asyncio.AbstractEventLoop
+    ) -> list[str]:
+        candidates = [
+            identifier
+            for row in rows
+            for identifier in [row.get("id")]
+            if isinstance(identifier, str) and identifier
+        ]
+        present = await loop.run_in_executor(
+            self._db_executor, self._existing_ids_sync, candidates
+        )
+        level = logging.WARNING if len(present) < len(candidates) else logging.DEBUG
+        self.logger.log(
+            level,
+            "Duplicate key during DB persist: %d of %d row(s) are present in the artifact "
+            "table; any remainder was rolled back and is not acknowledged.",
+            len(present),
+            len(candidates),
+        )
+        return present
+
     async def _db_persist_direct(self, rows: list[dict[str, Any]], user_id: str = "") -> list[str]:
-        if not rows or not self._db_executor or not self._item_model or not self._session_factory:
+        if not rows:
             return []
+        if not self._db_executor or not self._item_model or not self._session_factory:
+            raise ArtifactStoreUnavailable(
+                f"artifact store is not configured (table={self._artifact_table_name!r}); "
+                f"{len(rows)} row(s) were not written"
+            )
 
         retryer = AsyncRetrying(
             stop=stop_after_attempt(3),
@@ -1077,13 +1127,7 @@ class ArtifactStore:
                     )
                 except Exception as exc:
                     if self._is_duplicate_key_error(exc):
-                        self.logger.debug("Duplicate key detected during DB persist; assuming prior flush succeeded")
-                        return [
-                            identifier
-                            for row in rows
-                            for identifier in [row.get("id")]
-                            if isinstance(identifier, str) and identifier
-                        ]
+                        return await self._ack_rows_present_after_duplicate(rows, loop)
                     raise
                 if self._redis_enabled:
                     await self._redis_cache_rows(rows)
@@ -1401,6 +1445,32 @@ class ArtifactStore:
 
 
     @timed
+    def _artifact_store_ready(self) -> bool:
+        return bool(self._db_executor and self._item_model and self._session_factory)
+
+    def _note_flush_blocked(self) -> None:
+        self._flush_blocked_cycles += 1
+        if self._flush_blocked_cycles == 1:
+            self.logger.error(
+                "Artifact flush blocked: this worker has no usable artifact store, so buffered "
+                "artifacts stay in the Redis pending queue (key=%s) instead of being written. "
+                "Nothing is lost; a worker with a healthy store will drain the queue.",
+                self._redis_pending_key,
+            )
+        else:
+            self.logger.debug(
+                "Artifact flush still blocked (%d consecutive cycles); pending queue untouched.",
+                self._flush_blocked_cycles,
+            )
+
+    def _note_flush_ready(self) -> None:
+        if self._flush_blocked_cycles:
+            self.logger.info(
+                "Artifact flush recovered after %d blocked cycle(s); draining the pending queue.",
+                self._flush_blocked_cycles,
+            )
+            self._flush_blocked_cycles = 0
+
     async def _flush_redis_queue(self) -> None:
         if not (self._redis_enabled and self._redis_client):
             return
@@ -1422,10 +1492,20 @@ class ArtifactStore:
                 self.logger.debug("Skipping Redis flush: another worker holds the lock")
                 return
 
-            rows: list[dict[str, Any]] = []
-            raw_entries: list[str] = []
+            if not self._artifact_store_ready():
+                try:
+                    self._ensure_artifact_store(self.valves, self.id)
+                except Exception:
+                    self.logger.debug("Artifact store re-init during flush failed", exc_info=True)
+            if not self._artifact_store_ready():
+                self._note_flush_blocked()
+                return
+            self._note_flush_ready()
+
+            entries_by_row: list[tuple[str, dict[str, Any]]] = []
+            malformed = 0
             batch_size = self.valves.DB_BATCH_SIZE
-            while len(rows) < batch_size:
+            while len(entries_by_row) < batch_size:
                 data = await _await_if_needed(self._redis_client.lpop(self._redis_pending_key))
                 if data is None:
                     break
@@ -1439,39 +1519,77 @@ class ArtifactStore:
                         "Unexpected Redis queue payload type '%s'; skipping entry.",
                         type(data).__name__,
                     )
+                    malformed += 1
                     continue
-                raw_entries.append(entry)
                 try:
                     parsed = json.loads(entry)
                 except json.JSONDecodeError as exc:
-                    self.logger.warning("Malformed JSON in pending queue, skipping: %s", exc)
+                    self.logger.warning("Malformed JSON in pending queue, discarding: %s", exc)
+                    malformed += 1
                     continue
                 if not isinstance(parsed, dict):
-                    self.logger.warning("Pending queue entry must be an object; skipping malformed payload.")
+                    self.logger.warning("Pending queue entry must be an object; discarding malformed payload.")
+                    malformed += 1
                     continue
-                rows.append(parsed)
-            if not raw_entries:
-                return
-            if not rows:
-                self.logger.warning("Discarded %d malformed artifact(s) from Redis pending queue.", len(raw_entries))
+                entries_by_row.append((entry, parsed))
+            if malformed:
+                self.logger.warning("Discarded %d malformed artifact(s) from Redis pending queue.", malformed)
+            if not entries_by_row:
                 return
 
+            rows = [row for _entry, row in entries_by_row]
             self.logger.debug("Flushing %d artifact(s) from Redis pending queue to DB (table: %s)", len(rows), self._artifact_table_name or "unknown")
+            committed: set[str] = set()
+            failure = ""
             try:
-                await self._db_persist_direct(rows)
-                self.logger.debug("✅ Successfully flushed %d artifacts to DB", len(rows))
-            except Exception:
+                committed = {
+                    identifier
+                    for identifier in await self._db_persist_direct(rows)
+                    if isinstance(identifier, str) and identifier
+                }
+            except Exception as exc:
+                failure = f"{type(exc).__name__}: {exc}"
                 self.logger.exception("❌ DB flush failed! %d artifacts could not be persisted", len(rows))
+
+            unrecoverable = [row for _entry, row in entries_by_row if row.get("payload") is None]
+            uncommitted = [
+                entry
+                for entry, row in entries_by_row
+                if row.get("payload") is not None and row.get("id") not in committed
+            ]
+            if unrecoverable:
+                self.logger.error(
+                    "Discarded %d artifact(s) with no payload that can never be persisted (ids=%s). "
+                    "Markers referencing them are permanently dangling.",
+                    len(unrecoverable),
+                    sorted(str(row.get("id")) for row in unrecoverable),
+                )
+            if uncommitted:
+                if not failure:
+                    self.logger.error(
+                        "DB flush reported no error but committed only %d of %d artifact(s); "
+                        "returning %d to the pending queue.",
+                        len(committed),
+                        len(rows),
+                        len(uncommitted),
+                    )
                 try:
-                    await self._redis_requeue_entries(raw_entries)
-                    self.logger.debug("Re-queued %d artifact(s) back to Redis pending queue after DB failure", len(raw_entries))
+                    await self._redis_requeue_entries(uncommitted)
+                    self.logger.debug(
+                        "Re-queued %d artifact(s) after an incomplete flush (reason=%s)",
+                        len(uncommitted),
+                        failure or "uncommitted",
+                    )
                 except Exception as requeue_exc:  # pragma: no cover - defensive
                     self.logger.critical(
-                        "Failed to re-queue %d artifact(s) after DB failure: %s",
-                        len(raw_entries),
+                        "ARTIFACT LOSS: %d artifact(s) left the pending queue, were not committed, "
+                        "and could not be re-queued: %s",
+                        len(uncommitted),
                         requeue_exc,
                         exc_info=True,
                     )
+            elif not failure:
+                self.logger.debug("✅ Successfully flushed %d artifacts to DB", len(rows))
         finally:
             if lock_acquired and self._redis_client:
                 release_script = (
@@ -1560,7 +1678,6 @@ class ArtifactStore:
         pipe = self._redis_client.pipeline()
         for payload in reversed(entries):
             pipe.lpush(self._redis_pending_key, payload)
-        pipe.expire(self._redis_pending_key, max(self._redis_ttl, 60))
         await _await_if_needed(pipe.execute())
 
     @timed
@@ -1631,7 +1748,7 @@ class ArtifactStore:
 
     @timed
     async def _run_cleanup_once(self) -> None:
-        if not (self._item_model and self._session_factory):
+        if not (self._db_executor and self._item_model and self._session_factory):
             return
         cutoff_days = self.valves.ARTIFACT_CLEANUP_DAYS
         cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=cutoff_days)

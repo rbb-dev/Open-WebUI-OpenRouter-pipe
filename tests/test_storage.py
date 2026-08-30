@@ -801,15 +801,18 @@ async def test_flush_redis_queue_db_failure_requeues(pipe_instance, caplog):
             return 1
 
         def pipeline(self):
+            outer = self
+
             class _Pipe:
                 def lpush(_, key, value):
                     requeued.append(value)
-                    return self
+                    outer.lists.setdefault(key, []).insert(0, value)
+                    return _
 
                 def expire(_, key, ttl):
-                    return self
+                    return _
 
-                def execute(self):
+                def execute(_):
                     return []
 
             return _Pipe()
@@ -824,6 +827,215 @@ async def test_flush_redis_queue_db_failure_requeues(pipe_instance, caplog):
     caplog.set_level(logging.ERROR)
     await store._flush_redis_queue()
     assert requeued
+    assert store._redis_client.lists[store._redis_pending_key] == requeued
+
+
+class _QueueRedis:
+    """Fake Redis whose pending list really mutates, so end-state can be asserted."""
+
+    def __init__(self, key, entries):
+        self.storage = {}
+        self.lists = {key: list(entries)}
+
+    def lpop(self, key):
+        values = self.lists.get(key, [])
+        return values.pop(0) if values else None
+
+    def set(self, key, value, nx=False, ex=None):
+        self.storage[key] = value
+        return True
+
+    def eval(self, script, numkeys, key, token):
+        self.storage.pop(key, None)
+        return 1
+
+    def pipeline(self):
+        outer = self
+
+        class _Pipe:
+            def lpush(self, key, value):
+                outer.lists.setdefault(key, []).insert(0, value)
+                return self
+
+            def execute(self):
+                return []
+
+        return _Pipe()
+
+
+def _queue_entries(count):
+    return [
+        json.dumps({"id": f"id-{i}", "chat_id": "c", "message_id": "m", "payload": {"n": i}})
+        for i in range(count)
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count", [2, 3])
+async def test_flush_leaves_queue_intact_when_store_cannot_write(pipe_instance, monkeypatch, count):
+    """An unusable store must not remove anything from the shared pending queue."""
+    store = pipe_instance._artifact_store
+    store._item_model = None
+    store._session_factory = None
+    store._db_executor = None
+    store._redis_enabled = True
+    entries = _queue_entries(count)
+    store._redis_client = _QueueRedis(store._redis_pending_key, entries)
+    monkeypatch.setattr(store, "_ensure_artifact_store", lambda *a, **k: None)
+
+    await store._flush_redis_queue()
+
+    assert store._redis_client.lists[store._redis_pending_key] == entries
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count", [2, 3])
+async def test_flush_never_dequeues_when_store_cannot_write(pipe_instance, monkeypatch, count):
+    """The gate must stop the flush before the queue is touched, not merely put rows back."""
+    store = pipe_instance._artifact_store
+    store._item_model = None
+    store._session_factory = None
+    store._db_executor = None
+    store._redis_enabled = True
+    pops = []
+
+    class _CountingRedis(_QueueRedis):
+        def lpop(self, key):
+            pops.append(key)
+            return super().lpop(key)
+
+    store._redis_client = _CountingRedis(store._redis_pending_key, _queue_entries(count))
+    monkeypatch.setattr(store, "_ensure_artifact_store", lambda *a, **k: None)
+
+    await store._flush_redis_queue()
+
+    assert pops == []
+
+
+def test_db_persist_sync_raises_when_store_is_torn_down(pipe_instance):
+    """The inner writer must raise too: the outer guard cannot see a mid-flight teardown."""
+    store = pipe_instance._artifact_store
+    store._item_model = None
+    store._session_factory = None
+    with pytest.raises(persistence_mod.ArtifactStoreUnavailable):
+        store._db_persist_sync([{"id": "x", "chat_id": "c", "message_id": "m", "payload": {}}])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count", [2, 3])
+async def test_flush_drains_queue_and_writes_rows_when_store_is_healthy(pipe_instance, count):
+    """The liveness half: a healthy store must actually drain the queue into the table."""
+    rows = _install_fake_store(pipe_instance)
+    store = pipe_instance._artifact_store
+    store._redis_enabled = False
+    entries = _queue_entries(count)
+    store._redis_client = _QueueRedis(store._redis_pending_key, entries)
+    store._redis_enabled = True
+
+    async def _no_cache(_rows):
+        return None
+
+    store._redis_cache_rows = _no_cache
+
+    await store._flush_redis_queue()
+
+    assert store._redis_client.lists[store._redis_pending_key] == []
+    assert sorted(getattr(row, "id", None) for row in rows) == [f"id-{i}" for i in range(count)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count", [2, 3])
+async def test_flush_requeues_rows_the_writer_did_not_commit(pipe_instance, count):
+    """Rows the writer did not acknowledge must go back on the queue, not vanish."""
+    _install_fake_store(pipe_instance)
+    store = pipe_instance._artifact_store
+    store._redis_enabled = True
+    entries = _queue_entries(count)
+    store._redis_client = _QueueRedis(store._redis_pending_key, entries)
+
+    async def _partial_persist(rows, user_id=""):
+        return ["id-0"]
+
+    store._db_persist_direct = _partial_persist
+
+    await store._flush_redis_queue()
+
+    assert store._redis_client.lists[store._redis_pending_key] == entries[1:]
+
+
+@pytest.mark.asyncio
+async def test_requeue_never_puts_a_ttl_on_the_pending_queue(pipe_instance):
+    """The pending queue is a write buffer; any expiry on it is silent data loss."""
+    store = pipe_instance._artifact_store
+    store._redis_enabled = True
+    expired = []
+
+    class _TtlSpyRedis(_QueueRedis):
+        def pipeline(self):
+            outer = self
+
+            class _Pipe:
+                def lpush(self, key, value):
+                    outer.lists.setdefault(key, []).insert(0, value)
+                    return self
+
+                def expire(self, key, ttl):
+                    expired.append((key, ttl))
+                    return self
+
+                def execute(self):
+                    return []
+
+            return _Pipe()
+
+    store._redis_client = _TtlSpyRedis(store._redis_pending_key, [])
+    store._redis_ttl = 600
+
+    await store._redis_requeue_entries(_queue_entries(2))
+
+    assert expired == []
+    assert len(store._redis_client.lists[store._redis_pending_key]) == 2
+
+
+def test_ensure_artifact_store_rebuilds_when_executor_is_gone(pipe_instance):
+    """A store whose executor was torn down is not ready and must be rebuilt."""
+    store = pipe_instance._artifact_store
+    store.id = "test-pipe"
+    store._encryption_key = ""
+    store._artifact_store_signature = (_sanitize_table_fragment("test-pipe"), "")
+    store._item_model = Mock()
+    store._session_factory = Mock()
+    store._engine = Mock()
+    store._db_executor = None
+
+    called = []
+    store._init_artifact_store = lambda *args, **kwargs: called.append(True)
+    store._ensure_artifact_store(pipe_instance.valves)
+
+    assert called
+
+
+@pytest.mark.asyncio
+async def test_flush_drops_unpersistable_rows_instead_of_requeueing_them(pipe_instance):
+    """A row that can never be written must not cycle through the queue forever."""
+    rows = _install_fake_store(pipe_instance)
+    store = pipe_instance._artifact_store
+    store._redis_enabled = True
+    entries = [
+        json.dumps({"id": "good", "chat_id": "c", "message_id": "m", "payload": {"n": 1}}),
+        json.dumps({"id": "bad", "chat_id": "c", "message_id": "m", "payload": None}),
+    ]
+    store._redis_client = _QueueRedis(store._redis_pending_key, entries)
+
+    async def _no_cache(_rows):
+        return None
+
+    store._redis_cache_rows = _no_cache
+
+    await store._flush_redis_queue()
+
+    assert store._redis_client.lists[store._redis_pending_key] == []
+    assert [getattr(row, "id", None) for row in rows] == ["good"]
 
 
 @pytest.mark.asyncio
@@ -1300,6 +1512,7 @@ def test_ensure_artifact_store_skip_when_unchanged(pipe_instance):
     store._item_model = Mock()
     store._session_factory = Mock()
     store._engine = Mock()
+    store._db_executor = Mock()
 
     # Should return early without calling _init_artifact_store
     original_init = store._init_artifact_store
@@ -1792,21 +2005,21 @@ async def test_artifact_cleanup_worker_exception_handling(pipe_instance, caplog,
 
 @pytest.mark.asyncio
 async def test_db_persist_direct_no_executor(pipe_instance):
-    """Test _db_persist_direct returns empty without executor."""
+    """An unusable store must raise, never report rows as written."""
     store = pipe_instance._artifact_store
     store._db_executor = None
-    result = await store._db_persist_direct([{"id": "test"}])
-    assert result == []
+    with pytest.raises(persistence_mod.ArtifactStoreUnavailable):
+        await store._db_persist_direct([{"id": "test"}])
 
 
 @pytest.mark.asyncio
 async def test_db_persist_direct_no_model(pipe_instance):
-    """Test _db_persist_direct returns empty without model."""
+    """An unusable store must raise, never report rows as written."""
     store = pipe_instance._artifact_store
     store._db_executor = ThreadPoolExecutor(max_workers=1)
     store._item_model = None
-    result = await store._db_persist_direct([{"id": "test"}])
-    assert result == []
+    with pytest.raises(persistence_mod.ArtifactStoreUnavailable):
+        await store._db_persist_direct([{"id": "test"}])
 
 
 @pytest.mark.asyncio
@@ -2562,11 +2775,19 @@ async def test_db_persist_records_failure_on_exception(monkeypatch, pipe_instanc
 
 
 @pytest.mark.asyncio
-async def test_db_persist_direct_duplicate_key_returns_ids(monkeypatch, pipe_instance) -> None:
-    _install_fake_store(pipe_instance)
+@pytest.mark.parametrize(
+    ("already_in_table", "expected"),
+    [(["id-1"], ["id-1"]), ([], [])],
+)
+async def test_db_persist_direct_duplicate_key_acks_only_rows_present_in_table(
+    monkeypatch, pipe_instance, already_in_table, expected
+) -> None:
+    """A duplicate-key rollback may only acknowledge ids actually present in the table."""
+    rows = _install_fake_store(pipe_instance)
     store = pipe_instance._artifact_store
     store._redis_enabled = False
-    store._db_executor = object()
+    for identifier in already_in_table:
+        rows.append(_FakeModel(id=identifier))
 
     class _Loop:
         async def run_in_executor(self, _executor, func, *args):
@@ -2581,7 +2802,7 @@ async def test_db_persist_direct_duplicate_key_returns_ids(monkeypatch, pipe_ins
 
     result = await store._db_persist_direct([{"id": "id-1"}])
 
-    assert result == ["id-1"]
+    assert result == expected
 
 
 @pytest.mark.asyncio
