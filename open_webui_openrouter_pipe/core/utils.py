@@ -46,6 +46,15 @@ SERVER_TOOL_EXTRA_SUCCESS = frozenset({"ok"})
 SERVER_TOOL_IN_FLIGHT_STATUSES = frozenset({"in_progress", "generating", "searching"})
 SERVER_TOOL_SUCCESS_STATUSES = frozenset({"completed"}) | SERVER_TOOL_EXTRA_SUCCESS
 SERVER_TOOL_FAILURE_STATUSES = frozenset({"incomplete", "failed"})
+OWUI_SETTLED_CALL_STATUSES = frozenset({"completed", "failed", "rejected"})
+
+
+def owui_call_status(result_status: str | None) -> str:
+    if result_status in OWUI_SETTLED_CALL_STATUSES:
+        return str(result_status)
+    if result_status in SERVER_TOOL_SUCCESS_STATUSES:
+        return "completed"
+    return "failed"
 
 _TEMPLATE_IF_TOKEN_RE = re.compile(r"\{\{\s*(#if\s+(\w+)|/if)\s*\}\}")
 _MARKER_SUFFIX = "]: #"

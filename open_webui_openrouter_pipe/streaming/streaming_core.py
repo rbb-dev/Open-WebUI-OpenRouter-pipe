@@ -86,6 +86,7 @@ from ..core.utils import (
     citation_access_stamp,
     join_answer_and_card,
     merge_usage_stats,
+    owui_call_status,
     wrap_code_block,
 )
 
@@ -909,15 +910,19 @@ class StreamingHandler:
             emitted_output_items.append(recorded)
 
         def _terminal_output_items() -> list[dict[str, Any]]:
+            result_status_by_call_id: dict[str, Any] = {}
+            for entry in emitted_output_items:
+                if entry.get("type") != "function_call_output":
+                    continue
+                result_id = entry.get("call_id")
+                if isinstance(result_id, str) and result_id:
+                    result_status_by_call_id[result_id] = entry.get("status")
             resolved: list[dict[str, Any]] = []
             for entry in emitted_output_items:
                 item = copy.deepcopy(entry)
                 if item.get("type") == "function_call":
                     call_id = item.get("call_id") or item.get("id")
-                    if item.get("status") not in {"completed", "failed", "rejected"}:
-                        item["status"] = (
-                            "completed" if call_id in emitted_tool_output_items else "failed"
-                        )
+                    item["status"] = owui_call_status(result_status_by_call_id.get(call_id))
                 resolved.append(item)
             trailing = assistant_message[recorded_message_chars:]
             if trailing:

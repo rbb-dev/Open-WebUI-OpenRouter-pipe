@@ -494,6 +494,42 @@ class TestFailedToolCardsStillReachHistory:
         )
 
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("http_status", "expected"),
+        [(200, "completed"), (503, "failed")],
+    )
+    async def test_published_call_status_reflects_whether_the_tool_succeeded(
+        self, monkeypatch, pipe_instance_async, http_status, expected
+    ):
+        """The published status must come from the result's outcome, not from the mere
+        existence of a result. Recording a failed tool round as "completed" tells the
+        model on every later turn that a tool it never got an answer from had worked.
+        """
+        pipe = pipe_instance_async
+        clock = _install_clock(monkeypatch)
+        valves = pipe.valves.model_copy(
+            update={"THINKING_OUTPUT_MODE": "open_webui", "SHOW_TOOL_CARDS": True}
+        )
+        steps = [
+            (0.0, {"type": "response.output_item.added",
+                   "item": {"type": "openrouter:web_search", "id": "ws-1"}}),
+            (1.0, {"type": "response.output_item.done",
+                   "item": {"type": "openrouter:web_search", "id": "ws-1",
+                            "action": {}, "httpStatus": http_status}}),
+            (0.2, {"type": "response.output_text.delta", "delta": "Done."}),
+            (0.0, {"type": "response.completed", "response": {"output": [], "usage": {}}}),
+        ]
+        emitted = await _run(pipe, valves, steps, clock, monkeypatch)
+
+        completions = _events_of(emitted, "response.completed")
+        assert completions
+        published = (completions[-1].get("response") or {}).get("output") or []
+        calls = [e for e in published if e.get("type") == "function_call"]
+        assert calls, "the call must be in the published array"
+        assert [e.get("status") for e in calls] == [expected]
+
+
 class TestRetireDriftGuard:
     """T7: the legacy reasoning wire vocabulary must not return."""
 
