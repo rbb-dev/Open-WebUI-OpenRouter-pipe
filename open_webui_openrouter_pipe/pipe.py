@@ -1545,6 +1545,23 @@ class Pipe:
         Cancels all Redis background tasks and closes the Redis client connection.
         Any errors during client close are logged but not propagated.
         """
+        await self._stop_redis_tasks()
+
+        if self._redis_client:
+            try:
+                await self._redis_client.close()
+            except Exception as e:
+                self.logger.debug(f"Failed to close Redis client: {e}", exc_info=True)
+            finally:
+                self._redis_client = None
+
+        self._redis_enabled = False
+        store = getattr(self, "_artifact_store", None)
+        if store is not None:
+            store._redis_enabled = False
+            store._redis_client = None
+
+    async def _stop_redis_tasks(self) -> None:
         cancelled_tasks: list[asyncio.Task] = []
         for attr in ("_redis_listener_task", "_redis_flush_task", "_redis_ready_task"):
             task = getattr(self, attr, None)
@@ -1565,21 +1582,6 @@ class Pipe:
                         asyncio.gather(*same_loop, return_exceptions=True),
                         timeout=2.0,
                     )
-
-        if self._redis_client:
-            try:
-                await self._redis_client.close()
-            except Exception as e:
-                self.logger.debug(f"Failed to close Redis client: {e}", exc_info=True)
-            finally:
-                self._redis_client = None
-
-        # Update state
-        self._redis_enabled = False
-        store = getattr(self, "_artifact_store", None)
-        if store is not None:
-            store._redis_enabled = False
-            store._redis_client = None
 
     def _init_minimal_for_tests(self) -> None:
         self.type = "manifold"
@@ -1829,6 +1831,8 @@ class Pipe:
             with contextlib.suppress(Exception):
                 await asyncio.gather(*extra_tasks, return_exceptions=True)
 
+        await self._stop_redis_tasks()
+
         pending_shutdown: list[Any] = []
         with contextlib.suppress(Exception):
             pending_shutdown = self.shutdown() or []
@@ -1838,9 +1842,11 @@ class Pipe:
                     asyncio.gather(*pending_shutdown, return_exceptions=True),
                     timeout=5.0,
                 )
-        await self._stop_video_tasks()
-        await self._stop_request_worker()
-        await self._stop_log_worker()
+        for drain in (self._stop_video_tasks, self._stop_request_worker, self._stop_log_worker):
+            try:
+                await drain()
+            except Exception:
+                self.logger.debug("Shutdown drain %s failed", drain.__name__, exc_info=True)
         await self._stop_redis()
 
         if self._http_session:
