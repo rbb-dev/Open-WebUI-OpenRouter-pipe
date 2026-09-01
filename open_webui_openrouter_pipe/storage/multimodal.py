@@ -424,6 +424,51 @@ def image_pixel_size(data: bytes) -> tuple[int, int] | None:
     return None
 
 
+_SNIFF_PREFIX_BYTES = 32
+_ISO_BMFF_BRANDS: dict[bytes, str] = {
+    b"avc1": "video/mp4",
+    b"cmfc": "video/mp4",
+    b"dash": "video/mp4",
+    b"iso2": "video/mp4",
+    b"iso4": "video/mp4",
+    b"iso5": "video/mp4",
+    b"iso6": "video/mp4",
+    b"isom": "video/mp4",
+    b"mp41": "video/mp4",
+    b"mp42": "video/mp4",
+    b"mp71": "video/mp4",
+    b"M4V ": "video/x-m4v",
+    b"M4VH": "video/x-m4v",
+    b"M4VP": "video/x-m4v",
+    b"qt  ": "video/quicktime",
+    b"3gp4": "video/3gpp",
+    b"3gp5": "video/3gpp",
+    b"3gp6": "video/3gpp",
+    b"3g2a": "video/3gpp2",
+    b"F4A ": "audio/mp4",
+    b"M4A ": "audio/mp4",
+    b"M4B ": "audio/mp4",
+    b"heic": "image/heic",
+    b"heix": "image/heic",
+    b"hevc": "image/heic",
+    b"mif1": "image/heif",
+    b"msf1": "image/heif",
+    b"avif": "image/avif",
+    b"avis": "image/avif",
+}
+
+
+def _iso_bmff_mime(raw: bytes) -> str | None:
+    major = _ISO_BMFF_BRANDS.get(raw[8:12])
+    if major:
+        return major
+    for offset in range(16, len(raw) - 3, 4):
+        compatible = _ISO_BMFF_BRANDS.get(raw[offset : offset + 4])
+        if compatible:
+            return compatible
+    return None
+
+
 def _sniff_mime_from_prefix(data: bytes) -> str | None:
     if not isinstance(data, (bytes, bytearray)) or not data:
         return None
@@ -441,7 +486,7 @@ def _sniff_mime_from_prefix(data: bytes) -> str | None:
         return "image/x-icon"
 
     if len(raw) >= 12 and raw[4:8] == b"ftyp":
-        return "video/mp4"
+        return _iso_bmff_mime(raw)
     if raw.startswith(b"\x1aE\xdf\xa3"):
         return "video/webm"
     if raw.startswith(b"OggS"):
@@ -859,18 +904,20 @@ class MultimodalHandler:
                                         f"({size_mb:.1f}MB > {limit_mb:.1f}MB); aborting."
                                     )
                                     return None
-                                if len(sniff_buffer) < 32:
-                                    sniff_buffer.extend(chunk[: 32 - len(sniff_buffer)])
+                                if len(sniff_buffer) < _SNIFF_PREFIX_BYTES:
+                                    sniff_buffer.extend(
+                                        chunk[: _SNIFF_PREFIX_BYTES - len(sniff_buffer)]
+                                    )
                                 fh.write(chunk)
                                 written = projected
 
                         if mime_allowlist is not None:
-                            if not sniffed_mime or sniffed_mime in {"application/octet-stream", ""}:
+                            if sniffed_mime not in mime_allowlist:
                                 sniffed_mime = _sniff_mime_from_prefix(bytes(sniff_buffer)) or sniffed_mime
                             if sniffed_mime not in mime_allowlist:
                                 self.logger.warning(
-                                    "Streaming download MIME %r not in allowlist %r; aborting.",
-                                    sniffed_mime, sorted(mime_allowlist),
+                                    "Streaming download MIME %r (declared %r) not in allowlist %r; aborting.",
+                                    sniffed_mime, mime_type, sorted(mime_allowlist),
                                 )
                                 return None
 
