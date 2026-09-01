@@ -1912,13 +1912,13 @@ def test_sanitize_request_input_applies_replay_budget_idempotently(pipe_instance
     ModelFamily.set_dynamic_specs(
         {
             "test.model": {
-                "full_model": {"max_prompt_tokens": 32},
-                "context_length": 32,
+                "full_model": {"max_prompt_tokens": 200},
+                "context_length": 200,
             }
         }
     )
 
-    oversized_output = "x" * 600
+    oversized_output = "x" * 4000
     body = ResponsesBody.model_validate(
         {
             "model": "test/model",

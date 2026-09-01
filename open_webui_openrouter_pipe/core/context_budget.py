@@ -13,6 +13,9 @@ logger = logging.getLogger(__name__)
 
 _FALLBACK_PROMPT_LIMIT_TOKENS = 128_000
 _CHARS_PER_TOKEN_HEURISTIC = 4
+_IMAGE_BLOCK_TYPES = frozenset({"input_image", "image_url"})
+_IMAGE_TOKEN_ESTIMATE = 1_700
+_IMAGE_PLACEHOLDER = "i" * (_IMAGE_TOKEN_ESTIMATE * _CHARS_PER_TOKEN_HEURISTIC)
 _LIVE_OMISSION_PREFIX = "[Tool result omitted due to context budget."
 _REPLAY_OMISSION_PREFIX = "[Replayed tool result omitted due to context budget."
 
@@ -63,17 +66,38 @@ def compute_prompt_limit_tokens(model_id: str) -> int:
     return _FALLBACK_PROMPT_LIMIT_TOKENS
 
 
+def _budget_shape(value: Any) -> Any:
+    if isinstance(value, dict):
+        if value.get("type") in _IMAGE_BLOCK_TYPES:
+            shaped = {key: item for key, item in value.items() if key != "image_url"}
+            shaped["image_url"] = _IMAGE_PLACEHOLDER
+            return shaped
+        return {key: _budget_shape(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_budget_shape(item) for item in value]
+    return value
+
+
+def _baseline_without_tool_outputs(items: Any) -> Any:
+    if not isinstance(items, list):
+        return items
+    baseline: list[Any] = []
+    for item in items:
+        if isinstance(item, dict) and item.get("type") == "function_call_output":
+            blanked = dict(item)
+            blanked["output"] = ""
+            baseline.append(blanked)
+        else:
+            baseline.append(item)
+    return baseline
+
+
 def estimate_serialized_chars(value: Any) -> int:
     """Estimate payload size by serialized character count."""
     try:
-        return len(json.dumps(value, ensure_ascii=False))
+        return len(json.dumps(_budget_shape(value), ensure_ascii=False))
     except (RecursionError, TypeError, ValueError):
         return len(str(value))
-
-
-def estimate_serialized_tokens(value: Any) -> int:
-    """Estimate token count using a simple char/token heuristic."""
-    return estimate_serialized_chars(value) // _CHARS_PER_TOKEN_HEURISTIC
 
 
 def is_tool_omission_stub(text: str) -> bool:
@@ -119,7 +143,16 @@ def apply_live_tool_output_budget(
 
     prompt_limit_tokens = compute_prompt_limit_tokens(model_id)
     prompt_limit_chars = max(prompt_limit_tokens * _CHARS_PER_TOKEN_HEURISTIC, 0)
-    remaining_chars = max(prompt_limit_chars - estimate_serialized_chars(existing_input_items), 0)
+    fixed_chars = estimate_serialized_chars(_baseline_without_tool_outputs(existing_input_items))
+    if prompt_limit_chars and fixed_chars >= prompt_limit_chars:
+        logger.warning(
+            "Skipping live tool-output budget: the request without tool output already needs "
+            "~%d chars against a ~%d char limit, so omitting results cannot bring it under.",
+            fixed_chars,
+            prompt_limit_chars,
+        )
+        return omitted_call_ids
+    remaining_chars = max(prompt_limit_chars - fixed_chars, 0)
 
     for output in outputs:
         if not isinstance(output, dict):
@@ -146,6 +179,9 @@ def apply_live_tool_output_budget(
                 result_chars=result_chars,
                 remaining_tokens=(remaining_chars // _CHARS_PER_TOKEN_HEURISTIC),
             )
+            if len(stub) >= result_chars:
+                remaining_chars = max(remaining_chars - result_chars, 0)
+                continue
             output["output"] = stub
             if call_id:
                 omitted_call_ids.add(call_id)
@@ -176,16 +212,16 @@ def apply_replay_tool_output_budget(
     prompt_limit_tokens = compute_prompt_limit_tokens(model_id)
     prompt_limit_chars = max(prompt_limit_tokens * _CHARS_PER_TOKEN_HEURISTIC, 0)
 
-    baseline_items: list[Any] = []
-    for item in items:
-        if isinstance(item, dict) and item.get("type") == "function_call_output":
-            baseline = dict(item)
-            baseline["output"] = ""
-            baseline_items.append(baseline)
-        else:
-            baseline_items.append(item)
-
-    remaining_chars = max(prompt_limit_chars - estimate_serialized_chars(baseline_items), 0)
+    fixed_chars = estimate_serialized_chars(_baseline_without_tool_outputs(items))
+    if prompt_limit_chars and fixed_chars >= prompt_limit_chars:
+        logger.warning(
+            "Skipping replay tool-output budget: the request without tool output already needs "
+            "~%d chars against a ~%d char limit, so omitting results cannot bring it under.",
+            fixed_chars,
+            prompt_limit_chars,
+        )
+        return omitted_call_ids
+    remaining_chars = max(prompt_limit_chars - fixed_chars, 0)
 
     for item in items:
         if not isinstance(item, dict) or item.get("type") != "function_call_output":
@@ -212,6 +248,9 @@ def apply_replay_tool_output_budget(
                 result_chars=result_chars,
                 remaining_tokens=(remaining_chars // _CHARS_PER_TOKEN_HEURISTIC),
             )
+            if len(stub) >= result_chars:
+                remaining_chars = max(remaining_chars - result_chars, 0)
+                continue
             item["output"] = stub
             if call_id:
                 omitted_call_ids.add(call_id)

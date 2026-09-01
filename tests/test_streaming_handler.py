@@ -4404,8 +4404,8 @@ class TestAdaptiveToolBudgeting:
         ModelFamily.set_dynamic_specs(
             {
                 "test.model": {
-                    "full_model": {"max_prompt_tokens": 20},
-                    "context_length": 20,
+                    "full_model": {"max_prompt_tokens": 200},
+                    "context_length": 200,
                 }
             }
         )
@@ -4466,7 +4466,7 @@ class TestAdaptiveToolBudgeting:
                 yield event
 
         async def mock_execute(calls, registry):
-            return [{"type": "function_call_output", "call_id": "call-1", "output": "y" * 220}]
+            return [{"type": "function_call_output", "call_id": "call-1", "output": "y" * 4000}]
 
         persisted_rows: list[dict] = []
 
