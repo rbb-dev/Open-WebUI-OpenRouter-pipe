@@ -1359,6 +1359,51 @@ class TestImageSelection:
             assert user_msg["role"] == "user"
 
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("intervening_text_turn", [False, True])
+    async def test_generated_image_survives_an_intervening_text_reply(
+        self, pipe_instance, intervening_text_turn
+    ):
+        """The image the model made is the edit reference for a later "change it" turn.
+
+        Measured live against gemini-3-pro-image: given the image, the edit is faithful;
+        without it the model invents a different subject. So an unrelated question asked
+        in between must not erase it, or the next edit silently retouches the wrong thing.
+        """
+        pipe_instance.valves.IMAGE_INPUT_SELECTION = "user_then_assistant"
+        pipe_instance.valves.MAX_INPUT_IMAGES_PER_REQUEST = 5
+
+        with patch("open_webui_openrouter_pipe.requests.transformer.ModelFamily") as mock_family:
+            mock_family.supports.return_value = True
+
+            async def mock_inline(*args, **kwargs):
+                return InlinedFile(data_url="data:image/png;base64,frog", filename="frog.png")
+
+            async def mock_download(*args, **kwargs):
+                return None
+
+            pipe_instance._file_gateway.inline_owui_file_id = mock_inline
+            pipe_instance._multimodal_handler._download_remote_url = mock_download
+
+            messages = [
+                {"role": "user", "content": "draw a green frog"},
+                {"role": "assistant", "content": "Done: ![frog](https://example.com/frog.png)"},
+            ]
+            if intervening_text_turn:
+                messages += [
+                    {"role": "user", "content": "what is the capital of France?"},
+                    {"role": "assistant", "content": "Paris."},
+                ]
+            messages.append({"role": "user", "content": [{"type": "text", "text": "make it yellow"}]})
+
+            result = await transform_messages_to_input(pipe_instance, messages)
+
+        latest = result[-1]
+        assert latest["role"] == "user"
+        images = [b for b in latest["content"] if b.get("type") == "input_image"]
+        assert images, "the generated image must still be supplied as the edit reference"
+
+
 # =============================================================================
 # Anthropic Prompt Caching Tests
 # =============================================================================
@@ -1399,6 +1444,7 @@ class TestValvesOverride:
         custom_valves = SimpleNamespace(
             MAX_INPUT_IMAGES_PER_REQUEST=1,
             IMAGE_INPUT_SELECTION="user_only",
+            IMAGE_REUSE_MAX_TURNS=3,
             IMAGE_UPLOAD_CHUNK_BYTES=1024,
             BASE64_MAX_SIZE_MB=10,
             ENABLE_ANTHROPIC_PROMPT_CACHING=False,
@@ -4913,3 +4959,190 @@ class TestVisionWarningLatestUserMessage:
 
             # Vision warning should be emitted
             assert any("does not accept image" in msg for msg in status_messages)
+
+
+class TestImageReuseRegister:
+    """The picture offered back when the user attaches nothing.
+
+    Every property here was invisible to the suite before: the existing tests assert
+    only that *an* image block is present, which is satisfied by supplying the wrong
+    one, from the wrong turn, at the cost of a new stored file and a saved error banner.
+    """
+
+    @staticmethod
+    def _blocks(result):
+        latest = result[-1]
+        out = []
+        for block in latest["content"]:
+            if isinstance(block, dict) and block.get("type") == "input_image":
+                url = block.get("image_url")
+                out.append(url.get("url") if isinstance(url, dict) else url)
+        return out
+
+    @staticmethod
+    async def _run(pipe_instance, messages, *, emitter=None, gateway=None, downloader=None):
+        with patch("open_webui_openrouter_pipe.requests.transformer.ModelFamily") as mock_family:
+            mock_family.supports.return_value = True
+
+            async def none(*a, **k):
+                return None
+
+            pipe_instance._file_gateway.inline_owui_file_id = gateway or none
+            pipe_instance._multimodal_handler._download_remote_url = downloader or none
+            return await transform_messages_to_input(
+                pipe_instance, messages, event_emitter=emitter
+            )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("user_uploads_last", [False, True])
+    async def test_the_newest_picture_wins_whoever_supplied_it(
+        self, pipe_instance, user_uploads_last
+    ):
+        """Only assistant images were recorded, so an older generated picture beat a
+        newer upload.
+
+        Measured before the fix on a four-turn transcript -- generate a horse, upload a
+        butterfly, generation fails, "try again" -- the request carried the horse. The
+        butterfly was two messages back, stored in Open WebUI and addressable; the code
+        simply never looked at it. Parametrised over which side supplied the newer
+        image so a constant cannot satisfy both rows.
+        """
+        pipe_instance.valves.IMAGE_INPUT_SELECTION = "user_then_assistant"
+        pipe_instance.valves.MAX_INPUT_IMAGES_PER_REQUEST = 5
+
+        assistant_turn = {"role": "assistant", "content": "Done: ![a](https://e.test/ASSISTANT.png)"}
+        user_turn = {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": "https://e.test/UPLOAD.png"}},
+                {"type": "text", "text": "here is mine"},
+            ],
+        }
+        order = [assistant_turn, user_turn] if user_uploads_last else [user_turn, assistant_turn]
+        expected = "https://e.test/UPLOAD.png" if user_uploads_last else "https://e.test/ASSISTANT.png"
+
+        messages = [{"role": "user", "content": "start"}, *order,
+                    {"role": "assistant", "content": "Sorry, that failed."},
+                    {"role": "user", "content": [{"type": "text", "text": "try again"}]}]
+
+        assert self._blocks(await self._run(pipe_instance, messages)) == [expected]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("gap_turns", "expect_image"), [(1, True), (2, False)])
+    async def test_a_picture_stops_being_resent_once_the_window_passes(
+        self, pipe_instance, gap_turns, expect_image
+    ):
+        """Without a bound the picture rode along on every later text turn forever.
+
+        Parametrised over the DISTANCE either side of the boundary rather than over the
+        window: with the window fixed at one turn, a picture one turn back must be
+        reused and one two turns back must not. Varying the window instead leaves both
+        rows far from the edge, so an off-by-one in the comparison changes neither
+        answer -- which is exactly how a first version of this test passed while the
+        boundary was wrong.
+        """
+        pipe_instance.valves.IMAGE_INPUT_SELECTION = "user_then_assistant"
+        pipe_instance.valves.MAX_INPUT_IMAGES_PER_REQUEST = 5
+        pipe_instance.valves.IMAGE_REUSE_MAX_TURNS = 1
+
+        messages = [
+            {"role": "user", "content": "draw something"},
+            {"role": "assistant", "content": "Done: ![a](https://e.test/PIC.png)"},
+        ]
+        for _ in range(gap_turns - 1):
+            messages += [
+                {"role": "user", "content": [{"type": "text", "text": "unrelated"}]},
+                {"role": "assistant", "content": "An answer."},
+            ]
+        messages.append({"role": "user", "content": [{"type": "text", "text": "and now?"}]})
+
+        blocks = self._blocks(await self._run(pipe_instance, messages))
+        assert bool(blocks) is expect_image
+
+    @pytest.mark.asyncio
+    async def test_a_failed_reuse_says_nothing_to_the_user(self, pipe_instance):
+        """`show_error_message=True` is not a status line.
+
+        Open WebUI assigns it to `message.error` and renders a red banner that is saved
+        into the chat. The reuse is speculative -- the user attached nothing and asked
+        for nothing -- so a missing file must not mark their conversation as errored,
+        least of all on every subsequent turn.
+        """
+        pipe_instance.valves.IMAGE_INPUT_SELECTION = "user_then_assistant"
+        emitted: list[dict] = []
+
+        async def emitter(event):
+            emitted.append(event)
+
+        messages = [
+            {"role": "assistant", "content": "Done: ![a](/api/v1/files/gone/content)"},
+            {"role": "user", "content": [{"type": "text", "text": "and now?"}]},
+        ]
+
+        await self._run(pipe_instance, messages, emitter=emitter)
+
+        assert not [e for e in emitted if isinstance(e, dict) and (e.get("data") or {}).get("error")], (
+            f"a speculative reuse put an error into the chat: {emitted}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_failed_reuse_cannot_end_the_turn(self, pipe_instance):
+        """`inline_owui_file_id` catches only ValueError.
+
+        `materialize_owui_file_to_temp` raises `RequiredInternalFileError` from eleven
+        places -- storage unavailable, missing storage path, size limit, auth denial --
+        and the reuse loop re-raised it, ending the turn before any model call. None of
+        those are the user's doing, and none are recoverable by them.
+        """
+        pipe_instance.valves.IMAGE_INPUT_SELECTION = "user_then_assistant"
+
+        async def raiser(*a, **k):
+            raise RequiredInternalFileError("Open WebUI storage is not available.", kind="image")
+
+        messages = [
+            {"role": "assistant", "content": "Done: ![a](/api/v1/files/x/content)"},
+            {"role": "user", "content": [{"type": "text", "text": "and now?"}]},
+        ]
+
+        result = await self._run(pipe_instance, messages, gateway=raiser)
+
+        assert isinstance(result, list) and result, "a failed reuse aborted the whole turn"
+        assert self._blocks(result) == []
+
+    @pytest.mark.asyncio
+    async def test_reusing_a_remote_picture_does_not_store_it_again(self, pipe_instance):
+        """The transcript already holds the reference; re-saving it creates an orphan.
+
+        `upload_to_owui_storage` has no content or URL dedup, so once the picture was
+        reused on every later turn this wrote a brand new Open WebUI file each time,
+        unbounded, for an image already in the chat.
+
+        The storage context is stubbed deliberately. Without it `_save_image_bytes`
+        returns before it ever reaches the upload, so an assertion of "zero uploads"
+        holds whether the fix is present or not -- which is how a first version of this
+        test passed against code that still uploaded.
+        """
+        pipe_instance.valves.IMAGE_INPUT_SELECTION = "user_then_assistant"
+        uploads: list[Any] = []
+
+        async def counting_upload(*a, **k):
+            uploads.append(a)
+            return None
+
+        async def downloaded(*a, **k):
+            return {"data": b"\x89PNG\r\n\x1a\n", "mime_type": "image/png"}
+
+        async def storage_context(*a, **k):
+            return (object(), object())
+
+        pipe_instance._file_gateway.upload_to_owui_storage = counting_upload
+        pipe_instance._file_gateway.resolve_storage_context = storage_context
+
+        messages = [
+            {"role": "assistant", "content": "Done: ![a](https://e.test/REMOTE.png)"},
+            {"role": "user", "content": [{"type": "text", "text": "and now?"}]},
+        ]
+
+        await self._run(pipe_instance, messages, downloader=downloaded)
+
+        assert uploads == [], "a reused picture was written to Open WebUI storage again"

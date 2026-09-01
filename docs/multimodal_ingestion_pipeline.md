@@ -67,7 +67,8 @@ This image re-hosting behavior is intentionally “always on” for data URLs an
 
 ### Limits and selection
 - `MAX_INPUT_IMAGES_PER_REQUEST` limits how many images will be forwarded.
-- `IMAGE_INPUT_SELECTION` controls whether the pipe can fall back to recent assistant images when the current user turn has no attachments.
+- `IMAGE_INPUT_SELECTION` controls whether the pipe can fall back to the most recent image already in the conversation - the model's or the user's - when the current user turn has no attachments.
+- `IMAGE_REUSE_MAX_TURNS` bounds how long that image stays available, so a long text conversation stops resending a picture nobody is discussing.
 
 ---
 
@@ -158,6 +159,7 @@ Remote downloads are used for images and for files when re-hosting is enabled. T
 | `IMAGE_UPLOAD_CHUNK_BYTES` | `1048576 (1 MiB)` | Chunk size used when inlining Open WebUI-hosted images as `data:` URLs. |
 | `MAX_INPUT_IMAGES_PER_REQUEST` | `5` | Maximum images forwarded per request. |
 | `IMAGE_INPUT_SELECTION` | `user_then_assistant` | Image selection policy when the user attaches no images. |
+| `IMAGE_REUSE_MAX_TURNS` | `3` | How many turns an earlier image stays available for reuse. |
 | `VIDEO_MAX_SIZE_MB` | `100` | Size guard for base64 (`data:`) videos and for stored videos re-read to extract frames. |
 
 For the complete list, see [Valves & Configuration Atlas](valves_and_configuration_atlas.md).

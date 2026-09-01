@@ -405,7 +405,12 @@ CONFIG_META: dict[str, dict[str, str]] = {
     "IMAGE_INPUT_SELECTION": {
         "title": "Image input reuse",
         "group": "Files & Media/Uploads & Limits",
-        "detail": "Which images are forwarded to the model for the current user message.\n\nWith the default, when the user sends text and no new image, the most recent assistant-generated image is reused, so follow-ups like \"make it brighter\" keep acting on the prior picture. Neither mode resends images from earlier user turns. The forwarded count is capped by `Maximum images per request`, and the fallback fires only when the model accepts image input.\n\n- `user_turn_only` - forwards only images attached to the current message; no reuse.\n- `user_then_assistant` - adds the latest assistant-generated image(s) when the user attaches none (default)."
+        "detail": "Which images are forwarded to the model for the current user message.\n\nWith the default, when the user sends text and no new image, the most recent picture already in the conversation is reused - whether the model generated it or the user uploaded it - so a follow-up like \"make it brighter\" keeps acting on the picture actually under discussion, including after a generation fails and the user simply says \"try again\". How long a picture stays available is set by `Image reuse window`. The forwarded count is capped by `Maximum images per request`, and the fallback fires only when the model accepts image input.\n\n- `user_turn_only` - forwards only images attached to the current message; no reuse.\n- `user_then_assistant` - reuses the latest picture in the conversation, from either side, when the user attaches none (default)."
+    },
+    "IMAGE_REUSE_MAX_TURNS": {
+        "title": "Image reuse window",
+        "group": "Files & Media/Uploads & Limits",
+        "detail": "How many turns an earlier picture stays available for reuse, when `Image input reuse` is set to `user_then_assistant` and the user attaches nothing.\n\nA picture is only ever resent on a turn where the user attached none of their own, so this never adds a second image to a request - it decides how long the last one keeps riding along. Raise it for image-editing work, where a conversation may wander through several text turns before returning to \"now make it brighter\". Lower it for general chat, where a picture from ten questions ago is being paid for on every request and may pull the answer off course.\n\n**Note:** This has no effect under `user_turn_only`, which never reuses anything."
     },
     "IMAGE_UPLOAD_CHUNK_BYTES": {
         "title": "Image read buffer size",

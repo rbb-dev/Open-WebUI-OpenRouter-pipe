@@ -59,7 +59,8 @@ Defaults and valve names are verified against the source code and are intended t
 | `ALLOW_INSECURE_HTTP_HOSTS` | `str` | `""` | Comma-separated list of hosts or host:port entries allowed for plaintext HTTP. Exact match only (no wildcards). Empty means no HTTP allowed. Example: `example.com, example.org:8080, 203.0.113.10`. |
 | `ALLOW_UNKNOWN_SIZE_CLOUD_READS` | `bool` | `False` | Global Valve only (not user-overridable). When `STORAGE_PROVIDER` is non-local (s3/gcs/azure) and a referenced Open WebUI file has no declared size in its metadata, reads fail closed by default to avoid an unbounded cloud download. Set `True` to permit such reads; the file is still copied to a private temp and capped by `BASE64_MAX_SIZE_MB` after download. This is a download-safety gate, not an authorization bypass. |
 | `MAX_INPUT_IMAGES_PER_REQUEST` | `int` | `5` | Maximum number of image inputs (user attachments plus assistant fallbacks) to include in a single provider request. |
-| `IMAGE_INPUT_SELECTION` | `Literal[\"user_turn_only\", \"user_then_assistant\"]` | `user_then_assistant` | Controls which images are forwarded to the provider. `user_turn_only` restricts inputs to the current user message; `user_then_assistant` falls back to the most recent assistant-generated images when the user did not attach any. |
+| `IMAGE_INPUT_SELECTION` | `Literal[\"user_turn_only\", \"user_then_assistant\"]` | `user_then_assistant` | Controls which images are forwarded to the provider. `user_turn_only` restricts inputs to the current user message; `user_then_assistant` falls back to the most recent image already in the conversation, from either side, when the user did not attach any. |
+| `IMAGE_REUSE_MAX_TURNS` | `int` | `3` | How many turns an earlier picture stays available for reuse under `user_then_assistant` when the user attaches nothing. |
 
 ### Models, catalog refresh, and reasoning
 

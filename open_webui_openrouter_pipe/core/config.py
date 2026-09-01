@@ -1669,7 +1669,18 @@ class Valves(BaseModel):
         description=(
             "Controls which images are forwarded to the provider. "
             "'user_turn_only' restricts inputs to the images supplied with the current user message. "
-            "'user_then_assistant' falls back to the most recent assistant-generated images when the user did not attach any."
+            "'user_then_assistant' falls back to the most recent image already in the conversation, from either side, when the user did not attach any."
+        ),
+    )
+    IMAGE_REUSE_MAX_TURNS: int = Field(
+        default=3,
+        ge=1,
+        le=50,
+        description=(
+            "How many turns an earlier picture stays available for reuse under "
+            "'user_then_assistant' when the user attaches nothing. Beyond this the "
+            "picture is forgotten, so a long text conversation stops paying to resend "
+            "an image nobody is talking about any more."
         ),
     )
 

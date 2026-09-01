@@ -46,6 +46,7 @@ from ..core.utils import (
     split_text_by_phase_markers,
     strip_hidden_marker_lines,
 )
+from ..core.warn_latch import warn_level
 
 # Import Anthropic integration
 from ..integrations.anthropic import _maybe_apply_anthropic_prompt_caching
@@ -83,6 +84,7 @@ def _strip_reasoning_anchor_keys(item: dict[str, Any]) -> dict[str, Any]:
 
 
 logger = logging.getLogger(__name__)
+_warned_image_reuse: set[str] = set()
 
 
 def _reinterleave_region(region: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -242,6 +244,7 @@ async def transform_messages_to_input(
     active_valves = valves or pipe.valves
     image_limit = active_valves.MAX_INPUT_IMAGES_PER_REQUEST
     selection_mode = active_valves.IMAGE_INPUT_SELECTION
+    image_reuse_turns = active_valves.IMAGE_REUSE_MAX_TURNS
     chunk_size = active_valves.IMAGE_UPLOAD_CHUNK_BYTES
     max_inline_bytes = active_valves.BASE64_MAX_SIZE_MB * 1024 * 1024
     target_model_id = model_id or openwebui_model_id or ""
@@ -254,7 +257,8 @@ async def transform_messages_to_input(
         vision_supported = True
 
     openai_input: list[dict] = []
-    last_assistant_images: list[dict[str, Any]] = []
+    last_image_blocks: list[dict[str, Any]] = []
+    last_image_turn: int | None = None
 
     def _message_identifier(entry: dict[str, Any]) -> str | None:
         """Return the most specific identifier available on ``entry``."""
@@ -469,16 +473,14 @@ async def transform_messages_to_input(
                 )
                 content_blocks = []
 
-            async def _to_input_image(block: dict, *, required: bool = True, msg_id: str | None = msg_id) -> dict[str, Any] | None:
+            async def _to_input_image(
+                block: dict,
+                *,
+                required: bool = True,
+                persist: bool = True,
+                msg_id: str | None = msg_id,
+            ) -> dict[str, Any] | None:
                 """Convert Open WebUI image block into Responses format.
-
-                When ``required`` is True (current-user message attachments), a
-                current-user internal OWUI image that cannot be authorised or
-                materialised raises ``RequiredInternalFileError`` so the request
-                aborts visibly instead of silently dropping it. When ``required``
-                is False (best-effort reuse of historical/assistant images), the
-                same failure emits a visible warning and skips, never forwarding
-                the internal URL.
 
                 Handles image URLs and base64 data URLs, downloading remote images and
                 saving all images to OWUI storage to prevent data loss. HTTP is disabled
@@ -577,7 +579,7 @@ async def transform_messages_to_input(
                             await pipe._event_emitter_handler._emit_status(event_emitter, status_message, done=False)
                         return stored_id
 
-                    if url.startswith("data:"):
+                    if persist and url.startswith("data:"):
                         try:
                             parsed = pipe._multimodal_handler._parse_data_url(url)
                             if parsed:
@@ -598,7 +600,7 @@ async def transform_messages_to_input(
                                 show_error_message=False
                             )
 
-                    elif is_http_or_https_url(url) and not is_internal_file_url(url):
+                    elif persist and is_http_or_https_url(url) and not is_internal_file_url(url):
                         try:
                             downloaded = await pipe._multimodal_handler._download_remote_url(url)
                             if downloaded:
@@ -638,10 +640,10 @@ async def transform_messages_to_input(
                                     f"A referenced image ({owui_file_id}) could not be retrieved from Open WebUI storage.",
                                     kind="image",
                                 )
-                            await pipe._ensure_error_formatter()._emit_error(
-                                event_emitter,
-                                f"Skipping image {owui_file_id}: Open WebUI file unavailable.",
-                                show_error_message=True,
+                            pipe.logger.log(
+                                warn_level(_warned_image_reuse, str(owui_file_id)),
+                                "Not reusing image %s: Open WebUI file unavailable.",
+                                owui_file_id,
                             )
                             return None
                         url = inlined.data_url
@@ -1378,6 +1380,7 @@ async def transform_messages_to_input(
             user_images_used = 0
             dropped_images = 0
             encountered_user_images = False
+            reusable_image_blocks: list[dict[str, Any]] = []
             vision_warning_sent = False
             latest_user_message = role == "user" and idx == len(messages) - 1
             include_user_images = (
@@ -1408,6 +1411,8 @@ async def transform_messages_to_input(
 
                 if is_image_block:
                     encountered_user_images = True
+                    if not latest_user_message:
+                        reusable_image_blocks.append(block)
                     if not include_user_images:
                         if latest_user_message and not vision_supported and not vision_warning_sent:
                             await pipe._event_emitter_handler._emit_status(
@@ -1456,17 +1461,26 @@ async def transform_messages_to_input(
                 and selection_mode == "user_then_assistant"
                 and include_user_images
                 and user_images_used == 0
-                and last_assistant_images
+                and last_image_blocks
+                and last_image_turn is not None
+                and msg_turn_index is not None
+                and (msg_turn_index - last_image_turn) <= image_reuse_turns
             ):
-                fallback_slots = min(image_limit, len(last_assistant_images))
+                fallback_slots = min(image_limit, len(last_image_blocks))
                 fallback_blocks: list[dict[str, Any]] = []
-                for source_block in last_assistant_images[:fallback_slots]:
+                for source_block in last_image_blocks[:fallback_slots]:
                     try:
-                        transformed = await _to_input_image(source_block, required=False)
+                        transformed = await _to_input_image(
+                            source_block, required=False, persist=False
+                        )
                         if transformed is not None:
                             fallback_blocks.append(transformed)
-                    except RequiredInternalFileError:
-                        raise
+                    except RequiredInternalFileError as exc:
+                        pipe.logger.log(
+                            warn_level(_warned_image_reuse, str(exc.user_message)),
+                            "Not reusing an earlier image: %s",
+                            exc.user_message,
+                        )
                     except Exception:
                         pipe.logger.exception("Failed to reuse assistant image")
                 if fallback_blocks:
@@ -1478,6 +1492,10 @@ async def transform_messages_to_input(
                     )
                     converted_blocks = fallback_blocks + converted_blocks
                     user_images_used = len(fallback_blocks)
+
+            if reusable_image_blocks:
+                last_image_blocks = reusable_image_blocks
+                last_image_turn = msg_turn_index
 
             if dropped_images and latest_user_message:
                 await pipe._event_emitter_handler._emit_status(
@@ -1524,12 +1542,11 @@ async def transform_messages_to_input(
         is_old_message = _is_old_turn(msg_turn_index, threshold=prune_before_turn)
         assistant_image_urls = _markdown_images_from_text(assistant_text)
         if assistant_image_urls:
-            last_assistant_images = [
+            last_image_blocks = [
                 {"type": "image_url", "image_url": url, "detail": "auto"}
                 for url in assistant_image_urls
             ]
-        else:
-            last_assistant_images = []
+            last_image_turn = msg_turn_index
 
         def _append_assistant_text_chunks(
             text: str,
