@@ -338,7 +338,7 @@ for the model it belongs to, in any of the id forms Open WebUI produces.
 | `VIDEO_FRAME_IMAGE_MAX_BYTES` | `int` | `12582912` | Maximum decoded size for one image frame passed to video generation. |
 | `VIDEO_FRAME_TOTAL_MAX_BYTES` | `int` | `52428800` | Maximum combined decoded size for all image frames in one video request. |
 | `VIDEO_FRAME_IMAGE_MIME_ALLOWLIST` | `str` | `image/jpeg,image/png,image/webp` | Comma-separated MIME allowlist for video frame images. |
-| `VIDEO_OUTPUT_MIME_ALLOWLIST` | `str` | `video/mp4,video/webm` | Comma-separated MIME allowlist for generated video downloads after content sniffing. |
+| `VIDEO_OUTPUT_MIME_ALLOWLIST` | `str` | `video/mp4,video/webm` | Comma-separated MIME allowlist for generated video downloads, applied to the declared type or, where that is not listed, to the format identified from the file's leading bytes. |
 Notes:
 - Generated videos are not buffered as full Python `bytes`; they go through the canonical helpers (`MultimodalHandler._download_remote_url_streaming` → `OwuiFileGateway.upload_to_owui_storage_from_path` → `OwuiFileGateway.try_link_file_to_chat`), which apply the SSRF gate, exponential-backoff retry, size cap, MIME sniff, OWUI `upload_file_handler` insert, and chat-file link in one shot. The same helpers are reused by image generation.
 - The adapter persists a hidden `videojob` marker into the assistant message immediately after `submit()` returns a job_id, by emitting an OWUI socket `'message'` event (which routes through `Chats.upsert_message_to_chat_by_id_and_message_id`). A later request for the same message resumes polling that job instead of submitting a second job.

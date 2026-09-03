@@ -21,8 +21,9 @@ import time
 from collections.abc import AsyncIterator, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
+from enum import Enum, auto
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 from urllib.parse import quote, urljoin, urlparse
 
 # External dependencies
@@ -424,7 +425,40 @@ def image_pixel_size(data: bytes) -> tuple[int, int] | None:
     return None
 
 
-_SNIFF_PREFIX_BYTES = 32
+_SNIFF_PREFIX_BYTES = 64
+_MEDIA_TOP_LEVEL_TYPES = frozenset({"video", "audio", "image"})
+
+
+class Confidence(Enum):
+    IDENTIFIED = auto()
+    FAMILY = auto()
+
+
+class Evidence(NamedTuple):
+    mime: str
+    confidence: Confidence
+
+
+def declaration_is_noncommittal(declared: str | None) -> bool:
+    cleaned = (declared or "").split(";", 1)[0].strip().lower()
+    return cleaned.split("/", 1)[0] not in _MEDIA_TOP_LEVEL_TYPES
+
+
+def resolve_download_type(
+    declared: str | None,
+    evidence: Evidence | None,
+    allowlist: set[str] | None = None,
+) -> str:
+    cleaned = (declared or "").split(";", 1)[0].strip().lower()
+    if allowlist is not None and cleaned in allowlist:
+        return cleaned
+    if evidence is not None and evidence.confidence is Confidence.IDENTIFIED:
+        return evidence.mime
+    if evidence is not None and declaration_is_noncommittal(declared):
+        return evidence.mime
+    return cleaned
+
+
 _ISO_BMFF_BRANDS: dict[bytes, str] = {
     b"avc1": "video/mp4",
     b"cmfc": "video/mp4",
@@ -458,41 +492,48 @@ _ISO_BMFF_BRANDS: dict[bytes, str] = {
 }
 
 
-def _iso_bmff_mime(raw: bytes) -> str | None:
+def _iso_bmff_mime(raw: bytes) -> Evidence:
     major = _ISO_BMFF_BRANDS.get(raw[8:12])
     if major:
-        return major
-    for offset in range(16, len(raw) - 3, 4):
+        return Evidence(major, Confidence.IDENTIFIED)
+    raw_size = int.from_bytes(raw[0:4], "big")
+    declared_end = len(raw) if raw_size in (0, 1) else raw_size
+    for offset in range(16, min(len(raw), declared_end) - 3, 4):
         compatible = _ISO_BMFF_BRANDS.get(raw[offset : offset + 4])
         if compatible:
-            return compatible
-    return None
+            return Evidence(compatible, Confidence.IDENTIFIED)
+    return Evidence("video/mp4", Confidence.FAMILY)
 
 
 def _sniff_mime_from_prefix(data: bytes) -> str | None:
+    found = _sniff_evidence(data)
+    return found.mime if found is not None else None
+
+
+def _sniff_evidence(data: bytes) -> Evidence | None:
     if not isinstance(data, (bytes, bytearray)) or not data:
         return None
     raw = bytes(data)
 
     if raw.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
+        return Evidence("image/png", Confidence.IDENTIFIED)
     if raw.startswith(b"\xff\xd8\xff"):
-        return "image/jpeg"
+        return Evidence("image/jpeg", Confidence.IDENTIFIED)
     if raw.startswith((b"GIF87a", b"GIF89a")):
-        return "image/gif"
+        return Evidence("image/gif", Confidence.IDENTIFIED)
     if raw.startswith(b"RIFF") and raw[8:12] == b"WEBP":
-        return "image/webp"
+        return Evidence("image/webp", Confidence.IDENTIFIED)
     if raw.startswith((b"\x00\x00\x01\x00", b"\x00\x00\x02\x00")):
-        return "image/x-icon"
+        return Evidence("image/x-icon", Confidence.IDENTIFIED)
 
     if len(raw) >= 12 and raw[4:8] == b"ftyp":
         return _iso_bmff_mime(raw)
     if raw.startswith(b"\x1aE\xdf\xa3"):
-        return "video/webm"
+        return Evidence("video/webm", Confidence.IDENTIFIED)
     if raw.startswith(b"OggS"):
-        return "video/ogg"
+        return Evidence("video/ogg", Confidence.IDENTIFIED)
     if raw.startswith(b"RIFF") and raw[8:12] == b"AVI ":
-        return "video/x-msvideo"
+        return Evidence("video/x-msvideo", Confidence.IDENTIFIED)
 
     return None
 
@@ -912,8 +953,11 @@ class MultimodalHandler:
                                 written = projected
 
                         if mime_allowlist is not None:
-                            if sniffed_mime not in mime_allowlist:
-                                sniffed_mime = _sniff_mime_from_prefix(bytes(sniff_buffer)) or sniffed_mime
+                            sniffed_mime = resolve_download_type(
+                                sniffed_mime,
+                                _sniff_evidence(bytes(sniff_buffer)),
+                                mime_allowlist,
+                            )
                             if sniffed_mime not in mime_allowlist:
                                 self.logger.warning(
                                     "Streaming download MIME %r (declared %r) not in allowlist %r; aborting.",

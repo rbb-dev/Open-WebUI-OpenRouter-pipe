@@ -2048,7 +2048,7 @@ class Valves(BaseModel):
     )
     VIDEO_OUTPUT_MIME_ALLOWLIST: str = Field(
         default="video/mp4,video/webm",
-        description="Comma-separated MIME allowlist for generated video downloads after the format is identified from the downloaded file.",
+        description="Comma-separated MIME allowlist for generated video downloads, applied to the declared type or, where that is not listed, to the format identified from the file's leading bytes.",
     )
     VIDEO_INTENT_ENABLED: bool = Field(
         default=True,

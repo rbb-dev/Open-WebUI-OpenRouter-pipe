@@ -1658,7 +1658,7 @@ Functions → OpenRouter pipe → Valves.
 | `VIDEO_FRAME_IMAGE_MAX_BYTES` | `12_582_912` (12 MB) | 65536–67108864 | Per-image decoded size cap. |
 | `VIDEO_FRAME_TOTAL_MAX_BYTES` | `52_428_800` (50 MB) | 65536–134217728 | Combined frame-bytes cap across one request. |
 | `VIDEO_FRAME_IMAGE_MIME_ALLOWLIST` | `image/jpeg,image/png,image/webp` | comma-list | Allowed MIMEs for frame images. |
-| `VIDEO_OUTPUT_MIME_ALLOWLIST` | `video/mp4,video/webm` | comma-list | Allowed MIMEs for downloaded video (sniffed from prefix). |
+| `VIDEO_OUTPUT_MIME_ALLOWLIST` | `video/mp4,video/webm` | comma-list | Allowed MIMEs for downloaded video (header first; bytes consulted only when the header is unlisted). |
 Tuning hints:
 
 - **High-volume deployments** with many users: bump
@@ -1788,7 +1788,7 @@ pipe()
         │     ├─ poll with backoff until terminal status
         │     ├─ download each generated clip (streaming, bounded, capped
         │     │  number of outputs)
-        │     ├─ MIME-sniff against VIDEO_OUTPUT_MIME_ALLOWLIST
+        │     ├─ Check declared type against VIDEO_OUTPUT_MIME_ALLOWLIST, sniffing only if unlisted
         │     ├─ stream-upload to OWUI storage (per-backend: Local/S3/GCS/Azure)
         │     ├─ insert Files row + link to chat
         │     ├─ build success content (markers + <video> blocks)

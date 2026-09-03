@@ -219,10 +219,58 @@ async def test_the_content_url_addresses_the_jobs_own_content(job_id, base_url):
         ("VIDEO/WEBM", ".webm"),
         ("video/mp4", ".mp4"),
         ("", ".mp4"),
+        ("video/quicktime", ".mov"),
+        ("video/x-m4v", ".m4v"),
+        ("video/3gpp", ".3gp"),
+        ("video/3gpp2", ".3g2"),
+        ("video/x-matroska", ".mkv"),
+        ("video/ogg", ".ogv"),
+        ("video/mpeg", ".mpeg"),
+        ("video/x-msvideo", ".avi"),
+        ("video/x-flv", ".mp4"),
     ],
 )
 def test_the_extension_follows_the_mime_type(mime, expected):
     assert extension_for_video_mime(mime) == expected
+
+
+def test_every_type_the_sniffer_can_settle_on_has_its_own_extension():
+    """The two tables were added together and nothing checks them against each other.
+
+    The input set is read out of `multimodal.py` itself rather than from the brand table
+    alone: `_sniff_evidence` also settles on `video/webm`, `video/ogg` and
+    `video/x-msvideo` from magic-byte signatures that have no `ftyp` box, and a brand
+    table can never see those. A new signature added there must redden this exactly as a
+    new brand row does.
+
+    `resolve_download_type` can now answer with any video type in `_ISO_BMFF_BRANDS`, and
+    that answer names the stored file. A brand row added without a matching extension
+    stores a QuickTime clip as `.mp4` -- undoing the brand identification one step after
+    it succeeded, and silently, because the file still plays for some players and not
+    others. Deriving one side from the sniffer's own table is what makes a new brand
+    row redden rather than drift.
+    """
+    import re
+    from pathlib import Path
+
+    from open_webui_openrouter_pipe.storage import multimodal as mm
+
+    source = Path(mm.__file__).read_text(encoding="utf-8")
+    named = {m for m in re.findall(r'"(video/[a-z0-9.+-]+)"', source)}
+    video_types = {m for m in mm._ISO_BMFF_BRANDS.values() if m.startswith("video/")} | named
+    assert len(video_types) > len(
+        {m for m in mm._ISO_BMFF_BRANDS.values() if m.startswith("video/")}
+    ), (
+        "regime broken: the scan found no video type outside the brand table, so this "
+        "guard is only checking the ftyp path it was already checking"
+    )
+    collapsed = sorted(
+        m for m in video_types if m != "video/mp4" and extension_for_video_mime(m) == ".mp4"
+    )
+    assert not collapsed, (
+        f"{collapsed} are types the download path can settle on, and each would be stored "
+        "with an .mp4 suffix that contradicts its own content type"
+    )
 
 
 

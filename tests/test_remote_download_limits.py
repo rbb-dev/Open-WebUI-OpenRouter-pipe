@@ -213,13 +213,19 @@ async def test_a_content_type_outside_the_allowlist_is_sniffed_before_it_decides
     """A server that will not commit to a type must not be taken at face value.
 
     This enumerated the generic types it would look past, listing only
-    ``application/octet-stream``. OpenRouter serves generated video as
-    ``binary/octet-stream``, which was in neither the allowlist nor the enumeration, so
-    the bytes were never consulted and every generated clip was downloaded in full and
-    then discarded -- after the generation had been paid for. Parametrising over a
-    third value that no enumeration would have contained keeps the general rule in
-    place: whatever the header claims, if it does not clear the allowlist the bytes
-    decide.
+    ``application/octet-stream``. A delivery server sending ``binary/octet-stream``
+    matched neither the allowlist nor the enumeration, so the bytes were never consulted
+    and the clip was downloaded in full and then discarded -- after the generation had
+    been paid for. Parametrising over a third value that no enumeration would have
+    contained keeps the general rule in place: where the header does not clear the
+    allowlist and will not name a type, the bytes decide.
+
+    Which spelling OpenRouter actually sends is not settled and this rule does not
+    depend on it. Its two published specs for the same content endpoint disagree --
+    one documents `video/mp4`, the other `application/octet-stream`. A recorded live
+    capture shows `video/mp4`; the corpus is not unanimous, so treat neither spelling as
+    settled. Every generic spelling is handled here,
+    and an honest `video/mp4` is taken at its word by the allowlist short-circuit.
     """
     transport([PNG_BYTES], {"content-type": declared})
 
@@ -570,14 +576,12 @@ async def test_a_generated_mp4_arriving_in_small_chunks_is_still_identified(
 ):
     """The case this whole path exists for, driven end to end.
 
-    Every other sniff test here uses PNG bytes, identifiable from 8. An ISO-BMFF file
-    needs 12 for `ftyp` plus the brand, so shrinking the sniff window would leave the
-    entire suite green while restoring the original bug: OpenRouter serves generated
-    video as `binary/octet-stream`, so the bytes are the only evidence, and a short
-    buffer discards a clip that has already been paid for. Delivered in four-byte
-    chunks so the buffer's accumulation is exercised and not merely its size, and the
-    allowlist is read from the valve so this also fails if the shipped default stops
-    admitting what the sniffer returns.
+    What this pins is the buffer's ACCUMULATION across chunks, not its size: the
+    payload is delivered in four-byte pieces, and a buffer that captured only the first
+    chunk leaves four bytes, which cannot reach the `ftyp` marker at all. The window
+    size is pinned elsewhere, by the test whose compatible brand sits past byte 32.
+    The allowlist is read from the valve so this also fails if the shipped default
+    stops admitting what the sniffer returns.
     """
     from open_webui_openrouter_pipe.integrations.video import _csv_set
 
@@ -645,20 +649,181 @@ async def test_an_unusual_major_brand_is_rescued_by_its_compatible_brands(
 
 
 @pytest.mark.asyncio
-async def test_a_wholly_unidentifiable_container_falls_back_to_the_declaration(
+async def test_an_unrecognised_brand_is_still_treated_as_a_container(
     pipe_instance_async, tmp_path, transport
 ):
-    """When the sniffer cannot name it, the declared type decides -- not `video/mp4`.
+    """The brand table upgrades a container; it does not decide membership.
 
-    This is the rule the repo already settled for images: an unrecognised subtype must
-    be refused rather than quietly become something known, because the answer reaches a
-    stored filename and a content-type header the browser acts on.
+    Refusing every brand nobody enumerated costs paid generations: `av01`, the
+    registered AV1-in-MP4 brand, is not in the table, and an earlier version of this
+    code discarded such a clip after the user had been charged for it. Where a server
+    will not name a type at all the bytes are the only evidence there is -- an `ftyp`
+    box we cannot name more precisely is still an ISO-BMFF container, and `video/mp4`
+    is the honest generic answer.
+
+    Refusing here would not have bought safety. A payload with no recognisable signature
+    at all is accepted whenever the header names an allowlisted type, so the brand table
+    can only ever turn away well-formed media containers. It is a format policy.
     """
-    transport([_ftyp(b"zzzz", b"yyyy")], {"content-type": "binary/octet-stream"})
+    from open_webui_openrouter_pipe.storage.multimodal import _ISO_BMFF_BRANDS
+
+    assert _ISO_BMFF_BRANDS.get(b"av01") is None and _ISO_BMFF_BRANDS.get(b"av1m") is None, (
+        "this payload must be unknown end to end, or the compatible-brand scan answers "
+        "before the fallback and this test stops covering it"
+    )
+    transport([_ftyp(b"av01", b"av01av1m")], {"content-type": "binary/octet-stream"})
+
+    result = await _download(pipe_instance_async, tmp_path, mime_allowlist={"video/mp4"})
+
+    assert result is not None, "an AV1 clip was discarded after being paid for"
+    assert result["mime_type"] == "video/mp4"
+
+
+@pytest.mark.parametrize("box_size", [32, 1, 0], ids=["explicit", "largesize-64bit", "to-eof"])
+def test_the_brand_scan_reads_every_size_encoding_the_format_allows(box_size):
+    """ISO/IEC 14496-12 gives `size` three meanings, and two of them are not a length.
+
+    `size == 1` means a 64-bit `largesize` follows; `size == 0` means the box runs to end
+    of file. Clamping the scan to `size` verbatim made the `size == 1` range empty, so a
+    legal MP4 fell through to the generic family answer -- and a family answer loses to
+    any committal declaration, so a clip an operator had excluded by header was discarded
+    after being paid for. Three encodings of the same box, one expected answer.
+    """
+    from open_webui_openrouter_pipe.storage.multimodal import Confidence, _sniff_evidence
+
+    body = b"ftyp" + b"zzzz" + bytes([0, 0, 2, 0]) + b"isom"
+    payload = box_size.to_bytes(4, "big") + body + bytes(32)
+
+    evidence = _sniff_evidence(payload)
+
+    assert evidence is not None and evidence.confidence is Confidence.IDENTIFIED, (
+        f"a box declaring size={box_size} hid its own compatible brand, so a real MP4 "
+        f"resolves to the generic family answer: {evidence}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_compatible_brand_scan_stays_inside_the_ftyp_box(
+    pipe_instance_async, tmp_path, transport
+):
+    """A 16-byte `ftyp` box is legal and is followed immediately by the next box.
+
+    Scanning the whole sniff buffer for compatible brands reads that next box's type as
+    though it were a brand, so a file could be identified from bytes that are not part
+    of its `ftyp` box at all. Here the following box is typed `qt  `; without the box
+    length clamp the download is reported as QuickTime and refused.
+    """
+    payload = b"\x00\x00\x00\x10ftypzzzz" + bytes([0, 0, 2, 0]) + b"\x00\x00\x00\x08qt  " + bytes(40)
+    transport([payload], {"content-type": "binary/octet-stream"})
+
+    result = await _download(pipe_instance_async, tmp_path, mime_allowlist={"video/mp4"})
+
+    assert result is not None, "a brand was read from beyond the ftyp box"
+    assert result["mime_type"] == "video/mp4"
+
+
+@pytest.mark.parametrize(
+    ("major", "compatible", "expected"),
+    [
+        (b"qt  ", b"", "video/quicktime"),
+        (b"M4A ", b"mp42isom", "audio/mp4"),
+        (b"heic", b"mif1", "image/heic"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_container_the_operator_allowed_is_identified_by_name(
+    pipe_instance_async, tmp_path, transport, major, compatible, expected
+):
+    """The mirror of the exclusion test, which on its own constrains nothing.
+
+    Refusal is satisfied just as well by a sniffer that identifies *nothing* -- the
+    declared type then fails the allowlist and the answer is the same. Only asserting
+    the returned value pins the table's non-mp4 rows; without this, deleting every one
+    of them leaves the suite green. The generic header is essential for the same
+    reason: with an honest one the assertion passes on the fallback.
+    """
+    transport([_ftyp(major, compatible)], {"content-type": "binary/octet-stream"})
+
+    result = await _download(
+        pipe_instance_async, tmp_path, mime_allowlist={"video/mp4", expected}
+    )
+
+    assert result is not None, f"a {expected} container was refused by its own allowlist"
+    assert result["mime_type"] == expected
+
+
+@pytest.mark.parametrize(
+    ("major", "declared"),
+    [(b"qt  ", "video/mp4"), (b"M4V ", "video/mp4"), (b"3gp4", "video/webm")],
+)
+@pytest.mark.asyncio
+async def test_a_declaration_the_operator_allowed_is_not_second_guessed(
+    pipe_instance_async, tmp_path, transport, major, declared
+):
+    """OpenRouter's own spec declares a real media type for the content endpoint.
+
+    The brand table is a guess about what a container is; the operator's allowlist is a
+    statement about what may be stored. Where the header already satisfies that list the
+    guess has nothing to add, and letting it veto discards a clip that has been generated
+    and billed. Eighteen of the table's rows resolve to something other than `video/mp4`,
+    so every one of them was a way to lose paid output.
+
+    Two distinct declared values, so a constant cannot satisfy both rows.
+    """
+    transport([_ftyp(major)], {"content-type": declared})
+
+    result = await _download(
+        pipe_instance_async, tmp_path, mime_allowlist={"video/mp4", "video/webm"}
+    )
+
+    assert result is not None, (
+        f"a clip declared {declared!r} -- a type the operator allows -- was discarded "
+        f"after being paid for, because its brand is {major!r}"
+    )
+    assert result["mime_type"] == declared
+
+
+@pytest.mark.asyncio
+async def test_an_unnameable_container_does_not_overrule_an_honest_declaration(
+    pipe_instance_async, tmp_path, transport
+):
+    """`Confidence.FAMILY` is the weakest evidence the sniffer produces.
+
+    An `ftyp` box whose brand is in no table says only "some ISO-BMFF container". That
+    must not promote itself over a header that names a type the operator excluded, or
+    the allowlist stops being a filter. Without this row the noncommittal guard is dead
+    weight: replacing it with a bare `if evidence is not None` passes the whole suite.
+    """
+    transport([_ftyp(b"zzzz")], {"content-type": "video/quicktime"})
 
     result = await _download(pipe_instance_async, tmp_path, mime_allowlist={"video/mp4"})
 
     assert result is None, (
-        "an unidentifiable container was assumed to be video/mp4 rather than judged on "
-        "what the server actually declared"
+        "a container nobody could name was promoted to video/mp4 over a committal "
+        "declaration the operator had excluded"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_compatible_brand_can_answer_something_other_than_mp4(
+    pipe_instance_async, tmp_path, transport
+):
+    """Otherwise the scan is indistinguishable from the fallback.
+
+    Every other case that exercises the compatible-brand loop expects `video/mp4`,
+    which is also what the function returns when the loop finds nothing -- so deleting
+    the loop entirely leaves those tests green. Here the compatible brand resolves to
+    audio, which the fallback can never produce, and it sits past byte 32 so the
+    64-byte sniff window is load-bearing too.
+    """
+    payload = _ftyp(b"zzzz", b"XXXXYYYYZZZZWWWWM4A ")
+
+    transport([payload], {"content-type": "binary/octet-stream"})
+
+    result = await _download(
+        pipe_instance_async, tmp_path, mime_allowlist={"video/mp4", "audio/mp4"}
+    )
+
+    assert result is not None and result["mime_type"] == "audio/mp4", (
+        f"the compatible-brand scan did not reach offset 32: {result}"
     )

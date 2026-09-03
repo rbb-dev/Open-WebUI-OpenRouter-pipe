@@ -19,12 +19,22 @@ from ..requests.debug import (
 )
 from .video_types import VideoGenerationError
 
+_VIDEO_MIME_EXTENSIONS: dict[str, str] = {
+    "video/webm": ".webm",
+    "video/quicktime": ".mov",
+    "video/x-m4v": ".m4v",
+    "video/3gpp": ".3gp",
+    "video/3gpp2": ".3g2",
+    "video/x-matroska": ".mkv",
+    "video/ogg": ".ogv",
+    "video/mpeg": ".mpeg",
+    "video/x-msvideo": ".avi",
+}
+
 
 def extension_for_video_mime(mime: str) -> str:
     normalized = (mime or "").split(";", 1)[0].strip().lower()
-    if normalized == "video/webm":
-        return ".webm"
-    return ".mp4"
+    return _VIDEO_MIME_EXTENSIONS.get(normalized, ".mp4")
 
 
 class OpenRouterVideoClient:
