@@ -1376,7 +1376,10 @@ class TestImageSelection:
         with patch("open_webui_openrouter_pipe.requests.transformer.ModelFamily") as mock_family:
             mock_family.supports.return_value = True
 
-            async def mock_inline(*args, **kwargs):
+            inlined: list[str] = []
+
+            async def mock_inline(file_id, *args, **kwargs):
+                inlined.append(file_id)
                 return InlinedFile(data_url="data:image/png;base64,frog", filename="frog.png")
 
             async def mock_download(*args, **kwargs):
@@ -1387,7 +1390,7 @@ class TestImageSelection:
 
             messages = [
                 {"role": "user", "content": "draw a green frog"},
-                {"role": "assistant", "content": "Done: ![frog](https://example.com/frog.png)"},
+                {"role": "assistant", "content": "Done: ![frog](/api/v1/files/frog/content)"},
             ]
             if intervening_text_turn:
                 messages += [
@@ -1400,6 +1403,10 @@ class TestImageSelection:
 
         latest = result[-1]
         assert latest["role"] == "user"
+        assert inlined == ["frog"], (
+            "the inline stub was never called, so this test was exercising a path the "
+            "pipe does not take for its own generated images"
+        )
         images = [b for b in latest["content"] if b.get("type") == "input_image"]
         assert images, "the generated image must still be supplied as the edit reference"
 
@@ -4994,6 +5001,86 @@ class TestImageReuseRegister:
             )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("cause", "phrase", "banner"),
+        [
+            ("insecure_http", "ALLOW_INSECURE_HTTP_HOSTS", True),
+            ("oversized_inline", "limit", False),
+            ("oversized_remote", "limit", False),
+        ],
+    )
+    async def test_a_refused_attachment_tells_the_user_which_way_it_failed(
+        self, pipe_instance, cause, phrase, banner
+    ):
+        """Dropping the user's own picture silently is the whole failure this prevents.
+
+        Nothing in the suite asserted any of it. A refusal reached the user as a status
+        line the pipe's own later statuses hid -- Open WebUI appends every status to
+        `message.statusHistory` and `StatusHistory.svelte` shows only the last unless the
+        reader expands it, and `ResponseMessage.svelte` passes no `expand` -- and the
+        security refusal had lost both valve names needed to act on it. Three rows with
+        distinct expectations, so an unconditional "an image was skipped" emitted from
+        anywhere satisfies none of them.
+
+        The banner column is the load-bearing part. A blocked plaintext fetch is a policy
+        decision the user must be able to see and undo, so it writes an error into the
+        chat; a size refusal is a fact about the file and stays a status. Collapsing the
+        two back into one severity reddens this.
+        """
+        pipe_instance.valves.BASE64_MAX_SIZE_MB = 1
+        events: list[dict] = []
+
+        async def emitter(event):
+            events.append(event)
+
+        async def oversized_download(_url):
+            return {"data": b"x" * 4_000_000, "mime_type": "image/png"}
+
+        url = {
+            "insecure_http": "http://insecure.test/a.png",
+            "oversized_inline": "data:image/png;base64," + "A" * 4_000_000,
+            "oversized_remote": "https://example.test/big.png",
+        }[cause]
+        downloader = oversized_download if cause == "oversized_remote" else None
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what is this"},
+                    {"type": "image_url", "image_url": {"url": url}},
+                ],
+            }
+        ]
+
+        result = await self._run(
+            pipe_instance, messages, emitter=emitter, downloader=downloader
+        )
+
+        assert self._blocks(result) == [], "a refused attachment was sent anyway"
+        errors = [
+            e for e in events
+            if isinstance(e, dict) and isinstance(e.get("data"), dict) and e["data"].get("error")
+        ]
+        statuses = [
+            e for e in events
+            if isinstance(e, dict) and e.get("type") == "status"
+        ]
+        surfaced = errors if banner else statuses
+        assert surfaced, (
+            f"a {cause} refusal produced no {'error' if banner else 'status'} event, so the "
+            "user's picture vanished with no way to tell why"
+        )
+        assert any(phrase in json.dumps(e) for e in surfaced), (
+            f"the {cause} refusal never mentioned {phrase!r}, so the user cannot act on it"
+        )
+        if banner:
+            assert not any(phrase in json.dumps(e) for e in statuses), (
+                "a security refusal was also emitted as a status, which the next status "
+                "line hides behind a click"
+            )
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("user_uploads_last", [False, True])
     async def test_the_newest_picture_wins_whoever_supplied_it(
         self, pipe_instance, user_uploads_last
@@ -5079,8 +5166,18 @@ class TestImageReuseRegister:
             {"role": "user", "content": [{"type": "text", "text": "and now?"}]},
         ]
 
-        await self._run(pipe_instance, messages, emitter=emitter)
+        attempted: list[str] = []
 
+        async def gateway(file_id, *_a, **_k):
+            attempted.append(file_id)
+            return None
+
+        await self._run(pipe_instance, messages, emitter=emitter, gateway=gateway)
+
+        assert attempted == ["gone"], (
+            "the reuse was never attempted, so the absence of an error below asserts "
+            f"nothing: {attempted}"
+        )
         assert not [e for e in emitted if isinstance(e, dict) and (e.get("data") or {}).get("error")], (
             f"a speculative reuse put an error into the chat: {emitted}"
         )
@@ -5096,7 +5193,10 @@ class TestImageReuseRegister:
         """
         pipe_instance.valves.IMAGE_INPUT_SELECTION = "user_then_assistant"
 
-        async def raiser(*a, **k):
+        attempted: list[str] = []
+
+        async def raiser(file_id, *_a, **_k):
+            attempted.append(file_id)
             raise RequiredInternalFileError("Open WebUI storage is not available.", kind="image")
 
         messages = [
@@ -5106,16 +5206,372 @@ class TestImageReuseRegister:
 
         result = await self._run(pipe_instance, messages, gateway=raiser)
 
+        assert attempted == ["x"], (
+            "the reuse was never attempted, so surviving the turn asserts nothing"
+        )
         assert isinstance(result, list) and result, "a failed reuse aborted the whole turn"
         assert self._blocks(result) == []
 
+    @pytest.mark.parametrize(
+        "attachment",
+        [
+            "data:image/png;base64," + ("A" * 3_000_000),
+            "https://e.test/TOO-BIG.png",
+        ],
+        ids=["oversized-data-url", "oversized-remote"],
+    )
     @pytest.mark.asyncio
-    async def test_reusing_a_remote_picture_does_not_store_it_again(self, pipe_instance):
+    async def test_a_refused_attachment_is_not_replaced_by_an_older_picture(
+        self, pipe_instance, attachment
+    ):
+        """Refusing the user's own image must not silently substitute someone else's.
+
+        The reuse fallback fired on `user_images_used == 0`, which is true both when
+        the user attached nothing and when what they attached failed to convert. So an
+        over-limit photo was dropped and a picture the model generated turns earlier
+        was sent in its place -- the model then described or edited the wrong image,
+        with nothing in the response to say so. The gate is "the user attached
+        nothing", not "nothing survived".
+        """
+        pipe_instance.valves.IMAGE_INPUT_SELECTION = "user_then_assistant"
+        pipe_instance.valves.MAX_INPUT_IMAGES_PER_REQUEST = 5
+        pipe_instance.valves.BASE64_MAX_SIZE_MB = 1
+
+        async def oversized(*_a, **_k):
+            return {"data": b"\x89PNG\r\n\x1a\x0a" + b"A" * (2 * 1024 * 1024), "mime_type": "image/png"}
+
+        async def frog_inlines_fine(*_a, **_k):
+            return InlinedFile(data_url="data:image/png;base64,FROG", filename="frog.png")
+
+        messages = [
+            {"role": "user", "content": "draw a frog"},
+            {"role": "assistant", "content": "Done: ![f](/api/v1/files/frog/content)"},
+            {"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": attachment}},
+                {"type": "text", "text": "describe THIS one instead"},
+            ]},
+        ]
+
+        result = await self._run(
+            pipe_instance, messages, downloader=oversized, gateway=frog_inlines_fine
+        )
+
+        assert self._blocks(result) == [], (
+            f"a refused attachment was replaced by {self._blocks(result)} -- the model "
+            "would answer about a picture the user did not send"
+        )
+
+    @pytest.mark.asyncio
+    async def test_every_image_notice_for_a_turn_arrives_in_one_status(self, pipe_instance):
+        """Two notices meant the first was hidden behind a click.
+
+        Open WebUI appends every status to `message.statusHistory` but shows only the
+        last one unless the reader expands it, and the pipe emits many more statuses
+        later in the turn. A refusal followed by a drop therefore told the user only
+        about the drop. The limit check runs before transformation, so a refusal really
+        can precede a drop in the same turn -- this drives both at once.
+        """
+        pipe_instance.valves.MAX_INPUT_IMAGES_PER_REQUEST = 1
+        pipe_instance.valves.BASE64_MAX_SIZE_MB = 1
+        events: list[dict] = []
+
+        async def emitter(event):
+            events.append(event)
+
+        good = "data:image/png;base64," + base64.b64encode(b"\x89PNG\r\n\x1a\x0a" + b"0" * 40).decode()
+        messages = [
+            {"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,!!!bad!!!"}},
+                {"type": "image_url", "image_url": {"url": good}},
+                {"type": "image_url", "image_url": {"url": good}},
+            ]}
+        ]
+
+        await self._run(pipe_instance, messages, emitter=emitter)
+
+        statuses = [
+            e["data"]["description"]
+            for e in events
+            if e.get("type") == "status" and isinstance(e.get("data"), dict)
+            and "description" in e["data"]
+        ]
+        assert statuses, "the turn refused and dropped images and said nothing"
+        last = statuses[-1]
+        assert "skipped" in last and "dropped" in last, (
+            "the refusal and the drop went out as separate statuses, so the earlier one "
+            f"is hidden behind a click: {statuses}"
+        )
+
+    @pytest.mark.parametrize(
+        ("url", "phrase", "absent"),
+        [
+            ("data:image/svg+xml,%3Csvg%2F%3E", "not base64-encoded", "limit"),
+            ("data:image/png;base64," + "A" * 4_000_000, "inline limit", "base64-encoded"),
+            ("data:image/png;base64,!!!!not-base64!!!!", "not decodable", "limit"),
+        ],
+        ids=["unencoded", "oversized", "undecodable"],
+    )
+    @pytest.mark.asyncio
+    async def test_each_way_a_data_url_can_fail_gets_its_own_reason(
+        self, pipe_instance, url, phrase, absent
+    ):
+        """`_parse_data_url` returns `None` for three unrelated causes.
+
+        Collapsing them into "malformed, or over the N-byte limit" tells a user with a
+        3 MB paste to check their encoding and a user with a bad encoding to shrink their
+        file, and it says "malformed" about a data URL that is perfectly well-formed and
+        merely percent-encoded rather than base64. Each row asserts its own phrase *and*
+        the absence of another row's, so one constant string cannot satisfy the set.
+        """
+        pipe_instance.valves.BASE64_MAX_SIZE_MB = 1
+        events: list[dict] = []
+
+        async def emitter(event):
+            events.append(event)
+
+        messages = [
+            {"role": "user", "content": [{"type": "image_url", "image_url": {"url": url}}]}
+        ]
+
+        result = await self._run(pipe_instance, messages, emitter=emitter)
+
+        assert self._blocks(result) == []
+        said = json.dumps(events)
+        assert phrase in said, f"the refusal never mentioned {phrase!r}: {said}"
+        assert absent not in said, (
+            f"the refusal also claimed {absent!r}, so it is one string covering causes "
+            "the user must tell apart"
+        )
+
+    @pytest.mark.parametrize(
+        ("cap_mb", "refused"),
+        [(1, True), (50, False)],
+        ids=["over-the-inline-limit", "within-it"],
+    )
+    @pytest.mark.asyncio
+    async def test_a_remote_image_too_big_to_send_is_still_archived(
+        self, pipe_instance, cap_mb, refused
+    ):
+        """The archive is why a dead third-party link does not empty the chat.
+
+        The size gate ran before the archive branch, so an image between
+        BASE64_MAX_SIZE_MB and REMOTE_FILE_MAX_SIZE_MB was downloaded, refused, and
+        never stored -- an operator who lowers the inline cap to bound request bodies
+        loses the copy that keeps the conversation replayable. Both rows archive; only
+        the first refuses, so a constant cannot satisfy them.
+        """
+        pipe_instance.valves.BASE64_MAX_SIZE_MB = cap_mb
+        uploads: list[int] = []
+
+        async def upload(**kwargs):
+            uploads.append(len(kwargs["file_data"]))
+            return "stored-1"
+
+        async def big(*_a, **_k):
+            return {"data": b"\x89PNG\r\n\x1a\x0a" + b"A" * (3 * 1024 * 1024),
+                    "mime_type": "image/png"}
+
+        async def inlines(*_a, **_k):
+            return InlinedFile(data_url="data:image/png;base64,STORED", filename="a.png")
+
+        async def storage_context(*_a, **_k):
+            return (object(), object())
+
+        pipe_instance._file_gateway.upload_to_owui_storage = upload
+        pipe_instance._file_gateway.resolve_storage_context = storage_context
+        messages = [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": "https://cdn.test/big.png"}},
+        ]}]
+
+        result = await self._run(
+            pipe_instance, messages, downloader=big, gateway=inlines
+        )
+
+        assert len(uploads) == 1, (
+            f"a downloaded remote image was not archived (cap={cap_mb}MB); when the "
+            "source link dies the chat loses it"
+        )
+        assert (self._blocks(result) == []) is refused, (
+            f"cap={cap_mb}MB: expected refused={refused}, got {self._blocks(result)}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_fault_processing_the_user_s_own_image_is_not_read_as_no_image(
+        self, pipe_instance
+    ):
+        """A transient storage fault must not silently swap in someone else's picture.
+
+        `_to_input_image` catches its own exceptions, so an error out of the gateway
+        returned `None` -- the same answer it gives when a block carries no source at
+        all. The reuse fallback reads that as "the user attached nothing" and supplies a
+        picture the model generated turns ago, with nothing in the turn saying so. The
+        user asked about THEIR image and the model answers about a different one.
+        """
+        pipe_instance.valves.IMAGE_INPUT_SELECTION = "user_then_assistant"
+
+        async def gateway(file_id, *_a, **_k):
+            if "mine" in str(file_id):
+                raise RuntimeError("transient storage fault")
+            return InlinedFile(data_url="data:image/png;base64,FROG", filename="frog.png")
+
+        messages = [
+            {"role": "user", "content": "draw a frog"},
+            {"role": "assistant", "content": "Done: ![f](/api/v1/files/frog/content)"},
+            {"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": "/api/v1/files/mine/content"}},
+                {"type": "text", "text": "describe THIS one instead"},
+            ]},
+        ]
+
+        result = await self._run(pipe_instance, messages, gateway=gateway)
+
+        assert self._blocks(result) == [], (
+            "a fault while processing the user's own attachment was read as 'nothing "
+            f"attached', so an older picture was substituted: {self._blocks(result)}"
+        )
+
+    @pytest.mark.parametrize(
+        "empty_block",
+        [
+            {"type": "image_url"},
+            {"type": "image_url", "image_url": {"url": ""}},
+            {"type": "image_url", "image_url": ""},
+        ],
+        ids=["no-payload-key", "empty-nested-url", "empty-flat-url"],
+    )
+    @pytest.mark.asyncio
+    async def test_a_block_that_names_an_image_but_carries_none_does_not_count_as_one(
+        self, pipe_instance, empty_block
+    ):
+        """The gate is "the user attached nothing", and these blocks attached nothing.
+
+        The flag was set from the block's *type*, before anything established that the
+        block carried a source, so a payload-less `image_url` turned the reuse fallback
+        off for the whole turn. `_to_input_image` rejects these outright -- it returns
+        `None`, which is the outcome meaning "nothing was attached", not "something was
+        refused". Three shapes that all reach that same return.
+        """
+        pipe_instance.valves.IMAGE_INPUT_SELECTION = "user_then_assistant"
+
+        async def frog_inlines_fine(*_a, **_k):
+            return InlinedFile(data_url="data:image/png;base64,FROG", filename="frog.png")
+
+        messages = [
+            {"role": "user", "content": "draw a frog"},
+            {"role": "assistant", "content": "Done: ![f](/api/v1/files/frog/content)"},
+            {"role": "user", "content": [empty_block, {"type": "text", "text": "edit it"}]},
+        ]
+
+        result = await self._run(pipe_instance, messages, gateway=frog_inlines_fine)
+
+        assert self._blocks(result) == ["data:image/png;base64,FROG"], (
+            "a block that named an image type but carried no source suppressed the reuse "
+            f"fallback, so the turn went out with no picture at all: {self._blocks(result)}"
+        )
+
+    @pytest.mark.parametrize(
+        ("declared", "magic", "expected"),
+        [
+            ("", b"\x89PNG\r\n\x1a\x0a", "image/png"),
+            ("text/plain", b"\x89PNG\r\n\x1a\x0a", "image/png"),
+            ("", b"\xff\xd8\xff\xe0", "image/jpeg"),
+            ("application/octet-stream", b"GIF89a", "image/gif"),
+            ("application/octet-stream", b"MZ\x90\x00", None),
+        ],
+        ids=["absent-png", "wrong-png", "absent-jpeg", "generic-gif", "not-an-image"],
+    )
+    @pytest.mark.asyncio
+    async def test_a_reused_remote_image_is_typed_by_the_pipe_not_the_server(
+        self, pipe_instance, declared, magic, expected
+    ):
+        """A server that sends no Content-Type must not produce `data:;base64,...`.
+
+        An empty media type means text/plain per RFC 2397, so the block would be
+        forwarded as an image carrying a text type. The URL came from an earlier
+        assistant message, so neither the user nor the operator chose it -- the pipe
+        has to assert the type itself, from the bytes it already holds.
+
+        Rows whose correct answers differ, so a hardcoded `image/png` cannot satisfy the
+        set -- an earlier version parametrised only over PNG magic and stayed green with
+        the whole resolution replaced by that constant. The last row is bytes that are
+        not an image at all: those must produce no block, which is the only coverage the
+        `reuse_untyped` refusal has.
+        """
+        pipe_instance.valves.IMAGE_INPUT_SELECTION = "user_then_assistant"
+
+        async def untyped(*_a, **_k):
+            return {"data": magic + b"\x00" * 32, "mime_type": declared}
+
+        messages = [
+            {"role": "assistant", "content": "Done: ![a](https://e.test/UNTYPED.png)"},
+            {"role": "user", "content": [{"type": "text", "text": "and now?"}]},
+        ]
+
+        blocks = self._blocks(await self._run(pipe_instance, messages, downloader=untyped))
+
+        if expected is None:
+            assert blocks == [], f"bytes that are not an image were reused as one: {blocks}"
+        else:
+            assert blocks and blocks[0].startswith(f"data:{expected};base64,"), (
+                f"the reused block carries a media type the pipe did not assert: {blocks}"
+            )
+
+    @pytest.mark.parametrize(
+        ("denied", "expected_warnings"), [(True, 2), (False, 1)], ids=["denied", "fault"]
+    )
+    @pytest.mark.asyncio
+    async def test_an_authorization_denial_is_reported_every_time(
+        self, pipe_instance, caplog, denied, expected_warnings
+    ):
+        """A denial is a security signal; the warn-once latch is for noisy faults.
+
+        The latch drops every occurrence after the first to DEBUG for the life of the
+        worker, keyed on a constant string -- so repeated attempts to read files a user
+        does not own would go silent after the first one anywhere in the process, for
+        any user and any file. Operational faults still latch; denials do not.
+        """
+        import logging as _logging
+
+        pipe_instance.valves.IMAGE_INPUT_SELECTION = "user_then_assistant"
+
+        async def denier(file_id, *_a, **_k):
+            raise RequiredInternalFileError(
+                "Cannot read a referenced file.", kind="image", denied=denied
+            )
+
+        messages = [
+            {"role": "assistant", "content": "Done: ![a](/api/v1/files/one/content)"},
+            {"role": "user", "content": [{"type": "text", "text": "and now?"}]},
+        ]
+
+        with caplog.at_level(_logging.WARNING):
+            await self._run(pipe_instance, messages, gateway=denier)
+            await self._run(pipe_instance, messages, gateway=denier)
+
+        seen = [r for r in caplog.records if "Not reusing an earlier image" in r.getMessage()]
+        assert len(seen) == expected_warnings, (
+            f"got {len(seen)} WARNING records, expected {expected_warnings}. A denial is "
+            "a security signal reported every time; an operational fault recurs on every "
+            "turn and must latch after the first."
+        )
+
+    @pytest.mark.parametrize(
+        "src",
+        ["https://e.test/REMOTE.png", "data:image/png;base64,iVBORw0KGgo="],
+        ids=["remote", "data-url"],
+    )
+    @pytest.mark.asyncio
+    async def test_reusing_a_picture_does_not_store_it_again(self, pipe_instance, src):
         """The transcript already holds the reference; re-saving it creates an orphan.
 
         `upload_to_owui_storage` has no content or URL dedup, so once the picture was
         reused on every later turn this wrote a brand new Open WebUI file each time,
         unbounded, for an image already in the chat.
+
+        Parametrised over both source shapes because Open WebUI rewrites every image
+        URL to base64 before the pipe runs (`convert_url_images_to_base64`), so the
+        `data:` row is the one production actually takes -- the remote row alone left
+        the branch that matters unguarded.
 
         The storage context is stubbed deliberately. Without it `_save_image_bytes`
         returns before it ever reaches the upload, so an assertion of "zero uploads"
@@ -5127,7 +5583,7 @@ class TestImageReuseRegister:
 
         async def counting_upload(*a, **k):
             uploads.append(a)
-            return None
+            return f"stored-{len(uploads)}"
 
         async def downloaded(*a, **k):
             return {"data": b"\x89PNG\r\n\x1a\n", "mime_type": "image/png"}
@@ -5139,10 +5595,119 @@ class TestImageReuseRegister:
         pipe_instance._file_gateway.resolve_storage_context = storage_context
 
         messages = [
-            {"role": "assistant", "content": "Done: ![a](https://e.test/REMOTE.png)"},
+            {"role": "assistant", "content": f"Done: ![a]({src})"},
             {"role": "user", "content": [{"type": "text", "text": "and now?"}]},
         ]
 
-        await self._run(pipe_instance, messages, downloader=downloaded)
+        downloads: list[str] = []
 
-        assert uploads == [], "a reused picture was written to Open WebUI storage again"
+        async def archived_inline(*_a, **_k):
+            return InlinedFile(
+                data_url="data:image/png;base64,iVBORw0KGgo=", filename="a.png"
+            )
+
+        async def counting_download(url, *_a, **_k):
+            downloads.append(url)
+            return await downloaded()
+
+        from open_webui_openrouter_pipe.requests import transformer as _tr
+
+        _tr._reuse_archive_memo.clear()
+        result = None
+        for _ in range(3):
+            result = await self._run(
+                pipe_instance,
+                messages,
+                downloader=counting_download,
+                gateway=archived_inline,
+            )
+
+        if src.startswith("data:"):
+            assert uploads == [], "an inline picture was written to storage on reuse"
+            assert downloads == [], "an inline picture was fetched over the network"
+        else:
+            assert len(uploads) == 1, (
+                f"a remote picture was archived {len(uploads)} times across three turns; "
+                "storage has no URL dedup, so this grows a new file every turn"
+            )
+            assert len(downloads) == 1, (
+                f"a remote picture was refetched {len(downloads)} times across three turns. "
+                "The reuse register is rebuilt from message text every request, so without "
+                "a memo each turn re-downloads every remembered image -- on a dead host "
+                "that is the retry budget multiplied by the image limit, before dispatch."
+            )
+        blocks = self._blocks(result)
+        assert blocks, "the reuse never happened, so the upload count above asserts nothing"
+        if src.startswith("https://"):
+            assert blocks[0].startswith("data:image/png;base64,"), (
+                f"a reused remote image was passed through as a URL: {blocks[0][:60]}"
+            )
+            assert base64.b64decode(blocks[0].split(",", 1)[1]) == b"\x89PNG\r\n\x1a\n", (
+                "the download was paid for and then discarded"
+            )
+
+
+class TestTransformerFeedsTheBudget:
+    """The seam where one unit's output shape is another unit's input assumption.
+
+    Every other test here checks one side. The budget's fixtures were hand-drawn from
+    memory of what the transformer emits, and where the drawing was wrong the code and
+    the test were wrong together and agreed perfectly -- which is precisely the state a
+    mutation harness cannot detect, because it measures test-vs-code agreement and that
+    agreement was intact. The only way to see it is to hand one unit's real output to
+    the other.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_real_attachment_does_not_switch_tool_trimming_off(self, pipe_instance):
+        """Transform a real attachment, then budget the result the transformer produced.
+
+        Run against production code with no mutation, this returned a 1.4 M character
+        estimate against a 512 k limit, tripped the futility guard, and shipped a
+        900,000-character tool result in full -- while every row of the budget's own
+        parametrised attachment test stayed green.
+        """
+        from open_webui_openrouter_pipe.core.context_budget import (
+            apply_live_tool_output_budget,
+            estimate_serialized_chars,
+        )
+        from open_webui_openrouter_pipe.models.registry import ModelFamily
+
+        ModelFamily.set_dynamic_specs(
+            {"big.model": {"full_model": {"max_prompt_tokens": 128_000},
+                           "context_length": 128_000}}
+        )
+        pipe_instance.valves.SAVE_REMOTE_FILE_URLS = False
+        payload = "data:application/pdf;base64," + "A" * 1_400_000
+
+        with patch("open_webui_openrouter_pipe.requests.transformer.ModelFamily") as mock_family:
+            mock_family.supports.return_value = True
+
+            async def none(*a, **k):
+                return None
+
+            pipe_instance._file_gateway.inline_owui_file_id = none
+            pipe_instance._multimodal_handler._download_remote_url = none
+            produced = await transform_messages_to_input(
+                pipe_instance,
+                [{"role": "user", "content": [
+                    {"type": "file", "file": {"file_data": payload, "filename": "report.pdf"}},
+                    {"type": "text", "text": "summarise this"}]}],
+            )
+
+        outputs = [{"type": "function_call_output", "call_id": "big", "output": "z" * 900_000}]
+        omitted = apply_live_tool_output_budget(
+            outputs, existing_input_items=produced, model_id="big/model"
+        )
+
+        raw = len(json.dumps(produced))
+        assert raw > 1_000_000, (
+            "the transformer dropped the payload, so this measures nothing about the "
+            "budget -- an earlier version keyed the fixture on `url`/`name`, which "
+            "`_to_input_file` reads nowhere, and passed at 124 characters"
+        )
+        assert 1_000 < estimate_serialized_chars(produced) < 512_000, (
+            "the transformer's own output is measured at more than the whole prompt "
+            "budget, so the futility guard fires and nothing is trimmed"
+        )
+        assert omitted == {"big"}, "an attachment switched tool-output trimming off"

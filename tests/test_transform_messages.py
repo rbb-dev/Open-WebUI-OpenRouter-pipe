@@ -175,7 +175,9 @@ async def test_transform_limits_user_images(monkeypatch, pipe_instance_async):
     content = transformed[0]["content"]
     assert len(content) == 1
     assert content[0]["image_url"].endswith("img-a")
-    assert any("Dropped" in status for status in captured_status)
+    assert any("dropped 1" in status.lower() for status in captured_status), (
+        f"the turn dropped an image over the limit and never said so: {captured_status}"
+    )
 
 
 @pytest.mark.asyncio

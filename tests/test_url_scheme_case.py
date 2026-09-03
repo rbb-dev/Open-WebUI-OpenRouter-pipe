@@ -10,10 +10,9 @@ Measured against the real ``transform_messages_to_input`` before the fix, with
     'HTTPS://secure.example.com/y.png'    downloads=[]
 
 Two invariants broke at once. ``ALLOW_INSECURE_HTTP``'s "disabled by default" never
-consulted its own gate for ``HTTP://``, and ``_to_input_image``'s docstring promise that
-remote images are "ALWAYS saved to storage ... cannot be disabled via valve
-configuration" never fired for ``HTTPS://`` -- the URL went to OpenRouter verbatim and
-OpenRouter fetched it.
+consulted its own gate for ``HTTP://``, and the rehosting of remote images -- which is
+what keeps a third-party URL from being handed to OpenRouter to fetch itself -- never
+fired for ``HTTPS://``, so the URL went upstream verbatim and OpenRouter fetched it.
 
 Every case-varying test here parametrises over at least two spellings whose expected
 answers differ, or over both a blocked and an allowed row, so no constant return value
@@ -239,12 +238,11 @@ async def test_cleartext_http_images_are_gated_however_the_scheme_is_typed(
 async def test_every_remote_image_is_downloaded_and_rehosted(
     pipe_instance_async, mock_request, mock_user, monkeypatch, scheme
 ):
-    """``_to_input_image``: "Image data URLs and remote URLs are ALWAYS saved to storage
-    ... This cannot be disabled via valve configuration."
+    """A remote image the pipe can inline is fetched and rehosted, whatever the scheme's case.
 
     ``HTTPS://`` was never downloaded, so the URL went upstream verbatim and OpenRouter
-    fetched the third-party host directly -- the chat-history bloat and the outbound
-    fetch the docstring says are not optional.
+    fetched the third-party host directly -- chat-history bloat plus an outbound fetch
+    from a host the operator never vetted.
 
     The assertion is on the spy record rather than the returned block: a block that
     merely LOOKS rehosted proves nothing about whether bytes were actually pulled.

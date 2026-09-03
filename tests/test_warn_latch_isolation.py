@@ -31,6 +31,7 @@ EXPECTED_LATCHES = {
     "_warned_image_endpoints",
     "_warned_image_provider_keys",
     "_warned_image_reuse",
+    "_warned_oversized_inline",
     "_warned_forward_headers",
     "_warned_import_sites",
     "_warned_pinned_attachment",

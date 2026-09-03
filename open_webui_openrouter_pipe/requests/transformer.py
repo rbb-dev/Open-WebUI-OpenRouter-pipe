@@ -18,7 +18,7 @@ import json
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 from urllib.parse import urlparse
 
 from starlette.requests import Request
@@ -55,7 +55,12 @@ from ..integrations.anthropic import _maybe_apply_anthropic_prompt_caching
 from ..models.registry import ModelFamily, supports_phase_model
 
 # Import from storage
-from ..storage.multimodal import image_extension_for_mime
+from ..storage.multimodal import (
+    _SNIFF_PREFIX_BYTES,
+    _sniff_evidence,
+    image_extension_for_mime,
+    resolve_download_type,
+)
 from ..storage.owui_files import (
     extract_internal_file_id,
     is_internal_file_url,
@@ -85,6 +90,16 @@ def _strip_reasoning_anchor_keys(item: dict[str, Any]) -> dict[str, Any]:
 
 logger = logging.getLogger(__name__)
 _warned_image_reuse: set[str] = set()
+_REUSE_ARCHIVE_MEMO_LIMIT = 256
+_reuse_archive_memo: dict[str, str] = {}
+_warned_oversized_inline: set[str] = set()
+
+
+class ImageRefusal(NamedTuple):
+    reason: str
+    cause: str
+    severity: Literal["status", "error", "fatal"] = "status"
+    subject: str = ""
 
 
 def _reinterleave_region(region: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -476,15 +491,10 @@ async def transform_messages_to_input(
             async def _to_input_image(
                 block: dict,
                 *,
-                required: bool = True,
-                persist: bool = True,
+                mode: Literal["attachment", "reuse"] = "attachment",
                 msg_id: str | None = msg_id,
-            ) -> dict[str, Any] | None:
+            ) -> dict[str, Any] | ImageRefusal | None:
                 """Convert Open WebUI image block into Responses format.
-
-                Handles image URLs and base64 data URLs, downloading remote images and
-                saving all images to OWUI storage to prevent data loss. HTTP is disabled
-                by default for remote URLs; see ALLOW_INSECURE_HTTP_* valves.
 
                 Supported Image Formats (per OpenRouter docs):
                     - image/png
@@ -495,24 +505,6 @@ async def transform_messages_to_input(
                 Args:
                     block: Content block from Open WebUI message
 
-                Returns:
-                    Responses API input_image block with internal OWUI storage URL
-
-                Processing Flow:
-                    1. Extract image URL from block (nested or flat structure)
-                    2. If data URL: Parse, upload to OWUI storage
-                    3. If remote URL: Download, upload to OWUI storage
-                    4. If OWUI file reference: Keep as-is
-                    5. Return Responses API format with detail level
-
-                Note:
-                    Image data URLs and remote URLs are ALWAYS saved to storage
-                    to prevent chat history bloat, similar to the default behavior of
-                    SAVE_FILE_DATA_CONTENT for file inputs. This cannot be disabled
-                    via valve configuration as inline image payloads significantly
-                    degrade UI performance and storage efficiency.
-                    All errors are caught and logged with status emissions.
-                    Failed processing returns empty image_url rather than crashing.
                 """
                 try:
                     image_payload = block.get("image_url")
@@ -537,14 +529,14 @@ async def transform_messages_to_input(
                         and not is_internal_file_url(url)
                         and not pipe._multimodal_handler._is_insecure_http_allowed(url)
                     ):
-                            pipe.logger.error("Blocked insecure HTTP image URL by default: %s", url)
-                            await pipe._ensure_error_formatter()._emit_error(
-                                event_emitter,
-                                "Image URL blocked by security policy (HTTP disabled by default). "
-                                "Enable ALLOW_INSECURE_HTTP + ALLOW_INSECURE_HTTP_HOSTS to allow specific hosts.",
-                                show_error_message=True,
+                            return ImageRefusal(
+                                "served over plain HTTP, which is blocked by security policy; "
+                                "set ALLOW_INSECURE_HTTP and list the host in "
+                                "ALLOW_INSECURE_HTTP_HOSTS to permit it",
+                                "insecure_http",
+                                severity="error",
+                                subject=url,
                             )
-                            return None
 
                     storage_context: tuple[Request | None, Any | None] | None = None
 
@@ -579,10 +571,27 @@ async def transform_messages_to_input(
                             await pipe._event_emitter_handler._emit_status(event_emitter, status_message, done=False)
                         return stored_id
 
-                    if persist and url.startswith("data:"):
+                    if url.startswith("data:"):
                         try:
+                            if ";base64," not in url:
+                                return ImageRefusal(
+                                    "a data URL that is not base64-encoded, which "
+                                    "OpenRouter does not accept",
+                                    "unencoded_inline",
+                                    subject=url[:64],
+                                )
                             parsed = pipe._multimodal_handler._parse_data_url(url)
-                            if parsed:
+                            if not parsed:
+                                encoded = url.split(";base64,", 1)[1]
+                                oversized = (len(encoded) * 3) // 4 > max_inline_bytes
+                                return ImageRefusal(
+                                    f"larger than the {max_inline_bytes}-byte inline limit"
+                                    if oversized
+                                    else "not decodable as base64",
+                                    "oversized_inline" if oversized else "undecodable_inline",
+                                    subject=url[:64],
+                                )
+                            if mode == "attachment":
                                 ext = image_extension_for_mime(parsed["mime_type"])
                                 stored_id = await _save_image_bytes(
                                     parsed["data"],
@@ -600,23 +609,74 @@ async def transform_messages_to_input(
                                 show_error_message=False
                             )
 
-                    elif persist and is_http_or_https_url(url) and not is_internal_file_url(url):
+                    elif is_http_or_https_url(url) and not is_internal_file_url(url):
+                        remembered = _reuse_archive_memo.get(url) if mode == "reuse" else None
+                        if remembered:
+                            owui_file_id = remembered
+                            url = f"/api/v1/files/{remembered}/content"
                         try:
-                            downloaded = await pipe._multimodal_handler._download_remote_url(url)
+                            downloaded = (
+                                None
+                                if owui_file_id
+                                else await pipe._multimodal_handler._download_remote_url(url)
+                            )
                             if downloaded:
-                                filename = url.split("/")[-1].split("?")[0] or f"image-{uuid.uuid4().hex}"
-                                if "." not in filename:
-                                    ext = image_extension_for_mime(downloaded["mime_type"])
-                                    filename = f"{filename}.{ext}"
+                                oversized = len(downloaded["data"]) > max_inline_bytes
+                                if oversized and mode != "attachment":
+                                    return ImageRefusal(
+                                        f"{len(downloaded['data'])} bytes, over the "
+                                        f"{max_inline_bytes}-byte limit, so it was not sent",
+                                        "oversized_remote",
+                                        subject=url,
+                                    )
+                                if mode == "attachment":
+                                    filename = url.split("/")[-1].split("?")[0] or f"image-{uuid.uuid4().hex}"
+                                    if "." not in filename:
+                                        ext = image_extension_for_mime(downloaded["mime_type"])
+                                        filename = f"{filename}.{ext}"
 
-                                stored_id = await _save_image_bytes(
-                                    downloaded["data"],
-                                    downloaded["mime_type"],
-                                    filename,
-                                    StatusMessages.IMAGE_REMOTE_SAVED,
-                                )
-                                if stored_id:
-                                    owui_file_id = stored_id
+                                    stored_id = await _save_image_bytes(
+                                        downloaded["data"],
+                                        downloaded["mime_type"],
+                                        filename,
+                                        StatusMessages.IMAGE_REMOTE_SAVED,
+                                    )
+                                    if stored_id:
+                                        owui_file_id = stored_id
+                                    if oversized:
+                                        return ImageRefusal(
+                                            f"{len(downloaded['data'])} bytes, over the "
+                                            f"{max_inline_bytes}-byte limit, so it was "
+                                            "archived but not sent",
+                                            "oversized_remote",
+                                            subject=url,
+                                        )
+                                elif mode == "reuse":
+                                    stored_id = await _save_image_bytes(
+                                        downloaded["data"],
+                                        downloaded["mime_type"],
+                                        url.split("/")[-1].split("?")[0]
+                                        or f"image-{uuid.uuid4().hex}",
+                                        StatusMessages.IMAGE_REMOTE_SAVED,
+                                    )
+                                    if stored_id:
+                                        if len(_reuse_archive_memo) >= _REUSE_ARCHIVE_MEMO_LIMIT:
+                                            _reuse_archive_memo.clear()
+                                        _reuse_archive_memo[url] = stored_id
+                                    declared = str(downloaded.get("mime_type") or "")
+                                    resolved = resolve_download_type(
+                                        declared,
+                                        _sniff_evidence(downloaded["data"][:_SNIFF_PREFIX_BYTES]),
+                                    )
+                                    if not resolved.startswith("image/"):
+                                        return ImageRefusal(
+                                            "not identifiable as an image",
+                                            "reuse_untyped",
+                                        )
+                                    url = (
+                                        f"data:{resolved};base64,"
+                                        + base64.b64encode(downloaded["data"]).decode("ascii")
+                                    )
                         except Exception as exc:
                             pipe.logger.exception("Failed to download remote image %s", url)
                             await pipe._ensure_error_formatter()._emit_error(
@@ -635,17 +695,12 @@ async def transform_messages_to_input(
                             user=user_obj,
                         )
                         if not inlined:
-                            if required:
-                                raise RequiredInternalFileError(
-                                    f"A referenced image ({owui_file_id}) could not be retrieved from Open WebUI storage.",
-                                    kind="image",
-                                )
-                            pipe.logger.log(
-                                warn_level(_warned_image_reuse, str(owui_file_id)),
-                                "Not reusing image %s: Open WebUI file unavailable.",
-                                owui_file_id,
+                            return ImageRefusal(
+                                "no longer available in Open WebUI storage",
+                                "owui_file_unavailable",
+                                severity="fatal",
+                                subject=owui_file_id,
                             )
-                            return None
                         url = inlined.data_url
 
                     result: dict[str, Any] = {"type": "input_image", "image_url": url}
@@ -658,14 +713,13 @@ async def transform_messages_to_input(
 
                 except RequiredInternalFileError:
                     raise
-                except Exception as exc:
+                except Exception:
                     pipe.logger.exception("Error in _to_input_image")
-                    await pipe._ensure_error_formatter()._emit_error(
-                        event_emitter,
-                        f"Image processing error: {exc}",
-                        show_error_message=False
+                    return ImageRefusal(
+                        "could not be processed",
+                        "processing_error",
+                        subject=str(block.get("image_url") or "")[:64],
                     )
-                    return None
 
             async def _to_input_file(block: dict, *, msg_id: str | None = msg_id) -> dict:
                 """Convert Open WebUI file blocks into Responses API format.
@@ -1379,6 +1433,7 @@ async def transform_messages_to_input(
             converted_blocks: list[dict[str, Any]] = []
             user_images_used = 0
             dropped_images = 0
+            refused_images: list[str] = []
             encountered_user_images = False
             reusable_image_blocks: list[dict[str, Any]] = []
             vision_warning_sent = False
@@ -1410,7 +1465,6 @@ async def transform_messages_to_input(
                 is_image_block = block_type in {"image_url", "input_image"}
 
                 if is_image_block:
-                    encountered_user_images = True
                     if not latest_user_message:
                         reusable_image_blocks.append(block)
                     if not include_user_images:
@@ -1424,6 +1478,7 @@ async def transform_messages_to_input(
                         continue
                     if user_images_used >= image_limit:
                         dropped_images += 1
+                        encountered_user_images = True
                         continue
 
                 try:
@@ -1431,6 +1486,29 @@ async def transform_messages_to_input(
                         result = await transformer(block)
                     else:
                         result = transformer(block)
+                    if isinstance(result, ImageRefusal):
+                        if result.severity == "fatal":
+                            raise RequiredInternalFileError(
+                                f"A referenced image ({result.subject}) is "
+                                f"{result.reason}.",
+                                kind="image",
+                            )
+                        pipe.logger.log(
+                            warn_level(_warned_oversized_inline, result.cause),
+                            "Skipping an attached image (%s): %s",
+                            result.subject or "no source",
+                            result.reason,
+                        )
+                        if result.severity == "error":
+                            await pipe._event_emitter_handler._emit_error_event(
+                                event_emitter,
+                                f"An attached image was {result.reason}.",
+                                show_error_message=True,
+                            )
+                        else:
+                            refused_images.append(result.reason)
+                        encountered_user_images = True
+                        continue
                     if result is None:
                         continue
                     if isinstance(result, dict):
@@ -1443,6 +1521,7 @@ async def transform_messages_to_input(
                             result["text"] = cleaned
                     if is_image_block and result:
                         user_images_used += 1
+                        encountered_user_images = True
                     converted_blocks.append(result)
                 except RequiredInternalFileError:
                     raise
@@ -1461,6 +1540,7 @@ async def transform_messages_to_input(
                 and selection_mode == "user_then_assistant"
                 and include_user_images
                 and user_images_used == 0
+                and not encountered_user_images
                 and last_image_blocks
                 and last_image_turn is not None
                 and msg_turn_index is not None
@@ -1470,14 +1550,20 @@ async def transform_messages_to_input(
                 fallback_blocks: list[dict[str, Any]] = []
                 for source_block in last_image_blocks[:fallback_slots]:
                     try:
-                        transformed = await _to_input_image(
-                            source_block, required=False, persist=False
-                        )
-                        if transformed is not None:
+                        transformed = await _to_input_image(source_block, mode="reuse")
+                        if isinstance(transformed, ImageRefusal):
+                            pipe.logger.log(
+                                warn_level(_warned_image_reuse, transformed.cause),
+                                "Not reusing an earlier image: %s",
+                                transformed.reason,
+                            )
+                        elif transformed is not None:
                             fallback_blocks.append(transformed)
                     except RequiredInternalFileError as exc:
                         pipe.logger.log(
-                            warn_level(_warned_image_reuse, str(exc.user_message)),
+                            logging.WARNING
+                            if exc.denied
+                            else warn_level(_warned_image_reuse, "reuse_unavailable"),
                             "Not reusing an earlier image: %s",
                             exc.user_message,
                         )
@@ -1497,21 +1583,19 @@ async def transform_messages_to_input(
                 last_image_blocks = reusable_image_blocks
                 last_image_turn = msg_turn_index
 
-            if dropped_images and latest_user_message:
-                await pipe._event_emitter_handler._emit_status(
-                    event_emitter,
-                    f"Dropped {dropped_images} extra image{'s' if dropped_images != 1 else ''}; limit is {image_limit}.",
-                    done=False,
+            image_notices: list[str] = []
+            if refused_images:
+                image_notices.append(
+                    f"skipped {len(refused_images)} ({'; '.join(refused_images)})"
                 )
-            if (
-                latest_user_message
-                and encountered_user_images
-                and not vision_supported
-                and not vision_warning_sent
-            ):
+            if dropped_images:
+                image_notices.append(
+                    f"dropped {dropped_images} over the limit of {image_limit}"
+                )
+            if image_notices and latest_user_message:
                 await pipe._event_emitter_handler._emit_status(
                     event_emitter,
-                    "Model does not accept image inputs; skipping user attachments.",
+                    "Images: " + "; ".join(image_notices) + ".",
                     done=False,
                 )
 
