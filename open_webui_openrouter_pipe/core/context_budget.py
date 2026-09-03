@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from ..models.registry import ModelFamily
@@ -13,9 +14,68 @@ logger = logging.getLogger(__name__)
 
 _FALLBACK_PROMPT_LIMIT_TOKENS = 128_000
 _CHARS_PER_TOKEN_HEURISTIC = 4
-_IMAGE_BLOCK_TYPES = frozenset({"input_image", "image_url"})
-_IMAGE_TOKEN_ESTIMATE = 1_700
-_IMAGE_PLACEHOLDER = "i" * (_IMAGE_TOKEN_ESTIMATE * _CHARS_PER_TOKEN_HEURISTIC)
+_AUDIO_BYTES_PER_TOKEN = 500
+_VIDEO_BYTES_PER_TOKEN = 380
+_DOCUMENT_BYTES_PER_TOKEN = 500
+_TEXTUAL_MEDIA_TYPES = frozenset(
+    {
+        "application/json",
+        "application/xml",
+        "application/x-ndjson",
+        "application/csv",
+        "application/javascript",
+        "application/yaml",
+        "application/x-yaml",
+        "application/toml",
+        "application/sql",
+        "application/graphql",
+    }
+)
+
+
+_UNTYPED_DECLARATIONS = frozenset(
+    {
+        "application/octet-stream",
+        "binary/octet-stream",
+        "application/binary",
+        "application/download",
+        "application/force-download",
+        "application/x-binary",
+        "application/unknown",
+        "*/*",
+    }
+)
+
+_TEXTUAL_SUFFIXES = (
+    ".txt", ".md", ".markdown", ".csv", ".tsv", ".json", ".jsonl", ".ndjson", ".xml",
+    ".yaml", ".yml", ".toml", ".ini", ".cfg", ".log", ".sql", ".py", ".js", ".ts",
+    ".html", ".htm", ".css", ".rst", ".srt", ".vtt",
+)
+
+
+def _reads_as_text(media_type: str, filename: str) -> bool:
+    if media_type.startswith("text/"):
+        return True
+    if media_type in _TEXTUAL_MEDIA_TYPES or media_type.endswith(("+json", "+xml")):
+        return True
+    if media_type in _UNTYPED_DECLARATIONS or not media_type:
+        return filename.strip().lower().endswith(_TEXTUAL_SUFFIXES)
+    return False
+
+
+def _document_tokens(n: int, media_type: str, filename: str = "") -> int:
+    if _reads_as_text(media_type, filename):
+        return n // _CHARS_PER_TOKEN_HEURISTIC
+    return n // _DOCUMENT_BYTES_PER_TOKEN
+
+
+_OPAQUE_BLOCK_PAYLOADS: dict[str, tuple[tuple[str, ...], Callable[..., int]]] = {
+    "input_image": (("image_url",), lambda _n, _t, _f="": 1_700),
+    "image_url": (("image_url",), lambda _n, _t, _f="": 1_700),
+    "input_audio": (("input_audio",), lambda n, _t, _f="": n // _AUDIO_BYTES_PER_TOKEN),
+    "input_file": (("file_data", "file_id", "file_url"), _document_tokens),
+    "video_url": (("video_url",), lambda n, _t, _f="": n // _VIDEO_BYTES_PER_TOKEN),
+}
 _LIVE_OMISSION_PREFIX = "[Tool result omitted due to context budget."
 _REPLAY_OMISSION_PREFIX = "[Replayed tool result omitted due to context budget."
 
@@ -66,11 +126,51 @@ def compute_prompt_limit_tokens(model_id: str) -> int:
     return _FALLBACK_PROMPT_LIMIT_TOKENS
 
 
+def _payload_bytes(value: Any) -> tuple[int, str] | None:
+    if isinstance(value, str):
+        head = value[:128]
+        media_type = ""
+        if ";base64," in head:
+            prefix, raw = value.split(";base64,", 1)
+            if prefix.startswith("data:"):
+                media_type = prefix[len("data:") :].split(";", 1)[0].strip().lower()
+        else:
+            raw = value
+        size = len(raw) * 3 // 4
+        return (size, media_type) if size else None
+    if isinstance(value, dict):
+        for sub_key in ("url", "data"):
+            if sub_key in value:
+                return _payload_bytes(value[sub_key])
+    return None
+
+
 def _budget_shape(value: Any) -> Any:
     if isinstance(value, dict):
-        if value.get("type") in _IMAGE_BLOCK_TYPES:
-            shaped = {key: item for key, item in value.items() if key != "image_url"}
-            shaped["image_url"] = _IMAGE_PLACEHOLDER
+        block_type = value.get("type")
+        spec = _OPAQUE_BLOCK_PAYLOADS.get(block_type) if isinstance(block_type, str) else None
+        if spec is not None:
+            payload_keys, rate = spec
+            sizes: dict[str, tuple[int, str]] = {}
+            for key in payload_keys:
+                if key not in value:
+                    continue
+                measured = _payload_bytes(value[key])
+                if measured is not None:
+                    sizes[key] = measured
+            charged_key = max(sizes, key=lambda k: sizes[k][0]) if sizes else None
+            shaped: dict[str, Any] = {}
+            for key, item in value.items():
+                if key == charged_key:
+                    filename = value.get("filename")
+                    tokens = rate(
+                        *sizes[key], filename if isinstance(filename, str) else ""
+                    )
+                    shaped[key] = "x" * (tokens * _CHARS_PER_TOKEN_HEURISTIC)
+                elif key in sizes:
+                    shaped[key] = ""
+                else:
+                    shaped[key] = _budget_shape(item)
             return shaped
         return {key: _budget_shape(item) for key, item in value.items()}
     if isinstance(value, list):
@@ -92,12 +192,29 @@ def _baseline_without_tool_outputs(items: Any) -> Any:
     return baseline
 
 
+def _already_stubbed_chars(items: Any) -> int:
+    if not isinstance(items, list):
+        return 0
+    return sum(
+        len(item["output"])
+        for item in items
+        if isinstance(item, dict)
+        and item.get("type") == "function_call_output"
+        and isinstance(item.get("output"), str)
+        and is_tool_omission_stub(item["output"])
+    )
+
+
 def estimate_serialized_chars(value: Any) -> int:
     """Estimate payload size by serialized character count."""
     try:
-        return len(json.dumps(_budget_shape(value), ensure_ascii=False))
+        shaped = _budget_shape(value)
+    except RecursionError:
+        shaped = value
+    try:
+        return len(json.dumps(shaped, ensure_ascii=False))
     except (RecursionError, TypeError, ValueError):
-        return len(str(value))
+        return len(str(shaped))
 
 
 def is_tool_omission_stub(text: str) -> bool:
@@ -144,15 +261,18 @@ def apply_live_tool_output_budget(
     prompt_limit_tokens = compute_prompt_limit_tokens(model_id)
     prompt_limit_chars = max(prompt_limit_tokens * _CHARS_PER_TOKEN_HEURISTIC, 0)
     fixed_chars = estimate_serialized_chars(_baseline_without_tool_outputs(existing_input_items))
-    if prompt_limit_chars and fixed_chars >= prompt_limit_chars:
+    irreducible_chars = fixed_chars + _already_stubbed_chars(existing_input_items)
+    if prompt_limit_chars and irreducible_chars >= prompt_limit_chars:
         logger.warning(
-            "Skipping live tool-output budget: the request without tool output already needs "
-            "~%d chars against a ~%d char limit, so omitting results cannot bring it under.",
-            fixed_chars,
+            "Skipping live tool-output budget: the request's irreducible content -- attachments "
+            "plus results already omitted -- needs ~%d chars against a ~%d char limit, so "
+            "omitting more cannot bring it under.",
+            irreducible_chars,
             prompt_limit_chars,
         )
         return omitted_call_ids
-    remaining_chars = max(prompt_limit_chars - fixed_chars, 0)
+    spent_chars = max(estimate_serialized_chars(existing_input_items) - fixed_chars, 0)
+    remaining_chars = max(prompt_limit_chars - fixed_chars - spent_chars, 0)
 
     for output in outputs:
         if not isinstance(output, dict):
@@ -213,11 +333,13 @@ def apply_replay_tool_output_budget(
     prompt_limit_chars = max(prompt_limit_tokens * _CHARS_PER_TOKEN_HEURISTIC, 0)
 
     fixed_chars = estimate_serialized_chars(_baseline_without_tool_outputs(items))
-    if prompt_limit_chars and fixed_chars >= prompt_limit_chars:
+    irreducible_chars = fixed_chars + _already_stubbed_chars(items)
+    if prompt_limit_chars and irreducible_chars >= prompt_limit_chars:
         logger.warning(
-            "Skipping replay tool-output budget: the request without tool output already needs "
-            "~%d chars against a ~%d char limit, so omitting results cannot bring it under.",
-            fixed_chars,
+            "Skipping replay tool-output budget: the request's irreducible content -- "
+            "attachments plus results already omitted -- needs ~%d chars against a ~%d char "
+            "limit, so omitting more cannot bring it under.",
+            irreducible_chars,
             prompt_limit_chars,
         )
         return omitted_call_ids
