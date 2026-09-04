@@ -133,8 +133,8 @@ This keeps the loop alive, informs the model in-band, and lets the model decide 
 
 ### User-visible behavior changes
 
-- Some tool outputs may be replaced by an omission stub when they would likely exceed remaining context budget.
-- Failed or omitted tool outputs are still provided to the model for continuity, but they are **not** persisted and **not** shown as tool cards.
+- Some tool outputs may be replaced by an omission stub in the request sent to the model, when the full text would exceed the remaining context budget for that turn.
+- The stub exists only in that request. The tool card, the stored chat message and the artifact store all keep the result's full text, and a warning notification names the tools the model did not receive. Because the budget is recomputed every turn, an omitted result is replayed in full once the context has room or the conversation moves to a larger model.
 - If tool loops complete without any assistant content growth and no actionable continuation remains, the pipe emits a fallback assistant message instead of staying silent.
 
 ### Operator guidance

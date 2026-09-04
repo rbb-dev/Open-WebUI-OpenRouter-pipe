@@ -4396,8 +4396,24 @@ class TestAdaptiveToolBudgeting:
         )
 
     @pytest.mark.asyncio
-    async def test_omitted_tool_outputs_are_not_persisted_but_carded(self, monkeypatch, pipe_instance_async):
-        """Budget-omitted tool outputs show cards (OWUI compat) but are not persisted."""
+    async def test_an_omitted_result_keeps_its_full_text_everywhere_but_upstream(
+        self, monkeypatch, pipe_instance_async
+    ):
+        """The budget's verdict is about one request; it must not reach any durable surface.
+
+        `apply_live_tool_output_budget` mutates in place, and the caller handed it the
+        same list of the same dicts that the cards, the citation harvest, persistence and
+        `body.input` all read. One object, four consumers -- so a per-turn budget decision
+        rewrote the card the user reads and the record Open WebUI stores.
+
+        That mattered because omission is recoverable: the same stored result replays in
+        full once the context has room, or on a larger model. Freezing the stub into the
+        record makes a transient decision permanent.
+
+        The stub belongs only in the bytes sent upstream. `assert not persisted_rows` used
+        to stand here and was vacuous -- `_make_db_row` returns None without `_item_model`,
+        which no test env sets -- so it passed however persistence behaved.
+        """
         from open_webui_openrouter_pipe.models.registry import ModelFamily
 
         pipe = pipe_instance_async
@@ -4474,8 +4490,14 @@ class TestAdaptiveToolBudgeting:
             persisted_rows.extend(rows)
             return [f"ulid-{i}" for i in range(len(rows))]
 
+        def mock_make_db_row(chat_id, message_id, model_id, payload):
+            if not (chat_id and message_id):
+                return None
+            return {"item_type": payload.get("type"), "payload": payload}
+
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", streaming)
         monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
+        monkeypatch.setattr(pipe._artifact_store, "_make_db_row", mock_make_db_row)
         monkeypatch.setattr(pipe._artifact_store, "_db_persist", mock_persist)
 
         emitted: list[dict] = []
@@ -4503,7 +4525,15 @@ class TestAdaptiveToolBudgeting:
             and str(item.get("output", "")).startswith("[Tool result omitted due to context budget.")
         ]
         assert omitted_outputs, "Expected omitted tool output stub to be model-visible"
-        assert not persisted_rows
+
+        stored = [(r["item_type"], len(str(r["payload"].get("output", "")))) for r in persisted_rows]
+        assert ("function_call_output", 4000) in stored, (
+            "the stub replaced the tool's result in the record Open WebUI stores and "
+            f"re-renders; a per-request budget verdict became permanent: {stored}"
+        )
+        assert any(kind == "function_call" for kind, _ in stored), (
+            "the call was dropped while its output was kept, leaving an unpaired result"
+        )
         output_items = [e for e in emitted if e.get("type") == "response.output_item.added"]
         fc_items = [e for e in output_items if e.get("item", {}).get("type") == "function_call"]
         fco_items = [e for e in output_items if e.get("item", {}).get("type") == "function_call_output"]

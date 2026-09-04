@@ -2810,8 +2810,12 @@ class StreamingHandler:
                                     _tool_ctx.on_complete = None
 
                         all_function_outputs = list(function_outputs) + list(invalid_call_outputs)
+                        budgeted_outputs = [
+                            dict(output) if isinstance(output, dict) else output
+                            for output in all_function_outputs
+                        ]
                         omitted_call_ids = apply_live_tool_output_budget(
-                            all_function_outputs,
+                            budgeted_outputs,
                             existing_input_items=body.input,
                             model_id=model_for_cache,
                             logger=self.logger,
@@ -2827,6 +2831,18 @@ class StreamingHandler:
                             cid = _extract_call_id(output)
                             if cid:
                                 output_by_call_id[cid] = output
+
+                        if omitted_call_ids and event_emitter:
+                            omitted_names = sorted(
+                                str((call_by_id.get(cid) or {}).get("name") or cid)
+                                for cid in omitted_call_ids
+                            )
+                            await self._pipe._event_emitter_handler._emit_notification(
+                                event_emitter,
+                                "Too large for the remaining context this turn, so the model "
+                                f"did not receive: {', '.join(omitted_names)}.",
+                                level="warning",
+                            )
 
                         if show_tool_cards and event_emitter and body.stream and all_function_outputs:
                             try:
@@ -2968,8 +2984,6 @@ class StreamingHandler:
                             persist_payloads: list[dict] = []
                             for output in all_function_outputs:
                                 cid = _extract_call_id(output)
-                                if cid and cid in omitted_call_ids:
-                                    continue
                                 call = call_by_id.get(cid) if cid else None
                                 if call:
                                     persist_payloads.append(call)
@@ -3031,7 +3045,7 @@ class StreamingHandler:
                             if thinking_tasks:
                                 cancel_thinking()
                             self.logger.debug("Received tool result\n%s", result_text)
-                        body.input.extend(all_function_outputs)
+                        body.input.extend(budgeted_outputs)
                         _sanitize_request_input(self._pipe, body)
                     elif invalid_call_outputs:
                         if not tool_loops_executed:

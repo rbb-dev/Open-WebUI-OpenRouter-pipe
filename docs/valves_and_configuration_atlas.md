@@ -117,7 +117,7 @@ See: [OpenRouter Zero Data Retention (ZDR)](openrouter_zdr.md).
 Behavior note (no valve):
 - Pipeline mode applies dynamic, model-aware tool output budgeting. Oversized live/replayed `function_call_output` payloads can be replaced with omission stubs so the model stays in-context.
 - When `MAX_FUNCTION_CALL_LOOPS` is reached, pending tool calls receive stub responses advising the model to synthesize from existing context, and the model gets one additional generation turn.
-- Failed/omitted tool outputs remain model-visible for continuation, but are not persisted and not rendered as tool cards.
+- Failed/omitted tool outputs remain model-visible for continuation. The omission stub applies only to the request sent upstream; cards, the stored message and the artifact store keep the full text, and the omission is announced by a notification.
 
 ### Persistence, encryption, and compression
 
