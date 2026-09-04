@@ -1070,7 +1070,7 @@ class VideoGenerationAdapter:
                 file_ids=file_ids,
                 elapsed=elapsed,
                 usage=usage,
-                unstored=len(downloads) - len(file_ids),
+                produced=reported,
             )
             if disclosure_block:
                 content = disclosure_block + "\n" + content
@@ -2738,17 +2738,17 @@ class VideoGenerationAdapter:
         file_ids: list[str],
         elapsed: float,
         usage: dict[str, Any],
-        unstored: int = 0,
+        produced: int = 0,
     ) -> str:
         clips = "".join(
             f"<video>\n/api/v1/files/{file_id}/content\n</video>\n" for file_id in file_ids
         )
         shortfall = ""
-        if unstored > 0:
-            produced = len(file_ids) + unstored
+        missing = max(produced - len(file_ids), 0)
+        if missing > 0:
             shortfall = (
-                f"\n{unstored} of the {produced} clips this job produced could not be saved "
-                "to Open WebUI storage and are not shown above. The job was billed for all "
+                f"\n{missing} of the {produced} clips this job produced could not be "
+                "delivered and are not shown above. The job was billed for all "
                 f"{produced}.\n"
             )
         return (

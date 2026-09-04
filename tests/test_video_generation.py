@@ -298,6 +298,50 @@ def test_model_specific_filters_hide_unsupported_controls():
     assert "VIDEO_AUDIO_URL" in wan_source
 
 
+@pytest.mark.parametrize(
+    ("produced", "delivered"),
+    [(3, 1), (3, 3), (5, 2), (16, 15), (1, 1)],
+)
+def test_the_shortfall_counts_every_clip_the_job_was_billed_for(produced, delivered):
+    """The count was derived from survivors, so the losses it reported were the ones it saw.
+
+    `unstored` was `len(downloads) - len(file_ids)` -- the gap between downloading and
+    storing. A clip refused at download never enters `downloads`, so it moved both terms
+    equally and vanished from the count meant to report it: the loop breaks, the sentence
+    computes zero, and the user gets a normal success with fewer videos than they paid
+    for. The `_MAX_VIDEO_OUTPUTS` clamp is lost the same way.
+
+    Counting against what OpenRouter said it produced covers all three loss paths without
+    asking which one fired. Both integers are parsed and compared, because a sentence
+    that merely appears can still carry the wrong numbers -- which is what the old one
+    did, understating `produced` as well.
+    """
+    import re
+
+    adapter = VideoGenerationAdapter.__new__(VideoGenerationAdapter)
+    content = adapter._build_success_content(
+        job_id="job-abc",
+        model_id="google/veo-3.1-lite",
+        file_ids=[f"file-{i}" for i in range(delivered)],
+        elapsed=1.0,
+        usage={"cost": 0.4},
+        produced=produced,
+    )
+
+    if produced == delivered:
+        assert "could not be" not in content, (
+            f"all {produced} clips were delivered but the message reports a shortfall"
+        )
+        return
+    match = re.search(r"(\d+) of the (\d+) clips this job produced could not be", content)
+    assert match, f"{produced - delivered} of {produced} clips never reached the user and the message says nothing: {content!r}"
+    assert (int(match.group(1)), int(match.group(2))) == (produced - delivered, produced), (
+        f"the shortfall reports {match.group(1)} of {match.group(2)}; the job produced "
+        f"{produced} and delivered {delivered}, and was billed for all {produced}"
+    )
+    assert f"billed for all {produced}" in content
+
+
 def test_build_success_content_ends_with_newline():
     adapter = VideoGenerationAdapter.__new__(VideoGenerationAdapter)
     content = adapter._build_success_content(
@@ -5008,6 +5052,103 @@ def test_a_null_list_field_still_renders_no_control(list_field):
     source = render_video_filter_source(model_id="alibaba/wan-2.7", video_model=model)
 
     assert valve not in source
+
+
+@pytest.mark.parametrize(
+    ("clip_count", "fails_at"),
+    [(3, 1), (4, 2), (2, 1)],
+    ids=["3-clips-second-fails", "4-clips-third-fails", "2-clips-second-fails"],
+)
+@pytest.mark.asyncio
+async def test_a_clip_that_cannot_be_downloaded_is_declared_to_the_user(
+    monkeypatch, clip_count, fails_at
+):
+    """The shortfall was counted from survivors, so a download refusal reported itself as zero.
+
+    `unstored` was `len(downloads) - len(file_ids)`. A clip refused at download never
+    enters `downloads`, so it moved both terms equally and vanished from the count meant
+    to report it -- the loop breaks, the sentence computes zero, and the user gets an
+    ordinary success with fewer videos than they were billed for. Index 0 is excluded
+    because production correctly raises when nothing downloads at all; only clips 2+ are
+    silent.
+
+    Three rows with different billed and delivered counts, so no constant satisfies them.
+    This drives `adapter.generate()` because the unit test for the sentence never touches
+    the call site that computes its arguments -- reverting that one line leaves 946 tests
+    green.
+    """
+    import re
+
+    pipe = Pipe()
+    pipe.valves.API_KEY = EncryptedStr("test-api-key")
+    pipe.valves.VIDEO_INITIAL_POLL_DELAY_SECONDS = 0
+    adapter = pipe._ensure_video_generation_adapter()
+    cast(Any, adapter)._persistence = _MemoryPersistence(
+        "[openrouter:v1:videojob:job-partial]: #\n\nVideo generation is running..."
+    )
+
+    class FakeClient(OpenRouterVideoClient):
+        async def status(self, job_id, polling_url=None):
+            return {
+                "status": "completed",
+                "unsigned_urls": [
+                    f"https://storage.test/{i}.mp4" for i in range(clip_count)
+                ],
+            }
+
+        def bearer_header(self) -> dict[str, str]:
+            return {"Authorization": "Bearer test"}
+
+    attempted: list[int] = []
+
+    async def refusing_download(url: str, dest_path, **_kwargs):
+        index = len(attempted)
+        attempted.append(index)
+        if index >= fails_at:
+            return None
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        dest_path.write_bytes(MP4_BYTES)
+        return {"path": dest_path, "mime_type": "video/mp4", "url": url,
+                "size_bytes": len(MP4_BYTES)}
+
+    async def fake_upload_from_path(*_args, **kwargs):
+        return f"file-{len(attempted)}"
+
+    monkeypatch.setattr(
+        "open_webui_openrouter_pipe.integrations.video.OpenRouterVideoClient", FakeClient
+    )
+    monkeypatch.setattr(pipe, "_create_http_session", lambda *_a, **_k: _FakeSession([]))
+    monkeypatch.setattr(
+        pipe._multimodal_handler, "_download_remote_url_streaming", refusing_download
+    )
+    monkeypatch.setattr(
+        pipe._file_gateway, "upload_to_owui_storage_from_path", fake_upload_from_path
+    )
+
+    result = await adapter.generate(
+        body={"messages": [{"role": "user", "content": "make a video"}]},
+        responses_body=SimpleNamespace(provider={}),
+        valves=pipe.valves,
+        session=None,
+        event_emitter=None,
+        metadata={"chat_id": "chat-1", "message_id": "msg-1"},
+        user={"id": "user-1"},
+        request=None,
+        user_obj={"id": "user-1"},
+        normalized_model_id="openai.sora-2-pro",
+        api_model_id="openai/sora-2-pro",
+    )
+
+    match = re.search(r"(\d+) of the (\d+) clips this job produced could not be", result)
+    assert match, (
+        f"{clip_count - fails_at} of {clip_count} billed clips never reached the user "
+        f"and the message says nothing: {result!r}"
+    )
+    assert (int(match.group(1)), int(match.group(2))) == (clip_count - fails_at, clip_count), (
+        f"the shortfall reports {match.group(1)} of {match.group(2)}; the job produced "
+        f"{clip_count} and delivered {fails_at}"
+    )
+    assert f"billed for all {clip_count}" in result
 
 
 @pytest.mark.parametrize(
