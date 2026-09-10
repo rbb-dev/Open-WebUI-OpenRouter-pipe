@@ -64,7 +64,7 @@ Image handling is described in detail in [Multimodal Intake Pipeline](multimodal
   - `IMAGE_INPUT_SELECTION` controls fallback behavior:
     - `user_turn_only`: only user-attached images are forwarded.
     - `user_then_assistant`: if the user turn has no images, the pipe may reuse the most recent image already in the conversation - an assistant image extracted from Markdown image syntax, or one the user attached on an earlier turn - bounded by `IMAGE_REUSE_MAX_TURNS`.
-- Remote/data URL images are re-hosted into Open WebUI storage and/or inlined as `data:` URLs as needed so providers do not need to fetch from your Open WebUI host directly.
+- Images attached to the current turn are re-hosted into Open WebUI storage when a storage context is available; an image reused from an earlier turn is inlined as a `data:` URL instead, under a media type the pipe resolves from the bytes. Where a storage context resolves, the block sent upstream carries the bytes, so providers never need to fetch from your Open WebUI host; a request made without one - API automation, for instance - keeps the original payload. Re-hosting on this path covers only what the user attached; images the model generates are stored by the output path.
 
 ### 3.3 Files, audio, and video
 The pipe includes transformer functions for:

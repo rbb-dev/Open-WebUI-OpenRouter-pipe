@@ -125,7 +125,7 @@ In long tool loops, the request can become context-saturated (large replayed art
 
 The pipe now applies **adaptive, model-aware budgeting** instead of fixed output caps:
 
-- It derives prompt limits from model metadata (`max_prompt_tokens`, then `context_length`/`max_completion_tokens`, with safe fallbacks).
+- It derives prompt limits from model metadata: `max_prompt_tokens` when the catalog publishes it, otherwise the model's `context_length` less whatever reply allowance the request itself carries, with safe fallbacks. The provider's largest possible completion is not reserved — that is a ceiling the request never asked for, and on most of the catalog it put the budget far below the real window.
 - It estimates request/input size and omits oversized `function_call_output` payloads by replacing them with a short model-visible stub that advises the model to retry with a narrower query.
 - The model retains full tool access throughout the conversation and can recover from oversized results by retrying with tighter parameters.
 

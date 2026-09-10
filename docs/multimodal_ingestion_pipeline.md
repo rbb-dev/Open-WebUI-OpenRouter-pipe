@@ -15,7 +15,7 @@ For user messages that include multimodal content, the pipe normalizes content b
 
 At a high level:
 
-- **Images** are converted to Responses-style `input_image` blocks and (when sourced from remote URLs or data URLs) are **re-hosted** into Open WebUI storage.
+- **Images** are converted to Responses-style `input_image` blocks and, when they are attached to the current user turn and a storage context is available, are **re-hosted** into Open WebUI storage. Requests made without one - API automation, for instance - keep the original payload.
 - **Files** are converted to Responses-style `input_file` blocks and may be re-hosted into Open WebUI storage depending on valve configuration (defaults re-host common cases).
 - **Audio** is converted to Responses-style `input_audio` blocks and must be **base64/data URL** (remote URLs are rejected).
 - **Video** is passed using Chat Completions-style `video_url` blocks (the Responses API does not provide a dedicated `input_video` block). Videos are **not** downloaded or re-hosted by the pipe; the pipe applies basic validation and SSRF checks for remote URLs.
@@ -59,11 +59,13 @@ For cloud/unknown backends, a file whose declared `meta['size']` is missing or i
   - a string `{ "image_url": "..." }`.
 
 ### Storage behavior (important)
-- If the image is provided as a **data URL** (`data:image/...;base64,...`), the pipe validates size, decodes, and uploads it to Open WebUI storage. The outgoing `input_image.image_url` references the internal Open WebUI file URL.
-- If the image is provided as a **remote URL** (`https://`), the pipe downloads it (with retries/limits/SSRF protection), uploads it to Open WebUI storage, and references the internal URL. Plain `http://` is disabled by default and requires explicit allowlisting.
+
+The rules below apply to images attached to the current user turn. An image the pipe reuses from an earlier turn is handled differently - see the note after them.
+- If the image is provided as a **data URL** (`data:image/...;base64,...`), the pipe validates size, decodes, and uploads it to Open WebUI storage. The block sent upstream is always a `data:` URL, so the stored file is for your history rather than for the provider to fetch.
+- If the image is provided as a **remote URL** (`https://`), the pipe downloads it (with retries/limits/SSRF protection), uploads it to Open WebUI storage, and sends the bytes upstream as a `data:` URL. Plain `http://` is disabled by default and requires explicit allowlisting.
 - If the image is already an **Open WebUI file URL** (for example `/api/v1/files/...`), the pipe streams it and inlines it as a `data:` URL to avoid requiring OpenRouter to fetch from your Open WebUI host.
 
-This image re-hosting behavior is intentionally “always on” for data URLs and remote URLs to avoid chat history bloat and to preserve replayability.
+This image re-hosting behavior is always on for data URLs and remote URLs the user attaches, where it avoids chat history bloat and preserves replayability. An image the pipe **reuses** from an earlier turn is not re-hosted: it is inlined as a `data:` URL. Bytes that carry a recognisable image signature decide its media type, whatever the source declared; where they carry none, the declaration decides. A reuse is dropped only when the type settled on this way is not an image type - so a payload declaring an image type whose bytes the pipe does not recognise (BMP and TIFF among them) is forwarded under its declaration, and one the pipe could not fetch at all is dropped. Nothing on this input path writes a file for content the user did not attach - images the model *generates* are stored separately, and that is an output-side behavior.
 
 ### Limits and selection
 - `MAX_INPUT_IMAGES_PER_REQUEST` limits how many images will be forwarded.
