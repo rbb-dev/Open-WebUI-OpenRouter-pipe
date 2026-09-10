@@ -12,7 +12,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from ..api.transforms import _filter_replayable_input_items
-from ..core.context_budget import apply_replay_tool_output_budget
+from ..core.context_budget import BudgetOutcome, apply_replay_tool_output_budget
 from ..core.utils import TOOL_CALL_STATUSES, _clean_str
 from ..integrations.anthropic import _is_anthropic_model_id
 
@@ -97,11 +97,11 @@ def _strip_unreplayable_anthropic_reasoning(items: list[Any]) -> list[Any]:
     return out if changed else items
 
 
-def _sanitize_request_input(pipe: Pipe, body: ResponsesBody) -> None:
+def _sanitize_request_input(pipe: Pipe, body: ResponsesBody) -> BudgetOutcome | None:
     """Remove non-replayable artifacts that may have snuck into body.input."""
     items = getattr(body, "input", None)
     if not isinstance(items, list):
-        return
+        return None
     original_items = items
     target_model = getattr(body, "api_model", None)
     if not (isinstance(target_model, str) and target_model.strip()):
@@ -172,11 +172,14 @@ def _sanitize_request_input(pipe: Pipe, body: ResponsesBody) -> None:
 
     api_model = getattr(body, "api_model", None)
     model_for_budget = api_model if isinstance(api_model, str) and api_model.strip() else str(getattr(body, "model", "") or "")
-    omitted_call_ids = apply_replay_tool_output_budget(
+    budget = apply_replay_tool_output_budget(
         normalized,
         model_id=model_for_budget,
         logger=pipe.logger,
+        referenced_sizes=getattr(body, "input_file_sizes", None),
+        reserved_output_tokens=getattr(body, "max_output_tokens", None),
     )
+    omitted_call_ids = budget.omitted_call_ids
 
     validated = _validate_tool_call_pairs(normalized, logger=pipe.logger)
     pairs_changed = validated is not normalized
@@ -197,6 +200,7 @@ def _sanitize_request_input(pipe: Pipe, body: ResponsesBody) -> None:
                 len(omitted_call_ids),
             )
         body.input = validated
+    return budget
 
 
 def _validate_tool_call_pairs(

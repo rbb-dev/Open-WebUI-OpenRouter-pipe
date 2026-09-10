@@ -439,7 +439,7 @@ class Evidence(NamedTuple):
     confidence: Confidence
 
 
-def declaration_is_noncommittal(declared: str | None) -> bool:
+def declaration_is_non_media(declared: str | None) -> bool:
     cleaned = (declared or "").split(";", 1)[0].strip().lower()
     return cleaned.split("/", 1)[0] not in _MEDIA_TOP_LEVEL_TYPES
 
@@ -454,7 +454,7 @@ def resolve_download_type(
         return cleaned
     if evidence is not None and evidence.confidence is Confidence.IDENTIFIED:
         return evidence.mime
-    if evidence is not None and declaration_is_noncommittal(declared):
+    if evidence is not None and declaration_is_non_media(declared):
         return evidence.mime
     return cleaned
 

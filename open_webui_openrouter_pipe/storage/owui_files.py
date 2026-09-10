@@ -514,6 +514,113 @@ def is_internal_file_url(url: str) -> bool:
     return "/api/v1/files/" in url
 
 
+_warned_reference_sizes: set[str] = set()
+
+
+def _referenced_file_ids(items: Any) -> dict[str, str]:
+    found: dict[str, str] = {}
+    if not isinstance(items, list):
+        return found
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "input_file":
+                continue
+            raw_id = block.get("file_id")
+            if isinstance(raw_id, str) and raw_id.strip():
+                if not raw_id.strip().startswith("file-"):
+                    found[raw_id] = raw_id.strip()
+                continue
+            for key in ("file_data", "file_url"):
+                raw = block.get(key)
+                if not isinstance(raw, str) or not raw.strip():
+                    continue
+                candidate = raw.strip()
+                if not is_internal_file_url(candidate):
+                    continue
+                extracted = extract_internal_file_id(candidate)
+                if extracted:
+                    found[raw] = extracted
+                break
+    return found
+
+
+async def _file_records_by_id(
+    ids: Iterable[str], logger: logging.Logger
+) -> dict[str, Any]:
+    ordered = sorted({file_id for file_id in ids if file_id})
+    if Files is None or not ordered:
+        return {}
+    records: dict[str, Any] = {}
+    bulk = getattr(Files, "get_file_metadatas_by_ids", None)
+    rows: Any = None
+    if callable(bulk):
+        try:
+            rows = bulk(list(ordered))
+            if inspect.isawaitable(rows):
+                rows = await rows
+        except Exception:
+            logger.log(
+                warn_level(_warned_reference_sizes, "bulk-metadata"),
+                "Bulk file-metadata lookup failed; falling back to per-id reads",
+                exc_info=True,
+            )
+            rows = None
+        for row in rows or []:
+            row_id = getattr(row, "id", None)
+            if isinstance(row_id, str) and row_id in ordered:
+                records[row_id] = row
+    for file_id in ordered:
+        if file_id in records or rows is not None:
+            continue
+        record = await get_file_by_id(file_id, logger)
+        if record is not None:
+            records[file_id] = record
+    return records
+
+
+async def index_referenced_file_payloads(
+    items: Any, logger: logging.Logger
+) -> dict[str, tuple[int, str, str]]:
+    try:
+        references = _referenced_file_ids(items)
+        if not references:
+            return {}
+        records = await _file_records_by_id(references.values(), logger)
+        index: dict[str, tuple[int, str, str]] = {}
+        for reference, file_id in references.items():
+            record = records.get(file_id)
+            size = declared_file_size(record) if record is not None else None
+            if size is None:
+                logger.log(
+                    warn_level(_warned_reference_sizes, "unsized-record"),
+                    "Referenced Open WebUI file %s has no readable declared size; the "
+                    "context budget charges it nothing",
+                    file_id,
+                )
+                continue
+            meta = getattr(record, "meta", None)
+            name = meta.get("name") if isinstance(meta, dict) else None
+            index[reference] = (
+                size,
+                infer_file_mime_type(record),
+                name if isinstance(name, str) else "",
+            )
+        return index
+    except Exception:
+        logger.log(
+            warn_level(_warned_reference_sizes, "index"),
+            "Failed to index referenced Open WebUI file payloads; the context budget "
+            "charges them nothing",
+            exc_info=True,
+        )
+        return {}
+
+
 class OwuiFileGateway:
     """Stateful gateway for authorized, backend-agnostic OWUI file storage I/O."""
 

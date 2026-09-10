@@ -17,6 +17,7 @@ import contextlib
 import json
 import logging
 import uuid
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 from urllib.parse import urlparse
@@ -89,9 +90,9 @@ def _strip_reasoning_anchor_keys(item: dict[str, Any]) -> dict[str, Any]:
 
 
 logger = logging.getLogger(__name__)
+_REUSE_DOWNLOAD_MEMO_MAX_BYTES = 8 * 1024 * 1024
+_reuse_download_memo: OrderedDict[str, tuple[bytes, str]] = OrderedDict()
 _warned_image_reuse: set[str] = set()
-_REUSE_ARCHIVE_MEMO_LIMIT = 256
-_reuse_archive_memo: dict[str, str] = {}
 _warned_oversized_inline: set[str] = set()
 
 
@@ -610,14 +611,15 @@ async def transform_messages_to_input(
                             )
 
                     elif is_http_or_https_url(url) and not is_internal_file_url(url):
-                        remembered = _reuse_archive_memo.get(url) if mode == "reuse" else None
-                        if remembered:
-                            owui_file_id = remembered
-                            url = f"/api/v1/files/{remembered}/content"
                         try:
+                            remembered = (
+                                _reuse_download_memo.get(url) if mode == "reuse" else None
+                            )
                             downloaded = (
                                 None
                                 if owui_file_id
+                                else {"data": remembered[0], "mime_type": remembered[1]}
+                                if remembered is not None
                                 else await pipe._multimodal_handler._download_remote_url(url)
                             )
                             if downloaded:
@@ -644,37 +646,39 @@ async def transform_messages_to_input(
                                     if stored_id:
                                         owui_file_id = stored_id
                                     if oversized:
+                                        outcome = (
+                                            "archived but not sent"
+                                            if stored_id
+                                            else "not sent, and it could not be archived either"
+                                        )
                                         return ImageRefusal(
                                             f"{len(downloaded['data'])} bytes, over the "
-                                            f"{max_inline_bytes}-byte limit, so it was "
-                                            "archived but not sent",
+                                            f"{max_inline_bytes}-byte limit, so it was {outcome}",
                                             "oversized_remote",
                                             subject=url,
                                         )
                                 elif mode == "reuse":
-                                    stored_id = await _save_image_bytes(
-                                        downloaded["data"],
-                                        downloaded["mime_type"],
-                                        url.split("/")[-1].split("?")[0]
-                                        or f"image-{uuid.uuid4().hex}",
-                                        StatusMessages.IMAGE_REMOTE_SAVED,
-                                    )
-                                    if stored_id:
-                                        if len(_reuse_archive_memo) >= _REUSE_ARCHIVE_MEMO_LIMIT:
-                                            _reuse_archive_memo.clear()
-                                        _reuse_archive_memo[url] = stored_id
-                                    declared = str(downloaded.get("mime_type") or "")
-                                    resolved = resolve_download_type(
-                                        declared,
-                                        _sniff_evidence(downloaded["data"][:_SNIFF_PREFIX_BYTES]),
-                                    )
-                                    if not resolved.startswith("image/"):
-                                        return ImageRefusal(
-                                            "not identifiable as an image",
-                                            "reuse_untyped",
+                                    if (
+                                        remembered is None
+                                        and len(downloaded["data"])
+                                        <= _REUSE_DOWNLOAD_MEMO_MAX_BYTES
+                                    ):
+                                        held = sum(
+                                            len(data) for data, _ in _reuse_download_memo.values()
+                                        )
+                                        while (
+                                            _reuse_download_memo
+                                            and held + len(downloaded["data"])
+                                            > _REUSE_DOWNLOAD_MEMO_MAX_BYTES
+                                        ):
+                                            _, evicted = _reuse_download_memo.popitem(last=False)
+                                            held -= len(evicted[0])
+                                        _reuse_download_memo[url] = (
+                                            downloaded["data"],
+                                            downloaded.get("mime_type") or "",
                                         )
                                     url = (
-                                        f"data:{resolved};base64,"
+                                        f"data:{downloaded.get('mime_type') or ''};base64,"
                                         + base64.b64encode(downloaded["data"]).decode("ascii")
                                     )
                         except Exception as exc:
@@ -702,6 +706,30 @@ async def transform_messages_to_input(
                                 subject=owui_file_id,
                             )
                         url = inlined.data_url
+
+                    if mode == "reuse":
+                        head, _, body = url.partition(";base64,")
+                        if not body:
+                            return ImageRefusal(
+                                "could not be fetched, so its type could not be established",
+                                "reuse_unfetched",
+                                subject=url[:64],
+                            )
+                        declared = head[len("data:") :].split(";", 1)[0].strip().lower()
+                        try:
+                            sniffed = base64.b64decode(
+                                "".join(body.split())[: (_SNIFF_PREFIX_BYTES + 2) // 3 * 4]
+                            )
+                        except (binascii.Error, ValueError):
+                            sniffed = b""
+                        resolved = resolve_download_type(declared, _sniff_evidence(sniffed))
+                        if not resolved.startswith("image/"):
+                            return ImageRefusal(
+                                "not identifiable as an image",
+                                "reuse_untyped",
+                            )
+                        if resolved != declared:
+                            url = f"data:{resolved};base64,{body}"
 
                     result: dict[str, Any] = {"type": "input_image", "image_url": url}
                     if isinstance(detail, str) and detail in {"auto", "low", "high"}:

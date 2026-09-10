@@ -18,7 +18,7 @@ import logging
 from collections.abc import Awaitable, Callable, Iterator
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 if TYPE_CHECKING:
     from fastapi import Request
@@ -118,6 +118,10 @@ class ResponsesBody(BaseModel):
     debug: dict[str, Any] | None = None
     image_config: dict[str, Any] | None = None
     modalities: list[str] | None = None
+    input_file_sizes: dict[str, tuple[int, str, str]] | None = Field(
+        default=None, exclude=True
+    )
+    budget_futility_notified: bool = Field(default=False, exclude=True)
     model_config = ConfigDict(extra="allow")
 
     @staticmethod

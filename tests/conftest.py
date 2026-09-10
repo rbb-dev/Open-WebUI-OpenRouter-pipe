@@ -292,6 +292,50 @@ def _session_log_level_debug():
         SessionLogger.log_level.reset(token)
 
 
+REBINDABLE_FILE_ACCESSOR_MODULES = (
+    "open_webui_openrouter_pipe.integrations.video",
+    "open_webui_openrouter_pipe.requests.orchestrator",
+    "open_webui_openrouter_pipe.storage.owui_files",
+)
+FILE_ACCESSOR_NAMES = ("get_file_by_id", "infer_file_mime_type")
+
+
+@pytest.fixture(autouse=True)
+def _restore_rebound_file_accessors():
+    """Put back the file accessors a test swapped on a module, however it swapped them.
+
+    Several media-relay tests rebind `get_file_by_id` and `infer_file_mime_type` directly
+    on a module rather than through monkeypatch, to a stub that raises for any id it does
+    not know. Under the package layout that only affects the one module and the damage
+    stays local. Under the flat bundle every submodule is the same object, so the
+    replacement stands for the rest of the run and the next production caller of
+    `get_file_by_id` trips over it -- which is exactly what happened when the stored-file
+    budget added one: two of its tests passed alone and failed after those files loaded.
+    """
+    import open_webui_openrouter_pipe.storage.owui_files as _files
+
+    import importlib
+
+    modules = [importlib.import_module(name) for name in REBINDABLE_FILE_ACCESSOR_MODULES]
+    names = FILE_ACCESSOR_NAMES
+    saved = [
+        (module, name, getattr(module, name))
+        for module in modules
+        for name in names
+        if hasattr(module, name)
+    ]
+    assert len(saved) == len(modules) * len(names), (
+        "_restore_rebound_file_accessors captured "
+        f"{len(saved)} of {len(modules) * len(names)} accessors; a module that does not "
+        "carry one is silently skipped and never restored"
+    )
+    yield
+    for module, name, original in saved:
+        if getattr(module, name, None) is not original:
+            setattr(module, name, original)
+    del _files
+
+
 @pytest.fixture(autouse=True)
 def _reset_stub_chat_files():
     """The chat_file row store is class state; without this it leaks across tests."""
@@ -315,6 +359,11 @@ def _reset_warn_latches():
     latches = _warn_latches()
     for latch in latches.values():
         latch.clear()
+    from open_webui_openrouter_pipe.requests import transformer as _transformer
+
+    memo = getattr(_transformer, "_reuse_download_memo", None)
+    if memo is not None:
+        memo.clear()
     yield
 
 

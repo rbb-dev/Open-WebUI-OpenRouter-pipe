@@ -84,23 +84,29 @@ class _Harness:
         async def _get_file(file_id, _logger):
             return self.records[file_id]
 
+        saved_get_file = video_module.get_file_by_id
+        saved_infer = video_module.infer_file_mime_type
         video_module.get_file_by_id = _get_file
         video_module.infer_file_mime_type = infer_file_mime_type
-        async with aiohttp.ClientSession() as session:
-            self.pipe._create_http_session = lambda *_a, **_k: _Ctx(session)
-            with aioresponses() as mocked:
-                mocked.post(_ENDPOINTS[self.host][0], callback=self._wire, repeat=True)
-                return await self.adapter._encode_input_references(
-                    {"input_references": refs, "model_id": "runway/aleph-2"},
-                    valves,
-                    withheld=withheld if withheld is not None else [],
-                    user_obj=SimpleNamespace(id="bob", role="user"),
-                    video_model=model or {"id": "runway/aleph-2",
-                                          "input_modalities": ["video", "image", "audio"]},
-                    relayed=relayed if relayed is not None else set(),
-                    companions=True,
-                    event_emitter=event_emitter,
-                )
+        try:
+            async with aiohttp.ClientSession() as session:
+                self.pipe._create_http_session = lambda *_a, **_k: _Ctx(session)
+                with aioresponses() as mocked:
+                    mocked.post(_ENDPOINTS[self.host][0], callback=self._wire, repeat=True)
+                    return await self.adapter._encode_input_references(
+                        {"input_references": refs, "model_id": "runway/aleph-2"},
+                        valves,
+                        withheld=withheld if withheld is not None else [],
+                        user_obj=SimpleNamespace(id="bob", role="user"),
+                        video_model=model or {"id": "runway/aleph-2",
+                                              "input_modalities": ["video", "image", "audio"]},
+                        relayed=relayed if relayed is not None else set(),
+                        companions=True,
+                        event_emitter=event_emitter,
+                    )
+        finally:
+            video_module.get_file_by_id = saved_get_file
+            video_module.infer_file_mime_type = saved_infer
 
 
 def _record(file_id, stored_mime, filename="clip.mp4"):

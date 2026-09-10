@@ -23,6 +23,7 @@ from ..api.transforms import (
     apply_context_transforms,
 )
 from ..core.config import _PIPE_METADATA_KEY
+from ..core.context_budget import build_futility_notice, default_output_reservation
 from ..core.errors import (
     OpenRouterAPIError,
     _is_reasoning_effort_error,
@@ -41,7 +42,11 @@ from ..integrations.provider_options import (
     restrict_provider_block,
 )
 from ..models.registry import ModelFamily, OpenRouterModelRegistry
-from ..storage.owui_files import get_file_by_id, infer_file_mime_type
+from ..storage.owui_files import (
+    get_file_by_id,
+    index_referenced_file_payloads,
+    infer_file_mime_type,
+)
 from ..storage.users import get_user_by_id
 from ..streaming.constants import DEFERRED_REASONING_FLUSH
 from ..tools.tool_registry import _build_collision_safe_tool_specs_and_registry
@@ -670,7 +675,27 @@ class RequestOrchestrator:
             transformer_valves=valves,
             capability_model_id=pre_capability_model_id,
         )
-        _sanitize_request_input(self._pipe, responses_body)
+        responses_body.input_file_sizes = await index_referenced_file_payloads(
+            responses_body.input, self.logger
+        )
+        if valves.USE_MODEL_MAX_OUTPUT_TOKENS and responses_body.max_output_tokens is None:
+            default_max = default_output_reservation(responses_body.model)
+            if default_max:
+                responses_body.max_output_tokens = default_max
+
+        budget_outcome = _sanitize_request_input(self._pipe, responses_body)
+        if (
+            budget_outcome is not None
+            and budget_outcome.futile
+            and not use_task_model_adapter
+            and not responses_body.budget_futility_notified
+        ):
+            responses_body.budget_futility_notified = True
+            await self._pipe._event_emitter_handler._emit_notification(
+                __event_emitter__,
+                build_futility_notice(budget_outcome),
+                level="warning",
+            )
         self._pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences(responses_body, valves)
         self._pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config(responses_body, valves)
         self._pipe._ensure_reasoning_config_manager()._apply_anthropic_verbosity(responses_body, valves)
@@ -815,16 +840,6 @@ class RequestOrchestrator:
             "Fusion live UI gate: model=%s fusion=%s fusion_enable=%s direct=%s -> enabled=%s",
             responses_body.model, fusion_model, valves.ENABLE_OPENROUTER_FUSION, is_direct, fusion_live_enabled,
         )
-
-        # The valve governs the pipe's own DEFAULT, never the user's parameter.
-        # `max_output_tokens` is non-None here only if the user asked for it: the sole
-        # other writer is the fill below. Clearing it in an else branch discarded the
-        # `max_tokens` the user set in Open WebUI's advanced params, while temperature
-        # and top_p on the same request went through untouched.
-        if valves.USE_MODEL_MAX_OUTPUT_TOKENS and responses_body.max_output_tokens is None:
-            default_max = ModelFamily.max_completion_tokens(responses_body.model)
-            if default_max:
-                responses_body.max_output_tokens = default_max
 
         capability_model_id = vvb.get(normalized_model_id, responses_body.model)
 

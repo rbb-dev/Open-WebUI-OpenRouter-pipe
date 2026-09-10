@@ -27,6 +27,7 @@ import logging
 import asyncio
 import base64
 import json
+import re
 from typing import Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -4393,6 +4394,401 @@ class TestAdaptiveToolBudgeting:
         assert "failed before completion" in fco_text
         assert fco_items[0]["item"]["status"] == "incomplete", (
             "a failed tool call is carded, and persisted, as a successful one"
+        )
+
+    @pytest.mark.parametrize(
+        ("max_tokens", "user_chars", "result_chars", "expect"),
+        [
+            (100_000, 260, 200, "nothing"),
+            (200, 260, 4_000, "per-tool"),
+            (130, 120, 160, "nothing"),
+            (200, 6_000, 4_000, "futile"),
+            (400, 12_000, 4_000, "futile"),
+        ],
+        ids=[
+            "fits",
+            "trimmed",
+            "live-pass-alone-says-hopeless",
+            "cannot-be-trimmed",
+            "cannot-be-trimmed-larger-model",
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_the_user_is_told_which_of_the_three_budget_outcomes_happened(
+        self, monkeypatch, pipe_instance_async, max_tokens, user_chars, result_chars, expect
+    ):
+        """Three outcomes, three messages, and until now none of them had a test.
+
+        The pass either changes nothing, omits results the model then does not see, or
+        determines the request cannot be brought under the limit at all. The third was
+        structurally silent: it returns an empty set, and the in-chat notice was gated on
+        that set being non-empty, so the one case where the pipe has a definite answer
+        produced only a server log. The case where it CAN help got a clear warning.
+
+        The third message also has to name a cause the reader can act on. An earlier
+        wording said "This conversation's attachments and already-omitted results" and
+        told the user to remove an attachment -- but the number counts the whole
+        conversation minus tool bodies, so a user who had pasted a long spec and attached
+        nothing was told to delete a file that did not exist.
+
+        The third row is the one that decides WHICH pass the notice comes from. The live
+        pass reserves a longer placeholder than the sanitiser's replay pass writes, so at
+        130 tokens its floor is 520 characters against a 520-character limit -- futile
+        only because the comparison is `>=` -- while the request the sanitiser actually
+        dispatches has a floor of 486 and fits. Reporting the live pass's verdict there
+        tells the user their request is hopeless on a turn that worked. That regime is
+        pinned by the test below, so this row cannot quietly become a duplicate of the
+        `fits` row if the placeholder wording shifts the floors.
+
+        Asserted on the emitted event payload rather than on caplog, because a log line
+        is exactly what the user cannot see. No constant satisfies the set: always
+        emitting futility fails the first two rows, always emitting the per-tool notice
+        fails the first and third, and emitting nothing fails the last two.
+        """
+        from open_webui_openrouter_pipe.models.registry import ModelFamily
+
+        pipe = pipe_instance_async
+        ModelFamily.set_dynamic_specs(
+            {"test.model": {"full_model": {"max_prompt_tokens": max_tokens},
+                            "context_length": max_tokens}}
+        )
+        body = ResponsesBody.model_validate(
+            {
+                "model": "test/model",
+                "stream": True,
+                "input": [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "x" * user_chars}],
+                    }
+                ],
+            }
+        )
+        valves = pipe.valves.model_copy(
+            update={"TOOL_EXECUTION_MODE": "Pipeline", "MAX_FUNCTION_CALL_LOOPS": 2}
+        )
+        events_by_call = [
+            [{"type": "response.completed", "response": {"output": [
+                {"type": "function_call", "call_id": "call-1", "name": "lookup", "arguments": "{}"}
+            ], "usage": {}}}],
+            [{"type": "response.output_text.delta", "delta": "Done."},
+             {"type": "response.completed", "response": {"output": [], "usage": {}}}],
+        ]
+        call_index = 0
+
+        async def streaming(self, session, request_body, **_kwargs):
+            nonlocal call_index
+            idx = min(call_index, len(events_by_call) - 1)
+            call_index += 1
+            for event in events_by_call[idx]:
+                yield event
+
+        async def mock_execute(calls, registry):
+            return [{"type": "function_call_output", "call_id": "call-1",
+                     "output": "y" * result_chars}]
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", streaming)
+        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
+
+        emitted: list[dict] = []
+
+        async def emitter(event):
+            emitted.append(event)
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body,
+            valves,
+            emitter,
+            metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"},
+            tools={"lookup": {"callable": lambda **_kwargs: "ok"}},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+
+        notices = [
+            e["data"]["content"]
+            for e in emitted
+            if isinstance(e, dict) and e.get("type") == "notification"
+            and isinstance(e.get("data"), dict)
+        ]
+        per_tool = [n for n in notices if "did not receive" in n]
+        futile = [n for n in notices if "reduced to a placeholder" in n]
+
+        if expect == "nothing":
+            assert not per_tool and not futile, (
+                f"a request that fits produced a budget notification: {notices}"
+            )
+        elif expect == "per-tool":
+            assert per_tool, f"a trimmed result told the user nothing: {notices}"
+            assert "lookup" in per_tool[0], (
+                f"the notice did not name the tool whose result was dropped: {per_tool[0]}"
+            )
+            assert not futile, f"a request that WAS trimmed claimed it could not be: {notices}"
+        else:
+            assert futile, (
+                "the pipe determined the request cannot be brought under the limit and "
+                f"told the user nothing: {notices}"
+            )
+            assert f"model's {max_tokens}-token limit" in futile[0], (
+                f"the notice does not state THIS model's limit: {futile[0]}"
+            )
+            needed = int(re.search(r"needs about (\d+) tokens", futile[0]).group(1))
+            floor = user_chars // 4
+            assert floor <= needed <= floor + 400, (
+                f"the notice says {needed} tokens for a conversation whose text alone is "
+                f"{floor}; the number is not derived from this request"
+            )
+            assert per_tool, (
+                "the pass trimmed what it could and did not say which tool lost its "
+                f"result: {notices}"
+            )
+
+    def test_the_live_pass_alone_can_call_a_turn_hopeless_that_the_request_survives(self):
+        """The regime the `live-pass-alone-says-hopeless` row is built on, asserted directly.
+
+        That row expects silence, and it is only meaningful while the two passes disagree:
+        the live pass futile, the request actually dispatched not. Nothing checked that, so
+        the row would have gone on passing as a second `fits` row if the floors ever moved
+        together -- and it is the only witness anywhere for `_warn_if_futile` being handed
+        the shipped verdict rather than the live one.
+
+        The numbers are the row's own: a 130-token model, a 120-character user message and
+        a 160-character tool result. The live floor lands on 520 against a 520-character
+        limit, so this regime also depends on futility being decided by `>=` rather than
+        `>`; `test_a_floor_that_exactly_fills_the_budget_is_futile` pins that separately.
+        """
+        from open_webui_openrouter_pipe.core.context_budget import (
+            apply_live_tool_output_budget,
+            apply_replay_tool_output_budget,
+        )
+        from open_webui_openrouter_pipe.models.registry import ModelFamily
+
+        ModelFamily.set_dynamic_specs(
+            {"test.model": {"full_model": {"max_prompt_tokens": 130}, "context_length": 130}}
+        )
+        message = {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "x" * 120}],
+        }
+        call = {"type": "function_call", "call_id": "call-1", "name": "lookup", "arguments": "{}"}
+        result = {"type": "function_call_output", "call_id": "call-1", "output": "y" * 160}
+
+        live = apply_live_tool_output_budget(
+            [dict(result)], existing_input_items=[message, call], model_id="test/model"
+        )
+        shipped = apply_replay_tool_output_budget(
+            [message, call, dict(result)], model_id="test/model"
+        )
+
+        assert live.futile is True, (
+            f"the live pass reports futile={live.futile} ({live.irreducible_chars} against "
+            f"{live.limit_chars}); this row exists for the case where it says hopeless"
+        )
+        assert shipped.futile is False, (
+            f"the dispatched request reports futile={shipped.futile} "
+            f"({shipped.irreducible_chars} against {shipped.limit_chars}); if it agrees "
+            "with the live pass, the row no longer distinguishes which verdict is shown"
+        )
+
+    @pytest.mark.parametrize(
+        ("loops", "max_tokens", "user_chars", "expect_notices"),
+        [
+            (1, 200, 6_000, 1),
+            (2, 200, 6_000, 1),
+            (8, 200, 6_000, 1),
+            (25, 200, 6_000, 1),
+            (25, 100_000, 260, 0),
+        ],
+        ids=["1-loop", "2-loops", "8-loops", "25-loops-the-shipped-default", "not-futile"],
+    )
+    @pytest.mark.asyncio
+    async def test_the_futility_verdict_is_announced_once_a_turn(
+        self, monkeypatch, pipe_instance_async, loops, max_tokens, user_chars, expect_notices
+    ):
+        """One turn, one verdict -- however many tool rounds the model asks for.
+
+        `_warn_if_futile` is awaited from inside the tool loop, so a conversation that
+        stays futile emitted a notice on every iteration: 25 of them at the shipped
+        default. Worse, the number climbed each time -- 334, 422, 509 -- because each
+        round adds another placeholder to the irreducible floor, so the user watched a
+        figure grow for a reason that is the pipe's own stub text and told them to
+        shorten something that was not the cause.
+
+        The latch lives on the request body rather than in the loop's closure because the
+        pre-dispatch pass in the orchestrator emits the same verdict for the same turn;
+        a closure-local flag would let the user receive it twice.
+
+        The last row is what stops a constant satisfying this: a pass that always emits
+        exactly one notice fails it, and one that never emits fails the other four.
+        """
+        from open_webui_openrouter_pipe.models.registry import ModelFamily
+
+        pipe = pipe_instance_async
+        ModelFamily.set_dynamic_specs(
+            {"test.model": {"full_model": {"max_prompt_tokens": max_tokens},
+                            "context_length": max_tokens}}
+        )
+        body = ResponsesBody.model_validate(
+            {
+                "model": "test/model",
+                "stream": True,
+                "input": [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "x" * user_chars}],
+                    }
+                ],
+            }
+        )
+        valves = pipe.valves.model_copy(
+            update={"TOOL_EXECUTION_MODE": "Pipeline", "MAX_FUNCTION_CALL_LOOPS": loops}
+        )
+        round_number = iter(range(1, 500))
+
+        async def streaming(self, session, request_body, **_kwargs):
+            yield {
+                "type": "response.completed",
+                "response": {
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "call_id": f"call-{next(round_number)}",
+                            "name": "lookup",
+                            "arguments": "{}",
+                        }
+                    ],
+                    "usage": {},
+                },
+            }
+
+        async def mock_execute(calls, registry):
+            return [
+                {
+                    "type": "function_call_output",
+                    "call_id": call.get("call_id"),
+                    "output": "y" * 4_000,
+                }
+                for call in calls
+            ]
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", streaming)
+        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
+
+        emitted: list[dict] = []
+
+        async def emitter(event):
+            emitted.append(event)
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body,
+            valves,
+            emitter,
+            metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"},
+            tools={"lookup": {"callable": lambda **_kwargs: "ok"}},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+
+        futile = [
+            e["data"]["content"]
+            for e in emitted
+            if isinstance(e, dict)
+            and e.get("type") == "notification"
+            and isinstance(e.get("data"), dict)
+            and "reduced to a placeholder" in e["data"]["content"]
+        ]
+        assert len(futile) == expect_notices, (
+            f"{loops} tool rounds produced {len(futile)} futility notices, not "
+            f"{expect_notices}; the verdict is about the turn, not the iteration"
+        )
+
+    @pytest.mark.parametrize(
+        ("max_tokens", "user_chars", "expect_futile"),
+        [(200, 6_000, True), (100_000, 260, False)],
+        ids=["over-the-limit", "fits"],
+    )
+    @pytest.mark.asyncio
+    async def test_a_turn_whose_only_call_was_malformed_still_reports_futility(
+        self, monkeypatch, pipe_instance_async, max_tokens, user_chars, expect_futile
+    ):
+        """The rejected-call path dispatches too, and used to report nothing.
+
+        When every tool call the model emitted was malformed, the loop takes a different
+        continuation branch, and that branch carried its own copy of the futility notice.
+        Deleting all thirteen lines of it left the whole suite green: the branch is
+        reachable -- three existing tests drive it -- but none of them sets up a budget
+        that cannot be met, so the turn shipped a request the pipe knew was too large and
+        said nothing.
+
+        The notice now has one implementation shared by both dispatch sites, so this row
+        pins that the rejected-call path reaches it. The model emits a `function_call`
+        with no `arguments`, which the pipe rejects, leaving `call_items` empty.
+        """
+        from open_webui_openrouter_pipe.models.registry import ModelFamily
+
+        pipe = pipe_instance_async
+        ModelFamily.set_dynamic_specs(
+            {"test.model": {"full_model": {"max_prompt_tokens": max_tokens},
+                            "context_length": max_tokens}}
+        )
+        body = ResponsesBody.model_validate(
+            {
+                "model": "test/model",
+                "stream": True,
+                "input": [{"type": "message", "role": "user",
+                           "content": [{"type": "input_text", "text": "x" * user_chars}]}],
+            }
+        )
+        valves = pipe.valves.model_copy(
+            update={"TOOL_EXECUTION_MODE": "Pipeline", "MAX_FUNCTION_CALL_LOOPS": 2}
+        )
+        events_by_call = [
+            [{"type": "response.completed", "response": {"output": [
+                {"type": "function_call", "call_id": "c1", "name": "lookup"}
+            ], "usage": {}}}],
+            [{"type": "response.output_text.delta", "delta": "Done."},
+             {"type": "response.completed", "response": {"output": [], "usage": {}}}],
+        ]
+        call_index = 0
+
+        async def streaming(self, session, request_body, **_kwargs):
+            nonlocal call_index
+            idx = min(call_index, len(events_by_call) - 1)
+            call_index += 1
+            for event in events_by_call[idx]:
+                yield event
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", streaming)
+        emitted: list[dict] = []
+
+        async def emitter(event):
+            emitted.append(event)
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body, valves, emitter,
+            metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"},
+            tools={"lookup": {"callable": lambda **_kwargs: "ok"}},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+
+        assert call_index >= 2, (
+            "the rejected-call continuation never ran, so this row asserts nothing about "
+            "the branch it names"
+        )
+        futile = [
+            e["data"]["content"]
+            for e in emitted
+            if isinstance(e, dict) and e.get("type") == "notification"
+            and isinstance(e.get("data"), dict)
+            and "reduced to a placeholder" in e["data"]["content"]
+        ]
+        assert bool(futile) is expect_futile, (
+            f"a turn whose only call was malformed, at {max_tokens} tokens with "
+            f"{user_chars} characters of user text, reported {futile}"
         )
 
     @pytest.mark.asyncio

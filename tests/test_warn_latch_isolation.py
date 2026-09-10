@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import FILE_ACCESSOR_NAMES, REBINDABLE_FILE_ACCESSOR_MODULES
 from open_webui_openrouter_pipe.core import config as _core_config
 
 PACKAGE_DIR = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
@@ -41,6 +42,7 @@ EXPECTED_LATCHES = {
     "_warned_proxy_env",
     "_warned_chat_provider_keys",
     "_warned_queue_backlog",
+    "_warned_reference_sizes",
     "_warned_responses_chunk_parse",
     "_warned_row_timestamps",
     "_warned_stale_filter_rows",
@@ -279,4 +281,70 @@ def test_no_warn_latch_hides_on_a_class():
         "these warn-once latches are held on a CLASS, so the autouse module sweep in "
         f"conftest never resets them and they leak between tests: {sorted(offenders)}. "
         "Move each to a module-level set."
+    )
+
+
+FILE_ACCESSOR_TARGETS = set(FILE_ACCESSOR_NAMES)
+
+
+def _modules_exposing_file_accessors() -> set[str]:
+    """Every package module that carries a file accessor as a module-level attribute."""
+    import ast
+
+    found: set[str] = set()
+    for path in PACKAGE_DIR.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        exposed: set[str] = set()
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                exposed |= {node.name} & FILE_ACCESSOR_TARGETS
+            elif isinstance(node, ast.ImportFrom):
+                exposed |= {a.asname or a.name for a in node.names} & FILE_ACCESSOR_TARGETS
+            elif isinstance(node, ast.Assign):
+                exposed |= {
+                    t.id for t in node.targets if isinstance(t, ast.Name)
+                } & FILE_ACCESSOR_TARGETS
+        if exposed:
+            rel = path.relative_to(PACKAGE_DIR).with_suffix("")
+            parts = [p for p in rel.parts if p != "__init__"]
+            found.add(".".join(["open_webui_openrouter_pipe", *parts]))
+    return found
+
+
+@pytest.mark.skipif(
+    bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),
+    reason="in a bundle the loaded code is the artifact, not this source tree, so a source scan proves nothing about what is running",
+)
+def test_every_module_holding_a_file_accessor_is_restored():
+    found = _modules_exposing_file_accessors()
+    declared: set[str] = set(REBINDABLE_FILE_ACCESSOR_MODULES)
+    assert found == declared, (
+        "the set of modules carrying a rebindable file accessor changed.\n"
+        f"  only in source:   {sorted(found - declared)}\n"
+        f"  only in conftest: {sorted(declared - found)}\n"
+        "conftest's _restore_rebound_file_accessors filters by hasattr, so a module "
+        "named here that does not carry the attribute is silently dropped and the "
+        "fixture restores nothing -- which is how it became a no-op. A module missing "
+        "from the tuple is never restored at all."
+    )
+
+
+def test_the_reuse_download_memo_is_still_named_what_the_reset_clears():
+    """Module state that survives a test must be reset, and the reset keys on this name.
+
+    `_reuse_download_memo` holds downloaded image bytes so a picture reused across turns
+    is fetched once rather than once per turn. It is a module-level dict, so without a
+    per-test reset one test's download satisfies another test's assertion that a download
+    happened -- and conftest clears it by name, tolerating absence so a rename does not
+    error out every test in the suite. This is what makes the rename loud instead: it
+    fails here, once, with somewhere to go.
+    """
+    from open_webui_openrouter_pipe.requests import transformer
+
+    memo = getattr(transformer, "_reuse_download_memo", None)
+    assert isinstance(memo, dict), (
+        "transformer._reuse_download_memo is gone or is no longer a dict. conftest's "
+        "_reset_warn_latches clears it by that name and skips it when absent, so a rename "
+        "silently stops the reset and lets downloaded bytes leak between tests. Rename it "
+        "in conftest too, or drop both together."
     )

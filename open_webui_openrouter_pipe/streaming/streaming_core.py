@@ -56,6 +56,7 @@ from ..core.config import (
 )
 from ..core.context_budget import (
     apply_live_tool_output_budget,
+    build_futility_notice,
 )
 
 # Import costs helper
@@ -496,6 +497,18 @@ class StreamingHandler:
 
         if event_emitter is None:
             event_emitter = _wrap_event_emitter(None)
+
+        async def _warn_if_futile(outcome: Any) -> None:
+            if outcome is None or not outcome.futile:
+                return
+            if body.budget_futility_notified:
+                return
+            body.budget_futility_notified = True
+            await self._pipe._event_emitter_handler._emit_notification(
+                event_emitter,
+                build_futility_notice(outcome),
+                level="warning",
+            )
 
         if not isinstance(metadata, dict):
             metadata = {}
@@ -2814,11 +2827,13 @@ class StreamingHandler:
                             dict(output) if isinstance(output, dict) else output
                             for output in all_function_outputs
                         ]
-                        omitted_call_ids = apply_live_tool_output_budget(
+                        budget = apply_live_tool_output_budget(
                             budgeted_outputs,
                             existing_input_items=body.input,
                             model_id=model_for_cache,
                             logger=self.logger,
+                            referenced_sizes=getattr(body, "input_file_sizes", None),
+                            reserved_output_tokens=getattr(body, "max_output_tokens", None),
                         )
 
                         call_by_id: dict[str, dict] = {}
@@ -2832,6 +2847,7 @@ class StreamingHandler:
                             if cid:
                                 output_by_call_id[cid] = output
 
+                        omitted_call_ids = budget.omitted_call_ids
                         if omitted_call_ids and event_emitter:
                             omitted_names = sorted(
                                 str((call_by_id.get(cid) or {}).get("name") or cid)
@@ -2843,7 +2859,6 @@ class StreamingHandler:
                                 f"did not receive: {', '.join(omitted_names)}.",
                                 level="warning",
                             )
-
                         if show_tool_cards and event_emitter and body.stream and all_function_outputs:
                             try:
                                 for cid, output in output_by_call_id.items():
@@ -3046,25 +3061,21 @@ class StreamingHandler:
                                 cancel_thinking()
                             self.logger.debug("Received tool result\n%s", result_text)
                         body.input.extend(budgeted_outputs)
-                        _sanitize_request_input(self._pipe, body)
+                        shipped_budget = _sanitize_request_input(self._pipe, body)
+                        await _warn_if_futile(shipped_budget)
                     elif invalid_call_outputs:
                         if not tool_loops_executed:
                             assistant_len_before_tool_loops = len(assistant_message)
                         tool_loops_executed = True
                         all_function_outputs = list(invalid_call_outputs)
-                        apply_live_tool_output_budget(
-                            all_function_outputs,
-                            existing_input_items=body.input,
-                            model_id=model_for_cache,
-                            logger=self.logger,
-                        )
                         for output in all_function_outputs:
                             result_text = wrap_code_block(output.get("output", ""))
                             if thinking_tasks:
                                 cancel_thinking()
                             self.logger.debug("Received tool result\n%s", result_text)
                         body.input.extend(all_function_outputs)
-                        _sanitize_request_input(self._pipe, body)
+                        shipped_budget = _sanitize_request_input(self._pipe, body)
+                        await _warn_if_futile(shipped_budget)
                     else:
                         break
                 else:
