@@ -13,6 +13,8 @@ actually returns, not against the strings the source happens to contain.
 
 from __future__ import annotations
 
+import os
+
 import aiohttp
 import pytest
 from aioresponses import CallbackResult, aioresponses
@@ -234,6 +236,10 @@ def test_the_extension_follows_the_mime_type(mime, expected):
     assert extension_for_video_mime(mime) == expected
 
 
+@pytest.mark.skipif(
+    bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),
+    reason="in a bundle the loaded code is the artifact, not this source tree, so a source scan proves nothing about what is running",
+)
 def test_every_type_the_sniffer_can_settle_on_has_its_own_extension():
     """The two tables were added together and nothing checks them against each other.
 
