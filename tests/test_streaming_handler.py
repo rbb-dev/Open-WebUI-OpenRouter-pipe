@@ -4657,6 +4657,125 @@ class TestAdaptiveToolBudgeting:
             f"{expect_notices}; the verdict is about the turn, not the iteration"
         )
 
+    @pytest.mark.asyncio
+    async def test_the_futility_verdict_the_user_sees_is_the_dispatched_one(
+        self, monkeypatch, pipe_instance_async
+    ):
+        """Two passes reach a verdict; only the one describing the shipped request counts.
+
+        The live pass measures the outputs it was handed against the conversation so far.
+        The sanitiser then re-budgets the request that is actually dispatched. Those can
+        disagree, and telling the user the live pass's verdict announces that their turn
+        is hopeless on a turn that worked.
+
+        The regime is narrow and is asserted rather than assumed: the live pass reserves
+        the longer of the two placeholders for the fresh result, so its floor sits 34
+        characters above the sanitiser's. A fresh result SHORTER than a placeholder is
+        what keeps the band open -- its excess is zero, so it is never actually stubbed,
+        and the two floors stay apart. Once the live pass stubs the fresh result the
+        sanitiser measures that same stub and the verdicts converge, which is why the
+        obvious large-result fixture cannot witness this.
+
+        Measured band through the real path, overhead included: max_prompt_tokens 404
+        to 411, live floor 1,645 against the sanitiser's 1,611. This row sits at 407.
+        The band moves whenever the floor changes, so the precondition below asserts
+        the regime rather than trusting the number.
+        """
+        from open_webui_openrouter_pipe.core.context_budget import (
+            apply_live_tool_output_budget,
+            apply_replay_tool_output_budget,
+        )
+        from open_webui_openrouter_pipe.models.registry import ModelFamily
+        from open_webui_openrouter_pipe.requests.sanitizer import _request_overhead_chars
+
+        pipe = pipe_instance_async
+        ModelFamily.set_dynamic_specs(
+            {"test.model": {"full_model": {"max_prompt_tokens": 407}, "context_length": 407}}
+        )
+
+        def _conversation() -> list[dict]:
+            items: list[dict] = [
+                {"type": "message", "role": "user",
+                 "content": [{"type": "input_text", "text": "x" * 120}]}
+            ]
+            for i in range(4):
+                items.append({"type": "function_call", "call_id": f"h{i}", "name": "lookup",
+                              "arguments": "{}"})
+                items.append({"type": "function_call_output", "call_id": f"h{i}",
+                              "output": "y" * 160})
+            items.append({"type": "function_call", "call_id": "fresh", "name": "lookup",
+                          "arguments": "{}"})
+            return items
+
+        probe_body = ResponsesBody.model_validate(
+            {"model": "test/model", "stream": True, "input": _conversation()}
+        )
+        overhead = _request_overhead_chars(probe_body)
+        probe_live = apply_live_tool_output_budget(
+            [{"type": "function_call_output", "call_id": "fresh", "output": "z" * 160}],
+            existing_input_items=_conversation(), model_id="test/model",
+            fixed_overhead_chars=overhead,
+        )
+        probe_shipped = apply_replay_tool_output_budget(
+            _conversation() + [{"type": "function_call_output", "call_id": "fresh",
+                                "output": "z" * 160}],
+            model_id="test/model", fixed_overhead_chars=overhead,
+        )
+        assert probe_live.futile and not probe_shipped.futile, (
+            "regime broken: this row only means something while the live pass calls the "
+            f"turn hopeless and the dispatched request does not (live futile="
+            f"{probe_live.futile} at floor {probe_live.irreducible_chars}, shipped "
+            f"futile={probe_shipped.futile} at floor {probe_shipped.irreducible_chars}, "
+            f"limit {probe_live.limit_chars}). Re-derive the band before editing this."
+        )
+
+        body = ResponsesBody.model_validate(
+            {"model": "test/model", "stream": True, "input": _conversation()[:-1]}
+        )
+        valves = pipe.valves.model_copy(
+            update={"TOOL_EXECUTION_MODE": "Pipeline", "MAX_FUNCTION_CALL_LOOPS": 2}
+        )
+        rounds = iter(range(1, 200))
+
+        async def streaming(self, session, request_body, **_kwargs):
+            if next(rounds) == 1:
+                yield {"type": "response.completed", "response": {"output": [
+                    {"type": "function_call", "call_id": "fresh", "name": "lookup",
+                     "arguments": "{}"}], "usage": {}}}
+            else:
+                yield {"type": "response.output_text.delta", "delta": "Done."}
+                yield {"type": "response.completed", "response": {"output": [], "usage": {}}}
+
+        async def mock_execute(calls, registry):
+            return [{"type": "function_call_output", "call_id": c.get("call_id"),
+                     "output": "z" * 160} for c in calls]
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", streaming)
+        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
+        emitted: list[dict] = []
+
+        async def emitter(event):
+            emitted.append(event)
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body, valves, emitter,
+            metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"},
+            tools={"lookup": {"callable": lambda **_kwargs: "ok"}},
+            session=cast(Any, object()), user_id="user-123",
+        )
+
+        futile = [
+            e["data"]["content"] for e in emitted
+            if isinstance(e, dict) and e.get("type") == "notification"
+            and isinstance(e.get("data"), dict)
+            and "reduced to a placeholder" in e["data"]["content"]
+        ]
+        assert not futile, (
+            f"the user was told the conversation is hopeless on a turn the dispatched "
+            f"request fits: {futile}. The notice must carry the sanitiser's verdict, not "
+            "the live pass's."
+        )
+
     @pytest.mark.parametrize(
         ("fresh_chars", "live_must_differ"),
         [(16_000, True), (30_000, False)],
