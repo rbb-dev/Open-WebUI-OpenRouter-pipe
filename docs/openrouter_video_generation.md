@@ -1,6 +1,6 @@
 # OpenRouter Video Generation
 
-This pipe exposes OpenRouter's twenty-two async video-generation models as
+This pipe exposes OpenRouter's twenty-nine (29) async video-generation models as
 selectable chat models in Open WebUI. You pick a video model in the chat
 header (just like any other LLM), type a prompt, and the pipe submits a
 job, polls until completion, downloads the generated video into Open WebUI
@@ -180,6 +180,13 @@ See [Configuration valves](#configuration-valves-admin) for the full list of vid
 | `runway/aleph-2` | Runway: Aleph 2.0 | In-context **video editor**: applies an instruction across footage you attach while leaving the rest untouched. Length and size come from your clip, not from a control. | ❌ | ✅ | none |
 | `alibaba/happyhorse-1.1` | Alibaba: HappyHorse 1.1 | Unusually wide framing range — the usual five plus ultrawide 21:9 and tall 9:21 — in 3–15s clips at 720p or 1080p; 1.1 refines 1.0 with the same controls. | — | ✅ | first only |
 | `alibaba/happyhorse-1.0` | Alibaba: HappyHorse 1.0 | The first HappyHorse tier, same controls and framings as 1.1; reach for it only to pin 1.0's exact generation behaviour. | — | ✅ | first only |
+| `alibaba/wan-3.0` | Alibaba: Wan 3.0 | Generalist default: the widest duration range here (2–30s), three resolutions to 1080p, generated audio and a seed. No provider parameters. | ✅ | ✅ | first only |
+| `alibaba/wan-3.0-prime` | Alibaba: Wan 3.0 Prime | The higher-fidelity Wan 3.0 tier; identical controls, so a prompt moves between the two unchanged. | ✅ | ✅ | first only |
+| `minimax/hailuo-3-max` | MiniMax: H3 Max | Widest framing in the MiniMax line including 21:9; 5–15s at 480p or 768p; bookend with first and last frames. No seed. | ❌ | ❌ | first + last |
+| `bytedance/seedance-2.0-mini` | ByteDance: Seedance 2.0 Mini | The lightest Seedance tier, and the only model taking text, image, video and audio together. | ✅ | ✅ | first + last |
+| `heygen/avatar-iv` | HeyGen: Avatar IV | Animates one photograph into a lip-synced talking head. Length comes from the speech, not a control; nine provider parameters carry the voice and staging. | ❌ | ❌ | — |
+| `black-forest-labs/flux-video-edit` | Black Forest Labs: FLUX Video Edit | Edits footage you supply. Length, framing and resolution all come from your clip, so it publishes no generation controls. | ❌ | ❌ | — |
+| `black-forest-labs/flux-video-upscale` | Black Forest Labs: FLUX Video Upscale | Enlarges footage 1.5–3×, in either a faithful mode that sharpens the source or an inventive mode that restores detail. | ❌ | ❌ | — |
 
 A `—` in the Audio or Seed column means OpenRouter publishes nothing
 either way for that model. The control is still offered, and whatever the
@@ -1144,9 +1151,9 @@ default applies; the second gets no control.
 
 | Identifier | Type | Default | Maps to API field | Gate (catalog condition) | Exposed on |
 |------------|------|---------|-------------------|---------------------------|------------|
-| `VIDEO_PROVIDER_OPTIONS_JSON` | `str` | `""` | `provider.options` (raw JSON object keyed by slug) | always | all 22 |
+| `VIDEO_PROVIDER_OPTIONS_JSON` | `str` | `""` | `provider.options` (raw JSON object keyed by slug) | always | all 29 |
 | `VIDEO_DURATION` | `Literal[0, …]` | `0` | top-level `duration` | `supported_durations` non-empty | 21 (all except Aleph 2.0) |
-| `VIDEO_ASPECT_RATIO` | `Literal["", …]` | `""` | top-level `aspect_ratio` | `supported_aspect_ratios` non-empty | all 22 |
+| `VIDEO_ASPECT_RATIO` | `Literal["", …]` | `""` | top-level `aspect_ratio` | `supported_aspect_ratios` non-empty | all 29 |
 | `VIDEO_RESOLUTION` | `Literal["", …]` | `""` | top-level `resolution` | `supported_resolutions` non-empty | 21 (all except Aleph 2.0) |
 | `VIDEO_SIZE` | `Literal["", …]` | `""` | top-level `size` | `supported_sizes` non-empty | 18 (all except FLUX.3 Video, H3, Aleph 2.0, Grok Imagine Video 1.5) |
 | `VIDEO_FRAME_MODE` | `Literal["auto", "none", "first_only"(, "first_last")]` | `"auto"` | controls `frame_images[]` shaping | `supported_frame_images` non-empty | 20 (all except Sora 2 Pro and Aleph 2.0) |
@@ -1474,6 +1481,212 @@ The same reasoning decides which provider carries an attachment. Because the
 video request carries no `only`, routing never sees an operator's pin, so the
 pipe keys attachments to a provider drawn from the catalog rather than to the
 pin. On the image endpoint `only` *is* accepted, so there the pin decides.
+
+---
+
+---
+
+### Alibaba: Wan 3.0
+
+> **id**: `alibaba/wan-3.0`
+
+The generalist of this catalogue, and the one to reach for when you do not
+yet know what you need. Clips run any whole number of seconds from 2 to
+30 — the longest range published here — across three resolutions from
+480p to 1080p and five framings. It generates its own audio, honours a
+seed, and animates from an opening still when you supply one. It accepts
+no provider parameters at all, so what you see in the settings is the
+whole surface.
+
+**Tips & pitfalls**
+
+- Draft at 480p and move up once the prompt is right; finding the shot at
+  the lowest tier and stepping up for the keeper is the whole discipline
+  for this model.
+- Thirty seconds is available but rarely the right first ask — a mistake
+  at second three costs the whole clip.
+- Only a first frame is accepted, so describe where the shot should
+  finish rather than expecting to pin the closing image.
+- Audio is generated with the video; say so in the prompt if you want it
+  sparse.
+- Fix a seed before iterating, or every re-run changes the staging as
+  well as the wording you meant to test.
+- The five framings run 16:9 to 9:16 — there is no ultrawide.
+
+---
+
+### Alibaba: Wan 3.0 Prime
+
+> **id**: `alibaba/wan-3.0-prime`
+
+The higher-fidelity tier of Wan 3.0. Everything about how you drive it is
+identical to its sibling — 2 to 30 seconds, 480p through 1080p, the same
+five framings, generated audio, a seed, an optional opening still — so a
+prompt developed on Wan 3.0 moves here unchanged. What differs is the
+fidelity of the render. Find the shot on Wan 3.0 and render the keeper
+here.
+
+**Tips & pitfalls**
+
+- Draft on plain Wan 3.0, finish here. The two take the same settings, so
+  nothing has to be re-tuned when you switch.
+- Treat it as a finishing choice rather than a default; Wan 3.0 is the
+  one to explore on.
+- A long take at 1080p is the heaviest render available here — be sure
+  of the prompt first.
+- Only a first frame is accepted; describe the ending rather than trying
+  to pin it.
+- Fix a seed before iterating so the staging holds still while you change
+  the wording.
+
+---
+
+### MiniMax: H3 Max
+
+> **id**: `minimax/hailuo-3-max`
+
+The widest-framing model in MiniMax's line and the one with the most
+flexible clip length in its family: any whole number of seconds from 5 to
+15. Six framings including the 21:9 ultrawide its siblings skip, at 480p
+or 768p. It animates from a supplied first frame, a last frame, or both,
+so you can pin where a shot starts and ends and let the model find the
+motion between. It does not generate audio and does not honour a seed.
+
+**Tips & pitfalls**
+
+- Supply both a first and a last frame when you know the beginning and
+  the end — bookending steers the shot far harder than describing the
+  motion in words.
+- There is no seed, so the same prompt twice gives two different clips.
+  Iterate by generating a few and choosing, not by locking a draw.
+- Draft at 480p and step up to 768p once the framing and motion are
+  right.
+- 21:9 is available here and on few other models, so this is the one to
+  use when you need a true ultrawide.
+- No audio is generated; the clip arrives silent.
+- Five seconds is the shortest it will make — for a shorter beat,
+  generate five and trim.
+
+---
+
+### ByteDance: Seedance 2.0 Mini
+
+> **id**: `bytedance/seedance-2.0-mini`
+
+The lightest tier of the Seedance family, and the only model here that
+takes all four input kinds — text, an image, a video clip and an audio
+track — in the same request. Clips run 4 to 15 seconds at 480p or 720p
+across seven framings from 21:9 down to 9:21, and you can either pick a
+framing or pin exact pixel dimensions from the thirteen sizes it
+publishes. It generates its own audio, honours a seed, and anchors on a
+first frame, a last frame, or both.
+
+**Tips & pitfalls**
+
+- Building on a clip you already have is the more controllable path — the
+  model works from your footage instead of inventing the whole shot.
+- Your media only reaches the model if sending media to a file host is
+  turned on; with that off the reference is left out and the chat says so.
+- Pin a size rather than an aspect ratio when the output has to drop into
+  a fixed frame.
+- Bookend with a first and last frame when you know both ends of the shot.
+- Fix a seed before iterating so the staging holds while you change the
+  wording.
+- Resolution and length both drive how heavy a render is, so raise them
+  only when the shot needs it.
+
+---
+
+### HeyGen: Avatar IV
+
+> **id**: `heygen/avatar-iv`
+
+Animates a single photograph into a lip-synced talking head. It is unlike
+everything else in this catalogue: there is no duration control, because
+the length is however long the speech takes, and no prompt-driven scene,
+because the picture is the scene. You give it one still and either a
+script to voice or an audio track to lip-sync to. Rather than only
+matching mouth shapes, it reads tone and rhythm and drives head motion
+and expression from them. It renders at 720p or 1080p in 16:9, 9:16 or
+1:1, and almost everything worth setting lives in the provider
+parameters rather than the ordinary controls.
+
+**Tips & pitfalls**
+
+- Length is set by the speech, not by a control — a longer script is a
+  longer clip, so trim the script to trim the video.
+- Supply either a script or an audio track. An audio track lip-syncs
+  directly; a script is voiced by HeyGen text-to-speech and needs a
+  `voice_id`.
+- `voice_id` is an opaque identifier from HeyGen's own voice list, not a
+  name you can invent — look it up in your HeyGen account first.
+- `expressiveness` takes `high`, `medium` or `low` and defaults to `low`,
+  so if the delivery looks flat it is doing exactly what it was told.
+- `motion_prompt` is free text describing body motion and gestures, and
+  applies to photo avatars.
+- `remove_background` and `background` are separate: the first strips
+  what was behind the person, the second supplies a flat colour or an
+  image to replace it.
+- The provider parameters are `voice_id`, `voice_settings`,
+  `motion_prompt`, `expressiveness`, `fit`, `remove_background`,
+  `background`, `caption` and `title`.
+
+---
+
+### Black Forest Labs: FLUX Video Edit
+
+> **id**: `black-forest-labs/flux-video-edit`
+
+Changes footage you already have rather than generating a scene. You
+supply a clip and an instruction, and it applies that change across the
+video. Because the work is done on your footage, the length, the framing
+and the resolution of the result all come from the clip you send — which
+is why this model publishes no duration, aspect ratio or resolution
+control at all. It does not honour a seed and does not generate audio;
+the soundtrack is whatever your source carried.
+
+**Tips & pitfalls**
+
+- Attach the clip you want changed. With sending media to a file host
+  turned off, the clip is left out and there is nothing to edit.
+- Name the change and nothing else. Re-describing the whole scene invites
+  it to redo parts you wanted kept.
+- The result takes its length, framing and resolution from your source —
+  trim and crop before sending, because there is no control to do it
+  afterwards.
+- One instruction per pass holds up better than a list.
+- There is no seed, so two runs of the same instruction will differ.
+- `safety_tolerance` is the one provider parameter.
+
+---
+
+### Black Forest Labs: FLUX Video Upscale
+
+> **id**: `black-forest-labs/flux-video-upscale`
+
+Enlarges footage you already have. It is the most narrowly scoped model
+in this catalogue: it publishes no duration, framing or resolution
+control, because all three are decided by the clip you supply and by how
+far you ask it to enlarge. Its two settings are how much bigger to make
+the video, between 1.5 and 3 times, and which of two modes it works in:
+one preserves the source exactly and sharpens it, the other restores and
+invents fine detail that was not there.
+
+**Tips & pitfalls**
+
+- Attach the clip you want enlarged. With sending media to a file host
+  turned off, there is nothing to upscale.
+- A 3× pass on a long clip is the heaviest thing you can ask of it —
+  enlarge only as far as the result actually needs.
+- Choose the mode deliberately rather than leaving the default: faithful
+  suits faces, products and brand assets; inventive suits textures,
+  crowds and scenery.
+- Enlarge once, not twice — a second pass compounds whatever the first
+  one invented.
+- Trim the clip before sending it; the source is capped at 20 seconds,
+  2K and 50 MB.
+- There is no seed, so two passes will not invent the same detail.
+- `safety_tolerance` is the one provider parameter.
 
 ---
 

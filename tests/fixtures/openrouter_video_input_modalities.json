@@ -1,6 +1,6 @@
 {
   "source": "GET /api/v1/models/{id}/endpoints",
-  "captured": "2026-08-21",
+  "captured": "2026-09-12",
   "input_modalities": {
     "alibaba/happyhorse-1.0": [
       "image",
@@ -18,8 +18,24 @@
       "image",
       "text"
     ],
+    "alibaba/wan-3.0": [
+      "image",
+      "text"
+    ],
+    "alibaba/wan-3.0-prime": [
+      "image",
+      "text"
+    ],
     "black-forest-labs/flux-3-video": [
       "image",
+      "text",
+      "video"
+    ],
+    "black-forest-labs/flux-video-edit": [
+      "text",
+      "video"
+    ],
+    "black-forest-labs/flux-video-upscale": [
       "text",
       "video"
     ],
@@ -63,6 +79,11 @@
       "image",
       "text"
     ],
+    "heygen/avatar-iv": [
+      "audio",
+      "image",
+      "text"
+    ],
     "kwaivgi/kling-v3.0-pro": [
       "image",
       "text"
@@ -84,6 +105,10 @@
       "image",
       "text",
       "video"
+    ],
+    "minimax/hailuo-3-max": [
+      "image",
+      "text"
     ],
     "openai/sora-2-pro": [
       "image",

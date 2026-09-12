@@ -682,6 +682,213 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
         },
     },
+    "alibaba/wan-3.0": {
+        "display_name": "Alibaba: Wan 3.0",
+        "best_known_for": (
+            "Wan 3.0, the generalist of this catalogue and the one to reach for when you do not "
+            "yet know what you need. Clips run any whole number of seconds from 2 to 30 — the "
+            "longest range published here — across three resolutions from 480p to 1080p and five "
+            "framings, so the same model drafts a two-second test at 480p and finishes a "
+            "half-minute take at 1080p with one control changed. It generates its own audio, "
+            "honours a seed, and animates from an opening still when you supply one. It accepts "
+            "no provider parameters at all, which makes it one of the simplest models here to "
+            "drive: what you see in these settings is the whole surface."
+        ),
+        "tips_and_pitfalls": [
+            "Draft at 480p and move up once the prompt is right — finding the shot at the lowest tier and stepping up for the keeper is the whole discipline for this model.",
+            "Thirty seconds is available but rarely the right first ask — a long take commits you to every second of it, and a mistake at second three spoils the whole clip.",
+            "Only a first frame is accepted, so describe where the shot should finish rather than expecting to pin the closing image.",
+            "Audio is generated with the video. If you plan to score it yourself, say so in the prompt rather than expecting a silent track.",
+            "Fix a seed before you iterate, or every re-run changes the staging as well as the wording you meant to test.",
+            "The five framings cover landscape through portrait but not ultrawide — if you need 21:9, this is not the model.",
+            f"A long take at 1080p is the heaviest render this model offers, so be sure of the prompt before you commit to one. {OPENROUTER_PRICING}",
+        ],
+        "knob_descriptions": {
+            "Duration": "Clip length in seconds, any whole number from 2 to 30.",
+            "Aspect ratio": "The framing to work in — 16:9, 4:3, 1:1, 3:4, or 9:16.",
+            "Resolution": "480p, 720p or 1080p.",
+            "Frames": "Whether a supplied still opens the shot: none for pure text-to-video, or first_only to animate from it.",
+            "Audio": "Whether the model generates a soundtrack alongside the picture.",
+            "Seed": "Fixes the random draw so the same prompt and seed reproduce the same clip.",
+            "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
+        },
+    },
+    "alibaba/wan-3.0-prime": {
+        "display_name": "Alibaba: Wan 3.0 Prime",
+        "best_known_for": (
+            "Wan 3.0 Prime, the higher-fidelity tier of Wan 3.0. Everything about how you drive it "
+            "is identical to its sibling — 2 to 30 seconds, 480p through 1080p, the same five "
+            "framings, its own generated audio, a seed, and an optional opening still — so a "
+            "prompt developed on Wan 3.0 moves here unchanged. What differs is the render: Prime "
+            "is the higher-fidelity tier of the two. The sensible pattern is to "
+            "find the shot on Wan 3.0 and render the keeper here. Like its sibling it accepts "
+            "no provider parameters."
+        ),
+        "tips_and_pitfalls": [
+            "Draft on plain Wan 3.0, finish here. The two models take the same settings, so nothing has to be re-tuned when you switch.",
+            "Treat it as a finishing choice rather than a default — Wan 3.0 is the one to explore on.",
+            "Clips run 2 to 30 seconds, but a long take at 1080p is the heaviest render here — be sure of the prompt first.",
+            "Only a first frame is accepted, so describe the ending rather than trying to pin it with a closing still.",
+            "Audio is generated with the video; say so in the prompt if you want it sparse.",
+            "Fix a seed before iterating so the staging holds still while you change the wording.",
+            "Ultrawide is not offered — the five framings run 16:9 to 9:16.",
+        ],
+        "knob_descriptions": {
+            "Duration": "Clip length in seconds, any whole number from 2 to 30.",
+            "Aspect ratio": "The framing to work in — 16:9, 4:3, 1:1, 3:4, or 9:16.",
+            "Resolution": "480p, 720p or 1080p.",
+            "Frames": "Whether a supplied still opens the shot: none for pure text-to-video, or first_only to animate from it.",
+            "Audio": "Whether the model generates a soundtrack alongside the picture.",
+            "Seed": "Fixes the random draw so the same prompt and seed reproduce the same clip.",
+            "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
+        },
+    },
+    "minimax/hailuo-3-max": {
+        "display_name": "MiniMax: H3 Max",
+        "best_known_for": (
+            "H3 Max, the widest-framing model in MiniMax's line and the one with the most "
+            "flexible clip length in its family: any whole number of seconds from 5 to 15. It "
+            "offers six framings including the 21:9 ultrawide its siblings skip, animates from a "
+            "supplied first frame, a last frame, or both — so you can pin where a shot starts and "
+            "where it ends and let the model find the motion between them — and renders at 480p "
+            "or 768p. It does not generate audio and does not honour a seed, so identical prompts "
+            "will not reproduce identical clips; plan to pick from several takes rather than to "
+            "refine one deterministically."
+        ),
+        "tips_and_pitfalls": [
+            "Supply both a first and a last frame when you know the beginning and the end — bookending the shot steers it far harder than describing the motion in words.",
+            "There is no seed, so the same prompt twice gives two different clips. Iterate by generating a few and choosing, not by locking a draw.",
+            "Draft at 480p and step up to 768p once the framing and motion are right.",
+            "21:9 is available here and on few other models, so this is the one to use when you need a true ultrawide.",
+            "No audio is generated; the clip arrives silent and the whole prompt should go into what is seen.",
+            "Five seconds is the shortest it will make — for a shorter beat, generate five and trim.",
+            f"Ask for the length you actually need rather than the longest available. {OPENROUTER_PRICING}",
+        ],
+        "knob_descriptions": {
+            "Duration": "Clip length in seconds, any whole number from 5 to 15.",
+            "Aspect ratio": "The framing to work in — 21:9, 16:9, 4:3, 1:1, 3:4, or 9:16.",
+            "Resolution": "480p or 768p.",
+            "Frames": "Which supplied stills anchor the clip: a first frame, a last frame, or both.",
+            "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
+        },
+    },
+    "bytedance/seedance-2.0-mini": {
+        "display_name": "ByteDance: Seedance 2.0 Mini",
+        "best_known_for": (
+            "Seedance 2.0 Mini, the lightest tier of the Seedance family and the only model here "
+            "that takes all four input kinds — text, an image, a video clip and an audio track — "
+            "in the same request. Clips run 4 to 15 seconds at 480p or 720p, across seven "
+            "framings from 21:9 down to 9:21, and you can either pick a framing or pin exact pixel "
+            "dimensions from the thirteen sizes it publishes. It generates its own audio, honours "
+            "a seed, and anchors on a first frame, a last frame, or both. Supplying a reference "
+        ),
+        "tips_and_pitfalls": [
+            "Building on a clip you already have is the more controllable path — the model works from your footage instead of inventing the whole shot.",
+            "Your media only reaches the model if your administrator has turned on sending media to a file host — with that off the reference is left out and the chat tells you so.",
+            "Pin a size rather than an aspect ratio when the output has to drop into a fixed frame; the thirteen sizes are exact pixel dimensions.",
+            "Bookend with a first and last frame when you know both ends of the shot — it steers motion better than any amount of prose.",
+            "Fix a seed before iterating so the staging holds while you change the wording.",
+            "Audio is generated with the video, so say in the prompt what you want from it rather than discarding a track afterwards.",
+            f"Resolution and length both drive how heavy a render is, so raise them only when the shot needs it. {OPENROUTER_PRICING}",
+        ],
+        "knob_descriptions": {
+            "Duration": "Clip length in seconds, any whole number from 4 to 15.",
+            "Aspect ratio": "The framing to work in — 1:1, 3:4, 9:16, 4:3, 16:9, 21:9, or 9:21.",
+            "Resolution": "480p or 720p.",
+            "Size": "Pins exact pixel dimensions instead of letting the ratio decide — thirteen are published, from 480x480 to 1680x720.",
+            "Frames": "Which supplied stills anchor the clip: a first frame, a last frame, or both.",
+            "Audio": "Whether the model generates a soundtrack alongside the picture.",
+            "Seed": "Fixes the random draw so the same prompt and seed reproduce the same clip.",
+            "Reference video URL": "A clip the model works from instead of inventing the whole shot.",
+            "Audio reference URL": "A sound track the model works to.",
+            "Watermark": "Whether ByteDance stamps its visible branding on the finished clip — model_default keeps ByteDance's own policy, on forces it, off asks for a clean clip, which your account has to be allowed to receive.",
+            "Request key": VIDEO_REQ_KEY_DESCRIPTION,
+            "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
+        },
+    },
+    "heygen/avatar-iv": {
+        "display_name": "HeyGen: Avatar IV",
+        "best_known_for": (
+            "Avatar IV, which animates a single photograph into a lip-synced talking head. It is "
+            "unlike everything else in this catalogue: there is no duration control, because the "
+            "length is however long the speech takes, and no prompt-driven scene, because the "
+            "picture is the scene. You give it one still and either a script to voice or an audio "
+            "track to lip-sync to. Rather than only matching mouth shapes, it reads tone and "
+            "rhythm and drives head motion and expression from them. It renders at 720p or 1080p "
+            "in 16:9, 9:16 or 1:1, and almost everything worth setting — the voice, its speed and "
+            "pitch, how expressive the avatar is, the background, captions — lives in the provider "
+            "parameters rather than the ordinary controls."
+        ),
+        "tips_and_pitfalls": [
+            "Length is set by the speech, not by a control — a longer script is a longer clip, so trim the script to trim the video.",
+            "Supply either a script or an audio track. An audio track lip-syncs directly; a script is voiced by HeyGen text-to-speech and then needs a voice_id.",
+            "voice_id is an opaque identifier from HeyGen's own voice list, not a name you can invent — look it up in your HeyGen account first.",
+            "expressiveness takes high, medium or low and defaults to low, so if the delivery looks flat it is probably doing exactly what it was told.",
+            "motion_prompt is free text describing body motion and gestures, and applies to photo avatars — it is the closest thing here to a scene prompt.",
+            "remove_background and background are separate: the first strips what was behind the person, the second supplies a flat colour or an image to replace it.",
+            "Your photograph only reaches the model if your administrator has turned on sending media to a file host — with that off there is nothing to animate and the chat says so.",
+            f"Trim the script rather than the resolution when you need a shorter result. {OPENROUTER_PRICING}",
+        ],
+        "knob_descriptions": {
+            "Aspect ratio": "The framing to work in — 16:9, 9:16 or 1:1.",
+            "Resolution": "720p or 1080p.",
+            "Audio reference URL": "A voice track the photograph is lip-synced to, instead of a written script.",
+            "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
+        },
+    },
+    "black-forest-labs/flux-video-edit": {
+        "display_name": "Black Forest Labs: FLUX Video Edit",
+        "best_known_for": (
+            "FLUX Video Edit, which changes footage you already have rather than generating a "
+            "scene. You supply a clip and an instruction, and it applies that change across the "
+            "video. Because the work is done on your footage, the length, the framing and the "
+            "resolution of the result all come from the clip you send — which is why this model "
+            "publishes no duration, aspect ratio or resolution control at all. It does not honour "
+            "a seed and does not generate audio; the soundtrack is whatever your source carried. "
+            "Its one provider parameter is a content-moderation threshold. Your footage only "
+            "reaches it if your administrator has turned on sending media to a file host."
+        ),
+        "tips_and_pitfalls": [
+            "Attach the clip you want changed to your message. With sending media to a file host turned off, the clip is left out, the chat says so, and there is nothing to edit.",
+            "Name the change and nothing else. Re-describing the whole scene invites it to redo parts you wanted kept.",
+            "The result takes its length, framing and resolution from your source clip — trim and crop before sending, because there is no control here to do it afterwards.",
+            "One instruction per pass holds up better than a list; run a second pass for the second change and you keep the ability to reject either one.",
+            "There is no seed, so two runs of the same instruction will differ. Generate a couple and choose.",
+            "No audio is generated — whatever your source clip carried is what you get back.",
+            f"The length of the clip you supply sets the length of the result, so trim it first. {OPENROUTER_PRICING}",
+        ],
+        "knob_descriptions": {
+            "Reference video URL": "The clip to be edited. Everything about the output's shape comes from it.",
+            "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
+        },
+    },
+    "black-forest-labs/flux-video-upscale": {
+        "display_name": "Black Forest Labs: FLUX Video Upscale",
+        "best_known_for": (
+            "FLUX Video Upscale, which enlarges footage you already have. It is the most narrowly "
+            "scoped model in this catalogue: it publishes no duration, framing or resolution "
+            "control, because all three are decided by the clip you supply and by how far you ask "
+            "it to enlarge. Its two settings are how much bigger to make the video, between 1.5 "
+            "and 3 times, and which of two modes it works in: one preserves the source exactly "
+            "and sharpens it, the other restores and invents fine detail that was not there. "
+            "It neither honours a seed nor "
+            "generates audio, and your footage only reaches it if your administrator has turned "
+            "on sending media to a file host."
+        ),
+        "tips_and_pitfalls": [
+            "Attach the clip you want enlarged. With sending media to a file host turned off, there is nothing to upscale and the chat says so.",
+            "A 3x pass on a long clip is the heaviest thing you can ask of it — enlarge only as far as the result actually needs.",
+            "Choose the mode deliberately rather than leaving the default: faithful suits faces, products and brand assets; inventive suits textures, crowds and scenery.",
+            "Enlarge once, not twice — a second pass compounds whatever the first one invented.",
+            "Trim the clip before sending it; there is no duration control here to cut it afterwards, and the source is capped at 20 seconds and 2K.",
+            "There is no seed, so two passes over the same footage will not invent the same detail.",
+            f"No audio is generated; the soundtrack is whatever your source carried. {OPENROUTER_PRICING}",
+        ],
+        "knob_descriptions": {
+            "Reference video URL": "The clip to be enlarged. Its length and dimensions decide the output.",
+            "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
+        },
+    },
 }
 
 
@@ -792,10 +999,42 @@ def _format_csv(value: Any) -> str:
 def _format_frames_capability(supported_frames: Any) -> str:
     csv = _format_csv(supported_frames)
     if not csv:
-        return "none (text-only)"
+        return "none"
     if "first_frame" in csv and "last_frame" in csv:
         return "first_frame and last_frame"
     return csv
+
+
+_INPUT_KIND_WORDS = {
+    "text": "a written prompt",
+    "image": "an image",
+    "audio": "an audio track",
+    "video": "a video clip",
+}
+
+
+def _help_input_kinds(model: dict[str, Any]) -> list[str]:
+    declared = model.get("input_modalities")
+    if not isinstance(declared, list):
+        arch = model.get("architecture")
+        declared = arch.get("input_modalities") if isinstance(arch, dict) else None
+    if not isinstance(declared, list):
+        return []
+    return [item for item in declared if isinstance(item, str) and item.strip()]
+
+
+def _format_accepted_inputs(model: dict[str, Any]) -> str:
+    kinds = _help_input_kinds(model)
+    if not kinds:
+        return "not published"
+    known = [_INPUT_KIND_WORDS[kind] for kind in _INPUT_KIND_WORDS if kind in kinds]
+    extra = sorted(kind for kind in kinds if kind not in _INPUT_KIND_WORDS)
+    words = known + extra
+    if not words:
+        return "not published"
+    if len(words) == 1:
+        return words[0]
+    return f"{', '.join(words[:-1])} and {words[-1]}"
 
 
 _UNDECLARED_CAPABILITY = "not published; the control is offered and the model's own default applies"
@@ -834,6 +1073,7 @@ def _render_template(
     aspects = _format_csv(model.get("supported_aspect_ratios")) or "model default"
     resolutions = _format_csv(model.get("supported_resolutions")) or "model default"
     frames = _format_frames_capability(model.get("supported_frame_images"))
+    accepted = _format_accepted_inputs(model)
     audio = _declared_capability(model.get("generate_audio"), spec.supports_generate_audio_toggle)
     seed = _declared_capability(model.get("seed"), spec.supports_seed)
 
@@ -865,6 +1105,7 @@ def _render_template(
         f"### {display_name}\n\n"
         f"{data['best_known_for']}\n\n"
         "**Output capabilities**\n"
+        f"- Accepted inputs: {accepted}\n"
         f"- Durations: {durations}\n"
         f"- Aspect ratios: {aspects}\n"
         f"- Resolutions: {resolutions}\n"
@@ -911,6 +1152,7 @@ def _render_catalog_fallback(model_id: str, model: dict[str, Any]) -> str:
     raw_description = model.get("description")
     description = raw_description if isinstance(raw_description, str) else ""
     frames = _format_frames_capability(model.get("supported_frame_images"))
+    accepted = _format_accepted_inputs(model)
     params = _format_csv(model.get("allowed_passthrough_parameters")) or "none listed"
     ratios = _format_csv(model.get("supported_aspect_ratios")) or "model default"
     durations = _format_csv(model.get("supported_durations")) or "model default"
@@ -918,7 +1160,8 @@ def _render_catalog_fallback(model_id: str, model: dict[str, Any]) -> str:
     return (
         f"### {display}\n\n"
         f"Capability: {description.strip() or 'OpenRouter video generation model.'}\n\n"
-        f"Accepted inputs: {frames}.\n\n"
+        f"Accepted inputs: {accepted}.\n\n"
+        f"Frame controls: {frames}.\n\n"
         "Useful prompt patterns: Describe subject, action, setting, camera "
         "movement, visual style, and constraints in one clear shot.\n\n"
         "Known limitations: This model is not ZDR-capable and exact continuity "

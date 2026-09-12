@@ -2203,7 +2203,9 @@ def test_no_video_price_reaches_a_user_at_all():
         assert model.get("pricing_skus"), f"{model_id} publishes no rate to leak"
         for supplied in ({"id": model_id, "name": model_id}, model):
             rendered = render_video_help(model_id, supplied)
-            assert VIDEO_HELP_BY_MODEL[model_id]["best_known_for"] in rendered, (
+            curated = VIDEO_HELP_BY_MODEL.get(model_id)
+            witness = curated["best_known_for"] if curated else "Supported knobs:"
+            assert witness and witness in rendered, (
                 f"{model_id} did not render its own card, so this proves nothing"
             )
             assert not re.search(r"\$\s*\d", rendered), f"{model_id} quotes a price"
@@ -7502,3 +7504,79 @@ async def test_the_stall_only_offers_a_resume_where_the_marker_can_be_stored(
     assert video_module._video_still_running_note(window) in result.content, (
         "every stall must still say the job is running, resumable or not"
     )
+
+
+_MODALITY_FIXTURE = Path(__file__).parent / "fixtures" / "openrouter_video_input_modalities.json"
+_DECLARED_MODALITIES = json.loads(_MODALITY_FIXTURE.read_text())["input_modalities"]
+_NON_TEXT_INPUT_MODELS = sorted(
+    model_id
+    for model_id, kinds in _DECLARED_MODALITIES.items()
+    if model_id in VIDEO_BY_ID and any(kind != "text" for kind in kinds)
+)
+
+
+@pytest.mark.parametrize("model_id", _NON_TEXT_INPUT_MODELS)
+def test_a_help_card_never_calls_a_model_text_only_when_it_declares_another_input(model_id):
+    """The card said what a model ACCEPTS using the field that says what FRAMES it takes.
+
+    `supported_frame_images` is null for an upscaler, an editor and an avatar model, and the
+    fallback turned that into "Accepted inputs: none (text-only)" for models whose whole
+    purpose is transforming a clip or a photograph you supply. Two of the five were curated,
+    so curating a model is not the defence -- the shared helper is.
+
+    Both directions are asserted. Dropping the phrase alone would satisfy a "text-only" check
+    while still telling the user nothing, so the declared kind must also be named.
+    """
+    from open_webui_openrouter_pipe.integrations.video_help import render_video_help
+
+    row = dict(VIDEO_BY_ID[model_id])
+    row["input_modalities"] = _DECLARED_MODALITIES[model_id]
+    rendered = render_video_help(model_id, row)
+
+    assert "text-only" not in rendered, (
+        f"{model_id} declares {_DECLARED_MODALITIES[model_id]} but its card says text-only"
+    )
+    words = {"image": "an image", "audio": "an audio track", "video": "a video clip"}
+    for kind in _DECLARED_MODALITIES[model_id]:
+        if kind in words:
+            assert words[kind] in rendered, (
+                f"{model_id} accepts {kind} but its card never says so"
+            )
+
+
+def test_a_help_card_reads_the_nested_architecture_shape_too():
+    """Two shapes carry the same fact and only one was exercised.
+
+    `/videos/models` rows get a flat `input_modalities` attached by the catalog loader, but a
+    row read from `/models/{id}/endpoints` carries it under `architecture`. The renderer reads
+    both; deleting the nested branch from help left every card correct, which means the branch
+    was load-bearing in production and proved by nothing.
+    """
+    from open_webui_openrouter_pipe.integrations.video_help import render_video_help
+
+    model_id = "black-forest-labs/flux-video-upscale"
+    row = dict(VIDEO_BY_ID[model_id])
+    row.pop("input_modalities", None)
+    row["architecture"] = {"input_modalities": ["text", "video"]}
+    rendered = render_video_help(model_id, row)
+
+    assert "a video clip" in rendered, (
+        "the nested architecture shape must be read when the flat key is absent"
+    )
+    assert "text-only" not in rendered
+
+
+def test_a_help_card_says_so_when_no_model_declares_its_inputs():
+    """Absent is not the same as none, and the card must not invent either way."""
+    from open_webui_openrouter_pipe.integrations.video_help import render_video_help
+
+    model_id = "black-forest-labs/flux-video-upscale"
+    row = dict(VIDEO_BY_ID[model_id])
+    row.pop("input_modalities", None)
+    row.pop("architecture", None)
+    rendered = render_video_help(model_id, row)
+
+    assert "Accepted inputs: not published" in rendered, (
+        "an unpublished modality list must read as unpublished, not as text-only or none"
+    )
+
