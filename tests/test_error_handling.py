@@ -1608,6 +1608,45 @@ class TestStreamingErrorEdgeCases:
 class TestUsageFormatting:
     """Tests for usage formatting edge cases in _format_final_status_description."""
 
+    @pytest.mark.parametrize(
+        "counter",
+        [float("inf"), float("-inf"), float("nan")],
+        ids=["infinity", "negative-infinity", "nan"],
+    )
+    @pytest.mark.asyncio
+    async def test_a_non_finite_usage_counter_does_not_kill_the_turn(self, counter):
+        """The end-of-turn status line runs on every success, so it must not raise.
+
+        `BASE_URL` is configurable, so usage arrives from arbitrary OpenAI-compatible
+        gateways, and `json.loads` produces `inf` from a bare `Infinity` literal --
+        which is legal in Python's JSON dialect. `_to_int` did an unguarded
+        `int(value)` on any float, and `int(inf)` raises `OverflowError` while
+        `int(nan)` raises `ValueError`. Neither is caught anywhere between here and
+        `_run_streaming_loop`, so a gateway reporting a non-finite counter killed an
+        otherwise successful turn at the point of rendering Time/Cost/Tokens.
+
+        Three rows because the two exception types differ, and the status line must
+        still render for the counters that are fine.
+        """
+        from open_webui_openrouter_pipe import Pipe
+
+        pipe = Pipe()
+        try:
+            result = pipe._ensure_error_formatter()._format_final_status_description(
+                elapsed=1.0,
+                stream_duration=1.0,
+                total_usage={"input_tokens": counter, "output_tokens": 12, "total_tokens": 12},
+                valves=pipe.valves,
+            )
+            assert isinstance(result, str), (
+                f"a {counter} input-token counter did not render a status line"
+            )
+            assert "12" in result, (
+                f"the counters that ARE finite were dropped along with the bad one: {result}"
+            )
+        finally:
+            await pipe.close()
+
     @pytest.mark.asyncio
     async def test_to_int_handles_bool_values(self):
         """_to_int converts True/False to 1/0 (line 314)."""

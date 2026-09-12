@@ -57,6 +57,11 @@ from ..core.config import (
 from ..core.context_budget import (
     apply_live_tool_output_budget,
     build_futility_notice,
+    effective_chars_per_token,
+    estimate_serialized_chars,
+    measure_chars_per_token,
+    omitted_tool_names,
+    record_chars_per_token,
 )
 
 # Import costs helper
@@ -103,7 +108,16 @@ from ..models.registry import (
 )
 
 # Import request sanitizer
-from ..requests.sanitizer import _sanitize_request_input
+from ..requests.sanitizer import (
+    _request_overhead_chars,
+    _sanitize_request_input,
+    budget_model_id,
+)
+
+_REPLAY_DROPPED_OPENING = (
+    "Earlier tool results no longer fit this model's context, so the model "
+    "did not receive:"
+)
 
 # Imports from storage.persistence
 from ..storage.multimodal import _guess_image_mime_type, image_extension_for_mime
@@ -497,6 +511,24 @@ class StreamingHandler:
 
         if event_emitter is None:
             event_emitter = _wrap_event_emitter(None)
+
+        async def _report_omissions(outcome: Any, opening: str) -> None:
+            if outcome is None or not outcome.omitted_call_ids:
+                return
+            fresh = {
+                call_id
+                for call_id in outcome.omitted_call_ids
+                if call_id not in body.budget_reported_call_ids
+            }
+            if not fresh:
+                return
+            body.budget_reported_call_ids.update(fresh)
+            names = omitted_tool_names(
+                type(outcome)(frozenset(fresh), False, 0, 0), body.input
+            )
+            await self._pipe._event_emitter_handler._emit_notification(
+                event_emitter, f"{opening} {', '.join(names)}.", level="warning"
+            )
 
         async def _warn_if_futile(outcome: Any) -> None:
             if outcome is None or not outcome.futile:
@@ -1373,13 +1405,17 @@ class StreamingHandler:
                     reasoning_stream_completed.discard("__reasoning__")
                     reasoning_display.pop("__reasoning__", None)
                 final_response: dict[str, Any] | None = None
+                dispatched_metered_chars: int | None = None
+                dispatched_model_id: str = ""
                 if event_source is not None:
                     if loop_index > 0:
                         break
                     model_for_cache = body.model
                     event_iter = event_source
                 else:
-                    _sanitize_request_input(self._pipe, body)
+                    _replay_budget = _sanitize_request_input(self._pipe, body)
+                    await _warn_if_futile(_replay_budget)
+                    await _report_omissions(_replay_budget, _REPLAY_DROPPED_OPENING)
                     api_model_override = getattr(body, "api_model", None)
                     model_for_cache = api_model_override if isinstance(api_model_override, str) else body.model
                     items = getattr(body, "input", None)
@@ -1408,6 +1444,11 @@ class StreamingHandler:
                     _apply_disable_native_websearch_to_payload(request_payload, logger=self.logger)
                     _apply_provider_routing_params_to_payload(request_payload, logger=self.logger)
                     _strip_disable_model_settings_params(request_payload)
+                    dispatched_model_id = budget_model_id(body)
+                    dispatched_metered_chars = estimate_serialized_chars(
+                        body.input,
+                        referenced_sizes=getattr(body, "input_file_sizes", None),
+                    ) + _request_overhead_chars(body)
 
                     api_key_value = EncryptedStr.decrypt(valves.API_KEY)
                     is_streaming = bool(request_payload.get("stream"))
@@ -2384,6 +2425,18 @@ class StreamingHandler:
                 raw_usage = final_response.get("usage") or {}
                 usage = dict(raw_usage) if isinstance(raw_usage, dict) else {}
 
+                priced_chars, dispatched_metered_chars = dispatched_metered_chars, None
+                if priced_chars is not None:
+                    measured = measure_chars_per_token(
+                        metered_chars=priced_chars,
+                        usage=usage,
+                        model_id=dispatched_model_id,
+                    )
+                    if measured is not None:
+                        record_chars_per_token(
+                            body.budget_chars_per_token, dispatched_model_id, measured
+                        )
+
                 if usage:
                     usage["turn_count"] = 1
                     usage["function_call_count"] = sum(
@@ -2578,7 +2631,9 @@ class StreamingHandler:
                             "📞 Preserving %d function_call item(s) for tool continuation",
                             len(call_items),
                         )
-                    _sanitize_request_input(self._pipe, body)
+                    _replay_budget = _sanitize_request_input(self._pipe, body)
+                    await _warn_if_futile(_replay_budget)
+                    await _report_omissions(_replay_budget, _REPLAY_DROPPED_OPENING)
 
                 self.logger.debug("📞 Found %d function_call items in response", len(call_items))
                 function_outputs: list[dict[str, Any]] = []
@@ -2834,6 +2889,10 @@ class StreamingHandler:
                             logger=self.logger,
                             referenced_sizes=getattr(body, "input_file_sizes", None),
                             reserved_output_tokens=getattr(body, "max_output_tokens", None),
+                            chars_per_token=effective_chars_per_token(
+                                body.budget_chars_per_token, budget_model_id(body)
+                            ),
+                            fixed_overhead_chars=_request_overhead_chars(body),
                         )
 
                         call_by_id: dict[str, dict] = {}
@@ -2848,17 +2907,11 @@ class StreamingHandler:
                                 output_by_call_id[cid] = output
 
                         omitted_call_ids = budget.omitted_call_ids
-                        if omitted_call_ids and event_emitter:
-                            omitted_names = sorted(
-                                str((call_by_id.get(cid) or {}).get("name") or cid)
-                                for cid in omitted_call_ids
-                            )
-                            await self._pipe._event_emitter_handler._emit_notification(
-                                event_emitter,
-                                "Too large for the remaining context this turn, so the model "
-                                f"did not receive: {', '.join(omitted_names)}.",
-                                level="warning",
-                            )
+                        await _report_omissions(
+                            budget,
+                            "Too large for the remaining context this turn, so the model "
+                            "did not receive:",
+                        )
                         if show_tool_cards and event_emitter and body.stream and all_function_outputs:
                             try:
                                 for cid, output in output_by_call_id.items():
@@ -3063,6 +3116,7 @@ class StreamingHandler:
                         body.input.extend(budgeted_outputs)
                         shipped_budget = _sanitize_request_input(self._pipe, body)
                         await _warn_if_futile(shipped_budget)
+                        await _report_omissions(shipped_budget, _REPLAY_DROPPED_OPENING)
                     elif invalid_call_outputs:
                         if not tool_loops_executed:
                             assistant_len_before_tool_loops = len(assistant_message)
@@ -3076,6 +3130,7 @@ class StreamingHandler:
                         body.input.extend(all_function_outputs)
                         shipped_budget = _sanitize_request_input(self._pipe, body)
                         await _warn_if_futile(shipped_budget)
+                        await _report_omissions(shipped_budget, _REPLAY_DROPPED_OPENING)
                     else:
                         break
                 else:

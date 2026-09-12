@@ -676,7 +676,7 @@ class RequestOrchestrator:
             capability_model_id=pre_capability_model_id,
         )
         responses_body.input_file_sizes = await index_referenced_file_payloads(
-            responses_body.input, self.logger
+            responses_body.input, self.logger, user=user_model
         )
         if valves.USE_MODEL_MAX_OUTPUT_TOKENS and responses_body.max_output_tokens is None:
             default_max = default_output_reservation(responses_body.model)

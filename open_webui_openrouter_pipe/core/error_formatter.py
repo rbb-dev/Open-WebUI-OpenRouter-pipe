@@ -8,6 +8,7 @@ and final status description formatting with usage metrics.
 from __future__ import annotations
 
 import logging
+import math
 from typing import TYPE_CHECKING, Any
 
 from ..core.timing_logger import timed
@@ -360,7 +361,7 @@ class ErrorFormatter:
             if isinstance(value, int):
                 return value
             if isinstance(value, float):
-                return int(value)
+                return int(value) if math.isfinite(value) else None
             return None
 
         input_tokens = _to_int(usage.get("input_tokens"))

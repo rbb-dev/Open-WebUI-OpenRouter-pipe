@@ -12,7 +12,11 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from ..api.transforms import _filter_replayable_input_items
-from ..core.context_budget import BudgetOutcome, apply_replay_tool_output_budget
+from ..core.context_budget import (
+    BudgetOutcome,
+    apply_replay_tool_output_budget,
+    effective_chars_per_token,
+)
 from ..core.utils import TOOL_CALL_STATUSES, _clean_str
 from ..integrations.anthropic import _is_anthropic_model_id
 
@@ -97,6 +101,21 @@ def _strip_unreplayable_anthropic_reasoning(items: list[Any]) -> list[Any]:
     return out if changed else items
 
 
+def budget_model_id(body: Any) -> str:
+    api_model = getattr(body, "api_model", None)
+    if isinstance(api_model, str) and api_model.strip():
+        return api_model
+    return str(getattr(body, "model", "") or "")
+
+
+def _request_overhead_chars(body: Any) -> int:
+    try:
+        rest = body.model_dump(exclude_none=True, exclude={"input"})
+        return len(json.dumps(rest, ensure_ascii=False, default=str))
+    except (TypeError, ValueError, AttributeError):
+        return 0
+
+
 def _sanitize_request_input(pipe: Pipe, body: ResponsesBody) -> BudgetOutcome | None:
     """Remove non-replayable artifacts that may have snuck into body.input."""
     items = getattr(body, "input", None)
@@ -170,14 +189,17 @@ def _sanitize_request_input(pipe: Pipe, body: ResponsesBody) -> BudgetOutcome | 
             stripped_any = True
         normalized.append(stripped)
 
-    api_model = getattr(body, "api_model", None)
-    model_for_budget = api_model if isinstance(api_model, str) and api_model.strip() else str(getattr(body, "model", "") or "")
+    model_for_budget = budget_model_id(body)
     budget = apply_replay_tool_output_budget(
         normalized,
         model_id=model_for_budget,
         logger=pipe.logger,
         referenced_sizes=getattr(body, "input_file_sizes", None),
         reserved_output_tokens=getattr(body, "max_output_tokens", None),
+        fixed_overhead_chars=_request_overhead_chars(body),
+        chars_per_token=effective_chars_per_token(
+            getattr(body, "budget_chars_per_token", None), model_for_budget
+        ),
     )
     omitted_call_ids = budget.omitted_call_ids
 

@@ -6,6 +6,7 @@ import base64
 import binascii
 import json
 import logging
+import math
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -19,6 +20,8 @@ logger = logging.getLogger(__name__)
 _FALLBACK_PROMPT_LIMIT_TOKENS = 128_000
 _CHARS_PER_TOKEN_HEURISTIC = 4
 _MAX_DEFAULT_OUTPUT_SHARE_DIVISOR = 2
+_MIN_MEASURED_INPUT_TOKENS = 1_000
+_MIN_MEASURED_CHARS_PER_TOKEN = 0.25
 _AUDIO_BYTES_PER_TOKEN = 500
 _VIDEO_BYTES_PER_TOKEN = 380
 _DOCUMENT_BYTES_PER_TOKEN = 500
@@ -83,7 +86,7 @@ def _window_reads_as_text(window: str, *, at_tail: bool) -> bool | None:
     decoded = _decode_window(window, at_tail=at_tail)
     if decoded is None:
         return None
-    if b"\x00" in decoded:
+    if b"\x00" in decoded and not at_tail:
         return False
     for trim in range(4):
         chunk = decoded[trim:] if at_tail else decoded[: len(decoded) - trim]
@@ -95,7 +98,7 @@ def _window_reads_as_text(window: str, *, at_tail: bool) -> bool | None:
             return None
         control = sum(1 for ch in text if ord(ch) < 32 and ch not in _ALLOWED_CONTROL)
         return control * _CONTROL_RATIO_CAP < len(text)
-    return None
+    return False if b"\x00" in decoded else None
 
 
 _WINDOW_SCAN_CHARS = _PAYLOAD_HEAD_CHARS * 4
@@ -175,6 +178,56 @@ _LIVE_OMISSION_PREFIX = "[Tool result omitted due to context budget."
 _REPLAY_OMISSION_PREFIX = "[Replayed tool result omitted due to context budget."
 
 
+def _finite_positive(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) and number > 0 else None
+
+
+def measure_chars_per_token(
+    *, metered_chars: int, usage: Any, model_id: str | None = None
+) -> float | None:
+    if not isinstance(usage, Mapping) or metered_chars <= 0:
+        return None
+    input_tokens = _finite_positive(usage.get("input_tokens"))
+    if input_tokens is None or input_tokens < _MIN_MEASURED_INPUT_TOKENS:
+        return None
+    window = model_context_length(model_id) if model_id else None
+    if window is not None and input_tokens > window:
+        return None
+    output_tokens = _finite_positive(usage.get("output_tokens"))
+    total_tokens = _finite_positive(usage.get("total_tokens"))
+    if (
+        output_tokens is not None
+        and total_tokens is not None
+        and abs(input_tokens + output_tokens - total_tokens) > 1.0
+    ):
+        return None
+    ratio = metered_chars / input_tokens
+    return ratio if ratio >= _MIN_MEASURED_CHARS_PER_TOKEN else None
+
+
+def record_chars_per_token(store: Any, model_id: str, ratio: float) -> None:
+    if not isinstance(store, dict):
+        return
+    key = model_id or ""
+    previous = store.get(key)
+    store[key] = ratio if previous is None else min(previous, ratio)
+
+
+def effective_chars_per_token(store: Any, model_id: str) -> float | None:
+    if not isinstance(store, Mapping) or not store:
+        return None
+    ratio = store.get(model_id or "")
+    if isinstance(ratio, bool) or not isinstance(ratio, (int, float)) or ratio <= 0:
+        return None
+    return min(float(ratio), float(_CHARS_PER_TOKEN_HEURISTIC))
+
+
 def model_context_length(model_id: str) -> int | None:
     spec = ModelFamily._lookup_spec(model_id)
     if not isinstance(spec, dict):
@@ -230,6 +283,10 @@ def compute_prompt_limit_tokens(
     return context_length
 
 
+_NAMES_CONTENT: tuple[int, str, tuple[str, ...] | None] = (0, "", None)
+_LOCATOR_RE = re.compile(r"^(?!data:)[A-Za-z][A-Za-z0-9+.\-]*:")
+
+
 def _payload_bytes(value: Any) -> tuple[int, str, tuple[str, ...] | None] | None:
     if isinstance(value, str):
         media_type = ""
@@ -239,6 +296,8 @@ def _payload_bytes(value: Any) -> tuple[int, str, tuple[str, ...] | None] | None
             if prefix.startswith("data:"):
                 media_type = prefix[len("data:") :].split(";", 1)[0].strip().lower()
                 payload_head = _payload_windows(raw)
+        elif _LOCATOR_RE.match(value):
+            return _NAMES_CONTENT
         else:
             raw = value
         size = len(raw) * 3 // 4
@@ -309,11 +368,12 @@ def _budget_shape(
                     )
                     tokens = rate(*sizes[key], filename)
                     charged_chars = tokens * _CHARS_PER_TOKEN_HEURISTIC
+                    names_content = sizes[key] is _NAMES_CONTENT
                     if charges is None:
-                        shaped[key] = "x" * charged_chars
+                        shaped[key] = ("x" * charged_chars) + (item if names_content else "")
                     else:
                         charges.append(charged_chars)
-                        shaped[key] = ""
+                        shaped[key] = item if names_content else ""
                 elif key in sizes:
                     shaped[key] = ""
                 else:
@@ -451,14 +511,31 @@ class BudgetOutcome:
     futile: bool = False
     irreducible_chars: int = 0
     limit_chars: int = 0
+    chars_per_token: float | None = None
+    limit_tokens: int = 0
+
+
+def omitted_tool_names(outcome: BudgetOutcome, items: Any) -> list[str]:
+    named = {
+        item.get("call_id"): str(item.get("name") or item.get("call_id"))
+        for item in (items if isinstance(items, list) else [])
+        if isinstance(item, dict) and item.get("type") == "function_call"
+    }
+    return sorted({named.get(call_id, call_id) for call_id in outcome.omitted_call_ids})
+
+
+def _notice_tokens(outcome: BudgetOutcome, chars: int) -> int:
+    if outcome.chars_per_token is None or outcome.limit_chars <= 0:
+        return chars // _CHARS_PER_TOKEN_HEURISTIC
+    return -(-chars * (outcome.limit_tokens or 1) // outcome.limit_chars)
 
 
 def build_futility_notice(outcome: BudgetOutcome) -> str:
     return (
         "This conversation needs about "
-        f"{outcome.irreducible_chars // _CHARS_PER_TOKEN_HEURISTIC} tokens even "
+        f"{_notice_tokens(outcome, outcome.irreducible_chars)} tokens even "
         "with every tool result reduced to a placeholder, more than this model's "
-        f"{outcome.limit_chars // _CHARS_PER_TOKEN_HEURISTIC}-token limit. "
+        f"{outcome.limit_tokens or outcome.limit_chars // _CHARS_PER_TOKEN_HEURISTIC}-token limit. "
         "Results were trimmed as far as they go and the request may still be too "
         "large. Shorten or remove the largest message or attachment, or start a "
         "new chat."
@@ -486,6 +563,8 @@ def _apply_tool_output_budget(
     logger: logging.Logger = logger,
     referenced_sizes: Mapping[str, tuple[int, str, str]] | None = None,
     reserved_output_tokens: int | None = None,
+    fixed_overhead_chars: int = 0,
+    chars_per_token: float | None = None,
 ) -> BudgetOutcome:
     omitted_call_ids: set[str] = set()
     if not items:
@@ -495,6 +574,14 @@ def _apply_tool_output_budget(
         model_id, reserved_output_tokens=reserved_output_tokens
     )
     prompt_limit_chars = max(prompt_limit_tokens * _CHARS_PER_TOKEN_HEURISTIC, 0)
+    measured_ratio = (
+        chars_per_token
+        if chars_per_token is not None
+        and 0 < chars_per_token < _CHARS_PER_TOKEN_HEURISTIC
+        else None
+    )
+    if measured_ratio is not None:
+        prompt_limit_chars = max(int(prompt_limit_tokens * measured_ratio), 0)
 
     def _is_live(index: int) -> bool:
         return live_from is not None and index >= live_from
@@ -507,7 +594,7 @@ def _apply_tool_output_budget(
     fixed_chars = estimate_serialized_chars(
         _baseline_without_tool_outputs(items), referenced_sizes=referenced_sizes
     )
-    irreducible_chars = fixed_chars + sum(
+    irreducible_chars = fixed_chars + max(fixed_overhead_chars, 0) + sum(
         _output_floor_chars(_output_text_of(item), _builder(index))
         for index, item in enumerate(items)
         if isinstance(item, dict) and item.get("type") == "function_call_output"
@@ -517,7 +604,7 @@ def _apply_tool_output_budget(
         logger.warning(futile_message, irreducible_chars, prompt_limit_chars)
     remaining_chars = max(prompt_limit_chars - irreducible_chars, 0)
 
-    for index, item in enumerate(items):
+    for index, item in reversed(list(enumerate(items))):
         if not isinstance(item, dict) or item.get("type") != "function_call_output":
             continue
 
@@ -552,7 +639,12 @@ def _apply_tool_output_budget(
         remaining_chars = max(remaining_chars - (_wire_chars(stub) - floor_chars), 0)
 
     return BudgetOutcome(
-        frozenset(omitted_call_ids), futile, irreducible_chars, prompt_limit_chars
+        frozenset(omitted_call_ids),
+        futile,
+        irreducible_chars,
+        prompt_limit_chars,
+        measured_ratio,
+        prompt_limit_tokens,
     )
 
 
@@ -564,6 +656,8 @@ def apply_live_tool_output_budget(
     logger: logging.Logger = logger,
     referenced_sizes: Mapping[str, tuple[int, str, str]] | None = None,
     reserved_output_tokens: int | None = None,
+    fixed_overhead_chars: int = 0,
+    chars_per_token: float | None = None,
 ) -> BudgetOutcome:
     if not outputs:
         return BudgetOutcome(frozenset())
@@ -576,6 +670,8 @@ def apply_live_tool_output_budget(
         logger=logger,
         referenced_sizes=referenced_sizes,
         reserved_output_tokens=reserved_output_tokens,
+        fixed_overhead_chars=fixed_overhead_chars,
+        chars_per_token=chars_per_token,
     )
 
 
@@ -586,6 +682,8 @@ def apply_replay_tool_output_budget(
     logger: logging.Logger = logger,
     referenced_sizes: Mapping[str, tuple[int, str, str]] | None = None,
     reserved_output_tokens: int | None = None,
+    fixed_overhead_chars: int = 0,
+    chars_per_token: float | None = None,
 ) -> BudgetOutcome:
     return _apply_tool_output_budget(
         items,
@@ -595,4 +693,6 @@ def apply_replay_tool_output_budget(
         logger=logger,
         referenced_sizes=referenced_sizes,
         reserved_output_tokens=reserved_output_tokens,
+        fixed_overhead_chars=fixed_overhead_chars,
+        chars_per_token=chars_per_token,
     )

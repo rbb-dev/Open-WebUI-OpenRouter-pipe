@@ -51,9 +51,21 @@ def _blocks(*blocks: dict) -> list[dict]:
     return [{"type": "message", "role": "user", "content": list(blocks)}]
 
 
+class _Requester:
+    def __init__(self, user_id: str = "user-1", role: str = "user"):
+        self.id = user_id
+        self.role = role
+
+
+_OWNER = _Requester()
+
+
 class _Record:
-    def __init__(self, file_id: str, size: Any, content_type: str, name: str = ""):
+    def __init__(
+        self, file_id: str, size: Any, content_type: str, name: str = "", user_id: str = "user-1"
+    ):
         self.id = file_id
+        self.user_id = user_id
         self.meta: dict[str, Any] = {"content_type": content_type}
         if size is not None:
             self.meta["size"] = size
@@ -267,7 +279,9 @@ async def test_the_index_reads_the_size_off_the_stored_record(
         {"type": "input_file", "file_url": _INTERNAL_URL},
     )
 
-    index = await index_referenced_file_payloads(items, logging.getLogger("test"))
+    index = await index_referenced_file_payloads(
+            items, logging.getLogger("test"), user=_OWNER
+        )
 
     assert index == {
         _FILE_ID: (declared_bytes, "application/pdf", "s.pdf"),
@@ -295,7 +309,9 @@ async def test_the_index_prefers_the_bulk_metadata_read(monkeypatch) -> None:
         {"type": "input_file", "file_id": other},
     )
 
-    index = await index_referenced_file_payloads(items, logging.getLogger("test"))
+    index = await index_referenced_file_payloads(
+            items, logging.getLogger("test"), user=_OWNER
+        )
 
     assert index[_FILE_ID][0] == 1_000 and index[other][0] == 2_000
     assert seen["bulk"] == [sorted([_FILE_ID, other])], (
@@ -320,7 +336,9 @@ async def test_the_index_falls_back_per_id_when_the_bulk_read_is_absent(
     )
     items = _blocks({"type": "input_file", "file_id": _FILE_ID})
 
-    index = await index_referenced_file_payloads(items, logging.getLogger("test"))
+    index = await index_referenced_file_payloads(
+            items, logging.getLogger("test"), user=_OWNER
+        )
 
     assert index == {_FILE_ID: (777, "text/plain", "a.txt")}
     assert seen["single"] == [_FILE_ID]
@@ -335,7 +353,9 @@ async def test_a_record_with_no_declared_size_degrades_to_zero_and_says_so(
     items = _blocks({"type": "input_file", "file_id": _FILE_ID})
 
     with caplog.at_level(logging.WARNING):
-        index = await index_referenced_file_payloads(items, logging.getLogger("test"))
+        index = await index_referenced_file_payloads(
+            items, logging.getLogger("test"), user=_OWNER
+        )
 
     assert index == {}, "a record with no declared size produced a size anyway"
     assert any(_FILE_ID in record.getMessage() for record in caplog.records), (
@@ -367,7 +387,9 @@ async def test_a_bulk_read_that_fails_still_falls_back_per_id(monkeypatch) -> No
     monkeypatch.setattr(owui_files, "Files", _HalfBroken)
     items = _blocks({"type": "input_file", "file_id": _FILE_ID})
 
-    index = await index_referenced_file_payloads(items, logging.getLogger("test"))
+    index = await index_referenced_file_payloads(
+            items, logging.getLogger("test"), user=_OWNER
+        )
 
     assert index == {_FILE_ID: (1_050_009, "application/pdf", "s.pdf")}
 
@@ -423,7 +445,9 @@ async def test_the_index_resolves_the_one_reference_the_gateway_will_inline(
     )
     items = _blocks({"type": "input_file", **block})
 
-    index = await index_referenced_file_payloads(items, logging.getLogger("test"))
+    index = await index_referenced_file_payloads(
+            items, logging.getLogger("test"), user=_OWNER
+        )
 
     read = sorted({i for call in seen["bulk"] for i in call} | set(seen["single"]))
     assert read == sorted(expect_read), (
@@ -488,7 +512,9 @@ async def test_a_bulk_read_that_returned_is_not_asked_again_id_by_id(
 
     items = _blocks(*({"type": "input_file", "file_id": file_id} for file_id in ids))
 
-    await index_referenced_file_payloads(items, logging.getLogger("test"))
+    await index_referenced_file_payloads(
+            items, logging.getLogger("test"), user=_OWNER
+        )
 
     assert len(seen["single"]) == expect_single_reads, (
         f"{len(seen['single'])} per-id reads followed a bulk read that "
@@ -523,7 +549,9 @@ async def test_the_unsized_record_warning_latches_on_its_reason(monkeypatch, cap
     )
 
     with caplog.at_level(logging.DEBUG, logger="test"):
-        index = await index_referenced_file_payloads(items, logging.getLogger("test"))
+        index = await index_referenced_file_payloads(
+            items, logging.getLogger("test"), user=_OWNER
+        )
 
     assert index == {}
     unsized = [r for r in caplog.records if "no readable declared size" in r.getMessage()]
@@ -556,7 +584,9 @@ async def test_a_failing_lookup_never_reaches_the_request_it_was_estimating(
     monkeypatch.setattr(owui_files, "Files", _Exploding)
     items = _blocks({"type": "input_file", "file_id": _FILE_ID})
 
-    assert await index_referenced_file_payloads(items, logging.getLogger("test")) == {}
+    assert await index_referenced_file_payloads(
+            items, logging.getLogger("test"), user=_OWNER
+        ) == {}
 
 
 @pytest.mark.asyncio
@@ -590,7 +620,9 @@ async def test_a_record_that_cannot_be_read_never_reaches_the_request(
     monkeypatch.setattr(owui_files, "Files", _Files)
     items = _blocks({"type": "input_file", "file_id": _FILE_ID})
 
-    assert await index_referenced_file_payloads(items, logging.getLogger("test")) == {}
+    assert await index_referenced_file_payloads(
+            items, logging.getLogger("test"), user=_OWNER
+        ) == {}
 
 
 @pytest.mark.asyncio
@@ -599,7 +631,9 @@ async def test_an_openrouter_file_id_is_not_looked_up_in_open_webui(monkeypatch)
     seen = _install_files(monkeypatch, [])
     items = _blocks({"type": "input_file", "file_id": "file-abc123"})
 
-    assert await index_referenced_file_payloads(items, logging.getLogger("test")) == {}
+    assert await index_referenced_file_payloads(
+            items, logging.getLogger("test"), user=_OWNER
+        ) == {}
     assert seen["bulk"] == [] and seen["single"] == []
 
 
@@ -628,7 +662,12 @@ def test_the_declared_map_never_reaches_the_wire() -> None:
         for name, field in ResponsesBody.model_fields.items()
         if getattr(field, "exclude", False)
     }
-    assert internal == {"input_file_sizes", "budget_futility_notified"}, (
+    assert internal == {
+        "input_file_sizes",
+        "budget_futility_notified",
+        "budget_reported_call_ids",
+        "budget_chars_per_token",
+    }, (
         f"the set of pipe-internal ResponsesBody fields changed to {sorted(internal)}. "
         "Each one is bookkeeping that must never be dispatched; add it here deliberately "
         "so the exclusion below covers it."
@@ -863,6 +902,11 @@ async def test_the_orchestrator_sizes_every_attachment_before_the_budget_runs(
         else []
     )
     _install_files(monkeypatch, records)
+
+    async def _requester(user_id, logger):
+        return _Requester(user_id)
+
+    monkeypatch.setattr(orchestrator_module, "get_user_by_id", _requester)
 
     captured: dict[str, Any] = {}
 
@@ -1372,4 +1416,146 @@ async def test_one_futility_notice_per_turn_across_both_dispatch_paths(monkeypat
     assert len(futile) == 1, (
         f"a turn that reached the futility verdict on both the pre-dispatch pass and the "
         f"tool loop emitted {len(futile)} notices; the verdict belongs to the turn"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("owner", "expect_indexed", "expect_charged"),
+    [("user-1", True, 32_000), ("someone-else", False, 0)],
+    ids=["the-requesters-own-file", "not-the-requesters-file"],
+)
+async def test_a_file_the_requester_cannot_read_is_charged_nothing(
+    monkeypatch, owner: str, expect_indexed: bool, expect_charged: int
+) -> None:
+    """The budget must not price a file the dispatch path will refuse to send.
+
+    `index_referenced_file_payloads` took no user and authorised nothing, so any file id
+    a request named was resolved against storage and its declared size folded into the
+    budget. That size then reaches the requester twice: it steers which tool results
+    survive, and it is summed into the "needs about N tokens" notice. With attacker-
+    controlled padding, any monotone function of the size is a full oracle for a file
+    the requester cannot read -- measured 9,700x of the reported figure coming from
+    someone else's 40 MB attachment.
+
+    It is a correctness bug in the same motion: the gateway refuses an unauthorised file
+    at dispatch, so its bytes never travel and charging them can declare a turn hopeless
+    over a payload that was never in the request.
+
+    Asserted on the charge, not on a log line, because the charge is what the user sees.
+    """
+    _install_files(
+        monkeypatch,
+        [_Record(_FILE_ID, 4_000_000, "application/pdf", "big.pdf", user_id=owner)],
+    )
+    items = _blocks({"type": "input_file", "file_id": _FILE_ID})
+
+    index = await index_referenced_file_payloads(
+        items, logging.getLogger("test"), user=_OWNER
+    )
+
+    assert bool(index) is expect_indexed, (
+        f"a file owned by {owner!r} was {'indexed' if index else 'skipped'} for a "
+        "requester who is user-1; only files the requester may read may be priced"
+    )
+    charged = estimate_serialized_chars(items, referenced_sizes=index)
+    assert abs(charged - expect_charged) < 250, (
+        f"the reference was charged {charged} chars, not ~{expect_charged}; an "
+        "unauthorised file must contribute nothing to any number the user is shown"
+    )
+
+
+@pytest.mark.parametrize("tools", [0, 15, 30])
+def test_the_budget_counts_the_tools_the_request_carries(tools: int) -> None:
+    """`tools` and `instructions` travel on the wire and were never metered.
+
+    The budget only ever looked at `body.input`, so a request's tool schemas -- which the
+    provider tokenises like everything else -- were invisible to it. Measured against an
+    8k window: 2,348 uncounted characters at 5 tools, 6,843 at 15, and 13,593 at 30, the
+    last being 42.5% of the window the budget believed it was managing.
+
+    The overhead is derived from the body itself (`model_dump(exclude={"input"})`) rather
+    than from a hand-written list of keys, so a new top-level field cannot silently escape
+    it. Three tool counts, so no constant satisfies the row set.
+    """
+    from open_webui_openrouter_pipe.requests.sanitizer import _request_overhead_chars
+
+    schema = {
+        "type": "function",
+        "name": "search_documents",
+        "description": "Search the corpus and return ranked excerpts with citations.",
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
+            "required": ["query"],
+        },
+    }
+    payload: dict[str, Any] = {
+        "model": "test/model",
+        "input": [{"type": "message", "role": "user",
+                   "content": [{"type": "input_text", "text": "hi"}]}],
+    }
+    if tools:
+        payload["tools"] = [dict(schema, name=f"{schema['name']}_{i}") for i in range(tools)]
+        payload["instructions"] = "You are a careful assistant."
+    body = ResponsesBody.model_validate(payload)
+
+    overhead = _request_overhead_chars(body)
+
+    wire = len(json.dumps(body.model_dump(exclude_none=True), ensure_ascii=False, default=str))
+    seen = len(json.dumps(body.input, ensure_ascii=False))
+    assert overhead >= (wire - seen) - 15, (
+        f"{tools} tool schemas put {wire - seen} chars on the wire and the budget "
+        f"accounted for {overhead}; everything the request carries has to be counted. "
+        "The 15-char allowance is the JSON punctuation around the `input` key itself, "
+        "which is not attributable to the tools and is measured at 11."
+    )
+    if tools:
+        assert overhead > 1_000, (
+            f"{tools} tool schemas were charged {overhead} chars; they are not free"
+        )
+
+
+def test_the_tools_a_request_carries_reach_the_budget_not_just_the_helper() -> None:
+    """Measuring the overhead is worthless unless the budget spends against it.
+
+    A helper that returns the right number and a floor that ignores it is the shape this
+    repo has been bitten by before: the call site reads correctly and the behaviour never
+    changes. Asserted on `irreducible_chars` from the real sanitiser pass, with and
+    without tool schemas on the same conversation, so the only way to satisfy it is for
+    the overhead to arrive where the verdict is computed.
+    """
+    from open_webui_openrouter_pipe.requests.sanitizer import _sanitize_request_input
+
+    ModelFamily.set_dynamic_specs(
+        {"test.model": {"context_length": 200_000, "full_model": {"context_length": 200_000}}}
+    )
+    schema = {
+        "type": "function",
+        "name": "search_documents",
+        "description": "Search the corpus and return ranked excerpts with citations.",
+        "parameters": {"type": "object", "properties": {"query": {"type": "string"}}},
+    }
+    conversation = [
+        {"type": "function_call", "call_id": "c1", "name": "lookup", "arguments": "{}"},
+        {"type": "function_call_output", "call_id": "c1", "output": "r" * 400},
+    ]
+
+    class _Pipe:
+        logger = logging.getLogger("test")
+
+    floors = {}
+    for label, tools in (("bare", None), ("with-tools", [dict(schema, name=f"t{i}") for i in range(30)])):
+        payload: dict[str, Any] = {"model": "test/model", "input": list(conversation)}
+        if tools:
+            payload["tools"] = tools
+        body = ResponsesBody.model_validate(payload)
+        outcome = _sanitize_request_input(cast(Any, _Pipe()), body)
+        assert outcome is not None
+        floors[label] = outcome.irreducible_chars
+
+    assert floors["with-tools"] - floors["bare"] > 4_000, (
+        f"the same conversation floored at {floors['bare']} chars bare and "
+        f"{floors['with-tools']} with 30 tool schemas attached; the schemas travel on the "
+        "wire, so the budget that decides what to trim has to see them"
     )

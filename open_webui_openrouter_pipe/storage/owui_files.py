@@ -584,7 +584,7 @@ async def _file_records_by_id(
 
 
 async def index_referenced_file_payloads(
-    items: Any, logger: logging.Logger
+    items: Any, logger: logging.Logger, *, user: Any
 ) -> dict[str, tuple[int, str, str]]:
     try:
         references = _referenced_file_ids(items)
@@ -594,6 +594,14 @@ async def index_referenced_file_payloads(
         index: dict[str, tuple[int, str, str]] = {}
         for reference, file_id in references.items():
             record = records.get(file_id)
+            if record is not None and not await authorize_file_read(record, user, logger):
+                logger.log(
+                    warn_level(_warned_reference_sizes, "unauthorized-record"),
+                    "Referenced Open WebUI file %s is not readable by the requester; the "
+                    "context budget charges it nothing",
+                    file_id,
+                )
+                continue
             size = declared_file_size(record) if record is not None else None
             if size is None:
                 logger.log(

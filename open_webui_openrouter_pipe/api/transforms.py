@@ -122,6 +122,8 @@ class ResponsesBody(BaseModel):
         default=None, exclude=True
     )
     budget_futility_notified: bool = Field(default=False, exclude=True)
+    budget_reported_call_ids: set[str] = Field(default_factory=set, exclude=True)
+    budget_chars_per_token: dict[str, float] = Field(default_factory=dict, exclude=True)
     model_config = ConfigDict(extra="allow")
 
     @staticmethod

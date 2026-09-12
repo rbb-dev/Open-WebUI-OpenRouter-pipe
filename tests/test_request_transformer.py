@@ -4996,7 +4996,8 @@ class TestImageReuseRegister:
         return base64.b64decode(block.split(",", 1)[1])[8:9]
 
     @staticmethod
-    async def _run(pipe_instance, messages, *, emitter=None, gateway=None, downloader=None):
+    async def _run(pipe_instance, messages, *, emitter=None, gateway=None, downloader=None,
+                   chat_id="chat-1"):
         with patch("open_webui_openrouter_pipe.requests.transformer.ModelFamily") as mock_family:
             mock_family.supports.return_value = True
 
@@ -5006,7 +5007,7 @@ class TestImageReuseRegister:
             pipe_instance._file_gateway.inline_owui_file_id = gateway or none
             pipe_instance._multimodal_handler._download_remote_url = downloader or none
             return await transform_messages_to_input(
-                pipe_instance, messages, event_emitter=emitter
+                pipe_instance, messages, chat_id=chat_id, event_emitter=emitter
             )
 
     @pytest.mark.asyncio
@@ -6022,3 +6023,70 @@ class TestTransformerFeedsTheBudget:
             "budget, so the futility guard fires and nothing is trimmed"
         )
         assert omitted == {"big"}, "an attachment switched tool-output trimming off"
+
+
+@pytest.mark.asyncio
+async def test_one_chat_s_download_is_not_handed_to_another(pipe_instance):
+    """The remembered bytes belong to the conversation that fetched them.
+
+    The reuse memo was module-global and keyed by URL alone, so the first chat in a
+    worker to fetch a link decided what every other chat saw for it, for the life of the
+    process. A link whose content depends on anything but the string -- an expiring
+    signature, a rotating asset, a per-session redirect -- kept resolving out of that
+    dict long after the server would have answered differently.
+
+    A cross-chat leak shows up two ways and both are asserted: the second chat performs
+    no fetch of its own, AND it receives the first chat's bytes. Asserting only the
+    download count would also pass if the memo were deleted outright, which is a
+    different behaviour with its own cost.
+    """
+    pipe_instance.valves.IMAGE_INPUT_SELECTION = "user_then_assistant"
+    url = "https://example.invalid/rotating.png"
+    served = {
+        "chat-a": b"\x89PNG\r\n\x1a\nAAAAAAAA",
+        "chat-b": b"\x89PNG\r\n\x1a\nBBBBBBBB",
+    }
+    downloads: list[str] = []
+    current = {"chat": "chat-a"}
+
+    async def counting_download(requested, *_a, **_k):
+        downloads.append(requested)
+        return {"data": served[current["chat"]], "mime_type": "image/png"}
+
+    async def none(*_a, **_k):
+        return None
+
+    pipe_instance._file_gateway.resolve_storage_context = none
+    pipe_instance._file_gateway.inline_owui_file_id = none
+    pipe_instance._multimodal_handler._download_remote_url = counting_download
+
+    messages = [
+        {"role": "assistant", "content": f"Done: ![a]({url})"},
+        {"role": "user", "content": [{"type": "text", "text": "and now?"}]},
+    ]
+    shipped: dict[str, str] = {}
+    for chat in ("chat-a", "chat-b"):
+        current["chat"] = chat
+        result: Any = None
+        for _ in range(3):
+            result = await transform_messages_to_input(pipe_instance, messages, chat_id=chat)
+        shipped[chat] = json.dumps(result)
+
+    assert len(downloads) == 2, (
+        f"two chats naming the same URL performed {len(downloads)} downloads across six "
+        "turns; each conversation fetches once and remembers only within itself"
+    )
+    assert shipped["chat-a"] != shipped["chat-b"], (
+        "both chats were served identical bytes for the same URL, so one chat's download "
+        "was handed to the other"
+    )
+
+    before = len(downloads)
+    current["chat"] = "chat-a"
+    for _ in range(2):
+        await transform_messages_to_input(pipe_instance, messages, chat_id=None)
+    assert len(downloads) - before == 2, (
+        f"two requests carrying no chat id shared a cached download ("
+        f"{len(downloads) - before} fetches for two turns); keying them under a common "
+        "empty string is process-global sharing under a new name, which is the defect"
+    )

@@ -11,6 +11,9 @@ from typing import Any, cast
 import pytest
 
 from open_webui_openrouter_pipe.core.context_budget import (
+    effective_chars_per_token,
+    measure_chars_per_token,
+    record_chars_per_token,
     _CHARS_PER_TOKEN_HEURISTIC,
     _decode_window,
     _payload_windows,
@@ -1082,10 +1085,11 @@ def test_an_attachment_does_not_switch_tool_trimming_off(block) -> None:
 
 
 @pytest.mark.parametrize(
-    ("prior_chars", "expect_stub"), [(100, False), (200, True), (600, False)]
+    ("fresh_chars", "expect_stub"),
+    [(100, False), (400, False), (900, True), (2000, True)],
 )
 def test_results_already_in_the_request_consume_the_remaining_budget(
-    prior_chars, expect_stub
+    fresh_chars, expect_stub
 ) -> None:
     """A result accepted on an earlier tool loop is charged what it will really cost.
 
@@ -1100,10 +1104,9 @@ def test_results_already_in_the_request_consume_the_remaining_budget(
     The expectations are not hand-chosen. Each row asserts against the counterfactual
     -- what the sanitiser ships when the live pass touches nothing -- so the row is
     checkable against the request the user's model actually receives rather than
-    against the loop's own arithmetic. The three rows disagree with each other, so no
-    single answer satisfies them; note that they are deliberately not monotonic in
-    `prior_chars`, because the replay loop spends in list order and a large earlier
-    result is dropped where a small one is kept.
+    against the loop's own arithmetic. The discriminating axis is the fresh result's own
+    size: the budget spends newest-first, so a stale result no longer decides the fate of
+    a fresh one, and what remains observable is whether the fresh result fits at all.
 
     The fixture pairs each output with the `function_call` production always puts ahead
     of it. Without that the rows were calibrated against a request the provider never
@@ -1116,14 +1119,14 @@ def test_results_already_in_the_request_consume_the_remaining_budget(
     _spec(240)
     existing = [
         {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
-        {"type": "function_call_output", "call_id": "earlier", "output": "y" * prior_chars},
+        {"type": "function_call_output", "call_id": "earlier", "output": "y" * 600},
     ]
-    outputs = [{"type": "function_call_output", "call_id": "new", "output": "z" * 400}]
+    outputs = [{"type": "function_call_output", "call_id": "new", "output": "z" * fresh_chars}]
 
     counterfactual = [
         {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
-        {"type": "function_call_output", "call_id": "earlier", "output": "y" * prior_chars},
-        {"type": "function_call_output", "call_id": "new", "output": "z" * 400},
+        {"type": "function_call_output", "call_id": "earlier", "output": "y" * 600},
+        {"type": "function_call_output", "call_id": "new", "output": "z" * fresh_chars},
     ]
     counterfactual = _with_calls(counterfactual)
     apply_replay_tool_output_budget(counterfactual, model_id="test/model")
@@ -1132,7 +1135,7 @@ def test_results_already_in_the_request_consume_the_remaining_budget(
     delivered = _delivered(shipped)
 
     assert ("new" in delivered) is not expect_stub, (
-        f"a {prior_chars} char earlier result left the shipped request "
+        f"a {fresh_chars} char fresh result left the shipped request "
         f"{'carrying' if 'new' in delivered else 'without'} the fresh 400 char result"
     )
     assert delivered == _delivered(counterfactual), (
@@ -1151,11 +1154,11 @@ def test_results_already_in_the_request_consume_the_remaining_budget(
 
 
 @pytest.mark.parametrize(
-    ("prior_chars", "expect_new_stubbed"),
-    [(100, False), (200, True), (400, False), (600, False)],
+    ("fresh_chars", "expect_new_stubbed"),
+    [(100, False), (400, False), (900, True), (2000, True)],
 )
 def test_the_live_pass_leaves_results_it_was_not_handed_alone(
-    prior_chars, expect_new_stubbed
+    fresh_chars, expect_new_stubbed
 ) -> None:
     """The live pass may decide the fate of its own outputs, not of the ones already sent.
 
@@ -1176,9 +1179,9 @@ def test_the_live_pass_leaves_results_it_was_not_handed_alone(
     earlier = {
         "type": "function_call_output",
         "call_id": "earlier",
-        "output": "y" * prior_chars,
+        "output": "y" * 600,
     }
-    new = {"type": "function_call_output", "call_id": "new", "output": "z" * 400}
+    new = {"type": "function_call_output", "call_id": "new", "output": "z" * fresh_chars}
     paired = _with_calls(
         [
             {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
@@ -1191,7 +1194,7 @@ def test_the_live_pass_leaves_results_it_was_not_handed_alone(
     )
 
     assert not is_tool_omission_stub(earlier["output"]), (
-        f"a {prior_chars} char result already in the request was replaced with a "
+        f"a 600 char result already in the request was replaced with a "
         "placeholder by the live pass, which was not handed it; the user watched that "
         "result arrive on an earlier tool loop"
     )
@@ -1378,6 +1381,12 @@ def _payload(kind: str, size: int) -> bytes:
         )
         room = max(size - len(directory), 0)
         return compressed[:room] + directory
+    if kind == "tail_nul_text":
+        body = ("the quick brown fox jumps over the lazy dog. " * 4000).encode()[:size]
+        return body[:-100] + b"\x00" + body[-99:]
+    if kind == "ascii_headed_deflate":
+        head = (b"1 0 obj << /Type /Catalog >> endobj " * 20)[:600]
+        return (head + bytes(range(256)) * (size // 256 + 1))[:size]
     if kind == "ascii_wrapped_pdf":
         head = b"%PDF-1.4\r\n" + b"1 0 obj\r\n<< /Type /Catalog /Pages 2 0 R >>\r\nendobj\r\n" * 12
         tail = (
@@ -1472,6 +1481,8 @@ def test_an_attachment_is_charged_for_its_bytes_not_its_name(kind: str, filename
         ("density_32", "a.bin", True, "the control-density cap's value, from above"),
         ("ascii_wrapped_pdf", "a.txt", False, "the %PDF- signature, alone -- both windows read as ASCII"),
         ("rtf", "a.bin", True, "that ASCII document markup is still text"),
+        ("tail_nul_text", "a.bin", True, "the tail's control RATIO -- one stray NUL is not a veto"),
+        ("ascii_headed_deflate", "a.txt", False, "the tail veto, on a dense binary tail behind a clean ASCII head"),
         ("zip_directory_tail", "a.txt", True, "the name, because the head abstains and a tail may not vouch"),
         ("zip_directory_tail", "a.bin", False, "the name, because the head abstains and a tail may not vouch"),
     ],
@@ -2209,7 +2220,7 @@ def test_each_stub_quotes_the_budget_the_stubs_before_it_actually_spent(
 
     quoted = [
         int(match.group(1).replace(",", ""))
-        for item in items
+        for item in reversed(items)
         if (match := re.search(r"Remaining prompt budget: ~([\d,]+) tokens", item["output"]))
     ]
     assert len(quoted) == results, (
@@ -2509,3 +2520,226 @@ def test_the_irreducible_floor_covers_what_the_stubbed_request_really_costs() ->
         f"actually costs {shipped}; the floor is summed from raw lengths while the wire "
         "carries the escaped strings"
     )
+
+
+@pytest.mark.parametrize(
+    ("tokens", "expect_kept"),
+    [(2000, 5), (2500, 9), (3000, 13)],
+    ids=["room-for-five", "room-for-nine", "room-for-thirteen"],
+)
+def test_the_budget_keeps_the_newest_results_and_drops_the_oldest(
+    tokens: int, expect_kept: int
+) -> None:
+    """When the allowance cannot cover every result, the survivors are the recent ones.
+
+    The loop spent front-to-back, so the OLDEST results survived and the newest were
+    replaced -- including the one the model had just asked for. Measured on the real
+    dispatch path over a 40-turn conversation, from turn 15 onward the pipe discarded
+    every freshly-executed result while 15-turn-stale ones rode along in full. The model
+    asks again, the pipe drops it again, and nothing is emitted: a livelock the operator
+    cannot see, because the transcript shows the result arriving.
+
+    It also undid the retention pruner, which shortens the OLDEST turns and leaves the
+    newest whole -- two trimmers with opposite policies, the second destroying what the
+    first had just protected.
+
+    The property is the surviving SUFFIX, not the last element: greedy spending still
+    stubs a newest result too large to fit, which is why the two rows expect different
+    counts and why "the newest is always delivered" is the wrong assertion.
+    """
+    _spec(tokens)
+    items = [
+        {"type": "function_call_output", "call_id": f"c{i:02d}", "output": "R" * 600}
+        for i in range(20)
+    ]
+
+    apply_replay_tool_output_budget(_with_calls(items), model_id="test/model")
+
+    kept = [i["call_id"] for i in items if not is_tool_omission_stub(i["output"])]
+    assert len(kept) == expect_kept, (
+        f"regime broken: {len(kept)} of 20 results survived, not {expect_kept}; this "
+        "fixture must exercise a budget that runs out partway"
+    )
+    assert kept == [f"c{i:02d}" for i in range(20 - expect_kept, 20)], (
+        f"the budget kept {kept}; it must keep the most recent {expect_kept} results, "
+        "not the oldest -- the newest are the ones the model is still working with"
+    )
+
+
+@pytest.mark.parametrize("filename", ["report.pdf", "report.txt", ""])
+@pytest.mark.parametrize("url_chars", [200, 20_000])
+def test_a_reference_the_estimator_cannot_size_costs_its_own_characters(
+    url_chars: int, filename: str
+) -> None:
+    """A string that only NAMES content is charged the characters it occupies.
+
+    `_payload_bytes` could not tell a locator from a payload, so it measured the URL as
+    though the URL were base64 -- `len(raw) * 3 // 4` -- and `_budget_shape` then BLANKED
+    the key and charged a rate on that invented number. The characters that actually
+    travel were erased. Measured on a 20,000-character external `file_url`: 175 charged
+    against 20,057 on the wire when the block was named `.pdf`, and 15,059 when the same
+    block was named `.txt`. A client-supplied filename swung the charge by 86x on bytes
+    nobody had measured.
+
+    Both filenames and the empty one are rows here, so the name provably has no vote, and
+    the two URL lengths are two orders of magnitude apart so no constant satisfies them.
+    """
+    block: dict = {"type": "input_file", "file_url": "https://example.invalid/" + "a" * url_chars}
+    if filename:
+        block["filename"] = filename
+
+    charged = estimate_serialized_chars([block])
+
+    wire = len(json.dumps(block))
+    assert charged >= wire, (
+        f"a block whose payload the estimator cannot size was charged {charged} chars "
+        f"against the {wire} it puts on the wire; an unsizable reference must cost at "
+        "least what it occupies"
+    )
+
+
+@pytest.mark.parametrize(
+    ("block_type", "payload_key"),
+    [("input_image", "image_url"), ("image_url", "image_url")],
+)
+def test_a_reference_still_pays_a_rate_that_never_needed_its_size(
+    block_type: str, payload_key: str
+) -> None:
+    """An image costs what an image costs, whether or not its bytes can be measured.
+
+    The tempting fix for the defect above is to return `None` for anything that is not a
+    data URL. That drops the block out of the rate table entirely, and a remote image goes
+    from 6,842 charged characters to its 71 literal ones -- a 96x under-charge on a
+    payload the provider really does fetch and tokenise. The flat image rate never needed
+    a size, so a locator must not disable it.
+    """
+    block = {"type": block_type, payload_key: "https://example.invalid/pic.png"}
+
+    charged = estimate_serialized_chars([block])
+
+    assert charged > 6_000, (
+        f"a remote image was charged {charged} chars; the flat image rate does not depend "
+        "on measuring the bytes and must survive a reference it cannot size"
+    )
+
+
+@pytest.mark.parametrize(
+    ("usage", "expect"),
+    [
+        ({"input_tokens": 10_811}, 3.7),
+        ({"input_tokens": "10811"}, 3.7),
+        ({"input_tokens": 10_811.0}, 3.7),
+        ({"input_tokens": 10_811, "output_tokens": 60, "total_tokens": 10_871}, 3.7),
+        ({}, None),
+        ({"input_tokens": None}, None),
+        ({"input_tokens": 0}, None),
+        ({"input_tokens": -5}, None),
+        ({"input_tokens": True}, None),
+        ({"input_tokens": "many"}, None),
+        ({"input_tokens": float("inf")}, None),
+        ({"input_tokens": float("nan")}, None),
+        ({"input_tokens": float("-inf")}, None),
+        ({"input_tokens": 10 ** 400}, None),
+        ({"input_tokens": 277}, None),
+        ({"input_tokens": 10_811, "output_tokens": 60, "total_tokens": 99_999}, None),
+        ({"input_tokens": 200_000}, None),
+        ({"input_tokens": 160_000}, 0.25),
+    ],
+    ids=[
+        "healthy", "numeric-string", "float", "counters-agree", "empty", "none", "zero",
+        "negative", "bool", "not-a-number", "infinity", "nan", "negative-infinity",
+        "400-digit-integer", "below-the-sample-gate", "counters-contradict",
+        "below-the-physical-floor", "exactly-at-the-floor",
+    ],
+)
+def test_only_a_sample_the_guards_stand_behind_becomes_a_ratio(usage, expect) -> None:
+    """A ratio is only as good as the counter it divides by.
+
+    `BASE_URL` is configurable, so usage arrives from arbitrary OpenAI-compatible
+    gateways. `json.loads` turns a bare `Infinity` literal into `inf`, and the pipe's own
+    `_coerce_positive_int` raises `OverflowError` on it -- so the coercion here cannot be
+    that one. A 400-digit integer is legal JSON and `float()` raises on it too.
+
+    The sample gate is 1,000 tokens because the estimator meters JSON scaffolding the
+    provider's chat template does not tokenise, and that overhead is fixed: the error it
+    causes decays as 1/tokens and falls below the constant's own 9.7% error at ~988.
+
+    The floor is 0.25 and it is a physical bound, not a preference: a token spans at
+    least one UTF-8 byte and a character is at most four of them, so no real tokenizer
+    can report fewer than a quarter of a character per token.
+
+    Sixteen rows, four of which must yield a number and twelve of which must not, so
+    neither "always measure" nor "never measure" satisfies the set.
+    """
+    ratio = measure_chars_per_token(metered_chars=40_000, usage=usage)
+
+    if expect is None:
+        assert ratio is None, (
+            f"usage {usage!r} produced a ratio of {ratio}; a counter the guards cannot "
+            "stand behind must fall back to the constant, not steer the budget"
+        )
+    else:
+        assert ratio is not None and abs(ratio - expect) < 0.01, (
+            f"usage {usage!r} produced {ratio}, not ~{expect}"
+        )
+
+
+@pytest.mark.parametrize(
+    ("ratio", "expect_limit"),
+    [(None, 16_000), (4.5, 16_000), (4.0, 16_000), (3.0, 12_000), (2.0, 8_000), (0.25, 1_000)],
+    ids=["no-sample", "above-the-cap", "at-the-cap", "tighter", "tighter-still", "floor"],
+)
+def test_a_measured_ratio_may_tighten_the_budget_and_may_never_loosen_it(
+    ratio, expect_limit: int
+) -> None:
+    """The whole safety property in one row set.
+
+    A measured ratio is allowed to say the conversation costs MORE tokens than four
+    characters each, which shrinks the character budget. It is never allowed to say it
+    costs fewer, because a rising limit admits content that was previously trimmed --
+    the dispatched request then grows as the conversation grows, which is the
+    discontinuity this repo forbids and the reason an earlier content-dependent limit
+    was rejected.
+
+    The three rows at or above the cap must all produce the identical limit a deployment
+    with no usage at all gets, so a gateway reporting a loose ratio changes nothing.
+    """
+    _spec(4_000)
+    items = _with_calls(
+        [{"type": "function_call_output", "call_id": f"c{i}", "output": "R" * 900} for i in range(8)]
+    )
+
+    outcome = apply_replay_tool_output_budget(
+        items, model_id="test/model", chars_per_token=ratio
+    )
+
+    assert outcome.limit_chars == expect_limit, (
+        f"a ratio of {ratio} produced a {outcome.limit_chars}-char limit, not "
+        f"{expect_limit}; at or above {_CHARS_PER_TOKEN_HEURISTIC} it must equal the "
+        "limit a deployment with no usage gets"
+    )
+    assert outcome.limit_chars <= 4_000 * _CHARS_PER_TOKEN_HEURISTIC, (
+        "a measured ratio loosened the budget above the constant's limit"
+    )
+
+
+def test_the_ratchet_keeps_the_tightest_sample_of_the_turn() -> None:
+    """Within a turn the limit must never rise, so the store keeps the minimum.
+
+    Feeding the latest sample instead lets a turn that measured 2.5 on one call go back
+    to 3.9 on the next, raising the limit mid-turn and re-admitting results it had
+    already dropped. A running mean has the same defect more slowly.
+    """
+    store: dict[str, float] = {}
+    for sample in (3.9, 2.5, 3.2, 3.8):
+        record_chars_per_token(store, "m", sample)
+
+    assert store["m"] == 2.5, (
+        f"the store holds {store['m']} after seeing 3.9, 2.5, 3.2, 3.8; it must keep the "
+        "tightest, or the limit rises again mid-turn"
+    )
+    assert effective_chars_per_token(store, "m") == 2.5
+    assert effective_chars_per_token(store, "other-model") is None, (
+        "a ratio measured for one model was applied to another"
+    )
+    assert effective_chars_per_token({}, "m") is None

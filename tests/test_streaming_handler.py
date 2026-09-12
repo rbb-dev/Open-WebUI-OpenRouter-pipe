@@ -4401,14 +4401,14 @@ class TestAdaptiveToolBudgeting:
         [
             (100_000, 260, 200, "nothing"),
             (200, 260, 4_000, "per-tool"),
-            (130, 120, 160, "nothing"),
+            (140, 120, 160, "nothing"),
             (200, 6_000, 4_000, "futile"),
             (400, 12_000, 4_000, "futile"),
         ],
         ids=[
             "fits",
             "trimmed",
-            "live-pass-alone-says-hopeless",
+            "trimmed-nothing-and-said-nothing",
             "cannot-be-trimmed",
             "cannot-be-trimmed-larger-model",
         ],
@@ -4431,14 +4431,13 @@ class TestAdaptiveToolBudgeting:
         conversation minus tool bodies, so a user who had pasted a long spec and attached
         nothing was told to delete a file that did not exist.
 
-        The third row is the one that decides WHICH pass the notice comes from. The live
-        pass reserves a longer placeholder than the sanitiser's replay pass writes, so at
-        130 tokens its floor is 520 characters against a 520-character limit -- futile
-        only because the comparison is `>=` -- while the request the sanitiser actually
-        dispatches has a floor of 486 and fits. Reporting the live pass's verdict there
-        tells the user their request is hopeless on a turn that worked. That regime is
-        pinned by the test below, so this row cannot quietly become a duplicate of the
-        `fits` row if the placeholder wording shifts the floors.
+        The third row used to decide WHICH pass the notice comes from, by sitting in the
+        one-token band where the live pass called a turn hopeless while the request the
+        sanitiser actually dispatched fitted. Metering `tools` and `instructions` lifted
+        both floors, and the band is now narrower than a whole token -- no integer limit
+        falls inside it -- so that choice is currently unwitnessed. Recorded with the
+        measurements in `.git/panel/18-which-pass-speaks-unwitnessed.md`. The row now pins
+        the neighbouring property: a request that fits says nothing at all.
 
         Asserted on the emitted event payload rather than on caplog, because a log line
         is exactly what the user cannot see. No constant satisfies the set: always
@@ -4544,53 +4543,6 @@ class TestAdaptiveToolBudgeting:
                 f"result: {notices}"
             )
 
-    def test_the_live_pass_alone_can_call_a_turn_hopeless_that_the_request_survives(self):
-        """The regime the `live-pass-alone-says-hopeless` row is built on, asserted directly.
-
-        That row expects silence, and it is only meaningful while the two passes disagree:
-        the live pass futile, the request actually dispatched not. Nothing checked that, so
-        the row would have gone on passing as a second `fits` row if the floors ever moved
-        together -- and it is the only witness anywhere for `_warn_if_futile` being handed
-        the shipped verdict rather than the live one.
-
-        The numbers are the row's own: a 130-token model, a 120-character user message and
-        a 160-character tool result. The live floor lands on 520 against a 520-character
-        limit, so this regime also depends on futility being decided by `>=` rather than
-        `>`; `test_a_floor_that_exactly_fills_the_budget_is_futile` pins that separately.
-        """
-        from open_webui_openrouter_pipe.core.context_budget import (
-            apply_live_tool_output_budget,
-            apply_replay_tool_output_budget,
-        )
-        from open_webui_openrouter_pipe.models.registry import ModelFamily
-
-        ModelFamily.set_dynamic_specs(
-            {"test.model": {"full_model": {"max_prompt_tokens": 130}, "context_length": 130}}
-        )
-        message = {
-            "type": "message",
-            "role": "user",
-            "content": [{"type": "input_text", "text": "x" * 120}],
-        }
-        call = {"type": "function_call", "call_id": "call-1", "name": "lookup", "arguments": "{}"}
-        result = {"type": "function_call_output", "call_id": "call-1", "output": "y" * 160}
-
-        live = apply_live_tool_output_budget(
-            [dict(result)], existing_input_items=[message, call], model_id="test/model"
-        )
-        shipped = apply_replay_tool_output_budget(
-            [message, call, dict(result)], model_id="test/model"
-        )
-
-        assert live.futile is True, (
-            f"the live pass reports futile={live.futile} ({live.irreducible_chars} against "
-            f"{live.limit_chars}); this row exists for the case where it says hopeless"
-        )
-        assert shipped.futile is False, (
-            f"the dispatched request reports futile={shipped.futile} "
-            f"({shipped.irreducible_chars} against {shipped.limit_chars}); if it agrees "
-            "with the live pass, the row no longer distinguishes which verdict is shown"
-        )
 
     @pytest.mark.parametrize(
         ("loops", "max_tokens", "user_chars", "expect_notices"),
@@ -4704,6 +4656,231 @@ class TestAdaptiveToolBudgeting:
             f"{loops} tool rounds produced {len(futile)} futility notices, not "
             f"{expect_notices}; the verdict is about the turn, not the iteration"
         )
+
+    @pytest.mark.parametrize(
+        ("fresh_chars", "live_must_differ"),
+        [(16_000, True), (30_000, False)],
+        ids=["the-live-pass-decides", "the-replay-pass-decides"],
+    )
+    @pytest.mark.asyncio
+    async def test_the_pipe_learns_its_chars_per_token_and_spends_it(
+        self, monkeypatch, pipe_instance_async, fresh_chars, live_must_differ
+    ):
+        """The ratio must be measured from a real response AND change what ships.
+
+        Three things can each be absent while every unit test still passes: the loop can
+        fail to record a sample, the sanitiser can fail to consume one, and the numerator
+        can be measured against the wrong quantity. All three were verified to survive a
+        suite that tested the helper and the parameter in isolation.
+
+        So this drives the real loop twice over the identical conversation, differing
+        only in whether the provider reports usage, and asserts the measured arm ships
+        strictly less. The history carries an inline image, because the metered size and
+        the wire size diverge by two orders of magnitude there: a ratio taken against the
+        wire reads ~100x too loose and changes nothing, which is how that mistake hides.
+        """
+        from open_webui_openrouter_pipe.models.registry import ModelFamily
+
+        pipe = pipe_instance_async
+        ModelFamily.set_dynamic_specs(
+            {"test.model": {"context_length": 8_000, "full_model": {"context_length": 8_000}}}
+        )
+        picture = "data:image/png;base64," + ("iVBORw0KGgo" * 4_000)
+
+        def _body():
+            history: list[dict] = []
+            for i in range(8):
+                history.append({"type": "function_call", "call_id": f"h{i}", "name": f"t{i}",
+                                "arguments": "{}"})
+                history.append({"type": "function_call_output", "call_id": f"h{i}",
+                                "output": "H" * 1_500})
+            return ResponsesBody.model_validate(
+                {"model": "test/model", "stream": True,
+                 "input": [{"type": "message", "role": "user", "content": [
+                     {"type": "input_text", "text": "hello"},
+                     {"type": "input_image", "image_url": picture}]}, *history]}
+            )
+
+        valves = pipe.valves.model_copy(
+            update={"TOOL_EXECUTION_MODE": "Pipeline", "MAX_FUNCTION_CALL_LOOPS": 3}
+        )
+
+        async def mock_execute(calls, registry):
+            return [{"type": "function_call_output", "call_id": c.get("call_id"),
+                     "output": "F" * fresh_chars} for c in calls]
+
+        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
+
+        async def _run(report_usage: bool) -> tuple[list[int], list[str]]:
+            sizes: list[int] = []
+            notices: list[str] = []
+
+            async def emitter(event):
+                if (isinstance(event, dict) and event.get("type") == "notification"
+                        and isinstance(event.get("data"), dict)):
+                    notices.append(str(event["data"].get("content", "")))
+            rounds = iter(range(1, 200))
+
+            async def streaming(self, session, request_body, **_kwargs):
+                sizes.append(len(json.dumps(request_body, default=str)))
+                usage = {"input_tokens": 8_000} if report_usage else {}
+                if next(rounds) == 1:
+                    yield {"type": "response.completed", "response": {"output": [
+                        {"type": "function_call", "call_id": "fresh", "name": "lookup",
+                         "arguments": "{}"}], "usage": usage}}
+                else:
+                    yield {"type": "response.output_text.delta", "delta": "Done."}
+                    yield {"type": "response.completed",
+                           "response": {"output": [], "usage": usage}}
+
+            monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", streaming)
+            await pipe._streaming_handler._run_streaming_loop(
+                _body(), valves, emitter,
+                metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"},
+                tools={"lookup": {"callable": lambda **_kwargs: "ok"}},
+                session=cast(Any, object()), user_id="user-123",
+            )
+            return sizes, notices
+
+        blind, blind_notices = await _run(report_usage=False)
+        measured, measured_notices = await _run(report_usage=True)
+
+        assert len(blind) >= 2 and len(blind) == len(measured), (
+            f"the two arms dispatched {len(blind)} and {len(measured)} times; they must "
+            "take the same path for the comparison to mean anything"
+        )
+        assert blind[0] == measured[0], (
+            "the arms differ on the FIRST dispatch, before any usage could have been "
+            "reported; something other than the measurement is moving"
+        )
+        assert measured[-1] < blind[-1], (
+            f"the provider priced the request and the last dispatch was {measured[-1]} "
+            f"chars against {blind[-1]} blind; a measured ratio that changes nothing is "
+            "either never recorded, never consumed, or measured against the wrong size"
+        )
+
+        live_blind = [n for n in blind_notices if "Too large for the remaining context" in n]
+        live_measured = [n for n in measured_notices
+                         if "Too large for the remaining context" in n]
+        if live_must_differ:
+            assert len(live_measured) > len(live_blind), (
+                f"the live pass emitted {len(live_measured)} omission notices with a "
+                f"measured ratio and {len(live_blind)} without; if the ratio reaches only "
+                "the replay pass, the live pass budgets against a roomier limit, keeps a "
+                "fresh result the replay pass then replaces, and the pipe cites a result "
+                "the model never received"
+            )
+        else:
+            assert len(live_measured) == len(live_blind), (
+                "regime broken: this row is meant to be decided by the replay pass, but "
+                f"the live pass already differs ({live_measured} vs {live_blind})"
+            )
+
+    @pytest.mark.parametrize(
+        ("max_tokens", "result_chars", "fresh_chars", "expect_dropped", "expect_futile"),
+        [
+            (100_000, 200, 200, False, False),
+            (3_000, 2_000, 200, True, False),
+            (5_000, 1_000, 12_000, True, False),
+            (200, 9_000, 200, True, True),
+        ],
+        ids=["fits", "history-dropped", "dropped-after-a-tool-round", "dropped-and-hopeless"],
+    )
+    @pytest.mark.asyncio
+    async def test_the_user_is_told_when_the_replay_pass_drops_history(
+        self, monkeypatch, pipe_instance_async, max_tokens, result_chars, fresh_chars,
+        expect_dropped, expect_futile
+    ):
+        """A result removed by the replay pass was removed silently.
+
+        Two passes can replace a tool result with a placeholder. The live pass announces
+        what it drops. The replay pass -- the one that re-budgets the whole conversation
+        on every later turn -- reported its omissions to a DEBUG log and nothing else, so
+        a result the user watched arrive simply stopped reaching the model, on this turn
+        and every turn after.
+
+        Measured on the real path: 6 of 12 replayed results replaced, zero notices.
+
+        The last row is why the omission notice must not share the futility latch. An
+        earlier design fired both through one latch and a benign omission then swallowed
+        the futility verdict entirely -- measured FUTILITY=1 becoming 0. Here both must
+        arrive.
+        """
+        from open_webui_openrouter_pipe.models.registry import ModelFamily
+
+        pipe = pipe_instance_async
+        ModelFamily.set_dynamic_specs(
+            {"test.model": {"context_length": max_tokens,
+                            "full_model": {"context_length": max_tokens}}}
+        )
+        history: list[dict] = []
+        for i in range(8):
+            history.append({"type": "function_call", "call_id": f"h{i}", "name": f"tool{i}",
+                            "arguments": "{}"})
+            history.append({"type": "function_call_output", "call_id": f"h{i}",
+                            "output": "H" * result_chars})
+        body = ResponsesBody.model_validate(
+            {"model": "test/model", "stream": True,
+             "input": [{"type": "message", "role": "user",
+                        "content": [{"type": "input_text", "text": "hi"}]}, *history]}
+        )
+        valves = pipe.valves.model_copy(
+            update={"TOOL_EXECUTION_MODE": "Pipeline", "MAX_FUNCTION_CALL_LOOPS": 2}
+        )
+        rounds = iter(range(1, 200))
+
+        async def streaming(self, session, request_body, **_kwargs):
+            if next(rounds) == 1:
+                yield {"type": "response.completed", "response": {"output": [
+                    {"type": "function_call", "call_id": "fresh", "name": "lookup",
+                     "arguments": "{}"}], "usage": {}}}
+            else:
+                yield {"type": "response.output_text.delta", "delta": "Done."}
+                yield {"type": "response.completed", "response": {"output": [], "usage": {}}}
+
+        async def mock_execute(calls, registry):
+            return [{"type": "function_call_output", "call_id": c.get("call_id"),
+                     "output": "F" * fresh_chars} for c in calls]
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", streaming)
+        monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_execute)
+        emitted: list[dict] = []
+
+        async def emitter(event):
+            emitted.append(event)
+
+        await pipe._streaming_handler._run_streaming_loop(
+            body, valves, emitter,
+            metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"},
+            tools={"lookup": {"callable": lambda **_kwargs: "ok"}},
+            session=cast(Any, object()), user_id="user-123",
+        )
+
+        notices = [
+            e["data"]["content"] for e in emitted
+            if isinstance(e, dict) and e.get("type") == "notification"
+            and isinstance(e.get("data"), dict)
+        ]
+        dropped = [n for n in notices if "Earlier tool results no longer fit" in n]
+        live = [n for n in notices if "Too large for the remaining context this turn" in n]
+        futile = [n for n in notices if "reduced to a placeholder" in n]
+
+        assert bool(dropped) is expect_dropped, (
+            f"the replay pass dropped history and the user saw {notices}; the live "
+            "notice does not cover it -- these are different passes losing different "
+            "results, and only the live one was ever announced"
+        )
+        assert not (set(dropped) & set(live)), (
+            "the same loss was announced twice under two wordings"
+        )
+        assert bool(futile) is expect_futile, (
+            f"the futility verdict was {'swallowed' if expect_futile else 'invented'}: "
+            f"{notices}"
+        )
+        for notice in dropped:
+            assert "0 tool" not in notice and "(s)" not in notice, (
+                f"the notice reads as a template rather than a sentence: {notice}"
+            )
 
     @pytest.mark.parametrize(
         ("max_tokens", "user_chars", "expect_futile"),

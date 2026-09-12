@@ -91,7 +91,7 @@ def _strip_reasoning_anchor_keys(item: dict[str, Any]) -> dict[str, Any]:
 
 logger = logging.getLogger(__name__)
 _REUSE_DOWNLOAD_MEMO_MAX_BYTES = 8 * 1024 * 1024
-_reuse_download_memo: OrderedDict[str, tuple[bytes, str]] = OrderedDict()
+_reuse_download_memo: OrderedDict[tuple[str, str], tuple[bytes, str]] = OrderedDict()
 _warned_image_reuse: set[str] = set()
 _warned_oversized_inline: set[str] = set()
 
@@ -612,8 +612,11 @@ async def transform_messages_to_input(
 
                     elif is_http_or_https_url(url) and not is_internal_file_url(url):
                         try:
+                            memo_key = (chat_id, url) if chat_id else None
                             remembered = (
-                                _reuse_download_memo.get(url) if mode == "reuse" else None
+                                _reuse_download_memo.get(memo_key)
+                                if mode == "reuse" and memo_key is not None
+                                else None
                             )
                             downloaded = (
                                 None
@@ -660,6 +663,7 @@ async def transform_messages_to_input(
                                 elif mode == "reuse":
                                     if (
                                         remembered is None
+                                        and memo_key is not None
                                         and len(downloaded["data"])
                                         <= _REUSE_DOWNLOAD_MEMO_MAX_BYTES
                                     ):
@@ -673,7 +677,7 @@ async def transform_messages_to_input(
                                         ):
                                             _, evicted = _reuse_download_memo.popitem(last=False)
                                             held -= len(evicted[0])
-                                        _reuse_download_memo[url] = (
+                                        _reuse_download_memo[memo_key] = (
                                             downloaded["data"],
                                             downloaded.get("mime_type") or "",
                                         )
