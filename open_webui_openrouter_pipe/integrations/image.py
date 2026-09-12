@@ -602,6 +602,21 @@ class ImageGenerationAdapter:
             record.get("supports_streaming") is True for record in records
         )
 
+    @staticmethod
+    def _should_ask_for_a_stream(
+        payload: dict[str, Any], records: list[dict[str, Any]]
+    ) -> bool:
+        requested = payload.get("n")
+        if (
+            isinstance(requested, int)
+            and not isinstance(requested, bool)
+            and requested > 1
+        ):
+            return False
+        if payload.get("input_references"):
+            return False
+        return ImageGenerationAdapter._every_endpoint_publishes_streaming(records)
+
     def _unserved_pin_note(self, unserved_pin: str, api_model_id: str) -> _Note:
         self._logger.log(
             warn_level(_warned_image_endpoints, f"{api_model_id}:pin"),
@@ -1198,13 +1213,7 @@ class ImageGenerationAdapter:
             notes, api_model_id=api_model_id, event_emitter=event_emitter
         )
 
-        requested = payload.get("n")
-        single = not (
-            isinstance(requested, int)
-            and not isinstance(requested, bool)
-            and requested > 1
-        )
-        if single and self._every_endpoint_publishes_streaming(records):
+        if self._should_ask_for_a_stream(payload, records):
             payload["stream"] = True
 
         if event_emitter:

@@ -865,3 +865,38 @@ async def test_a_pin_naming_a_provider_that_does_not_serve_this_model_says_so():
     assert body.image_config == {"resolution": "4K"}, (
         "an unmatched pin must not also silently drop the settings the user chose"
     )
+
+
+@pytest.mark.parametrize(
+    ("payload", "asked"),
+    [
+        ({"prompt": "a leaf"}, True),
+        ({"prompt": "remove the frame", "input_references": [{"type": "image_url"}]}, False),
+        ({"prompt": "a leaf", "n": 2}, False),
+        ({"prompt": "remove the frame", "input_references": [], "n": 1}, True),
+    ],
+)
+def test_a_stream_is_never_asked_for_on_an_edit(payload, asked):
+    """OpenRouter refuses a streamed edit outright, and the contract cannot say so.
+
+    Reported from production 2026-09-12: `openai/gpt-image-2.5-sunburst` publishes
+    `supports_streaming: true`, the pipe read that correctly, and a request carrying
+    `input_references` came back `400 Streaming is not supported for image-to-image (edit)
+    requests`. The flag describes the ENDPOINT; the restriction is on the REQUEST SHAPE, so
+    no amount of reading the contract catches it -- the presence of references has to be
+    part of the decision.
+
+    An empty reference list is a generate, not an edit, so it still streams: the fact is
+    whether references were actually attached, not whether the key exists.
+    """
+    streaming_records = [{"supports_streaming": True}]
+    assert ImageGenerationAdapter._should_ask_for_a_stream(payload, streaming_records) is asked
+
+
+def test_an_edit_is_refused_a_stream_even_on_the_recorded_contract_that_allows_one():
+    """Driven off the recording rather than a hand-built record, so a re-record moves it."""
+    edit = {"prompt": "remove the frame", "input_references": [{"type": "image_url"}]}
+    generate = {"prompt": "a leaf"}
+    assert ImageGenerationAdapter._every_endpoint_publishes_streaming(records(GPT_IMAGE_2)) is True
+    assert ImageGenerationAdapter._should_ask_for_a_stream(generate, records(GPT_IMAGE_2)) is True
+    assert ImageGenerationAdapter._should_ask_for_a_stream(edit, records(GPT_IMAGE_2)) is False
