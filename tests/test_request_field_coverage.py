@@ -451,3 +451,79 @@ def test_the_accepted_provider_keys_are_the_ones_the_format_publishes(transport)
         f"{transport}: invented={sorted(set(accepted) - recorded)} "
         f"missing={sorted(recorded - set(accepted))}"
     )
+
+
+def test_the_catalog_partition_covers_every_key_the_catalogue_publishes():
+    """A second arm, because the two recordings go stale on different cadences.
+
+    The request-format arm above compares against a schema recorded by hand. That recording
+    was made 2026-08-19 behind the catalogue, and in that window a model arrived publishing
+    two typed control domains -- `upscale_factor` and `creativity` -- that reached no control,
+    no warning and no list, while the gate built to notice exactly that passed. It could not
+    see them: they are catalogue keys, and it only reads request-body keys.
+
+    The catalogue is the recording that grows a new control the day a model ships, so it gets
+    its own arm. The expected set is computed from the fixture, never typed here.
+    """
+    from open_webui_openrouter_pipe.integrations.request_fields import (
+        VIDEO_CATALOG_FIELD_GAPS,
+        VIDEO_CATALOG_FIELD_ROUTES,
+        VIDEO_CATALOG_FIELDS,
+    )
+
+    published: set[str] = set()
+    for row in VIDEO_CATALOG.values():
+        published |= set(row)
+    assert len(published) > 10, f"only {len(published)} keys seen; the fixture is not loading"
+
+    covered = set(VIDEO_CATALOG_FIELD_ROUTES) | set(VIDEO_CATALOG_FIELD_GAPS)
+    assert covered == published, (
+        f"unlisted={sorted(published - covered)} invented={sorted(covered - published)}. "
+        "A key the catalogue publishes and nothing here mentions is indistinguishable from "
+        "one deliberately left alone -- which is how a model shipped with its only two "
+        "settings reaching nothing at all."
+    )
+    assert VIDEO_CATALOG_FIELDS == covered, (
+        "the exported set is the two halves put together, not a third list beside them"
+    )
+    assert not (set(VIDEO_CATALOG_FIELD_ROUTES) & set(VIDEO_CATALOG_FIELD_GAPS))
+
+
+def test_every_catalog_gap_carries_a_reason_long_enough_to_be_one():
+    """A label is not an explanation; a reader must be able to tell a decision from an oversight."""
+    from open_webui_openrouter_pipe.integrations.request_fields import VIDEO_CATALOG_FIELD_GAPS
+
+    assert VIDEO_CATALOG_FIELD_GAPS, "claiming no gaps at all needs removing this test, not emptying the list"
+    for field, reason in VIDEO_CATALOG_FIELD_GAPS.items():
+        assert len(reason.split()) >= 12, f"{field}: {reason!r}"
+
+
+def test_a_catalog_key_carrying_a_control_domain_is_not_quietly_shrugged_off():
+    """A gap whose reason is real and a gap that was never noticed read identically.
+
+    Every gap entry names why nothing reads that key. For the keys that publish a settable
+    domain on some model -- a {min,max} object or a non-empty list -- the reason has to say
+    something about routing, not merely that the field is unused, because those are the ones
+    a user can see advertised and cannot reach.
+    """
+    from open_webui_openrouter_pipe.integrations.request_fields import VIDEO_CATALOG_FIELD_GAPS
+
+    domained = {
+        key
+        for row in VIDEO_CATALOG.values()
+        for key, value in row.items()
+        if isinstance(value, dict) and {"min", "max"} <= set(value)
+        or isinstance(value, list) and value and all(isinstance(v, (int, float)) for v in value)
+    }
+    unexplained = [
+        key
+        for key in sorted(domained & set(VIDEO_CATALOG_FIELD_GAPS))
+        if not any(
+            word in VIDEO_CATALOG_FIELD_GAPS[key].lower()
+            for word in ("route", "request format", "passthrough", "send")
+        )
+    ]
+    assert not unexplained, (
+        f"these keys publish a control domain but their gap reason never says why it cannot "
+        f"be sent: {unexplained}"
+    )

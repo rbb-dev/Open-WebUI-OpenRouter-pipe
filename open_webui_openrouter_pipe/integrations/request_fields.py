@@ -61,6 +61,60 @@ VIDEO_FIELD_GAPS: dict[str, str] = {
     ),
 }
 
+VIDEO_CATALOG_FIELD_ROUTES: dict[str, str] = {
+    "allowed_passthrough_parameters": "the names a typed control is drawn for, or a free-text box when none exists",
+    "description": "the capability line of the model's help card",
+    "generate_audio": "the audio toggle, drawn when the catalogue does not declare it off",
+    "id": "the model's identity everywhere: filter name, marker, catalogue lookup, help card",
+    "name": "the display name on the filter and at the head of the help card",
+    "seed": "the seed control, drawn when the catalogue does not declare it off",
+    "supported_aspect_ratios": "the aspect-ratio control, drawn from the shapes listed",
+    "supported_durations": "the duration control, drawn from the lengths listed",
+    "supported_frame_images": "the frames control, and the frame-controls line of the help card",
+    "supported_resolutions": "the resolution control, drawn from the tiers listed",
+    "supported_sizes": "the size control, drawn from the exact dimensions listed",
+}
+
+VIDEO_CATALOG_FIELD_GAPS: dict[str, str] = {
+    "canonical_slug": (
+        "the dated spelling of the same model, such as runway/aleph-2-20260729. Every "
+        "lookup in this pipe keys on the undated id the chat header shows, so a second "
+        "spelling would only give two names for one model and a way for them to disagree."
+    ),
+    "created": (
+        "the timestamp the model was published. Nothing here orders or filters models by "
+        "age: the catalogue arrives in OpenRouter's own order and is shown in it, so the "
+        "date would be read by nobody and would have to be kept true by somebody."
+    ),
+    "creativity": (
+        "the model publishes the two modes it accepts, but OpenRouter's video request "
+        "format documents no field that carries them and the model names only "
+        "safety_tolerance as a passthrough parameter, so there is no route to send one. "
+        "Returned to the panel rather than guessed at; see round 21 in the ledger."
+    ),
+    "hugging_face_id": (
+        "null on every video model OpenRouter publishes, so there is nothing to read. If "
+        "one ever carries a value, this entry is wrong and the census test will not catch "
+        "it, because a gap with a reason is exactly what it is asked to accept."
+    ),
+    "pricing_skus": (
+        "deliberately never read. A rate shown to a reader goes stale in silence whoever "
+        "supplied it, so no card, filter or page in this pipe quotes one; what a "
+        "generation actually cost is reported after the poll instead. Pinned by "
+        "test_no_video_price_reaches_a_user_at_all."
+    ),
+    "upscale_factor": (
+        "the model publishes the range it accepts, but OpenRouter's video request format "
+        "documents no field that carries it and the model names only safety_tolerance as "
+        "a passthrough parameter, so there is no route to send one. Returned to the panel "
+        "rather than guessed at; see round 21 in the ledger."
+    ),
+}
+
+VIDEO_CATALOG_FIELDS: frozenset[str] = frozenset(VIDEO_CATALOG_FIELD_ROUTES) | frozenset(
+    VIDEO_CATALOG_FIELD_GAPS
+)
+
 IMAGE_REQUEST_FIELDS: frozenset[str] = frozenset(IMAGE_FIELD_ROUTES) | frozenset(
     IMAGE_FIELD_GAPS
 )
