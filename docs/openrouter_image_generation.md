@@ -228,6 +228,18 @@ TTL is shared with the video and chat catalogs.
 | `sourceful/riverflow-v2.5-fast` | Sourceful: Riverflow V2.5 Fast | image only | Speed-optimized Riverflow 2.5; JPEG, up to 2K |
 | `sourceful/riverflow-v2.5-pro` | Sourceful: Riverflow V2.5 Pro | image only | Most powerful Riverflow 2.5; brand and marketing finals |
 | `x-ai/grok-imagine-image-quality` | SpaceXAI: Grok Imagine Image Quality | image only | Photoreal 1K/2K; 14 ratios including tall phone screens |
+| `bytedance-seed/seedream-5-0-lite` | ByteDance Seed: Seedream 5.0 Lite | image only | Widest framing range here (18 ratios, incl. the tall phone shapes); 2K or 4K; up to 14 references and 4 variations |
+| `bytedance-seed/seedream-5-0-pro` | ByteDance Seed: Seedream 5.0 Pro | image only | Production tier: same 18 ratios and 14 references, one image per request, tops out at 2K |
+| `meta/muse-image` | Meta: Muse Image | image only | Agentic multi-pass generation and editing; publishes no settings at all, so the prompt is the whole interface |
+| `microsoft/mai-image-2.6` | Microsoft AI: MAI-Image-2.6 | image only | Precision MAI tier; web grounding lets it consult the web for real places, products and current subjects |
+| `microsoft/mai-image-2.6-flash` | Microsoft AI: MAI-Image-2.6 Flash | image only | Low-latency MAI tier with identical settings to the precision one, for interactive work |
+| `openai/gpt-image-2.5-flare` | OpenAI: GPT Image 2.5 Flare | image only | Speed tier of GPT Image 2.5; same controls as Sunburst, with partial-image streaming |
+| `openai/gpt-image-2.5-sunburst` | OpenAI: GPT Image 2.5 Sunburst | image only | Precision tier of GPT Image 2.5; six quality steps, transparent backgrounds, 16 references, 10 variations |
+| `recraft/recraft-v4-styles` | Recraft: Recraft V4 Styles | image only | Style transfer from reference images rather than adjectives; at least one reference is required |
+| `recraft/recraft-v4-styles-pro` | Recraft: Recraft V4 Styles Pro | image only | Higher-fidelity Styles tier for finished work; same interface as the base tier |
+| `recraft/recraft-v4-styles-pro-vector` | Recraft: Recraft V4 Styles Pro Vector | image only | Higher-fidelity SVG output with style transfer; cleaner geometry than the base vector tier |
+| `recraft/recraft-v4-styles-vector` | Recraft: Recraft V4 Styles Vector | image only | SVG output with style transfer, for logos and icons that must survive resizing |
+| `x-ai/grok-imagine-image-2.0` | xAI: Grok Imagine Image 2.0 | image only | Compact surface: 14 framings incl. tall phone shapes, two quality steps, 1K or 2K, no provider parameters |
 
 Pick model selection rules of thumb:
 

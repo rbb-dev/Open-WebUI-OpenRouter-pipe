@@ -1,0 +1,88 @@
+{
+  "endpoints": [
+    {
+      "allowed_passthrough_parameters": [],
+      "pricing": [
+        {
+          "billable": "input_image",
+          "cost_usd": 0.01,
+          "unit": "image"
+        },
+        {
+          "billable": "output_image",
+          "cost_usd": 0.04,
+          "unit": "image",
+          "variant": "low_1k"
+        },
+        {
+          "billable": "output_image",
+          "cost_usd": 0.06,
+          "unit": "image",
+          "variant": "low_2k"
+        },
+        {
+          "billable": "output_image",
+          "cost_usd": 0.06,
+          "unit": "image",
+          "variant": "medium_1k"
+        },
+        {
+          "billable": "output_image",
+          "cost_usd": 0.08,
+          "unit": "image",
+          "variant": "medium_2k"
+        }
+      ],
+      "provider_name": "SpaceXAI",
+      "provider_slug": "xai",
+      "provider_tag": "xai",
+      "supported_parameters": {
+        "aspect_ratio": {
+          "type": "enum",
+          "values": [
+            "1:1",
+            "3:4",
+            "4:3",
+            "9:16",
+            "16:9",
+            "2:3",
+            "3:2",
+            "9:19.5",
+            "19.5:9",
+            "9:20",
+            "20:9",
+            "1:2",
+            "2:1",
+            "auto"
+          ]
+        },
+        "input_references": {
+          "max": 3,
+          "min": 0,
+          "type": "range"
+        },
+        "n": {
+          "max": 1,
+          "min": 1,
+          "type": "range"
+        },
+        "quality": {
+          "type": "enum",
+          "values": [
+            "low",
+            "medium"
+          ]
+        },
+        "resolution": {
+          "type": "enum",
+          "values": [
+            "1K",
+            "2K"
+          ]
+        }
+      },
+      "supports_streaming": false
+    }
+  ],
+  "id": "x-ai/grok-imagine-image-2.0"
+}

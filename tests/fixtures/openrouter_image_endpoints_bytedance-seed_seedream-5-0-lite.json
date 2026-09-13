@@ -1,0 +1,69 @@
+{
+  "endpoints": [
+    {
+      "allowed_passthrough_parameters": [],
+      "pricing": [
+        {
+          "billable": "output_image",
+          "cost_usd": 0.035,
+          "unit": "image"
+        },
+        {
+          "billable": "input_image",
+          "cost_usd": 0,
+          "unit": "image"
+        }
+      ],
+      "provider_name": "Seed",
+      "provider_slug": "seed",
+      "provider_tag": "seed",
+      "supported_parameters": {
+        "aspect_ratio": {
+          "type": "enum",
+          "values": [
+            "1:1",
+            "1:2",
+            "2:1",
+            "2:3",
+            "3:2",
+            "3:4",
+            "4:3",
+            "4:5",
+            "5:4",
+            "9:16",
+            "16:9",
+            "9:19.5",
+            "19.5:9",
+            "9:20",
+            "20:9",
+            "9:21",
+            "21:9",
+            "auto"
+          ]
+        },
+        "input_references": {
+          "max": 14,
+          "min": 0,
+          "type": "range"
+        },
+        "n": {
+          "max": 4,
+          "min": 1,
+          "type": "range"
+        },
+        "resolution": {
+          "type": "enum",
+          "values": [
+            "2K",
+            "4K"
+          ]
+        },
+        "seed": {
+          "type": "boolean"
+        }
+      },
+      "supports_streaming": false
+    }
+  ],
+  "id": "bytedance-seed/seedream-5-0-lite"
+}

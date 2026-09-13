@@ -571,6 +571,213 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "2K carries more detail than 1K; draft at 1K and switch up once the framing is settled.",
         ],
     },
+    "openai/gpt-image-2.5-sunburst": {
+        "display_name": "OpenAI: GPT Image 2.5 Sunburst",
+        "best_known_for": (
+            "The precision tier of GPT Image 2.5 — the one to reach for when the brief is "
+            "detailed and the result has to match it. Nine framings including 21:9 and auto, "
+            "six quality tiers from low through max, a transparent-background option, and up "
+            "to sixteen reference images in a single request. It returns up to ten variations "
+            "at once, and it streams partial images as they are drawn, so a long render shows "
+            "progress instead of a blank wait."
+        ),
+        "tips_and_pitfalls": [
+            "Ask for several variations rather than re-running one prompt — n goes to 10, and choosing beats re-rolling.",
+            "quality has six steps (auto, low, medium, high, xhigh, max); auto is usually right until the composition is settled.",
+            "background transparent gives a cut-out ready to composite; opaque forces a filled frame.",
+            "Up to sixteen reference images — enough to pin a character, a palette and a layout in one go.",
+            "output_compression only affects lossy containers; on a lossless one it changes nothing.",
+            "moderation is the one provider parameter.",
+        ],
+    },
+    "openai/gpt-image-2.5-flare": {
+        "display_name": "OpenAI: GPT Image 2.5 Flare",
+        "best_known_for": (
+            "The speed tier of GPT Image 2.5, with the same control surface as Sunburst — the "
+            "same nine framings, six quality tiers, transparent background, sixteen reference "
+            "slots and up to ten variations, and the same partial-image streaming. Prompts "
+            "move between the two tiers unchanged, so the usual pattern is to find the "
+            "composition here and render the keeper on Sunburst."
+        ),
+        "tips_and_pitfalls": [
+            "Identical settings to Sunburst, so nothing has to be re-tuned when you switch tiers.",
+            "Ask for several variations at once; n goes to 10.",
+            "quality auto is the sane default while the prompt is still moving.",
+            "background transparent gives a cut-out ready to composite.",
+            "Up to sixteen reference images.",
+            "moderation is the one provider parameter.",
+        ],
+    },
+    "microsoft/mai-image-2.6": {
+        "display_name": "Microsoft AI: MAI-Image-2.6",
+        "best_known_for": (
+            "The precision tier of Microsoft's MAI-Image-2.6 family. Eight framings including "
+            "auto, up to five reference images, and one image per request — it is built to get "
+            "a single picture right rather than to offer a spread. Its distinctive control is "
+            "web grounding, which lets the model consult the web for a subject it would "
+            "otherwise have to invent."
+        ),
+        "tips_and_pitfalls": [
+            "One image per request, so iterate on the prompt rather than asking for a spread.",
+            "web_grounding is the one provider parameter, and the reason to pick this family: it helps on real places, products and current subjects.",
+            "Up to five reference images.",
+            "No resolution or quality control is published — the model decides.",
+            "Use the Flash tier while the prompt is still moving.",
+        ],
+    },
+    "microsoft/mai-image-2.6-flash": {
+        "display_name": "Microsoft AI: MAI-Image-2.6 Flash",
+        "best_known_for": (
+            "The low-latency member of the MAI-Image-2.6 family, built for interactive use "
+            "where a fast answer matters more than the last increment of fidelity. Same eight "
+            "framings, same five reference slots, same one-image-per-request, and the same web "
+            "grounding as the precision tier, so a prompt developed here moves there unchanged."
+        ),
+        "tips_and_pitfalls": [
+            "Draft here, finish on MAI-Image-2.6 — the settings are identical.",
+            "One image per request.",
+            "web_grounding is the one provider parameter.",
+            "Up to five reference images.",
+            "No resolution or quality control is published.",
+        ],
+    },
+    "meta/muse-image": {
+        "display_name": "Meta: Muse Image",
+        "best_known_for": (
+            "An agentic image model that generates and edits from text and reference images. "
+            "Unlike the single-pass models here it works in several passes of its own, which "
+            "is why it publishes no settings at all: no framing, no resolution, no variation "
+            "count, no provider parameters. The prompt and the images you attach are the whole "
+            "interface, so say in words what you would otherwise have set in a control."
+        ),
+        "tips_and_pitfalls": [
+            "There are no settings. Everything you want — shape, size, how many — has to be in the prompt.",
+            "Ask for the framing in words: \"a wide 16:9 banner\" rather than reaching for an aspect-ratio control that is not there.",
+            "It edits as well as generates, so attaching an image and describing the change is a first-class use.",
+            "Because it works in several passes, a single request can take noticeably longer than a one-pass model.",
+            "Nothing here is a limitation of the pipe — the model publishes no contract to draw controls from.",
+        ],
+    },
+    "recraft/recraft-v4-styles": {
+        "display_name": "Recraft: Recraft V4 Styles",
+        "best_known_for": (
+            "Style transfer rather than style description. Every request needs at least one "
+            "style reference image, and the output is generated to match it — the way to get a "
+            "consistent look across a set without writing the same adjectives every time. "
+            "Twelve framings, one to ten references, and up to six images per request. Its "
+            "provider parameters address the style itself: a saved style id, how hard to match "
+            "it, fine-grained controls, and a seed."
+        ),
+        "tips_and_pitfalls": [
+            "At least one reference image is REQUIRED — a text-only prompt will not work on this model.",
+            "The references define the look, not the subject; describe the subject in the prompt.",
+            "style_match sets how literally the reference is followed — the dial between homage and copy.",
+            "style_id reuses a style you have already saved with Recraft, instead of re-uploading its references.",
+            "Ask for several at once; n goes to 6, and a style is easier to judge across a set.",
+            "random_seed and controls are the other two provider parameters.",
+        ],
+    },
+    "recraft/recraft-v4-styles-pro": {
+        "display_name": "Recraft: Recraft V4 Styles Pro",
+        "best_known_for": (
+            "The higher-fidelity tier of Recraft V4 Styles, for finished work rather than "
+            "exploration. Same interface as the base tier — at least one style reference "
+            "required, twelve framings, one to ten references, up to six per request, and the "
+            "same style_id / style_match / controls / random_seed parameters — with a sharper "
+            "render. Find the style on the base tier and produce the final here."
+        ),
+        "tips_and_pitfalls": [
+            "At least one reference image is REQUIRED.",
+            "Settings are identical to the base tier, so a working setup moves across unchanged.",
+            "style_match sets how literally the reference is followed.",
+            "style_id reuses a saved Recraft style instead of re-uploading its references.",
+            "Reserve it for finals; explore on Recraft V4 Styles.",
+        ],
+    },
+    "recraft/recraft-v4-styles-vector": {
+        "display_name": "Recraft: Recraft V4 Styles Vector",
+        "best_known_for": (
+            "The vector member of the V4 Styles line: it returns SVG rather than pixels, so the "
+            "result scales to any size without softening. Style transfer works the same way — "
+            "at least one style reference is required and drives the look — across twelve "
+            "framings, one to ten references and up to six per request. For logos, icons, "
+            "badges and anything that has to survive being resized."
+        ),
+        "tips_and_pitfalls": [
+            "Output is SVG; output_format publishes svg and nothing else.",
+            "At least one reference image is REQUIRED.",
+            "Vector suits flat, graphic, bounded shapes — photographic references will not vectorise well.",
+            "style_match sets how literally the reference is followed.",
+            "Ask for several at once; n goes to 6.",
+        ],
+    },
+    "recraft/recraft-v4-styles-pro-vector": {
+        "display_name": "Recraft: Recraft V4 Styles Pro Vector",
+        "best_known_for": (
+            "The higher-fidelity vector tier of V4 Styles — SVG output with cleaner geometry "
+            "and better curve handling than the base vector tier. The interface is the same: a "
+            "style reference is required, twelve framings, one to ten references, up to six per "
+            "request, and the same four style parameters. For vector work that ships."
+        ),
+        "tips_and_pitfalls": [
+            "Output is SVG; output_format publishes svg and nothing else.",
+            "At least one reference image is REQUIRED.",
+            "Settings are identical to the base vector tier — develop there, finish here.",
+            "Flat graphic references vectorise well; photographs do not.",
+            "style_id, style_match, controls and random_seed are the provider parameters.",
+        ],
+    },
+    "bytedance-seed/seedream-5-0-lite": {
+        "display_name": "ByteDance Seed: Seedream 5.0 Lite",
+        "best_known_for": (
+            "The widest framing range in this catalogue — eighteen ratios, from 21:9 ultrawide "
+            "down to 9:21 and the phone-screen 9:19.5 and 9:20 shapes almost nothing else "
+            "offers. It renders at 2K or 4K, takes up to fourteen reference images, returns up "
+            "to four variations, and honours a seed. Suited to professional visual work that "
+            "benefits from web-connected retrieval."
+        ),
+        "tips_and_pitfalls": [
+            "Eighteen framings including the tall phone shapes — this is the model when the output has to fit an unusual frame.",
+            "4K is available here and not on the Pro tier, which is the opposite of what the names suggest.",
+            "Up to fourteen reference images, so a character, a palette and a layout can all be pinned at once.",
+            "Ask for several at once; n goes to 4.",
+            "Fix a seed before iterating so the composition holds while the wording changes.",
+            "No provider parameters at all — what you see is the whole surface.",
+        ],
+    },
+    "bytedance-seed/seedream-5-0-pro": {
+        "display_name": "ByteDance Seed: Seedream 5.0 Pro",
+        "best_known_for": (
+            "The production tier of Seedream 5.0, built for commercial visual work where the "
+            "result has to be exact. Same eighteen framings and fourteen reference slots as the "
+            "Lite tier, and it honours a seed — but it returns one image per request and tops "
+            "out at 2K, so it is a finishing model rather than an exploratory one."
+        ),
+        "tips_and_pitfalls": [
+            "One image per request, unlike Lite's four — iterate on the prompt, not on the batch.",
+            "Tops out at 2K; if you need 4K, the Lite tier is the one that offers it.",
+            "Same eighteen framings and fourteen reference slots as Lite, so a setup moves across unchanged.",
+            "Fix a seed before iterating so the composition holds while the wording changes.",
+            "No provider parameters at all.",
+        ],
+    },
+    "x-ai/grok-imagine-image-2.0": {
+        "display_name": "xAI: Grok Imagine Image 2.0",
+        "best_known_for": (
+            "Generation and editing from text or reference images, with fourteen framings "
+            "including the tall 9:19.5 and 9:20 phone shapes. Two quality steps and two "
+            "resolutions, up to three reference images, one image per request. A compact "
+            "control surface with no provider parameters, which makes it one of the simplest "
+            "models here to drive."
+        ),
+        "tips_and_pitfalls": [
+            "quality publishes low and medium only — there is no high tier to reach for.",
+            "1K or 2K; draft at 1K and step up once the composition is right.",
+            "Up to three reference images, fewer than most models here — pick the ones that matter.",
+            "One image per request, so iterate on the prompt rather than asking for a spread.",
+            "No provider parameters at all.",
+        ],
+    },
 }
 
 # Public re-export name (mirror of VIDEO_HELP_BY_MODEL convention).

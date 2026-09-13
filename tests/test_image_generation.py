@@ -1388,6 +1388,49 @@ the catalogue, in both directions, so a sweep parametrised over it cannot silent
 """
 
 
+PUBLISHES_NOTHING = frozenset({"meta/muse-image"})
+"""Models whose contract publishes no settable parameter at all.
+
+`meta/muse-image` is agentic: it works in several passes of its own and exposes no framing,
+size, count or provider parameter -- the prompt and the attached images are the whole
+interface. It is not a gap in the pipe; there is no contract to draw a control from.
+
+Named here rather than skipped in place, so a model that silently LOSES its parameters
+reddens `test_the_no_knob_models_are_exactly_the_ones_that_publish_nothing` instead of
+quietly dropping out of every sweep that needs a knob to drive.
+"""
+
+CONTRACTS_WITH_KNOBS = [
+    (slug, model_id) for slug, model_id in EVERY_CONTRACT if model_id not in PUBLISHES_NOTHING
+]
+"""`EVERY_CONTRACT` minus the models that publish nothing.
+
+For the nodes that must choose a published value and follow it to the wire. Those carry
+their own anti-vacuity guards -- "publishes no choice list at all, so this node asserts
+nothing" -- which fire correctly on a no-knob model. Feeding them one turns a guard that
+exists to catch a vacuous sweep into a failure about a model that is behaving correctly.
+"""
+
+
+def test_the_no_knob_models_are_exactly_the_ones_that_publish_nothing():
+    """The exclusion list is measured against the contracts, not trusted.
+
+    Computed from `supported_parameters` rather than from the renderer, so a renderer that
+    stopped drawing controls entirely could not satisfy this by agreeing with itself.
+    """
+    silent = {
+        model_id
+        for slug, model_id in EVERY_CONTRACT
+        if not (_recorded_endpoint(slug) or [{}])[0].get("supported_parameters")
+    }
+    assert silent == PUBLISHES_NOTHING, (
+        f"models publishing nothing moved: {sorted(silent - PUBLISHES_NOTHING)} joined and "
+        f"{sorted(PUBLISHES_NOTHING - silent)} left. A model that lost its published "
+        "parameters looks identical to one that never had any."
+    )
+    assert len(CONTRACTS_WITH_KNOBS) == len(EVERY_CONTRACT) - len(PUBLISHES_NOTHING)
+
+
 
 @pytest.mark.parametrize(
     ("fixture", "model_id", "expected_ratios", "expected_passthrough"),
@@ -1654,7 +1697,7 @@ async def test_both_id_forms_map_to_separate_lists():
         "mutating one key's list changed the other; they alias the same object"
     )
 
-@pytest.mark.parametrize(("fixture", "model_id"), EVERY_CONTRACT, ids=[s for s, _ in EVERY_CONTRACT])
+@pytest.mark.parametrize(("fixture", "model_id"), CONTRACTS_WITH_KNOBS, ids=[s for s, _ in CONTRACTS_WITH_KNOBS])
 def test_the_filter_writes_for_the_id_open_webui_actually_sends(fixture, model_id):
     """The id is built the way production builds it, never typed as a literal.
 
@@ -1720,7 +1763,7 @@ def test_the_filter_writes_for_the_id_open_webui_actually_sends(fixture, model_i
         )
 
 
-@pytest.mark.parametrize(("fixture", "model_id"), EVERY_CONTRACT, ids=[s for s, _ in EVERY_CONTRACT])
+@pytest.mark.parametrize(("fixture", "model_id"), CONTRACTS_WITH_KNOBS, ids=[s for s, _ in CONTRACTS_WITH_KNOBS])
 def test_the_chosen_value_is_the_value_that_travels(fixture, model_id):
     """Two different choices must produce two different requests.
 
@@ -3722,7 +3765,7 @@ def _published_union(records: list[dict], parameter: str) -> list:
 
 
 @pytest.mark.parametrize(
-    ("slug", "model_id"), sorted(_recorded_contract_slugs().items())
+    ("slug", "model_id"), CONTRACTS_WITH_KNOBS
 )
 def test_the_server_tool_filter_offers_exactly_what_the_model_publishes(slug, model_id):
     """Every option offered is published, and every published option is offered.
@@ -4653,7 +4696,7 @@ def test_a_request_naming_no_size_is_left_exactly_as_the_user_built_it():
 
 
 @pytest.mark.parametrize(
-    ("slug", "model_id"), EVERY_CONTRACT, ids=[slug for slug, _ in EVERY_CONTRACT]
+    ("slug", "model_id"), CONTRACTS_WITH_KNOBS, ids=[slug for slug, _ in CONTRACTS_WITH_KNOBS]
 )
 def test_the_drawing_model_note_describes_the_panel_that_model_actually_gets(slug, model_id):
     """The valve that picks the drawing model explains the panel; it has to match it.

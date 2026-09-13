@@ -79,6 +79,21 @@ def _tool_controls(model_id: str, records: list[dict] | None) -> tuple[list[str]
 
 EVERY_CONTRACT = _contracts()
 
+CONTRACTS_WITH_KNOBS = [
+    (slug, model_id) for slug, model_id in EVERY_CONTRACT if model_id != "meta/muse-image"
+]
+"""`EVERY_CONTRACT` minus the one model whose contract publishes no settable parameter.
+
+`meta/muse-image` is agentic and exposes no framing, size, count or provider parameter. The
+nodes below assert that a panel draws MORE than the model published, and that the drawn list
+ranks in the documented order; both carry their own guard -- "publishes nothing, so a superset
+claim proves nothing" -- which fires correctly on it. Excluding it keeps those guards meaning
+what they say. `tests/test_image_generation.py::test_the_no_knob_models_are_exactly_the_ones_that_publish_nothing`
+measures this membership against the contracts, so a model that LOSES its parameters reddens
+rather than silently dropping out of these sweeps.
+"""
+
+
 ALWAYS = ("Quality", "Aspect ratio", "Background", "Output format", "Output compression")
 
 
@@ -101,6 +116,9 @@ def test_the_image_tool_draws_five_shared_controls_plus_exactly_one_size_control
 
 
 _TIERED_MODELS = frozenset({
+    "bytedance-seed/seedream-5-0-lite",
+    "bytedance-seed/seedream-5-0-pro",
+    "x-ai/grok-imagine-image-2.0",
     "bytedance-seed/seedream-4.5",
     "google/gemini-3-pro-image",
     "google/gemini-3-pro-image-preview",
@@ -120,6 +138,15 @@ _TIERED_MODELS = frozenset({
 })
 
 _TYPED_MODELS = frozenset({
+    "meta/muse-image",
+    "microsoft/mai-image-2.6",
+    "microsoft/mai-image-2.6-flash",
+    "openai/gpt-image-2.5-flare",
+    "openai/gpt-image-2.5-sunburst",
+    "recraft/recraft-v4-styles",
+    "recraft/recraft-v4-styles-pro",
+    "recraft/recraft-v4-styles-pro-vector",
+    "recraft/recraft-v4-styles-vector",
     "black-forest-labs/flux.2-flex",
     "black-forest-labs/flux.2-klein-4b",
     "black-forest-labs/flux.2-max",
@@ -3998,7 +4025,7 @@ def test_the_install_panels_valve_says_what_becomes_of_a_size_a_model_never_publ
 
 
 @pytest.mark.parametrize("dedicated", [True, False], ids=["image-api", "chat-route"])
-@pytest.mark.parametrize(("slug", "model_id"), EVERY_CONTRACT, ids=[s for s, _ in EVERY_CONTRACT])
+@pytest.mark.parametrize(("slug", "model_id"), CONTRACTS_WITH_KNOBS, ids=[s for s, _ in CONTRACTS_WITH_KNOBS])
 def test_every_recorded_panel_draws_more_than_its_model_publishes(slug, model_id, dedicated):
     """Measured per contract, so the claim "panel equals contract" can never come back.
 
@@ -5296,7 +5323,7 @@ def test_the_help_list_orders_its_groups_the_way_the_page_describes(dedicated):
 
     wrong: dict[str, str] = {}
     exercised = {"heads": 0, "choices": 0, "rest": 0}
-    for slug, model_id in EVERY_CONTRACT:
+    for slug, model_id in CONTRACTS_WITH_KNOBS:
         records = _records(slug)
         listed = _listed_controls(model_id, records, dedicated)
         groups = _published_groups(model_id, records, dedicated)

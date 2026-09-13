@@ -1,0 +1,64 @@
+{
+  "endpoints": [
+    {
+      "allowed_passthrough_parameters": [
+        "style_id",
+        "style_match",
+        "controls",
+        "random_seed"
+      ],
+      "pricing": [
+        {
+          "billable": "output_image",
+          "cost_usd": 0.12,
+          "unit": "image"
+        },
+        {
+          "billable": "input_reference",
+          "cost_usd": 0.005,
+          "unit": "request"
+        }
+      ],
+      "provider_name": "Recraft",
+      "provider_slug": "recraft",
+      "provider_tag": "recraft",
+      "supported_parameters": {
+        "aspect_ratio": {
+          "type": "enum",
+          "values": [
+            "1:1",
+            "2:1",
+            "1:2",
+            "3:2",
+            "2:3",
+            "4:3",
+            "3:4",
+            "5:4",
+            "4:5",
+            "16:9",
+            "9:16",
+            "auto"
+          ]
+        },
+        "input_references": {
+          "max": 10,
+          "min": 1,
+          "type": "range"
+        },
+        "n": {
+          "max": 6,
+          "min": 1,
+          "type": "range"
+        },
+        "output_format": {
+          "type": "enum",
+          "values": [
+            "svg"
+          ]
+        }
+      },
+      "supports_streaming": false
+    }
+  ],
+  "id": "recraft/recraft-v4-styles-pro-vector"
+}
