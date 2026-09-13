@@ -167,19 +167,19 @@ def _socket_resolution_only():
     import aiohttp.resolver as _resolver
 
     threaded = _resolver.ThreadedResolver
-    saved = [
-        (module, getattr(module, "DefaultResolver", None))
-        for module in (_resolver, _connector)
-    ]
-    for module, current in saved:
-        if current is not None:
-            module.DefaultResolver = threaded
+    saved_resolver = _resolver.DefaultResolver
+    saved_connector = getattr(_connector, "DefaultResolver", None)
+    _resolver.DefaultResolver = threaded
+    # `aiohttp.connector` binds its own reference at import, and patching only the public
+    # module leaves the connector still building an AsyncResolver. Reached via setattr
+    # because it is a private re-export that pyright refuses to see as an attribute.
+    setattr(_connector, "DefaultResolver", threaded)  # noqa: B010
     try:
         yield
     finally:
-        for module, current in saved:
-            if current is not None:
-                module.DefaultResolver = current
+        _resolver.DefaultResolver = saved_resolver
+        if saved_connector is not None:
+            setattr(_connector, "DefaultResolver", saved_connector)  # noqa: B010
 
 
 @contextmanager
