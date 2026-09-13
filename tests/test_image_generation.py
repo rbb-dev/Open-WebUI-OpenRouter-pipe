@@ -1388,6 +1388,10 @@ the catalogue, in both directions, so a sweep parametrised over it cannot silent
 """
 
 
+EVERY_CONTRACT_IDS = [model_id for _slug, model_id in EVERY_CONTRACT]
+"""Just the ids, for checks that compare against a documented list rather than render."""
+
+
 PUBLISHES_NOTHING = frozenset({"meta/muse-image"})
 """Models whose contract publishes no settable parameter at all.
 
@@ -4798,4 +4802,37 @@ def test_a_setting_no_panel_draws_is_named_by_itself_and_not_by_an_empty_title(
 
     assert _labelled(name) == expected, (
         f"a note about {name!r} would read {_labelled(name)!r}"
+    )
+
+
+_DOCUMENTED_BUT_UNLISTED = frozenset({"openrouter/auto"})
+"""Models with a deep dive that the image catalogue does not list.
+
+`openrouter/auto` is a router, not a model: `GET /images/models` excludes it and both auto
+routers by design, but a reader who picks it in the chat still needs the section. Named here
+so a section for a model OpenRouter actually withdrew cannot hide behind the same allowance.
+"""
+
+
+def test_the_documented_deep_dives_cover_exactly_the_catalogued_image_models():
+    """The video doc has had this check for months; the image doc never did, and drifted.
+
+    It sat at twenty-nine sections against forty catalogued models, so eleven a user can
+    pick in the chat header had no written reference at all — and nothing said so, because
+    only the table was pinned and the table is a different list. Both directions matter: a
+    section for a withdrawn model reads as a model you can still choose.
+    """
+    import re
+
+    doc = (Path(__file__).parent.parent / "docs" / "openrouter_image_generation.md").read_text()
+    dived = set(re.findall(r"^> \*\*id\*\*: `([^`]+)`", doc, re.M))
+    assert dived, "the deep-dive sections must declare the model they describe"
+
+    catalogued = set(EVERY_CONTRACT_IDS)
+    assert catalogued - dived == set(), (
+        f"catalogued but no deep dive: {sorted(catalogued - dived)}"
+    )
+    assert dived - catalogued == set(_DOCUMENTED_BUT_UNLISTED), (
+        f"deep dive for a model the catalogue does not list: "
+        f"{sorted((dived - catalogued) - _DOCUMENTED_BUT_UNLISTED)}"
     )

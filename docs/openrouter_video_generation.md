@@ -1152,19 +1152,21 @@ default applies; the second gets no control.
 | Identifier | Type | Default | Maps to API field | Gate (catalog condition) | Exposed on |
 |------------|------|---------|-------------------|---------------------------|------------|
 | `VIDEO_PROVIDER_OPTIONS_JSON` | `str` | `""` | `provider.options` (raw JSON object keyed by slug) | always | all 29 |
-| `VIDEO_DURATION` | `Literal[0, …]` | `0` | top-level `duration` | `supported_durations` non-empty | 21 (all except Aleph 2.0) |
-| `VIDEO_ASPECT_RATIO` | `Literal["", …]` | `""` | top-level `aspect_ratio` | `supported_aspect_ratios` non-empty | all 29 |
-| `VIDEO_RESOLUTION` | `Literal["", …]` | `""` | top-level `resolution` | `supported_resolutions` non-empty | 21 (all except Aleph 2.0) |
-| `VIDEO_SIZE` | `Literal["", …]` | `""` | top-level `size` | `supported_sizes` non-empty | 18 (all except FLUX.3 Video, H3, Aleph 2.0, Grok Imagine Video 1.5) |
-| `VIDEO_FRAME_MODE` | `Literal["auto", "none", "first_only"(, "first_last")]` | `"auto"` | controls `frame_images[]` shaping | `supported_frame_images` non-empty | 20 (all except Sora 2 Pro and Aleph 2.0) |
-| `VIDEO_NEGATIVE_PROMPT` | `str` | `""` | passthrough `negative_prompt` (or `negativePrompt` on Veo) | `"negative_prompt"` or `"negativePrompt"` in `allowed_passthrough_parameters` | 8 (Veo trio, Kling trio, Wan 2.6, Wan 2.7) |
-| `VIDEO_GENERATE_AUDIO` | `Literal["model_default", "on", "off"]` | `"model_default"` | top-level `generate_audio` (boolean) | `generate_audio` present and not published as `false` | 19 (all except Hailuo 2.3, Gen-4.5, Aleph 2.0) |
-| `VIDEO_SEED` | `int` (`ge=0`) | `0` | top-level `seed` | `seed` present and not published as `false` | 16 (all except FLUX.3 Video, H3, the Kling trio, Sora 2 Pro) |
+| `VIDEO_DURATION` | `Literal[0, …]` | `0` | top-level `duration` | `supported_durations` non-empty | 25 (all except FLUX Video Edit, FLUX Video Upscale, Avatar IV, Aleph 2.0) |
+| `VIDEO_ASPECT_RATIO` | `Literal["", …]` | `""` | top-level `aspect_ratio` | `supported_aspect_ratios` non-empty | 27 (all except FLUX Video Edit, FLUX Video Upscale) |
+| `VIDEO_RESOLUTION` | `Literal["", …]` | `""` | top-level `resolution` | `supported_resolutions` non-empty | 26 (all except FLUX Video Edit, FLUX Video Upscale, Aleph 2.0) |
+| `VIDEO_SIZE` | `Literal["", …]` | `""` | top-level `size` | `supported_sizes` non-empty | 19 of 29 |
+| `VIDEO_FRAME_MODE` | `Literal["auto", "none", "first_only"(, "first_last")]` | `"auto"` | controls `frame_images[]` shaping | `supported_frame_images` non-empty | 24 of 29 |
+| `VIDEO_NEGATIVE_PROMPT` | `str` | `""` | passthrough `negative_prompt` (or `negativePrompt` on Veo) | `"negative_prompt"` or `"negativePrompt"` in `allowed_passthrough_parameters` | 8 of 29 |
+| `VIDEO_GENERATE_AUDIO` | `Literal["model_default", "on", "off"]` | `"model_default"` | top-level `generate_audio` (boolean) | `generate_audio` present and not published as `false` | 22 of 29 |
+| `VIDEO_SEED` | `int` (`ge=0`) | `0` | top-level `seed` | `seed` present and not published as `false` | 19 of 29 |
 | `VIDEO_AUDIO_URL` | `str` | `""` | passthrough `audio` (URL) | `"audio"` allowed **and** `audio` in the model's declared input modalities | none — Wan 2.6 and 2.7 publish the parameter but declare only text and pictures |
 | `VIDEO_REFERENCE_VIDEO_URL` | `str` | `""` | passthrough `video` | `"video"` allowed **and** `video` in the model's declared input modalities | none — Wan 2.7 publishes the parameter but declares only text and pictures |
 | `VIDEO_REFERENCE_VIDEOS_JSON` | `str` (JSON array) | `""` | passthrough `videos` | `"videos"` allowed **and** `video` in the model's declared input modalities | none — Wan 2.7 publishes the parameter but declares only text and pictures |
 | `VIDEO_REFERENCE_IMAGES_JSON` | `str` (JSON array) | `""` | passthrough `images` | `"images"` in `allowed_passthrough_parameters` | Wan 2.7 |
 | `VIDEO_LAST_IMAGE_URL` | `str` | `""` | passthrough `last_image` | `"last_image"` in `allowed_passthrough_parameters` | Wan 2.7 |
+| `VIDEO_CREATIVITY` | `Literal['', '0', '1']` | `""` | top-level `creativity` | `creativity` published as a list | FLUX Video Upscale |
+| `VIDEO_UPSCALE_FACTOR` | `float` | `0.0` | top-level `upscale_factor` | `upscale_factor` published as a range | FLUX Video Upscale |
 
 ### New typed UserValves added in this feature (passthrough-param wrappers)
 
@@ -1175,18 +1177,18 @@ when the corresponding string appears in the model's
 
 | Identifier | Type | Default | Maps to API field | Gate | Exposed on |
 |------------|------|---------|-------------------|------|------------|
-| `VIDEO_PERSON_GENERATION` | `Literal["", "allow_all", "allow_adult", "dont_allow", "disallow"]` | `""` | passthrough `personGeneration` | `"personGeneration"` allowed | Veo trio |
-| `VIDEO_CONDITIONING_SCALE` | `float` (`ge=0.0`, `le=1.0`) | `0.0` | passthrough `conditioningScale` | `"conditioningScale"` allowed | Veo trio |
-| `VIDEO_CFG_SCALE` | `float` (`ge=0.0`, `le=1.0`) | `0.0` | passthrough `cfg_scale` | `"cfg_scale"` allowed | Kling v3.0 (Pro, Standard) |
-| `VIDEO_ENHANCE_PROMPT` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `enhancePrompt` (boolean) | `"enhancePrompt"` allowed | Veo trio |
-| `VIDEO_PROMPT_OPTIMIZER` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `prompt_optimizer` (boolean) | `"prompt_optimizer"` allowed | Hailuo |
-| `VIDEO_FAST_PRETREATMENT` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `fast_pretreatment` (boolean) | `"fast_pretreatment"` allowed | Hailuo |
+| `VIDEO_PERSON_GENERATION` | `Literal["", "allow_all", "allow_adult", "dont_allow", "disallow"]` | `""` | passthrough `personGeneration` | `"personGeneration"` allowed | Veo 3.1, Veo 3.1 Fast, Veo 3.1 Lite |
+| `VIDEO_CONDITIONING_SCALE` | `float` (`ge=0.0`, `le=1.0`) | `0.0` | passthrough `conditioningScale` | `"conditioningScale"` allowed | Veo 3.1, Veo 3.1 Fast, Veo 3.1 Lite |
+| `VIDEO_CFG_SCALE` | `float` (`ge=0.0`, `le=1.0`) | `0.0` | passthrough `cfg_scale` | `"cfg_scale"` allowed | Video v3.0 Pro, Video v3.0 Standard |
+| `VIDEO_ENHANCE_PROMPT` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `enhancePrompt` (boolean) | `"enhancePrompt"` allowed | Veo 3.1, Veo 3.1 Fast, Veo 3.1 Lite |
+| `VIDEO_PROMPT_OPTIMIZER` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `prompt_optimizer` (boolean) | `"prompt_optimizer"` allowed | Hailuo 2.3 |
+| `VIDEO_FAST_PRETREATMENT` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `fast_pretreatment` (boolean) | `"fast_pretreatment"` allowed | Hailuo 2.3 |
 | `VIDEO_PROMPT_EXTEND` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `prompt_extend` (boolean) | `"prompt_extend"` allowed | Wan 2.7 |
 | `VIDEO_RATIO` | `str` | `""` | passthrough `ratio` | `"ratio"` allowed | Wan 2.7 |
 | `VIDEO_ENABLE_PROMPT_EXPANSION` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `enable_prompt_expansion` (boolean) | `"enable_prompt_expansion"` allowed | Wan 2.6 |
 | `VIDEO_SHOT_TYPE` | `str` | `""` | passthrough `shot_type` | `"shot_type"` allowed | Wan 2.6 |
-| `VIDEO_WATERMARK` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `watermark` (boolean) | `"watermark"` allowed | 4 (Seedance 1.5 Pro, 2.0, 2.0 Fast, 2.5) |
-| `VIDEO_REQ_KEY` | `str` | `""` | passthrough `req_key` | `"req_key"` allowed | 4 (Seedance 1.5 Pro, 2.0, 2.0 Fast, 2.5) |
+| `VIDEO_WATERMARK` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `watermark` (boolean) | `"watermark"` allowed | 5 of 29 |
+| `VIDEO_REQ_KEY` | `str` | `""` | passthrough `req_key` | `"req_key"` allowed | 5 of 29 |
 | `VIDEO_QUALITY` | `str` | `""` | passthrough `quality` | `"quality"` allowed | Sora 2 Pro |
 | `VIDEO_STYLE` | `str` | `""` | passthrough `style` | `"style"` allowed | Sora 2 Pro |
 
@@ -1872,6 +1874,22 @@ Functions → OpenRouter pipe → Valves.
 | `VIDEO_FRAME_TOTAL_MAX_BYTES` | `52_428_800` (50 MB) | 65536–134217728 | Combined frame-bytes cap across one request. |
 | `VIDEO_FRAME_IMAGE_MIME_ALLOWLIST` | `image/jpeg,image/png,image/webp` | comma-list | Allowed MIMEs for frame images. |
 | `VIDEO_OUTPUT_MIME_ALLOWLIST` | `video/mp4,video/webm` | comma-list | Allowed MIMEs for downloaded video (header first; bytes consulted only when the header is unlisted). |
+| `VIDEO_AIGC_WATERMARK` | `str` | `""` | passthrough `aigc_watermark` | `"aigc_watermark"` allowed | H3, H3 Max |
+| `VIDEO_BACKGROUND` | `str` | `""` | passthrough `background` | `"background"` allowed | Avatar IV |
+| `VIDEO_CAPTION` | `str` | `""` | passthrough `caption` | `"caption"` allowed | Avatar IV |
+| `VIDEO_CONTENT_MODERATION` | `str` | `""` | passthrough `contentModeration` | `"contentModeration"` allowed | Aleph 2.0, Gen-4.5 |
+| `VIDEO_EXPRESSIVENESS` | `Literal["", "high", "medium", "low"]` | `""` | passthrough `expressiveness` | `"expressiveness"` allowed | Avatar IV |
+| `VIDEO_FIT` | `Literal["", "contain", "cover"]` | `""` | passthrough `fit` | `"fit"` allowed | Avatar IV |
+| `VIDEO_KEYFRAMES` | `str` | `""` | passthrough `keyframes` | `"keyframes"` allowed | Aleph 2.0 |
+| `VIDEO_MOTION_PROMPT` | `str` | `""` | passthrough `motion_prompt` | `"motion_prompt"` allowed | Avatar IV |
+| `VIDEO_OUTPUT_FORMAT` | `str` | `""` | passthrough `output_format` | `"output_format"` allowed | Seedance 2.5 |
+| `VIDEO_REMOVE_BACKGROUND` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `remove_background` | `"remove_background"` allowed | Avatar IV |
+| `VIDEO_RETURN_LAST_FRAME` | `str` | `""` | passthrough `return_last_frame` | `"return_last_frame"` allowed | Seedance 2.0 Mini |
+| `VIDEO_SAFETY_TOLERANCE` | `str` | `""` | passthrough `safety_tolerance` | `"safety_tolerance"` allowed | FLUX.3 Video, FLUX Video Edit, FLUX Video Upscale |
+| `VIDEO_TITLE` | `str` | `""` | passthrough `title` | `"title"` allowed | Avatar IV |
+| `VIDEO_VERSION` | `str` | `""` | passthrough `version` | `"version"` allowed | FLUX.3 Video |
+| `VIDEO_VOICE_ID` | `str` | `""` | passthrough `voice_id` | `"voice_id"` allowed | Avatar IV |
+| `VIDEO_VOICE_SETTINGS` | `str` | `""` | passthrough `voice_settings` | `"voice_settings"` allowed | Avatar IV |
 Tuning hints:
 
 - **High-volume deployments** with many users: bump

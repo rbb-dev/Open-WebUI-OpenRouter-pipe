@@ -417,6 +417,24 @@ A task-model classifier that reads recent chat turns and attachments before an O
 | `VIDEO_INTENT_MAX_CALLS_PER_CHAT` | `int` | `0` | Cost guard: max classifier calls per chat (`0`=unlimited). Per-worker in-memory counter; over the cap, classification is skipped and the render still proceeds. |
 | `VIDEO_INTENT_MAX_CALLS_PER_USER_DAY` | `int` | `0` | Cost guard: max classifier calls per user per UTC day (`0`=unlimited). Per-worker in-memory counter, resets at UTC midnight/restart. |
 | `VIDEO_INTENT_LOG_DECISIONS` | `bool` | `False` | When True, log the per-turn classification summary (intent, confidence, language, frame counts, latency, fallback/failure flags, hashed chat id) at INFO instead of DEBUG. Always written; excludes the verbatim prompt and the model's free-text reason. |
+| `VIDEO_AIGC_WATERMARK` | `str` | `""` | passthrough `aigc_watermark` | `"aigc_watermark"` in `allowed_passthrough_parameters` |
+| `VIDEO_BACKGROUND` | `str` | `""` | passthrough `background` | `"background"` in `allowed_passthrough_parameters` |
+| `VIDEO_CAPTION` | `str` | `""` | passthrough `caption` | `"caption"` in `allowed_passthrough_parameters` |
+| `VIDEO_CONTENT_MODERATION` | `str` | `""` | passthrough `contentModeration` | `"contentModeration"` in `allowed_passthrough_parameters` |
+| `VIDEO_CREATIVITY` | `Literal['', '0', '1']` | `""` | top-level `creativity` | `creativity` published as a list |
+| `VIDEO_EXPRESSIVENESS` | `Literal["", "high", "medium", "low"]` | `""` | passthrough `expressiveness` | `"expressiveness"` in `allowed_passthrough_parameters` |
+| `VIDEO_FIT` | `Literal["", "contain", "cover"]` | `""` | passthrough `fit` | `"fit"` in `allowed_passthrough_parameters` |
+| `VIDEO_KEYFRAMES` | `str` | `""` | passthrough `keyframes` | `"keyframes"` in `allowed_passthrough_parameters` |
+| `VIDEO_MOTION_PROMPT` | `str` | `""` | passthrough `motion_prompt` | `"motion_prompt"` in `allowed_passthrough_parameters` |
+| `VIDEO_OUTPUT_FORMAT` | `str` | `""` | passthrough `output_format` | `"output_format"` in `allowed_passthrough_parameters` |
+| `VIDEO_REMOVE_BACKGROUND` | `Literal["model_default", "on", "off"]` | `"model_default"` | passthrough `remove_background` | `"remove_background"` in `allowed_passthrough_parameters` |
+| `VIDEO_RETURN_LAST_FRAME` | `str` | `""` | passthrough `return_last_frame` | `"return_last_frame"` in `allowed_passthrough_parameters` |
+| `VIDEO_SAFETY_TOLERANCE` | `str` | `""` | passthrough `safety_tolerance` | `"safety_tolerance"` in `allowed_passthrough_parameters` |
+| `VIDEO_TITLE` | `str` | `""` | passthrough `title` | `"title"` in `allowed_passthrough_parameters` |
+| `VIDEO_UPSCALE_FACTOR` | `float` | `0.0` | top-level `upscale_factor` | `upscale_factor` published as a range |
+| `VIDEO_VERSION` | `str` | `""` | passthrough `version` | `"version"` in `allowed_passthrough_parameters` |
+| `VIDEO_VOICE_ID` | `str` | `""` | passthrough `voice_id` | `"voice_id"` in `allowed_passthrough_parameters` |
+| `VIDEO_VOICE_SETTINGS` | `str` | `""` | passthrough `voice_settings` | `"voice_settings"` in `allowed_passthrough_parameters` |
 
 ### Direct uploads (bypass OWUI RAG)
 

@@ -4,7 +4,7 @@
 [![Version](https://img.shields.io/badge/version-2.7.3-blue.svg)](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe)
 [![Open WebUI Compatible](https://img.shields.io/badge/Open%20WebUI-0.9.1%2B-green.svg)](https://openwebui.com/)
 
-**380+ AI models. Chat, image, video, and live multi-model Fusion with full access to your knowledge bases and tools — all from your Open WebUI.**
+**520+ AI models. Chat, image, video, and live multi-model Fusion with full access to your knowledge bases and tools — all from your Open WebUI.**
 
 GPT-5.6, Gemini 3.1, Claude Opus, Llama 4, FLUX.2, Sora 2, Veo 3.1, Kling, Wan, Riverflow — text, images, and video generation through OpenRouter's unified API, plus live multi-model Fusion deliberation that runs inside your Open WebUI — panels that draw on your knowledge bases and tools, not just the open web. One key, one bill, every model that matters.
 
@@ -34,16 +34,16 @@ GPT-5.6, Gemini 3.1, Claude Opus, Llama 4, FLUX.2, Sora 2, Veo 3.1, Kling, Wan, 
 ## What You Get
 
 🎯 **Every Model, One Place**
-340+ chat models, 16 video models, 40 image-output models. All variants (`:nitro`, `:thinking`, `:exacto`, `:free`) and OpenRouter presets (`@preset/...`).
+440+ chat models, 29 video models, 52 image-output models. All variants (`:nitro`, `:thinking`, `:exacto`, `:free`) and OpenRouter presets (`@preset/...`).
 
 🎨 **Image Generation, Inline**
-40 image models — Recraft, Sourceful Riverflow, Black Forest Labs FLUX.2, ByteDance Seedream, Gemini Image, GPT-5 Image, Qwen, Krea, xAI Grok Imagine, Microsoft MAI. Type a prompt, get an image. Each model brings its own settings panel, offering exactly what that model accepts.
+52 image models — Recraft, Sourceful Riverflow, Black Forest Labs FLUX.2, ByteDance Seedream, Gemini Image, GPT Image, Qwen, Krea, xAI Grok Imagine, Microsoft MAI, Meta Muse. Type a prompt, get an image. Each model brings its own settings panel, offering exactly what that model accepts.
 
 🎬 **Video Generation**
-16 video models — Veo 3.1, Sora 2 Pro, Kling, Wan, Hailuo, Seedance, xAI Grok Imagine. Type a prompt, get a video that plays inline. Per-model knobs (duration, aspect ratio, resolution, audio, frames, negative prompt) all exposed as one-click filters.
+29 video models — Veo 3.1, Sora 2 Pro, Kling, Wan, Hailuo, Seedance, FLUX Video, Runway Aleph, HeyGen Avatar, xAI Grok Imagine. Type a prompt, get a video that plays inline. Every setting a model publishes becomes a control — duration, aspect ratio, resolution, audio, frames, negative prompt, and the provider-specific ones each model names for itself, from an avatar's voice and expressiveness to an upscaler's enlargement factor.
 
 💡 **Per-Model Help, Built In**
-Type `help` (literally just that word, nothing else) in a chat against any image or video model — the pipe responds with curated, model-specific guidance: what it's best for, every knob the filter exposes, and tips/pitfalls for that specific model. A different answer for every one of the 50+ generation models.
+Type `help` (literally just that word, nothing else) in a chat against any image or video model — the pipe responds with curated, model-specific guidance: what it's best for, every knob the filter exposes, and tips/pitfalls for that specific model. A different answer for every one of the 81 generation models.
 
 🧬 **Fusion — Many Models, One Answer, Live**
 Ask once; a *panel* of up to 8 models answers in parallel, a *judge* weighs their answers — consensus, disagreements, gaps, blind spots — and the final answer is written from that analysis. The pipe renders the whole deliberation as a **live, theme-aware panel** in the chat: each model's answer and thinking streaming in, the judge's breakdown, and the final answer as it is written.
@@ -67,8 +67,8 @@ Model icons + descriptions + capabilities sync automatically. Per-chat cost disp
 ## What's New
 
 - **Fusion, two engines** — multi-model deliberation (up to 8 panel models plus a judge), rendered as a **live, theme-aware HTML panel** that streams every model's answer and thinking, the judge's analysis, and the final answer. Switch between OpenRouter's hosted engine and the pipe's built-in engine, which gives every panelist full access to the user's knowledge bases, tools, and tool servers. Preset, panel, judge, and tool-budget knobs via the filter.
-- **Native image generation** — 40 image-output models (Sourceful, FLUX, Seedream, Gemini Image, GPT-5 Image, Recraft, Qwen, Krea, xAI Grok Imagine, Microsoft MAI), each with its own settings panel built from the options that model publishes to OpenRouter.
-- **Video generation** — 16 OpenRouter video models with per-model filters and inline `<video>` rendering.
+- **Native image generation** — 52 image-output models (Sourceful, FLUX, Seedream, Gemini Image, GPT Image, Recraft, Qwen, Krea, xAI Grok Imagine, Microsoft MAI, Meta Muse), each with its own settings panel built from the options that model publishes to OpenRouter.
+- **Video generation** — 29 OpenRouter video models with per-model filters and inline `<video>` rendering.
 - **OpenRouter Web Tools** — Web Search + Web Fetch + Datetime + **Advisor** + **Subagent** + **Model Search** as one toggleable filter; tool-execution cards with citations, plus a per-request `SERVER_TOOLS_MAX_COST_USD` cap that bounds the server-tool agent loop.
 - **Open WebUI 0.9.x compatibility** — fully migrated to the async DB stack.
 - **Provider routing filters** — admin + user-controlled routing, fallbacks, ZDR, sort order.
@@ -79,7 +79,7 @@ Model icons + descriptions + capabilities sync automatically. Per-chat cost disp
 ## For IT & Operations
 
 ⚡ **Production Hardened**
-Rate limiting, circuit breakers, request admission, graceful degradation. 5900+ pytest tests, all four generated bundles (readable and compressed, each with and without plugins).
+Rate limiting, circuit breakers, request admission, graceful degradation. 10,000+ pytest tests, all four generated bundles (readable and compressed, each with and without plugins).
 
 🔐 **Security First**
 Encrypted credential storage. SSRF protection with HTTPS-only remote fetches by default. No secrets in logs. Capability-gated filter attach (image and video models cannot accidentally enable tools they don't support).

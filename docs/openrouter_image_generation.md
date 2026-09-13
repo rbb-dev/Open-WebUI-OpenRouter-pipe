@@ -1,6 +1,6 @@
 # OpenRouter Image Generation
 
-This pipe exposes OpenRouter's forty native image-output models as
+This pipe exposes OpenRouter's fifty-two (52) native image-output models as
 selectable chat models in Open WebUI. You pick an image model in the chat
 header (just like any other LLM), type a prompt, and the pipe routes the
 request on what that model declares it produces: a model that returns only
@@ -754,6 +754,331 @@ that lets the model pick frame shape from the prompt.
 
 ---
 
+### OpenAI: GPT Image 1
+
+> **id**: `openai/gpt-image-1`
+
+Generation and editing through the dedicated Images API, with accurate
+text rendering and transparent backgrounds. Four framings only — square,
+the two 3:2 shapes, and auto.
+
+- **Up to sixteen reference images** for an edit, enough to pin a
+  character, a palette and a layout at once.
+- **Transparent backgrounds** via the background control, giving a
+  cut-out ready to composite.
+- **Streams partial images**, so a long render shows progress.
+- `moderation` is the one provider parameter.
+
+### OpenAI: GPT Image 1 Mini
+
+> **id**: `openai/gpt-image-1-mini`
+
+The lower-latency variant of GPT Image 1, with an identical control
+surface — same four framings, same sixteen reference slots, same four
+quality steps, same streaming.
+
+- **Settings are identical** to GPT Image 1, so a prompt moves between
+  them unchanged.
+- Use it to find the composition, then render on the full model.
+- `moderation` is the one provider parameter.
+
+### OpenAI: GPT Image 2
+
+> **id**: `openai/gpt-image-2`
+
+The step up from GPT Image 1: nine framings instead of four, including
+16:9 and the 21:9 ultrawide.
+
+- **No transparent background** — this model publishes only auto and
+  opaque, unlike GPT Image 1 either side of it.
+- Up to sixteen reference images, up to ten variations per request.
+- **Streams partial images.**
+- `moderation` is the one provider parameter.
+
+### OpenAI: GPT Image 2.5 Sunburst
+
+> **id**: `openai/gpt-image-2.5-sunburst`
+
+The precision tier of the GPT Image 2.5 series — the one to reach for
+when the brief is detailed and the result has to match it.
+
+- **Six quality steps**, from low through to max: two more than any
+  earlier GPT Image tier.
+- Nine framings, transparent backgrounds, sixteen reference slots, up to
+  ten variations.
+- **Streams partial images.**
+- `moderation` is the one provider parameter.
+
+### OpenAI: GPT Image 2.5 Flare
+
+> **id**: `openai/gpt-image-2.5-flare`
+
+The speed tier of GPT Image 2.5, with the same control surface as
+Sunburst — same nine framings, same six quality steps, same sixteen
+reference slots, same streaming.
+
+- **Settings are identical** to Sunburst, so nothing has to be re-tuned
+  when you switch tiers.
+- Find the composition here; render the keeper on Sunburst.
+- `moderation` is the one provider parameter.
+
+### Google: Nano Banana Pro (Gemini 3 Pro Image)
+
+> **id**: `google/gemini-3-pro-image` · **multimodal**
+
+Google's most capable image model, built on Gemini 3 Pro — it answers
+with text and images in the same turn rather than returning a picture
+alone.
+
+- **Multimodal output:** be explicit ("Generate an image of…") when you
+  want a picture rather than a description.
+- Ten framings including 21:9; 1K or 2K; up to fourteen reference images.
+- One image per request.
+- `cachedContent` is the one provider parameter.
+
+### Google: Nano Banana 2 (Gemini 3.1 Flash Image)
+
+> **id**: `google/gemini-3.1-flash-image` · **multimodal**
+
+Pro-level quality at Flash speed, and the widest framing range of any
+Gemini image tier.
+
+- **Fourteen framings**, including the extreme 8:1 and 1:8 strips
+  nothing else here offers — useful for banners and column art.
+- **Four resolutions, 512 through 4K** — the only Gemini image tier that
+  reaches 4K.
+- Up to fourteen reference images; one image per request.
+- `cachedContent` is the one provider parameter.
+
+### Google: Nano Banana 2 Lite (Gemini 3.1 Flash Lite Image)
+
+> **id**: `google/gemini-3.1-flash-lite-image` · **multimodal**
+
+The fastest Gemini image tier, for rapid exploration rather than
+finished work.
+
+- **Same fourteen framings** as Nano Banana 2, including the 8:1 and 1:8
+  strips.
+- **1K only** — the resolution control has a single value, so step up to
+  Nano Banana 2 when the result matters.
+- Up to fourteen reference images; one image per request.
+- `cachedContent` is the one provider parameter.
+
+### Microsoft AI: MAI-Image-2.5 Pro
+
+> **id**: `microsoft/mai-image-2.5-pro`
+
+Photorealistic and artistic generation through Azure AI Foundry. Eight
+framings including auto.
+
+- **One reference image only**, so this is not the model for pinning a
+  character across several inputs.
+- One image per request.
+- No resolution or quality control is published — the model decides.
+- No provider parameters.
+
+### Microsoft AI: MAI-Image-2.6
+
+> **id**: `microsoft/mai-image-2.6`
+
+The precision tier of the MAI-Image-2.6 family, and the reason to pick
+this family at all.
+
+- **Web grounding** is the distinctive control: it lets the model
+  consult the web for a subject it would otherwise have to invent, which
+  helps on real places, products and current events.
+- Up to five reference images — five times what MAI-Image-2.5 Pro takes.
+- One image per request; eight framings.
+
+### Microsoft AI: MAI-Image-2.6 Flash
+
+> **id**: `microsoft/mai-image-2.6-flash`
+
+The low-latency member of the MAI-Image-2.6 family, for interactive work.
+
+- **Settings are identical** to the precision tier, including web
+  grounding, so a prompt moves between them unchanged.
+- Up to five reference images; one image per request.
+- Draft here, finish on MAI-Image-2.6.
+
+### ByteDance Seed: Seedream 5.0 Lite
+
+> **id**: `bytedance-seed/seedream-5-0-lite`
+
+Ties the widest framing range here with the other Seedream tiers, and
+is the one to reach for when the output has to fit an unusual frame.
+
+- **Eighteen framings**, from 21:9 ultrawide down to 9:21, including the
+  phone-screen 9:19.5 and 9:20 shapes, which it shares with the other
+  Seedream tiers and the Grok Imagine image models.
+- **2K or 4K** — and 4K is available here but not on the Pro tier, which
+  is the opposite of what the names suggest.
+- Up to fourteen reference images; up to four variations; honours a seed.
+- No provider parameters.
+
+### ByteDance Seed: Seedream 5.0 Pro
+
+> **id**: `bytedance-seed/seedream-5-0-pro`
+
+The production tier of Seedream 5.0, for commercial work that has to be
+exact.
+
+- **One image per request**, unlike Lite's four — iterate on the prompt,
+  not on the batch.
+- **Tops out at 2K**; if you need 4K, the Lite tier is the one offering it.
+- Same eighteen framings and fourteen reference slots as Lite; honours a
+  seed.
+- No provider parameters.
+
+### Qwen: Qwen Image 3
+
+> **id**: `qwen/qwen-image-3`
+
+Unified generation and editing, with precise rendering of text and
+detail as small as ten pixels.
+
+- **Thirteen framings** including the extreme 4:1 and 1:4 strips.
+- 1K or 2K; up to four reference images; up to six variations; honours a
+  seed.
+- Small-text rendering is its distinctive strength — worth trying when
+  labels or signage have to be legible.
+- No provider parameters.
+
+### Qwen: Qwen Image 3 Pro
+
+> **id**: `qwen/qwen-image-3-pro`
+
+The higher-fidelity Qwen Image 3 tier, with the same interface.
+
+- **Settings are identical** to Qwen Image 3, so a prompt moves across
+  unchanged.
+- Thirteen framings, 1K or 2K, four reference slots, six variations, a
+  seed.
+- Explore on Qwen Image 3 and render the keeper here.
+
+### Krea: Krea 2 Large
+
+> **id**: `krea/krea-2-large`
+
+More than twice the size of Krea 2 Medium, with lighter post-training
+that leaves images rawer and more textured.
+
+- **Eight provider parameters** — the richest set here — covering style
+  references, moodboards, creativity, intensity, complexity, movement
+  and strength.
+- Seven framings; 1K; one reference image; honours a seed.
+- The rawer character is the point: reach for it when Medium's output
+  looks too clean.
+
+### Krea: Krea 2 Medium
+
+> **id**: `krea/krea-2-medium`
+
+Krea's balanced tier and a practical starting point, with extensive
+post-training for stable, consistent results.
+
+- **Same eight provider parameters** as Krea 2 Large, so a setup moves
+  between them unchanged.
+- Seven framings; 1K; one reference image; honours a seed.
+- Start here, and move to Large when you want a rawer texture.
+
+### Krea: Krea 2 Medium Turbo
+
+> **id**: `krea/krea-2-medium-turbo`
+
+A distilled, speed-focused variant of Krea 2 Medium, for rapid iteration
+and graphic-design exploration.
+
+- **Same controls and same eight provider parameters** as the rest of
+  the Krea 2 line.
+- Seven framings; 1K; one reference image; honours a seed.
+- Use it to explore, then re-render on Medium or Large.
+
+### Recraft: Recraft V4 Styles
+
+> **id**: `recraft/recraft-v4-styles`
+
+Style transfer rather than style description: you supply a reference and
+the output reproduces its look.
+
+- **At least one reference image is REQUIRED** — a text-only prompt will
+  not work on this model.
+- The references define the look; describe the subject in the prompt.
+- `style_match` sets how literally the reference is followed;
+  `style_id` reuses a style already saved with Recraft.
+- Twelve framings; one to ten references; up to six variations.
+
+### Recraft: Recraft V4 Styles Pro
+
+> **id**: `recraft/recraft-v4-styles-pro`
+
+The higher-fidelity Styles tier, for finished work rather than
+exploration.
+
+- **At least one reference image is REQUIRED.**
+- Interface is identical to the base Styles tier, so a working setup
+  moves across unchanged.
+- Same four provider parameters: `style_id`, `style_match`, `controls`,
+  `random_seed`.
+
+### Recraft: Recraft V4 Styles Vector
+
+> **id**: `recraft/recraft-v4-styles-vector`
+
+The vector member of the Styles line: it returns SVG rather than pixels,
+so the result scales without softening.
+
+- **Output is SVG** — `output_format` publishes `svg` and nothing else.
+- **At least one reference image is REQUIRED.**
+- Flat, graphic, bounded shapes vectorise well; photographic references
+  do not.
+- For logos, icons and badges that must survive resizing.
+
+### Recraft: Recraft V4 Styles Pro Vector
+
+> **id**: `recraft/recraft-v4-styles-pro-vector`
+
+The higher-fidelity vector Styles tier, with cleaner geometry and better
+curve handling than the base vector tier.
+
+- **Output is SVG**; at least one reference image is REQUIRED.
+- Interface is identical to the base vector tier — develop there, finish
+  here.
+- Same four provider parameters as the rest of the Styles line.
+
+### xAI: Grok Imagine Image 2.0
+
+> **id**: `x-ai/grok-imagine-image-2.0`
+
+Generation and editing with a compact control surface and an unusually
+wide choice of framings.
+
+- **Fourteen framings** including the tall 9:19.5 and 9:20 phone shapes,
+  which it shares with Grok Imagine Image Quality and the Seedream
+  tiers (4.5, 5.0 Lite, 5.0 Pro).
+- **Two quality steps only** — low and medium; there is no high tier to
+  reach for.
+- 1K or 2K; up to three reference images, fewer than most models here.
+- One image per request; no provider parameters.
+
+### Meta: Muse Image
+
+> **id**: `meta/muse-image`
+
+An agentic model that reasons before it renders, working in several
+passes rather than one.
+
+- **It publishes no settings at all** — no framing, no resolution, no
+  variation count, no provider parameters. The prompt and the images you
+  attach are the whole interface.
+- **Ask for the framing in words** ("a wide 16:9 banner") rather than
+  looking for an aspect-ratio control that is not there.
+- It edits as well as generates, so attaching an image and describing
+  the change is a first-class use.
+- Because it works in several passes, a single request can take
+  noticeably longer than a one-pass model. This is the model's own
+  design, not a gap in the pipe.
+
 ## What settings a model offers
 
 Every image model on OpenRouter publishes its own list of the settings it
@@ -784,9 +1109,9 @@ for any model and no model's published list mentions it:
 - **Output size** — either a size tier (`512`, `1K`, `2K`, `4K`) or exact pixels
   such as `1024x1024`. A tier sets the same thing as **Resolution** and still
   takes its shape from **Aspect ratio**; what it is measured against depends on
-  the model. Sixteen of the forty publish a tier list of their own, and on those
+  the model. Nineteen of the fifty-two publish a tier list of their own, and on those
   a tier outside the list is withheld rather than sent, and named. The other
-  twenty-four publish no list, so a tier is measured only against those four
+  thirty-three publish no list, so a tier is measured only against those four
   names and then goes out for the company running the model to interpret.
   Anything that is neither one of the four names nor pixels is withheld and named
   on every model. Exact pixels settle the picture on their own: no model
