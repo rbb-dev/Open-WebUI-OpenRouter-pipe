@@ -149,6 +149,40 @@ def single_san_cert(name: str, into: Any) -> dict[str, Any]:
 
 
 @contextmanager
+def _socket_resolution_only():
+    """Make aiohttp resolve through `socket.getaddrinfo`, so staged DNS is seen.
+
+    With the production dependency set installed, `aiodns` is present and aiohttp's
+    `DefaultResolver` is `AsyncResolver`, which asks c-ares directly and never calls
+    `socket.getaddrinfo`. Every DNS staging helper below patches `getaddrinfo`, so under
+    production dependencies the staging silently does nothing and the test performs a real
+    lookup of a name that does not exist. That is how two rebind guards passed for months
+    in a lean environment and failed the moment CI installed the full set.
+
+    Forcing the threaded resolver does not weaken what these tests prove: the control
+    session still re-resolves, which is the behaviour being contrasted with the vetted
+    transport's single gated lookup.
+    """
+    import aiohttp.connector as _connector
+    import aiohttp.resolver as _resolver
+
+    threaded = _resolver.ThreadedResolver
+    saved = [
+        (module, getattr(module, "DefaultResolver", None))
+        for module in (_resolver, _connector)
+    ]
+    for module, current in saved:
+        if current is not None:
+            module.DefaultResolver = threaded
+    try:
+        yield
+    finally:
+        for module, current in saved:
+            if current is not None:
+                module.DefaultResolver = current
+
+
+@contextmanager
 def rebinding_dns(name: str, answers: list[str]):
     """`name` resolves to a different address on each successive lookup.
 
@@ -175,7 +209,8 @@ def rebinding_dns(name: str, answers: list[str]):
 
     _socket.getaddrinfo = _resolve
     try:
-        yield
+        with _socket_resolution_only():
+            yield
     finally:
         _socket.getaddrinfo = installed
 
@@ -201,7 +236,8 @@ def dns_answering(name: str, addresses: list[str]):
 
     _socket.getaddrinfo = _resolve
     try:
-        yield
+        with _socket_resolution_only():
+            yield
     finally:
         _socket.getaddrinfo = installed
 

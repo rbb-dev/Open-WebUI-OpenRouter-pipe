@@ -5781,11 +5781,22 @@ class TestImageReuseRegister:
             {"role": "user", "content": [{"type": "text", "text": "and now?"}]},
         ]
 
-        with caplog.at_level(_logging.WARNING):
-            await self._run(pipe_instance, messages, gateway=denier)
-            await self._run(pipe_instance, messages, gateway=denier)
+        captured: list[_logging.LogRecord] = []
 
-        seen = [r for r in caplog.records if "Not reusing an earlier image" in r.getMessage()]
+        class _Spy(_logging.Handler):
+            def emit(self, record: _logging.LogRecord) -> None:
+                captured.append(record)
+
+        spy = _Spy(level=_logging.WARNING)
+        logger = _logging.getLogger("open_webui_openrouter_pipe")
+        logger.addHandler(spy)
+        try:
+            await self._run(pipe_instance, messages, gateway=denier)
+            await self._run(pipe_instance, messages, gateway=denier)
+        finally:
+            logger.removeHandler(spy)
+
+        seen = [r for r in captured if "Not reusing an earlier image" in r.getMessage()]
         assert len(seen) == expected_warnings, (
             f"got {len(seen)} WARNING records, expected {expected_warnings}. A denial is "
             "a security signal reported every time; an operational fault recurs on every "
