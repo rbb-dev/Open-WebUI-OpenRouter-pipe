@@ -50,6 +50,7 @@ _WAN_DASHSCOPE_TEXT_TO_VIDEO = (
 )
 _WAN_FAL_2_6_IMAGE_TO_VIDEO = "https://fal.ai/models/wan/v2.6/image-to-video/api"
 _SEEDANCE_ARK_TASKS = "https://www.volcengine.com/docs/82379/1520757"
+_HEYGEN_CREATE_VIDEO = "https://developers.heygen.com/reference/create-video"
 _KLING_LEGACY_IMAGE_TO_VIDEO = (
     "https://app.klingai.com/cn/dev/document-api/api/video/3-0-omni/image-to-video/legacy"
 )
@@ -84,6 +85,171 @@ def _unconfirmed_notice(kind: str, minimum: float, maximum: float) -> str:
 
 
 _PASSTHROUGH_CONTROLS: tuple[_PassthroughControl, ...] = (
+    _PassthroughControl(
+        param="aigc_watermark",
+        field="VIDEO_AIGC_WATERMARK",
+        title="AI-generated watermark",
+        description=(
+            "Whether MiniMax marks the clip as machine-generated, sent exactly as you type "
+            "it. No MiniMax page publishes this setting or what it accepts, so send only a "
+            "value your provider named; some accounts and some jurisdictions require the mark "
+            "and will refuse to drop it. Blank sends nothing."
+        ),
+        kind=_CONTROL_TEXT,
+    ),
+    _PassthroughControl(
+        param="return_last_frame",
+        field="VIDEO_RETURN_LAST_FRAME",
+        title="Return the last frame",
+        description=(
+            "Whether the closing still comes back alongside the clip, which is what you would "
+            "feed to the next segment to continue a longer sequence. Sent exactly as you type "
+            "it; no ByteDance page publishes what it accepts. Blank sends nothing."
+        ),
+        kind=_CONTROL_TEXT,
+    ),
+    _PassthroughControl(
+        param="safety_tolerance",
+        field="VIDEO_SAFETY_TOLERANCE",
+        title="Safety tolerance",
+        description=(
+            "How permissive Black Forest Labs' content check is, written as a whole number "
+            "from 0 for the strictest to 4 for the most permissive; it leaves it at 2 when "
+            "blank. Sent exactly as you type it, so a value outside that is refused upstream."
+        ),
+        kind=_CONTROL_TEXT,
+    ),
+    _PassthroughControl(
+        param="contentModeration",
+        field="VIDEO_CONTENT_MODERATION",
+        title="Content moderation JSON",
+        description=(
+            "A JSON object adjusting Runway's own moderation, sent as you type it. Blank "
+            "leaves Runway's default in force."
+        ),
+        kind=_CONTROL_TEXT,
+    ),
+    _PassthroughControl(
+        param="keyframes",
+        field="VIDEO_KEYFRAMES",
+        title="Keyframes JSON",
+        description=(
+            "A JSON list of moments the edit should match, each showing the model what a point "
+            "in the clip ought to look like rather than describing it in words. Sent as you "
+            "type it; blank sends none."
+        ),
+        kind=_CONTROL_TEXT,
+    ),
+    _PassthroughControl(
+        param="version",
+        field="VIDEO_VERSION",
+        title="Version",
+        description=(
+            "A model version string sent to Black Forest Labs exactly as you type it. No page "
+            "publishes which versions are accepted, so send only one your provider named."
+        ),
+        kind=_CONTROL_TEXT,
+    ),
+    _PassthroughControl(
+        param="output_format",
+        field="VIDEO_OUTPUT_FORMAT",
+        title="Output format",
+        description=(
+            "The container ByteDance returns the clip in, sent exactly as you type it. No page "
+            "publishes the accepted values, so send only one your provider named."
+        ),
+        kind=_CONTROL_TEXT,
+    ),
+    _PassthroughControl(
+        param="expressiveness",
+        field="VIDEO_EXPRESSIVENESS",
+        title="Expressiveness",
+        description=(
+            "How much energy the avatar puts into movement. Low is the model's own default, "
+            "so a delivery that looks flat is usually doing exactly what it was told."
+        ),
+        kind=_CONTROL_ENUM,
+        choices=(("high", _HEYGEN_CREATE_VIDEO), ("medium", _HEYGEN_CREATE_VIDEO), ("low", _HEYGEN_CREATE_VIDEO)),
+    ),
+    _PassthroughControl(
+        param="fit",
+        field="VIDEO_FIT",
+        title="Fit",
+        description=(
+            "How the avatar is scaled into the frame. Contain keeps the whole subject visible; "
+            "cover fills the frame and crops whatever falls outside it."
+        ),
+        kind=_CONTROL_ENUM,
+        choices=(("contain", _HEYGEN_CREATE_VIDEO), ("cover", _HEYGEN_CREATE_VIDEO)),
+    ),
+    _PassthroughControl(
+        param="remove_background",
+        field="VIDEO_REMOVE_BACKGROUND",
+        title="Remove background",
+        description="Whether what was behind the person in the photograph is stripped out.",
+        kind=_CONTROL_TOGGLE,
+        source=_HEYGEN_CREATE_VIDEO,
+    ),
+    _PassthroughControl(
+        param="voice_id",
+        field="VIDEO_VOICE_ID",
+        title="Voice",
+        description=(
+            "The voice that reads your script, as an identifier from your HeyGen account's own "
+            "voice list rather than a name you can invent. Blank sends nothing, and a script "
+            "with no voice cannot be spoken."
+        ),
+        kind=_CONTROL_TEXT,
+    ),
+    _PassthroughControl(
+        param="voice_settings",
+        field="VIDEO_VOICE_SETTINGS",
+        title="Voice settings JSON",
+        description=(
+            "A JSON object tuning the voice, sent as you type it — speed, pitch, volume and a "
+            "locale hint. Blank leaves every one of them alone."
+        ),
+        kind=_CONTROL_TEXT,
+    ),
+    _PassthroughControl(
+        param="motion_prompt",
+        field="VIDEO_MOTION_PROMPT",
+        title="Motion prompt",
+        description=(
+            "What the body and hands should do, written in plain words — the closest thing this "
+            "model has to a scene description. Blank leaves the movement to the model."
+        ),
+        kind=_CONTROL_TEXT,
+    ),
+    _PassthroughControl(
+        param="background",
+        field="VIDEO_BACKGROUND",
+        title="Background JSON",
+        description=(
+            "A JSON object replacing what is behind the subject, sent as you type it: a colour, "
+            "or an image given by link. Blank leaves the original background in place."
+        ),
+        kind=_CONTROL_TEXT,
+    ),
+    _PassthroughControl(
+        param="caption",
+        field="VIDEO_CAPTION",
+        title="Caption JSON",
+        description=(
+            "A JSON object asking for subtitles, sent as you type it. Blank sends none."
+        ),
+        kind=_CONTROL_TEXT,
+    ),
+    _PassthroughControl(
+        param="title",
+        field="VIDEO_TITLE",
+        title="Title",
+        description=(
+            "A label for the finished video in your HeyGen account. It does not appear in the "
+            "picture and changes nothing about what is generated."
+        ),
+        kind=_CONTROL_TEXT,
+    ),
     _PassthroughControl(
         param="personGeneration",
         field="VIDEO_PERSON_GENERATION",

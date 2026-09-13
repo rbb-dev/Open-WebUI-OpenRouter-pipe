@@ -33,6 +33,8 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Audio is generated alongside the picture, so it is worth describing the sound you want rather than leaving it to chance.",
         ],
         "knob_descriptions": {
+            "Safety tolerance": "How permissive Black Forest Labs' content check is: 0 for the strictest, 4 for the most permissive. Blank leaves it at 2.",
+            "Version": "A model version string sent to Black Forest Labs exactly as you type it. No page publishes which versions are accepted.",
             "Duration": "Clip length in seconds, 5 to 20.",
             "Aspect ratio": "Framing, from ultrawide 21:9 through 16:9, 4:3, 1:1 and 3:4 to vertical 9:16.",
             "Resolution": "720p or 1080p — the detail tier the clip is rendered at.",
@@ -62,6 +64,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             OPENROUTER_PRICING,
         ],
         "knob_descriptions": {
+            "Output format": "The container ByteDance returns the clip in. No page publishes the accepted values, so send only one your provider named.",
             "Duration": "Clip length in seconds, 4 to 30 — the longest single take in the catalogue.",
             "Aspect ratio": "16:9, 4:3, 1:1, 3:4, 9:16, or ultrawide 21:9.",
             "Resolution": "480p or 720p.",
@@ -94,6 +97,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "There is no seed, so an exact re-run is not available — keep the take you like rather than expecting to reproduce it.",
         ],
         "knob_descriptions": {
+            "AI-generated watermark": "Whether MiniMax marks the clip as machine-generated. Some accounts and some jurisdictions require the mark.",
             "Duration": "Clip length in seconds, 5 to 15.",
             "Aspect ratio": "21:9, 16:9, 4:3, 1:1, 3:4, or 9:16.",
             "Resolution": "2K, the only tier this model publishes.",
@@ -127,6 +131,8 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             f"Batch small corrections into a single pass where you can, rather than sending a string of one-second fixes. {OPENROUTER_PRICING}",
         ],
         "knob_descriptions": {
+            "Content moderation JSON": "A JSON object adjusting Runway's own moderation. Blank leaves Runway's default in force.",
+            "Keyframes JSON": "A JSON list of moments the edit should match, showing the model what a point in the clip should look like.",
             "Aspect ratio": "The framing to work in — 16:9, 4:3, 3:2, 1:1, 2:3, 3:4, 9:16, or 21:9.",
             "Seed": "Fixes the random draw so the same footage and instruction reproduce the same edit — set it before iterating.",
             "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
@@ -152,6 +158,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Fix a seed to keep identity and staging stable while you refine the wording.",
         ],
         "knob_descriptions": {
+            "Content moderation JSON": "A JSON object adjusting Runway's own moderation. Blank leaves Runway's default in force.",
             "Duration": "Clip length in seconds, 2 to 10.",
             "Aspect ratio": "Landscape 16:9 or portrait 9:16.",
             "Resolution": "720p, the only tier this model publishes.",
@@ -765,6 +772,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             f"Ask for the length you actually need rather than the longest available. {OPENROUTER_PRICING}",
         ],
         "knob_descriptions": {
+            "AI-generated watermark": "Whether MiniMax marks the clip as machine-generated. Some accounts and some jurisdictions require the mark.",
             "Duration": "Clip length in seconds, any whole number from 5 to 15.",
             "Aspect ratio": "The framing to work in — 21:9, 16:9, 4:3, 1:1, 3:4, or 9:16.",
             "Resolution": "480p or 768p.",
@@ -792,6 +800,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             f"Resolution and length both drive how heavy a render is, so raise them only when the shot needs it. {OPENROUTER_PRICING}",
         ],
         "knob_descriptions": {
+            "Return the last frame": "Whether the closing still comes back with the clip, which is what you feed the next segment to continue a sequence.",
             "Duration": "Clip length in seconds, any whole number from 4 to 15.",
             "Aspect ratio": "The framing to work in — 1:1, 3:4, 9:16, 4:3, 16:9, 21:9, or 9:21.",
             "Resolution": "480p or 720p.",
@@ -833,6 +842,15 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "Aspect ratio": "The framing to work in — 16:9, 9:16 or 1:1.",
             "Resolution": "720p or 1080p.",
             "Audio reference URL": "A voice track the photograph is lip-synced to, instead of a written script.",
+            "Voice": "The voice that reads your script, named by an identifier from your HeyGen account rather than a name you invent.",
+            "Voice settings JSON": "Speed, pitch, volume and a locale hint for that voice, as a JSON object.",
+            "Expressiveness": "How much energy the avatar puts into movement: high, medium or low. Low is the model's own default.",
+            "Motion prompt": "What the body and hands should do, in plain words — the closest thing here to a scene description.",
+            "Fit": "How the avatar is scaled into the frame: contain keeps the whole subject visible, cover fills the frame and crops.",
+            "Remove background": "Whether what was behind the person in the photograph is stripped out.",
+            "Background JSON": "A colour or an image to put behind the subject instead, as a JSON object.",
+            "Caption JSON": "A request for subtitles on the finished video, as a JSON object.",
+            "Title": "A label for the video in your HeyGen account. It does not appear in the picture.",
             "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
         },
     },
@@ -858,6 +876,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             f"The length of the clip you supply sets the length of the result, so trim it first. {OPENROUTER_PRICING}",
         ],
         "knob_descriptions": {
+            "Safety tolerance": "How permissive Black Forest Labs' content check is: 0 for the strictest, 4 for the most permissive. Blank leaves it at 2.",
             "Reference video URL": "The clip to be edited. Everything about the output's shape comes from it.",
             "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
         },
@@ -885,6 +904,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             f"No audio is generated; the soundtrack is whatever your source carried. {OPENROUTER_PRICING}",
         ],
         "knob_descriptions": {
+            "Safety tolerance": "How permissive Black Forest Labs' content check is: 0 for the strictest, 4 for the most permissive. Blank leaves it at 2.",
             "Upscale factor": "How much bigger to make the video, 1.5 to 3 times its current size. 0 leaves it to the model.",
             "Creativity": "0 keeps the source exactly as it is and sharpens it; 1 restores and invents fine detail that was not there.",
             "Reference video URL": "The clip to be enlarged. Its length and dimensions decide the output.",

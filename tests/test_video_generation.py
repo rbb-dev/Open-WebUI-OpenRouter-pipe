@@ -4237,9 +4237,8 @@ async def test_every_serving_candidate_receives_the_knobs(value):
 @pytest.mark.parametrize(
     ("published", "expected_fields"),
     [
-        (["contentModeration", "keyframes"], ["VIDEO_CONTENTMODERATION", "VIDEO_KEYFRAMES"]),
-        (["safety_tolerance", "version"], ["VIDEO_SAFETY_TOLERANCE", "VIDEO_VERSION"]),
-        (["aigc_watermark"], ["VIDEO_AIGC_WATERMARK"]),
+        (["vendorKnob", "vendor_other"], ["VIDEO_VENDORKNOB", "VIDEO_VENDOR_OTHER"]),
+        (["someFuture_setting"], ["VIDEO_SOMEFUTURE_SETTING"]),
         ([], []),
     ],
 )
@@ -4280,7 +4279,7 @@ def test_a_published_setting_travels_and_a_broken_container_is_named():
     model = {
         "id": "vendor/model",
         "name": "Model",
-        "allowed_passthrough_parameters": ["contentModeration", "keyframes"],
+        "allowed_passthrough_parameters": ["vendorKnob", "vendor_other"],
     }
     module = _load_filter_from_source(
         render_video_filter_source(model_id="vendor/model", video_model=model),
@@ -4293,22 +4292,22 @@ def test_a_published_setting_travels_and_a_broken_container_is_named():
         __metadata__=metadata,
         __user__={
             "valves": module.Filter.UserValves(
-                VIDEO_CONTENTMODERATION="low",
-                VIDEO_KEYFRAMES='[{"at": 0}]',
+                VIDEO_VENDORKNOB="low",
+                VIDEO_VENDOR_OTHER='[{"at": 0}]',
             )
         },
     )
     params = metadata["openrouter_pipe"]["video_generation"]["params"]
-    assert params.get("contentModeration") == "low", f"plain text must travel as text; got {params}"
-    assert params.get("keyframes") == [{"at": 0}], f"JSON must travel parsed; got {params}"
+    assert params.get("vendorKnob") == "low", f"plain text must travel as text; got {params}"
+    assert params.get("vendor_other") == [{"at": 0}], f"JSON must travel parsed; got {params}"
 
     with pytest.raises(Exception) as caught:
         module.Filter().inlet(
             {"files": []},
             __metadata__={},
-            __user__={"valves": module.Filter.UserValves(VIDEO_KEYFRAMES="[{broken")},
+            __user__={"valves": module.Filter.UserValves(VIDEO_VENDOR_OTHER="[{broken")},
         )
-    assert "keyframes" in str(caught.value), f"the message must name the field; got {caught.value}"
+    assert "vendor_other" in str(caught.value), f"the message must name the field; got {caught.value}"
 
 
 @pytest.mark.parametrize(
@@ -4369,10 +4368,10 @@ def test_the_unreachable_warning_names_only_what_cannot_be_offered(caplog):
             video_model={
                 "id": "vendor/ok",
                 "name": "M",
-                "allowed_passthrough_parameters": ["contentModeration"],
+                "allowed_passthrough_parameters": ["vendorKnob"],
             },
         )
-    assert "contentModeration" not in caplog.text, (
+    assert "vendorKnob" not in caplog.text, (
         "this parameter is rendered and sent, so it must not be reported as dropped"
     )
 
@@ -4406,18 +4405,18 @@ def test_video_help_names_the_free_text_controls_the_filter_draws():
     base = dict(VIDEO_BY_ID["google/veo-3.1-fast"])
     base["allowed_passthrough_parameters"] = list(
         base.get("allowed_passthrough_parameters") or []
-    ) + ["contentModeration"]
+    ) + ["vendorKnob"]
 
     module = _load_filter_from_source(
         render_video_filter_source(model_id=base["id"], video_model=base),
         "help_matches_filter",
     )
-    assert "VIDEO_CONTENTMODERATION" in module.Filter.UserValves.model_fields, (
+    assert "VIDEO_VENDORKNOB" in module.Filter.UserValves.model_fields, (
         "the filter must draw a control for the published setting"
     )
 
     rendered = render_video_help(base["id"], base)
-    assert "contentModeration" in rendered, (
+    assert "vendorKnob" in rendered, (
         "help must name every control the filter draws, including the free-text ones"
     )
 
@@ -4437,17 +4436,17 @@ def test_a_case_variant_published_name_does_not_render_twice():
     model = {
         "id": "vendor/model",
         "name": "Model",
-        "allowed_passthrough_parameters": ["contentModeration", "contentmoderation", "keyframes"],
+        "allowed_passthrough_parameters": ["vendorKnob", "vendorknob", "vendor_other"],
     }
     offered = _unhandled_params(build_video_filter_spec("vendor/model", model))
-    assert offered == ("contentModeration", "keyframes"), (
+    assert offered == ("vendorKnob", "vendor_other"), (
         f"the case-variant must be dropped, not rendered twice; got {offered}"
     )
 
     source = render_video_filter_source(model_id="vendor/model", video_model=model)
-    assert source.count("VIDEO_CONTENTMODERATION:") == 1
+    assert source.count("VIDEO_VENDORKNOB:") == 1
     module = _load_filter_from_source(source, "video_case_variant")
-    assert "VIDEO_KEYFRAMES" in module.Filter.UserValves.model_fields
+    assert "VIDEO_VENDOR_OTHER" in module.Filter.UserValves.model_fields
 
 
 
@@ -7660,3 +7659,78 @@ def test_a_model_publishing_neither_field_gets_neither_control():
         assert spec.upscale_bounds is None and spec.creativity_modes == ()
     probe = render_video_filter_source(model_id=without[0], video_model=VIDEO_BY_ID[without[0]])
     assert "VIDEO_UPSCALE_FACTOR" not in probe and "VIDEO_CREATIVITY" not in probe
+
+
+_RAW_FALLBACK_PARAMS: frozenset[str] = frozenset()
+"""Published parameters still rendered by the generic fallback rather than a descriptor.
+
+A tripwire, not a description. The fallback gives a control titled with the raw wire name and
+a description that can say nothing about values, because there is nothing to say it from. That
+is the honest rendering for a parameter nobody has looked up yet -- but it should be a decision,
+not a default, so a new one has to be argued for here.
+
+Empty today: all thirty-nine parameters the catalogue publishes carry a descriptor in
+`_PASSTHROUGH_CONTROLS`, with a vendor citation wherever a closed domain is offered.
+"""
+
+
+def test_every_published_passthrough_parameter_has_a_descriptor():
+    """A new parameter must be looked up, not silently handed a raw text box.
+
+    Computed from the catalogue on both sides, so it cannot be satisfied by editing one of
+    them: the published set comes from the fixture and the handled set from the renderer.
+    """
+    from open_webui_openrouter_pipe.filters.video_filter_renderer import (
+        _HANDLED_PASSTHROUGH_PARAMS,
+    )
+
+    published = {
+        name
+        for model in VIDEO_BY_ID.values()
+        for name in (model.get("allowed_passthrough_parameters") or [])
+    }
+    assert len(published) > 30, f"only {len(published)} published; the sweep went hollow"
+
+    falling_back = published - set(_HANDLED_PASSTHROUGH_PARAMS)
+    assert falling_back == _RAW_FALLBACK_PARAMS, (
+        f"these published parameters have no descriptor and render as a raw text box: "
+        f"{sorted(falling_back - _RAW_FALLBACK_PARAMS)}. Look the parameter up on the "
+        f"vendor's own page and add it to _PASSTHROUGH_CONTROLS -- cite the page for a "
+        f"closed domain, or render it as free text with a description that says what it is. "
+        f"Recorded here only if neither is possible."
+    )
+
+
+_CITED_ENUM_DOMAINS: dict[str, tuple[str, ...]] = {
+    "expressiveness": ("high", "medium", "low"),
+    "fit": ("contain", "cover"),
+    "personGeneration": ("allow_all", "allow_adult", "dont_allow", "disallow"),
+}
+"""Every value the video filter offers from a closed domain, written out in full.
+
+A tripwire, not a description. Unlike the image side -- where the values come from
+OpenRouter's own contract and cannot drift from it -- these are read off a vendor page by
+hand. Nothing else notices if one is quietly deleted, and a user then loses a choice the
+model still accepts, silently. Naming them here makes a change two deliberate edits.
+"""
+
+
+def test_the_offered_closed_domains_are_the_ones_on_the_record():
+    """Dropping a cited value must be a decision, not an edit that nothing catches."""
+    from open_webui_openrouter_pipe.filters.video_filter_renderer import (
+        _CONTROL_ENUM,
+        _PASSTHROUGH_CONTROLS,
+    )
+
+    offered = {
+        control.param: tuple(value for value, _ in control.choices)
+        for control in _PASSTHROUGH_CONTROLS
+        if control.kind == _CONTROL_ENUM
+    }
+    assert offered == _CITED_ENUM_DOMAINS, (
+        "the set of values a closed-domain control offers changed. Check the cited vendor "
+        "page still publishes exactly these, then update this record in the same commit: "
+        f"added {sorted(set(offered) - set(_CITED_ENUM_DOMAINS))}, "
+        f"removed {sorted(set(_CITED_ENUM_DOMAINS) - set(offered))}, "
+        f"changed {sorted(k for k in offered.keys() & _CITED_ENUM_DOMAINS.keys() if offered[k] != _CITED_ENUM_DOMAINS[k])}"
+    )
