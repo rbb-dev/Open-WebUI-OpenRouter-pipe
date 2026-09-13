@@ -2438,6 +2438,8 @@ def test_no_video_control_narrows_what_may_be_sent_outside_the_cited_table():
         "VIDEO_ASPECT_RATIO",
         "VIDEO_RESOLUTION",
         "VIDEO_SIZE",
+        "VIDEO_UPSCALE_FACTOR",
+        "VIDEO_CREATIVITY",
         "VIDEO_FRAME_MODE",
         "VIDEO_GENERATE_AUDIO",
         "VIDEO_SEED",
@@ -7580,3 +7582,81 @@ def test_a_help_card_says_so_when_no_model_declares_its_inputs():
         "an unpublished modality list must read as unpublished, not as text-only or none"
     )
 
+
+
+_UPSCALE_MODELS = sorted(
+    model_id for model_id, m in VIDEO_BY_ID.items() if isinstance(m.get("upscale_factor"), dict)
+)
+_CREATIVITY_MODELS = sorted(
+    model_id for model_id, m in VIDEO_BY_ID.items() if isinstance(m.get("creativity"), list)
+)
+
+
+@pytest.mark.parametrize("model_id", _UPSCALE_MODELS)
+def test_the_upscale_control_takes_its_bounds_from_the_catalogue(model_id):
+    """A bound typed into the renderer goes stale the day OpenRouter ships a wider tier.
+
+    Both numbers are read out of the fixture here, so a constant cannot satisfy this for two
+    models with different ranges. The wire sweep cannot see this: it proves a chosen value
+    arrives, not that the OFFERED range is the one the model published.
+    """
+    from open_webui_openrouter_pipe.filters.video_filter_renderer import (
+        build_video_filter_spec,
+        render_video_filter_source,
+    )
+
+    published = VIDEO_BY_ID[model_id]["upscale_factor"]
+    low, high = float(published["min"]), float(published["max"])
+
+    spec = build_video_filter_spec(model_id, VIDEO_BY_ID[model_id])
+    assert spec.upscale_bounds == (low, high)
+
+    source = render_video_filter_source(model_id=model_id, video_model=VIDEO_BY_ID[model_id])
+    assert f"le={high:g}" in source
+    assert f"if {low:g} <= upscale <= {high:g}:" in source
+
+
+@pytest.mark.parametrize("model_id", _CREATIVITY_MODELS)
+def test_the_creativity_control_sends_the_published_integers_including_zero(model_id):
+    """`0` is a real mode, not "unset", and a numeric control could never send it.
+
+    The catalogue publishes `[0, 1]` -- a list of allowed values, not a range. Rendered as a
+    float with the usual `> 0` guard the faithful mode would be permanently unreachable, which
+    a live generation showed is also the cheaper one. The blank option carries "leave it alone"
+    so zero stays free to mean zero, and the value reaches the wire as an int, not a string.
+    """
+    from open_webui_openrouter_pipe.filters.video_filter_renderer import (
+        build_video_filter_spec,
+        render_video_filter_source,
+    )
+
+    published = [int(v) for v in VIDEO_BY_ID[model_id]["creativity"]]
+    spec = build_video_filter_spec(model_id, VIDEO_BY_ID[model_id])
+    assert spec.creativity_modes == tuple(published)
+
+    source = render_video_filter_source(model_id=model_id, video_model=VIDEO_BY_ID[model_id])
+    literal = ", ".join(f"'{v}'" for v in published)
+    assert f"Literal['', {literal}]" in source, source[:0] or f"missing Literal for {published}"
+    assert 'params["creativity"] = creativity' in source
+    assert "int(str(creativity_raw).strip())" in source, "the wire value must be an int, not a str"
+    assert f"if creativity in ({', '.join(str(v) for v in published)},):" in source
+
+
+def test_a_model_publishing_neither_field_gets_neither_control():
+    """The controls are offered because the catalogue published a domain, not by model name."""
+    from open_webui_openrouter_pipe.filters.video_filter_renderer import (
+        build_video_filter_spec,
+        render_video_filter_source,
+    )
+
+    without = [
+        m for m in VIDEO_BY_ID
+        if not isinstance(VIDEO_BY_ID[m].get("upscale_factor"), dict)
+        and not isinstance(VIDEO_BY_ID[m].get("creativity"), list)
+    ]
+    assert without, "every model publishes one, so this proves nothing"
+    for model_id in without:
+        spec = build_video_filter_spec(model_id, VIDEO_BY_ID[model_id])
+        assert spec.upscale_bounds is None and spec.creativity_modes == ()
+    probe = render_video_filter_source(model_id=without[0], video_model=VIDEO_BY_ID[without[0]])
+    assert "VIDEO_UPSCALE_FACTOR" not in probe and "VIDEO_CREATIVITY" not in probe

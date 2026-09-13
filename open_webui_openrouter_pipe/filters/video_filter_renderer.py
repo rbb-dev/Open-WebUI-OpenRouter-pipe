@@ -320,6 +320,8 @@ class VideoFilterSpec:
     resolutions: tuple[str, ...]
     frame_types: tuple[str, ...]
     size_options: tuple[str, ...]
+    upscale_bounds: tuple[float, float] | None = None
+    creativity_modes: tuple[int, ...] = ()
     seed_capable: bool = False
     seed_declared: bool = False
     audio_capable: bool = False
@@ -423,6 +425,31 @@ _REFERENCE_PARAMS_BY_KIND: dict[str, tuple[str, ...]] = {
 }
 
 
+def _upscale_bounds(published: Any) -> tuple[float, float] | None:
+    if not isinstance(published, dict):
+        return None
+    low, high = published.get("min"), published.get("max")
+    if isinstance(low, bool) or isinstance(high, bool):
+        return None
+    if not isinstance(low, (int, float)) or not isinstance(high, (int, float)):
+        return None
+    if not 0 < low < high:
+        return None
+    return float(low), float(high)
+
+
+def _creativity_modes(published: Any) -> tuple[int, ...]:
+    if not isinstance(published, list):
+        return ()
+    modes: list[int] = []
+    for item in published:
+        if isinstance(item, bool) or not isinstance(item, int):
+            return ()
+        if item not in modes:
+            modes.append(item)
+    return tuple(modes) if len(modes) > 1 else ()
+
+
 def _reachable_reference_params(
     allowed: tuple[str, ...], model: dict[str, Any]
 ) -> tuple[str, ...]:
@@ -469,6 +496,8 @@ def build_video_filter_spec(
     resolutions = _safe_literal_tuple(model.get("supported_resolutions"))
     frame_types = _safe_literal_tuple(model.get("supported_frame_images"))
     size_options = _safe_literal_tuple(model.get("supported_sizes") or model.get("supported_size_options"))
+    upscale_bounds = _upscale_bounds(model.get("upscale_factor"))
+    creativity_modes = _creativity_modes(model.get("creativity"))
 
     intent_admin_enabled = True
     intent_enabled_default = True
@@ -499,6 +528,8 @@ def build_video_filter_spec(
         resolutions=resolutions,
         frame_types=frame_types,
         size_options=size_options,
+        upscale_bounds=upscale_bounds,
+        creativity_modes=creativity_modes,
         seed_capable="seed" in model and not capability_declared_off(model.get("seed")),
         seed_declared=model.get("seed") is True,
         audio_capable="generate_audio" in model
@@ -836,6 +867,33 @@ def _render_purpose_built_fields(spec: VideoFilterSpec) -> list[str]:
                 "        )"
             )
         )
+    if spec.upscale_bounds:
+        low, high = spec.upscale_bounds
+        fields.append(
+            _field_block(
+                "VIDEO_UPSCALE_FACTOR: float = Field(\n"
+                "            default=0.0,\n"
+                "            ge=0.0,\n"
+                f"            le={high:g},\n"
+                '            title="Upscale factor",\n'
+                f'            description="How much bigger to make the video, {low:g} to {high:g} '
+                'times its current size. 0 leaves it to the model.",\n'
+                "        )"
+            )
+        )
+    if spec.creativity_modes:
+        literals = _literal_union(("", *(str(mode) for mode in spec.creativity_modes)))
+        fields.append(
+            _field_block(
+                f"VIDEO_CREATIVITY: Literal[{literals}] = Field(\n"
+                '            default="",\n'
+                '            title="Creativity",\n'
+                '            description="0 keeps the source exactly as it is and sharpens it; '
+                "1 restores and invents fine detail that was not there. Blank leaves the "
+                'model\'s own choice.",\n'
+                "        )"
+            )
+        )
     if spec.aspect_ratios:
         literals = _literal_union(("", *spec.aspect_ratios))
         fields.append(
@@ -1113,6 +1171,32 @@ def _render_param_lines(spec: VideoFilterSpec) -> str:
                 '        duration = self._to_int(getattr(user_valves, "VIDEO_DURATION", 0))',
                 '        if duration and duration > 0:',
                 '            params["duration"] = duration',
+            ]
+        )
+    if spec.upscale_bounds:
+        low, high = spec.upscale_bounds
+        lines.extend(
+            [
+                '        upscale_raw = getattr(user_valves, "VIDEO_UPSCALE_FACTOR", 0.0)',
+                "        try:",
+                "            upscale = float(upscale_raw)",
+                "        except (TypeError, ValueError):",
+                "            upscale = 0.0",
+                f"        if {low:g} <= upscale <= {high:g}:",
+                '            params["upscale_factor"] = upscale',
+            ]
+        )
+    if spec.creativity_modes:
+        allowed = ", ".join(str(mode) for mode in spec.creativity_modes)
+        lines.extend(
+            [
+                '        creativity_raw = getattr(user_valves, "VIDEO_CREATIVITY", "")',
+                "        try:",
+                "            creativity = int(str(creativity_raw).strip())",
+                "        except (TypeError, ValueError):",
+                "            creativity = None",
+                f"        if creativity in ({allowed},):",
+                '            params["creativity"] = creativity',
             ]
         )
     if spec.aspect_ratios:

@@ -2635,6 +2635,10 @@ class VideoGenerationAdapter:
                 video_model.get("generate_audio")
             ):
                 top_level.add("generate_audio")
+            if isinstance(video_model.get("upscale_factor"), dict):
+                top_level.add("upscale_factor")
+            if isinstance(video_model.get("creativity"), list):
+                top_level.add("creativity")
         passthrough -= _DOCUMENTED_TOP_LEVEL_VIDEO_FIELDS
         return top_level, passthrough
 

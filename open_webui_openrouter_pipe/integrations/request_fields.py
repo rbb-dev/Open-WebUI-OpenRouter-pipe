@@ -63,6 +63,7 @@ VIDEO_FIELD_GAPS: dict[str, str] = {
 
 VIDEO_CATALOG_FIELD_ROUTES: dict[str, str] = {
     "allowed_passthrough_parameters": "the names a typed control is drawn for, or a free-text box when none exists",
+    "creativity": "per-model control, drawn from the modes the catalogue lists",
     "description": "the capability line of the model's help card",
     "generate_audio": "the audio toggle, drawn when the catalogue does not declare it off",
     "id": "the model's identity everywhere: filter name, marker, catalogue lookup, help card",
@@ -73,6 +74,7 @@ VIDEO_CATALOG_FIELD_ROUTES: dict[str, str] = {
     "supported_frame_images": "the frames control, and the frame-controls line of the help card",
     "supported_resolutions": "the resolution control, drawn from the tiers listed",
     "supported_sizes": "the size control, drawn from the exact dimensions listed",
+    "upscale_factor": "per-model control, bounded by the range the catalogue publishes",
 }
 
 VIDEO_CATALOG_FIELD_GAPS: dict[str, str] = {
@@ -86,12 +88,6 @@ VIDEO_CATALOG_FIELD_GAPS: dict[str, str] = {
         "age: the catalogue arrives in OpenRouter's own order and is shown in it, so the "
         "date would be read by nobody and would have to be kept true by somebody."
     ),
-    "creativity": (
-        "the model publishes the two modes it accepts, but OpenRouter's video request "
-        "format documents no field that carries them and the model names only "
-        "safety_tolerance as a passthrough parameter, so there is no route to send one. "
-        "Returned to the panel rather than guessed at; see round 21 in the ledger."
-    ),
     "hugging_face_id": (
         "null on every video model OpenRouter publishes, so there is nothing to read. If "
         "one ever carries a value, this entry is wrong and the census test will not catch "
@@ -102,12 +98,6 @@ VIDEO_CATALOG_FIELD_GAPS: dict[str, str] = {
         "supplied it, so no card, filter or page in this pipe quotes one; what a "
         "generation actually cost is reported after the poll instead. Pinned by "
         "test_no_video_price_reaches_a_user_at_all."
-    ),
-    "upscale_factor": (
-        "the model publishes the range it accepts, but OpenRouter's video request format "
-        "documents no field that carries it and the model names only safety_tolerance as "
-        "a passthrough parameter, so there is no route to send one. Returned to the panel "
-        "rather than guessed at; see round 21 in the ledger."
     ),
 }
 

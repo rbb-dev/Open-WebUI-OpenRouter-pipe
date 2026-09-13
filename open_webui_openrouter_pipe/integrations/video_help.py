@@ -885,6 +885,8 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             f"No audio is generated; the soundtrack is whatever your source carried. {OPENROUTER_PRICING}",
         ],
         "knob_descriptions": {
+            "Upscale factor": "How much bigger to make the video, 1.5 to 3 times its current size. 0 leaves it to the model.",
+            "Creativity": "0 keeps the source exactly as it is and sharpens it; 1 restores and invents fine detail that was not there.",
             "Reference video URL": "The clip to be enlarged. Its length and dimensions decide the output.",
             "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,
         },
