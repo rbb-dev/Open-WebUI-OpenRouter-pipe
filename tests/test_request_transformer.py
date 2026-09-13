@@ -5788,7 +5788,11 @@ class TestImageReuseRegister:
                 captured.append(record)
 
         spy = _Spy(level=_logging.WARNING)
-        logger = _logging.getLogger("open_webui_openrouter_pipe")
+        # The logger the code under test actually writes to -- `pipe.logger.log(...)` at the
+        # emission site. Looking one up by name works in the package but not in the flat
+        # bundle, where every submodule collapses into one object and the name differs, so a
+        # handler attached by name receives nothing and the sweep counts zero.
+        logger = pipe_instance.logger
         logger.addHandler(spy)
         try:
             await self._run(pipe_instance, messages, gateway=denier)
