@@ -917,6 +917,14 @@ def collect_external_type_checking(
     return tc_import_lines, else_lines
 
 
+def _read_stub_required_open_webui_version(stub_path: Path) -> str:
+    content = stub_path.read_text(encoding="utf-8")
+    match = re.search(r"^required_open_webui_version:\s*([^\n]+)", content, re.MULTILINE)
+    if not match:
+        raise SystemExit(f"no required_open_webui_version in {stub_path}")
+    return match.group(1).strip()
+
+
 def _read_stub_version(stub_path: Path) -> str:
     content = stub_path.read_text(encoding="utf-8")
     match = re.search(r"^version:\s*([^\n]+)", content, re.MULTILINE)
@@ -924,6 +932,7 @@ def _read_stub_version(stub_path: Path) -> str:
 
 
 def _render_header(*, version: str, compressed: bool) -> str:
+    required_open_webui_version = _read_stub_required_open_webui_version(STUB_FILE)
     description_suffix = " (minified)" if compressed else ""
     return f'''"""
 title: Open WebUI OpenRouter Responses Pipe
@@ -932,7 +941,7 @@ author_url: https://github.com/rbb-dev
 git_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe
 id: open_webui_openrouter_pipe
 description: OpenRouter Responses API integration for Open WebUI (flat monolith{description_suffix})
-required_open_webui_version: 0.9.1
+required_open_webui_version: {required_open_webui_version}
 version: {version}
 requirements: aiohttp, cryptography, fastapi, httpx, imageio, imageio-ffmpeg, lz4, pydantic, pydantic_core, sqlalchemy, tenacity, pyzipper, cairosvg, Pillow, yarl
 license: MIT
@@ -1234,6 +1243,7 @@ def _b64_chunks_expr(b64_text: str, *, chunk_size: int = 120) -> str:
 
 
 def _render_header_compressed(*, version: str) -> str:
+    required_open_webui_version = _read_stub_required_open_webui_version(STUB_FILE)
     return f'''"""
 title: Open WebUI OpenRouter Responses Pipe
 author: rbb-dev
@@ -1241,7 +1251,7 @@ author_url: https://github.com/rbb-dev
 git_url: https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe
 id: open_webui_openrouter_pipe
 description: OpenRouter Responses API integration for Open WebUI (bundled and compressed monolith)
-required_open_webui_version: 0.9.1
+required_open_webui_version: {required_open_webui_version}
 version: {version}
 requirements: aiohttp, cryptography, fastapi, httpx, imageio, imageio-ffmpeg, lz4, pydantic, pydantic_core, sqlalchemy, tenacity, pyzipper, cairosvg, Pillow, yarl
 license: MIT
