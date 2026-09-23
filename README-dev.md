@@ -50,7 +50,7 @@ git push origin v2.0.4                # Push tag
 # Version bump checklist (before tagging):
 # - Update `open_webui_openrouter_pipe.py` manifest header:
 #   - `version:` field
-#   - `requirements:` tag pin (`@vX.Y.Z`)
+#   - the tag in the `requirements:` release-archive URL (`.../archive/refs/tags/vX.Y.Z.zip`)
 
 # 3. Go back to dev for next work
 git checkout dev

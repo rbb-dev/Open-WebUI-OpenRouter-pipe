@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Version](https://img.shields.io/badge/version-2.7.3-blue.svg)](https://github.com/rbb-dev/Open-WebUI-OpenRouter-pipe)
-[![Open WebUI Compatible](https://img.shields.io/badge/Open%20WebUI-0.9.1%2B-green.svg)](https://openwebui.com/)
+[![Open WebUI Compatible](https://img.shields.io/badge/Open%20WebUI-0.11.4%2B-green.svg)](https://openwebui.com/)
 
 **520+ AI models. Chat, image, video, and live multi-model Fusion with full access to your knowledge bases and tools — all from your Open WebUI.**
 
@@ -152,7 +152,7 @@ That's it.
 
 ## Requirements
 
-- Open WebUI 0.9.1+
+- Open WebUI 0.11.4+
 - An [OpenRouter](https://openrouter.ai/) account
 - `WEBUI_SECRET_KEY` configured (required for encrypted credential storage)
 
