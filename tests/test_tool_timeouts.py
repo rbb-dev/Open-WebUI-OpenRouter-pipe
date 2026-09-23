@@ -181,10 +181,11 @@ def _text(output: dict[str, Any]) -> str:
 
 
 async def _run(pipe, monkeypatch, registry, calls, *, timeout=60.0, batch_timeout=120.0, idle_timeout=None,
-               on_complete=None):
+               on_complete=None, event_emitter=None, card_carries_the_result=False, drain=0.0):
     """Run one turn's calls through the real queue, workers, batch executor and retry wrapper.
 
-    Returns the outputs by call_id and how many (virtual) seconds the turn took.
+    Returns the outputs by call_id and how many (virtual) seconds the turn took. `drain` keeps the workers for that many
+    more (virtual) seconds after the calls return, as the rest of a request does.
     """
     context = _ToolExecutionContext(
         queue=asyncio.Queue(maxsize=50),
@@ -194,10 +195,11 @@ async def _run(pipe, monkeypatch, registry, calls, *, timeout=60.0, batch_timeou
         batch_timeout=batch_timeout,
         idle_timeout=idle_timeout,
         user_id="user-1",
-        event_emitter=None,
+        event_emitter=event_emitter,
         batch_cap=4,
     )
     context.on_complete = on_complete
+    context.card_carries_the_result = card_carries_the_result
     executor = pipe._ensure_tool_executor()
     context.workers.extend(asyncio.create_task(executor._tool_worker_loop(context)) for _ in range(5))
     token = pipe._TOOL_CONTEXT.set(context)
@@ -206,6 +208,8 @@ async def _run(pipe, monkeypatch, registry, calls, *, timeout=60.0, batch_timeou
     try:
         with _scaled_clock(monkeypatch):
             outputs = await executor._execute_function_calls(calls, registry)
+            if drain:
+                await asyncio.sleep(drain * SCALE)
     finally:
         pipe._TOOL_CONTEXT.reset(token)
         for worker in context.workers:

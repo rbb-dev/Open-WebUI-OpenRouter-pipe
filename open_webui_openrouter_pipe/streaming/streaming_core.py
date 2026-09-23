@@ -77,23 +77,30 @@ from ..core.url_scheme import is_http_or_https_url
 # Imports from core.utils
 from ..core.utils import (
     OWUI_UNRESOLVABLE_CALL_STATUSES,
+    PIPE_ONLY_TOOL_ROUND_KEY,
     REASONING_ANCHOR_SEQ_KEY,
     REASONING_FOLLOWING_ORDINAL_KEY,
+    REASONING_FOLLOWING_SERVER_ITEM_KEY,
     REASONING_PRECEDING_ORDINAL_KEY,
     REASONING_TEXT_ORDINAL_KEY,
-    SERVER_TOOL_FAILURE_STATUSES,
-    SERVER_TOOL_IN_FLIGHT_STATUSES,
-    SERVER_TOOL_SUCCESS_STATUSES,
-    TOOL_ROUND_SKELETON_KEY,
     _redact_payload_blobs,
     _safe_json_loads,
     _serialize_marker,
     _serialize_phase_marker,
     citation_access_stamp,
     continued_turn_counts,
+    is_picture_output,
     join_answer_and_card,
     merge_usage_stats,
     owui_call_status,
+    picture_output,
+    recorded_tool_text,
+    server_tool_arguments,
+    server_tool_call_id,
+    server_tool_result_text,
+    server_tool_status,
+    strip_hidden_marker_lines,
+    tool_output_text_and_pictures,
     wrap_code_block,
 )
 
@@ -122,7 +129,11 @@ _REPLAY_DROPPED_OPENING = (
 # Imports from storage.persistence
 from ..storage.multimodal import _guess_image_mime_type, image_extension_for_mime
 from ..storage.persistence import normalize_persisted_item
-from ..tools.citation_harvester import BUILTIN_CITATION_TOOLS, harvest_tool_citations
+from ..tools.citation_harvester import (
+    BUILTIN_CITATION_TOOLS,
+    UNCITED_TOOLS,
+    harvest_tool_citations,
+)
 from .constants import DEFERRED_REASONING_FLUSH, ReasoningStatusThrottle
 
 # Import EventEmitter type alias
@@ -174,6 +185,7 @@ except Exception:
     )
     _owui_apply_source_context = None  # type: ignore
 
+
 try:
     _OWUI_SUPPORTS_INCLUDE_CONTENT = (
         _owui_apply_source_context is not None
@@ -185,7 +197,6 @@ except (TypeError, ValueError):
 from ..api.transforms import _responses_input_to_chat_messages
 
 _monotonic = time.monotonic
-_UNRETAINED_TOOL_RESULT = "[tool result not retained]"
 
 
 def _citation_host(url: str) -> str:
@@ -394,34 +405,6 @@ async def _apply_source_context_responses_api(
     return result
 
 
-def _server_tool_status(item: dict[str, Any]) -> str:
-    """Card status for a server-side tool result.
-
-    The item carries its own outcome. Hardcoding "completed" labels a tool that
-    returned an error, or a non-2xx httpStatus, as a call that worked -- and Open
-    WebUI appends the card verbatim onto the persisted assistant message.
-    """
-    reported = item.get("status")
-    if isinstance(reported, str) and reported:
-        if reported in SERVER_TOOL_IN_FLIGHT_STATUSES:
-            return "in_progress"
-        if reported in SERVER_TOOL_FAILURE_STATUSES:
-            return "incomplete"
-        if reported not in SERVER_TOOL_SUCCESS_STATUSES:
-            return "incomplete"
-    if item.get("error"):
-        return "incomplete"
-    http_status = item.get("httpStatus")
-    if http_status is not None:
-        try:
-            code = int(http_status)
-        except (TypeError, ValueError):
-            return "incomplete"
-        if not 200 <= code < 300:
-            return "incomplete"
-    return "completed"
-
-
 class StreamingHandler:
     """Manages streaming response processing.
 
@@ -510,6 +493,8 @@ class StreamingHandler:
         if session is None:
             raise RuntimeError("HTTP session is required for streaming")
 
+        emitter_supplied = event_emitter is not None
+        continuation_newline_pending = bool(body._continues_after_marker)
         if event_emitter is None:
             event_emitter = _wrap_event_emitter(None)
 
@@ -551,7 +536,7 @@ class StreamingHandler:
         breaker_key_value = user_id or None
 
         owui_tool_passthrough = valves.TOOL_EXECUTION_MODE == "Open-WebUI"
-        persist_tools_enabled = valves.PERSIST_TOOL_RESULTS and (not owui_tool_passthrough)
+        persist_tools_enabled = valves.PERSIST_TOOL_RESULTS
         is_continuation = False
         if owui_tool_passthrough and isinstance(body.input, list):
             is_continuation = any(
@@ -585,8 +570,12 @@ class StreamingHandler:
         streamed_tool_call_name_sent: set[str] = set()
         emitted_tool_call_items: set[str] = set()
         emitted_tool_output_items: set[str] = set()
+        committed_call_rows: set[str] = set()
+        committed_output_rows: set[str] = set()
         emitted_response_output_items = False
         emitted_output_items: list[dict[str, Any]] = []
+        published_item_ids: list[str] = []
+        open_message_id: str | None = None
         seeded_output_items: list[dict[str, Any]] | None = None
         recorded_message_chars = 0
         incomplete_warning_emitted = False
@@ -621,7 +610,6 @@ class StreamingHandler:
         assistant_len_before_tool_loops = len(assistant_message)
         pending_ulids: list[str] = []
         pending_items: list[dict[str, Any]] = []
-        staged_skeleton_rows: list[dict[str, Any]] = []
         reasoning_anchor_state: dict[str, Any] = {
             "seq": 0,
             "calls_seen": earlier_turn_calls,
@@ -945,14 +933,16 @@ class StreamingHandler:
             return seeded_output_items
 
         def _flush_recorded_message() -> None:
-            nonlocal recorded_message_chars
+            nonlocal recorded_message_chars, open_message_id
             pending = assistant_message[recorded_message_chars:]
+            segment_id = open_message_id or f"msg-{uuid.uuid4().hex}"
+            open_message_id = None
             if not pending:
                 return
             recorded_message_chars = len(assistant_message)
             emitted_output_items.append({
                 "type": "message",
-                "id": f"msg-{uuid.uuid4().hex}",
+                "id": segment_id,
                 "role": "assistant",
                 "status": "completed",
                 "content": [{"type": "output_text", "text": pending}],
@@ -994,12 +984,46 @@ class StreamingHandler:
             if trailing:
                 resolved.append({
                     "type": "message",
-                    "id": f"msg-{uuid.uuid4().hex}",
+                    "id": open_message_id or f"msg-{uuid.uuid4().hex}",
                     "role": "assistant",
                     "status": "completed",
                     "content": [{"type": "output_text", "text": trailing}],
                 })
             return resolved
+
+        def _output_index(item: dict[str, Any]) -> int:
+            item_id = item.get("id")
+            if isinstance(item_id, str) and item_id in published_item_ids:
+                return published_item_ids.index(item_id)
+            published_item_ids.append(item_id if isinstance(item_id, str) and item_id else f"#{len(published_item_ids)}")
+            return len(published_item_ids) - 1
+
+        def _output_index_before_open_message(item: dict[str, Any]) -> int:
+            if open_message_id not in published_item_ids:
+                return _output_index(item)
+            position = published_item_ids.index(open_message_id)
+            published_item_ids.insert(position, str(item["id"]))
+            return position
+
+        async def _open_message() -> None:
+            nonlocal open_message_id
+            if open_message_id is not None or not (body.stream and emitter_supplied):
+                return
+            open_message_id = f"msg-{uuid.uuid4().hex}"
+            opened: dict[str, Any] = {
+                "type": "message",
+                "id": open_message_id,
+                "role": "assistant",
+                "status": "in_progress",
+                "content": [{"type": "output_text", "text": ""}],
+            }
+            await event_emitter({"type": "response.output_item.added", "output_index": _output_index(opened), "item": opened})
+
+        def _shows_a_file_inline(name: str) -> bool:
+            context = self._pipe._TOOL_CONTEXT.get()
+            return name == "display_file" and bool(
+                context and context.terminal_files_inline and not context.fusion_inner
+            )
 
         async def _emit_tool_start(
             *,
@@ -1015,7 +1039,7 @@ class StreamingHandler:
             stay in spinner state indefinitely.
             """
             nonlocal emitted_response_output_items
-            if not event_emitter:
+            if not event_emitter or not (valves.SHOW_TOOL_CARDS or _shows_a_file_inline(name)):
                 return call_id
             effective_id = call_id or f"st-{uuid.uuid4().hex}"
             if effective_id in emitted_tool_call_items:
@@ -1033,6 +1057,7 @@ class StreamingHandler:
             await _record_output_item(call_item)
             await event_emitter({
                 "type": "response.output_item.added",
+                "output_index": _output_index(call_item),
                 "item": call_item,
             })
             return effective_id
@@ -1044,6 +1069,7 @@ class StreamingHandler:
             files: list | None = None,
             embeds: list | None = None,
             status: str,
+            pictures: list[str] | None = None,
         ) -> None:
             """Emit a tool result card. Used by both pipeline and server tools.
 
@@ -1055,21 +1081,88 @@ class StreamingHandler:
             nonlocal emitted_response_output_items
             if not event_emitter or not call_id or call_id in emitted_tool_output_items:
                 return
+            if not valves.SHOW_TOOL_CARDS and call_id not in emitted_tool_call_items:
+                return
+            result_text = recorded_tool_text(result_text, status)
             emitted_tool_output_items.add(call_id)
             emitted_response_output_items = True
             output_item: dict[str, Any] = {
                 "type": "function_call_output",
                 "id": f"fco-{uuid.uuid4().hex}",
                 "call_id": call_id,
-                "output": [{"type": "input_text", "text": result_text}],
+                "output": picture_output(result_text, pictures or []),
                 "status": status,
             }
             if files:
                 output_item["files"] = files
             if embeds:
                 output_item["embeds"] = embeds
-            await _record_output_item(output_item)
-            await event_emitter({"type": "response.output_item.added", "item": output_item})
+            pending = assistant_message[recorded_message_chars:]
+            if pending and not strip_hidden_marker_lines(pending).strip():
+                await _capture_seeded_output()
+                emitted_output_items.append(copy.deepcopy(output_item))
+                output_index = _output_index_before_open_message(output_item)
+            else:
+                await _record_output_item(output_item)
+                output_index = _output_index(output_item)
+            await event_emitter({"type": "response.output_item.added", "output_index": output_index, "item": output_item})
+
+        def _handed_to_open_webui(call_id: str) -> bool:
+            return bool(emitter_supplied and call_id in emitted_tool_call_items)
+
+        def _tool_rows(payloads: list[dict[str, Any]], call_id: str) -> list[dict[str, Any]]:
+            rows: list[dict[str, Any]] = []
+            for payload in payloads:
+                if not _handed_to_open_webui(call_id):
+                    payload[PIPE_ONLY_TOOL_ROUND_KEY] = True
+                normalized = normalize_persisted_item(payload)
+                row = (
+                    self._pipe._artifact_store._make_db_row(chat_id, message_id, openwebui_model, normalized)
+                    if normalized
+                    else None
+                )
+                if row:
+                    rows.append(row)
+            return rows
+
+        def _round_call_row(call: dict[str, Any], cid: str) -> list[dict[str, Any]]:
+            return _tool_rows([dict(call)], cid)
+
+        def _round_output_row(output: dict[str, Any], cid: str) -> list[dict[str, Any]]:
+            recorded = output.get("output")
+            if is_picture_output(recorded):
+                text, pictures = tool_output_text_and_pictures(recorded)
+                recorded = picture_output(recorded_tool_text(text, output.get("status")), pictures)
+            elif isinstance(recorded, str):
+                recorded = recorded_tool_text(recorded, output.get("status"))
+            return _tool_rows([{**output, "output": recorded}], cid)
+
+        async def _commit_server_tool_round(
+            call_id: str, name: str, status: str, *, item_type: str, result_text: str, arguments: str = "{}",
+            raw_item: dict[str, Any] | None = None,
+        ) -> None:
+            if not message_id:
+                return
+            if persist_tools_enabled and item_type not in _NON_REPLAYABLE_TOOL_ARTIFACTS:
+                normalized = normalize_persisted_item(raw_item) if raw_item else None
+                row = (
+                    self._pipe._artifact_store._make_db_row(chat_id, message_id, openwebui_model, normalized)
+                    if normalized
+                    else None
+                )
+                rows = [row] if row else []
+            else:
+                rows = _tool_rows(
+                    [
+                        {"type": "function_call", "call_id": call_id, "name": name, "arguments": arguments},
+                        {"type": "function_call_output", "call_id": call_id, "status": status,
+                         "output": recorded_tool_text(result_text, status)},
+                    ],
+                    call_id,
+                )
+            ulids = await _persist_rows(rows, "server_tool") if rows else []
+            if ulids:
+                await _append_assistant_hidden_markers([_serialize_marker(ulid) for ulid in ulids])
 
         def _normalize_surrogate_chunk(text: str, bucket: str) -> str:
             """Coalesce surrogate pairs in streaming chunks to keep UTF-8 happy."""
@@ -1226,6 +1319,7 @@ class StreamingHandler:
             await event_emitter(
                 {
                     "type": "response.output_item.added",
+                    "output_index": _output_index(reasoning_item),
                     "item": reasoning_item,
                 }
             )
@@ -1240,15 +1334,10 @@ class StreamingHandler:
                     self.logger.exception("Failed to emit trailing reasoning item")
 
         @timed
-        async def _flush_pending(reason: str) -> None:
-            """Persist buffered artifacts and emit a warning when the DB fails."""
-            if not pending_items:
-                return
-            rows = pending_items[:]
-            pending_items.clear()
+        async def _persist_rows(rows: list[dict[str, Any]], reason: str) -> list[str]:
             try:
-                ulids = await self._pipe._artifact_store._db_persist(rows)
-            except Exception:  # pragma: no cover - DB errors handled later
+                return await self._pipe._artifact_store._db_persist(rows)
+            except Exception:
                 self.logger.exception("Failed to persist response artifacts (%s)", reason)
                 if event_emitter:
                     await event_emitter(
@@ -1257,8 +1346,21 @@ class StreamingHandler:
                             "data": {"description": "⚠️ Tool storage unavailable", "done": False},
                         }
                     )
+                return []
+
+        async def _flush_pending(reason: str) -> None:
+            if not pending_items:
                 return
-            pending_ulids.extend(ulids)
+            rows = pending_items[:]
+            pending_items.clear()
+            pending_ulids.extend(await _persist_rows(rows, reason))
+
+        async def _mark_committed_rows() -> None:
+            if not pending_ulids:
+                return
+            ulids = pending_ulids[:]
+            pending_ulids.clear()
+            await _append_assistant_hidden_markers([_serialize_marker(ulid) for ulid in ulids])
 
         thinking_tasks: list[asyncio.Task] = []
         thinking_cancelled = False
@@ -1311,14 +1413,24 @@ class StreamingHandler:
             if generation_started_at is None:
                 generation_started_at = now
 
+        def _continuation_lead() -> str:
+            nonlocal continuation_newline_pending
+            lead = "\n" if continuation_newline_pending and not assistant_message else ""
+            continuation_newline_pending = False
+            return lead
+
         async def _append_assistant_hidden_markers(markers: list[str]) -> None:
             nonlocal assistant_message, retry_barrier_crossed
             if not markers:
                 return
+            assistant_message += _continuation_lead()
             msg_before = len(assistant_message)
             assistant_message = _append_hidden_marker_lines(assistant_message, markers)
+            if reasoning_anchor_state["chars_at_last_chunk"] == msg_before:
+                reasoning_anchor_state["chars_at_last_chunk"] = len(assistant_message)
             marker_delta = assistant_message[msg_before:]
             if body.stream:
+                await _open_message()
                 await event_emitter({"type": "chat:message:delta", "data": {"content": marker_delta}})
                 retry_barrier_crossed = True
             elif content_handed_back:
@@ -1682,8 +1794,11 @@ class StreamingHandler:
                                         "data": {"description": "Responding to the user…"},
                                     }
                                 )
+                            if normalized_delta:
+                                normalized_delta = _continuation_lead() + normalized_delta
                             assistant_message += normalized_delta
                             if not fusion_armed:
+                                await _open_message()
                                 await event_emitter(
                                     {
                                         "type": "chat:message:delta",
@@ -1963,8 +2078,16 @@ class StreamingHandler:
                             should_persist = False
                             reasoning_anchor_state["stream_calls"] += 1
 
+                        elif isinstance(item_type, str) and item_type.startswith("openrouter:"):
+                            should_persist = False
+
                         else:
                             should_persist = persist_tools_enabled
+
+                        if isinstance(item_type, str) and item_type.startswith("openrouter:") and item.get("id"):
+                            for _pending_reasoning, _stream_pos, _text_pos in reasoning_anchor_state["awaiting"]:
+                                if _stream_pos == reasoning_anchor_state["stream_calls"]:
+                                    _pending_reasoning.setdefault(REASONING_FOLLOWING_SERVER_ITEM_KEY, str(item["id"]))
 
                         if should_persist:
                             normalized_item = normalize_persisted_item(item)
@@ -2144,7 +2267,7 @@ class StreamingHandler:
                             title = "Let me skim those files…"
                         elif item_type in ("image_generation_call", "openrouter:image_generation"):
                             title = "Let me create that image…"
-                            if _server_tool_status(item) == "incomplete":
+                            if server_tool_status(item) == "incomplete":
                                 error_msg = item.get("error") or "Image generation failed"
                                 self.logger.warning("Image generation error: %s", error_msg)
                                 await self._pipe._event_emitter_handler._emit_notification(
@@ -2178,37 +2301,51 @@ class StreamingHandler:
                                         image_markdowns = []
                         elif item_type == "openrouter:datetime":
                             title = None
-                            if valves.SHOW_TOOL_CARDS:
-                                dt_val = item.get("datetime", "")
-                                tz_val = item.get("timezone", "")
-                                result_text = json.dumps({"datetime": dt_val, "timezone": tz_val}, indent=2)
+                            dt_val = item.get("datetime", "")
+                            tz_val = item.get("timezone", "")
+                            result_text = json.dumps({"datetime": dt_val, "timezone": tz_val}, indent=2)
+                            effective_id = server_tool_call_id(item.get("id"))
+                            if emitter_supplied:
                                 effective_id = await _emit_tool_start(
-                                    call_id=item.get("id", ""),
+                                    call_id=effective_id,
                                     name="datetime",
                                     arguments="{}",
-                                    status=_server_tool_status(item),
+                                    status=server_tool_status(item),
                                 )
                                 await _emit_tool_result(
                                     call_id=effective_id,
                                     result_text=result_text,
-                                    status=_server_tool_status(item),
+                                    status=server_tool_status(item),
                                 )
+                            await _commit_server_tool_round(
+                                effective_id, "datetime", server_tool_status(item),
+                                item_type=item_type, result_text=result_text, arguments="{}",
+                            )
                             await self._pipe._event_emitter_handler._emit_status(event_emitter, "", done=True)
                         elif item_type == "openrouter:web_search":
                             title = None
-                            if valves.SHOW_TOOL_CARDS:
-                                result_text = "Search completed. Sources available in the citations panel below."
+                            result_text = (
+                                "Search completed. Sources available in the citations panel below."
+                                if server_tool_status(item) == "completed"
+                                else "Search did not complete."
+                            )
+                            effective_id = server_tool_call_id(item.get("id"))
+                            if emitter_supplied:
                                 effective_id = await _emit_tool_start(
-                                    call_id=item.get("id", ""),
+                                    call_id=effective_id,
                                     name="web_search",
                                     arguments="{}",
-                                    status=_server_tool_status(item),
+                                    status=server_tool_status(item),
                                 )
                                 await _emit_tool_result(
                                     call_id=effective_id,
                                     result_text=result_text,
-                                    status=_server_tool_status(item),
+                                    status=server_tool_status(item),
                                 )
+                            await _commit_server_tool_round(
+                                effective_id, "web_search", server_tool_status(item),
+                                item_type=item_type, result_text=result_text, arguments="{}",
+                            )
                             action = item.get("action") if isinstance(item.get("action"), dict) else {}
                             search_urls: list[str] = []
                             for u in (action.get("sources") or []):
@@ -2228,99 +2365,57 @@ class StreamingHandler:
                             await self._pipe._event_emitter_handler._emit_status(event_emitter, "", done=True)
                         elif item_type == "openrouter:web_fetch":
                             title = None
-                            if valves.SHOW_TOOL_CARDS:
-                                fetch_url = item.get("url", "")
-                                fetch_error = item.get("error")
-                                fetch_content = item.get("content")
-                                if fetch_error:
-                                    result_text = str(fetch_error)
-                                elif isinstance(fetch_content, str) and fetch_content:
-                                    result_text = fetch_content
-                                else:
-                                    http_status = item.get("httpStatus")
-                                    result_text = f"Fetch failed (HTTP {http_status})" if http_status else "Fetch failed or returned no content."
-                                args_text = json.dumps({"url": fetch_url}, ensure_ascii=False) if fetch_url else "{}"
+                            fetch_url = item.get("url", "")
+                            fetch_error = item.get("error")
+                            fetch_content = item.get("content")
+                            if fetch_error:
+                                result_text = str(fetch_error)
+                            elif isinstance(fetch_content, str) and fetch_content:
+                                result_text = fetch_content
+                            else:
+                                http_status = item.get("httpStatus")
+                                result_text = f"Fetch failed (HTTP {http_status})" if http_status else "Fetch failed or returned no content."
+                            args_text = json.dumps({"url": fetch_url}, ensure_ascii=False) if fetch_url else "{}"
+                            effective_id = server_tool_call_id(item.get("id"))
+                            if emitter_supplied:
                                 effective_id = await _emit_tool_start(
-                                    call_id=item.get("id", ""),
+                                    call_id=effective_id,
                                     name="web_fetch",
                                     arguments=args_text,
-                                    status=_server_tool_status(item),
+                                    status=server_tool_status(item),
                                 )
                                 await _emit_tool_result(
                                     call_id=effective_id,
                                     result_text=result_text,
-                                    status=_server_tool_status(item),
+                                    status=server_tool_status(item),
                                 )
-                            await self._pipe._event_emitter_handler._emit_status(event_emitter, "", done=True)
-                        elif item_type == "openrouter:advisor":
-                            title = None
-                            if valves.SHOW_TOOL_CARDS:
-                                advisor_error = item.get("error")
-                                if advisor_error:
-                                    result_text = str(advisor_error)
-                                else:
-                                    result_text = str(item.get("advice") or "")
-                                effective_id = await _emit_tool_start(
-                                    call_id=item.get("id", ""),
-                                    name="advisor",
-                                    arguments="{}",
-                                    status=_server_tool_status(item),
-                                )
-                                await _emit_tool_result(
-                                    call_id=effective_id,
-                                    result_text=result_text,
-                                    status=_server_tool_status(item),
-                                )
-                            await self._pipe._event_emitter_handler._emit_status(event_emitter, "", done=True)
-                        elif item_type == "openrouter:subagent":
-                            title = None
-                            if valves.SHOW_TOOL_CARDS:
-                                subagent_error = item.get("error")
-                                if subagent_error:
-                                    result_text = str(subagent_error)
-                                else:
-                                    result_text = str(item.get("outcome") or "")
-                                effective_id = await _emit_tool_start(
-                                    call_id=item.get("id", ""),
-                                    name="subagent",
-                                    arguments="{}",
-                                    status=_server_tool_status(item),
-                                )
-                                await _emit_tool_result(
-                                    call_id=effective_id,
-                                    result_text=result_text,
-                                    status=_server_tool_status(item),
-                                )
+                            await _commit_server_tool_round(
+                                effective_id, "web_fetch", server_tool_status(item),
+                                item_type=item_type, result_text=result_text, arguments=args_text,
+                            )
                             await self._pipe._event_emitter_handler._emit_status(event_emitter, "", done=True)
                         elif isinstance(item_type, str) and item_type.startswith("openrouter:"):
                             title = None
-                            if valves.SHOW_TOOL_CARDS:
-                                tool_name = item_type.split(":", 1)[1] or item_type
-                                result_data = item.get("result")
-                                if result_data is None:
-                                    result_data = {
-                                        k: v for k, v in item.items()
-                                        if k not in ("type", "id", "status")
-                                    } or None
-                                try:
-                                    result_text = (
-                                        json.dumps(result_data, indent=2, ensure_ascii=False)
-                                        if result_data is not None
-                                        else str(item.get("status") or "completed")
-                                    )
-                                except (TypeError, ValueError):
-                                    result_text = str(result_data)
+                            tool_name = item_type.split(":", 1)[1] or item_type
+                            result_text = server_tool_result_text(item)
+                            server_arguments = json.dumps(server_tool_arguments(item), ensure_ascii=False)
+                            effective_id = server_tool_call_id(item.get("id"))
+                            if emitter_supplied:
                                 effective_id = await _emit_tool_start(
-                                    call_id=item.get("id", ""),
+                                    call_id=effective_id,
                                     name=tool_name,
-                                    arguments="{}",
-                                    status=_server_tool_status(item),
+                                    arguments=server_arguments,
+                                    status=server_tool_status(item),
                                 )
                                 await _emit_tool_result(
                                     call_id=effective_id,
                                     result_text=result_text,
-                                    status=_server_tool_status(item),
+                                    status=server_tool_status(item),
                                 )
+                            await _commit_server_tool_round(
+                                effective_id, tool_name, server_tool_status(item),
+                                item_type=item_type, result_text=result_text, arguments=server_arguments, raw_item=item,
+                            )
                             await self._pipe._event_emitter_handler._emit_status(event_emitter, "", done=True)
                         elif item_type == "local_shell_call":
                             title = "Let me run that command…"
@@ -2356,10 +2451,12 @@ class StreamingHandler:
                             note_model_activity()
                             note_generation_activity()
                             msg_before = len(assistant_message)
+                            assistant_message += _continuation_lead()
                             for snippet in image_markdowns:
                                 assistant_message = _append_output_block(assistant_message, snippet)
                             if event_emitter:
                                 image_delta = assistant_message[msg_before:]
+                                await _open_message()
                                 await event_emitter({"type": "chat:message:delta", "data": {"content": image_delta}})
                                 retry_barrier_crossed = True
 
@@ -2793,12 +2890,13 @@ class StreamingHandler:
                         break
 
                     has_actionable_continuation = bool(call_items or invalid_call_outputs)
-                    show_tool_cards = valves.SHOW_TOOL_CARDS
 
                     if call_items:
                         if not tool_loops_executed:
                             assistant_len_before_tool_loops = len(assistant_message)
                         tool_loops_executed = True
+                        committed_call_rows.clear()
+                        committed_output_rows.clear()
 
                         if loop_limit_reached:
                             limit = valves.MAX_FUNCTION_CALL_LOOPS
@@ -2822,7 +2920,7 @@ class StreamingHandler:
                                     }
                                 )
                         else:
-                            if show_tool_cards and event_emitter and body.stream:
+                            if emitter_supplied:
                                 try:
                                     for call in call_items:
                                         call_id = _extract_call_id(call)
@@ -2847,23 +2945,46 @@ class StreamingHandler:
                                     self.logger.warning("Failed to emit in-progress tool cards: %s", exc, exc_info=True)
 
                             _tool_ctx = self._pipe._TOOL_CONTEXT.get()
-                            if show_tool_cards and event_emitter and body.stream and _tool_ctx:
+                            if _tool_ctx:
                                 async def _on_tool_complete(call: dict, result: dict) -> None:
                                     cid = _extract_call_id(call) or _extract_call_id(result)
                                     if not cid:
                                         return
-                                    result_str = result.get("output") or ""
-                                    if not isinstance(result_str, str):
-                                        result_str = str(result_str)
+                                    result_str, pictures = tool_output_text_and_pictures(result.get("output"))
                                     await _emit_tool_result(
                                         call_id=cid,
                                         result_text=result_str,
                                         files=result.get("files") or None,
                                         embeds=result.get("embeds") or None,
                                         status=str(result.get("status") or "completed"),
+                                        pictures=pictures,
                                     )
+                                    if message_id and cid in committed_call_rows and cid not in committed_output_rows:
+                                        committed_output_rows.add(cid)
+                                        rows = _round_output_row(result, cid)
+                                        ulids = await _persist_rows(rows, "tool_result") if rows else []
+                                        if ulids:
+                                            await _append_assistant_hidden_markers(
+                                                [_serialize_marker(ulid) for ulid in ulids]
+                                            )
 
                                 _tool_ctx.on_complete = _on_tool_complete
+                                _tool_ctx.card_carries_the_result = (
+                                    emitter_supplied and bool(valves.SHOW_TOOL_CARDS) and not _tool_ctx.fusion_inner
+                                )
+
+                            call_rows_at_start: list[dict[str, Any]] = []
+                            for call in call_items if message_id else []:
+                                cid = _extract_call_id(call)
+                                if cid and cid not in committed_call_rows:
+                                    committed_call_rows.add(cid)
+                                    call_rows_at_start.extend(_round_call_row(call, cid))
+                            if call_rows_at_start:
+                                if thinking_tasks:
+                                    cancel_thinking()
+                                pending_items.extend(call_rows_at_start)
+                                await _flush_pending("tool_calls")
+                                await _mark_committed_rows()
 
                             try:
                                 function_outputs = await self._pipe._ensure_tool_executor()._execute_function_calls(
@@ -2890,6 +3011,7 @@ class StreamingHandler:
                             finally:
                                 if _tool_ctx and _tool_ctx.on_complete is not None:
                                     _tool_ctx.on_complete = None
+                                    _tool_ctx.card_carries_the_result = False
 
                         all_function_outputs = list(function_outputs) + list(invalid_call_outputs)
                         budgeted_outputs = [
@@ -2926,18 +3048,17 @@ class StreamingHandler:
                             "Too large for the remaining context this turn, so the model "
                             "did not receive:",
                         )
-                        if show_tool_cards and event_emitter and body.stream and all_function_outputs:
+                        if emitter_supplied and all_function_outputs:
                             try:
                                 for cid, output in output_by_call_id.items():
-                                    result_str = output.get("output") or ""
-                                    if not isinstance(result_str, str):
-                                        result_str = str(result_str)
+                                    result_str, pictures = tool_output_text_and_pictures(output.get("output"))
                                     await _emit_tool_result(
                                         call_id=cid,
                                         result_text=result_str,
                                         files=output.get("files") or None,
                                         embeds=output.get("embeds") or None,
                                         status=str(output.get("status") or "completed"),
+                                        pictures=pictures,
                                     )
                             except Exception as exc:
                                 self.logger.warning("Failed to emit completed tool cards: %s", exc, exc_info=True)
@@ -2950,7 +3071,7 @@ class StreamingHandler:
                             if not call:
                                 continue
                             tool_name = (call.get("name") or "").strip()
-                            if output.get("status") != "completed":
+                            if output.get("status") != "completed" or tool_name in UNCITED_TOOLS:
                                 continue
                             try:
                                 tool_result = output.get("output") or ""
@@ -3062,90 +3183,29 @@ class StreamingHandler:
                                     exc_info=True,
                                 )
 
-                        if persist_tools_enabled:
-                            persist_payloads: list[dict] = []
-                            for output in all_function_outputs:
-                                cid = _extract_call_id(output)
-                                call = call_by_id.get(cid) if cid else None
-                                if call:
-                                    persist_payloads.append(call)
-                                persist_payloads.append(output)
-
-                            if persist_payloads:
-                                self.logger.debug("💾 Persisting %d tool results", len(persist_payloads))
-                                for idx, payload in enumerate(persist_payloads, start=1):
-                                    payload_type = payload.get("type")
-                                    self.logger.debug(
-                                        "🔍 [%d/%d] Payload type=%s",
-                                        idx,
-                                        len(persist_payloads),
-                                        payload_type,
-                                    )
-                                    normalized_payload = normalize_persisted_item(payload)
-                                    if not normalized_payload:
-                                        self.logger.warning(
-                                            "❌ [%d/%d] Normalization returned None for type=%s",
-                                            idx,
-                                            len(persist_payloads),
-                                            payload_type,
-                                        )
-                                        continue
-                                    self.logger.debug(
-                                        "✅ [%d/%d] Normalized successfully (type=%s)",
-                                        idx,
-                                        len(persist_payloads),
-                                        payload_type,
-                                    )
-                                    row = self._pipe._artifact_store._make_db_row(
-                                        chat_id, message_id, openwebui_model, normalized_payload
-                                    )
-                                    if not row:
-                                        self.logger.warning(
-                                            "❌ [%d/%d] _make_db_row returned None (chat_id=%s, message_id=%s, type=%s)",
-                                            idx,
-                                            len(persist_payloads),
-                                            chat_id,
-                                            message_id,
-                                            payload_type,
-                                        )
-                                        continue
-                                    self.logger.debug(
-                                        "✅ [%d/%d] Row created; enqueueing for persistence",
-                                        idx,
-                                        len(persist_payloads),
-                                    )
-                                    pending_items.append(row)
-                                self.logger.debug(
-                                    "📦 Total pending_items after loop: %d", len(pending_items)
-                                )
-                                if thinking_tasks:
-                                    cancel_thinking()
-                                await _flush_pending("function_outputs")
-                        elif valves.PERSIST_REASONING_TOKENS in {"next_reply", "conversation"}:
-                            for output in all_function_outputs:
-                                cid = _extract_call_id(output)
-                                call = call_by_id.get(cid) if cid else None
-                                if not call or (cid in emitted_tool_call_items and cid in emitted_tool_output_items):
-                                    continue
-                                for skeleton_item in (
-                                    {"type": "function_call", "call_id": cid, "name": call.get("name"),
-                                     "arguments": "{}", TOOL_ROUND_SKELETON_KEY: True},
-                                    {"type": "function_call_output", "call_id": cid, "output": _UNRETAINED_TOOL_RESULT,
-                                     "status": output.get("status"), TOOL_ROUND_SKELETON_KEY: True},
-                                ):
-                                    normalized_skeleton = normalize_persisted_item(skeleton_item)
-                                    row = (
-                                        self._pipe._artifact_store._make_db_row(
-                                            chat_id, message_id, openwebui_model, normalized_skeleton
-                                        )
-                                        if normalized_skeleton
-                                        else None
-                                    )
-                                    if row:
-                                        staged_skeleton_rows.append(row)
+                        call_rows: list[dict[str, Any]] = []
+                        output_rows: list[dict[str, Any]] = []
+                        for output in all_function_outputs if message_id else []:
+                            cid = _extract_call_id(output)
+                            call = call_by_id.get(cid) if cid else None
+                            if not call:
+                                continue
+                            if cid not in committed_call_rows:
+                                committed_call_rows.add(cid)
+                                call_rows.extend(_round_call_row(call, cid))
+                            if cid not in committed_output_rows:
+                                committed_output_rows.add(cid)
+                                output_rows.extend(_round_output_row(output, cid))
+                        round_rows = call_rows + output_rows
+                        if round_rows:
+                            if thinking_tasks:
+                                cancel_thinking()
+                            pending_items.extend(round_rows)
+                            await _flush_pending("tool_round")
+                            await _mark_committed_rows()
 
                         for output in all_function_outputs:
-                            result_text = wrap_code_block(output.get("output", ""))
+                            result_text = wrap_code_block(tool_output_text_and_pictures(output.get("output"))[0])
                             if thinking_tasks:
                                 cancel_thinking()
                             self.logger.debug("Received tool result\n%s", result_text)
@@ -3159,7 +3219,7 @@ class StreamingHandler:
                         tool_loops_executed = True
                         all_function_outputs = list(invalid_call_outputs)
                         for output in all_function_outputs:
-                            result_text = wrap_code_block(output.get("output", ""))
+                            result_text = wrap_code_block(tool_output_text_and_pictures(output.get("output"))[0])
                             if thinking_tasks:
                                 cancel_thinking()
                             self.logger.debug("Received tool result\n%s", result_text)
@@ -3188,6 +3248,7 @@ class StreamingHandler:
                 delta = joined[len(assistant_message):]
                 assistant_message = joined
                 if event_emitter:
+                    await _open_message()
                     await event_emitter(
                         {
                             "type": "chat:message:delta",
@@ -3425,19 +3486,23 @@ class StreamingHandler:
                 if event_emitter:
                     fusion_answer_item = {
                         "type": "message",
-                        "id": f"msg-{uuid.uuid4().hex}",
+                        "id": open_message_id or f"msg-{uuid.uuid4().hex}",
                         "role": "assistant",
                         "status": "completed",
                         "content": [{"type": "output_text", "text": assistant_message}],
                     }
                     try:
+                        recorded_message_chars = len(assistant_message)
                         await _record_output_item(fusion_answer_item)
+                        answer_index = _output_index(fusion_answer_item)
                         await event_emitter({
                             "type": "response.output_item.added",
+                            "output_index": answer_index,
                             "item": fusion_answer_item,
                         })
                         await event_emitter({
                             "type": "response.output_item.done",
+                            "output_index": answer_index,
                             "item": fusion_answer_item,
                         })
                         emitted_response_output_items = True
@@ -3451,6 +3516,7 @@ class StreamingHandler:
                     + assistant_message
                     + '\n</details>'
                 )
+                recorded_message_chars = len(assistant_message)
 
             if (
                 fusion_armed and fusion_state is not None and fusion_state.fusion_index is not None
@@ -3500,24 +3566,26 @@ class StreamingHandler:
                         list(pending_ulids),
                     )
             else:
-                if reasoning_anchor_state["seq"] > 0:
-                    pending_items.extend(staged_skeleton_rows)
                 await _flush_pending("finalize")
-                if pending_ulids:
-                    await _append_assistant_hidden_markers(
-                        [_serialize_marker(ulid) for ulid in pending_ulids]
-                    )
+                await _mark_committed_rows()
 
+            terminal_output: list[dict[str, Any]] = []
             if (
                 (not handed_back_for_retry)
                 and (not was_cancelled)
-                and emitted_output_items
-                and event_emitter
+                and (emitted_output_items or (terminal and not error_occurred))
             ):
+                await _capture_seeded_output()
+                terminal_output = _terminal_output_items()
+            if outcome_sink is not None and terminal_output and terminal:
+                outcome_sink["output"] = terminal_output
+                if total_usage:
+                    outcome_sink["usage"] = dict(total_usage)
+            if terminal_output and event_emitter:
                 try:
                     await event_emitter({
                         "type": "response.completed",
-                        "response": {"output": _terminal_output_items()},
+                        "response": {"output": terminal_output},
                     })
                 except asyncio.CancelledError:
                     raise

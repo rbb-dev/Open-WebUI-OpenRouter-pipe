@@ -153,6 +153,9 @@ SOLE_CALLER: dict[str, str] = {}
 # derive. Each was read at the call site. Keyed by receiver AND enclosing function, so a
 # second one at a new site is a new decision rather than something an old entry licenses.
 NOT_A_SESSION: dict[str, str] = {
+    "open_webui_openrouter_pipe/pipe.py::Pipe::_terminal_files_shown_inline::_OwuiConfig.get":
+        "Open WebUI's own settings store (open_webui.models.config.Config); `get` reads the admin's "
+        "`ui.default_interface_settings` from its database, not an HTTP request",
     "open_webui_openrouter_pipe/pipe.py::Pipe::_shutdown_tool_context::_graceful::context.queue.put":
         "ToolContext.queue is the asyncio.Queue the tool workers drain; the sentinel None "
         "is pushed once per worker and `context.queue.join()` follows",

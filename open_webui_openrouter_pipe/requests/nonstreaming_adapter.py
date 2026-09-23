@@ -15,7 +15,6 @@ import aiohttp
 
 from ..api.transforms import _filter_openrouter_request, _parse_url_citation_annotations
 from ..core.timing_logger import timed
-from ..models.registry import normalize_model_id_dotted
 from ..storage.persistence import generate_item_id
 
 if TYPE_CHECKING:
@@ -248,8 +247,7 @@ class NonStreamingAdapter:
                         args = json.dumps(args, ensure_ascii=False) if args is not None else "{}"
                     call_id = raw_call.get("id")
                     if not isinstance(call_id, str) or not call_id.strip():
-                        model_val = (responses_request_body.get("model") or "model")
-                        call_id = f"toolcall-{normalize_model_id_dotted(str(model_val))}-{index}"
+                        call_id = _chat_completions_adapter()._made_up_call_id(index)
                     call_id = call_id.strip()
                     item = {
                         "type": "function_call",

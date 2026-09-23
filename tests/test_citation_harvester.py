@@ -14,7 +14,7 @@ EXA_FETCH_FIXTURE = "# Climate change\nURL: https://www.who.int/news-room/fact-s
 
 def test_builtin_set_contents():
     assert BUILTIN_CITATION_TOOLS == {
-        "search_web", "fetch_url", "view_file", "view_knowledge_file", "query_knowledge_files",
+        "fetch_url", "view_file", "view_knowledge_file", "query_knowledge_files", "query_chat_files",
     }
 
 

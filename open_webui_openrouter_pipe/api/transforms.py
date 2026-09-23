@@ -43,12 +43,18 @@ from ..core.config import (
 )
 from ..core.timing_logger import timed
 from ..core.utils import (
-    TOOL_ROUND_SKELETON_KEY,
+    OPEN_WEBUI_TOOL_IMAGES_TEXT,
     _coerce_bool,
     _parse_model_fallback_csv,
     _sticky_session_key,
-    drop_skeleton_rounds_without_reasoning,
+    is_picture_output,
+    recorded_tool_text,
+    server_tool_arguments,
+    server_tool_call_id,
+    server_tool_result_text,
+    server_tool_status,
     strip_hidden_marker_lines,
+    tool_output_text_and_pictures,
 )
 from ..filters.fusion_filter_renderer import is_fusion_model
 from ..models.registry import ModelFamily
@@ -105,6 +111,7 @@ class ResponsesBody(BaseModel):
     user: str | None = None
     session_id: str | None = None
     _continued_turn: tuple[int, int, bool] | None = PrivateAttr(default=None)
+    _continues_after_marker: bool = PrivateAttr(default=False)
 
     max_tokens: int | None = None
     max_completion_tokens: int | None = None
@@ -765,11 +772,18 @@ def _responses_input_to_chat_messages(
         return [{"role": "user", "content": text}] if text else []
     if not isinstance(input_value, list):
         return []
-    input_value = drop_skeleton_rounds_without_reasoning(
-        [item for item in input_value if not (isinstance(item, dict) and item.get("type") == "reasoning")]
-    )
+    input_value = [item for item in input_value if not (isinstance(item, dict) and item.get("type") == "reasoning")]
 
     messages: list[dict[str, Any]] = []
+    tool_pictures: list[str] = []
+
+    def _hand_over_tool_pictures() -> None:
+        if tool_pictures:
+            messages.append({"role": "user", "content": [
+                {"type": "text", "text": OPEN_WEBUI_TOOL_IMAGES_TEXT},
+                *({"type": "image_url", "image_url": {"url": url}} for url in tool_pictures),
+            ]})
+            tool_pictures.clear()
 
     def _to_text_block(text: str, *, cache_control: Any = None) -> dict[str, Any]:
         block: dict[str, Any] = {"type": "text", "text": text}
@@ -781,6 +795,8 @@ def _responses_input_to_chat_messages(
         if not isinstance(item, dict):
             continue
         itype = item.get("type")
+        if itype not in ("function_call", "function_call_output"):
+            _hand_over_tool_pictures()
 
         if itype == "message":
             role = (item.get("role") or "").strip().lower()
@@ -994,17 +1010,44 @@ def _responses_input_to_chat_messages(
             messages.append(msg)
             continue
 
+        if isinstance(itype, str) and itype.startswith("openrouter:"):
+            call_id = server_tool_call_id(item.get("id"))
+            arguments = server_tool_arguments(item)
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {
+                                "name": itype.split(":", 1)[1],
+                                "arguments": json.dumps(arguments, ensure_ascii=False),
+                            },
+                        }
+                    ],
+                }
+            )
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": recorded_tool_text(server_tool_result_text(item), server_tool_status(item)),
+                }
+            )
+            continue
+
         if itype == "function_call_output":
             call_id = item.get("call_id")
             output = item.get("output")
             if isinstance(call_id, str) and call_id.strip():
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": call_id.strip(),
-                        "content": output if isinstance(output, str) else (json.dumps(output, ensure_ascii=False) if output is not None else ""),
-                    }
-                )
+                if is_picture_output(output):
+                    content, pictures = tool_output_text_and_pictures(output)
+                    tool_pictures.extend(pictures)
+                else:
+                    content = output if isinstance(output, str) else (json.dumps(output, ensure_ascii=False) if output is not None else "")
+                messages.append({"role": "tool", "tool_call_id": call_id.strip(), "content": content})
             continue
 
         if itype == "function_call":
@@ -1031,6 +1074,7 @@ def _responses_input_to_chat_messages(
             continue
 
 
+    _hand_over_tool_pictures()
     return messages
 
 
@@ -1610,13 +1654,6 @@ def _filter_openrouter_request(payload: dict[str, Any]) -> dict[str, Any]:
             if not value:
                 continue
 
-        if key == "input" and isinstance(value, list):
-            value = [
-                {name: item_value for name, item_value in item.items() if name != TOOL_ROUND_SKELETON_KEY}
-                if isinstance(item, dict) and TOOL_ROUND_SKELETON_KEY in item
-                else item
-                for item in value
-            ]
         filtered[key] = value
 
     return filtered

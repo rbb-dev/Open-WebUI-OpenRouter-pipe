@@ -45,7 +45,7 @@ from tenacity import (
 )
 
 from ..core.timing_logger import timed
-from ..core.utils import _await_if_needed
+from ..core.utils import _await_if_needed, is_picture_output
 
 # Optional dependencies
 try:
@@ -1949,7 +1949,8 @@ def normalize_persisted_item(
         _ensure_identity()
         normalized["call_id"] = normalized.get("call_id") or generate_item_id()
         output_value = normalized.get("output")
-        normalized["output"] = "" if output_value is None else str(output_value)
+        if not is_picture_output(output_value):
+            normalized["output"] = "" if output_value is None else str(output_value)
         return normalized
 
     if item_type == "function_call":

@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -35,7 +36,6 @@ from ...core.errors import (
 from ...core.timing_logger import timed, timing_mark
 from ...core.utils import _apply_retry_after_metadata
 from ...core.warn_latch import warn_level
-from ...models.registry import normalize_model_id_dotted
 from ...requests.debug import (
     _debug_print_error_response,
     _debug_print_request,
@@ -201,8 +201,7 @@ class ChatCompletionsAdapter:
             tid = current.get("id")
             if isinstance(tid, str) and tid.strip():
                 return tid.strip()
-            model_val = (chat_payload.get("model") or "model")
-            generated = f"toolcall-{normalize_model_id_dotted(str(model_val))}-{index}"
+            generated = ChatCompletionsAdapter._made_up_call_id(index)
             current["id"] = generated
             return generated
 
@@ -550,8 +549,9 @@ class ChatCompletionsAdapter:
                                         if not isinstance(index, int):
                                             index = max(tool_calls_by_index.keys(), default=-1) + 1
                                         current = tool_calls_by_index.setdefault(index, {})
-                                        if isinstance(raw_call.get("id"), str):
-                                            current["id"] = raw_call["id"]
+                                        raw_id = raw_call.get("id")
+                                        if isinstance(raw_id, str) and raw_id.strip():
+                                            current["id"] = raw_id
                                         function = raw_call.get("function")
                                         if isinstance(function, dict):
                                             name = function.get("name")
@@ -939,3 +939,7 @@ class ChatCompletionsAdapter:
     @staticmethod
     def _chat_usage_to_responses_usage(raw_usage: Any) -> dict[str, Any]:
         return chat_usage_to_responses_usage(raw_usage)
+
+    @staticmethod
+    def _made_up_call_id(index: int) -> str:
+        return f"toolcall-{index}-{uuid.uuid4().hex[:16]}"

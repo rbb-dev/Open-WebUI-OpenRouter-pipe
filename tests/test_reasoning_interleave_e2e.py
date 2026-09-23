@@ -164,8 +164,8 @@ async def test_e2e_colliding_call_id_across_rounds(monkeypatch, pipe_instance_as
         "TOOL_EXECUTION_MODE": "Pipeline", "MAX_FUNCTION_CALL_LOOPS": 5,
         "PERSIST_REASONING_TOKENS": "conversation", "PERSIST_TOOL_RESULTS": False,
     })
-    # Three rounds, all emitting the SAME call_id (the chat-completions gateway's
-    # `toolcall-{model}-0` reset-per-round behaviour).
+    # Three rounds, all emitting the SAME call_id (what the chat-completions gateway's
+    # `toolcall-{model}-0`, reset every round, produced before made-up ids were unique).
     rounds = ["tc-0", "tc-0", "tc-0"]
     payloads = await _stage_a_persist(pipe, monkeypatch, valves, rounds)
 

@@ -12,12 +12,11 @@ During a chat, the pipe can persist structured “artifacts” so future turns c
 
 Persisted artifacts include (at least):
 - Reasoning items (when enabled and retention permits).
-- Tool execution artifacts (calls/outputs), subject to replay filtering rules and retention pruning.
-- Skeleton tool rounds, when results are not kept but reasoning is. A skeleton is the shape of a round the
-  pipe ran and nothing more: the call's name and id with `{}` in place of its arguments, paired with a fixed
-  `[tool result not retained]` output carrying the round's real status. It exists so the reasoning that sat on
-  either side of that round does not end up next to itself on the following turn, which providers reject.
-  Nothing a person typed and nothing a tool returned is stored in one.
+- The pipe's own copy of each tool round (see [History Reconstruction & Context Replay](history_reconstruction_and_context.md),
+  which lists the rounds that are stored differently or not at all):
+  the call and its output, with the full arguments and result, pictures included, whatever `PERSIST_TOOL_RESULTS`
+  says. That setting decides what later turns receive; tool results are stored even while it is off. They are
+  encrypted at rest only when `ARTIFACT_ENCRYPTION_KEY` is set and `ENCRYPT_ALL` is on.
 
 **Note:** Not every artifact type is replayed verbatim. The pipe filters certain tool artifact types to avoid wasting context window and to reduce provider-side errors.
 
@@ -130,13 +129,12 @@ Reasoning retention controls whether replayed reasoning artifacts are deleted af
 - `next_reply`: reasoning is kept only until the next assistant reply finishes, then deleted.
 - `conversation`: reasoning is kept for the full chat history (until time-based cleanup removes it).
 
-Skeleton tool rounds follow this setting rather than having one of their own: they are written only for a turn
-that persisted reasoning, and they are deleted when that reasoning is deleted, so `disabled` writes none at
-all. Under `next_reply` the cleanup that runs at the end of a request spares the rows of the message that
-request is still writing, so continuing an answer does not delete the generation it continues.
+Tool-round copies do not follow this setting: they stay for the whole conversation, until time-based cleanup
+removes them. Under `next_reply` the cleanup that runs at the end of a request spares the rows of the message that
+request is still writing, so continuing an answer does not delete the reasoning of the generation it continues.
 
 ### Tool output pruning
-Tool artifacts are also subject to replay pruning based on `TOOL_OUTPUT_RETENTION_TURNS` (how far back tool results remain eligible for replay).
+When an earlier turn's tool result is handed to the model again, `TOOL_OUTPUT_RETENTION_TURNS` decides how much of it goes: results from the most recent turns go in full, while a long result from an older turn is cut to its first and last few hundred characters with a note of how much was removed. OpenRouter's own advisor and subagent items go back whole. The stored row is not changed.
 
 ---
 
@@ -154,6 +152,6 @@ Tool artifacts are also subject to replay pruning based on `TOOL_OUTPUT_RETENTIO
 | `ARTIFACT_CLEANUP_INTERVAL_HOURS` | `1.0` | Cleanup cadence. |
 | `DB_BATCH_SIZE` | `10` | DB transaction batching (also used for Redis flush batching). |
 | `PERSIST_REASONING_TOKENS` | `conversation` | Reasoning retention policy (system default). |
-| `TOOL_OUTPUT_RETENTION_TURNS` | `10` | Limits how many turns back tool outputs remain eligible for replay. |
+| `TOOL_OUTPUT_RETENTION_TURNS` | `10` | How many recent turns hand the model their tool results in full; older long results are shortened. |
 
 For the complete list (including breaker and tool execution settings), see [Valves & Configuration Atlas](valves_and_configuration_atlas.md).

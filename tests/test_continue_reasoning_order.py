@@ -24,6 +24,7 @@ from sqlalchemy.pool import StaticPool
 
 from open_webui_openrouter_pipe import Pipe, ResponsesBody, generate_item_id
 from open_webui_openrouter_pipe.requests.transformer import transform_messages_to_input
+from tests.test_continue_stores_once import _open_webui_convert_output_to_messages
 from tests.test_storage import _install_internal_db
 
 MODEL = "anthropic/claude-opus-4.8"
@@ -33,8 +34,8 @@ SHAPES = {
     "tools-then-tools": (
         [("call", "BEFORE-A", "call-a"), ("answer", "AFTER-A", "Part one.")],
         [("call", "BEFORE-B", "call-b"), ("answer", "AFTER-B", "Part two.")],
-        ["user:q1", "assistant:Part one.", "BEFORE-A", "call-a", "result:call-a", "AFTER-A",
-         "assistant:Part two.", "BEFORE-B", "call-b", "result:call-b", "AFTER-B", "user:q2"],
+        ["user:q1", "BEFORE-A", "call-a", "result:call-a", "AFTER-A", "assistant:Part one.",
+         "BEFORE-B", "call-b", "result:call-b", "AFTER-B", "assistant:Part two.", "user:q2"],
     ),
     "answer-then-answer": (
         [("answer", "THINK-A", "Part one.")],
@@ -44,14 +45,21 @@ SHAPES = {
     "tools-then-answer": (
         [("call", "BEFORE-A", "call-a"), ("answer", "AFTER-A", "Part one.")],
         [("answer", "THINK-B", "Part two.")],
-        ["user:q1", "assistant:Part one.", "BEFORE-A", "call-a", "result:call-a", "AFTER-A",
-         "assistant:Part two.", "THINK-B", "user:q2"],
+        ["user:q1", "BEFORE-A", "call-a", "result:call-a", "AFTER-A", "assistant:Part one.",
+         "THINK-B", "assistant:Part two.", "user:q2"],
     ),
     "answer-then-tools": (
         [("answer", "THINK-A", "Part one.")],
         [("call", "BEFORE-B", "call-b"), ("answer", "AFTER-B", "Part two.")],
-        ["user:q1", "THINK-A", "assistant:Part one.", "assistant:Part two.", "BEFORE-B", "call-b", "result:call-b",
-         "AFTER-B", "user:q2"],
+        ["user:q1", "THINK-A", "assistant:Part one.", "BEFORE-B", "call-b", "result:call-b", "AFTER-B",
+         "assistant:Part two.", "user:q2"],
+    ),
+    # The first generation stopped after thinking, before any text (Stop during thinking, or a length cut), so the
+    # continued turn ends on reasoning: the continuation's thinking goes after its own text, never beside THINK-A.
+    "thinking-then-answer": (
+        [("answer", "THINK-A", "")],
+        [("answer", "THINK-B", "Part two.")],
+        ["user:q1", "THINK-A", "assistant:Part two.", "THINK-B", "user:q2"],
     ),
 }
 
@@ -81,12 +89,13 @@ def _reasoning(label: str) -> dict[str, Any]:
 
 async def _generation(
     pipe, monkeypatch, valves, persisted, *, rounds, body_input, listing, continued, message_id="m1", refs=None,
-    stream=True,
+    stream=True, emitter=None,
 ) -> str:
     """One request, streamed unless `stream` is False; each entry of `rounds` is one model response within it.
 
     ("call", label, call_id) reasons, then calls a tool. ("answer", label, text) reasons, then answers.
     ("answer-beside-an-unlisted-call", label, text) also streams a call that its completion never lists.
+    ("search-then-call", label, call_id) reasons, has OpenRouter run a web search (item "ws-<call_id>"), then calls.
     Returns the content the loop produced: its text plus the hidden markers of what it persisted.
     With `persisted` None the rows go to the pipe's own artifact store; `refs` are the cleanup refs the transformer
     collected for this request, carried on the body the way `ResponsesBody.from_completions` carries them.
@@ -98,11 +107,16 @@ async def _generation(
         step[0] += 1
         reasoning = _reasoning(label)
         yield {"type": "response.output_item.done", "item": reasoning}
-        if kind == "call":
+        searched: list[dict[str, Any]] = []
+        if kind == "search-then-call":
+            search = {"type": "openrouter:web_search", "id": f"ws-{value}", "status": "completed", "action": {"sources": []}}
+            yield {"type": "response.output_item.done", "item": search}
+            searched = [search]
+        if kind in ("call", "search-then-call"):
             call = {"type": "function_call", "call_id": value, "name": "lookup", "arguments": "{}",
                     "status": "completed"}
             yield {"type": "response.output_item.done", "item": call}
-            listed = [reasoning, call] if listing == "with-reasoning" else [call]
+            listed = [reasoning, *searched, call] if listing == "with-reasoning" else [*searched, call]
         else:
             if kind == "answer-beside-an-unlisted-call":
                 yield {"type": "response.output_item.done", "item": {
@@ -148,7 +162,7 @@ async def _generation(
     content = await runner(
         ResponsesBody(model=MODEL, input=body_input, stream=stream, **extra),
         valves,
-        None,
+        emitter,
         metadata=metadata,
         tools={"lookup": {"callable": lambda **_k: "ok"}},
         session=cast(Any, object()),
@@ -182,6 +196,19 @@ def _label(item: dict[str, Any]) -> str:
         text = "".join(p.get("text", "") for p in parts if isinstance(p, dict)) if isinstance(parts, list) else str(parts)
         return f"{item.get('role')}:{text.strip()}"
     return str(kind)
+
+
+def _published_output(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The output a turn published, which is what Open WebUI stores as the message's record."""
+    for event in reversed(events):
+        if event.get("type") == "response.completed":
+            return (event.get("response") or {}).get("output") or []
+    return []
+
+
+def _open_webui_rebuilds(record: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """What `process_messages_with_output` hands the pipe for an assistant message carrying `output`."""
+    return _open_webui_convert_output_to_messages()(record, raw=True, flatten_tool_images=True)
 
 
 def _has_consecutive_reasoning(items: list[dict[str, Any]]) -> bool:
@@ -281,9 +308,12 @@ def _real_artifact_store(pipe):
         engine.dispose()
 
 
-def _rows_of(store, message_id: str) -> int:
+def _rows_of(store, message_id: str, item_type: str | None = None) -> int:
     with store._session_factory() as session:
-        return session.query(store._item_model).filter(store._item_model.message_id == message_id).count()
+        query = session.query(store._item_model).filter(store._item_model.message_id == message_id)
+        if item_type is not None:
+            query = query.filter(store._item_model.item_type == item_type)
+        return query.count()
 
 
 async def _replay_from_store(pipe, valves, messages, refs=None) -> list[dict[str, Any]]:
@@ -294,9 +324,9 @@ async def _replay_from_store(pipe, valves, messages, refs=None) -> list[dict[str
 
 
 WHOLE_TURN = {
-    "tools-then-tools": ["user:q0", "assistant:Earlier answer.", "user:q1", "assistant:Part one.", "BEFORE-A", "call-a",
-                         "result:call-a", "AFTER-A", "assistant:Part two.", "BEFORE-B", "call-b", "result:call-b",
-                         "AFTER-B", "user:q2"],
+    "tools-then-tools": ["user:q0", "assistant:Earlier answer.", "user:q1", "BEFORE-A", "call-a", "result:call-a",
+                         "AFTER-A", "assistant:Part one.", "BEFORE-B", "call-b", "result:call-b", "AFTER-B",
+                         "assistant:Part two.", "user:q2"],
     "answer-then-answer": ["user:q0", "assistant:Earlier answer.", "user:q1", "THINK-A", "assistant:Part one.",
                            "THINK-B", "assistant:Part two.", "user:q2"],
 }
@@ -354,8 +384,7 @@ async def test_next_reply_cleanup_keeps_the_rows_of_the_message_a_continue_is_st
 # Open WebUI keeps the first generation on a Continue whether or not the request streamed: its non-streaming
 # handler rebuilds the stored output, merges the continued message with the new one, and saves
 # `previous + response_output`. So a Continue that did not stream replays the whole turn, exactly as a streamed
-# one does. Open WebUI 0.11.3 stored only the continuation here; upstream fixed that, so no arm asserts the
-# old shape.
+# one does.
 
 
 @pytest.mark.asyncio
@@ -393,71 +422,55 @@ async def test_a_continue_that_is_not_streamed_replays_the_whole_turn_just_as_a_
     _assert_replays_exactly_and_apart(replay, expected)
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("stream", [True, False], ids=["streamed", "not-streamed"])
-@pytest.mark.parametrize("shape", list(WHOLE_TURN))
-async def test_after_a_continue_the_next_reply_leaves_none_of_the_continued_messages_rows(
-    monkeypatch, pipe_instance_async, shape, stream
-):
-    """Under next_reply a message's rows are gone once the reply after it finishes. Open WebUI keeps the whole
-    continued message whether or not the request streamed, so both arms store both generations."""
-    pipe = pipe_instance_async
-    valves = _valves(pipe).model_copy(update={"PERSIST_REASONING_TOKENS": "next_reply", "PERSIST_TOOL_RESULTS": False})
-    first_rounds, second_rounds, _ = SHAPES[shape]
-
-    with _real_artifact_store(pipe) as store:
-
-        async def reply(history, rounds, message_id, *, continued):
-            refs: list[tuple[str, str]] = []
-            body_input = await _replay_from_store(pipe, valves, history, refs)
-            return await _generation(
-                pipe, monkeypatch, valves, None, rounds=rounds, body_input=body_input, listing="with-reasoning",
-                continued=continued, message_id=message_id, refs=refs, stream=stream,
-            )
-
-        history = [{"role": "user", "content": "q1"}]
-        first = await reply(history, first_rounds, "m1", continued=False)
-        assert _rows_of(store, "m1") > 0
-        second = await reply([*history, {"role": "assistant", "content": first}], second_rounds, "m1", continued=True)
-        stored = first + second
-        await reply(
-            [*history, {"role": "assistant", "content": stored}, {"role": "user", "content": "q2"}],
-            [("answer", "THINK-0", "Next answer.")], "m2", continued=False,
-        )
-
-        assert _rows_of(store, "m1") == 0
-
-
 # --- a Continue retried without its replayed thinking ------------------------------------------------------------------
 
+# Chronological, read straight off SHAPES: each generation reasons, calls, reasons again and THEN answers, so its
+# text comes after its rounds. It is the same with tool cards on or off: the card switch decides what the user sees,
+# never what the model is handed, and the pipe commits each round where it happened.
 AFTER_A_THINKING_RETRY = {
-    "tools-then-tools": ["user:q1", "assistant:Part one.", "BEFORE-A", "call-a", "result:call-a", "AFTER-A",
-                         "assistant:Part two.", "BEFORE-B", "call-b", "result:call-b", "AFTER-B", "user:q2"],
-    "tools-then-answer": ["user:q1", "assistant:Part one.", "BEFORE-A", "call-a", "result:call-a", "AFTER-A",
-                          "assistant:Part two.", "THINK-B", "user:q2"],
+    "tools-then-tools": ["user:q1", "BEFORE-A", "call-a", "result:call-a", "AFTER-A", "assistant:Part one.",
+                         "BEFORE-B", "call-b", "result:call-b", "AFTER-B", "assistant:Part two.", "user:q2"],
+    "tools-then-answer": ["user:q1", "BEFORE-A", "call-a", "result:call-a", "AFTER-A", "assistant:Part one.",
+                          "THINK-B", "assistant:Part two.", "user:q2"],
+    "thinking-then-answer": ["user:q1", "THINK-A", "assistant:Part two.", "THINK-B", "user:q2"],
 }
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cards", [True, False], ids=["cards-on", "cards-off"])
 @pytest.mark.parametrize("shape", list(AFTER_A_THINKING_RETRY))
 async def test_a_continue_retried_without_its_replayed_thinking_still_numbers_its_reasoning_after_the_first_generation(
-    monkeypatch, pipe_instance_async, shape
+    monkeypatch, pipe_instance_async, shape, cards
 ):
-    """Results are not kept, so the first generation's tool rounds replay as skeletons. The Continue's first attempt
-    is rejected for a thinking-block signature; the retry drops the replayed thinking and those skeleton rounds before
+    """Results are not kept. On a saved chat each generation records its tool rounds and Open WebUI replays them. The
+    Continue's first attempt is rejected for a thinking-block signature; the retry drops the replayed thinking before
     streaming again. The continuation must still be numbered after the rounds the message's rows keep."""
     import open_webui_openrouter_pipe.pipe as pipe_mod
     from open_webui_openrouter_pipe import EncryptedStr
     from open_webui_openrouter_pipe.core.errors import _build_openrouter_api_error
 
     pipe = pipe_instance_async
-    valves = _valves(pipe).model_copy(update={"PERSIST_TOOL_RESULTS": False})
+    valves = _valves(pipe).model_copy(update={"PERSIST_TOOL_RESULTS": False, "SHOW_TOOL_CARDS": cards})
     first_rounds, second_rounds, _ = SHAPES[shape]
     persisted: dict[str, dict[str, Any]] = {}
     history = [{"role": "user", "content": "q1"}]
+    first_events: list[dict[str, Any]] = []
+
+    async def capture_first(event):
+        first_events.append(event)
+
+    # Both generations of a real Continue run with Open WebUI's emitter on a saved chat, so each RECORDS its
+    # round and Open WebUI stores it; neither writes a skeleton. The replays below rebuild the turn from those
+    # records with Open WebUI's own converter, as `process_messages_with_output` does before calling the pipe.
     first = await _generation(
         pipe, monkeypatch, valves, persisted, rounds=first_rounds, listing="with-reasoning", continued=False,
-        body_input=await _replay(pipe, valves, persisted, history),
+        body_input=await _replay(pipe, valves, persisted, history), emitter=capture_first,
+    )
+    first_record = _published_output(first_events)
+    assert any(i.get("type") == "function_call" for i in first_record) is (
+        cards and any(step[0] == "call" for step in first_rounds)
+    ), (
+        f"cards={cards}: the saved message {'lacks' if cards else 'shows'} the tool round: {first_record}"
     )
 
     attempts: list[int] = []
@@ -506,7 +519,7 @@ async def test_a_continue_retried_without_its_replayed_thinking_still_numbers_it
 
     result = await pipe.pipe(
         body={"model": "anthropic.claude-opus-4.8", "stream": True,
-              "messages": [*history, {"role": "assistant", "content": first}]},
+              "messages": [*history, *_open_webui_rebuilds(first_record)]},
         __user__={"id": "u1", "role": "user"},
         __request__=None,
         __event_emitter__=None,
@@ -515,16 +528,21 @@ async def test_a_continue_retried_without_its_replayed_thinking_still_numbers_it
         __tools__={"lookup": {"callable": lambda **_k: "ok"}},
     )
     second = ""
+    second_record: list[dict[str, Any]] = []
     if hasattr(result, "__aiter__"):
         async for chunk in cast(Any, result):
+            if isinstance(chunk, dict) and chunk.get("type") == "response.completed":
+                second_record = (chunk.get("response") or {}).get("output") or second_record
             choices = chunk.get("choices") if isinstance(chunk, dict) else None
             if choices:
                 second += choices[0].get("delta", {}).get("content") or ""
     assert len(attempts) >= 2, second
+    assert second_record, "the Continue published no record through the stream"
 
+    # Open WebUI keeps the continued message's stored output and appends what the Continue published.
     replay = await _replay(
         pipe, valves, persisted,
-        [*history, {"role": "assistant", "content": first + second}, {"role": "user", "content": "q2"}],
+        [*history, *_open_webui_rebuilds(first_record + second_record), {"role": "user", "content": "q2"}],
     )
 
     order = [_label(item) for item in replay]

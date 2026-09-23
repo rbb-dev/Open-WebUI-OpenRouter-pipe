@@ -13,12 +13,17 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..models.registry import ModelFamily
-from .utils import TOOL_CALL_STATUSES, _coerce_positive_int
+from .utils import (
+    TOOL_CALL_STATUSES,
+    _coerce_positive_int,
+    tool_output_text_and_pictures,
+)
 
 logger = logging.getLogger(__name__)
 
 _FALLBACK_PROMPT_LIMIT_TOKENS = 128_000
 _CHARS_PER_TOKEN_HEURISTIC = 4
+_PICTURE_TOKENS = 1_700
 _MAX_DEFAULT_OUTPUT_SHARE_DIVISOR = 2
 _MIN_MEASURED_INPUT_TOKENS = 1_000
 _MIN_MEASURED_CHARS_PER_TOKEN = 0.25
@@ -162,8 +167,8 @@ def _document_tokens(
 
 
 _OPAQUE_BLOCK_PAYLOADS: dict[str, tuple[tuple[str, ...], Callable[..., int]]] = {
-    "input_image": (("image_url",), lambda _n, _t, _h=None, _f="": 1_700),
-    "image_url": (("image_url",), lambda _n, _t, _h=None, _f="": 1_700),
+    "input_image": (("image_url",), lambda _n, _t, _h=None, _f="": _PICTURE_TOKENS),
+    "image_url": (("image_url",), lambda _n, _t, _h=None, _f="": _PICTURE_TOKENS),
     "input_audio": (
         ("input_audio",),
         lambda n, _t, _h=None, _f="": n // _AUDIO_BYTES_PER_TOKEN,
@@ -425,10 +430,12 @@ def _baseline_without_tool_outputs(items: Any) -> Any:
 
 
 def _output_text_of(item: Any) -> str:
-    raw = item.get("output") if isinstance(item, dict) else None
-    if isinstance(raw, str):
-        return raw
-    return "" if raw is None else str(raw)
+    return tool_output_text_and_pictures(item.get("output") if isinstance(item, dict) else None)[0]
+
+
+def _output_picture_chars(item: Any) -> int:
+    pictures = tool_output_text_and_pictures(item.get("output") if isinstance(item, dict) else None)[1]
+    return len(pictures) * _PICTURE_TOKENS * _CHARS_PER_TOKEN_HEURISTIC
 
 
 def _wire_chars(text: str) -> int:
@@ -612,11 +619,12 @@ def _apply_tool_output_budget(
         call_id = raw_call_id.strip() if isinstance(raw_call_id, str) else ""
 
         output_text = _output_text_of(item)
+        picture_chars = _output_picture_chars(item)
 
         build_stub = _builder(index)
-        result_chars = len(output_text)
+        result_chars = len(output_text) + picture_chars
         floor_chars = _output_floor_chars(output_text, build_stub)
-        excess_chars = _wire_chars(output_text) - floor_chars
+        excess_chars = _wire_chars(output_text) + picture_chars - floor_chars
 
         if excess_chars <= remaining_chars:
             remaining_chars = max(remaining_chars - excess_chars, 0)

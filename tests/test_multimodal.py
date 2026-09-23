@@ -3961,6 +3961,8 @@ class TestConversationRebuild:
             }
         })
 
+        # Results are kept: with them not kept an old round reaches the model as the not-retained placeholder
+        # and is never pruned. The pruner is this test's subject.
         transformed = await transform_messages_to_input(pipe_instance,
             messages,
             chat_id="chat-1",
@@ -3968,6 +3970,7 @@ class TestConversationRebuild:
             artifact_loader=artifact_loader,
             pruning_turns=1,
             replayed_reasoning_refs=[],
+            valves=pipe_instance.valves.model_copy(update={"PERSIST_TOOL_RESULTS": True}),
         )
 
         system_msg = next(item for item in transformed if item.get("role") == "system")

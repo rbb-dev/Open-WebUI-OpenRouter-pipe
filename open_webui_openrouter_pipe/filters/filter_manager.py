@@ -78,6 +78,14 @@ _PROVIDER_NAME_COLLAPSE_RE = re.compile(r"[ _]{2,}")
 
 _warned_stale_filter_rows: set[str] = set()
 
+
+def _merged_meta(row: Any, desired_meta: dict[str, Any]) -> dict[str, Any]:
+    stored = getattr(row, "meta", None)
+    dump = getattr(stored, "model_dump", None)
+    if callable(dump):
+        stored = dump()
+    return {**stored, **desired_meta} if isinstance(stored, dict) else dict(desired_meta)
+
 _REPLACE_IMPORTS_REFUSAL = (
     "Open WebUI rewrites this source when it loads it and stores the result, so the pipe "
     "would rewrite it back on the next refresh: its unanchored replace of 'from utils', "
@@ -422,7 +430,7 @@ class FilterManager:
                     {
                         "content": desired_source,
                         "name": desired_name,
-                        "meta": desired_meta,
+                        "meta": _merged_meta(chosen, desired_meta),
                         "type": "filter",
                         "is_active": True,
                         "is_global": False,
@@ -433,7 +441,7 @@ class FilterManager:
                     function_id,
                     {
                         "name": desired_name,
-                        "meta": desired_meta,
+                        "meta": _merged_meta(chosen, desired_meta),
                         "type": "filter",
                         "is_active": True,
                         "is_global": False,
@@ -2583,7 +2591,7 @@ class Filter:
                         {
                             "content": desired_source,
                             "name": desired_name,
-                            "meta": desired_meta,
+                            "meta": _merged_meta(existing, desired_meta),
                             "is_active": True,
                         },
                     )

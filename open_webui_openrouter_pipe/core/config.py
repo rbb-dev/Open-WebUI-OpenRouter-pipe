@@ -16,6 +16,7 @@ import logging
 import os
 import re
 from collections.abc import Mapping
+from contextvars import ContextVar
 from typing import Any, Literal, cast
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -1108,14 +1109,14 @@ class Valves(BaseModel):
         ),
     )
     SHOW_TOOL_CARDS: bool = Field(
-        default=False,
+        default=True,
         title="Show tool execution cards",
-        description="Show collapsible cards in chat with tool name, arguments, and results. When disabled, tools run silently without visual status indicators.",
+        description="Show each tool the model uses as a collapsible card in the chat, with its name, arguments and result, as Open WebUI does for the tools it runs itself. As in Open WebUI's own tool loop, a picture a tool returns as image data goes only to the model; its other files, such as an MCP tool's picture, go only to the chat. When off, the tools this pipe runs and OpenRouter's server tools get no card, except that a file the model shows through Open Terminal keeps its card for a person whose Open WebUI shows terminal files inline. On its next turn the model still learns which tools it used; after Stop, it learns of the calls before the first one still running if the reply was streamed, and of none if it was not. Tools Open WebUI runs in Open-WebUI mode always show Open WebUI's own cards.",
     )
     PERSIST_TOOL_RESULTS: bool = Field(
         default=False,
         title="Keep tool results",
-        description="Persist tool call results across conversation turns. When disabled, tool results stay ephemeral and the model relies on its own summaries or re-runs tools.",
+        description="Give the model the full arguments and results of tool calls from earlier turns. When disabled, the model sees each tool call from an earlier turn as its name and a short note on whether it succeeded, and relies on its own earlier answers or runs the tool again. The setting applies in both tool execution modes and decides what the model is handed, not whether results are stored: a shown tool card keeps the full result in the message, and the pipe's own copy of each tool round keeps the full call and result, pictures included, encrypted only while ARTIFACT_ENCRYPTION_KEY is set and ENCRYPT_ALL is on.",
     )
     ARTIFACT_ENCRYPTION_KEY: EncryptedStr = Field(
         default_factory=_default_artifact_encryption_key,
@@ -1484,7 +1485,7 @@ class Valves(BaseModel):
         ge=1,
         le=50,
         description=(
-            "Number of failures one user may accumulate before their requests are refused, a failing tool is skipped, or their database reads and writes are skipped; raise it for fewer trips in noisy environments. A request failure is a failed chat call to OpenRouter (an error reply; a connection that cannot be opened, drops or times out; an error reported inside a response; or a stream that stops before its final event), counted again on each automatic retry. A generation on a picture-only image model or a video model that fails after it was sent to OpenRouter is also a request failure, counted once. Request and database failures count within BREAKER_WINDOW_SECONDS. Request failures clear when a request ends without an error (for a picture-only image model or a video model, only once its result is delivered; for an internal Fusion run, only if a panel model answered); a request the user stops clears no request failures. Housekeeping tasks such as title generation neither count nor clear; Open WebUI's merge-responses task counts but never clears. Database failures also clear when a database operation succeeds. The request breaker never refuses a request whose last message is a tool result or a user message right after a tool result. Each tool counts its failures in a row."
+            "Number of failures one user may accumulate before their requests are refused, a failing tool is skipped, or their database reads and writes are skipped; raise it for fewer trips in noisy environments. A request failure is a failed chat call to OpenRouter (an error reply; a connection that cannot be opened, drops or times out; an error reported inside a response; or a stream that stops before its final event), counted again on each automatic retry. A generation on a picture-only image model or a video model that fails after it was sent to OpenRouter is also a request failure, counted once. Request and database failures count within BREAKER_WINDOW_SECONDS. Request failures clear when a request ends without an error (for a picture-only image model or a video model, only once its result is delivered; for an internal Fusion run, only if a panel model answered); a request the user stops clears no request failures. Housekeeping tasks such as title generation neither count nor clear; Open WebUI's merge-responses task counts but never clears. Database failures also clear when a database operation succeeds. The request breaker never refuses a request whose last message is a tool result, or is Open WebUI's own message that comes right after a tool result and hands the model a tool's images; a question or picture the user sends is refused like any other request. Each tool counts its failures in a row: errors it raises, per-call timeouts, running calls cut off by TOOL_BATCH_TIMEOUT_SECONDS, and calls whose tool server cannot be reached or answers with an HTTP error status; an ask_user timeout and a call to an MCP tool whose session has closed do not count. An error the tool reports in a result it returns normally is shown as failed but neither adds to the count nor clears it."
         ),
     )
     BREAKER_WINDOW_SECONDS: int = Field(
@@ -1515,10 +1516,7 @@ class Valves(BaseModel):
         default=10,
         ge=0,
         description=(
-            "Number of most recent logical turns whose tool outputs are sent in full. "
-            "A turn starts when a user speaks and includes the assistant/tool responses "
-            "that follow until the next user message. Older turns have their persisted "
-            "tool outputs shortened to save tokens. Set to 0 to keep every tool output in full."
+            "How many recent logical turns have their tool outputs sent in full. A turn runs from one user message to the next, including the assistant and tool responses in between. In older turns, long tool outputs are shortened to save tokens, whether they come from a saved tool card or the pipe's own storage; OpenRouter's own advisor and subagent items go back whole. Apart from answers given through ask_user, this matters only while tool results are kept across turns. Set to 0 to keep every tool output in full."
         ),
     )
     TOOL_TIMEOUT_SECONDS: int = Field(
@@ -1540,7 +1538,7 @@ class Valves(BaseModel):
         default=None,
         ge=1,
         description=(
-            "Maximum seconds to wait in total for one response's tool results, counted once from when the model asked; every call whose result has not arrived by then is reported as timed out, however long that call has been running; Open WebUI's ask_user waits at least its question window. On timeout, a call that is already running continues until it finishes, another tool limit ends it, or request cleanup cancels it after TOOL_SHUTDOWN_TIMEOUT_SECONDS (inside internal Fusion, without that wait, as soon as the calling model's answer ends). The model never receives the late result, though files or embeds the call returns can still appear in the chat. A call still waiting for a slot or a worker never starts. Null means no limit, leaving TOOL_TIMEOUT_SECONDS and TOOL_BATCH_TIMEOUT_SECONDS in charge."
+            "Maximum seconds to wait in total for one response's tool results, counted once from when the model asked; every call whose result has not arrived by then is reported as timed out, however long that call has been running; Open WebUI's ask_user waits at least its question window. On timeout, a call that is already running continues until it finishes, another tool limit ends it, or request cleanup cancels it after TOOL_SHUTDOWN_TIMEOUT_SECONDS (inside internal Fusion, without that wait, as soon as the calling model's answer ends). The model never receives the late result. Unless a streamed answer has already ended or the call ran inside internal Fusion, files or embeds the call returns still appear in the chat, and a file it shows through Open Terminal opens in the preview panel (or nowhere for a person whose Open WebUI shows terminal files inline). A call still waiting for a slot or a worker never starts. Null means no limit, leaving TOOL_TIMEOUT_SECONDS and TOOL_BATCH_TIMEOUT_SECONDS in charge."
         ),
     )
     TOOL_SHUTDOWN_TIMEOUT_SECONDS: float = Field(
@@ -2247,7 +2245,7 @@ class UserValves(BaseModel):
     PERSIST_TOOL_RESULTS: bool = Field(
         default=False,
         title="Remember tool and search results",
-        description="Let the AI reuse outputs from tools (for example web searches or other apps) later in the conversation. Uses more tokens on long chats; when off, the AI relies on its own summaries and can re-run tools as needed.",
+        description="Let the AI reuse outputs from tools (for example pages it fetched or other apps) later in the conversation, using more tokens on long chats. When off, the AI relies on its own summaries and can re-run tools as needed. Tool cards in the chat, while shown, still show every result.",
     )
     TOOL_EXECUTION_MODE: Literal["Pipeline", "Open-WebUI"] = Field(
         default="Pipeline",
@@ -2258,9 +2256,9 @@ class UserValves(BaseModel):
         ),
     )
     SHOW_TOOL_CARDS: bool = Field(
-        default=False,
+        default=True,
         title="Show tool execution cards",
-        description="Show collapsible cards in chat with tool name, arguments, and results. When disabled, tools run silently.",
+        description="Show each tool the AI uses as a card in the chat. When off, no card appears, except for a file the AI shows through Open Terminal while Open WebUI is set to show terminal files inline; when it is not, a file the AI asks to show inline opens in the preview panel. The AI still remembers which tools it used; after Stop, it remembers the calls before the first one still running if the reply was streamed, and none if it was not. Tools Open WebUI runs itself (Tool execution mode set to Open-WebUI) always show their cards.",
     )
     REQUEST_ZDR: bool = Field(
         default=False,
@@ -2330,6 +2328,9 @@ def _select_openrouter_http_referer(valves: Any | None) -> str:
     return _OPENROUTER_REFERER
 
 
+OWUI_REQUEST: ContextVar[Any] = ContextVar("owui_request", default=None)
+
+
 def _apply_owui_forward_user_headers(headers: dict, user: Any, chat_id: Any = None) -> dict:
     """Stamp Open WebUI user-identity headers (and Chat-Id) on an outbound request, matching a native OWUI connection; does nothing unless Open WebUI is present with ENABLE_FORWARD_USER_INFO_HEADERS set."""
     if _owui_env is None or _owui_include_user_info_headers is None:
@@ -2339,7 +2340,7 @@ def _apply_owui_forward_user_headers(headers: dict, user: Any, chat_id: Any = No
     if user is None or isinstance(user, dict):
         return headers
     try:
-        headers = _owui_include_user_info_headers(headers, user)
+        headers = _owui_include_user_info_headers(headers, user, request=OWUI_REQUEST.get())
         if chat_id:
             name = getattr(_owui_env, "FORWARD_SESSION_INFO_HEADER_CHAT_ID", "X-OpenWebUI-Chat-Id")
             headers[name] = str(chat_id)

@@ -427,6 +427,27 @@ async def test_context_timeout_error_does_not_raise():
         await pipe.close()
 
 
+def _as_open_webui_resolves_them(metadata: Any) -> Any:
+    """What Open WebUI 0.11.4's middleware does with the browser's tool servers before calling the pipe: it pops each
+    server's `specs` and `system_prompt` in place and puts every spec into the request's resolved tools as
+    `{"spec", "direct": True, "server"}`. The pipe never sees a server's specs, so its browser-run tools can come only
+    from those resolved entries, and any gate Open WebUI applies there applies to the pipe."""
+    if not isinstance(metadata, dict):
+        return metadata
+    resolved: dict[str, Any] = {}
+    for index, server in enumerate(metadata.get("tool_servers") or []):
+        if not isinstance(server, dict):
+            continue
+        server.pop("system_prompt", None)
+        for spec_index, spec in enumerate(server.pop("specs", None) or []):
+            name = spec.get("name") if isinstance(spec, dict) else None
+            key = name if isinstance(name, str) and name.strip() else f"entry-{index}-{spec_index}"
+            resolved[key] = {"spec": spec, "direct": True, "server": server}
+    if resolved:
+        metadata["tools"] = resolved
+    return metadata
+
+
 @pytest.mark.asyncio
 async def test_build_direct_tool_server_registry_invalid_metadata():
     """Test that invalid metadata returns empty registry (line 251)."""
@@ -475,7 +496,7 @@ async def test_build_direct_tool_server_registry_no_event_call():
         executor = pipe._ensure_tool_executor()
 
         registry, specs = executor._build_direct_tool_server_registry(
-            {"tool_servers": [{"specs": [{"name": "test_tool"}]}]},
+            _as_open_webui_resolves_them({"tool_servers": [{"specs": [{"name": "test_tool"}]}]}),
             valves=pipe.valves,
             event_call=None,
             event_emitter=AsyncMock(),
@@ -495,7 +516,7 @@ async def test_build_direct_tool_server_registry_invalid_server_entry():
         executor = pipe._ensure_tool_executor()
 
         registry, specs = executor._build_direct_tool_server_registry(
-            {"tool_servers": ["not a dict", None, 123]},
+            _as_open_webui_resolves_them({"tool_servers": ["not a dict", None, 123]}),
             valves=pipe.valves,
             event_call=AsyncMock(),
             event_emitter=AsyncMock(),
@@ -515,7 +536,7 @@ async def test_build_direct_tool_server_registry_empty_specs():
         executor = pipe._ensure_tool_executor()
 
         registry, specs = executor._build_direct_tool_server_registry(
-            {"tool_servers": [{"name": "server1"}]},
+            _as_open_webui_resolves_them({"tool_servers": [{"name": "server1"}]}),
             valves=pipe.valves,
             event_call=AsyncMock(),
             event_emitter=AsyncMock(),
@@ -535,7 +556,7 @@ async def test_build_direct_tool_server_registry_invalid_spec_entry():
         executor = pipe._ensure_tool_executor()
 
         registry, specs = executor._build_direct_tool_server_registry(
-            {
+            _as_open_webui_resolves_them({
                 "tool_servers": [
                     {
                         "specs": [
@@ -546,7 +567,7 @@ async def test_build_direct_tool_server_registry_invalid_spec_entry():
                         ]
                     }
                 ]
-            },
+            }),
             valves=pipe.valves,
             event_call=AsyncMock(),
             event_emitter=AsyncMock(),
@@ -572,7 +593,7 @@ async def test_build_direct_tool_server_registry_callable_execution():
             return {"result": "success"}
 
         registry, specs = executor._build_direct_tool_server_registry(
-            {
+            _as_open_webui_resolves_them({
                 "session_id": "test-session",
                 "tool_servers": [
                     {
@@ -588,7 +609,7 @@ async def test_build_direct_tool_server_registry_callable_execution():
                         ],
                     }
                 ],
-            },
+            }),
             valves=pipe.valves,
             event_call=mock_event_call,
             event_emitter=AsyncMock(),
@@ -633,7 +654,7 @@ async def test_no_direct_tool_registry_is_built_without_an_event_channel(pipe_in
         ]
     }
     registry, specs = executor._build_direct_tool_server_registry(
-        metadata, valves=pipe_instance.valves, event_call=None, event_emitter=AsyncMock()
+        _as_open_webui_resolves_them(metadata), valves=pipe_instance.valves, event_call=None, event_emitter=AsyncMock()
     )
     assert (registry, specs) == ({}, []), (
         f"a direct-tool registry was built with no event channel: {registry!r}. Every "
@@ -641,7 +662,7 @@ async def test_no_direct_tool_registry_is_built_without_an_event_channel(pipe_in
     )
 
     with_channel, with_specs = executor._build_direct_tool_server_registry(
-        metadata, valves=pipe_instance.valves, event_call=AsyncMock(), event_emitter=AsyncMock()
+        _as_open_webui_resolves_them(metadata), valves=pipe_instance.valves, event_call=AsyncMock(), event_emitter=AsyncMock()
     )
     assert with_channel and with_specs, (
         "the registry was empty WITH an event channel too, so the assertion above holds "
@@ -664,13 +685,13 @@ async def test_build_direct_tool_server_registry_callable_exception():
             notification_calls.append(event)
 
         registry, specs = executor._build_direct_tool_server_registry(
-            {
+            _as_open_webui_resolves_them({
                 "tool_servers": [
                     {
                         "specs": [{"name": "test_tool", "parameters": {"type": "object", "properties": {}}}]
                     }
                 ],
-            },
+            }),
             valves=pipe.valves,
             event_call=failing_event_call,
             event_emitter=mock_emitter,
@@ -694,7 +715,7 @@ async def test_build_direct_tool_server_registry_outer_exception():
 
         class BadDict(dict):
             def get(self, key, default=None):
-                if key == "tool_servers":
+                if key == "tools":
                     raise RuntimeError("Intentional error")
                 return super().get(key, default)
 
@@ -1063,7 +1084,7 @@ async def test_build_direct_tool_server_registry_with_parameters():
             return {"result": "ok"}
 
         registry, specs = executor._build_direct_tool_server_registry(
-            {
+            _as_open_webui_resolves_them({
                 "session_id": "sess-123",
                 "tool_servers": [
                     {
@@ -1082,7 +1103,7 @@ async def test_build_direct_tool_server_registry_with_parameters():
                         ],
                     }
                 ],
-            },
+            }),
             valves=pipe.valves,
             event_call=mock_event_call,
             event_emitter=AsyncMock(),
@@ -1151,42 +1172,6 @@ async def test_execute_function_calls_empty_args_no_required_in_context():
 
 
 @pytest.mark.asyncio
-async def test_build_direct_tool_server_registry_openapi_fallback():
-    """Test OpenAPI fallback conversion (lines 268-276)."""
-    pipe = Pipe()
-    try:
-        executor = pipe._ensure_tool_executor()
-
-        registry, specs = executor._build_direct_tool_server_registry(
-            {
-                "tool_servers": [
-                    {
-                        "name": "server_with_openapi",
-                        "openapi": {
-                            "openapi": "3.0.0",
-                            "paths": {
-                                "/test": {
-                                    "get": {
-                                        "operationId": "test_operation",
-                                    }
-                                }
-                            }
-                        },
-                    }
-                ]
-            },
-            valves=pipe.valves,
-            event_call=AsyncMock(),
-            event_emitter=AsyncMock(),
-        )
-
-        assert isinstance(registry, dict)
-        assert isinstance(specs, list)
-    finally:
-        await pipe.close()
-
-
-@pytest.mark.asyncio
 async def test_build_direct_tool_server_registry_spec_exception():
     """Test that exceptions in spec processing are handled (lines 361-364)."""
     pipe = Pipe()
@@ -1202,7 +1187,7 @@ async def test_build_direct_tool_server_registry_spec_exception():
                 return default
 
         registry, specs = executor._build_direct_tool_server_registry(
-            {
+            _as_open_webui_resolves_them({
                 "tool_servers": [
                     {
                         "specs": [
@@ -1211,7 +1196,7 @@ async def test_build_direct_tool_server_registry_spec_exception():
                         ]
                     }
                 ]
-            },
+            }),
             valves=pipe.valves,
             event_call=AsyncMock(),
             event_emitter=AsyncMock(),
@@ -1229,25 +1214,25 @@ async def test_build_direct_tool_server_registry_server_exception():
     try:
         executor = pipe._ensure_tool_executor()
 
-        class BadServer(dict):
+        class BadEntry(dict):
             def get(self, key, default=None):
-                if key == "specs":
+                if key == "spec":
                     raise RuntimeError("Intentional error")
                 return super().get(key, default)
 
         registry, specs = executor._build_direct_tool_server_registry(
             {
-                "tool_servers": [
-                    BadServer(),
-                    {"specs": [{"name": "valid_tool"}]},
-                ]
+                "tools": {
+                    "bad": BadEntry(direct=True),
+                    "valid_tool": {"spec": {"name": "valid_tool"}, "direct": True, "server": {"url": "http://tools.local"}},
+                }
             },
             valves=pipe.valves,
             event_call=AsyncMock(),
             event_emitter=AsyncMock(),
         )
 
-        assert isinstance(registry, dict)
+        assert [entry["spec"]["name"] for entry in registry.values()] == ["valid_tool"]
     finally:
         await pipe.close()
 
@@ -1260,13 +1245,13 @@ async def test_build_direct_tool_server_registry_transform_exception():
         executor = pipe._ensure_tool_executor()
 
         registry, specs = executor._build_direct_tool_server_registry(
-            {
+            _as_open_webui_resolves_them({
                 "tool_servers": [
                     {
                         "specs": [{"name": "test_tool", "parameters": {"type": "object", "properties": {}}}]
                     }
                 ]
-            },
+            }),
             valves=pipe.valves,
             event_call=AsyncMock(),
             event_emitter=AsyncMock(),
@@ -1307,14 +1292,14 @@ async def test_build_direct_tool_server_no_session_id():
             return {"result": "ok"}
 
         registry, specs = executor._build_direct_tool_server_registry(
-            {
+            _as_open_webui_resolves_them({
                 # No session_id in metadata
                 "tool_servers": [
                     {
                         "specs": [{"name": "test_tool", "parameters": {"type": "object", "properties": {}}}]
                     }
                 ],
-            },
+            }),
             valves=pipe.valves,
             event_call=mock_event_call,
             event_emitter=AsyncMock(),
@@ -1343,7 +1328,7 @@ async def test_build_direct_tool_server_no_parameters():
             return {"result": "ok"}
 
         registry, specs = executor._build_direct_tool_server_registry(
-            {
+            _as_open_webui_resolves_them({
                 "session_id": "sess-1",
                 "tool_servers": [
                     {
@@ -1355,7 +1340,7 @@ async def test_build_direct_tool_server_no_parameters():
                         ]
                     }
                 ],
-            },
+            }),
             valves=pipe.valves,
             event_call=mock_event_call,
             event_emitter=AsyncMock(),
@@ -1480,13 +1465,13 @@ async def test_direct_tool_callable_event_call_becomes_none():
             return {"result": "ok"}
 
         registry, specs = executor._build_direct_tool_server_registry(
-            {
+            _as_open_webui_resolves_them({
                 "tool_servers": [
                     {
                         "specs": [{"name": "test_tool", "parameters": {"type": "object", "properties": {}}}]
                     }
                 ],
-            },
+            }),
             valves=pipe.valves,
             event_call=mock_event_call,
             event_emitter=AsyncMock(),
@@ -1537,7 +1522,7 @@ async def test_build_direct_tool_server_registry_spec_with_failing_dict():
                 return super().keys()
 
         registry, specs = executor._build_direct_tool_server_registry(
-            {
+            _as_open_webui_resolves_them({
                 "tool_servers": [
                     {
                         "specs": [
@@ -1551,7 +1536,7 @@ async def test_build_direct_tool_server_registry_spec_with_failing_dict():
                         ]
                     }
                 ],
-            },
+            }),
             valves=pipe.valves,
             event_call=AsyncMock(),
             event_emitter=AsyncMock(),
@@ -1588,7 +1573,7 @@ async def test_build_direct_tool_server_metadata_get_fails():
         ]
 
         registry, specs = executor._build_direct_tool_server_registry(
-            metadata,
+            _as_open_webui_resolves_them(metadata),
             valves=pipe.valves,
             event_call=mock_event_call,
             event_emitter=AsyncMock(),
@@ -1632,7 +1617,7 @@ async def test_build_direct_tool_server_bad_properties_keys():
                 raise RuntimeError("Intentional failure")
 
         registry, specs = executor._build_direct_tool_server_registry(
-            {
+            _as_open_webui_resolves_them({
                 "session_id": "sess-1",
                 "tool_servers": [
                     {
@@ -1647,7 +1632,7 @@ async def test_build_direct_tool_server_bad_properties_keys():
                         ]
                     }
                 ],
-            },
+            }),
             valves=pipe.valves,
             event_call=mock_event_call,
             event_emitter=AsyncMock(),
@@ -1676,7 +1661,7 @@ async def test_build_direct_tool_server_spec_params_access_fails():
                 return super().get(key, default)
 
         registry, specs = executor._build_direct_tool_server_registry(
-            {
+            _as_open_webui_resolves_them({
                 "tool_servers": [
                     {
                         "specs": [
@@ -1687,7 +1672,7 @@ async def test_build_direct_tool_server_spec_params_access_fails():
                         ]
                     }
                 ],
-            },
+            }),
             valves=pipe.valves,
             event_call=AsyncMock(),
             event_emitter=AsyncMock(),
@@ -4619,48 +4604,6 @@ async def test_collision_safe_tool_renaming_executes_both(pipe_instance_async):
     assert out2 and out2[0]["output"] == "direct"
 
 
-def test_collision_safe_tool_registry_passthrough_keeps_origin_map():
-    from open_webui_openrouter_pipe.tools.tool_registry import _build_collision_safe_tool_specs_and_registry
-
-    request_tools = [
-        {
-            "type": "function",
-            "name": "search_web",
-            "description": "Search the web",
-            "parameters": {"type": "object", "properties": {"query": {"type": "string"}}},
-        }
-    ]
-
-    direct_registry = {
-        "search_web::0::0": {
-            "spec": {
-                "name": "search_web",
-                "description": "direct",
-                "parameters": {"type": "object", "properties": {"query": {"type": "string"}}},
-            },
-            "direct": True,
-            "origin_key": "search_web::0::0",
-            "callable": lambda **_kwargs: None,
-        }
-    }
-
-    tools, exec_registry, exposed_to_origin = _build_collision_safe_tool_specs_and_registry(
-        request_tool_specs=request_tools,
-        owui_registry={},
-        direct_registry=direct_registry,
-        builtin_registry={},
-        extra_tools=[],
-        strictify=False,
-        owui_tool_passthrough=True,
-        logger=None,
-    )
-
-    assert not exec_registry
-    assert exposed_to_origin["owui__search_web"] == "search_web"
-    assert exposed_to_origin["direct__search_web"] == "search_web"
-    assert {t["name"] for t in tools} == {"owui__search_web", "direct__search_web"}
-
-
 @pytest.mark.asyncio
 async def test_registry_tool_ids_tool_still_executes(pipe_instance_async):
     from open_webui_openrouter_pipe.tools.tool_registry import _build_collision_safe_tool_specs_and_registry
@@ -6235,7 +6178,7 @@ def test_server_tool_cards_report_the_tools_own_outcome():
     body. Hardcoding "completed" labelled those as calls that worked, and Open WebUI
     appends the card verbatim onto the persisted assistant message.
     """
-    from open_webui_openrouter_pipe.streaming.streaming_core import _server_tool_status as status_of
+    from open_webui_openrouter_pipe.core.utils import server_tool_status as status_of
 
     assert status_of({"status": "failed"}) == "incomplete"
     assert status_of({"status": "error"}) == "incomplete"

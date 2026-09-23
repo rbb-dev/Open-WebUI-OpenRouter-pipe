@@ -56,17 +56,16 @@ def test_the_upstream_list_wins_when_open_webui_publishes_one(monkeypatch):
     )
 
 
-def test_the_local_list_is_used_when_open_webui_has_no_such_module():
-    """The 0.10.x shape -- and the shape this repo's own venv has.
+def test_the_local_list_is_used_when_open_webui_has_no_such_module(monkeypatch):
+    """The module missing entirely: the resolver's ImportError path must still keep the gate armed.
 
-    No injection here on purpose: `open_webui.utils.chat_id` genuinely does not exist in
-    the installed Open WebUI, so this exercises the real ImportError path rather than a
-    simulation of it.
+    Absence is simulated explicitly. This test used to rely on `open_webui.utils.chat_id` being absent from the
+    test stubs, but that module has shipped since Open WebUI v0.11.0 -- below the 0.11.4 floor -- so it is present
+    wherever the pipe runs, and the stubs now carry a verbatim copy of it. A `None` entry in `sys.modules` makes
+    the import raise, which is the path the resolver guards. (Retiring the hand-copied list, and with it this
+    fallback, is tracked as T226.)
     """
-    assert "open_webui.utils.chat_id" not in sys.modules, (
-        "another test leaked the injected module; this one must run against the real "
-        "absence to mean anything"
-    )
+    monkeypatch.setitem(sys.modules, "open_webui.utils.chat_id", None)
     assert _unlinkable_chat_prefixes() == _UNLINKABLE_CHAT_PREFIXES
     assert is_linkable_chat("temporary:abc") is False
     assert is_linkable_chat("chat-1") is True

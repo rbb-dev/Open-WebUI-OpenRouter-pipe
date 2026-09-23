@@ -23,7 +23,9 @@ import logging
 import math
 import os
 import re
+import uuid
 from collections.abc import Awaitable
+from contextvars import ContextVar
 from typing import Any, TypeVar, cast
 
 from .config import (
@@ -33,6 +35,20 @@ from .config import (
 )
 
 logger = logging.getLogger(__name__)
+
+try:
+    from open_webui.utils.middleware import (
+        _is_tool_result_error as _owui_is_tool_result_error,  # type: ignore[import-not-found]
+    )
+except ImportError:
+    _owui_is_tool_result_error = None  # type: ignore
+except Exception:
+    logging.getLogger(__name__).warning(
+        "open_webui.utils.middleware failed to import for a reason other than absence; "
+        "the features that depend on it are now disabled",
+        exc_info=True,
+    )
+    _owui_is_tool_result_error = None  # type: ignore
 
 _T = TypeVar("_T")
 
@@ -67,13 +83,121 @@ REASONING_ANCHOR_SEQ_KEY = "_anchor_seq"
 REASONING_FOLLOWING_ORDINAL_KEY = "_anchor_following_call_ordinal"
 REASONING_PRECEDING_ORDINAL_KEY = "_anchor_preceding_call_ordinal"
 REASONING_TEXT_ORDINAL_KEY = "_anchor_text_ordinal"
+REASONING_FOLLOWING_SERVER_ITEM_KEY = "_anchor_following_server_item"
 TOOL_ROUND_SKELETON_KEY = "_anchor_tool_round_skeleton"
+PIPE_ONLY_TOOL_ROUND_KEY = "_anchor_pipe_only_tool_round"
+UNRETAINED_TOOL_RESULT = "[tool result not retained]"
+UNRETAINED_FAILED_TOOL_RESULT = "[tool call failed; result not retained]"
+TOOL_FAILURE_LINE = "Error: the tool call did not complete."
+SERVER_TOOL_CALL_PREFIX = "srv-"
 REASONING_ANCHOR_KEYS = (
     REASONING_ANCHOR_SEQ_KEY,
     REASONING_FOLLOWING_ORDINAL_KEY,
     REASONING_PRECEDING_ORDINAL_KEY,
     REASONING_TEXT_ORDINAL_KEY,
+    REASONING_FOLLOWING_SERVER_ITEM_KEY,
 )
+
+
+def server_tool_call_id(item_id: Any) -> str:
+    return f"{SERVER_TOOL_CALL_PREFIX}{item_id if isinstance(item_id, str) and item_id else uuid.uuid4().hex}"
+
+
+def is_server_tool_call_id(call_id: Any) -> bool:
+    return isinstance(call_id, str) and call_id.startswith(SERVER_TOOL_CALL_PREFIX)
+
+
+def unretained_tool_result(failed: bool) -> str:
+    return UNRETAINED_FAILED_TOOL_RESULT if failed else UNRETAINED_TOOL_RESULT
+
+
+def _tool_result_failed(text: str, status: Any = None) -> bool:
+    if isinstance(status, str) and status and status != "completed":
+        return True
+    if text == unretained_tool_result(True):
+        return True
+    if _owui_is_tool_result_error is None:
+        return text.lstrip().lower().startswith("error:")
+    try:
+        return bool(_owui_is_tool_result_error(text))
+    except Exception:
+        logger.debug("Open WebUI could not classify a tool result", exc_info=True)
+        return text.lstrip().lower().startswith("error:")
+
+
+def is_picture_output(output: Any) -> bool:
+    return (
+        isinstance(output, list)
+        and bool(output)
+        and all(isinstance(part, dict) and part.get("type") in ("input_text", "input_image") for part in output)
+        and any(part.get("type") == "input_image" for part in output)
+    )
+
+
+def tool_output_text_and_pictures(output: Any) -> tuple[str, list[str]]:
+    if is_picture_output(output):
+        text = "".join(str(part.get("text") or "") for part in output if part.get("type") == "input_text")
+        return text, [str(part["image_url"]) for part in output if part.get("type") == "input_image" and part.get("image_url")]
+    return (output if isinstance(output, str) else ("" if output is None else str(output))), []
+
+
+def picture_output(text: str, pictures: list[str]) -> list[dict[str, Any]]:
+    return [{"type": "input_text", "text": text}, *({"type": "input_image", "image_url": url} for url in pictures)]
+
+
+def recorded_tool_text(text: str, status: Any) -> str:
+    if status in (None, "completed") or _tool_result_failed(text):
+        return text
+    return f"{TOOL_FAILURE_LINE}\n{text}" if text else TOOL_FAILURE_LINE
+
+
+def server_tool_status(item: dict[str, Any]) -> str:
+    reported = item.get("status")
+    if isinstance(reported, str) and reported:
+        if reported in SERVER_TOOL_IN_FLIGHT_STATUSES:
+            return "in_progress"
+        if reported in SERVER_TOOL_FAILURE_STATUSES:
+            return "incomplete"
+        if reported not in SERVER_TOOL_SUCCESS_STATUSES:
+            return "incomplete"
+    if item.get("error"):
+        return "incomplete"
+    http_status = item.get("httpStatus")
+    if http_status is not None:
+        try:
+            code = int(http_status)
+        except (TypeError, ValueError):
+            return "incomplete"
+        if not 200 <= code < 300:
+            return "incomplete"
+    return "completed"
+
+
+_SERVER_TOOL_ARGUMENT_KEYS = {"openrouter:advisor": ("prompt",), "openrouter:subagent": ("task_name", "task_description")}
+
+
+def server_tool_arguments(item: dict[str, Any]) -> dict[str, Any]:
+    return {key: item[key] for key in _SERVER_TOOL_ARGUMENT_KEYS.get(str(item.get("type") or ""), ()) if item.get(key)}
+
+
+def server_tool_result_text(item: dict[str, Any]) -> str:
+    item_type = str(item.get("type") or "")
+    if item_type in ("openrouter:advisor", "openrouter:subagent"):
+        error = item.get("error")
+        if error:
+            return str(error)
+        return str(item.get("advice" if item_type == "openrouter:advisor" else "outcome") or "")
+    result_data = item.get("result")
+    if result_data is None:
+        result_data = {k: v for k, v in item.items() if k not in ("type", "id", "status")} or None
+    try:
+        return (
+            json.dumps(result_data, indent=2, ensure_ascii=False)
+            if result_data is not None
+            else str(item.get("status") or "completed")
+        )
+    except (TypeError, ValueError):
+        return str(result_data)
 
 
 def continued_turn_counts(items: Any) -> tuple[int, int, bool]:
@@ -86,9 +210,30 @@ def continued_turn_counts(items: Any) -> tuple[int, int, bool]:
                 turn = []
             else:
                 turn.append(item)
-    calls = sum(1 for item in turn if item.get("type") == "function_call")
+    calls = sum(
+        1 for item in turn if item.get("type") == "function_call" and not is_server_tool_call_id(item.get("call_id"))
+    )
     texts = sum(1 for item in turn if item.get("type") == "message" and item.get("role") == "assistant")
     return calls, texts, bool(turn) and turn[-1].get("type") == "reasoning"
+
+
+OPEN_WEBUI_TOOL_IMAGES_TEXT = "Here are the images from the tool results above. Please analyze them."
+
+
+def is_tool_image_handoff(previous: Any, message: Any) -> bool:
+    if not (isinstance(previous, dict) and isinstance(message, dict)):
+        return False
+    content = message.get("content")
+    if not (previous.get("role") == "tool" and message.get("role") == "user" and isinstance(content, list)):
+        return False
+    first, *images = content or [None]
+    return (
+        isinstance(first, dict)
+        and first.get("type") == "text"
+        and first.get("text") == OPEN_WEBUI_TOOL_IMAGES_TEXT
+        and bool(images)
+        and all(isinstance(part, dict) and part.get("type") == "image_url" for part in images)
+    )
 
 
 def brings_tool_results(body: dict[str, Any]) -> bool:
@@ -97,42 +242,8 @@ def brings_tool_results(body: dict[str, Any]) -> bool:
         return False
     if messages[-1].get("role") == "tool":
         return True
-    return (
-        messages[-1].get("role") == "user"
-        and len(messages) > 1
-        and isinstance(messages[-2], dict)
-        and messages[-2].get("role") == "tool"
-    )
+    return len(messages) > 1 and is_tool_image_handoff(messages[-2], messages[-1])
 
-
-def drop_skeleton_rounds_without_reasoning(
-    items: list[Any], *, keep_unterminated_turn: bool = False
-) -> list[Any]:
-    kept: list[Any] = []
-    region: list[Any] = []
-    dropped = False
-
-    def close_region(*, unterminated: bool = False) -> None:
-        nonlocal dropped
-        spare = unterminated and keep_unterminated_turn
-        has_reasoning = spare or any(
-            isinstance(item, dict) and item.get("type") == "reasoning" for item in region
-        )
-        for item in region:
-            if not has_reasoning and isinstance(item, dict) and item.get(TOOL_ROUND_SKELETON_KEY):
-                dropped = True
-                continue
-            kept.append(item)
-        region.clear()
-
-    for item in items:
-        if isinstance(item, dict) and item.get("type") == "message" and item.get("role") == "user":
-            close_region()
-            kept.append(item)
-        else:
-            region.append(item)
-    close_region(unterminated=True)
-    return kept if dropped else items
 
 
 def _stable_crockford_id(seed: str, *, length: int = ULID_LENGTH) -> str:
@@ -394,6 +505,18 @@ def contains_marker(text: str) -> bool:
     return bool(_iter_marker_spans(text))
 
 
+def is_hidden_marker_line(line: str) -> bool:
+    stripped = line.strip()
+    return _extract_phase_marker_value(stripped) is not None or bool(_extract_marker_ulid(stripped))
+
+
+def ends_on_hidden_marker_line(text: Any) -> bool:
+    if not isinstance(text, str):
+        return False
+    lines = text.rstrip().splitlines()
+    return bool(lines) and is_hidden_marker_line(lines[-1])
+
+
 def split_text_by_markers(text: str) -> list[dict]:
     """Split text into a sequence of literal segments and marker segments.
 
@@ -471,10 +594,7 @@ def strip_hidden_marker_lines(text: str) -> str:
         if not stripped:
             kept_segments.append(segment)
             continue
-        if _extract_phase_marker_value(stripped) is not None:
-            removed = True
-            continue
-        if _extract_marker_ulid(stripped):
+        if is_hidden_marker_line(stripped):
             removed = True
             continue
         kept_segments.append(segment)
@@ -989,9 +1109,24 @@ def summarise_names(names: list[str], limit: int = 4, width: int = _TEXT_LIMIT) 
     return f"{'; '.join(shown)}{tail}"
 
 
+CONTINUED_REPLY: ContextVar[str | None] = ContextVar("continued_reply", default=None)
+
+
+def continued_reply_text(body: Any, metadata: Any) -> str | None:
+    if not (isinstance(metadata, dict) and metadata.get("assistant_message_id")):
+        return None
+    messages = body.get("messages") if isinstance(body, dict) else None
+    last = messages[-1] if isinstance(messages, list) and messages else None
+    if not (isinstance(last, dict) and last.get("role") == "assistant"):
+        return None
+    content = last.get("content")
+    return content if isinstance(content, str) else ""
+
+
 def join_answer_and_card(answer: str, card: str) -> str:
     if not card:
         return answer
+    card = card.lstrip("\n")
     if not answer:
-        return card
+        return f"\n\n{card}" if CONTINUED_REPLY.get() is not None else card
     return f"{answer}\n\n{card}"

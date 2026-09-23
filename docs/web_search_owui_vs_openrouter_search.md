@@ -10,10 +10,9 @@ Open WebUI has a built-in **Web Search** feature. Separately, OpenRouter provide
 
 ### 1) Open WebUI Web Search (OWUI-native)
 
-- Open WebUI's own web-search pipeline.
-- When enabled, OWUI runs a web search **before** calling the model, then attaches the results to the request as context.
-- Does not require the model or provider to support any special tool feature.
-- Configured in Open WebUI's settings (search engine, API keys, etc.).
+- Open WebUI's own web search, configured in Open WebUI's settings (search engine, API keys, etc.).
+- By default (native function calling), Open WebUI hands the model its `search_web` and `fetch_url` tools, and the model decides when to search. In the pipe's default `Pipeline` tool mode, the pipe runs them. Search hits are not shown as sources (Open WebUI's own chats do not show them either), but a page the model fetches is.
+- Only for a model set to legacy function calling does Open WebUI search **before** the model is called, attaching the results to the request as context. That form needs no tool support from the model.
 
 ### 2) OpenRouter Web Search (server tool)
 
@@ -26,7 +25,7 @@ Open WebUI has a built-in **Web Search** feature. Separately, OpenRouter provide
 
 ## The rule: OpenRouter Web Search suppresses OWUI Web Search
 
-When OpenRouter Web Search is enabled for a request, the Web Tools filter sets `body["features"]["web_search"] = False`, which suppresses Open WebUI's native web-search handler. This prevents:
+When OpenRouter Web Search is enabled for a request, the Web Tools filter sets `body["features"]["web_search"] = False`, which turns off Open WebUI's own web search for that request in both forms (its tools and its legacy pre-search). This prevents:
 
 - running two searches (one OWUI, one OpenRouter),
 - paying twice,
@@ -74,10 +73,8 @@ These parameters are respected even when the global `AUTO_ATTACH_WEB_TOOLS_FILTE
 
 ### Use OWUI Web Search when:
 
-- You want search results injected as context **before** the model sees the prompt.
 - You want to use OWUI's configured search engine (Google, Bing, SearXNG, etc.).
-- The model does not support tool calling.
-- You prefer a deterministic "always search" behavior rather than model-decided searching.
+- The model does not support tool calling, or you prefer a deterministic "always search" behavior rather than model-decided searching: set the model to legacy function calling, so Open WebUI searches **before** the model sees the prompt and injects the results as context.
 
 ### Use both (advanced):
 

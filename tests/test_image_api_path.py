@@ -2808,7 +2808,7 @@ async def test_the_requesting_user_is_identified_on_the_wire(uid, chat, monkeypa
 
     from open_webui_openrouter_pipe.core import config
 
-    def _include(headers, user):
+    def _include(headers, user, *, request=None):
         headers = dict(headers)
         headers["X-OpenWebUI-User-Id"] = str(getattr(user, "id", ""))
         headers["X-OpenWebUI-User-Email"] = str(getattr(user, "email", ""))

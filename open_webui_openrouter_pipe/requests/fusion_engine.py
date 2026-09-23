@@ -22,7 +22,7 @@ from ..core.fusion_defaults import (
     FusionRunPlan,
 )
 from ..core.logging_system import SessionLogger
-from ..core.utils import merge_usage_stats
+from ..core.utils import CONTINUED_REPLY, merge_usage_stats
 from ..models.registry import ModelFamily
 from ..structured_task.schema import (
     build_response_format,
@@ -180,6 +180,7 @@ async def run_fusion_member(
         if stop_when:
             pipe_meta["stop_server_tools_when"] = copy.deepcopy(stop_when)
     request_token = SessionLogger.request_id.set(f"fusion-inner-{uuid.uuid4().hex[:12]}")
+    continued_token = CONTINUED_REPLY.set(None)
     outer_ctx = pipe._TOOL_CONTEXT.get()
     ctx = None
     token = None
@@ -209,6 +210,7 @@ async def run_fusion_member(
             request=outer_ctx.request,
             user=outer_ctx.user,
             metadata=inner_metadata,
+            terminal_metadata=outer_ctx.metadata,
             request_id=SessionLogger.request_id.get() or "",
             fusion_inner=True,
             tool_breaker=invocation.tool_breaker,
@@ -278,6 +280,7 @@ async def run_fusion_member(
             sources=tuple(collector.sources),
         )
     finally:
+        CONTINUED_REPLY.reset(continued_token)
         SessionLogger.request_id.reset(request_token)
         if token is not None:
             pipe._TOOL_CONTEXT.reset(token)

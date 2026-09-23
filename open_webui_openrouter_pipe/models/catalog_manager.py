@@ -1699,28 +1699,38 @@ class ModelCatalogManager:
                 continue
 
             removed = set(filter_ids) - set(pruned)
+            meta_dict["filterIds"] = pruned
+            try:
+                meta_obj = ModelMeta(**meta_dict)
+                form = self._build_model_form(
+                    model_form_cls=ModelForm,
+                    supports_access_control=supports_access_control,
+                    id=model.id,
+                    base_model_id=model.base_model_id,
+                    name=model.name,
+                    meta=meta_obj,
+                    params=_params_without_tag_scanning(ModelParams, model.params),
+                    access_payload=self._resolve_model_access_payload(
+                        model_obj=model,
+                        supports_access_control=supports_access_control,
+                    ),
+                    is_active=model.is_active,
+                )
+                await Models.update_model_by_id(model.id, form)
+            except Exception as exc:
+                self.logger.warning(
+                    "Startup prune: model '%s' keeps its stale filter IDs (%s): Open WebUI would not save it: %s",
+                    model.id,
+                    ", ".join(sorted(str(r) for r in removed)),
+                    exc,
+                    exc_info=True,
+                )
+                continue
             self.logger.warning(
                 "Startup prune: removed stale filter IDs from model '%s': %s",
                 model.id,
                 ", ".join(sorted(str(r) for r in removed)),
             )
-            meta_dict["filterIds"] = pruned
-            meta_obj = ModelMeta(**meta_dict)
-            form = self._build_model_form(
-                model_form_cls=ModelForm,
-                supports_access_control=supports_access_control,
-                id=model.id,
-                base_model_id=model.base_model_id,
-                name=model.name,
-                meta=meta_obj,
-                params=_params_without_tag_scanning(ModelParams, model.params),
-                access_payload=self._resolve_model_access_payload(
-                    model_obj=model,
-                    supports_access_control=supports_access_control,
-                ),
-                is_active=model.is_active,
-            )
-            await Models.update_model_by_id(model.id, form)
             updated += 1
 
         return updated

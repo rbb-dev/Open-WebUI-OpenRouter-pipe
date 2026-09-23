@@ -1342,7 +1342,13 @@ _A_TOOL_ROUND = [
 ]
 _IMAGES_FROM_THE_TOOL_ROUND = [
     *_A_TOOL_ROUND,
-    {"role": "user", "content": "Here are the images from the tool results above. Please analyze them."},
+    {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "Here are the images from the tool results above. Please analyze them."},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}},
+        ],
+    },
 ]
 
 

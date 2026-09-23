@@ -91,7 +91,9 @@ Which of these survives a page reload depends entirely on whether the turn is st
 
 **Streaming on.** The pipe does not hand its events to Open WebUI as events at all. It returns an async generator, and its own translator converts each event into the OpenAI-style stream chunks Open WebUI's streaming handler accumulates. Both `chat:message` and `chat:message:delta` become answer text there — a delta contributes its `content` verbatim, and a `chat:message` contributes only the part of its snapshot that has not been sent yet, so alternating the two on one turn does not duplicate text. That subtraction is conditional: the translator forwards the remainder **only when the snapshot starts with everything already sent**, and forwards nothing at all when it does not. So a card — an error card, a notice, any block the pipe appends to an answer in progress — goes out as a snapshot of the **whole message**, the answer so far joined to the card, never as the card alone. A bare card is a non-prefix write the moment any text has streamed, and the translator drops it: the user never sees it. Where a card instead reaches Open WebUI as an event rather than through the translator, a bare one is worse than invisible — `chat:message` assigns there, per the table above, so it would overwrite the partial answer rather than follow it. `chat:completion` is **not** answer text: a frame carrying `content` is forwarded out of band, one carrying `error` or `usage` is forwarded as an error or usage record, and a frame carrying none of the three is dropped. So a whole answer sent only as `chat:completion` arrives as no text at all.
 
-**Streaming off.** The translator does not exist; the events go straight to Open WebUI's socket emitter, which forwards them to the browser and writes only a subset to the database. `status`, `message`, `replace`, `embeds`, `files` and `source`/`citation` are written. `chat:message`, `chat:message:delta` and `chat:completion` are **not** — the browser shows them and the database never hears about them. What Open WebUI stores on this leg is the value the pipe RETURNS. An empty return also skips the outlet filters and the follow-up tasks that ride the same branch, so the turn reloads blank *and* the chat never gets a title.
+Each stretch of answer text streams into a message item that the pipe publishes first, under its own id: a `response.output_item.added` event carrying the empty message, then the text. Open WebUI puts a chunk's text into the reply's last item when that item is a message, so the text lands in the pipe's item, and Open WebUI names that item when it passes the text on to the browser. Every item the pipe publishes - a message, a tool card, a thinking box, a Fusion answer - also carries `output_index`, its place in the reply. Without `output_index`, the browser puts an item before the last one it holds, which showed a card above the text written before it. The pipe's closing record reuses the same ids. That matters because Open WebUI's browser merges the record by id into what it already shows: a record under fresh ids showed the answer twice until Open WebUI's final update.
+
+**Streaming off.** The translator does not exist; the events go straight to Open WebUI's socket emitter, which forwards them to the browser and writes only a subset to the database. `status`, `message`, `replace`, `embeds`, `files` and `source`/`citation` are written. `chat:message`, `chat:message:delta` and `chat:completion` are **not** — the browser shows them and the database never hears about them. What Open WebUI stores on this leg is the value the pipe RETURNS. For a finished chat reply that is a completion carrying the reply's text and its structured record (`output`), which Open WebUI saves exactly as it saves a streamed reply's record, so tool cards and thinking survive a reload. That includes a reply that ended in an error: its record carries the error card with the rest. A reply that produced nothing but text comes back as that text, error card included. An empty return also skips the outlet filters and the follow-up tasks that ride the same branch, so the turn reloads blank *and* the chat never gets a title.
 
 The rule that covers both legs: **an answer must be both shown and returned.** Showing it satisfies the live view on either leg; returning it satisfies persistence with streaming off and costs nothing with streaming on, where the return value is discarded. A card that is only emitted is a card the user loses on reload; a card that is only returned is a card that appears late.
 
@@ -103,9 +105,11 @@ Notes:
 
 ### 4.1 The stored output array, and who owns it
 
-A streaming turn ends with a `response.completed` event whose `output` array is what Open WebUI saves against
-the assistant message: the reasoning items, the tool cards that were shown, and the messages. Everything later
-turns replay comes from there, so who writes it matters.
+Every finished chat reply hands Open WebUI an `output` array, which it saves against the assistant message: a
+streamed reply publishes it in its closing `response.completed` event, and a non-streamed one returns it with its
+text. It holds the reasoning items, the tool cards that were shown, and the messages. Its messages carry the ids of
+the items their text streamed into, so Open WebUI's browser replaces the items it already shows rather than
+adding a second copy. Everything later turns replay comes from there, so who writes it matters.
 
 Open WebUI's bookkeeping depends on what it is doing, and the pipe has to match it:
 
@@ -123,11 +127,14 @@ So the read exists for one caller only: a client posting to the completions endp
 message that already holds output. Open WebUI's own chat never produces that state, and for the direct caller
 republishing is the right answer, because nothing else will put those items back.
 
-One consequence is worth stating plainly, because it is a deliberate choice rather than an oversight: a tool
-call left unfinished by Stop, on a message that is then continued, drops out of later history instead of being
-repaired. Open WebUI's own models behave the same way, and the events that would repair it cannot reach
-storage - `response.output_item.added` matches ids only within the new output, and `response.output_item.done`
-replaces by position - so an attempt to heal it would duplicate or corrupt the saved copy instead.
+One consequence is worth stating plainly, because it is a deliberate choice rather than an oversight: a tool call
+left unfinished by Stop, on a message that is then continued, stays unfinished in Open WebUI's saved copy instead of
+being repaired, so Open WebUI does not replay it. The events that would repair it cannot reach storage -
+`response.output_item.added` matches ids only within the new output, and `response.output_item.done` replaces by
+position - so an attempt to heal it would duplicate or corrupt the saved copy instead. The model still learns the
+round's calls before the first one still running: the pipe writes a round's calls when the round starts and each
+result when its call returns, in call order, and that copy is replayed in its place (see
+[History Reconstruction & Context Replay](history_reconstruction_and_context.md), section 5.4).
 
 ---
 

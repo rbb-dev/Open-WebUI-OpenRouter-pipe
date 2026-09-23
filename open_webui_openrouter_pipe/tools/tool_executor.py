@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..api.transforms import ResponsesBody
 from ..core.timing_logger import timed, timing_mark
-from ..core.utils import TOOL_CALL_STATUSES
+from ..core.utils import TOOL_CALL_STATUSES, picture_output
 from ..core.warn_latch import warn_level
 
 _OWUI_RESULT_WARN_COOLDOWN_S = 300.0
@@ -32,6 +32,48 @@ if TYPE_CHECKING:
     from ..pipe import Pipe
 
 from ..streaming.event_emitter import EventEmitter
+
+try:
+    from open_webui.utils.middleware import (  # pyright: ignore[reportMissingImports]
+        terminal_event_handler as _owui_terminal_event_handler,
+    )
+except ImportError:
+    _owui_terminal_event_handler = None  # type: ignore[assignment]
+except Exception:
+    logging.getLogger(__name__).warning(
+        "open_webui.utils.middleware failed to import for a reason other than absence; "
+        "the features that depend on it are now disabled",
+        exc_info=True,
+    )
+    _owui_terminal_event_handler = None  # type: ignore[assignment]
+
+try:
+    from open_webui.utils.middleware import (  # pyright: ignore[reportMissingImports]
+        store_tool_result_image as _owui_store_tool_result_image,
+    )
+except ImportError:
+    _owui_store_tool_result_image = None  # type: ignore[assignment]
+except Exception:
+    logging.getLogger(__name__).warning(
+        "open_webui.utils.middleware failed to import for a reason other than absence; "
+        "the features that depend on it are now disabled",
+        exc_info=True,
+    )
+    _owui_store_tool_result_image = None  # type: ignore[assignment]
+
+try:
+    from open_webui.utils.middleware import (  # pyright: ignore[reportMissingImports]
+        build_terminal_file_tool_result as _owui_build_terminal_file_tool_result,
+    )
+except ImportError:
+    _owui_build_terminal_file_tool_result = None  # type: ignore[assignment]
+except Exception:
+    logging.getLogger(__name__).warning(
+        "open_webui.utils.middleware failed to import for a reason other than absence; "
+        "the features that depend on it are now disabled",
+        exc_info=True,
+    )
+    _owui_build_terminal_file_tool_result = None  # type: ignore[assignment]
 
 try:
     from open_webui.utils.middleware import (
@@ -123,6 +165,9 @@ class _ToolExecutionContext:
     workers: list[asyncio.Task] = field(default_factory=list)
     timeout_error: str | None = None
     on_complete: Callable[[dict, dict], Awaitable[None]] | None = None
+    card_carries_the_result: bool = False
+    terminal_files_inline: bool = False
+    terminal_metadata: dict[str, Any] | None = None
 
 
 class ToolExecutor:
@@ -216,6 +261,58 @@ class ToolExecutor:
                 )
             return parsed
         raise ValueError(f"Unsupported argument type: {type(raw_args).__name__}")
+
+    @timed
+    def _terminal_file_result_safe(
+        self,
+        origin_name: str,
+        args: Any,
+        raw_result: Any,
+        tool_cfg: dict[str, Any] | None,
+        metadata: dict[str, Any] | None,
+    ) -> Any:
+        if _owui_build_terminal_file_tool_result is None:
+            return raw_result
+        try:
+            reshaped = _owui_build_terminal_file_tool_result(
+                origin_name, args if isinstance(args, dict) else {}, raw_result, tool_cfg, metadata
+            )
+        except Exception:
+            self.logger.log(
+                warn_level(
+                    self._owui_result_warn_ts, f"terminal-file:{origin_name}", cooldown_s=_OWUI_RESULT_WARN_COOLDOWN_S
+                ),
+                "Open WebUI could not prepare the Open Terminal file result of '%s'; the model receives the result "
+                "as the terminal returned it",
+                origin_name,
+                exc_info=True,
+            )
+            return raw_result
+        return reshaped if reshaped else raw_result
+
+    async def _emit_terminal_events_safe(
+        self,
+        origin_name: str,
+        args: Any,
+        result_text: Any,
+        event_emitter: EventEmitter | None,
+    ) -> None:
+        if _owui_terminal_event_handler is None or event_emitter is None:
+            return
+        try:
+            await _owui_terminal_event_handler(
+                origin_name, args if isinstance(args, dict) else {}, result_text, event_emitter
+            )
+        except Exception:
+            self.logger.log(
+                warn_level(
+                    self._owui_result_warn_ts, f"terminal-events:{origin_name}", cooldown_s=_OWUI_RESULT_WARN_COOLDOWN_S
+                ),
+                "Open WebUI could not tell the chat about the Open Terminal call '%s'; its file browser and preview "
+                "are not updated for it",
+                origin_name,
+                exc_info=True,
+            )
 
     @timed
     async def _process_tool_result_safe(
@@ -544,125 +641,87 @@ class ToolExecutor:
         try:
             if not isinstance(__metadata__, dict):
                 return {}, []
-            tool_servers = __metadata__.get("tool_servers")
-            if not isinstance(tool_servers, list) or not tool_servers:
+            resolved = __metadata__.get("tools")
+            if not isinstance(resolved, dict) or not resolved:
                 return {}, []
             if event_call is None:
                 return {}, []
 
-            for server_idx, server in enumerate(tool_servers):
+            for entry in resolved.values():
                 try:
-                    if not isinstance(server, dict):
+                    if not (isinstance(entry, dict) and entry.get("direct") is True):
                         continue
-                    specs = server.get("specs")
-                    if not isinstance(specs, list) or not specs:
-                        openapi = server.get("openapi")
-                        if isinstance(openapi, dict):
-                            try:
-                                from open_webui.utils.tools import (
-                                    convert_openapi_to_tool_payload,  # type: ignore
-                                )
-                            except Exception:
-                                self.logger.warning(
-                                    "Open WebUI's OpenAPI tool converter is unavailable; "
-                                    "direct tool servers cannot be advertised to the model",
-                                    exc_info=True,
-                                )
-                                convert_openapi_to_tool_payload = None  # type: ignore[assignment]
-                            if callable(convert_openapi_to_tool_payload):
-                                try:
-                                    specs = convert_openapi_to_tool_payload(openapi)  # type: ignore[misc]
-                                except Exception:
-                                    self.logger.warning(
-                                        "OpenAPI to tool conversion failed for direct tool "
-                                        "server %d; its tools will not be offered to the model",
-                                        server_idx,
-                                        exc_info=True,
-                                    )
-                                    specs = []
-                    if not isinstance(specs, list) or not specs:
+                    spec = entry.get("spec")
+                    server = entry.get("server")
+                    if not isinstance(spec, dict) or not isinstance(server, dict):
+                        continue
+                    raw_name = spec.get("name")
+                    name = raw_name.strip() if isinstance(raw_name, str) else ""
+                    if not name:
                         continue
 
+                    allowed_params: set[str] = set()
+                    parameters = spec.get("parameters")
+                    if isinstance(parameters, dict):
+                        props = parameters.get("properties")
+                        if isinstance(props, dict):
+                            allowed_params = {k for k in props if isinstance(k, str)}
+
+                    spec_payload = dict(spec)
+                    spec_payload["name"] = name
                     server_payload = dict(server)
                     with contextlib.suppress(Exception):
                         server_payload.pop("specs", None)
 
-                    for spec_idx, spec in enumerate(specs):
+                    async def _direct_tool_callable(
+                        _allowed_params: set[str] = allowed_params,
+                        _tool_name: str = name,
+                        _server_payload: dict[str, Any] = server_payload,
+                        _metadata: dict[str, Any] = __metadata__,
+                        _event_call: Callable[[dict[str, Any]], Awaitable[Any]] | None = event_call,
+                        _event_emitter: EventEmitter | None = event_emitter,
+                        **kwargs,
+                    ) -> Any:
+                        if _event_call is None:
+                            return [
+                                {"error": "Direct tool execution unavailable."},
+                                None,
+                            ]
                         try:
-                            if not isinstance(spec, dict):
-                                continue
-                            raw_name = spec.get("name")
-                            name = raw_name.strip() if isinstance(raw_name, str) else ""
-                            if not name:
-                                continue
+                            filtered = {k: v for k, v in kwargs.items() if k in _allowed_params}
+                            session_id = _metadata.get("session_id")
 
-                            allowed_params: set[str] = set()
-                            parameters = spec.get("parameters")
-                            if isinstance(parameters, dict):
-                                props = parameters.get("properties")
-                                if isinstance(props, dict):
-                                    allowed_params = {k for k in props if isinstance(k, str)}
-
-                            spec_payload = dict(spec)
-                            spec_payload["name"] = name
-
-                            async def _direct_tool_callable(
-                                _allowed_params: set[str] = allowed_params,
-                                _tool_name: str = name,
-                                _server_payload: dict[str, Any] = server_payload,
-                                _metadata: dict[str, Any] = __metadata__,
-                                _event_call: Callable[[dict[str, Any]], Awaitable[Any]] | None = event_call,
-                                _event_emitter: EventEmitter | None = event_emitter,
-                                **kwargs,
-                            ) -> Any:
-                                if _event_call is None:
-                                    # Precondition, not a late rescue: without the host's
-                                    # __event_call__ there is no channel to the tool
-                                    # server, and `await None(payload)` would hand the
-                                    # model "'NoneType' object is not callable".
-                                    return [
-                                        {"error": "Direct tool execution unavailable."},
-                                        None,
-                                    ]
-                                try:
-                                    filtered = {k: v for k, v in kwargs.items() if k in _allowed_params}
-                                    session_id = _metadata.get("session_id")
-
-                                    payload = {
-                                        "type": "execute:tool",
-                                        "data": {
-                                            "id": str(uuid.uuid4()),
-                                            "name": _tool_name,
-                                            "params": filtered,
-                                            "server": _server_payload,
-                                            "session_id": session_id,
-                                        },
-                                    }
-                                    return await _event_call(payload)  # type: ignore[misc]
-                                except Exception as exc:
-                                    self.logger.debug("Direct tool '%s' failed: %s", _tool_name, exc, exc_info=True)
-                                    with contextlib.suppress(Exception):
-                                        await self._pipe._event_emitter_handler._emit_notification(
-                                            _event_emitter,
-                                            f"Tool '{_tool_name}' failed: {exc}",
-                                            level="warning",
-                                        )
-                                    return [{"error": str(exc)}, None]
-
-                            registry_key = f"{name}::{server_idx}::{spec_idx}"
-                            direct_registry[registry_key] = {
-                                "spec": spec_payload,
-                                "direct": True,
-                                "server": server_payload,
-                                "callable": _direct_tool_callable,
-                                "origin_key": registry_key,
+                            payload = {
+                                "type": "execute:tool",
+                                "data": {
+                                    "id": str(uuid.uuid4()),
+                                    "name": _tool_name,
+                                    "params": filtered,
+                                    "server": _server_payload,
+                                    "session_id": session_id,
+                                },
                             }
-                        except Exception:
-                            # Skip malformed tool specs safely.
-                            self.logger.debug("Skipping malformed direct tool spec", exc_info=True)
-                            continue
+                            return await _event_call(payload)  # type: ignore[misc]
+                        except Exception as exc:
+                            self.logger.debug("Direct tool '%s' failed: %s", _tool_name, exc, exc_info=True)
+                            with contextlib.suppress(Exception):
+                                await self._pipe._event_emitter_handler._emit_notification(
+                                    _event_emitter,
+                                    f"Tool '{_tool_name}' failed: {exc}",
+                                    level="warning",
+                                )
+                            return [{"error": str(exc)}, None]
+
+                    registry_key = f"{name}::direct"
+                    direct_registry[registry_key] = {
+                        "spec": spec_payload,
+                        "direct": True,
+                        "server": server_payload,
+                        "callable": _direct_tool_callable,
+                        "origin_key": registry_key,
+                    }
                 except Exception:
-                    self.logger.debug("Skipping malformed direct tool server entry", exc_info=True)
+                    self.logger.debug("Skipping malformed direct tool spec", exc_info=True)
                     continue
 
             if direct_registry:
@@ -716,6 +775,7 @@ class ToolExecutor:
         status: str = "completed",
         files: list[dict[str, Any]] | None = None,
         embeds: list[str] | None = None,
+        pictures: list[str] | None = None,
     ) -> dict[str, Any]:
         """Build standardized tool output payload.
 
@@ -736,7 +796,7 @@ class ToolExecutor:
             "id": generate_item_id(),
             "status": normalized_status,
             "call_id": call_id,
-            "output": output_text,
+            "output": picture_output(output_text, pictures) if pictures else output_text,
         }
         if files:
             result["files"] = files
@@ -744,6 +804,32 @@ class ToolExecutor:
             result["embeds"] = embeds
         return result
 
+
+    async def _tool_pictures_safe(
+        self, files: list[dict[str, Any]], context: _ToolExecutionContext
+    ) -> tuple[list[str], list[dict[str, Any]]]:
+        pictures: list[str] = []
+        shown: list[dict[str, Any]] = []
+        for entry in files:
+            url = entry.get("url") if isinstance(entry, dict) else None
+            if isinstance(entry, dict) and entry.get("type") == "image" and isinstance(url, str) and url.startswith("data:"):
+                pictures.append(await self._stored_picture_safe(url, context))
+            else:
+                shown.append(entry)
+        return pictures, shown
+
+    async def _stored_picture_safe(self, url: str, context: _ToolExecutionContext) -> str:
+        if _owui_store_tool_result_image is None:
+            return url
+        try:
+            user_obj = context.user
+            if isinstance(user_obj, dict) and _Users is not None and user_obj.get("id"):
+                user_obj = await _Users.get_user_by_id(str(user_obj["id"]))
+            stored = await _owui_store_tool_result_image(context.request, url, context.metadata, user_obj)
+        except Exception:
+            self.logger.debug("Could not store a tool's picture; it stays inline", exc_info=True)
+            return url
+        return stored if isinstance(stored, str) and stored else url
 
     @timed
     async def _tool_worker_loop(self, context: _ToolExecutionContext) -> None:

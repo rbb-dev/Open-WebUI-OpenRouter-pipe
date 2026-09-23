@@ -20,9 +20,8 @@ from ..core.context_budget import (
 )
 from ..core.utils import (
     TOOL_CALL_STATUSES,
-    TOOL_ROUND_SKELETON_KEY,
     _clean_str,
-    drop_skeleton_rounds_without_reasoning,
+    is_picture_output,
 )
 from ..integrations.anthropic import _is_anthropic_model_id
 
@@ -104,7 +103,7 @@ def _strip_unreplayable_anthropic_reasoning(items: list[Any]) -> list[Any]:
             changed = True
             item = {k: v for k, v in item.items() if k != "reasoning_details"}
         out.append(item)
-    return drop_skeleton_rounds_without_reasoning(out, keep_unterminated_turn=True) if changed else items
+    return out if changed else items
 
 
 def budget_model_id(body: Any) -> str:
@@ -160,8 +159,6 @@ def _sanitize_request_input(pipe: Pipe, body: ResponsesBody) -> BudgetOutcome | 
                 "name": name.strip(),
                 "arguments": args,
             }
-            if item.get(TOOL_ROUND_SKELETON_KEY):
-                minimal[TOOL_ROUND_SKELETON_KEY] = True
             if set(item.keys()) != set(minimal.keys()):
                 changed = True
             return minimal, changed
@@ -170,7 +167,7 @@ def _sanitize_request_input(pipe: Pipe, body: ResponsesBody) -> BudgetOutcome | 
             if not (isinstance(call_id, str) and call_id.strip()):
                 return item, False
             output = item.get("output")
-            if not isinstance(output, str):
+            if not isinstance(output, str) and not is_picture_output(output):
                 output = json.dumps(output, ensure_ascii=False)
                 changed = True
             minimal: dict[str, Any] = {
@@ -181,8 +178,6 @@ def _sanitize_request_input(pipe: Pipe, body: ResponsesBody) -> BudgetOutcome | 
             reported_status = item.get("status")
             if reported_status in TOOL_CALL_STATUSES:
                 minimal["status"] = reported_status
-            if item.get(TOOL_ROUND_SKELETON_KEY):
-                minimal[TOOL_ROUND_SKELETON_KEY] = True
             if set(item.keys()) != set(minimal.keys()):
                 changed = True
             return minimal, changed

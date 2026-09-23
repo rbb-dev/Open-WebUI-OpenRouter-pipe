@@ -457,7 +457,7 @@ class TestFailedToolCardsStillReachHistory:
     async def test_an_incomplete_tool_card_is_published_at_a_terminal_status(
         self, monkeypatch, pipe_instance_async
     ):
-        """`_server_tool_status` returns "incomplete" for a failed call, and Open WebUI's
+        """`server_tool_status` returns "incomplete" for a failed call, and Open WebUI's
         converter only pairs a call with its result when the call sits at completed,
         failed or rejected. Published verbatim, a failed tool round vanishes from the
         replayed history entirely -- the model never learns the tool was tried.

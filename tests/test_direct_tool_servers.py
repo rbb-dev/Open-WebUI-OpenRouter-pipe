@@ -6,6 +6,7 @@ import pytest
 from aioresponses import aioresponses
 
 from open_webui_openrouter_pipe import Pipe
+from tests.test_tools import _as_open_webui_resolves_them
 
 
 _STUBBED_INPUT = [
@@ -121,7 +122,7 @@ async def test_direct_tool_servers_are_advertised_and_executable():
                 __request__=None,
                 __event_emitter__=None,
                 __event_call__=cast(Callable[[dict[str, Any]], Awaitable[Any]], track_event_call),
-                __metadata__=metadata,
+                __metadata__=_as_open_webui_resolves_them(metadata),
                 __tools__={},
                 __task__=None,
                 __task_body__=None,
@@ -254,7 +255,7 @@ async def test_direct_tool_servers_skipped_without_event_call():
                 __request__=None,
                 __event_emitter__=None,
                 __event_call__=None,  # KEY: No event_call provided
-                __metadata__=metadata,
+                __metadata__=_as_open_webui_resolves_them(metadata),
                 __tools__={},
                 __task__=None,
                 __task_body__=None,

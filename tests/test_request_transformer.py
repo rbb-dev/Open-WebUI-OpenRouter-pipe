@@ -839,37 +839,6 @@ class TestTurnComputation:
         assert len(result) == 2
 
     @pytest.mark.asyncio
-    async def test_direct_tool_outputs_not_pruned(self, pipe_instance):
-        """Direct tool messages are NOT pruned - pruning only applies to marker-replayed artifacts."""
-        # Create a long tool output
-        long_output = "X" * (_TOOL_OUTPUT_PRUNE_MIN_LENGTH + 100)
-
-        messages = [
-            {"role": "user", "content": "Turn 0"},
-            {"role": "assistant", "content": "Response 0"},
-            {"role": "tool", "tool_call_id": "call_old", "content": long_output},
-            {"role": "user", "content": "Turn 1"},
-            {"role": "assistant", "content": "Response 1"},
-            {"role": "user", "content": "Turn 2"},
-            {"role": "assistant", "content": "Response 2"},
-        ]
-
-        # Request pruning of turns older than 1
-        result = await transform_messages_to_input(
-            pipe_instance,
-            messages,
-            pruning_turns=1
-        )
-
-        # Find the function_call_output
-        tool_output = next((r for r in result if r.get("type") == "function_call_output"), None)
-        assert tool_output is not None
-        # Direct tool messages are NOT pruned - pruning only applies when replaying
-        # artifacts from the database via markers in assistant messages
-        assert "[tool output pruned:" not in tool_output["output"]
-        assert tool_output["output"] == long_output
-
-    @pytest.mark.asyncio
     async def test_no_pruning_when_pruning_turns_zero(self, pipe_instance):
         """No pruning when pruning_turns is 0."""
         long_output = "X" * (_TOOL_OUTPUT_PRUNE_MIN_LENGTH + 100)
@@ -2107,13 +2076,16 @@ class TestMarkerBasedArtifactReplay:
             {"role": "user", "content": "Turn 2"},
         ]
 
+        # Results are kept: with them not kept an old round reaches the model as the not-retained placeholder
+        # and is never pruned. The pruner is this test's subject.
         result = await transform_messages_to_input(
             pipe_instance,
             messages,
             chat_id="test_chat",
             openwebui_model_id="test_model",
             artifact_loader=mock_artifact_loader,
-            pruning_turns=1
+            pruning_turns=1,
+            valves=pipe_instance.valves.model_copy(update={"PERSIST_TOOL_RESULTS": True}),
         )
 
         # Find the function_call_output
@@ -2199,13 +2171,16 @@ class TestMarkerBasedArtifactReplay:
             {"role": "user", "content": "Turn 2"},
         ]
 
+        # Results are kept: with them not kept an old round reaches the model as the not-retained placeholder
+        # and is never pruned. The pruner is this test's subject.
         result = await transform_messages_to_input(
             pipe_instance,
             messages,
             chat_id="test_chat",
             openwebui_model_id="test_model",
             artifact_loader=mock_artifact_loader,
-            pruning_turns=1
+            pruning_turns=1,
+            valves=pipe_instance.valves.model_copy(update={"PERSIST_TOOL_RESULTS": True}),
         )
 
         tool_output = next((r for r in result if r.get("type") == "function_call_output"), None)
@@ -3230,13 +3205,16 @@ class TestPruningEdgeCases:
             {"role": "user", "content": "Turn 2"},
         ]
 
+        # Results are kept: with them not kept an old round reaches the model as the not-retained placeholder
+        # and is never pruned. The pruner is this test's subject.
         result = await transform_messages_to_input(
             pipe_instance,
             messages,
             chat_id="test_chat",
             openwebui_model_id="test_model",
             artifact_loader=mock_artifact_loader,
-            pruning_turns=1
+            pruning_turns=1,
+            valves=pipe_instance.valves.model_copy(update={"PERSIST_TOOL_RESULTS": True}),
         )
 
         tool_output = next((r for r in result if r.get("type") == "function_call_output"), None)
@@ -3516,13 +3494,16 @@ class TestPruneToolOutputEdgeCases:
             {"role": "user", "content": "Turn 2"},
         ]
 
+        # Results are kept: with them not kept an old round reaches the model as the not-retained placeholder
+        # and is never pruned. The pruner is this test's subject.
         result = await transform_messages_to_input(
             pipe_instance,
             messages,
             chat_id="test_chat",
             openwebui_model_id="test_model",
             artifact_loader=mock_artifact_loader,
-            pruning_turns=1
+            pruning_turns=1,
+            valves=pipe_instance.valves.model_copy(update={"PERSIST_TOOL_RESULTS": True}),
         )
 
         tool_output = next((r for r in result if r.get("type") == "function_call_output"), None)

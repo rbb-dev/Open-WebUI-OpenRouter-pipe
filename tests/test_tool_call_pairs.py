@@ -1,8 +1,9 @@
 """Tool calls and their results must pair up by COUNT on the wire, not by membership.
 
-Call ids are not unique. The chat-completions adapters mint `toolcall-{model}-{index}` with the index restarting
-each request, so in Open-WebUI tool mode -- where every round is a separate pipe request -- two rounds of one
-answer can carry the same id. Open WebUI appends a `function_call` only for ids it does not already hold but a
+Call ids are not always unique. Until the pipe made its ids unique, the chat-completions adapters minted
+`toolcall-{model}-{index}` with the index restarting each request, so in Open-WebUI tool mode -- where every round is
+a separate pipe request -- two rounds of one answer could carry the same id, and chats saved then still do. Open WebUI
+appends a `function_call` only for ids it does not already hold but a
 `function_call_output` for every result, so its stored output ends up with one call and several results under one
 id, and that is what comes back to the pipe.
 

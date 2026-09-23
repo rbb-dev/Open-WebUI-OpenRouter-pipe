@@ -2530,8 +2530,10 @@ class TestPipeEntryPointEdgeCases:
     """Tests for pipe() entry point edge cases."""
 
     @pytest.mark.asyncio
-    async def test_pipe_entry_with_invalid_body_type(self):
-        """Test that pipe() handles non-dict body gracefully."""
+    @pytest.mark.parametrize("metadata", [{}, {"assistant_message_id": "m1"}], ids=["new-message", "continue"])
+    async def test_pipe_entry_with_invalid_body_type(self, metadata):
+        """Test that pipe() handles non-dict body gracefully, on a Continue too, whose stored reply is read from the
+        body first."""
         pipe = Pipe()
         pipe.valves.API_KEY = EncryptedStr("sk-test-key")
 
@@ -2551,7 +2553,7 @@ class TestPipeEntryPointEdgeCases:
                     __request__=None,
                     __event_emitter__=None,
                     __event_call__=None,
-                    __metadata__={},
+                    __metadata__=metadata,
                     __tools__=None,
                 )
                 # Should handle gracefully
@@ -3319,7 +3321,7 @@ class TestToolExecution:
             context.timeout = 10.0
             context.user_id = "test_user"
 
-            status, text, files, embeds = await pipe._run_tool_with_retries(item, context, "function")
+            status, text, files, embeds, _pictures = await pipe._run_tool_with_retries(item, context, "function")
 
             assert status == "completed"
             assert text == "success"
@@ -3343,7 +3345,7 @@ class TestToolExecution:
             context.timeout = 10.0
             context.user_id = "test_user"
 
-            status, text, files, embeds = await pipe._run_tool_with_retries(item, context, "function")
+            status, text, files, embeds, _pictures = await pipe._run_tool_with_retries(item, context, "function")
 
             assert status == "failed"
             assert "missing a callable" in text
@@ -3408,7 +3410,7 @@ class TestToolExecution:
             context.per_request_semaphore = asyncio.Semaphore(1)
             context.global_semaphore = None
 
-            status, text, files, embeds = await pipe._invoke_tool_call(item, context)
+            status, text, files, embeds, _pictures = await pipe._invoke_tool_call(item, context)
 
             assert status == "skipped"
             assert "temporarily disabled" in text.lower()
@@ -3442,7 +3444,7 @@ class TestToolExecution:
             context.timeout = 5.0
             context.event_emitter = None
 
-            status, text, files, embeds = await pipe._invoke_tool_call(item, context)
+            status, text, files, embeds, _pictures = await pipe._invoke_tool_call(item, context)
 
             assert status == "failed"
             assert calls["count"] == 1
@@ -3471,7 +3473,7 @@ class TestToolExecution:
             context.timeout = 5.0
             context.event_emitter = None
 
-            status, text, files, embeds = await pipe._invoke_tool_call(item, context)
+            status, text, files, embeds, _pictures = await pipe._invoke_tool_call(item, context)
 
             assert status == "failed"
             assert "no longer available" in text
@@ -3510,13 +3512,13 @@ class TestToolExecution:
             context.event_emitter = None
 
             for _ in range(pipe._circuit_breaker.threshold):
-                status, _text, _files, _embeds = await pipe._invoke_tool_call(make_item(), context)
+                status, _text, _files, _embeds, _pictures = await pipe._invoke_tool_call(make_item(), context)
                 assert status == "failed"
 
             windows = pipe._circuit_breaker._tool_breakers.get(context.user_id) or {}
             assert ("function", "unknown") not in windows
             assert ("function", "None") not in windows
-            status, text, _files, _embeds = await pipe._invoke_tool_call(make_item(), context)
+            status, text, _files, _embeds, _pictures = await pipe._invoke_tool_call(make_item(), context)
             assert status == "skipped"
         finally:
             await pipe.close()
@@ -3543,7 +3545,7 @@ class TestToolExecution:
             context.timeout = 5.0
             context.event_emitter = None
 
-            status, text, _files, _embeds = await pipe._invoke_tool_call(item, context)
+            status, text, _files, _embeds, _pictures = await pipe._invoke_tool_call(item, context)
 
             assert status == "failed"
             assert "Tool error" in text
@@ -3578,7 +3580,7 @@ class TestToolExecution:
             context.timeout = 5.0
             context.event_emitter = None
 
-            status, _text, _files, _embeds = await pipe._invoke_tool_call(item, context)
+            status, _text, _files, _embeds, _pictures = await pipe._invoke_tool_call(item, context)
 
             assert status == "failed"
             assert calls["count"] == 1
@@ -3618,7 +3620,7 @@ class TestToolExecution:
             executor = pipe._ensure_tool_executor()
             executor._process_tool_result_safe = AsyncMock(side_effect=RuntimeError("boom"))
 
-            status, text, _files, _embeds = await pipe._invoke_tool_call(item, context)
+            status, text, _files, _embeds, _pictures = await pipe._invoke_tool_call(item, context)
 
             assert status == "completed"
             assert text == "hello\nworld"
@@ -3658,7 +3660,7 @@ class TestToolExecution:
             executor = pipe._ensure_tool_executor()
             executor._process_tool_result_safe = AsyncMock(side_effect=RuntimeError("boom"))
 
-            status, text, _files, _embeds = await pipe._invoke_tool_call(item, context)
+            status, text, _files, _embeds, _pictures = await pipe._invoke_tool_call(item, context)
 
             assert status == "completed"
             assert text == "alpha\nbeta"
@@ -5992,13 +5994,13 @@ async def test_run_tool_with_retries_success_and_missing_callable(pipe_instance)
         batch_cap=1,
     )
 
-    status, text, files, embeds = await pipe._run_tool_with_retries(good, context, "function")
+    status, text, files, embeds, _pictures = await pipe._run_tool_with_retries(good, context, "function")
     assert status == "completed"
     assert text == "ok"
     assert files == []
     assert embeds == []
 
-    status, message, files, embeds = await pipe._run_tool_with_retries(bad, context, "function")
+    status, message, files, embeds, _pictures = await pipe._run_tool_with_retries(bad, context, "function")
     assert status == "failed"
     assert "missing a callable" in message
     assert files == []

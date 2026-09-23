@@ -322,7 +322,10 @@ def _build_collision_safe_tool_specs_and_registry(
         )
 
     # 2) Direct tool servers (always include; collisions handled later).
+    carried_by_request = {id(c["tool_cfg"]) for c in candidates if c.get("tool_cfg") is not None}
     for tool_cfg in direct_entries:
+        if id(tool_cfg) in carried_by_request:
+            continue
         spec = _responses_spec_from_owui_tool_cfg(tool_cfg, strictify=strictify)
         if not spec:
             continue

@@ -5,10 +5,6 @@ whole-string JSON with exact ``url``/``link``/``href`` keys, and labeled-line
 text as emitted by web tools ("Title:"/"URL:" blocks or a "# heading" + "URL:"
 head). Anything else yields no candidates. All lookups are bounded and the
 public function never raises.
-
-``BUILTIN_CITATION_TOOLS`` mirrors the tool names Open WebUI's own
-``get_citation_source_from_tool_result`` special-cases (Open WebUI 0.10.x);
-those names keep using the Open WebUI extractor at the call site.
 """
 
 from __future__ import annotations
@@ -20,8 +16,9 @@ from typing import Any
 from urllib.parse import urlparse
 
 BUILTIN_CITATION_TOOLS = frozenset(
-    {"search_web", "fetch_url", "view_file", "view_knowledge_file", "query_knowledge_files"}
+    {"fetch_url", "view_file", "view_knowledge_file", "query_knowledge_files", "query_chat_files"}
 )
+UNCITED_TOOLS = frozenset({"search_web"})
 
 logger = logging.getLogger(__name__)
 

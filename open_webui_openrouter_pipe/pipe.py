@@ -82,6 +82,18 @@ except Exception:
     )
     Files = None  # type: ignore
 
+try:
+    from open_webui.models.config import Config as _OwuiConfig
+except ImportError:
+    _OwuiConfig = None  # type: ignore
+except Exception:
+    logging.getLogger(__name__).warning(
+        "open_webui.models.config failed to import for a reason other than absence; "
+        "the features that depend on it are now disabled",
+        exc_info=True,
+    )
+    _OwuiConfig = None  # type: ignore
+
 # Optional Redis support
 try:
     import redis.asyncio as aioredis
@@ -104,6 +116,7 @@ from .core.config import (
     _OPENROUTER_REFERER,
     _OPENROUTER_TITLE,
     _PIPE_RUNTIME_ID,
+    OWUI_REQUEST,
     EncryptedStr,
     UserValves,
     Valves,
@@ -121,11 +134,15 @@ from .core.errors import (
 from .core.logging_system import SessionLogger, resolve_level
 from .core.url_scheme import is_http_or_https_url
 from .core.utils import (
+    CONTINUED_REPLY,
     _apply_retry_after_metadata,
     _await_if_needed,
     _extract_feature_flags,
     _render_error_template,
+    _tool_result_failed,
     brings_tool_results,
+    continued_reply_text,
+    join_answer_and_card,
 )
 from .core.warn_latch import warn_level
 
@@ -231,6 +248,29 @@ class _LifecycleRegistry:
 _brings_tool_results = brings_tool_results
 
 
+def _reports_transport_failure(result: Any) -> bool:
+    if not (isinstance(result, (tuple, list)) and len(result) == 2 and result[1] is None):
+        return False
+    body = result[0]
+    error = body.get("error") if isinstance(body, dict) else None
+    return bool(error.strip()) if isinstance(error, str) else bool(error)
+
+
+def _tool_side_emitter(emitter: EventEmitter | None) -> EventEmitter | None:
+    if emitter is None:
+        return None
+
+    async def _emit(event: dict[str, Any]) -> None:
+        try:
+            await emitter(event)
+        except asyncio.CancelledError:
+            task = asyncio.current_task()
+            if task is not None and task.cancelling():
+                raise
+
+    return _emit
+
+
 def _fallback_tool_text(raw_result: Any) -> str:
     candidate: Any = raw_result
     if not isinstance(candidate, (str, list)):
@@ -290,6 +330,7 @@ class _PipeJob:
     # full user-row read -- and so one request sees ONE snapshot of the user's valves.
     user_valves: Pipe.UserValves | None = None
     rejected_user_valves: list[str] = field(default_factory=list)
+    continued_reply: str | None = None
 
     @property
     @timed
@@ -1275,6 +1316,7 @@ class Pipe:
             )
         self._active_pipes_calls += 1
         counter_transferred = False
+        continued_token = CONTINUED_REPLY.set(continued_reply_text(body, __metadata__))
         try:
             result = await self._pipe_impl(
                 body,
@@ -1300,6 +1342,7 @@ class Pipe:
                 return wrapped
             return result
         finally:
+            CONTINUED_REPLY.reset(continued_token)
             if not counter_transferred:
                 self._active_pipes_calls = max(0, self._active_pipes_calls - 1)
                 self._maybe_trigger_drain_close()
@@ -1403,7 +1446,7 @@ class Pipe:
                 if safe_event_emitter:
                     await self._event_emitter_handler._emit_notification(safe_event_emitter, message, level="warning")
                 SessionLogger.cleanup()
-                return message
+                return join_answer_and_card("", message)
 
             if self._warmup_failed and (self._startup_task is None or self._startup_task.done()):
                 message = "Service unavailable due to startup issues"
@@ -1415,7 +1458,7 @@ class Pipe:
                         done=True,
                     )
                 SessionLogger.cleanup()
-                return message
+                return join_answer_and_card("", message)
             await self._ensure_concurrency_controls(valves)
             timing_mark("after_concurrency_controls")
             queue = self._request_queue
@@ -1429,7 +1472,7 @@ class Pipe:
                         done=True,
                     )
                 SessionLogger.cleanup()
-                return "Service temporarily unavailable"
+                return join_answer_and_card("", "Service temporarily unavailable")
 
             loop = asyncio.get_running_loop()
             stream_queue: asyncio.Queue[dict[str, Any] | str | None] | None = None
@@ -1474,6 +1517,7 @@ class Pipe:
                 future=future,
                 stream_queue=stream_queue,
                 request_id=_early_request_id,
+                continued_reply=CONTINUED_REPLY.get(),
             )
 
             timing_mark("before_enqueue_job")
@@ -1487,7 +1531,7 @@ class Pipe:
                         done=True,
                     )
                 SessionLogger.cleanup()
-                return "Server busy (503)"
+                return join_answer_and_card("", "Server busy (503)")
         except Exception:
             self.logger.exception("Pre-enqueue setup failed")
             if safe_event_emitter:
@@ -1504,7 +1548,7 @@ class Pipe:
                 SessionLogger.cleanup()
             except Exception:
                 self.logger.debug("SessionLogger.cleanup failed during pre-enqueue recovery", exc_info=True)
-            return "Request setup failed. Please retry."
+            return join_answer_and_card("", "Request setup failed. Please retry.")
 
         if wants_stream and stream_queue is not None:
             @timed
@@ -2125,6 +2169,8 @@ class Pipe:
                 tokens.append(
                     (ModelFamily._PIPE_ID, ModelFamily._PIPE_ID.set(self.id))
                 )
+                tokens.append((CONTINUED_REPLY, CONTINUED_REPLY.set(job.continued_reply)))
+                tokens.append((OWUI_REQUEST, OWUI_REQUEST.set(job.request)))
                 tool_queue: asyncio.Queue[list[_QueuedToolCall] | None] = asyncio.Queue(maxsize=50)
                 per_request_tool_sem = asyncio.Semaphore(job.valves.MAX_PARALLEL_TOOLS_PER_REQUEST)
                 per_tool_timeout = job.valves.TOOL_TIMEOUT_SECONDS
@@ -2140,12 +2186,13 @@ class Pipe:
                     batch_timeout=batch_timeout,
                     idle_timeout=idle_timeout,
                     user_id=job.user_id,
-                    event_emitter=stream_emitter or job.event_emitter,
+                    event_emitter=_tool_side_emitter(stream_emitter or job.event_emitter),
                     batch_cap=job.valves.TOOL_BATCH_CAP,
                     request=job.request,
                     user=job.user,
                     metadata=job.metadata,
                     request_id=job.request_id,
+                    terminal_files_inline=await self._terminal_files_shown_inline(job.user),
                 )
                 worker_count = job.valves.MAX_PARALLEL_TOOLS_PER_REQUEST
                 tool_executor = self._ensure_tool_executor()
@@ -2174,6 +2221,14 @@ class Pipe:
                     rejected_user_valves=job.rejected_user_valves,
                     outcome_sink=outcome,
                     )
+                record = outcome.get("output")
+                if isinstance(result, str) and isinstance(record, list) and record and not job.task:
+                    result = self._build_chat_completion_payload(
+                        model=str(job.body.get("model") or "pipe"), content=result
+                    )
+                    result["output"] = record
+                    if outcome.get("usage"):
+                        result["usage"] = outcome["usage"]
                 if not job.future.done():
                     job.future.set_result(result)
                 if not job.task and outcome.get("error_occurred") is False:
@@ -2882,6 +2937,20 @@ class Pipe:
         ):
             yield event
 
+    async def _terminal_files_shown_inline(self, user: Any) -> bool:
+        settings = user.get("settings") if isinstance(user, dict) else None
+        ui = settings.get("ui") if isinstance(settings, dict) else None
+        choice = ui.get("terminalFileDisplay") if isinstance(ui, dict) else None
+        if choice is None and _OwuiConfig is not None:
+            try:
+                defaults = await _OwuiConfig.get("ui.default_interface_settings")
+            except Exception:
+                self.logger.debug("Open WebUI's interface defaults could not be read", exc_info=True)
+                defaults = None
+            if isinstance(defaults, dict):
+                choice = defaults.get("terminalFileDisplay")
+        return choice == "inline"
+
     async def _shutdown_tool_context(self, context: _ToolExecutionContext) -> None:
         """Stop per-request tool workers (bounded wait, then cancel)."""
 
@@ -2988,7 +3057,7 @@ class Pipe:
     def _count_self_cancelled_tool(
         self,
         item: _QueuedToolCall,
-        task: asyncio.Task[tuple[str, str, list[dict[str, Any]], list[str]]],
+        task: asyncio.Task[tuple[str, str, list[dict[str, Any]], list[str], list[str]]],
         context: _ToolExecutionContext,
         breaker: Any,
         ask_user_window: float | None,
@@ -3006,9 +3075,9 @@ class Pipe:
     def _finished_tool_output(
         self,
         item: _QueuedToolCall,
-        task: asyncio.Task[tuple[str, str, list[dict[str, Any]], list[str]]],
+        task: asyncio.Task[tuple[str, str, list[dict[str, Any]], list[str], list[str]]],
     ) -> tuple[dict[str, Any], str]:
-        result: tuple[str, str, list[dict[str, Any]], list[str]] | BaseException = (
+        result: tuple[str, str, list[dict[str, Any]], list[str], list[str]] | BaseException = (
             asyncio.CancelledError() if task.cancelled() else (task.exception() or task.result())
         )
         if isinstance(result, BaseException):
@@ -3027,8 +3096,10 @@ class Pipe:
                 status="failed",
             )
             return payload, "failed"
-        status, text, files, embeds = result
-        payload = self._ensure_tool_executor()._build_tool_output(item.call, text, status=status, files=files, embeds=embeds)
+        status, text, files, embeds, pictures = result
+        payload = self._ensure_tool_executor()._build_tool_output(
+            item.call, text, status=status, files=files, embeds=embeds, pictures=pictures
+        )
         return payload, str(status or "completed")
 
     @timed
@@ -3053,7 +3124,7 @@ class Pipe:
         self,
         item: _QueuedToolCall,
         context: _ToolExecutionContext,
-    ) -> tuple[str, str, list[dict[str, Any]], list[str]]:
+    ) -> tuple[str, str, list[dict[str, Any]], list[str], list[str]]:
         """Invoke a single tool call with circuit breaker protection."""
         tool_type = (item.tool_cfg.get("type") or "function").lower()
         gate_name = str(item.call.get("name") or "")
@@ -3072,11 +3143,12 @@ class Pipe:
         context: _ToolExecutionContext,
         tool_type: str,
         gate_name: str,
-    ) -> tuple[str, str, list[dict[str, Any]], list[str]]:
+    ) -> tuple[str, str, list[dict[str, Any]], list[str], list[str]]:
         if item.future.done():
             return (
                 "skipped",
                 f"Tool '{item.call.get('name')}' was not started: its result was no longer awaited.",
+                [],
                 [],
                 [],
             )
@@ -3091,6 +3163,7 @@ class Pipe:
                 f"Tool '{item.call.get('name')}' temporarily disabled due to repeated errors.",
                 [],
                 [],
+                [],
             )
         return await self._run_tool_with_retries(item, context, tool_type, gate_name)
 
@@ -3101,20 +3174,13 @@ class Pipe:
         context: _ToolExecutionContext,
         tool_type: str,
         breaker_name: str | None = None,
-    ) -> tuple[str, str, list[dict[str, Any]], list[str]]:
+    ) -> tuple[str, str, list[dict[str, Any]], list[str], list[str]]:
         """Run a tool with retry logic.
 
         This method executes the tool callable with timeout and optional retries,
         then processes the result to extract text, files, and embeds.
         Files and embeds are emitted to UI via event_emitter AND returned for
         inclusion in tool card HTML attributes.
-
-        Returns:
-            Tuple of (status, text, files, embeds) where:
-            - status: "completed", "failed", or "skipped"
-            - text: Processed tool output as string
-            - files: List of file dicts (e.g., [{"type": "image", "url": "..."}])
-            - embeds: List of HTML embed strings
         """
         tool_name = item.call.get("name", "unknown")
         breaker_key = (
@@ -3133,24 +3199,48 @@ class Pipe:
                 breaker.record_tool_failure(
                     context.user_id, tool_type, breaker_key
                 )
-            return ("failed", message, [], [])
+            return ("failed", message, [], [], [])
         fn_to_call = cast(ToolCallable, fn)
         ask_user_window = self._ensure_tool_executor()._ask_user_window(item.tool_cfg, item.args)
         timeout = ask_user_window if ask_user_window is not None else float(context.timeout)
 
-        async def _process_and_emit(raw_result: Any) -> tuple[str, list[dict[str, Any]], list[str]]:
+        origin_name = str(item.tool_cfg.get("origin_name") or tool_name)
+        displayed_inline_by_a_card = tool_name == "display_file" and (
+            context.card_carries_the_result or context.terminal_files_inline
+        )
+        args_without_inline = (
+            {key: value for key, value in item.args.items() if key != "inline"}
+            if origin_name == "display_file" and isinstance(item.args, dict) and item.args.get("inline") is True
+            else item.args
+        )
+
+        def _terminal_event_args() -> Any:
+            return item.args if displayed_inline_by_a_card and not item.future.done() else args_without_inline
+
+        async def _process_and_emit(raw_result: Any) -> tuple[str, list[dict[str, Any]], list[str], list[str]]:
             timing_mark(f"tool_run:{tool_name}:processing")
             try:
                 executor = self._ensure_tool_executor()
+                raw_result = executor._terminal_file_result_safe(
+                    origin_name, item.args, raw_result, item.tool_cfg, context.terminal_metadata or context.metadata
+                )
                 text, files, embeds = await executor._process_tool_result_safe(
                     tool_name=tool_name,
                     tool_type=tool_type,
                     raw_result=raw_result,
                     context=context,
+                    is_direct_tool=bool(item.tool_cfg.get("direct")),
                 )
+                pictures, files = await executor._tool_pictures_safe(files, context)
+                await executor._emit_terminal_events_safe(
+                    origin_name, _terminal_event_args(), text, context.event_emitter
+                )
+                a_card_holds_them = (
+                    context.card_carries_the_result or displayed_inline_by_a_card
+                ) and not item.future.done()
 
                 # Emit files if any were extracted
-                if files and context.event_emitter:
+                if files and context.event_emitter and not a_card_holds_them:
                     try:
                         await self._event_emitter_handler._emit_files(context.event_emitter, files)
                         timing_mark(f"tool_run:{tool_name}:files_emitted")
@@ -3158,28 +3248,34 @@ class Pipe:
                         self.logger.debug("Failed to emit files for '%s': %s", tool_name, emit_exc, exc_info=True)
 
                 # Emit embeds if any were extracted
-                if embeds and context.event_emitter:
+                if embeds and context.event_emitter and not a_card_holds_them:
                     try:
                         await self._event_emitter_handler._emit_embeds(context.event_emitter, embeds)
                         timing_mark(f"tool_run:{tool_name}:embeds_emitted")
                     except Exception as emit_exc:
                         self.logger.debug("Failed to emit embeds for '%s': %s", tool_name, emit_exc, exc_info=True)
 
-                return text, files, embeds
+                return text, files, embeds, pictures
             except Exception as proc_exc:
                 self.logger.debug("Result processing failed for '%s': %s", tool_name, proc_exc, exc_info=True)
-                return _fallback_tool_text(raw_result), [], []
+                return _fallback_tool_text(raw_result), [], [], []
 
         deadline = asyncio.timeout(timeout)
         try:
             timing_mark(f"tool_run:{tool_name}:executing")
             async with deadline:
                 result = await self._call_tool_callable(fn_to_call, item.args)
+            unreachable = _reports_transport_failure(result)
+            text, files, embeds, pictures = await _process_and_emit(result)
+            if unreachable or _tool_result_failed(text):
+                if unreachable and breaker is not None:
+                    breaker.record_tool_failure(context.user_id, tool_type, breaker_key)
+                timing_mark(f"tool_run:{tool_name}:failed")
+                return ("failed", text, files, embeds, pictures)
             if breaker is not None:
                 breaker.reset_tool(context.user_id, tool_type, breaker_key)
-            text, files, embeds = await _process_and_emit(result)
             timing_mark(f"tool_run:{tool_name}:done")
-            return ("completed", text, files, embeds)
+            return ("completed", text, files, embeds, pictures)
         except BaseException as exc:
             if isinstance(exc, asyncio.CancelledError):
                 raise
@@ -3201,15 +3297,15 @@ class Pipe:
                 )
             timing_mark(f"tool_run:{tool_name}:failed")
             if mcp_disconnected:
-                return (
-                    "failed",
-                    f"Tool '{tool_name}' is no longer available in this session.",
-                    [],
-                    [],
-                )
-            if timed_out:
-                return ("failed", f"Tool '{tool_name}' timed out after {timeout:.0f}s.", [], [])
-            return ("failed", self._ensure_tool_executor()._tool_error_text(exc), [], [])
+                failure = f"Tool '{tool_name}' is no longer available in this session."
+            elif timed_out:
+                failure = f"Tool '{tool_name}' timed out after {timeout:.0f}s."
+            else:
+                failure = self._ensure_tool_executor()._tool_error_text(exc)
+            await self._ensure_tool_executor()._emit_terminal_events_safe(
+                origin_name, _terminal_event_args(), failure, context.event_emitter
+            )
+            return ("failed", failure, [], [], [])
 
     @timed
     async def _call_tool_callable(self, fn: ToolCallable, args: dict[str, Any]) -> Any:

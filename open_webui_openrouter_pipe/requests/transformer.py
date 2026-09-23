@@ -36,18 +36,29 @@ from ..core.url_scheme import is_cleartext_http_url, is_http_or_https_url
 
 # Import utility functions
 from ..core.utils import (
+    PIPE_ONLY_TOOL_ROUND_KEY,
     REASONING_ANCHOR_KEYS,
     REASONING_ANCHOR_SEQ_KEY,
     REASONING_FOLLOWING_ORDINAL_KEY,
+    REASONING_FOLLOWING_SERVER_ITEM_KEY,
     REASONING_PRECEDING_ORDINAL_KEY,
     REASONING_TEXT_ORDINAL_KEY,
+    SERVER_TOOL_CALL_PREFIX,
     TOOL_ROUND_SKELETON_KEY,
     _extract_plain_text_content,
+    _tool_result_failed,
     contains_marker,
-    drop_skeleton_rounds_without_reasoning,
+    is_picture_output,
+    is_server_tool_call_id,
+    is_tool_image_handoff,
+    picture_output,
+    server_tool_call_id,
+    server_tool_status,
     split_text_by_markers,
     split_text_by_phase_markers,
     strip_hidden_marker_lines,
+    tool_output_text_and_pictures,
+    unretained_tool_result,
 )
 from ..core.warn_latch import warn_level
 
@@ -92,6 +103,30 @@ def _strip_reasoning_anchor_keys(item: dict[str, Any]) -> dict[str, Any]:
 
 
 logger = logging.getLogger(__name__)
+
+
+def _without_tool_result(item: dict[str, Any], names: dict[str, str]) -> list[dict[str, Any]] | None:
+    item_type = item.get("type")
+    call_id = item.get("call_id")
+    if item_type == "function_call":
+        name = str(item.get("name") or "")
+        if isinstance(call_id, str):
+            names.setdefault(call_id, name)
+        return None if name == "ask_user" else [{**item, "arguments": "{}"}]
+    if item_type == "function_call_output":
+        if names.get(str(call_id)) == "ask_user":
+            return None
+        output = item.get("output")
+        text = output if isinstance(output, str) else json.dumps(output, ensure_ascii=False)
+        return [{**item, "output": unretained_tool_result(_tool_result_failed(text, item.get("status")))}]
+    if isinstance(item_type, str) and item_type.startswith("openrouter:"):
+        round_id = server_tool_call_id(item.get("id"))
+        failed = server_tool_status(item) != "completed"
+        return [
+            {"type": "function_call", "call_id": round_id, "name": item_type.split(":", 1)[1], "arguments": "{}"},
+            {"type": "function_call_output", "call_id": round_id, "output": unretained_tool_result(failed)},
+        ]
+    return None
 _REUSE_DOWNLOAD_MEMO_MAX_BYTES = 8 * 1024 * 1024
 _reuse_download_memo: OrderedDict[tuple[str, str], tuple[bytes, str]] = OrderedDict()
 _warned_image_reuse: set[str] = set()
@@ -120,7 +155,7 @@ def _reinterleave_region(region: list[dict[str, Any]]) -> list[dict[str, Any]]:
     Reasoning whose ordinal is out of range, or which has no anchor, is left in
     place; nothing is dropped. Anchor keys are stripped from every item.
     """
-    movable: list[tuple[int, dict[str, Any], str, int]] = []
+    movable: list[tuple[int, dict[str, Any], str, int, str | None]] = []
     skeleton: list[dict[str, Any]] = []
     for it in region:
         if isinstance(it, dict) and it.get("type") == "reasoning":
@@ -128,14 +163,16 @@ def _reinterleave_region(region: list[dict[str, Any]]) -> list[dict[str, Any]]:
             seq = raw_seq if isinstance(raw_seq, int) else 0
             following = it.get(REASONING_FOLLOWING_ORDINAL_KEY)
             preceding = it.get(REASONING_PRECEDING_ORDINAL_KEY)
+            server_item = it.get(REASONING_FOLLOWING_SERVER_ITEM_KEY)
+            server_item = server_item if isinstance(server_item, str) and server_item else None
             stripped = _strip_reasoning_anchor_keys(it)
             text_ordinal = it.get(REASONING_TEXT_ORDINAL_KEY)
             if isinstance(following, int):
-                movable.append((seq, stripped, "before", following))
+                movable.append((seq, stripped, "before", following, server_item))
             elif isinstance(preceding, int):
-                movable.append((seq, stripped, "after", preceding))
+                movable.append((seq, stripped, "after", preceding, server_item))
             elif isinstance(text_ordinal, int):
-                movable.append((seq, stripped, "text", text_ordinal))
+                movable.append((seq, stripped, "text", text_ordinal, server_item))
             else:
                 skeleton.append(stripped)
         elif isinstance(it, dict):
@@ -148,8 +185,16 @@ def _reinterleave_region(region: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     fc_items = [
         (i, e) for i, e in enumerate(skeleton)
-        if isinstance(e, dict) and e.get("type") == "function_call"
+        if isinstance(e, dict) and e.get("type") == "function_call" and not is_server_tool_call_id(e.get("call_id"))
     ]
+    server_positions: dict[str, int] = {}
+    for i, e in enumerate(skeleton):
+        if not isinstance(e, dict):
+            continue
+        if e.get("type") == "function_call" and is_server_tool_call_id(e.get("call_id")):
+            server_positions.setdefault(str(e["call_id"])[len(SERVER_TOOL_CALL_PREFIX):], i)
+        elif str(e.get("type") or "").startswith("openrouter:") and isinstance(e.get("id"), str):
+            server_positions.setdefault(e["id"], i)
     fco_items = [
         (i, e) for i, e in enumerate(skeleton)
         if isinstance(e, dict) and e.get("type") == "function_call_output"
@@ -171,8 +216,11 @@ def _reinterleave_region(region: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     inserts_before: dict[int, list[tuple[int, dict[str, Any]]]] = {}
     inserts_after: dict[int, list[tuple[int, dict[str, Any]]]] = {}
-    for seq, item, mode, ordinal in sorted(movable, key=lambda a: a[0]):
-        pos: int | None = None
+    for seq, item, mode, ordinal, server_item in sorted(movable, key=lambda a: a[0]):
+        pos: int | None = server_positions.get(server_item) if server_item else None
+        if pos is not None:
+            inserts_before.setdefault(pos, []).append((seq, item))
+            continue
         if mode == "before":
             if 0 <= ordinal < len(fc_items):
                 pos = fc_items[ordinal][0]
@@ -210,18 +258,60 @@ def _reinterleave_reasoning_by_anchor(
     a tool call within its own turn -- tool ``call_id`` values are not unique across
     turns (the chat-completions adapter assigns index-based ids that repeat).
     """
-    items = drop_skeleton_rounds_without_reasoning(items)
     out: list[dict[str, Any]] = []
     region: list[dict[str, Any]] = []
     for it in items:
         if isinstance(it, dict) and it.get("type") == "message" and it.get("role") == "user":
-            out.extend(_reinterleave_region(region))
+            out.extend(_reinterleave_region(_one_copy_per_round(region)))
             region = []
             out.append(it)
         else:
             region.append(it)
-    out.extend(_reinterleave_region(region))
+    out.extend(_reinterleave_region(_one_copy_per_round(region)))
     return out
+
+
+_PIPE_STORAGE_KEY = "_anchor_from_pipe_storage"
+_TRANSPORT_ONLY_KEYS = (_PIPE_STORAGE_KEY, PIPE_ONLY_TOOL_ROUND_KEY, TOOL_ROUND_SKELETON_KEY)
+
+
+def _from_pipe_storage(item: dict[str, Any]) -> dict[str, Any]:
+    kind = str(item.get("type") or "")
+    if kind in ("function_call", "function_call_output") or kind.startswith("openrouter:"):
+        return {**item, _PIPE_STORAGE_KEY: True}
+    return item
+
+
+def _one_copy_per_round(region: list[Any]) -> list[Any]:
+    supplied = {
+        it.get("call_id")
+        for it in region
+        if isinstance(it, dict) and it.get("type") == "function_call" and not it.get(_PIPE_STORAGE_KEY)
+    }
+    raw_server_ids = {
+        it["id"]
+        for it in region
+        if isinstance(it, dict)
+        and it.get(_PIPE_STORAGE_KEY)
+        and str(it.get("type") or "").startswith("openrouter:")
+        and isinstance(it.get("id"), str)
+    }
+    shadowed = raw_server_ids | {server_tool_call_id(raw_id) for raw_id in raw_server_ids}
+    kept: list[Any] = []
+    for it in region:
+        if isinstance(it, dict) and it.get("type") in ("function_call", "function_call_output"):
+            from_pipe = bool(it.get(_PIPE_STORAGE_KEY))
+            pipe_only = bool(it.get(PIPE_ONLY_TOOL_ROUND_KEY) or it.get(TOOL_ROUND_SKELETON_KEY))
+            if from_pipe and not pipe_only and it.get("call_id") in supplied:
+                continue
+            if not from_pipe and it.get("call_id") in shadowed:
+                continue
+        if isinstance(it, dict) and any(key in it for key in _TRANSPORT_ONLY_KEYS):
+            it = {key: value for key, value in it.items() if key not in _TRANSPORT_ONLY_KEYS}
+            if it.get("type") == "function_call_output":
+                it.pop("status", None)
+        kept.append(it)
+    return kept
 
 
 async def transform_messages_to_input(
@@ -294,11 +384,13 @@ async def transform_messages_to_input(
         max_turn = -1
         last_dialog_role: str | None = None
 
-        for msg in messages:
+        for position, msg in enumerate(messages):
             role = (msg.get("role") or "").lower()
             turn_idx: int | None = None
 
-            if role == "user":
+            if role == "user" and position and is_tool_image_handoff(messages[position - 1], msg):
+                turn_idx = current_turn if current_turn >= 0 else None
+            elif role == "user":
                 if last_dialog_role != "user":
                     current_turn += 1
                 turn_idx = current_turn
@@ -349,6 +441,13 @@ async def transform_messages_to_input(
         output_value = item.get("output")
         if output_value is None:
             return False
+        if is_picture_output(output_value):
+            text, pictures = tool_output_text_and_pictures(output_value)
+            probe = {"type": "function_call_output", "call_id": item.get("call_id"), "output": text}
+            if not _prune_tool_output(probe, marker=marker, turn_index=turn_index, retention_turns=retention_turns):
+                return False
+            item["output"] = picture_output(probe["output"], pictures)
+            return True
         if not isinstance(output_value, str):
             try:
                 output_text = json.dumps(output_value, ensure_ascii=False)
@@ -383,6 +482,17 @@ async def transform_messages_to_input(
         return True
 
     turn_indices, total_turns = _compute_turn_indices()
+    tool_names_by_call_id: dict[str, str] = {
+        str(call.get("id")): str((call.get("function") or {}).get("name") or "")
+        for message in messages
+        if isinstance(message, dict) and isinstance(message.get("tool_calls"), list)
+        for call in message["tool_calls"]
+        if isinstance(call, dict) and call.get("id") and isinstance(call.get("function"), dict)
+    }
+
+    def _withheld(turn_index: int | None) -> bool:
+        return not active_valves.PERSIST_TOOL_RESULTS and turn_index is not None and turn_index < total_turns - 1
+
     prune_before_turn: int | None = None
     if pruning_turns > 0 and total_turns > pruning_turns:
         prune_before_turn = total_turns - pruning_turns
@@ -463,17 +573,24 @@ async def transform_messages_to_input(
                 except (TypeError, ValueError):
                     tool_content_text = str(tool_content)
 
-            openai_input.append(
-                {
-                    "type": "function_call_output",
-                    "id": f"fc_output_{generate_item_id()}",
-                    "call_id": call_id,
-                    "output": tool_content_text,
-                }
-            )
+            if _withheld(msg_turn_index) and tool_names_by_call_id.get(call_id) != "ask_user":
+                tool_content_text = unretained_tool_result(_tool_result_failed(tool_content_text))
+
+            tool_item: dict[str, Any] = {
+                "type": "function_call_output",
+                "id": f"fc_output_{generate_item_id()}",
+                "call_id": call_id,
+                "output": tool_content_text,
+            }
+            if pruning_turns > 0 and _is_old_turn(msg_turn_index, threshold=prune_before_turn):
+                _prune_tool_output(tool_item, marker=None, turn_index=msg_turn_index, retention_turns=pruning_turns)
+            openai_input.append(tool_item)
             continue
 
         if role == "user":
+            tool_images = bool(idx) and is_tool_image_handoff(messages[idx - 1], msg)
+            if tool_images and _withheld(msg_turn_index):
+                continue
             content_blocks = msg.get("content") or []
             if isinstance(content_blocks, str):
                 cleaned = _sanitize_free_text(content_blocks)
@@ -495,7 +612,7 @@ async def transform_messages_to_input(
             async def _to_input_image(
                 block: dict,
                 *,
-                mode: Literal["attachment", "reuse"] = "attachment",
+                mode: Literal["attachment", "reuse"] = "reuse" if tool_images else "attachment",
                 msg_id: str | None = msg_id,
             ) -> dict[str, Any] | ImageRefusal | None:
                 """Convert Open WebUI image block into Responses format.
@@ -1474,7 +1591,7 @@ async def transform_messages_to_input(
             vision_warning_sent = False
             latest_user_message = role == "user" and idx == len(messages) - 1
             include_user_images = (
-                latest_user_message and vision_supported and image_limit > 0
+                (latest_user_message or tool_images) and vision_supported and image_limit > 0
             )
 
             for block_idx, block in enumerate(content_blocks):
@@ -1500,7 +1617,7 @@ async def transform_messages_to_input(
                 is_image_block = block_type in {"image_url", "input_image"}
 
                 if is_image_block:
-                    if not latest_user_message:
+                    if not (latest_user_message or tool_images):
                         reusable_image_blocks.append(block)
                     if not include_user_images:
                         if latest_user_message and not vision_supported and not vision_warning_sent:
@@ -1710,7 +1827,7 @@ async def transform_messages_to_input(
                         orphaned_output_ids,
                     ) = _classify_function_call_artifacts(db_artifacts)
                     if orphaned_call_ids:
-                        logger.warning(
+                        logger.debug(
                             "Dropping %d persisted function_call artifact(s) missing outputs (chat_id=%s message_id=%s call_ids=%s)",
                             len(orphaned_call_ids),
                             chat_id,
@@ -1736,7 +1853,7 @@ async def transform_messages_to_input(
                         missing_artifact_markers.append(segment["marker"])
                         continue
                     if (
-                        (artifact_payload.get("type") == "reasoning" or artifact_payload.get(TOOL_ROUND_SKELETON_KEY))
+                        artifact_payload.get("type") == "reasoning"
                         and replayed_reasoning_refs is not None
                         and chat_id
                     ):
@@ -1748,17 +1865,6 @@ async def transform_messages_to_input(
                             pipe.logger.debug(
                                 "Skipping %s artifact when rebuilding provider context (not replayable).",
                                 item_type,
-                            )
-                            continue
-                        if msg_tool_calls and item_type in {
-                            "function_call",
-                            "function_call_output",
-                        }:
-                            pipe.logger.debug(
-                                "Skipping %s artifact; Open WebUI supplied this turn's calls "
-                                "(chat_id=%s)",
-                                item_type,
-                                chat_id,
                             )
                             continue
                         if (
@@ -1783,6 +1889,11 @@ async def transform_messages_to_input(
                                 msg_id,
                             )
                             continue
+                        if _withheld(msg_turn_index):
+                            withheld_items = _without_tool_result(item, tool_names_by_call_id)
+                            if withheld_items is not None:
+                                openai_input.extend(_from_pipe_storage(withheld) for withheld in withheld_items)
+                                continue
                         if (
                             is_old_message
                             and pruning_turns > 0
@@ -1794,7 +1905,7 @@ async def transform_messages_to_input(
                                 turn_index=msg_turn_index,
                                 retention_turns=pruning_turns,
                             )
-                        openai_input.append(item)
+                        openai_input.append(_from_pipe_storage(item))
                 elif segment["type"] == "text":
                     _append_assistant_text_chunks(segment["text"])
         else:
@@ -1828,6 +1939,8 @@ async def transform_messages_to_input(
                         args_text = json.dumps(arguments or {}, ensure_ascii=False)
                     except (TypeError, ValueError):
                         args_text = "{}"
+                if _withheld(msg_turn_index) and name != "ask_user":
+                    args_text = "{}"
 
                 openai_input.append(
                     {

@@ -866,6 +866,23 @@ class OwuiFileGateway:
         for item in input_items:
             if not isinstance(item, dict):
                 continue
+            if item.get("type") == "function_call_output" and isinstance(item.get("output"), list):
+                for part in item["output"]:
+                    image_url = part.get("image_url") if isinstance(part, dict) else None
+                    if part.get("type") != "input_image" or not (
+                        isinstance(image_url, str) and is_internal_file_url(image_url.strip())
+                    ):
+                        continue
+                    picture_id = extract_internal_file_id(image_url.strip())
+                    inlined = (
+                        await self.inline_owui_file_id(picture_id, chunk_size=chunk_size, max_bytes=max_bytes, user=user)
+                        if picture_id
+                        else None
+                    )
+                    if not inlined:
+                        raise ValueError(f"Failed to inline a tool's picture for /responses: {image_url}")
+                    part["image_url"] = inlined.data_url
+                continue
             content = item.get("content")
             if not isinstance(content, list) or not content:
                 continue

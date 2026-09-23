@@ -1,6 +1,6 @@
 """Every documented status must be classified, or the build fails.
 
-`_server_tool_status` decides whether a server-tool card reads as in-flight, succeeded
+`server_tool_status` decides whether a server-tool card reads as in-flight, succeeded
 or failed. It consults the classification sets, never the enums those values come from,
 so an enum can be widened without the decision changing -- and the default for an
 unrecognised value is "incomplete", which the streaming path treats as an error.
@@ -49,7 +49,7 @@ def test_server_tool_status_classification_is_total():
 
     assert not unclassified, (
         "these statuses are documented by OpenRouter but classified nowhere, so "
-        "_server_tool_status falls through to 'incomplete' and cards them as failures. "
+        "server_tool_status falls through to 'incomplete' and cards them as failures. "
         "For an image that means the generated, billed result is discarded behind an "
         f"'Image generation failed' notice: {unclassified}"
     )
@@ -144,12 +144,12 @@ def test_the_card_reads_each_documented_status_the_way_it_is_classified(status):
     What this pins is that each documented status reaches the reading its
     classification assigns, so the sets above cannot drift away from the function.
     """
-    from open_webui_openrouter_pipe.streaming.streaming_core import _server_tool_status
+    from open_webui_openrouter_pipe.core.utils import server_tool_status
 
     expected = _EXPECTED_READING[status]
-    assert _server_tool_status({"status": status}) == expected, (
+    assert server_tool_status({"status": status}) == expected, (
         f"a server tool reporting {status!r} is carded as "
-        f"{_server_tool_status({'status': status})!r}, not {expected!r}"
+        f"{server_tool_status({'status': status})!r}, not {expected!r}"
     )
 
 
@@ -166,12 +166,12 @@ def test_a_status_in_both_sets_is_classified_as_a_failure(monkeypatch):
 
     Driving it through an injected overlap makes the branch live and pins the ordering.
     """
-    from open_webui_openrouter_pipe.streaming import streaming_core as sc
+    from open_webui_openrouter_pipe.core import utils as sc
 
     monkeypatch.setattr(sc, "SERVER_TOOL_SUCCESS_STATUSES", frozenset({"completed", "ok", "wobbly"}))
     monkeypatch.setattr(sc, "SERVER_TOOL_FAILURE_STATUSES", frozenset({"incomplete", "failed", "wobbly"}))
 
-    assert sc._server_tool_status({"status": "wobbly"}) == "incomplete", (
+    assert sc.server_tool_status({"status": "wobbly"}) == "incomplete", (
         "a status listed as BOTH a failure and a success was classified as a success. "
         "Failure has to win: the alternative labels a broken tool call as one that "
         "worked, on a card the user reads and Open WebUI persists."

@@ -1,23 +1,25 @@
 """With tool results not kept, the next turn must still replay each tool round's structure around its reasoning.
 
 A reasoning model that thinks before and after a tool call produces thinking blocks with a tool round between them.
-When the round is not kept, replay puts the blocks next to each other, and Anthropic rejects exactly that ("thinking
+When the round is missing, replay puts the blocks next to each other, and Anthropic rejects exactly that ("thinking
 blocks ... cannot be modified", recorded live in tests/fixtures/anthropic_reasoning_replay_probe.json). So the pipe
-keeps a skeleton of each round it ran and did not show as tool cards: the call with empty arguments and a "not
-retained" result. The thinking blocks stay apart, while nothing the tool returned, or the model sent it, is stored.
+keeps its own copy of every round it runs -- the call with empty arguments and a "not retained" result, committed
+where the round happened -- and replay uses it whenever Open WebUI does not hand the same round back. The thinking
+blocks stay apart, while nothing the tool returned, or the model sent it, is stored. The copy is a record of the
+round, not of the reasoning: it survives every path that drops reasoning (measured accepted without it, t233a).
 
-Stage A is the real streaming loop on default tool settings. Stage B feeds the content stage A produced (text plus
-hidden markers, and no tool messages, which is what Open WebUI stores when no tool card was shown) to the real
-transformer.
+Stage A is the real streaming loop. Stage B feeds the next request what Open WebUI would: its saved message when the
+turn published one, otherwise the content stage A produced (text plus hidden markers), through the real transformer.
 """
 
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import pytest
 
@@ -26,10 +28,11 @@ from open_webui_openrouter_pipe.api.transforms import (
     _filter_openrouter_request,
     _responses_payload_to_chat_completions_payload,
 )
-from open_webui_openrouter_pipe.core.utils import contains_marker
+from open_webui_openrouter_pipe.core.utils import PIPE_ONLY_TOOL_ROUND_KEY, TOOL_ROUND_SKELETON_KEY, contains_marker
 from open_webui_openrouter_pipe.models.reasoning_config import ReasoningConfigManager
 from open_webui_openrouter_pipe.requests.sanitizer import _sanitize_request_input
 from open_webui_openrouter_pipe.requests.transformer import transform_messages_to_input
+from tests.test_continue_stores_once import _open_webui_convert_output_to_messages
 
 MODEL = "anthropic/claude-opus-4.8"
 RESULT_CANARY = "SECRET-TOOL-RESULT-7f3a"
@@ -61,11 +64,22 @@ def _valves(pipe, **changes):
 
 
 async def _stage_a(pipe, monkeypatch, valves, rounds, *, stream=True, emitter=None, tool_status="completed",
-                   real_executor=False, signed=True, message_id: str | None = "m1", real_row_builder=False):
+                   real_executor=False, signed: bool | Literal["at-completion"] = True, message_id: str | None = "m1",
+                   real_row_builder=False,
+                   chat_id: str = "c1", tool_name: str = "lookup", stop_in_round: int | None = None,
+                   rows: dict[str, dict[str, Any]] | None = None, tool_result: Any = RESULT_CANARY,
+                   continues_after_marker: bool = False):
     """Run one turn. Each round is ("calls", [call ids]), which reasons, writes and calls; ("quiet-calls", [call ids]),
-    which writes and calls without reasoning; or ("answer", reasons_first). ``signed=False`` streams reasoning with no
-    signature, which Anthropic cannot take back. ``message_id=None`` sends no message id, as an API request does;
-    ``real_row_builder`` builds rows with the store's own `_make_db_row` instead of a stand-in.
+    which writes and calls without reasoning; ("search-then-calls", [call ids]), which reasons, has OpenRouter run a web
+    search (item id "ws-<round>"), writes and calls; ("advise-then-calls", [call ids]) and ("search-think-then-calls",
+    [call ids]), which reason, have OpenRouter consult its advisor (item id "adv-<round>") or run a web search, reason
+    again ("THOUGHT-<round>-AFTER"), write and call; or ("answer", reasons_first). ``signed=False`` streams reasoning with
+    no signature, which Anthropic cannot take back; ``signed="at-completion"`` streams it unsigned and signs it only in
+    the completed response, as Anthropic does. ``message_id=None`` sends no message id, as an API request does;
+    ``real_row_builder`` builds rows with the store's own `_make_db_row` instead of a stand-in. ``stop_in_round``
+    cancels the turn as Stop does, when that round's model call starts; pass ``rows`` to see what was stored by then.
+    Rows are copied when they are written, as the database stores them: a change made to an item afterwards is not in
+    its row.
 
     Returns the content the loop produced, the rows it persisted (ulid -> payload) and the events it emitted.
     """
@@ -75,38 +89,58 @@ async def _stage_a(pipe, monkeypatch, valves, rounds, *, stream=True, emitter=No
         kind, value = rounds[step[0]]
         step[0] += 1
         index = step[0]
+        if stop_in_round == index:
+            raise asyncio.CancelledError()
         output: list[dict[str, Any]] = []
-        if kind == "calls" or (kind == "answer" and value):
-            block = {"type": "reasoning", "id": f"rs-{index}", "status": "completed",
-                     "content": [{"type": "reasoning_text", "text": f"THOUGHT-{index}"}], "summary": []}
+
+        def thought(suffix: str) -> dict[str, Any]:
+            block = {"type": "reasoning", "id": f"rs-{index}{suffix}", "status": "completed",
+                     "content": [{"type": "reasoning_text", "text": f"THOUGHT-{index}{suffix.upper()}"}], "summary": []}
             if signed:
-                block["signature"] = f"sig-{index}"
-            yield {"type": "response.output_item.done", "item": block}
+                block["signature"] = f"sig-{index}{suffix}"
             output.append(block)
+            streamed = {k: v for k, v in block.items() if k != "signature"} if signed == "at-completion" else block
+            return {"type": "response.output_item.done", "item": streamed}
+
+        consulting = kind in ("advise-then-calls", "search-think-then-calls")
+        if kind in ("calls", "search-then-calls") or consulting or (kind == "answer" and value):
+            yield thought("")
+        if kind in ("search-then-calls", "search-think-then-calls"):
+            search = {"type": "openrouter:web_search", "id": f"ws-{index}", "status": "completed",
+                      "action": {"sources": []}}
+            yield {"type": "response.output_item.done", "item": search}
+            output.append(search)
+        if kind == "advise-then-calls":
+            advice = {"type": "openrouter:advisor", "id": f"adv-{index}", "status": "completed",
+                      "advice": f"ADVICE-{index}"}
+            yield {"type": "response.output_item.done", "item": advice}
+            output.append(advice)
+        if consulting:
+            yield thought("-after")
         yield {"type": "response.output_text.delta", "delta": f"text {index} "}
-        if kind in ("calls", "quiet-calls"):
+        if kind in ("calls", "quiet-calls", "search-then-calls") or consulting:
             for call_id in value:
-                call = {"type": "function_call", "call_id": call_id, "name": "lookup",
+                call = {"type": "function_call", "call_id": call_id, "name": tool_name,
                         "arguments": json.dumps({"q": ARGUMENT_CANARY}), "status": "completed"}
                 yield {"type": "response.output_item.done", "item": call}
                 output.append(call)
         yield {"type": "response.completed", "response": {"output": output, "usage": {}}}
 
     async def lookup(**_kwargs):
-        return RESULT_CANARY
+        return tool_result
 
     async def run_tools(calls, _registry):
-        return [{"type": "function_call_output", "call_id": c.get("call_id"), "output": RESULT_CANARY,
+        return [{"type": "function_call_output", "call_id": c.get("call_id"), "output": tool_result,
                  "status": tool_status} for c in calls]
 
-    persisted: dict[str, dict[str, Any]] = {}
+    persisted: dict[str, dict[str, Any]] = {} if rows is None else rows
 
     def make_row(_chat_id, _message_id, _model_id, payload):
         return {"payload": payload}
 
     async def persist(rows):
         ulids = [generate_item_id() for _ in rows]
-        persisted.update(zip(ulids, (row["payload"] for row in rows)))
+        persisted.update(zip(ulids, (copy.deepcopy(row["payload"]) for row in rows)))
         return ulids
 
     monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", model)
@@ -125,6 +159,7 @@ async def _stage_a(pipe, monkeypatch, valves, rounds, *, stream=True, emitter=No
         emitted.append(event)
 
     body = ResponsesBody(model=MODEL, input=[], stream=stream)
+    body._continues_after_marker = continues_after_marker
     registry = {"lookup": {"type": "function", "callable": lookup,
                            "spec": {"name": "lookup", "parameters": {"type": "object", "properties": {}}}}}
     handler = pipe._streaming_handler
@@ -139,7 +174,8 @@ async def _stage_a(pipe, monkeypatch, valves, rounds, *, stream=True, emitter=No
         runner = handler._run_streaming_loop if stream else handler._run_nonstreaming_loop
         content = await runner(
             body, valves, capture if emitter is None else emitter,
-            metadata={"model": {"id": MODEL}, "chat_id": "c1", **({"message_id": message_id} if message_id else {})},
+            metadata={"model": {"id": MODEL}, "chat_id": chat_id, **({"message_id": message_id} if message_id else {}),
+                      **({"assistant_message_id": message_id} if continues_after_marker else {})},
             tools=registry, session=cast(Any, object()), user_id="u1",
         )
     finally:
@@ -151,15 +187,36 @@ async def _stage_a(pipe, monkeypatch, valves, rounds, *, stream=True, emitter=No
     return content, persisted, emitted
 
 
-async def _stage_b(pipe, valves, content, persisted, *, refs=None):
+def _recorded_output(emitted):
+    """The output the turn published, which is what Open WebUI stores as the message's record."""
+    for event in reversed(emitted):
+        if event.get("type") == "response.completed":
+            return (event.get("response") or {}).get("output") or []
+    return []
+
+
+async def _stage_b(pipe, valves, content, persisted, *, refs=None, recorded=None):
+    """Feed the turn back as the next request.
+
+    When the turn published output items, Open WebUI does NOT hand the pipe the assistant message as text:
+    `process_messages_with_output` replaces any assistant message carrying `output` with the messages
+    `convert_output_to_messages(output, raw=True, flatten_tool_images=True)` builds from it, and those
+    carry no message id. Passing `recorded` reproduces that. Turns that publish nothing -- non-streaming,
+    or no event emitter -- still arrive as a plain assistant message, which is the `recorded=None` path.
+    """
     async def loader(_chat_id, _message_id, ulids):
         return {u: persisted[u] for u in ulids if u in persisted}
 
+    if recorded:
+        assistant_turn = _open_webui_convert_output_to_messages()(
+            recorded, raw=True, flatten_tool_images=True
+        )
+    else:
+        assistant_turn = [{"role": "assistant", "message_id": "m1", "content": content}]
+
     return await transform_messages_to_input(
         pipe,
-        [{"role": "user", "content": "q1"},
-         {"role": "assistant", "message_id": "m1", "content": content},
-         {"role": "user", "content": "q2"}],
+        [{"role": "user", "content": "q1"}, *assistant_turn, {"role": "user", "content": "q2"}],
         chat_id="c1", openwebui_model_id="owui", artifact_loader=loader, model_id=MODEL, valves=valves,
         replayed_reasoning_refs=refs,
     )
@@ -174,28 +231,31 @@ def _has_consecutive_reasoning(items):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cards", [True, False], ids=["cards-on", "cards-off"])
 @pytest.mark.parametrize(
     ("rounds", "group", "arm"),
     [
-        (SEQUENTIAL_TWO_ROUNDS, "sequential_rounds", "V1_STUB"),
-        (PARALLEL_WITH_FINAL_REASONING, "parallel_calls_with_final_round_reasoning", "PIPE_STUB"),
+        # The round is replayed where it happened, text before the reasoning and calls of its round, and parallel
+        # calls grouped. With cards on it comes back in Open WebUI's saved message; with cards off from the pipe's
+        # own storage -- the same turn either way. Every arm is a live-measured 200.
+        (SEQUENTIAL_TWO_ROUNDS, "sequential_rounds", "V8_STUB"),
+        (PARALLEL_WITH_FINAL_REASONING, "parallel_calls_with_final_round_reasoning", "REC_GROUPED"),
     ],
     ids=["two-sequential-rounds", "parallel-calls-then-reasoning"],
 )
 async def test_an_unretained_tool_turn_replays_as_a_shape_anthropic_accepted(
-    monkeypatch, pipe_instance_async, rounds, group, arm
+    monkeypatch, pipe_instance_async, rounds, group, arm, cards
 ):
     pipe = pipe_instance_async
-    valves = _valves(pipe)
+    valves = _valves(pipe, SHOW_TOOL_CARDS=cards)
     accepted = _recorded(group, arm)
     assert accepted["status"] == 200
 
-    content, persisted, _ = await _stage_a(pipe, monkeypatch, valves, rounds)
-    replay = await _stage_b(pipe, valves, content, persisted)
+    content, persisted, emitted = await _stage_a(pipe, monkeypatch, valves, rounds)
+    replay = await _stage_b(pipe, valves, content, persisted, recorded=_recorded_output(emitted))
 
     assert _shape(replay) == accepted["shape"]
     assert _shape(replay) != _recorded("sequential_rounds", "T52")["shape"]
-
 
 # --- every default-settings path keeps the rounds apart ----------------------------------------------------------------
 
@@ -214,8 +274,8 @@ async def test_every_executed_round_keeps_its_structure_when_no_card_holds_it(
     valves = _valves(pipe, SHOW_TOOL_CARDS=cards)
     turn = [("calls", [f"toolu-{i}"]) for i in range(rounds)] + [("answer", True)]
 
-    content, persisted, _ = await _stage_a(pipe, monkeypatch, valves, turn, stream=stream)
-    replay = await _stage_b(pipe, valves, content, persisted)
+    content, persisted, emitted = await _stage_a(pipe, monkeypatch, valves, turn, stream=stream)
+    replay = await _stage_b(pipe, valves, content, persisted, recorded=_recorded_output(emitted))
 
     assert not _has_consecutive_reasoning(replay), _shape(replay)
     calls = [item.get("call_id") for item in replay if item.get("type") == "function_call"]
@@ -223,115 +283,7 @@ async def test_every_executed_round_keeps_its_structure_when_no_card_holds_it(
     assert calls == results == [f"toolu-{i}" for i in range(rounds)]
 
 
-@pytest.mark.asyncio
-async def test_a_round_that_did_not_reason_keeps_its_skeleton_so_later_reasoning_finds_its_call(
-    monkeypatch, pipe_instance_async
-):
-    """Reasoning is placed by the ordinal of the call beside it, counted over every call in the turn, so a round that
-    produced no reasoning of its own still has to leave its call in the replay."""
-    pipe = pipe_instance_async
-    valves = _valves(pipe)
-    turn = [("quiet-calls", ["toolu-1"]), ("calls", ["toolu-2"]), ("answer", True)]
-
-    content, persisted, _ = await _stage_a(pipe, monkeypatch, valves, turn)
-    replay = await _stage_b(pipe, valves, content, persisted)
-
-    assert _shape(replay) == [
-        "message:user", "message:assistant", "function_call", "function_call_output",
-        "reasoning", "function_call", "function_call_output", "reasoning", "message:user",
-    ]
-
-
-# --- nothing the tool returned or the model sent it is stored -----------------------------------------------------------
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("stream", [True, False], ids=["streaming", "not-streaming"])
-async def test_the_skeleton_keeps_neither_the_tool_result_nor_the_arguments(monkeypatch, pipe_instance_async, stream):
-    pipe = pipe_instance_async
-    valves = _valves(pipe)
-
-    _, persisted, _ = await _stage_a(pipe, monkeypatch, valves, SEQUENTIAL_TWO_ROUNDS, stream=stream)
-
-    stored = json.dumps(persisted)
-    assert [p.get("type") for p in persisted.values()].count("function_call") == 2
-    assert RESULT_CANARY not in stored
-    assert ARGUMENT_CANARY not in stored
-
-
-# --- the skeleton lives and dies with its reasoning --------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_no_skeleton_is_kept_when_reasoning_is_not_kept(monkeypatch, pipe_instance_async):
-    pipe = pipe_instance_async
-    valves = _valves(pipe, PERSIST_REASONING_TOKENS="disabled")
-
-    _, persisted, _ = await _stage_a(pipe, monkeypatch, valves, SEQUENTIAL_TWO_ROUNDS)
-
-    assert [p.get("type") for p in persisted.values()] == []
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("stream", [True, False], ids=["streaming", "not-streaming"])
-async def test_a_tool_turn_that_never_reasoned_keeps_no_skeleton(monkeypatch, pipe_instance_async, stream):
-    # The skeleton exists only to keep reasoning apart; a turn with no reasoning leaves no rows and no markers.
-    pipe = pipe_instance_async
-    valves = _valves(pipe)
-    turn = [("quiet-calls", ["toolu-1"]), ("quiet-calls", ["toolu-2"]), ("answer", False)]
-
-    content, persisted, _ = await _stage_a(pipe, monkeypatch, valves, turn, stream=stream)
-
-    assert persisted == {}
-    assert not contains_marker(content)
-
-
-@pytest.mark.asyncio
-async def test_the_skeleton_is_cleaned_up_with_the_reasoning_after_its_next_reply(monkeypatch, pipe_instance_async):
-    pipe = pipe_instance_async
-    valves = _valves(pipe, PERSIST_REASONING_TOKENS="next_reply")
-    content, persisted, _ = await _stage_a(pipe, monkeypatch, valves, SEQUENTIAL_TWO_ROUNDS)
-    assert [p.get("type") for p in persisted.values()].count("function_call") == 2, persisted
-
-    refs: list[tuple[str, str]] = []
-    await _stage_b(pipe, valves, content, persisted, refs=refs)
-
-    assert sorted(ulid for _, ulid in refs) == sorted(persisted)
-
-
-@pytest.mark.asyncio
-async def test_a_skeleton_whose_reasoning_is_gone_is_not_replayed(monkeypatch, pipe_instance_async):
-    pipe = pipe_instance_async
-    valves = _valves(pipe)
-    content, persisted, _ = await _stage_a(pipe, monkeypatch, valves, SEQUENTIAL_TWO_ROUNDS)
-    without_reasoning = {u: p for u, p in persisted.items() if p.get("type") != "reasoning"}
-    assert [p.get("type") for p in without_reasoning.values()].count("function_call") == 2, persisted
-
-    replay = await _stage_b(pipe, valves, content, without_reasoning)
-
-    assert _shape(replay) == ["message:user", "message:assistant", "message:user"]
-
-
-# --- the skeleton only stands in where nothing else holds the round -----------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_rounds_shown_as_tool_cards_get_no_skeleton(monkeypatch, pipe_instance_async):
-    # With both cards shown, Open WebUI stores the call and its result itself; a skeleton would replay the call twice.
-    pipe = pipe_instance_async
-    valves = _valves(pipe, SHOW_TOOL_CARDS=True)
-
-    _, persisted, emitted = await _stage_a(
-        pipe, monkeypatch, valves, [("calls", ["toolu-1"]), ("answer", True)], stream=True, real_executor=True,
-    )
-
-    carded = [
-        event.get("item", {}).get("type")
-        for event in emitted
-        if event.get("type") == "response.output_item.added"
-    ]
-    assert "function_call" in carded and "function_call_output" in carded, carded
-    assert [p.get("type") for p in persisted.values() if p.get("type") != "reasoning"] == []
+# --- what the copy holds, and where it never goes -------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -340,7 +292,7 @@ async def test_the_skeleton_is_never_published_as_turn_output(monkeypatch, pipe_
     pipe = pipe_instance_async
     valves = _valves(pipe)
 
-    _, persisted, emitted = await _stage_a(pipe, monkeypatch, valves, SEQUENTIAL_TWO_ROUNDS, stream=True)
+    _, persisted, emitted = await _stage_a(pipe, monkeypatch, valves, SEQUENTIAL_TWO_ROUNDS, stream=False)
     assert [p.get("type") for p in persisted.values()].count("function_call") == 2, persisted
 
     published = [
@@ -357,41 +309,14 @@ async def test_a_skeleton_result_keeps_the_real_status(monkeypatch, pipe_instanc
     pipe = pipe_instance_async
     valves = _valves(pipe)
 
-    _, persisted, _ = await _stage_a(
+    _, persisted, emitted = await _stage_a(
         pipe, monkeypatch, valves, [("calls", ["toolu-1"]), ("answer", True)], tool_status=tool_status,
+        stream=False,
     )
 
     results = [p for p in persisted.values() if p.get("type") == "function_call_output"]
     assert [r.get("status") for r in results] == [tool_status]
 
-
-
-@pytest.mark.asyncio
-async def test_a_round_cut_by_the_loop_limit_keeps_its_skeleton_though_its_result_card_was_shown(
-    monkeypatch, pipe_instance_async
-):
-    """At the loop limit the pipe answers the call with a stub instead of running it, and shows only the stub's result
-    card. Open WebUI drops a result whose call it never received when it rebuilds the history, so only the skeleton
-    keeps that round between its reasoning blocks."""
-    pipe = pipe_instance_async
-    valves = _valves(pipe, SHOW_TOOL_CARDS=True, MAX_FUNCTION_CALL_LOOPS=1)
-
-    content, persisted, emitted = await _stage_a(
-        pipe, monkeypatch, valves, [("calls", ["toolu-1"]), ("answer", True)], stream=True
-    )
-    carded = [
-        event.get("item", {}).get("type")
-        for event in emitted
-        if event.get("type") == "response.output_item.added"
-    ]
-    assert "function_call_output" in carded and "function_call" not in carded, carded
-
-    replay = await _stage_b(pipe, valves, content, persisted)
-
-    assert _shape(replay) == [
-        "message:user", "message:assistant", "reasoning", "function_call", "function_call_output", "reasoning",
-        "message:user",
-    ]
 
 
 @pytest.mark.asyncio
@@ -405,7 +330,7 @@ async def test_a_request_without_a_message_id_warns_only_when_it_had_something_t
     valves = _valves(pipe, PERSIST_REASONING_TOKENS=retention)
     caplog.set_level(logging.WARNING)
 
-    content, persisted, _ = await _stage_a(
+    content, persisted, emitted = await _stage_a(
         pipe, monkeypatch, valves, SEQUENTIAL_TWO_ROUNDS, message_id=None, real_row_builder=True
     )
 
@@ -414,12 +339,14 @@ async def test_a_request_without_a_message_id_warns_only_when_it_had_something_t
     assert any("missing message_id" in record.getMessage() for record in caplog.records) is warns
 
 
-# --- every stage that drops reasoning drops the skeleton with it -------------------------------------------------------
+# --- every stage that drops reasoning keeps the rounds ----------------------------------------------------------------
 
 
-async def _outgoing_body(pipe, valves, content, persisted):
+async def _outgoing_body(pipe, valves, content, persisted, *, recorded=None):
     """The next turn's request as the streaming loop holds it: the real replay, then the real sanitizer."""
-    body = ResponsesBody(model=MODEL, input=await _stage_b(pipe, valves, content, persisted), stream=True)
+    body = ResponsesBody(
+        model=MODEL, input=await _stage_b(pipe, valves, content, persisted, recorded=recorded), stream=True
+    )
     _sanitize_request_input(pipe, body)
     return body
 
@@ -429,187 +356,30 @@ def _internal_keys(items: list[Any]) -> list[str]:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cards", [True, False], ids=["cards-on", "cards-off"])
 @pytest.mark.parametrize(
     ("rounds", "group", "arm"),
     [
-        (SEQUENTIAL_TWO_ROUNDS, "sequential_rounds", "V1_STUB"),
-        (PARALLEL_WITH_FINAL_REASONING, "parallel_calls_with_final_round_reasoning", "PIPE_STUB"),
+        # The round is replayed where it happened, text before the reasoning and calls of its round, and parallel
+        # calls grouped. With cards on it comes back in Open WebUI's saved message; with cards off from the pipe's
+        # own storage -- the same turn either way. Every arm is a live-measured 200.
+        (SEQUENTIAL_TWO_ROUNDS, "sequential_rounds", "V8_STUB"),
+        (PARALLEL_WITH_FINAL_REASONING, "parallel_calls_with_final_round_reasoning", "REC_GROUPED"),
     ],
     ids=["two-sequential-rounds", "parallel-calls-then-reasoning"],
 )
 async def test_the_responses_request_on_the_wire_is_the_accepted_shape_with_no_internal_keys(
-    monkeypatch, pipe_instance_async, rounds, group, arm
+    monkeypatch, pipe_instance_async, rounds, group, arm, cards
 ):
     pipe = pipe_instance_async
-    valves = _valves(pipe)
-    content, persisted, _ = await _stage_a(pipe, monkeypatch, valves, rounds)
-    body = await _outgoing_body(pipe, valves, content, persisted)
+    valves = _valves(pipe, SHOW_TOOL_CARDS=cards)
+    content, persisted, emitted = await _stage_a(pipe, monkeypatch, valves, rounds)
+    body = await _outgoing_body(pipe, valves, content, persisted, recorded=_recorded_output(emitted))
 
     wire = _filter_openrouter_request(body.model_dump(exclude_none=True))
 
     assert _shape(wire["input"]) == _recorded(group, arm)["shape"]
     assert _internal_keys(wire["input"]) == []
-
-
-@pytest.mark.asyncio
-async def test_the_chat_completions_fallback_drops_the_skeleton_with_the_reasoning_it_cannot_carry(
-    monkeypatch, pipe_instance_async
-):
-    # The fallback converts the same request dict the /responses attempt was filtered from, so that filtering must
-    # leave the dict able to tell a skeleton round from a real one.
-    pipe = pipe_instance_async
-    valves = _valves(pipe)
-    content, persisted, _ = await _stage_a(pipe, monkeypatch, valves, SEQUENTIAL_TWO_ROUNDS)
-    request = (await _outgoing_body(pipe, valves, content, persisted)).model_dump(exclude_none=True)
-    _filter_openrouter_request(request)
-
-    chat = _responses_payload_to_chat_completions_payload(request)["messages"]
-
-    assert [message.get("role") for message in chat] == ["user", "assistant", "user"], chat
-    assert _internal_keys(chat) == []
-
-
-@pytest.mark.asyncio
-async def test_the_thinking_signature_retry_drops_the_skeleton_with_the_reasoning(monkeypatch, pipe_instance_async):
-    pipe = pipe_instance_async
-    valves = _valves(pipe)
-    content, persisted, _ = await _stage_a(pipe, monkeypatch, valves, SEQUENTIAL_TWO_ROUNDS)
-    body = await _outgoing_body(pipe, valves, content, persisted)
-    assert isinstance(body.input, list)
-    assert "reasoning" in _shape(body.input), _shape(body.input)
-
-    assert ReasoningConfigManager._strip_replayed_reasoning(body) is True
-
-    assert _shape(body.input) == ["message:user", "message:assistant", "message:user"]
-
-
-@pytest.mark.asyncio
-async def test_unsigned_reasoning_removed_for_anthropic_takes_its_skeleton_with_it(monkeypatch, pipe_instance_async):
-    pipe = pipe_instance_async
-    valves = _valves(pipe)
-    content, persisted, _ = await _stage_a(pipe, monkeypatch, valves, SEQUENTIAL_TWO_ROUNDS, signed=False)
-    kinds = [p.get("type") for p in persisted.values()]
-    assert kinds.count("reasoning") == 2 and kinds.count("function_call") == 2, kinds
-
-    body = await _outgoing_body(pipe, valves, content, persisted)
-
-    assert isinstance(body.input, list)
-    assert _shape(body.input) == ["message:user", "message:assistant", "message:user"]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "route", ["streaming-forced-chat", "streaming-fallback", "non-streaming-forced-chat", "non-streaming-fallback"]
-)
-async def test_every_chat_completions_route_hands_on_a_request_that_can_still_drop_the_skeleton(
-    monkeypatch, pipe_instance_async, route
-):
-    """The gateway passes the chat adapter the request the loop built; converting it must still tell a skeleton round
-    from a real one, so the skeleton leaves with the reasoning the chat format cannot carry."""
-    pipe = pipe_instance_async
-    valves = _valves(pipe, AUTO_FALLBACK_CHAT_COMPLETIONS=True)
-    content, persisted, _ = await _stage_a(pipe, monkeypatch, valves, SEQUENTIAL_TWO_ROUNDS)
-    request = (await _outgoing_body(pipe, valves, content, persisted)).model_dump(exclude_none=True)
-    monkeypatch.undo()
-    received: list[dict[str, Any]] = []
-
-    async def chat_streaming(self, session, responses_request_body, **_kwargs):
-        received.append(responses_request_body)
-        yield {"type": "response.completed", "response": {"output": [], "usage": {}}}
-
-    async def chat_nonstreaming(self, session, responses_request_body, **_kwargs):
-        received.append(responses_request_body)
-        return {"choices": [{"message": {"role": "assistant", "content": "ok"}}], "usage": {}}
-
-    unsupported = RuntimeError("this model does not support the responses endpoint")
-
-    async def responses_streaming(self, *_args, **_kwargs):
-        raise unsupported
-        yield {}
-
-    async def responses_nonstreaming(self, *_args, **_kwargs):
-        raise unsupported
-
-    monkeypatch.setattr(Pipe, "send_openai_chat_completions_streaming_request", chat_streaming)
-    monkeypatch.setattr(Pipe, "send_openai_chat_completions_nonstreaming_request", chat_nonstreaming)
-    monkeypatch.setattr(Pipe, "send_openai_responses_streaming_request", responses_streaming)
-    monkeypatch.setattr(Pipe, "send_openai_responses_nonstreaming_request", responses_nonstreaming)
-
-    session = cast(Any, object())
-    override = "chat_completions" if route.endswith("forced-chat") else None
-    gateway = (
-        pipe.send_openrouter_streaming_request if route.startswith("streaming")
-        else pipe.send_openrouter_nonstreaming_request_as_events
-    )
-    async for _ in gateway(session, request, "sk-test", "https://openrouter.ai/api/v1", valves=valves,
-                          endpoint_override=override):
-        pass
-
-    assert len(received) == 1, route
-    chat = _responses_payload_to_chat_completions_payload(received[0])["messages"]
-    assert [message.get("role") for message in chat] == ["user", "assistant", "user"], chat
-    assert _internal_keys(chat) == []
-
-
-@pytest.mark.asyncio
-async def test_removing_one_turns_unsigned_reasoning_takes_only_that_turns_skeleton(monkeypatch, pipe_instance_async):
-    """Unsigned reasoning is removed turn by turn, so a later signed turn keeps its reasoning and its skeleton rounds."""
-    pipe = pipe_instance_async
-    valves = _valves(pipe)
-    first, first_rows, _ = await _stage_a(pipe, monkeypatch, valves, SEQUENTIAL_TWO_ROUNDS, signed=False)
-    second, second_rows, _ = await _stage_a(pipe, monkeypatch, valves, SEQUENTIAL_TWO_ROUNDS, signed=True)
-    persisted = {**first_rows, **second_rows}
-
-    async def loader(_chat_id, _message_id, ulids):
-        return {u: persisted[u] for u in ulids if u in persisted}
-
-    replay = await transform_messages_to_input(
-        pipe,
-        [{"role": "user", "content": "q1"}, {"role": "assistant", "message_id": "m1", "content": first},
-         {"role": "user", "content": "q2"}, {"role": "assistant", "message_id": "m2", "content": second},
-         {"role": "user", "content": "q3"}],
-        chat_id="c1", openwebui_model_id="owui", artifact_loader=loader, model_id=MODEL, valves=valves,
-    )
-    body = ResponsesBody(model=MODEL, input=replay, stream=True)
-    _sanitize_request_input(pipe, body)
-
-    assert isinstance(body.input, list)
-    assert _shape(body.input) == [
-        "message:user", "message:assistant", *_recorded("sequential_rounds", "V1_STUB")["shape"]
-    ]
-
-
-# --- a Continue of an unretained tool turn -----------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_a_continue_of_an_unretained_tool_turn_sends_the_shape_anthropic_accepted(monkeypatch, pipe_instance_async):
-    """A Continue sends the history up to the continued message, so its request ends inside that turn. Ending on the
-    turn's skeleton result was accepted; dropping those rounds leaves the request ending on the assistant's own text,
-    which the model rejected ("does not support assistant message prefill")."""
-    pipe = pipe_instance_async
-    valves = _valves(pipe)
-    accepted = _recorded("continue_of_a_tool_turn", "A_FULL")
-    rejected = _recorded("continue_of_a_tool_turn", "B_FULL")
-    assert (accepted["status"], rejected["status"]) == (200, 400)
-
-    content, persisted, _ = await _stage_a(pipe, monkeypatch, valves, SEQUENTIAL_TWO_ROUNDS)
-
-    async def loader(_chat_id, _message_id, ulids):
-        return {u: persisted[u] for u in ulids if u in persisted}
-
-    continue_input = await transform_messages_to_input(
-        pipe,
-        [{"role": "user", "content": "q1"}, {"role": "assistant", "message_id": "m1", "content": content}],
-        chat_id="c1", openwebui_model_id="owui", artifact_loader=loader, model_id=MODEL, valves=valves,
-    )
-    body = ResponsesBody(model=MODEL, input=continue_input, stream=True)
-    _sanitize_request_input(pipe, body)
-    wire = _filter_openrouter_request(body.model_dump(exclude_none=True))
-
-    assert _shape(wire["input"]) == accepted["shape"]
-    assert _shape(wire["input"]) != rejected["shape"]
-
 
 # --- a Continue must still end on something the model accepts ----------------------------------------------------
 
@@ -663,17 +433,3 @@ def test_the_signature_retry_leaves_a_continue_ending_on_a_tool_result():
     assert isinstance(body.input, list)
     assert _ends_on(body.input) != "message:assistant", [_ends_on(body.input), body.input]
     assert _ends_on(body.input) == "function_call_output", _ends_on(body.input)
-
-
-def test_history_closed_by_a_user_message_still_drops_a_reasoningless_skeleton_round():
-    """The turn the Continue is writing is the only one spared: an earlier turn, closed by the user's next
-    message, still loses skeleton rounds that have no reasoning to anchor."""
-    from open_webui_openrouter_pipe.requests.sanitizer import _strip_unreplayable_anthropic_reasoning
-
-    items = _continue_shaped_items()
-    items[1] = {**items[1], "reasoning_details": [{"type": "reasoning.text", "text": "unsigned"}]}
-    items.append({"type": "message", "role": "user", "content": [{"type": "input_text", "text": "q2"}]})
-
-    out = _strip_unreplayable_anthropic_reasoning(items)
-
-    assert [item["type"] for item in out] == ["message", "message", "message"], out

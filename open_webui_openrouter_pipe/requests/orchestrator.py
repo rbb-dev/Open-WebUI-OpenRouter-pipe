@@ -33,8 +33,11 @@ from ..core.fusion_defaults import find_fusion_entry, resolve_fusion_run
 from ..core.logging_system import SessionLogger
 from ..core.timing_logger import timed
 from ..core.utils import (
+    CONTINUED_REPLY,
     _select_best_effort_fallback,
     continued_turn_counts,
+    ends_on_hidden_marker_line,
+    join_answer_and_card,
 )
 from ..core.warn_latch import warn_level
 from ..filters.fusion_filter_renderer import is_fusion_model
@@ -170,6 +173,9 @@ _FUSION_PARITY_DIALS = (
     "capability_tool_gate",
     "context_transforms_state",
 )
+
+
+_FUSION_CONTINUE_NOTICE = "Continue is not available for Fusion replies. Regenerate the reply to run Fusion again."
 
 
 def _fusion_backend_openrouter(valves: Any) -> bool:
@@ -682,6 +688,7 @@ class RequestOrchestrator:
             capability_model_id=pre_capability_model_id,
         )
         responses_body._continued_turn = continued_turn_counts(responses_body.input)
+        responses_body._continues_after_marker = ends_on_hidden_marker_line(CONTINUED_REPLY.get())
         responses_body.input_file_sizes = await index_referenced_file_payloads(
             responses_body.input, self.logger, user=user_model
         )
@@ -1106,6 +1113,10 @@ class RequestOrchestrator:
                         if name not in owui_registry and name not in known_origins:
                             owui_registry[name] = tool_cfg
 
+        owui_registry = {
+            name: cfg for name, cfg in owui_registry.items() if not (cfg.get("direct") is True and cfg.get("callable") is None)
+        }
+
         request_pipe_meta = __metadata__.get(_PIPE_METADATA_KEY) if isinstance(__metadata__, dict) else None
         if isinstance(request_pipe_meta, dict) and request_pipe_meta.get("fusion_inner"):
             is_builtin_ask_user = self._pipe._ensure_tool_executor()._is_builtin_ask_user
@@ -1212,6 +1223,13 @@ class RequestOrchestrator:
             is_task_request=use_task_model_adapter,
             metadata=__metadata__,
         ):
+            if CONTINUED_REPLY.get() is not None:
+                notice = join_answer_and_card("", _FUSION_CONTINUE_NOTICE)
+                self.logger.info("Continue declined: internal Fusion replies cannot be continued")
+                if __event_emitter__:
+                    await __event_emitter__({"type": "chat:message", "data": {"content": notice}})
+                    await __event_emitter__({"type": "chat:completion", "data": {"done": True}})
+                return notice
             plan = resolve_fusion_run(find_fusion_entry(responses_body.plugins))
             self.logger.info(
                 "Diverting fusion request to internal engine model=%s panel=%s judge=%s",

@@ -23,10 +23,6 @@ import ast
 import copy
 import importlib.metadata
 import json
-import os
-import re
-import subprocess
-import sys
 import sysconfig
 from pathlib import Path
 from typing import Any, cast
@@ -47,10 +43,6 @@ STORED = [
      "content": [{"type": "output_text", "text": "Part one."}]},
 ]
 STORED_IDS = ["fc-old", "fco-old", "msg-old"]
-
-
-async def _approval_drain(*_args, **_kwargs):
-    return False
 
 
 def _select_open_webui(monkeypatch, *, stored: list[dict[str, Any]]) -> None:
@@ -75,15 +67,6 @@ def _answer_steps(text: str) -> list[tuple[float, dict[str, Any]]]:
         (0.0, {"type": "response.output_item.added", "item": {"type": "reasoning", "id": "rs-1"}}),
         (1.0, {"type": "response.reasoning_text.delta", "item_id": "rs-1", "delta": "Thinking. "}),
         (0.2, {"type": "response.output_text.delta", "delta": text}),
-        (0.0, {"type": "response.completed", "response": {"output": [], "usage": {}}}),
-    ]
-
-
-def _text_first_answer_steps(text: str) -> list[tuple[float, dict[str, Any]]]:
-    return [
-        (0.0, {"type": "response.output_text.delta", "delta": text}),
-        (0.2, {"type": "response.output_item.added", "item": {"type": "reasoning", "id": "rs-2"}}),
-        (1.0, {"type": "response.reasoning_text.delta", "item_id": "rs-2", "delta": "Thinking. "}),
         (0.0, {"type": "response.completed", "response": {"output": [], "usage": {}}}),
     ]
 
@@ -220,9 +203,9 @@ async def test_a_tool_round_that_reuses_a_stored_call_id_still_stores_the_contin
 ):
     """A re-call is recognised by how many results it brings, not by whether their ids are new.
 
-    Tool call ids repeat: both chat-completions adapters mint `toolcall-{model}-{index}` whenever the
-    provider sends a tool-call delta without one, so the first call of every request over that transport
-    carries the same id, and the transformer already documents that they are not unique across turns.
+    Tool call ids can repeat: until the pipe made its ids unique, both chat-completions adapters minted
+    `toolcall-{model}-{index}` whenever the provider sent a tool-call delta without one, so the first call of
+    every request over that transport carried the same id, and chats saved then still hold those ids.
     Deciding "Open WebUI is already holding this round" by asking whether the turn's ids appear in the
     stored output therefore answers yes for a round Open WebUI has only just run, and the pipe republishes
     the stored answer that Open WebUI then puts back in front itself.
@@ -381,20 +364,6 @@ async def test_a_tool_round_that_returns_an_image_stores_the_continued_answer_on
     assert "Part two." in "".join(_texts(stored))
 
 
-def _owui_round(index: int, *, image: bool) -> list[dict[str, Any]]:
-    """One round as Open WebUI stores it. Every round of a turn carries the same call id, because both
-    chat-completions adapters mint `toolcall-{model}-{index}` per response rather than per turn."""
-    parts: list[dict[str, Any]] = [{"type": "input_text", "text": "ok"}]
-    if image:
-        parts.append({"type": "input_image", "image_url": _ONE_PIXEL_PNG})
-    return [
-        {"type": "function_call", "id": f"fc-{index}", "call_id": "toolcall-m-0", "name": "lookup",
-         "arguments": "{}", "status": "completed"},
-        {"type": "function_call_output", "id": f"fco-{index}", "call_id": "toolcall-m-0", "output": parts,
-         "status": "completed"},
-    ]
-
-
 @pytest.mark.asyncio
 async def test_a_continue_after_a_turn_that_ended_on_a_tool_result_keeps_its_stored_answer(
     monkeypatch, pipe_instance_async
@@ -518,6 +487,8 @@ async def test_a_continue_keeps_the_stored_answer_when_the_pipes_own_tool_result
         model_id="test/model",
         valves=pipe.valves,
     )
+    # Cards are off, so the round is hidden from the user and not saved in the message; it comes back from the
+    # pipe's own rows instead. That is exactly the case this test exists for.
     assert not [item for item in stored if item.get("type") in ("function_call", "function_call_output")], stored
     assert "call-X" in {
         item.get("call_id") for item in continue_input if item.get("type") == "function_call_output"

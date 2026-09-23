@@ -23,7 +23,7 @@ import pytest
 from open_webui_openrouter_pipe.core import config
 
 
-def _fake_plain_include(headers, user):
+def _fake_plain_include(headers, user, *, request=None):
     """Mimic OWUI plain-header mode."""
     return {
         **headers,
@@ -34,7 +34,7 @@ def _fake_plain_include(headers, user):
     }
 
 
-def _fake_jwt_include(headers, user):
+def _fake_jwt_include(headers, user, *, request=None):
     """Mimic OWUI JWT mode (four user headers collapsed to one signed token)."""
     return {**headers, "X-OpenWebUI-User-Jwt": "signed.jwt.token"}
 
@@ -123,7 +123,7 @@ def test_jwt_mode_passthrough(monkeypatch, enabled, user):
 
 
 def test_swallows_owui_exception(monkeypatch, enabled, user):
-    def _boom(headers, user):
+    def _boom(headers, user, *, request=None):
         raise RuntimeError("owui blew up")
 
     monkeypatch.setattr(config, "_owui_include_user_info_headers", _boom)
@@ -142,10 +142,10 @@ def test_the_failure_warning_is_deduped_per_exception_type(monkeypatch, caplog, 
     """
     import logging
 
-    def _boom(headers, user):
+    def _boom(headers, user, *, request=None):
         raise RuntimeError("owui blew up")
 
-    def _other_boom(headers, user):
+    def _other_boom(headers, user, *, request=None):
         raise KeyError("different cause")
 
     config._warned_forward_headers.clear()

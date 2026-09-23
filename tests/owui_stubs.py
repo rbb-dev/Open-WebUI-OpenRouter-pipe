@@ -8,6 +8,7 @@ conftest imports this module, so there is one installation of these stubs, not t
 
 from __future__ import annotations
 
+import json
 import os
 os.environ.setdefault("ENABLE_DB_MIGRATIONS", "false")
 os.environ.setdefault("DATA_DIR", "/tmp/owui-test-data")
@@ -501,10 +502,64 @@ def _install_open_webui_stubs() -> None:
 
     middleware_mod.apply_source_context_to_messages = _apply_source_context_to_messages
     middleware_mod.get_citation_source_from_tool_result = _get_citation_source_from_tool_result
+    def _build_terminal_file_tool_result(tool_function_name='', tool_function_params=None, tool_result=None,
+                                         tool=None, metadata=None):
+        return None
+
+    async def _terminal_event_handler(tool_function_name='', tool_function_params=None, tool_result=None,
+                                      event_emitter=None):
+        return None
+
+    def _is_tool_result_error(value: Any) -> bool:
+        """Open WebUI 0.11.4 `utils/middleware.py::_is_tool_result_error`, verbatim but for `json` in place of
+        its `JSONCodec` wrapper."""
+        if isinstance(value, str):
+            text = value.strip().lower()
+            if (
+                text.startswith('error:')
+                or text.startswith('exception:')
+                or text.startswith('traceback')
+                or text.startswith('http error!')
+            ):
+                return True
+
+        parsed = value
+        while isinstance(parsed, str):
+            try:
+                parsed = json.loads(parsed)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                break
+
+        if not isinstance(parsed, dict):
+            return False
+
+        error = parsed.get('error')
+        if isinstance(error, str):
+            has_error = bool(error.strip())
+        else:
+            has_error = isinstance(error, (dict, list)) and bool(error)
+        if has_error:
+            return True
+
+        status = parsed.get('status')
+        if isinstance(status, str) and status.strip().lower() in {'error', 'failed'}:
+            return True
+
+        if parsed.get('success') is False or parsed.get('ok') is False:
+            message = parsed.get('message')
+            return has_error or (
+                bool(message.strip()) if isinstance(message, str) else isinstance(message, (dict, list)) and bool(message)
+            )
+
+        return False
+
+    middleware_mod._is_tool_result_error = _is_tool_result_error
     middleware_mod.process_tool_result = _process_tool_result
+    middleware_mod.build_terminal_file_tool_result = _build_terminal_file_tool_result
+    middleware_mod.terminal_event_handler = _terminal_event_handler
     utils_pkg.middleware = middleware_mod
 
-    # Open WebUI 0.11.3 `utils/ask_user.py`, copied verbatim: the pipe asks it how long an
+    # Open WebUI 0.11.4 `utils/ask_user.py`, copied verbatim: the pipe asks it how long an
     # ask_user prompt stays open and whether an ask_user call may run in its turn, so a
     # simplified stand-in would test a rule Open WebUI does not have.
     ask_user_mod = cast(Any, _ensure_module("open_webui.utils.ask_user"))
@@ -583,6 +638,28 @@ def _install_open_webui_stubs() -> None:
 
     ask_user_mod.get_ask_user_tool_calls = _get_ask_user_tool_calls
     ask_user_mod.normalize_ask_user_request = _normalize_ask_user_request
+
+    # Open WebUI 0.11.4 `utils/chat_id.py`, copied verbatim: the pipe asks it whether a chat is saved, because only
+    # a saved chat is reloaded from the database with its structured output, so only there does Open WebUI replay
+    # a recorded tool round. A stand-in that called every id saved would hide the temporary-chat case.
+    chat_id_mod = cast(Any, _ensure_module("open_webui.utils.chat_id"))
+    chat_id_mod.TEMPORARY_CHAT_ID_PREFIX = 'temporary:'
+    chat_id_mod.LEGACY_TEMPORARY_CHAT_ID_PREFIX = 'local:'
+    chat_id_mod.CHANNEL_CHAT_ID_PREFIX = 'channel:'
+    chat_id_mod.TEMPORARY_CHAT_ID_PREFIXES = (
+        chat_id_mod.TEMPORARY_CHAT_ID_PREFIX,
+        chat_id_mod.LEGACY_TEMPORARY_CHAT_ID_PREFIX,
+    )
+    chat_id_mod.NON_SAVED_CHAT_ID_PREFIXES = (*chat_id_mod.TEMPORARY_CHAT_ID_PREFIXES, chat_id_mod.CHANNEL_CHAT_ID_PREFIX)
+
+    def _is_saved_chat_id(chat_id: str | None) -> bool:
+        return bool(chat_id) and not chat_id.startswith(chat_id_mod.NON_SAVED_CHAT_ID_PREFIXES)
+
+    def _is_temporary_chat_id(chat_id: str | None) -> bool:
+        return bool(chat_id) and chat_id.startswith(chat_id_mod.TEMPORARY_CHAT_ID_PREFIXES)
+
+    chat_id_mod.is_saved_chat_id = _is_saved_chat_id
+    chat_id_mod.is_temporary_chat_id = _is_temporary_chat_id
     utils_pkg.ask_user = ask_user_mod
 
     access_control_pkg = cast(Any, _ensure_module("open_webui.utils.access_control"))

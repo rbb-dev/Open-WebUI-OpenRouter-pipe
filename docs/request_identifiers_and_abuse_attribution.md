@@ -80,7 +80,7 @@ This is a **separate mechanism** from the request-body identifiers above: `SEND_
 
 There is **no pipe valve** for this — it is governed entirely by Open WebUI's own setting. Set `ENABLE_FORWARD_USER_INFO_HEADERS=True` in the Open WebUI environment (the same flag that drives header forwarding for native connections). When set, the pipe forwards the headers; when unset (the default), it forwards nothing.
 
-The pipe inherits Open WebUI's header configuration verbatim, including custom header names (such as an `X-Amzn-Bedrock-AgentCore-Runtime-Custom-` prefix) and JWT mode. When `FORWARD_USER_INFO_HEADER_JWT_SECRET` is set, the four `X-OpenWebUI-User-*` headers collapse into one signed `X-OpenWebUI-User-Jwt`.
+The pipe inherits Open WebUI's header configuration verbatim, including custom header names (such as an `X-Amzn-Bedrock-AgentCore-Runtime-Custom-` prefix) and JWT mode. When `FORWARD_USER_INFO_HEADER_JWT_SECRET` is set, the four `X-OpenWebUI-User-*` headers collapse into one signed `X-OpenWebUI-User-Jwt`; the auth-type header below is sent in either mode.
 
 ### Headers sent
 
@@ -90,6 +90,7 @@ The pipe inherits Open WebUI's header configuration verbatim, including custom h
 | `X-OpenWebUI-User-Id` | user GUID |
 | `X-OpenWebUI-User-Email` | email |
 | `X-OpenWebUI-User-Role` | role |
+| `X-OpenWebUI-Auth-Type` | how the request was authenticated to Open WebUI (`api_key` or `jwt`); sent only when Open WebUI recorded it for the request |
 | `X-OpenWebUI-Chat-Id` | current chat id |
 
 ### Privacy and scope

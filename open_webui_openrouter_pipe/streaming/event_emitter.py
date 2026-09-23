@@ -209,7 +209,7 @@ class EventEmitterHandler:
         """
         error_message = str(error_obj)
         self.logger.error("Error: %s", error_message)
-        shown = error_message if show_error_message else ""
+        shown = join_answer_and_card("", error_message) if show_error_message else ""
 
         if show_error_message and event_emitter:
             try:

@@ -10114,10 +10114,14 @@ class TestPhaseMarkerPersistence:
             for event in emitted
             if event.get("type") == "chat:message:delta"
         ]
+        # Each stretch of streamed text goes into a message item the pipe opens first (ledger 158): one for "Done.",
+        # one for the marker line written after the thinking box.
         assert [event.get("item", {}).get("type") for event in added_events] == [
             "function_call",
             "function_call_output",
+            "message",
             "reasoning",
+            "message",
         ]
         assert chat_deltas[-2:] == ["Done.", "\n\n[P:final_answer]: #\n"]
         assert result.endswith("\n\n[P:final_answer]: #\n")
@@ -11970,8 +11974,8 @@ class TestOpenRouterServerToolCards:
         function_outputs = [e for e in added_items if e.get("item", {}).get("type") == "function_call_output"]
         assert len(function_calls) == 1, f"Expected 1 function_call, got {len(function_calls)}"
         assert len(function_outputs) == 1, f"Expected 1 function_call_output, got {len(function_outputs)}"
-        assert function_calls[0]["item"]["call_id"] == "dt-1"
-        assert function_outputs[0]["item"]["call_id"] == "dt-1"
+        assert function_calls[0]["item"]["call_id"] == "srv-dt-1"
+        assert function_outputs[0]["item"]["call_id"] == "srv-dt-1"
         assert function_calls[0]["item"]["status"] == "completed"
         assert function_calls[0]["item"]["name"] == "datetime"
 
@@ -12003,10 +12007,10 @@ class TestOpenRouterServerToolCards:
         added_items = [e for e in emitted if e.get("type") == "response.output_item.added"]
         function_calls = [e for e in added_items
                           if e.get("item", {}).get("type") == "function_call"
-                          and e.get("item", {}).get("call_id") == "ft-1"]
+                          and e.get("item", {}).get("call_id") == "srv-ft-1"]
         function_outputs = [e for e in added_items
                            if e.get("item", {}).get("type") == "function_call_output"
-                           and e.get("item", {}).get("call_id") == "ft-1"]
+                           and e.get("item", {}).get("call_id") == "srv-ft-1"]
         assert len(function_calls) == 1, "Unknown openrouter:* tool should still emit a tool card"
         assert len(function_outputs) == 1
         assert function_calls[0]["item"]["name"] == "future_tool"
@@ -12043,11 +12047,11 @@ class TestOpenRouterServerToolCards:
         outs = [e["item"] for e in emitted
                 if e.get("type") == "response.output_item.added"
                 and e.get("item", {}).get("type") == "function_call_output"
-                and e.get("item", {}).get("call_id") == "adv-1"]
+                and e.get("item", {}).get("call_id") == "srv-adv-1"]
         calls = [e["item"] for e in emitted
                  if e.get("type") == "response.output_item.added"
                  and e.get("item", {}).get("type") == "function_call"
-                 and e.get("item", {}).get("call_id") == "adv-1"]
+                 and e.get("item", {}).get("call_id") == "srv-adv-1"]
         assert len(outs) == 1 and len(calls) == 1
         assert calls[0]["name"] == "advisor"
         assert outs[0]["output"][0]["text"] == "Use a channel-based coordination pattern."
@@ -12069,9 +12073,9 @@ class TestOpenRouterServerToolCards:
         outs = [e["item"] for e in emitted
                 if e.get("type") == "response.output_item.added"
                 and e.get("item", {}).get("type") == "function_call_output"
-                and e.get("item", {}).get("call_id") == "adv-2"]
+                and e.get("item", {}).get("call_id") == "srv-adv-2"]
         assert len(outs) == 1
-        assert outs[0]["output"][0]["text"] == "Advisor call failed: timeout"
+        assert outs[0]["output"][0]["text"] == "Error: the tool call did not complete.\nAdvisor call failed: timeout"
 
     @pytest.mark.asyncio
     async def test_openrouter_subagent_renders_outcome(self, pipe_instance_async):
@@ -12089,11 +12093,11 @@ class TestOpenRouterServerToolCards:
         outs = [e["item"] for e in emitted
                 if e.get("type") == "response.output_item.added"
                 and e.get("item", {}).get("type") == "function_call_output"
-                and e.get("item", {}).get("call_id") == "sub-1"]
+                and e.get("item", {}).get("call_id") == "srv-sub-1"]
         calls = [e["item"] for e in emitted
                  if e.get("type") == "response.output_item.added"
                  and e.get("item", {}).get("type") == "function_call"
-                 and e.get("item", {}).get("call_id") == "sub-1"]
+                 and e.get("item", {}).get("call_id") == "srv-sub-1"]
         assert len(outs) == 1 and len(calls) == 1
         assert calls[0]["name"] == "subagent"
         assert outs[0]["output"][0]["text"] == "Release 2.4 highlights: new streaming API."
@@ -12216,7 +12220,7 @@ class TestOpenRouterServerToolCards:
         outs = [e["item"] for e in emitted
                 if e.get("type") == "response.output_item.added"
                 and e.get("item", {}).get("type") == "function_call_output"
-                and e.get("item", {}).get("call_id") == "wf-err"]
+                and e.get("item", {}).get("call_id") == "srv-wf-err"]
         assert len(outs) == 1
         text = outs[0]["output"][0]["text"]
         assert text != "{}"
@@ -12236,7 +12240,7 @@ class TestOpenRouterServerToolCards:
         outs = [e["item"] for e in emitted
                 if e.get("type") == "response.output_item.added"
                 and e.get("item", {}).get("type") == "function_call_output"
-                and e.get("item", {}).get("call_id") == "ft-2"]
+                and e.get("item", {}).get("call_id") == "srv-ft-2"]
         assert len(outs) == 1
         assert "abc123" in outs[0]["output"][0]["text"]
 
@@ -12254,12 +12258,12 @@ class TestOpenRouterServerToolCards:
         cards = [e for e in emitted
                  if e.get("type") == "response.output_item.added"
                  and e.get("item", {}).get("type") in ("function_call", "function_call_output")
-                 and e.get("item", {}).get("call_id") == "ft-3"]
+                 and e.get("item", {}).get("call_id") == "srv-ft-3"]
         assert len(cards) == 0
 
     @pytest.mark.asyncio
     async def test_openrouter_datetime_card_suppressed_when_show_tool_cards_off(self, monkeypatch, pipe_instance_async):
-        """When SHOW_TOOL_CARDS is False (default), no card events are emitted."""
+        """When SHOW_TOOL_CARDS is off, no card events are emitted."""
         pipe = pipe_instance_async
         pipe.valves.SHOW_TOOL_CARDS = False
         body = ResponsesBody(model="test/model", input=[], stream=True)
@@ -12318,7 +12322,7 @@ class TestOpenRouterServerToolCards:
         fc_id = function_calls[0]["item"]["call_id"]
         fco_id = function_outputs[0]["item"]["call_id"]
         assert fc_id == fco_id, "function_call and function_call_output must have matching call_id"
-        assert fc_id.startswith("st-"), f"Expected UUID fallback prefix, got {fc_id}"
+        assert fc_id.startswith("srv-") and len(fc_id) == len("srv-") + 32, f"Expected the server-tool prefix and a UUID, got {fc_id}"
 
     @pytest.mark.asyncio
     async def test_openrouter_web_fetch_url_in_arguments(self, monkeypatch, pipe_instance_async):
@@ -12349,13 +12353,13 @@ class TestOpenRouterServerToolCards:
         function_calls = [e for e in emitted
                           if e.get("type") == "response.output_item.added"
                           and e.get("item", {}).get("type") == "function_call"
-                          and e.get("item", {}).get("call_id") == "wf-1"]
+                          and e.get("item", {}).get("call_id") == "srv-wf-1"]
         assert len(function_calls) == 1
         assert "https://example.com/page" in function_calls[0]["item"]["arguments"]
         function_outputs = [e for e in emitted
                             if e.get("type") == "response.output_item.added"
                             and e.get("item", {}).get("type") == "function_call_output"
-                            and e.get("item", {}).get("call_id") == "wf-1"]
+                            and e.get("item", {}).get("call_id") == "srv-wf-1"]
         assert len(function_outputs) == 1
         assert "page text content" in function_outputs[0]["item"]["output"][0]["text"]
 
@@ -12421,10 +12425,10 @@ class TestOpenRouterServerToolCards:
         added_items = [e for e in emitted if e.get("type") == "response.output_item.added"]
         fc_for_dup = [e for e in added_items
                       if e.get("item", {}).get("type") == "function_call"
-                      and e.get("item", {}).get("call_id") == "dt-dup"]
+                      and e.get("item", {}).get("call_id") == "srv-dt-dup"]
         fco_for_dup = [e for e in added_items
                        if e.get("item", {}).get("type") == "function_call_output"
-                       and e.get("item", {}).get("call_id") == "dt-dup"]
+                       and e.get("item", {}).get("call_id") == "srv-dt-dup"]
         assert len(fc_for_dup) == 1, "Dedup failed: function_call emitted twice"
         assert len(fco_for_dup) == 1, "Dedup failed: function_call_output emitted twice"
 
@@ -12455,7 +12459,7 @@ class TestOpenRouterServerToolCards:
         function_outputs = [e for e in emitted
                             if e.get("type") == "response.output_item.added"
                             and e.get("item", {}).get("type") == "function_call_output"
-                            and e.get("item", {}).get("call_id") == "ws-empty"]
+                            and e.get("item", {}).get("call_id") == "srv-ws-empty"]
         assert len(function_outputs) == 1
         result_text = function_outputs[0]["item"]["output"][0]["text"]
         assert "citations panel" in result_text
@@ -12556,7 +12560,7 @@ def test_citation_host_strips_www_prefix_not_character_set():
 
 class TestToolCitationHarvesting:
 
-    def _events_for_call(self, name):
+    def _events_for_call(self, name, arguments="{}"):
         return [
             {
                 "type": "response.completed",
@@ -12567,7 +12571,7 @@ class TestToolCitationHarvesting:
                             "call_id": "call-1",
                             "id": "call-1",
                             "name": name,
-                            "arguments": "{}",
+                            "arguments": arguments,
                         }
                     ],
                     "usage": {},
@@ -12590,7 +12594,7 @@ class TestToolCitationHarvesting:
 
         return cycling_stream
 
-    async def _run_tool_round(self, pipe, monkeypatch, *, tool_name, tool_output):
+    async def _run_tool_round(self, pipe, monkeypatch, *, tool_name, tool_output, arguments="{}"):
         body = ResponsesBody(model="test/model", input=[], stream=True)
         valves = pipe.valves.model_copy(update={"TOOL_EXECUTION_MODE": "Pipeline"})
 
@@ -12600,7 +12604,7 @@ class TestToolCitationHarvesting:
         tool_registry = {tool_name: {"callable": mock_tool, "spec": {"name": tool_name}}}
         monkeypatch.setattr(
             Pipe, "send_openrouter_streaming_request",
-            self._cycling_stream(self._events_for_call(tool_name)),
+            self._cycling_stream(self._events_for_call(tool_name, arguments)),
         )
 
         async def mock_execute(calls, registry):
@@ -12672,7 +12676,7 @@ class TestToolCitationHarvesting:
         monkeypatch.setattr(sc, "harvest_tool_citations", spy_harvester)
         monkeypatch.setattr(sc, "get_citation_source_from_tool_result", spy_owui)
         await self._run_tool_round(
-            pipe_instance_async, monkeypatch, tool_name="search_web", tool_output="[]",
+            pipe_instance_async, monkeypatch, tool_name="fetch_url", tool_output="page",
         )
         assert owui_calls["count"] == 1
         assert harvester_calls["count"] == 0

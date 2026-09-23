@@ -172,9 +172,10 @@ async def test_owui_metadata_tools_registry_is_used_for_native_tools(monkeypatch
             assert tool_call_args is not None
             assert tool_call_args["query"] == "hello world"
 
-            # Verify the result is valid (non-streaming with event_emitter=None returns string)
-            assert result is not None
-            assert isinstance(result, str)
+            # A finished non-streamed chat reply comes back as its record (T232): the text plus the structured output
+            assert isinstance(result, dict), result
+            assert isinstance(result["choices"][0]["message"]["content"], str)
+            assert isinstance(result.get("output"), list) and result["output"], result
 
         finally:
             await session.close()

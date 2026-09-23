@@ -6,6 +6,7 @@ from typing import Any, cast
 import pytest
 
 from open_webui_openrouter_pipe import Pipe, ResponsesBody
+from open_webui_openrouter_pipe.core.utils import contains_marker
 from tests.log_capture import emitted
 
 
@@ -39,7 +40,8 @@ FUSION_EVENTS = [
 ]
 
 
-async def _run(pipe, monkeypatch, *, fusion_live_enabled, events=None, plugins=None, endpoint_override=None):
+async def _run(pipe, monkeypatch, *, fusion_live_enabled, events=None, plugins=None, endpoint_override=None,
+               metadata=None):
     monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _fake_stream(events or FUSION_EVENTS))
     body = ResponsesBody(model="openrouter/fusion", input=[], stream=True)
     if plugins is not None:
@@ -50,7 +52,7 @@ async def _run(pipe, monkeypatch, *, fusion_live_enabled, events=None, plugins=N
         emitted.append(event)
 
     result = await pipe._streaming_handler._run_streaming_loop(
-        body, pipe.valves, emitter, metadata={}, tools={},
+        body, pipe.valves, emitter, metadata=metadata or {}, tools={},
         session=cast(Any, object()), user_id="u", fusion_live_enabled=fusion_live_enabled,
         endpoint_override=endpoint_override,
     )
@@ -289,10 +291,12 @@ async def test_fusion_final_answer_streams_over_socket_and_persists_collapsed(mo
 
 
 def _native_message_items(emitted):
+    """The Fusion answer, published whole. A message the pipe opens for text it streams starts in progress."""
     added = [
         e for e in emitted
         if e.get("type") == "response.output_item.added"
         and (e.get("item") or {}).get("type") == "message"
+        and (e.get("item") or {}).get("status") != "in_progress"
     ]
     done = [
         e for e in emitted

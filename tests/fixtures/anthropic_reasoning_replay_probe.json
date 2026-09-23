@@ -191,6 +191,21 @@
           "reasoning",
           "message:user"
         ]
+      },
+      "REC_GROUPED": {
+        "status": 200,
+        "shape": [
+          "message:user",
+          "message:assistant",
+          "reasoning",
+          "function_call",
+          "function_call",
+          "function_call_output",
+          "function_call_output",
+          "reasoning",
+          "message:assistant",
+          "message:user"
+        ]
       }
     }
   },
@@ -253,6 +268,35 @@
           "message:assistant"
         ],
         "error": "This model does not support assistant message prefill. The conversation must end with a user message."
+      },
+      "CONT_ENDS_TEXT": {
+        "status": 400,
+        "shape": [
+          "message:user",
+          "message:assistant",
+          "reasoning",
+          "function_call",
+          "function_call_output",
+          "message:assistant",
+          "reasoning",
+          "function_call",
+          "function_call_output",
+          "message:assistant"
+        ]
+      },
+      "CONT_ENDS_FCO": {
+        "status": 200,
+        "shape": [
+          "message:user",
+          "message:assistant",
+          "reasoning",
+          "function_call",
+          "function_call_output",
+          "message:assistant",
+          "reasoning",
+          "function_call",
+          "function_call_output"
+        ]
       }
     }
   }
