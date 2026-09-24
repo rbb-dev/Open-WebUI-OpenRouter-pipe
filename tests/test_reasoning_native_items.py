@@ -460,7 +460,8 @@ class TestFailedToolCardsStillReachHistory:
         """`server_tool_status` returns "incomplete" for a failed call, and Open WebUI's
         converter only pairs a call with its result when the call sits at completed,
         failed or rejected. Published verbatim, a failed tool round vanishes from the
-        replayed history entirely -- the model never learns the tool was tried.
+        replayed history entirely -- the model never learns the tool was tried. The live
+        card settles to the record's status as soon as its result is out.
         """
         pipe = pipe_instance_async
         clock = _install_clock(monkeypatch)
@@ -483,7 +484,7 @@ class TestFailedToolCardsStillReachHistory:
             for event in _events_of(emitted, "response.output_item.added")
             if (event.get("item") or {}).get("type") == "function_call"
         ]
-        assert live == ["incomplete"]
+        assert live == ["incomplete", "failed"]
 
         completions = _events_of(emitted, "response.completed")
         assert completions

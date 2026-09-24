@@ -18,7 +18,13 @@ Persisted artifacts include (at least):
   says. That setting decides what later turns receive; tool results are stored even while it is off. They are
   encrypted at rest only when `ARTIFACT_ENCRYPTION_KEY` is set and `ENCRYPT_ALL` is on.
 
-A temporary chat keeps nothing. Open WebUI keeps it only in the browser, and the pipe stores none of it either: no tool round, no reasoning and no session log. Rows an earlier release stored for a temporary chat are deleted at the next cleanup, whatever their age.
+A temporary chat keeps none of its content in the pipe's storage. Open WebUI keeps it only in the browser, and the pipe stores none of it (database, disk or file storage): no tool round, no reasoning, no session log and no copy of a picture or file the person attaches. When usage collection (`PIPE_DASHBOARD_USAGE_COLLECT`) or cost snapshots (`COSTS_REDIS_DUMP`) are switched on (both off by default), those records name the chat. Three things are kept the way Open WebUI keeps them:
+
+- Pictures and videos a model generates are saved to Open WebUI's file storage so the chat can show them, as Open WebUI does for pictures its own image generation makes.
+- Pictures and audio an MCP tool returns are saved as files by Open WebUI's own tool handling, as it does in any chat.
+- In Open-WebUI tool mode, Open WebUI calls the pipe again after each round of tool calls it runs in a streamed reply; a reply that is not streamed runs no tools there, and nothing is held for it. The rounds and thinking of the reply being written are held in the pipe's memory, never on disk or in the database, until that reply ends, so those calls hand the model the same turn a saved chat's would. A reply left idle for 15 minutes is dropped. Once the held rounds pass 64 MiB in one Open WebUI worker, the longest-idle replies are dropped first, and for a single reply larger than that, the pipe drops everything held for it so far. For a dropped reply, the model continues without the thinking and rounds held for it.
+
+Rows an earlier release stored for a temporary chat are deleted at the next cleanup, whatever their age.
 
 **Note:** Not every artifact type is replayed verbatim. The pipe filters certain tool artifact types to avoid wasting context window and to reduce provider-side errors.
 

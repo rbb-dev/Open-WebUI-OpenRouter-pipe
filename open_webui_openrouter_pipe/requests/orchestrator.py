@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import functools
 import inspect
 import json
 import logging
@@ -671,13 +672,17 @@ class RequestOrchestrator:
         raw_model = completions_body.model if isinstance(completions_body.model, str) else ""
         raw_norm = ModelFamily.base_model(raw_model) if raw_model else ""
         pre_capability_model_id = vvb.get(raw_norm) if raw_norm and raw_norm in vvb else None
+        request_pipe_meta = __metadata__.get(_PIPE_METADATA_KEY) if isinstance(__metadata__, dict) else None
+        fusion_inner = bool(isinstance(request_pipe_meta, dict) and request_pipe_meta.get("fusion_inner"))
 
         responses_body = await ResponsesBody.from_completions(
             completions_body=completions_body,
 
             **({"chat_id": __metadata__["chat_id"]} if __metadata__.get("chat_id") else {}),
             **({"openwebui_model_id": openwebui_model_id} if openwebui_model_id else {}),
-            artifact_loader=self._pipe._artifact_store._db_fetch,
+            artifact_loader=functools.partial(
+                self._pipe._artifact_store._db_fetch, reply_id=__metadata__.get("message_id")
+            ),
             pruning_turns=valves.TOOL_OUTPUT_RETENTION_TURNS,
             transformer_context=self._pipe,
             request=__request__,
@@ -685,6 +690,7 @@ class RequestOrchestrator:
             event_emitter=__event_emitter__,
             transformer_valves=valves,
             capability_model_id=pre_capability_model_id,
+            rehost_attachments=not fusion_inner,
         )
         responses_body._continued_turn = continued_turn_counts(responses_body.input)
         responses_body._continues_after_marker = ends_on_hidden_marker_line(CONTINUED_REPLY.get())
@@ -1116,8 +1122,7 @@ class RequestOrchestrator:
             name: cfg for name, cfg in owui_registry.items() if not (cfg.get("direct") is True and cfg.get("callable") is None)
         }
 
-        request_pipe_meta = __metadata__.get(_PIPE_METADATA_KEY) if isinstance(__metadata__, dict) else None
-        if isinstance(request_pipe_meta, dict) and request_pipe_meta.get("fusion_inner"):
+        if fusion_inner:
             is_builtin_ask_user = self._pipe._ensure_tool_executor()._is_builtin_ask_user
             owui_registry = {name: cfg for name, cfg in owui_registry.items() if not is_builtin_ask_user(cfg)}
 

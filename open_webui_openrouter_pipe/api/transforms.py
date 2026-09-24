@@ -292,6 +292,7 @@ class ResponsesBody(BaseModel):
         transformer_context: Any | None = None,
         transformer_valves: Pipe.Valves | None = None,
         capability_model_id: str | None = None,
+        rehost_attachments: bool = True,
         **extra_params,
     ) -> ResponsesBody:
         """
@@ -381,6 +382,7 @@ class ResponsesBody(BaseModel):
                 model_id=completions_dict.get("model"),
                 valves=transformer_valves or getattr(transformer_owner, "valves", None),
                 capability_model_id=capability_model_id,
+                rehost_attachments=rehost_attachments,
             )
             if replayed_reasoning_refs:
                 sanitized_params["_replayed_reasoning_refs"] = replayed_reasoning_refs

@@ -65,7 +65,7 @@ Image handling is described in detail in [Multimodal Intake Pipeline](multimodal
   - `IMAGE_INPUT_SELECTION` controls fallback behavior:
     - `user_turn_only`: only user-attached images are forwarded.
     - `user_then_assistant`: if the user turn has no images, the pipe may reuse the most recent image already in the conversation - an assistant image extracted from Markdown image syntax, or one the user attached on an earlier turn - bounded by `IMAGE_REUSE_MAX_TURNS`. An image returned by a tool is never reused this way: it belongs to its tool round (section 5.4), and once a tool has returned a picture, nothing older is reused either.
-- Images attached to the current turn are re-hosted into Open WebUI storage when a storage context is available; an image reused from an earlier turn is inlined as a `data:` URL instead, under a media type the pipe resolves from the bytes. Where a storage context resolves, the block sent upstream carries the bytes, so providers never need to fetch from your Open WebUI host; a request made without one - API automation, for instance - keeps the original payload. Re-hosting on this path covers only what the user attached; images the model generates are stored by the output path.
+- An image the person attached is re-hosted into Open WebUI storage, when a storage context is available, by each request that ends on the person's message: its first answer, each Regenerate and each further model answering it; never in a temporary chat, since Open WebUI uploads nothing a person attaches in a temporary chat to its storage. Internal Fusion's panel models, whose requests belong to no chat, store nothing. A Continue and Open WebUI's calls back after each round of tool calls (Open-WebUI tool mode) send it without storing it again. An image reused from an earlier turn is inlined as a `data:` URL, under a media type the pipe resolves from the bytes. Where a storage context resolves, the block sent upstream carries the bytes, so providers never need to fetch from your Open WebUI host. Without one - API automation, for instance - a request that would re-host the image keeps the original payload, while any other request downloads a remote image and sends its bytes inline, or forwards the link when it cannot download it. Re-hosting on this path covers only what the user attached; images the model generates are stored by the output path.
 
 ### 3.3 Files, audio, and video
 The pipe includes transformer functions for:
@@ -148,10 +148,13 @@ This keeps replay payloads smaller while preserving recency and high-level conte
 ### 5.4 The pipe's own copy of each tool round
 
 Every tool round the pipe runs itself, and every round of an OpenRouter server tool, is also stored by the pipe: the
-call and its output as a pair, behind a hidden marker placed in the answer where the round happened. Three exceptions:
+call and its output as a pair, behind a hidden marker placed in the answer where the round happened. Four exceptions:
 with results kept, a server tool whose own item OpenRouter takes back unchanged -- the advisor, the subagent -- is
-stored as that item instead; image generation, whose picture is already part of the answer, is not stored; and a
-request that belongs to no chat message, such as a direct API call, stores no copy at all. The calls are written when
+stored as that item instead; image generation, whose picture is already part of the answer, is not stored; a
+request that belongs to no chat message, such as a direct API call, stores no copy at all; and a temporary chat
+keeps nothing, so with tool cards off its rounds reach no later request. (In Open-WebUI tool mode the rounds of a
+temporary chat's reply are held in memory until that reply ends, so Open WebUI's calls back after each round of tool
+calls still hand them to the model; see [Persistence](persistence_encryption_and_storage.md).) The calls are written when
 the round starts and each result when its call returns, in call order. So in a streamed reply, Stop keeps a round's
 calls before the first one still running. A call refused before it ran, such as one naming an unknown tool, is answered
 at once and kept wherever it sits. A call the model sends without a name or without arguments is answered only after
@@ -164,7 +167,8 @@ did not complete keeps its failure text; where that text alone would not read as
 `Error: the tool call did not complete.` With no `ARTIFACT_ENCRYPTION_KEY` set, or with `ENCRYPT_ALL` off, the copy
 is stored as plain JSON.
 
-On replay each round reaches the model exactly once:
+On replay each round reaches the model exactly once, except in a temporary chat, where a later turn gets a round
+only through the card Open WebUI keeps for it in the browser, and none with cards off:
 
 - Open WebUI hands back the rounds saved in the message -- the shown cards of a reply -- as ordinary tool messages.
   Where it has handed back a call, the pipe's copy of that call is dropped.
@@ -172,8 +176,10 @@ On replay each round reaches the model exactly once:
   kept. Call ids alone cannot decide this: chats saved before the pipe made the ids it invents unique hold repeated
   ones, because the chat-completions route used to number calls without an id per request. This mark is what keeps the
   rule exact.
-- A round Open WebUI saved unfinished, because the user pressed Stop, is not handed back by Open WebUI's converter, so
-  the pipe's copy carries the round's calls before the first one still running.
+- After Stop in a streamed reply, Open WebUI saves as finished the cards of the calls before the first one still
+  running (the pipe fills a round's cards in call order) and marks that call and every later call unfinished; its
+  converter hands back only the finished calls, and the pipe's copy of them is dropped as a duplicate. With cards
+  off, or where no card was saved, the pipe's copy carries the round's calls before the first one still running.
 - Where the pipe replays OpenRouter's own item for a server tool unchanged (the advisor, with results kept), that item
   wins over the card pair Open WebUI saved for it.
 - An earlier turn's results are withheld by the same rule whichever copy carries them: with `PERSIST_TOOL_RESULTS` off
@@ -251,7 +257,7 @@ is not available for Fusion replies and that regenerating runs Fusion again.
 ## 7. Failure modes (what happens when artifacts are missing)
 
 - If the artifact loader fails (DB errors, network issues), the pipe logs a warning and continues without replaying artifacts for that assistant message.
-- If an individual marker cannot be resolved to a payload (for example after key rotation or cleanup), the pipe logs a warning and skips that artifact.
+- If an individual marker cannot be resolved to a payload (for example after key rotation or cleanup), the pipe logs a warning and skips that artifact. In a temporary chat a later turn's markers resolve to nothing by design, since the pipe keeps none of its rows, and are logged only at debug level.
 
 Operational implications:
 - Conversations may still render in the UI, but upstream requests may lack some historical tool/reasoning context.

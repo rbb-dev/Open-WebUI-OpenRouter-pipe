@@ -25,7 +25,7 @@ import random
 import re
 import secrets
 import time
-from collections import defaultdict, deque
+from collections import OrderedDict, defaultdict, deque
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
@@ -79,6 +79,9 @@ _ENCRYPTED_PAYLOAD_VERSION = 1
 _PAYLOAD_HEADER_SIZE = 1
 
 _REDIS_FLUSH_CHANNEL = "db-flush"
+
+REPLY_MEMORY_IDLE_SECONDS = 900.0
+REPLY_MEMORY_MAX_BYTES = 64 * 1024 * 1024
 
 
 class ArtifactStoreUnavailable(RuntimeError):
@@ -191,6 +194,100 @@ def _detect_redis_config(valves: Any, logger: logging.Logger) -> tuple[str, str,
 # ArtifactStore Class
 
 
+class ReplyMemory:
+    def __init__(
+        self,
+        *,
+        idle_seconds: float = REPLY_MEMORY_IDLE_SECONDS,
+        max_bytes: int = REPLY_MEMORY_MAX_BYTES,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._idle_seconds = idle_seconds
+        self._max_bytes = max_bytes
+        self._clock = clock
+        self._replies: OrderedDict[tuple[Any, Any], tuple[float, dict[str, dict[str, Any]], int]] = OrderedDict()
+        self._sweep: asyncio.TimerHandle | None = None
+
+    def _expire(self) -> None:
+        cutoff = self._clock() - self._idle_seconds
+        for key in [key for key, (touched, _rows, _size) in self._replies.items() if touched < cutoff]:
+            del self._replies[key]
+
+    def _arm(self) -> None:
+        if self._sweep is not None or not self._replies:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        earliest = min(touched for touched, _rows, _size in self._replies.values())
+        self._sweep = loop.call_later(max(0.0, earliest + self._idle_seconds - self._clock()), self._run_sweep)
+
+    def _run_sweep(self) -> None:
+        self._sweep = None
+        self._expire()
+        self._arm()
+
+    def _touch(self, key: tuple[Any, Any]) -> None:
+        _touched, rows, size = self._replies[key]
+        self._replies[key] = (self._clock(), rows, size)
+        self._replies.move_to_end(key)
+
+    def open(self, chat_id: Any, message_id: Any) -> None:
+        self._expire()
+        key = (chat_id, message_id)
+        if key in self._replies:
+            self._touch(key)
+        else:
+            self._replies[key] = (self._clock(), {}, 0)
+        self._arm()
+
+    def is_open(self, chat_id: Any, message_id: Any) -> bool:
+        self._expire()
+        return (chat_id, message_id) in self._replies
+
+    def hold(self, rows: list[dict[str, Any]]) -> list[str]:
+        self._expire()
+        held: list[str] = []
+        for row in rows:
+            key = (row.get("chat_id"), row.get("message_id"))
+            if key not in self._replies:
+                continue
+            payload = json.loads(json.dumps(row.get("payload"), default=str))
+            item_id = row.setdefault("id", generate_item_id())
+            _touched, kept, size = self._replies[key]
+            kept[item_id] = payload
+            self._replies[key] = (self._clock(), kept, size + len(json.dumps(payload)))
+            self._replies.move_to_end(key)
+            held.append(item_id)
+        for key in {(row.get("chat_id"), row.get("message_id")) for row in rows}:
+            if key in self._replies and self._replies[key][2] > self._max_bytes:
+                del self._replies[key]
+        while self._replies and sum(size for _touched, _rows, size in self._replies.values()) > self._max_bytes:
+            self._replies.popitem(last=False)
+        kept_ids = {item_id for _touched, kept, _size in self._replies.values() for item_id in kept}
+        self._arm()
+        return [item_id for item_id in held if item_id in kept_ids]
+
+    def read(self, chat_id: Any, message_id: Any, item_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
+        self._expire()
+        key = (chat_id, message_id)
+        if key not in self._replies:
+            return {}
+        kept = self._replies[key][1]
+        found = {item_id: json.loads(json.dumps(kept[item_id])) for item_id in item_ids if item_id in kept}
+        if found:
+            self._touch(key)
+        return found
+
+    def release(self, chat_id: Any, message_id: Any) -> None:
+        self._replies.pop((chat_id, message_id), None)
+
+    def holds(self, chat_id: Any) -> bool:
+        self._expire()
+        return any(key[0] == chat_id for key in self._replies)
+
+
 class ArtifactStore:
     """Manages artifact persistence, encryption, compression, and caching.
 
@@ -235,6 +332,7 @@ class ArtifactStore:
         self._TOOL_CONTEXT = tool_context_var
         self._user_id_context = user_id_context_var
 
+        self._reply_memory = ReplyMemory()
         self._initialize_encryption_state()
         self._initialize_circuit_breakers()
         self._initialize_redis_state()
@@ -851,7 +949,12 @@ class ArtifactStore:
         payload: dict[str, Any],
     ) -> dict[str, Any] | None:
         """Construct a persistence-ready row dict or return ``None`` when invalid."""
-        if not (chat_id and self._item_model) or is_temporary_chat(chat_id):
+        if not chat_id:
+            return None
+        if is_temporary_chat(chat_id):
+            if not self._reply_memory.is_open(chat_id, message_id):
+                return None
+        elif not self._item_model:
             return None
         if not message_id:
             self.logger.warning("Skipping artifact persistence for chat_id=%s: missing message_id.", chat_id)
@@ -1056,6 +1159,8 @@ class ArtifactStore:
         """Persist artifacts, optionally via Redis write-behind."""
         if not rows:
             return []
+        if is_temporary_chat(rows[0].get("chat_id")):
+            return self._reply_memory.hold(rows)
 
         from open_webui_openrouter_pipe.core.logging_system import SessionLogger
 
@@ -1236,10 +1341,14 @@ class ArtifactStore:
         chat_id: str | None,
         message_id: str | None,
         item_ids: list[str],
+        *,
+        reply_id: str | None = None,
     ) -> dict[str, dict]:
         """Fetch artifacts with Redis cache + retries."""
         if not (chat_id and item_ids):
             return {}
+        if is_temporary_chat(chat_id):
+            return self._reply_memory.read(chat_id, reply_id, item_ids)
 
         cached: dict[str, dict] = {}
         if self._redis_enabled:

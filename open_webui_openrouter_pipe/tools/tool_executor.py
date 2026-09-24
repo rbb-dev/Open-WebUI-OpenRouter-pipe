@@ -165,7 +165,7 @@ class _ToolExecutionContext:
     workers: list[asyncio.Task] = field(default_factory=list)
     timeout_error: str | None = None
     on_complete: Callable[[dict, dict], Awaitable[None]] | None = None
-    card_carries_the_result: bool = False
+    carded_calls: set[str] = field(default_factory=set)
     terminal_files_inline: bool = False
 
 
@@ -644,6 +644,43 @@ class ToolExecutor:
             if event_call is None:
                 return {}, []
 
+            def _browser_call(
+                allowed: set[str],
+                tool_name: str,
+                server_payload: dict[str, Any],
+                send: Callable[[dict[str, Any]], Awaitable[Any]],
+            ) -> Callable[..., Awaitable[Any]]:
+                async def _direct_tool_callable(**kwargs: Any) -> Any:
+                    try:
+                        filtered = {k: v for k, v in kwargs.items() if k in allowed}
+                        session_id = __metadata__.get("session_id")
+
+                        payload = {
+                            "type": "execute:tool",
+                            "data": {
+                                "id": str(uuid.uuid4()),
+                                "name": tool_name,
+                                "params": filtered,
+                                "server": server_payload,
+                                "session_id": session_id,
+                            },
+                        }
+                        reply = await send(payload)
+                        if isinstance(reply, dict) and reply.get("error"):
+                            return [reply, None]
+                        return reply
+                    except Exception as exc:
+                        self.logger.debug("Direct tool '%s' failed: %s", tool_name, exc, exc_info=True)
+                        with contextlib.suppress(Exception):
+                            await self._pipe._event_emitter_handler._emit_notification(
+                                event_emitter,
+                                f"Tool '{tool_name}' failed: {exc}",
+                                level="warning",
+                            )
+                        return [{"error": str(exc)}, None]
+
+                return _direct_tool_callable
+
             for entry in resolved.values():
                 try:
                     if not (isinstance(entry, dict) and entry.get("direct") is True):
@@ -670,54 +707,12 @@ class ToolExecutor:
                     with contextlib.suppress(Exception):
                         server_payload.pop("specs", None)
 
-                    async def _direct_tool_callable(
-                        _allowed_params: set[str] = allowed_params,
-                        _tool_name: str = name,
-                        _server_payload: dict[str, Any] = server_payload,
-                        _metadata: dict[str, Any] = __metadata__,
-                        _event_call: Callable[[dict[str, Any]], Awaitable[Any]] | None = event_call,
-                        _event_emitter: EventEmitter | None = event_emitter,
-                        **kwargs,
-                    ) -> Any:
-                        if _event_call is None:
-                            return [
-                                {"error": "Direct tool execution unavailable."},
-                                None,
-                            ]
-                        try:
-                            filtered = {k: v for k, v in kwargs.items() if k in _allowed_params}
-                            session_id = _metadata.get("session_id")
-
-                            payload = {
-                                "type": "execute:tool",
-                                "data": {
-                                    "id": str(uuid.uuid4()),
-                                    "name": _tool_name,
-                                    "params": filtered,
-                                    "server": _server_payload,
-                                    "session_id": session_id,
-                                },
-                            }
-                            reply = await _event_call(payload)  # type: ignore[misc]
-                            if isinstance(reply, dict) and reply.get("error"):
-                                return [reply, None]
-                            return reply
-                        except Exception as exc:
-                            self.logger.debug("Direct tool '%s' failed: %s", _tool_name, exc, exc_info=True)
-                            with contextlib.suppress(Exception):
-                                await self._pipe._event_emitter_handler._emit_notification(
-                                    _event_emitter,
-                                    f"Tool '{_tool_name}' failed: {exc}",
-                                    level="warning",
-                                )
-                            return [{"error": str(exc)}, None]
-
                     registry_key = f"{name}::direct"
                     direct_registry[registry_key] = {
                         "spec": spec_payload,
                         "direct": True,
                         "server": server_payload,
-                        "callable": _direct_tool_callable,
+                        "callable": _browser_call(allowed_params, name, server_payload, event_call),
                         "origin_key": registry_key,
                     }
                 except Exception:

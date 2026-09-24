@@ -4891,24 +4891,38 @@ def _stored_valves_row(monkeypatch, row: dict) -> None:
     monkeypatch.setattr(owf.Functions, "get_user_valves_by_id_and_user_id", staticmethod(reader))
 
 
+def _stored_valves_unreadable(monkeypatch) -> None:
+    """The stored row cannot be read, so the pipe falls back to what `__user__["valves"]` carries."""
+    import open_webui.models.functions as owf
+
+    async def reader(_id, _user_id, db=None):
+        raise RuntimeError("the database is unavailable")
+
+    monkeypatch.setattr(owf.Functions, "get_user_valves_by_id_and_user_id", staticmethod(reader))
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("as_model", [False, True], ids=["mapping", "UserValves-instance"])
+@pytest.mark.parametrize("source", ["stored-row", "mapping-fallback", "instance-fallback"])
 @pytest.mark.parametrize("requested", [True, False], ids=["opted-in", "opted-out"])
-async def test_zdr_user_valve_injects_provider_preference(monkeypatch, as_model, requested):
-    """The user's ZDR preference reaches the payload, read from the stored row, with `__user__` in the shape Open
-    WebUI sends.
+async def test_zdr_user_valve_injects_provider_preference(monkeypatch, source, requested):
+    """The user's ZDR preference reaches the payload: from the stored row first, and from `__user__["valves"]` when
+    that row cannot be read, in either shape that value may take.
 
     Open WebUI does not hand the pipe a mapping. `functions.py` assigns
     `params["__user__"]["valves"] = function_module.UserValves(**user_valves)` -- a MODEL
     INSTANCE. A reader gated on `isinstance(raw, dict)` reads nothing in production and
     still passes a test that hands it a dict, which is exactly how every user who ticked
-    Zero Data Retention came to be routed without `provider.zdr`. Both shapes are driven
-    here so the mapping-only version of that bug cannot come back.
+    Zero Data Retention came to be routed without `provider.zdr`. The fallback is driven
+    with both shapes so the mapping-only version of that bug cannot come back; the
+    stored-row arm hands `__user__` the opposite answer, so the row must win.
 
     Parametrised over opted-in AND opted-out so a reader hardcoded to either answer
     fails one of the two arms; asserting only the True case is satisfied by `return True`.
     """
-    _stored_valves_row(monkeypatch, {"REQUEST_ZDR": requested})
+    if source == "stored-row":
+        _stored_valves_row(monkeypatch, {"REQUEST_ZDR": requested})
+    else:
+        _stored_valves_unreadable(monkeypatch)
     pipe = Pipe()
 
     try:
@@ -4941,8 +4955,10 @@ async def test_zdr_user_valve_injects_provider_preference(monkeypatch, as_model,
             )
 
             valves_payload = (
-                Pipe.UserValves(REQUEST_ZDR=requested)
-                if as_model
+                {"REQUEST_ZDR": not requested}
+                if source == "stored-row"
+                else Pipe.UserValves(REQUEST_ZDR=requested)
+                if source == "instance-fallback"
                 else {"REQUEST_ZDR": requested}
             )
             body = {
@@ -4968,8 +4984,7 @@ async def test_zdr_user_valve_injects_provider_preference(monkeypatch, as_model,
         assert captured_payloads, "Expected a request payload to be captured"
         provider = captured_payloads[-1].get("provider") or {}
         assert provider.get("zdr") is (True if requested else None), (
-            f"REQUEST_ZDR={requested} sent as "
-            f"{'a UserValves instance' if as_model else 'a mapping'} produced "
+            f"REQUEST_ZDR={requested} read from {source} produced "
             f"provider.zdr={provider.get('zdr')!r}. Open WebUI sends the instance shape, "
             "so a reader that only understands mappings silently drops the user's "
             "Zero Data Retention preference on every real request."

@@ -70,7 +70,7 @@ The pipe **skips persistence** when any of the following are true:
 - `SESSION_LOG_DIR` is empty.
 - `SESSION_LOG_ZIP_PASSWORD` is empty/unconfigured.
 - The request produced no captured log lines.
-- The chat is a temporary chat, which Open WebUI keeps only in the browser; the pipe keeps nothing for it either.
+- The chat is a temporary chat, which Open WebUI keeps only in the browser; the pipe stores nothing for it either. In Open-WebUI tool mode the tool rounds and thinking of a streamed reply are held in memory for that reply only, and dropped when the pipe answers its last call back or after 15 minutes unused.
 
 If persistence is skipped, the request still completes normally; the archive is simply not written.
 

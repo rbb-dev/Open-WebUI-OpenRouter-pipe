@@ -132,8 +132,9 @@ left unfinished by Stop, on a message that is then continued, stays unfinished i
 being repaired, so Open WebUI does not replay it. The events that would repair it cannot reach storage -
 `response.output_item.added` matches ids only within the new output, and `response.output_item.done` replaces by
 position - so an attempt to heal it would duplicate or corrupt the saved copy instead. The model still learns the
-round's calls before the first one still running: the pipe writes a round's calls when the round starts and each
-result when its call returns, in call order, and that copy is replayed in its place (see
+round's calls before the first one still running: Open WebUI saves their cards as finished and hands them back, and
+with cards off the pipe's own copy does (not in a temporary chat, where the pipe keeps no copy), since the pipe writes
+a round's calls when the round starts and each result when its call returns, in call order (see
 [History Reconstruction & Context Replay](history_reconstruction_and_context.md), section 5.4).
 
 ---

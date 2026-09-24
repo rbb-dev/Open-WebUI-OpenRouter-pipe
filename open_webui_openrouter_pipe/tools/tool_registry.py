@@ -323,6 +323,11 @@ def _build_collision_safe_tool_specs_and_registry(
 
     # 2) Direct tool servers (always include; collisions handled later).
     carried_by_request = {id(c["tool_cfg"]) for c in candidates if c.get("tool_cfg") is not None}
+    carried_by_registry = {
+        str(entry.get("origin_name") or (entry.get("spec") or {}).get("name") or "")
+        for _, entry in owui_entries
+        if entry.get("direct") is True and callable(entry.get("callable"))
+    }
     for tool_cfg in direct_entries:
         if id(tool_cfg) in carried_by_request:
             continue
@@ -330,6 +335,8 @@ def _build_collision_safe_tool_specs_and_registry(
         if not spec:
             continue
         origin_name = spec["name"]
+        if origin_name in carried_by_registry:
+            continue
         if (not owui_tool_passthrough) and tool_cfg.get("callable") is None:
             continue
         candidates.append(

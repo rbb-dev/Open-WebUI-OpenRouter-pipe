@@ -500,7 +500,7 @@ async def test_a_continue_retried_without_its_replayed_thinking_still_numbers_it
     async def loaded(*_args: Any, **_kwargs: Any) -> None:
         return None
 
-    async def stored_rows(_chat_id, _message_id, ulids):
+    async def stored_rows(_chat_id, _message_id, ulids, **_kwargs):
         return {ulid: persisted[ulid] for ulid in ulids if ulid in persisted}
 
     monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", rejected_once_then_streams)

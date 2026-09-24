@@ -845,11 +845,11 @@ class Valves(BaseModel):
     )
     SAVE_REMOTE_FILE_URLS: bool = Field(
         default=True,
-        description="When True, remote URLs and data URLs in the file_url field are downloaded/parsed and re-hosted in Open WebUI storage (default; keeps chats replayable if the source link later dies, at the cost of storage growth). When False, file_url values pass through untouched. Note: This valve only affects the file_url field; see SAVE_FILE_DATA_CONTENT for file_data behavior.",
+        description="When True, remote URLs and data URLs in the file_url field are downloaded/parsed and re-hosted in Open WebUI storage (default, at the cost of storage growth). When False, file_url values pass through untouched. Re-hosting happens for each request that ends on the person's message (its first answer, a Regenerate, each further model answering it), and never in a temporary chat. Note: This valve only affects the file_url field; see SAVE_FILE_DATA_CONTENT for file_data behavior.",
     )
     SAVE_FILE_DATA_CONTENT: bool = Field(
         default=True,
-        description="When True, base64 content and URLs in the file_data field are parsed/downloaded and re-hosted in Open WebUI storage to prevent chat history bloat. When False, file_data values pass through untouched. Recommended: Keep enabled to avoid large inline payloads in chat history.",
+        description="When True, base64 content and URLs in the file_data field are parsed/downloaded and re-hosted in Open WebUI storage. When False, file_data values pass through untouched. Re-hosting happens for each request that ends on the person's message (its first answer, a Regenerate, each further model answering it), and never in a temporary chat.",
     )
     BASE64_MAX_SIZE_MB: int = Field(
         default=50,
@@ -1086,7 +1086,7 @@ class Valves(BaseModel):
     PERSIST_REASONING_TOKENS: Literal["disabled", "next_reply", "conversation"] = Field(
         default="conversation",
         title="Reasoning retention",
-        description="Reasoning retention: 'disabled' keeps nothing, 'next_reply' keeps thoughts only until the following assistant reply finishes, and 'conversation' keeps them for the full chat history. A temporary chat keeps no reasoning at all.",
+        description="Reasoning retention: 'disabled' keeps nothing, 'next_reply' keeps thoughts only until the following assistant reply finishes, and 'conversation' keeps them for the full chat history. A temporary chat stores no reasoning; in Open-WebUI tool mode the thinking of a streamed reply is held in memory for that reply only, and dropped when the pipe answers its last call back or after 15 minutes unused.",
     )
     TASK_MODEL_REASONING_EFFORT: Literal["none", "minimal", "low", "medium", "high", "xhigh"] = Field(
         default="low",
@@ -1116,7 +1116,7 @@ class Valves(BaseModel):
     PERSIST_TOOL_RESULTS: bool = Field(
         default=False,
         title="Keep tool results",
-        description="Give the model the full arguments and results of tool calls from earlier turns. When disabled, the model sees each tool call from an earlier turn as its name and a short note on whether it succeeded, and relies on its own earlier answers or runs the tool again. The setting applies in both tool execution modes and decides what the model is handed, not whether results are stored: a shown tool card keeps the full result in the message, and the pipe's own copy of each tool round keeps the full call and result, pictures included, encrypted only while ARTIFACT_ENCRYPTION_KEY is set and ENCRYPT_ALL is on. A temporary chat keeps nothing: the pipe stores none of its tool rounds or thinking.",
+        description="Give the model the full arguments and results of tool calls from earlier turns. When disabled, the model sees each tool call from an earlier turn as its name and a short note on whether it succeeded (an ask_user question and the person's answer always go back), and relies on its own earlier answers or runs the tool again. The setting applies in both tool execution modes and decides what the model is handed, not whether results are stored: a shown tool card keeps the full result in the message, and the pipe's own copy of each tool round keeps the full call and result, pictures included, encrypted only while ARTIFACT_ENCRYPTION_KEY is set and ENCRYPT_ALL is on. A temporary chat stores none of its tool rounds or thinking; in Open-WebUI tool mode the rounds and thinking of a streamed reply are held in memory for that reply only, and dropped when the pipe answers its last call back or after 15 minutes unused.",
     )
     ARTIFACT_ENCRYPTION_KEY: EncryptedStr = Field(
         default_factory=_default_artifact_encryption_key,
@@ -1642,7 +1642,7 @@ class Valves(BaseModel):
         default=5,
         ge=1,
         le=20,
-        description="Maximum number of images one of the person's messages forwards to the provider, counting a picture reused from earlier in the conversation. Pictures a tool returns are not counted: a tool round's pictures always reach the model in full, as in Open WebUI's own tool loop.",
+        description="Maximum number of images one of the person's messages forwards to the provider, counting a picture reused from earlier in the conversation. Pictures a tool returns are not counted: they are never cut by this limit. Whenever a tool round's result reaches the model, all of its pictures go with it, as in Open WebUI's own tool loop.",
     )
     IMAGE_INPUT_SELECTION: Literal["user_turn_only", "user_then_assistant"] = Field(
         default="user_then_assistant",

@@ -80,6 +80,7 @@ from ..storage.multimodal import (
 from ..storage.owui_files import (
     extract_internal_file_id,
     is_internal_file_url,
+    is_temporary_chat,
 )
 
 # Import from persistence
@@ -360,6 +361,7 @@ async def transform_messages_to_input(
     model_id: str | None = None,
     valves: Pipe.Valves | None = None,
     capability_model_id: str | None = None,
+    rehost_attachments: bool = True,
 ) -> list[dict[str, Any]]:
     """
     Build an OpenAI Responses-API `input` array from Open WebUI-style messages.
@@ -522,6 +524,7 @@ async def transform_messages_to_input(
         and not (position and is_tool_image_handoff(messages[position - 1], message))
     ]
     person_images_this_turn = False
+    temporary_chat = is_temporary_chat(chat_id)
     tool_names_by_call_id: dict[str, str] = {
         str(call.get("id")): str((call.get("function") or {}).get("name") or "")
         for message in messages
@@ -651,10 +654,14 @@ async def transform_messages_to_input(
                 )
                 content_blocks = []
 
+            stores_attachments = rehost_attachments and idx == len(messages) - 1 and not temporary_chat
+
             async def _to_input_image(
                 block: dict,
                 *,
-                mode: Literal["attachment", "reuse"] = "reuse" if tool_images else "attachment",
+                mode: Literal["attachment", "reuse", "inline"] = (
+                    "attachment" if stores_attachments and not tool_images else "reuse" if tool_images else "inline"
+                ),
                 msg_id: str | None = msg_id,
             ) -> dict[str, Any] | ImageRefusal | None:
                 """Convert Open WebUI image block into Responses format.
@@ -822,9 +829,10 @@ async def transform_messages_to_input(
                                             "oversized_remote",
                                             subject=url,
                                         )
-                                elif mode == "reuse":
+                                else:
                                     if (
-                                        remembered is None
+                                        mode == "reuse"
+                                        and remembered is None
                                         and memo_key is not None
                                         and len(downloaded["data"])
                                         <= _REUSE_DOWNLOAD_MEMO_MAX_BYTES
@@ -915,7 +923,9 @@ async def transform_messages_to_input(
                         subject=str(block.get("image_url") or "")[:64],
                     )
 
-            async def _to_input_file(block: dict, *, msg_id: str | None = msg_id) -> dict:
+            async def _to_input_file(
+                block: dict, *, msg_id: str | None = msg_id, stores_attachments: bool = stores_attachments
+            ) -> dict:
                 """Convert Open WebUI file blocks into Responses API format.
 
                 Handles file content blocks from multiple sources, downloading remote files
@@ -1042,6 +1052,7 @@ async def transform_messages_to_input(
                         file_data
                         and isinstance(file_data, str)
                         and pipe.valves.SAVE_FILE_DATA_CONTENT
+                        and stores_attachments
                     ):
                         if file_data.startswith("data:"):
                             try:
@@ -1117,6 +1128,7 @@ async def transform_messages_to_input(
                         file_url
                         and isinstance(file_url, str)
                         and pipe.valves.SAVE_REMOTE_FILE_URLS
+                        and stores_attachments
                         and not file_url_set_from_file_data
                     ):
                         if file_url.startswith("data:"):
@@ -2002,7 +2014,8 @@ async def transform_messages_to_input(
 
     if missing_artifact_markers:
         distinct_missing = sorted(set(missing_artifact_markers))
-        logger.warning(
+        logger.log(
+            logging.DEBUG if temporary_chat else logging.WARNING,
             "Missing %d artifact(s) across %d marker reference(s) for chat_id=%s: %s",
             len(distinct_missing),
             len(missing_artifact_markers),

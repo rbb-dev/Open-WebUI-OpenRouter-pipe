@@ -65,18 +65,21 @@ def _valves(pipe, **changes):
 
 async def _stage_a(pipe, monkeypatch, valves, rounds, *, stream=True, emitter=None, tool_status="completed",
                    real_executor=False, signed: bool | Literal["at-completion"] = True, message_id: str | None = "m1",
-                   real_row_builder=False,
+                   real_row_builder=False, real_store=False,
                    chat_id: str = "c1", tool_name: str = "lookup", stop_in_round: int | None = None,
                    rows: dict[str, dict[str, Any]] | None = None, tool_result: Any = RESULT_CANARY,
                    continues_after_marker: bool = False):
     """Run one turn. Each round is ("calls", [call ids]), which reasons, writes and calls; ("quiet-calls", [call ids]),
-    which writes and calls without reasoning; ("search-then-calls", [call ids]), which reasons, has OpenRouter run a web
+    which writes and calls without reasoning; ("silent-calls", [call ids]), which only calls; ("silent-search-then-calls",
+    [call ids]) and ("think-silent-search-then-calls", [call ids]), which have OpenRouter run a web search and then call,
+    writing nothing, the second reasoning first; ("search-then-calls", [call ids]), which reasons, has OpenRouter run a web
     search (item id "ws-<round>"), writes and calls; ("advise-then-calls", [call ids]) and ("search-think-then-calls",
     [call ids]), which reason, have OpenRouter consult its advisor (item id "adv-<round>") or run a web search, reason
     again ("THOUGHT-<round>-AFTER"), write and call; or ("answer", reasons_first). ``signed=False`` streams reasoning with
     no signature, which Anthropic cannot take back; ``signed="at-completion"`` streams it unsigned and signs it only in
     the completed response, as Anthropic does. ``message_id=None`` sends no message id, as an API request does;
-    ``real_row_builder`` builds rows with the store's own `_make_db_row` instead of a stand-in. ``stop_in_round``
+    ``real_row_builder`` builds rows with the store's own `_make_db_row` instead of a stand-in, and ``real_store`` keeps
+    the store's own writer, which holds a temporary chat's reply in memory. ``stop_in_round``
     cancels the turn as Stop does, when that round's model call starts; pass ``rows`` to see what was stored by then.
     Rows are copied when they are written, as the database stores them: a change made to an item afterwards is not in
     its row.
@@ -103,9 +106,13 @@ async def _stage_a(pipe, monkeypatch, valves, rounds, *, stream=True, emitter=No
             return {"type": "response.output_item.done", "item": streamed}
 
         consulting = kind in ("advise-then-calls", "search-think-then-calls")
-        if kind in ("calls", "search-then-calls") or consulting or (kind == "answer" and value):
+        silent = kind in ("silent-calls", "silent-search-then-calls", "think-silent-search-then-calls")
+        if kind in ("calls", "search-then-calls", "think-silent-search-then-calls") or consulting or (
+            kind == "answer" and value
+        ):
             yield thought("")
-        if kind in ("search-then-calls", "search-think-then-calls"):
+        if kind in ("search-then-calls", "search-think-then-calls", "silent-search-then-calls",
+                    "think-silent-search-then-calls"):
             search = {"type": "openrouter:web_search", "id": f"ws-{index}", "status": "completed",
                       "action": {"sources": []}}
             yield {"type": "response.output_item.done", "item": search}
@@ -117,8 +124,9 @@ async def _stage_a(pipe, monkeypatch, valves, rounds, *, stream=True, emitter=No
             output.append(advice)
         if consulting:
             yield thought("-after")
-        yield {"type": "response.output_text.delta", "delta": f"text {index} "}
-        if kind in ("calls", "quiet-calls", "search-then-calls") or consulting:
+        if not silent:
+            yield {"type": "response.output_text.delta", "delta": f"text {index} "}
+        if kind in ("calls", "quiet-calls", "search-then-calls") or consulting or silent:
             for call_id in value:
                 call = {"type": "function_call", "call_id": call_id, "name": tool_name,
                         "arguments": json.dumps({"q": ARGUMENT_CANARY}), "status": "completed"}
@@ -151,7 +159,8 @@ async def _stage_a(pipe, monkeypatch, valves, rounds, *, stream=True, emitter=No
         monkeypatch.setattr(pipe._artifact_store, "_item_model", object())
     else:
         monkeypatch.setattr(pipe._artifact_store, "_make_db_row", make_row)
-    monkeypatch.setattr(pipe._artifact_store, "_db_persist", persist)
+    if not real_store:
+        monkeypatch.setattr(pipe._artifact_store, "_db_persist", persist)
 
     emitted: list[dict[str, Any]] = []
 

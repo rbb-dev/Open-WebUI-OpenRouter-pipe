@@ -3195,24 +3195,27 @@ class Pipe:
         timeout = ask_user_window if ask_user_window is not None else float(context.timeout)
 
         origin_name = str(item.tool_cfg.get("origin_name") or tool_name)
-        displayed_inline_by_a_card = tool_name == "display_file" and (
-            context.card_carries_the_result or context.terminal_files_inline
+        declared = ((item.tool_cfg.get("spec") or {}).get("parameters") or {}).get("properties") or {}
+        call_args = (
+            {key: value for key, value in item.args.items() if key in declared} if isinstance(item.args, dict) else {}
         )
+        carded = str(item.call.get("call_id") or item.call.get("id") or "").strip() in context.carded_calls
+        displayed_inline_by_a_card = tool_name == "display_file" and carded
         args_without_inline = (
-            {key: value for key, value in item.args.items() if key != "inline"}
-            if origin_name == "display_file" and isinstance(item.args, dict) and item.args.get("inline") is True
-            else item.args
+            {key: value for key, value in call_args.items() if key != "inline"}
+            if origin_name == "display_file" and call_args.get("inline") is True
+            else call_args
         )
 
         def _terminal_event_args() -> Any:
-            return item.args if displayed_inline_by_a_card and not item.future.done() else args_without_inline
+            return call_args if displayed_inline_by_a_card and not item.future.done() else args_without_inline
 
         async def _process_and_emit(raw_result: Any) -> tuple[str, list[dict[str, Any]], list[str], list[str]]:
             timing_mark(f"tool_run:{tool_name}:processing")
             try:
                 executor = self._ensure_tool_executor()
                 raw_result = executor._terminal_file_result_safe(
-                    origin_name, item.args, raw_result, item.tool_cfg, context.metadata
+                    origin_name, call_args, raw_result, item.tool_cfg, context.metadata
                 )
                 text, files, embeds = await executor._process_tool_result_safe(
                     tool_name=tool_name,
@@ -3225,9 +3228,7 @@ class Pipe:
                 await executor._emit_terminal_events_safe(
                     origin_name, _terminal_event_args(), text, context.event_emitter
                 )
-                a_card_holds_them = (
-                    context.card_carries_the_result or displayed_inline_by_a_card
-                ) and not item.future.done()
+                a_card_holds_them = carded and not item.future.done()
 
                 # Emit files if any were extracted
                 if files and context.event_emitter and not a_card_holds_them:
@@ -3254,7 +3255,7 @@ class Pipe:
         try:
             timing_mark(f"tool_run:{tool_name}:executing")
             async with deadline:
-                result = await self._call_tool_callable(fn_to_call, item.args)
+                result = await self._call_tool_callable(fn_to_call, call_args)
             unreachable = _reports_transport_failure(result)
             text, files, embeds, pictures = await _process_and_emit(result)
             if unreachable or _tool_result_failed(text):

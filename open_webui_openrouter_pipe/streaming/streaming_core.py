@@ -129,6 +129,7 @@ _REPLAY_DROPPED_OPENING = (
 
 # Imports from storage.persistence
 from ..storage.multimodal import _guess_image_mime_type, image_extension_for_mime
+from ..storage.owui_files import is_temporary_chat
 from ..storage.persistence import normalize_persisted_item
 from ..tools.citation_harvester import (
     BUILTIN_CITATION_TOOLS,
@@ -633,6 +634,9 @@ class StreamingHandler:
         unhandled_citation_notified = False
         chat_id = metadata.get("chat_id")
         message_id = metadata.get("message_id")
+        holds_the_reply = bool(owui_tool_passthrough and body.stream and message_id and is_temporary_chat(chat_id))
+        if holds_the_reply:
+            self._pipe._artifact_store._reply_memory.open(chat_id, message_id)
         model_started = asyncio.Event()
         responding_status_sent = False
         provider_status_seen = False
@@ -1010,6 +1014,21 @@ class StreamingHandler:
 
         async def _place_item(item: dict[str, Any]) -> int:
             pending = assistant_message[recorded_message_chars:]
+            if item.get("type") == "function_call" and not strip_hidden_marker_lines(pending).strip():
+                recorded = [*(await _capture_seeded_output() or []), *emitted_output_items]
+                if recorded and recorded[-1].get("type") == "function_call_output":
+                    divider: dict[str, Any] = {
+                        "type": "message",
+                        "id": f"msg-{uuid.uuid4().hex}",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": ""}],
+                    }
+                    await event_emitter({
+                        "type": "response.output_item.added",
+                        "output_index": await _place_item(divider),
+                        "item": divider,
+                    })
             if pending and not strip_hidden_marker_lines(pending).strip():
                 await _capture_seeded_output()
                 emitted_output_items.append(copy.deepcopy(item))
@@ -1112,6 +1131,20 @@ class StreamingHandler:
                 output_item["embeds"] = embeds
             output_index = await _place_item(output_item)
             await event_emitter({"type": "response.output_item.added", "output_index": output_index, "item": output_item})
+            call_item = next(
+                (entry for entry in emitted_output_items
+                 if entry.get("type") == "function_call" and entry.get("call_id") == call_id),
+                None,
+            )
+            if call_item is not None and call_item.get("status") not in OWUI_UNRESOLVABLE_CALL_STATUSES:
+                settled = owui_call_status(status)
+                if call_item.get("status") != settled:
+                    call_item["status"] = settled
+                    await event_emitter({
+                        "type": "response.output_item.added",
+                        "output_index": _output_index(call_item),
+                        "item": copy.deepcopy(call_item),
+                    })
 
         def _handed_to_open_webui(call_id: str) -> bool:
             return bool(emitter_supplied and call_id in calls_carded_this_round)
@@ -2978,8 +3011,8 @@ class StreamingHandler:
                                             )
 
                                 _tool_ctx.on_complete = _on_tool_complete
-                                _tool_ctx.card_carries_the_result = (
-                                    emitter_supplied and bool(valves.SHOW_TOOL_CARDS) and not _tool_ctx.fusion_inner
+                                _tool_ctx.carded_calls = (
+                                    calls_carded_this_round if emitter_supplied and not _tool_ctx.fusion_inner else set()
                                 )
 
                             call_rows_at_start: list[dict[str, Any]] = []
@@ -3020,7 +3053,7 @@ class StreamingHandler:
                             finally:
                                 if _tool_ctx and _tool_ctx.on_complete is not None:
                                     _tool_ctx.on_complete = None
-                                    _tool_ctx.card_carries_the_result = False
+                                    _tool_ctx.carded_calls = set()
 
                         all_function_outputs = list(function_outputs) + list(invalid_call_outputs)
                         budgeted_outputs = [
@@ -3369,6 +3402,8 @@ class StreamingHandler:
                 or (not owui_tool_passthrough)
                 or (owui_tool_passthrough and (not has_function_calls))
             )
+            if holds_the_reply and terminal and not handed_back_for_retry:
+                self._pipe._artifact_store._reply_memory.release(chat_id, message_id)
 
             generation_status = "cancelled" if was_cancelled else ("failed" if error_occurred else "ok")
             if not handed_back_for_retry:

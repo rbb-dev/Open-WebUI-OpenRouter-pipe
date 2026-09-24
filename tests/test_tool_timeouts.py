@@ -117,10 +117,24 @@ def _builtin_ask_user(tool, exposed: str = "ask_user") -> dict[str, Any]:
         "tool_id": "builtin:ask_user",
         "type": "builtin",
         "callable": tool,
-        "spec": {"name": "ask_user", "parameters": {"type": "object", "properties": {}}},
+        "spec": {"name": "ask_user", "parameters": {"type": "object", "properties": {
+            "questions": {"type": "array", "items": {"type": "object"}},
+            "allow_other": {"type": "boolean"},
+            "timeout_ms": {"type": "integer"},
+        }, "required": ["questions"]}},
         "origin_source": "owui_registry_tools",
         "origin_name": "ask_user",
         "exposed_name": exposed,
+    }
+
+
+def _declared(tool) -> dict[str, Any]:
+    """The arguments Open WebUI's spec for a tool declares: its named parameters, without the `__context__` ones Open
+    WebUI binds itself."""
+    return {
+        name: {}
+        for name, parameter in inspect.signature(tool).parameters.items()
+        if parameter.kind in (parameter.POSITIONAL_OR_KEYWORD, parameter.KEYWORD_ONLY) and not name.startswith("__")
     }
 
 
@@ -128,7 +142,7 @@ def _entry(tool, *, tool_type: str, name: str) -> dict[str, Any]:
     return {
         "type": tool_type,
         "callable": tool,
-        "spec": {"name": name, "parameters": {"type": "object", "properties": {}}},
+        "spec": {"name": name, "parameters": {"type": "object", "properties": _declared(tool)}},
         "origin_source": "owui_registry_tools",
         "origin_name": name,
         "exposed_name": name,
@@ -199,7 +213,7 @@ async def _run(pipe, monkeypatch, registry, calls, *, timeout=60.0, batch_timeou
         batch_cap=4,
     )
     context.on_complete = on_complete
-    context.card_carries_the_result = card_carries_the_result
+    context.carded_calls = {str(call.get("call_id")) for call in calls} if card_carries_the_result else set()
     executor = pipe._ensure_tool_executor()
     context.workers.extend(asyncio.create_task(executor._tool_worker_loop(context)) for _ in range(5))
     token = pipe._TOOL_CONTEXT.set(context)

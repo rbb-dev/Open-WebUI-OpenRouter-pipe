@@ -3296,6 +3296,7 @@ class TestToolExecution:
         try:
             # Create minimal context
             context = Mock()
+            context.carded_calls = set()
             context.workers = []
             context.queue = asyncio.Queue()
             context.batch_timeout = None
@@ -3318,6 +3319,8 @@ class TestToolExecution:
             item.args = {}
 
             context = Mock()
+
+            context.carded_calls = set()
             context.timeout = 10.0
             context.user_id = "test_user"
 
@@ -3342,6 +3345,8 @@ class TestToolExecution:
             item.args = {}
 
             context = Mock()
+
+            context.carded_calls = set()
             context.timeout = 10.0
             context.user_id = "test_user"
 
@@ -3405,6 +3410,7 @@ class TestToolExecution:
 
             # Create minimal context
             context = Mock(spec=_ToolExecutionContext)
+            context.carded_calls = set()
             context.user_id = user_id
             context.fusion_inner = False
             context.per_request_semaphore = asyncio.Semaphore(1)
@@ -3437,6 +3443,7 @@ class TestToolExecution:
             item.args = {}
             item.future = asyncio.get_running_loop().create_future()
             context = Mock(spec=_ToolExecutionContext)
+            context.carded_calls = set()
             context.user_id = "test_user_single_shot"
             context.fusion_inner = False
             context.per_request_semaphore = asyncio.Semaphore(1)
@@ -3466,6 +3473,7 @@ class TestToolExecution:
             item.args = {}
             item.future = asyncio.get_running_loop().create_future()
             context = Mock(spec=_ToolExecutionContext)
+            context.carded_calls = set()
             context.user_id = "test_user_mcp_gone"
             context.fusion_inner = False
             context.per_request_semaphore = asyncio.Semaphore(1)
@@ -3504,6 +3512,8 @@ class TestToolExecution:
                 return item
 
             context = Mock(spec=_ToolExecutionContext)
+
+            context.carded_calls = set()
             context.user_id = "test_user_nameless"
             context.fusion_inner = False
             context.per_request_semaphore = asyncio.Semaphore(1)
@@ -3538,6 +3548,7 @@ class TestToolExecution:
             item.args = {}
             item.future = asyncio.get_running_loop().create_future()
             context = Mock(spec=_ToolExecutionContext)
+            context.carded_calls = set()
             context.user_id = "test_user_db_down"
             context.fusion_inner = False
             context.per_request_semaphore = asyncio.Semaphore(1)
@@ -3573,6 +3584,7 @@ class TestToolExecution:
             item.args = {}
             item.future = asyncio.get_running_loop().create_future()
             context = Mock(spec=_ToolExecutionContext)
+            context.carded_calls = set()
             context.user_id = "test_user_mcp_raise"
             context.fusion_inner = False
             context.per_request_semaphore = asyncio.Semaphore(1)
@@ -3610,6 +3622,7 @@ class TestToolExecution:
             item.args = {}
             item.future = asyncio.get_running_loop().create_future()
             context = Mock(spec=_ToolExecutionContext)
+            context.carded_calls = set()
             context.user_id = "u-fallback"
             context.fusion_inner = False
             context.per_request_semaphore = asyncio.Semaphore(1)
@@ -3650,6 +3663,7 @@ class TestToolExecution:
             item.args = {}
             item.future = asyncio.get_running_loop().create_future()
             context = Mock(spec=_ToolExecutionContext)
+            context.carded_calls = set()
             context.user_id = "u-fallback-obj"
             context.fusion_inner = False
             context.per_request_semaphore = asyncio.Semaphore(1)

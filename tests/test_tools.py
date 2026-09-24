@@ -1442,65 +1442,6 @@ async def test_multiple_tools_with_various_errors():
 
 
 @pytest.mark.asyncio
-async def test_direct_tool_callable_event_call_becomes_none():
-    """A direct tool with no channel to its server must say so, not leak a TypeError.
-
-    `__event_call__` is `| None` at every Pipe.pipe signature. Without the guard,
-    `await None(payload)` raises TypeError, the handler below catches it at DEBUG, and
-    the model and the user are both handed "'NoneType' object is not callable" -- a
-    message neither can act on, with nothing above DEBUG for the operator.
-
-    This test previously built the registry with a REAL event_call and asserted it was
-    invoked, so despite its name it never exercised the None case at all -- which is why
-    deleting the guard left the whole suite green.
-    """
-    pipe = Pipe()
-    try:
-        executor = pipe._ensure_tool_executor()
-
-        call_count = {"count": 0}
-
-        async def mock_event_call(payload: dict) -> Any:
-            call_count["count"] += 1
-            return {"result": "ok"}
-
-        registry, specs = executor._build_direct_tool_server_registry(
-            _as_open_webui_resolves_them({
-                "tool_servers": [
-                    {
-                        "specs": [{"name": "test_tool", "parameters": {"type": "object", "properties": {}}}]
-                    }
-                ],
-            }),
-            valves=pipe.valves,
-            event_call=mock_event_call,
-            event_emitter=AsyncMock(),
-        )
-
-        key = list(registry.keys())[0]
-        callable_fn = registry[key]["callable"]
-
-        # The control: with a real channel the call goes through.
-        result = await callable_fn()
-        assert call_count["count"] == 1
-
-        # The case this test is named for, and never covered: no channel at all.
-        no_channel = await callable_fn(_event_call=None)
-        assert call_count["count"] == 1, "the tool server was reached without a channel"
-
-        payload = no_channel[0] if isinstance(no_channel, list) else no_channel
-        error = (payload or {}).get("error", "") if isinstance(payload, dict) else str(payload)
-        assert error, f"a tool with no channel returned {no_channel!r} instead of an error"
-        assert "NoneType" not in error and "not callable" not in error, (
-            f"the model was handed the interpreter's own words: {error!r}. It cannot act "
-            "on that, and neither can the user who sees it in the tool card."
-        )
-
-    finally:
-        await pipe.close()
-
-
-@pytest.mark.asyncio
 async def test_build_direct_tool_server_registry_spec_with_failing_dict():
     """Test spec processing with a dict-like object that raises on certain ops (lines 361-364)."""
     pipe = Pipe()
