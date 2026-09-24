@@ -10,7 +10,7 @@ Measured against the real ``transform_messages_to_input`` before the fix, with
     'HTTPS://secure.example.com/y.png'    downloads=[]
 
 Two invariants broke at once. ``ALLOW_INSECURE_HTTP``'s "disabled by default" never
-consulted its own gate for ``HTTP://``, and the rehosting of remote images -- which is
+consulted its own gate for ``HTTP://``, and the download of remote images -- which is
 what keeps a third-party URL from being handed to OpenRouter to fetch itself -- never
 fired for ``HTTPS://``, so the URL went upstream verbatim and OpenRouter fetched it.
 
@@ -40,9 +40,6 @@ from open_webui_openrouter_pipe.storage import multimodal as mm
 from open_webui_openrouter_pipe.storage.owui_files import InlinedFile, is_internal_file_url
 
 INSECURE_HOST = "insecure.example.test"
-SECURE_HOST = "secure.example.test"
-
-
 @pytest.fixture(autouse=True)
 def _reset_model_specs():
     ModelFamily.set_dynamic_specs({})
@@ -176,7 +173,7 @@ def _vision_pipe(pipe, *, allow=False, hosts=""):
     return pipe
 
 
-async def _transform_block(pipe, block, *, request=None, user=None):
+async def _transform_block(pipe, block, *, user=None):
     async def _emitter(_event):
         return None
 
@@ -186,7 +183,6 @@ async def _transform_block(pipe, block, *, request=None, user=None):
         model_id="vision-model",
         valves=pipe.valves,
         event_emitter=_emitter,
-        __request__=request,
         user_obj=user,
     )
 
@@ -234,46 +230,6 @@ async def test_cleartext_http_images_are_gated_however_the_scheme_is_typed(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("scheme", ["https", "HTTPS", "hTTps"])
-async def test_every_remote_image_is_downloaded_and_rehosted(
-    pipe_instance_async, mock_request, mock_user, monkeypatch, scheme
-):
-    """A remote image the pipe can inline is fetched and rehosted, whatever the scheme's case.
-
-    ``HTTPS://`` was never downloaded, so the URL went upstream verbatim and OpenRouter
-    fetched the third-party host directly -- chat-history bloat plus an outbound fetch
-    from a host the operator never vetted.
-
-    The assertion is on the spy record rather than the returned block: a block that
-    merely LOOKS rehosted proves nothing about whether bytes were actually pulled.
-    """
-    pipe = _vision_pipe(pipe_instance_async)
-    url = f"{scheme}://{SECURE_HOST}/y.png"
-
-    download = AsyncMock(return_value={"data": b"\x89PNG", "mime_type": "image/png", "url": url})
-    upload = AsyncMock(return_value="stored-1")
-    inline = AsyncMock(return_value=InlinedFile(data_url="data:image/png;base64,AAAA", filename="y.png"))
-    monkeypatch.setattr(pipe._multimodal_handler, "_download_remote_url", download)
-    monkeypatch.setattr(pipe._file_gateway, "upload_to_owui_storage", upload)
-    monkeypatch.setattr(pipe._file_gateway, "inline_owui_file_id", inline)
-    monkeypatch.setattr(
-        pipe._file_gateway,
-        "resolve_storage_context",
-        AsyncMock(return_value=(mock_request, mock_user)),
-    )
-
-    images = _images(await _transform_block(pipe, _image_block(url), request=mock_request, user=mock_user))
-
-    assert [c.args[0] for c in download.await_args_list] == [url], (
-        f"{url!r} was never downloaded, so it is on its way to OpenRouter verbatim"
-    )
-    upload.assert_awaited_once()
-    assert images and images[0]["image_url"].startswith("data:image/png"), (
-        f"the rehosted image did not replace the remote URL: {images!r}"
-    )
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("scheme", ["http", "HTTP", "Http"])
 @pytest.mark.parametrize(
     ("allow", "hosts", "kept"),
@@ -304,83 +260,6 @@ async def test_a_foreign_url_carrying_the_owui_file_path_is_still_a_foreign_url(
 
     assert bool(images) is kept, f"url={url} ALLOW_INSECURE_HTTP={allow}: got {images!r}"
     inline.assert_not_awaited()
-
-
-# ── the file path, end to end ─────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("field", ["file_url", "file_data"])
-@pytest.mark.parametrize(
-    ("scheme", "host", "downloads"),
-    [
-        ("http", INSECURE_HOST, False),
-        ("HTTP", INSECURE_HOST, False),
-        ("https", SECURE_HOST, True),
-        ("HTTPS", SECURE_HOST, True),
-    ],
-)
-async def test_remote_files_follow_the_same_gate_on_both_carrying_fields(
-    pipe_instance_async, monkeypatch, field, scheme, host, downloads
-):
-    """``file_url`` and ``file_data`` each carry a remote URL through their own pair of
-    branches, and each pair had its own copy of the prefix test.
-
-    Cleartext must reach the gate and be refused; TLS must be pulled down and re-hosted.
-    One row cannot be satisfied by a constant that satisfies the other.
-    """
-    pipe = _vision_pipe(pipe_instance_async)
-    pipe.valves.SAVE_REMOTE_FILE_URLS = True
-    pipe.valves.SAVE_FILE_DATA_CONTENT = True
-    url = f"{scheme}://{host}/manual.pdf"
-
-    download = AsyncMock(return_value=None)
-    monkeypatch.setattr(pipe._multimodal_handler, "_download_remote_url", download)
-
-    await _transform_block(pipe, {"type": "input_file", field: url, "filename": "manual.pdf"})
-
-    assert [c.args[0] for c in download.await_args_list] == ([url] if downloads else []), (
-        f"{field}={url!r}: expected {'a download' if downloads else 'no download'}"
-    )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("field", ["file_url", "file_data"])
-@pytest.mark.parametrize(
-    ("scheme", "host", "survives"),
-    [
-        ("http", INSECURE_HOST, False),
-        ("HTTP", INSECURE_HOST, False),
-        ("https", SECURE_HOST, True),
-        ("HTTPS", SECURE_HOST, True),
-    ],
-)
-async def test_a_file_that_is_never_rehosted_is_still_gated(
-    pipe_instance_async, monkeypatch, field, scheme, host, survives
-):
-    """With SAVE_REMOTE_FILE_URLS and SAVE_FILE_DATA_CONTENT off, the download branches
-    never run and a SECOND pair of cleartext gates further down is what refuses the URL.
-
-    Those two sites had their own copies of the prefix test, and nothing above reaches
-    them, so they need their own row: the block comes back with the field STRIPPED when
-    the gate refuses and carrying the URL verbatim when it does not.
-    """
-    pipe = _vision_pipe(pipe_instance_async)
-    pipe.valves.SAVE_REMOTE_FILE_URLS = False
-    pipe.valves.SAVE_FILE_DATA_CONTENT = False
-    monkeypatch.setattr(
-        pipe._multimodal_handler, "_download_remote_url", AsyncMock(return_value=None)
-    )
-    url = f"{scheme}://{host}/manual.pdf"
-
-    transformed = await _transform_block(
-        pipe, {"type": "input_file", field: url, "filename": "manual.pdf"}
-    )
-    block = transformed[0]["content"][0]
-
-    assert block.get(field) == (url if survives else None), (
-        f"{field}={url!r}: got {block!r}"
-    )
 
 
 # ── the audio path ────────────────────────────────────────────────────────────

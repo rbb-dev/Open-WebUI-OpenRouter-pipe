@@ -685,12 +685,10 @@ class RequestOrchestrator:
             ),
             pruning_turns=valves.TOOL_OUTPUT_RETENTION_TURNS,
             transformer_context=self._pipe,
-            request=__request__,
             user_obj=user_model,
             event_emitter=__event_emitter__,
             transformer_valves=valves,
             capability_model_id=pre_capability_model_id,
-            rehost_attachments=not fusion_inner,
         )
         responses_body._continued_turn = continued_turn_counts(responses_body.input)
         responses_body._continues_after_marker = ends_on_hidden_marker_line(CONTINUED_REPLY.get())

@@ -163,6 +163,8 @@ In multi-worker deployments (multiple uvicorn workers behind a load balancer), e
 2. **Publishing** — no local viewers, but another worker set the active flag: write this worker's slice to `{ns}:dashboard:worker:{pid}` every 2s so the emitting worker can aggregate it. On the idle→active transition the emitter waits ~1s so freshly woken workers land their first slice before the first aggregate.
 3. **Idle** — no viewers anywhere: one Redis `EXISTS` per 5s, woken instantly via the `{ns}:dashboard:wake` pub/sub channel — near-zero overhead.
 
+A worker's slice expires 10s after it is written. Besides that worker's collector figures it carries its live session rows and the cost of each finished background task whose chat's row is not on that worker, both keyed by chat id, so the emitting worker can add a task's cost to its chat's row; the emitter then drops the id from every row before anything reaches the browser. A temporary chat is never written under its own id: its rows and task costs carry an anonymous stand-in instead, an HMAC of the chat id keyed by `WEBUI_SECRET_KEY` under a label only the dashboard uses, so it is neither the chat id, nor the socket id Open WebUI builds that id from, nor the key the pipe sends OpenRouter. Without `WEBUI_SECRET_KEY`, a temporary chat's rows carry no id and none of its task costs are published, so a task cost it ran on another worker is left out of its row. Saved and channel chats keep their own id. The worker's own memory always keeps the real id; only what it writes to Redis carries the stand-in.
+
 In single-worker mode (no Redis), the worker with viewers emits directly from its local collectors — the same payload shape, minus the multi-worker `workers` table.
 
 ### Payload Shape
@@ -686,6 +688,7 @@ The Live and Usage tabs are backed by two layers: an in-memory `SessionTracker` 
 | Field | Type | Notes |
 |-------|------|-------|
 | `user` | str | User name (or email, or `?`) |
+| `chat_id` | str | The chat the request belongs to, used to add a background task's cost to its chat's row; removed before the rows reach the browser. In a worker's Redis slice a temporary chat carries an anonymous stand-in, or nothing without `WEBUI_SECRET_KEY` (see Multi-Worker Aggregation) |
 | `model_id` | str | Raw model id |
 | `model_name` | str | Server-resolved display name |
 | `kind` | str | `chat` or `task` |
@@ -706,7 +709,7 @@ The Live and Usage tabs are backed by two layers: an in-memory `SessionTracker` 
 | `started_at` | datetime | Request start |
 | `kind` | str(8) | `chat` or `task` (indexed) |
 | `user_id`, `user_name` | str | Caller identity (`user_id` indexed) |
-| `chat_id`, `session_id` | str | Conversation identifiers (`chat_id` indexed) |
+| `chat_id`, `session_id` | str | Conversation identifiers (`chat_id` indexed). Both are written empty for a temporary chat (as `is_temporary_chat` decides; `channel:` chats keep them), whose row keeps every other column; `UsageStore` applies this on every write, and its purge clears them from rows an earlier release wrote, keeping the rows |
 | `model_id` | str(128) | Raw model id (indexed) |
 | `task_name` | str(32) / null | Task type for `kind="task"` rows |
 | `status` | str(12) | `ok` / `failed` / `cancelled` |

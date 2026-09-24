@@ -11,6 +11,7 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from ..storage.owui_files import is_temporary_chat
 from ..storage.persistence import _sanitize_table_fragment
 from .timing_logger import timed
 from .utils import _await_if_needed
@@ -99,9 +100,10 @@ async def maybe_dump_costs_snapshot(
         "usage": snapshot_usage,
         "ts": ts,
     }
-    if chat_id:
+    temporary = is_temporary_chat(chat_id)
+    if chat_id and not temporary:
         payload["chat_id"] = str(chat_id)
-    if message_id:
+    if message_id and not temporary:
         payload["message_id"] = str(message_id)
     if kind:
         payload["kind"] = str(kind)

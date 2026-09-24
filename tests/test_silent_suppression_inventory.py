@@ -84,7 +84,6 @@ _EXPECTED: dict[str, int] = {
     # all of which suppress for the same reason: a failure here has no consequence
     # beyond itself, and letting it out would skip the cleanup that follows.
     "pipe.py": 20,
-    "requests/transformer.py": 2,
     "storage/persistence.py": 3,
     # 1st: the caller-supplied fallback in `_emit_templated_error_event`. It is reached only because the
     # admin's own template already failed to render, and the generic card below it is the answer if the

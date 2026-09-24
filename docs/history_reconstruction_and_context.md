@@ -22,7 +22,7 @@ Inputs (high level):
   - `pruning_turns` (from `TOOL_OUTPUT_RETENTION_TURNS`)
   - `replayed_reasoning_refs` (for `PERSIST_REASONING_TOKENS="next_reply"` cleanup)
 - Runtime context for multimodal conversion:
-  - `__request__`, `user_obj`, `event_emitter`
+  - `user_obj`, `event_emitter`
   - `valves` (or defaults to `self.valves`)
 
 Output:
@@ -65,7 +65,7 @@ Image handling is described in detail in [Multimodal Intake Pipeline](multimodal
   - `IMAGE_INPUT_SELECTION` controls fallback behavior:
     - `user_turn_only`: only user-attached images are forwarded.
     - `user_then_assistant`: if the user turn has no images, the pipe may reuse the most recent image already in the conversation - an assistant image extracted from Markdown image syntax, or one the user attached on an earlier turn - bounded by `IMAGE_REUSE_MAX_TURNS`. An image returned by a tool is never reused this way: it belongs to its tool round (section 5.4), and once a tool has returned a picture, nothing older is reused either.
-- An image the person attached is re-hosted into Open WebUI storage, when a storage context is available, by each request that ends on the person's message: its first answer, each Regenerate and each further model answering it; never in a temporary chat, since Open WebUI uploads nothing a person attaches in a temporary chat to its storage. Internal Fusion's panel models, whose requests belong to no chat, store nothing. A Continue and Open WebUI's calls back after each round of tool calls (Open-WebUI tool mode) send it without storing it again. An image reused from an earlier turn is inlined as a `data:` URL, under a media type the pipe resolves from the bytes. Where a storage context resolves, the block sent upstream carries the bytes, so providers never need to fetch from your Open WebUI host. Without one - API automation, for instance - a request that would re-host the image keeps the original payload, while any other request downloads a remote image and sends its bytes inline, or forwards the link when it cannot download it. Re-hosting on this path covers only what the user attached; images the model generates are stored by the output path.
+- An image the person attached is never written to Open WebUI storage, in any chat and by any request of a turn. A `data:` URL is sent as it came; a remote image is downloaded and its bytes sent inline, or its link is forwarded when it cannot be downloaded; an Open WebUI file URL is read with the requester's access and inlined, so providers never need to fetch from your Open WebUI host. An image reused from an earlier turn is inlined as a `data:` URL, under a media type the pipe resolves from the bytes. Images the model generates are stored by the output path.
 
 ### 3.3 Files, audio, and video
 The pipe includes transformer functions for:
@@ -73,7 +73,7 @@ The pipe includes transformer functions for:
 - `input_audio` / `audio` → `input_audio`
 - `video_url` / `video` → `video_url`
 
-The security/size/SSRF rules (including HTTPS-only defaults) and re-hosting behaviors are documented in [Multimodal Intake Pipeline](multimodal_ingestion_pipeline.md).
+The security/size/SSRF rules (including HTTPS-only defaults) are documented in [Multimodal Intake Pipeline](multimodal_ingestion_pipeline.md).
 
 ---
 

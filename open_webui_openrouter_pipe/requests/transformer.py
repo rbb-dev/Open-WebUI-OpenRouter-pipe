@@ -13,16 +13,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
-import contextlib
 import json
 import logging
-import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
-from urllib.parse import urlparse
-
-from starlette.requests import Request
 
 # Import from config
 from ..core.config import (
@@ -74,7 +69,6 @@ from ..models.registry import ModelFamily, supports_phase_model
 from ..storage.multimodal import (
     _SNIFF_PREFIX_BYTES,
     _sniff_evidence,
-    image_extension_for_mime,
     resolve_download_type,
 )
 from ..storage.owui_files import (
@@ -354,14 +348,12 @@ async def transform_messages_to_input(
     artifact_loader: Callable[[str | None, str | None, list[str]], Awaitable[dict[str, dict[str, Any]]]] | None = None,
     pruning_turns: int = 0,
     replayed_reasoning_refs: list[tuple[str, str]] | None = None,
-    __request__: Request | None = None,
     user_obj: Any | None = None,
     event_emitter: Callable | None = None,
     *,
     model_id: str | None = None,
     valves: Pipe.Valves | None = None,
     capability_model_id: str | None = None,
-    rehost_attachments: bool = True,
 ) -> list[dict[str, Any]]:
     """
     Build an OpenAI Responses-API `input` array from Open WebUI-style messages.
@@ -654,15 +646,10 @@ async def transform_messages_to_input(
                 )
                 content_blocks = []
 
-            stores_attachments = rehost_attachments and idx == len(messages) - 1 and not temporary_chat
-
             async def _to_input_image(
                 block: dict,
                 *,
-                mode: Literal["attachment", "reuse", "inline"] = (
-                    "attachment" if stores_attachments and not tool_images else "reuse" if tool_images else "inline"
-                ),
-                msg_id: str | None = msg_id,
+                mode: Literal["reuse", "inline"] = "reuse" if tool_images else "inline",
             ) -> dict[str, Any] | ImageRefusal | None:
                 """Convert Open WebUI image block into Responses format.
 
@@ -708,39 +695,6 @@ async def transform_messages_to_input(
                                 subject=url,
                             )
 
-                    storage_context: tuple[Request | None, Any | None] | None = None
-
-                    async def _get_storage_context() -> tuple[Request | None, Any | None]:
-                        """Resolve (request,user) tuple only once for storage uploads."""
-                        nonlocal storage_context
-                        if storage_context is None:
-                            storage_context = await pipe._file_gateway.resolve_storage_context(__request__, user_obj)
-                        return storage_context
-
-                    async def _save_image_bytes(
-                        payload: bytes,
-                        mime_type: str,
-                        preferred_name: str,
-                        status_message: str,
-                    ) -> str | None:
-                        """Upload image bytes to Open WebUI storage and emit status."""
-                        upload_request, upload_user = await _get_storage_context()
-                        if not (upload_request and upload_user):
-                            return None
-                        stored_id = await pipe._file_gateway.upload_to_owui_storage(
-                            request=upload_request,
-                            user=upload_user,
-                            file_data=payload,
-                            filename=preferred_name,
-                            mime_type=mime_type,
-                            chat_id=chat_id,
-                            message_id=msg_id,
-                            owui_user_id=getattr(user_obj, "id", None),
-                        )
-                        if stored_id:
-                            await pipe._event_emitter_handler._emit_status(event_emitter, status_message, done=False)
-                        return stored_id
-
                     if url.startswith("data:"):
                         try:
                             if ";base64," not in url:
@@ -761,21 +715,11 @@ async def transform_messages_to_input(
                                     "oversized_inline" if oversized else "undecodable_inline",
                                     subject=url[:64],
                                 )
-                            if mode == "attachment":
-                                ext = image_extension_for_mime(parsed["mime_type"])
-                                stored_id = await _save_image_bytes(
-                                    parsed["data"],
-                                    parsed["mime_type"],
-                                    f"image-{uuid.uuid4().hex}.{ext}",
-                                    StatusMessages.IMAGE_BASE64_SAVED,
-                                )
-                                if stored_id:
-                                    owui_file_id = stored_id
                         except Exception as exc:
                             pipe.logger.exception("Failed to process base64 image")
                             await pipe._ensure_error_formatter()._emit_error(
                                 event_emitter,
-                                f"Failed to save base64 image: {exc}",
+                                f"Failed to process base64 image: {exc}",
                                 show_error_message=False
                             )
 
@@ -796,65 +740,38 @@ async def transform_messages_to_input(
                             )
                             if downloaded:
                                 oversized = len(downloaded["data"]) > max_inline_bytes
-                                if oversized and mode != "attachment":
+                                if oversized:
                                     return ImageRefusal(
                                         f"{len(downloaded['data'])} bytes, over the "
                                         f"{max_inline_bytes}-byte limit, so it was not sent",
                                         "oversized_remote",
                                         subject=url,
                                     )
-                                if mode == "attachment":
-                                    filename = url.split("/")[-1].split("?")[0] or f"image-{uuid.uuid4().hex}"
-                                    if "." not in filename:
-                                        ext = image_extension_for_mime(downloaded["mime_type"])
-                                        filename = f"{filename}.{ext}"
-
-                                    stored_id = await _save_image_bytes(
-                                        downloaded["data"],
-                                        downloaded["mime_type"],
-                                        filename,
-                                        StatusMessages.IMAGE_REMOTE_SAVED,
+                                if (
+                                    mode == "reuse"
+                                    and remembered is None
+                                    and memo_key is not None
+                                    and len(downloaded["data"])
+                                    <= _REUSE_DOWNLOAD_MEMO_MAX_BYTES
+                                ):
+                                    held = sum(
+                                        len(data) for data, _ in _reuse_download_memo.values()
                                     )
-                                    if stored_id:
-                                        owui_file_id = stored_id
-                                    if oversized:
-                                        outcome = (
-                                            "archived but not sent"
-                                            if stored_id
-                                            else "not sent, and it could not be archived either"
-                                        )
-                                        return ImageRefusal(
-                                            f"{len(downloaded['data'])} bytes, over the "
-                                            f"{max_inline_bytes}-byte limit, so it was {outcome}",
-                                            "oversized_remote",
-                                            subject=url,
-                                        )
-                                else:
-                                    if (
-                                        mode == "reuse"
-                                        and remembered is None
-                                        and memo_key is not None
-                                        and len(downloaded["data"])
-                                        <= _REUSE_DOWNLOAD_MEMO_MAX_BYTES
+                                    while (
+                                        _reuse_download_memo
+                                        and held + len(downloaded["data"])
+                                        > _REUSE_DOWNLOAD_MEMO_MAX_BYTES
                                     ):
-                                        held = sum(
-                                            len(data) for data, _ in _reuse_download_memo.values()
-                                        )
-                                        while (
-                                            _reuse_download_memo
-                                            and held + len(downloaded["data"])
-                                            > _REUSE_DOWNLOAD_MEMO_MAX_BYTES
-                                        ):
-                                            _, evicted = _reuse_download_memo.popitem(last=False)
-                                            held -= len(evicted[0])
-                                        _reuse_download_memo[memo_key] = (
-                                            downloaded["data"],
-                                            downloaded.get("mime_type") or "",
-                                        )
-                                    url = (
-                                        f"data:{downloaded.get('mime_type') or ''};base64,"
-                                        + base64.b64encode(downloaded["data"]).decode("ascii")
+                                        _, evicted = _reuse_download_memo.popitem(last=False)
+                                        held -= len(evicted[0])
+                                    _reuse_download_memo[memo_key] = (
+                                        downloaded["data"],
+                                        downloaded.get("mime_type") or "",
                                     )
+                                url = (
+                                    f"data:{downloaded.get('mime_type') or ''};base64,"
+                                    + base64.b64encode(downloaded["data"]).decode("ascii")
+                                )
                         except Exception as exc:
                             pipe.logger.exception("Failed to download remote image %s", url)
                             await pipe._ensure_error_formatter()._emit_error(
@@ -923,13 +840,8 @@ async def transform_messages_to_input(
                         subject=str(block.get("image_url") or "")[:64],
                     )
 
-            async def _to_input_file(
-                block: dict, *, msg_id: str | None = msg_id, stores_attachments: bool = stores_attachments
-            ) -> dict:
+            async def _to_input_file(block: dict) -> dict:
                 """Convert Open WebUI file blocks into Responses API format.
-
-                Handles file content blocks from multiple sources, downloading remote files
-                and saving base64 data to OWUI storage for persistence.
 
                 Responses API File Input Fields (per OpenAPI spec):
                     - type: "input_file" (required)
@@ -944,21 +856,9 @@ async def transform_messages_to_input(
                 Returns:
                     Responses API input_file block with all available fields
 
-                Processing Flow:
-                    1. Extract fields from nested or flat block structure
-                    2. If file_data provided AND SAVE_FILE_DATA_CONTENT enabled:
-                       - If data URL: Parse, upload to OWUI storage, set file_url
-                       - If remote URL: Download, upload to OWUI storage, set file_url
-                    3. If file_id: Keep as-is (already in OWUI storage)
-                    4. If file_url provided AND SAVE_REMOTE_FILE_URLS enabled:
-                       - If data URL: Parse, upload to OWUI storage
-                       - If remote URL: Download, upload to OWUI storage
-                    5. Return all available fields to Responses API
-
                 Note:
                     All errors are caught and logged with status emissions.
                     Failed processing returns minimal valid block rather than crashing.
-                    Size limits follow BASE64_MAX_SIZE_MB (default 50MB) for inline payloads.
                 """
                 try:
                     result = {"type": "input_file"}
@@ -970,72 +870,6 @@ async def transform_messages_to_input(
                     file_data = source.get("file_data")
                     filename = source.get("filename")
                     file_url = source.get("file_url")
-                    file_url_set_from_file_data = False
-
-                    storage_context: tuple[Request | None, Any | None] | None = None
-
-                    async def _get_storage_context() -> tuple[Request | None, Any | None]:
-                        """Lazy-load the request/user pair used for uploads."""
-                        nonlocal storage_context
-                        if storage_context is None:
-                            storage_context = await pipe._file_gateway.resolve_storage_context(__request__, user_obj)
-                        return storage_context
-
-                    async def _save_bytes_to_storage(
-                        payload: bytes,
-                        mime_type: str,
-                        *,
-                        preferred_name: str | None,
-                        status_message: str,
-                    ) -> str | None:
-                        """Persist arbitrary bytes to Open WebUI storage and emit status."""
-                        upload_request, upload_user = await _get_storage_context()
-                        if not (upload_request and upload_user):
-                            return None
-                        safe_mime = mime_type or "application/octet-stream"
-                        fname = preferred_name or filename or f"file-{uuid.uuid4().hex}"
-                        if "." not in fname and safe_mime:
-                            ext = safe_mime.split("/")[-1]
-                            fname = f"{fname}.{ext}"
-
-                        stored_id = await pipe._file_gateway.upload_to_owui_storage(
-                            request=upload_request,
-                            user=upload_user,
-                            file_data=payload,
-                            filename=fname,
-                            mime_type=safe_mime,
-                            chat_id=chat_id,
-                            message_id=msg_id,
-                            owui_user_id=getattr(user_obj, "id", None),
-                        )
-                        if stored_id:
-                            await pipe._event_emitter_handler._emit_status(
-                                event_emitter,
-                                status_message,
-                                done=False,
-                            )
-                        return stored_id
-
-                    async def _download_and_store(
-                        remote_url: str,
-                        *,
-                        name_hint: str | None = None,
-                    ) -> str | None:
-                        """Download a remote file and persist it via `_save_bytes_to_storage`."""
-                        downloaded = await pipe._multimodal_handler._download_remote_url(remote_url)
-                        if not downloaded:
-                            return None
-                        derived_name = (
-                            name_hint
-                            or remote_url.split("/")[-1].split("?")[0]
-                            or f"file-{uuid.uuid4().hex}"
-                        )
-                        return await _save_bytes_to_storage(
-                            downloaded["data"],
-                            downloaded.get("mime_type") or "application/octet-stream",
-                            preferred_name=derived_name,
-                            status_message=StatusMessages.FILE_REMOTE_SAVED,
-                        )
 
                     if isinstance(file_url, str) and file_url.strip() and is_internal_file_url(file_url.strip()):
                         extracted = extract_internal_file_id(file_url.strip())
@@ -1047,151 +881,6 @@ async def transform_messages_to_input(
                         if extracted:
                             file_id = extracted
                             file_data = None
-
-                    if (
-                        file_data
-                        and isinstance(file_data, str)
-                        and pipe.valves.SAVE_FILE_DATA_CONTENT
-                        and stores_attachments
-                    ):
-                        if file_data.startswith("data:"):
-                            try:
-                                parsed = pipe._multimodal_handler._parse_data_url(file_data)
-                                if parsed:
-                                    fname = filename or f"file-{uuid.uuid4().hex}"
-                                    stored_id = await _save_bytes_to_storage(
-                                        parsed["data"],
-                                        parsed["mime_type"],
-                                        preferred_name=fname,
-                                        status_message=StatusMessages.FILE_BASE64_SAVED,
-                                    )
-                                    if stored_id:
-                                        file_id = stored_id
-                                        file_url = None
-                                        file_data = None
-                            except Exception as exc:
-                                pipe.logger.exception("Failed to process base64 file")
-                                await pipe._ensure_error_formatter()._emit_error(
-                                    event_emitter,
-                                    f"Failed to save base64 file: {exc}",
-                                    show_error_message=False
-                                )
-
-                        elif is_http_or_https_url(file_data) and not is_internal_file_url(file_data):
-                            try:
-                                remote_url = file_data
-                                if is_cleartext_http_url(remote_url) and not pipe._multimodal_handler._is_insecure_http_allowed(remote_url):
-                                    pipe.logger.error("Blocked insecure HTTP file_data URL by default: %s", remote_url)
-                                    await pipe._ensure_error_formatter()._emit_error(
-                                        event_emitter,
-                                        "File URL blocked by security policy (HTTP disabled by default). "
-                                        "Enable ALLOW_INSECURE_HTTP + ALLOW_INSECURE_HTTP_HOSTS to allow specific hosts.",
-                                        show_error_message=True,
-                                    )
-                                    if file_id:
-                                        file_data = None
-                                    else:
-                                        return result
-                                else:
-                                    fname = filename or remote_url.split("/")[-1].split("?")[0]
-                                    stored_id = await _download_and_store(remote_url, name_hint=fname)
-                                    if stored_id:
-                                        file_id = stored_id
-                                        file_url = None
-                                        file_url_set_from_file_data = True
-                                    else:
-                                        if not file_url:
-                                            file_url = remote_url
-                                            file_url_set_from_file_data = True
-                                        if event_emitter:
-                                            label = fname or "remote file"
-                                            if not fname:
-                                                with contextlib.suppress(Exception):
-                                                    host = urlparse(remote_url).netloc
-                                                    if host:
-                                                        label = host
-                                            await pipe._event_emitter_handler._emit_notification(
-                                                event_emitter,
-                                                f"Unable to download/re-host file '{label}'. Using the remote URL as-is.",
-                                                level="warning",
-                                            )
-                                    file_data = None
-                            except Exception as exc:
-                                pipe.logger.exception("Failed to download remote file")
-                                await pipe._ensure_error_formatter()._emit_error(
-                                    event_emitter,
-                                    f"Failed to download file: {exc}",
-                                    show_error_message=False
-                                )
-
-                    if (
-                        file_url
-                        and isinstance(file_url, str)
-                        and pipe.valves.SAVE_REMOTE_FILE_URLS
-                        and stores_attachments
-                        and not file_url_set_from_file_data
-                    ):
-                        if file_url.startswith("data:"):
-                            try:
-                                parsed = pipe._multimodal_handler._parse_data_url(file_url)
-                                if parsed:
-                                    fname = filename or f"file-{uuid.uuid4().hex}"
-                                    stored_id = await _save_bytes_to_storage(
-                                        parsed["data"],
-                                        parsed["mime_type"],
-                                        preferred_name=fname,
-                                        status_message=StatusMessages.FILE_BASE64_SAVED,
-                                    )
-                                    if stored_id:
-                                        file_id = stored_id
-                                        file_url = None
-                            except Exception as exc:
-                                pipe.logger.exception("Failed to process base64 file_url")
-                                await pipe._ensure_error_formatter()._emit_error(
-                                    event_emitter,
-                                    f"Failed to save base64 file URL: {exc}",
-                                    show_error_message=False
-                                )
-                        elif is_http_or_https_url(file_url) and not is_internal_file_url(file_url):
-                            try:
-                                name_hint = filename or file_url.split("/")[-1].split("?")[0]
-                                if is_cleartext_http_url(file_url) and not pipe._multimodal_handler._is_insecure_http_allowed(file_url):
-                                    pipe.logger.error("Blocked insecure HTTP file_url by default: %s", file_url)
-                                    await pipe._ensure_error_formatter()._emit_error(
-                                        event_emitter,
-                                        "File URL blocked by security policy (HTTP disabled by default). "
-                                        "Enable ALLOW_INSECURE_HTTP + ALLOW_INSECURE_HTTP_HOSTS to allow specific hosts.",
-                                        show_error_message=True,
-                                    )
-                                    if file_id:
-                                        file_url = None
-                                    else:
-                                        return result
-                                else:
-                                    stored_id = await _download_and_store(file_url, name_hint=name_hint)
-                                    if stored_id:
-                                        file_id = stored_id
-                                        file_url = None
-                                    else:
-                                        if event_emitter:
-                                            label = name_hint or "remote file"
-                                            if not name_hint:
-                                                with contextlib.suppress(Exception):
-                                                    host = urlparse(file_url).netloc
-                                                    if host:
-                                                        label = host
-                                            await pipe._event_emitter_handler._emit_notification(
-                                                event_emitter,
-                                                f"Unable to download/re-host file '{label}'. Using the remote URL as-is.",
-                                                level="warning",
-                                            )
-                            except Exception as exc:
-                                pipe.logger.exception("Failed to download remote file_url")
-                                await pipe._ensure_error_formatter()._emit_error(
-                                    event_emitter,
-                                    f"Failed to download file URL: {exc}",
-                                    show_error_message=False
-                                )
 
                     if (
                         isinstance(file_data, str)

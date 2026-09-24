@@ -79,18 +79,10 @@ class StatusMessages:
     IMAGE_BASE64_SAVED = "📥 Saved base64 image to storage"
     IMAGE_REMOTE_SAVED = "📥 Downloaded and saved image from remote URL"
 
-    # File processing
-    FILE_BASE64_SAVED = "📥 Saved base64 file to storage"
-    FILE_REMOTE_SAVED = "📥 Downloaded and saved file from remote URL"
-
     # Video processing
     VIDEO_BASE64 = "🎥 Processing base64 video input"
     VIDEO_YOUTUBE = "🎥 Processing YouTube video input"
     VIDEO_REMOTE = "🎥 Processing video input"
-
-    # Audio processing
-    AUDIO_BASE64_SAVED = "🎵 Saved base64 audio to storage"
-    AUDIO_REMOTE_SAVED = "🎵 Downloaded and saved audio from remote URL"
 
 
 class RequiredInternalFileError(Exception):

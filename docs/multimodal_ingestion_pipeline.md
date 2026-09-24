@@ -15,24 +15,28 @@ For user messages that include multimodal content, the pipe normalizes content b
 
 At a high level:
 
-- **Images** are converted to Responses-style `input_image` blocks and, when the person attached them and a storage context is available, are **re-hosted** into Open WebUI storage by each request that ends on the person's message: its first answer, each Regenerate and each further model answering it; never in a temporary chat. Internal Fusion's panel models, whose requests belong to no chat, store nothing. Without a storage context - API automation, for instance - a request that would re-host them keeps the original payload, while any other request downloads a remote image and sends its bytes inline, or forwards the link when it cannot download it.
-- **Files** are converted to Responses-style `input_file` blocks and may be re-hosted into Open WebUI storage depending on valve configuration (defaults re-host common cases), under the same rule: by each request that ends on the person's message (its first answer, each Regenerate and each further model answering it), and never in a temporary chat.
+- **Images** are converted to Responses-style `input_image` blocks. A `data:` URL is sent as it came, a remote image is downloaded and sent inline (or forwarded as its link when it cannot be downloaded), and an Open WebUI file URL is read with the requester's access and sent inline.
+- **Files** are converted to Responses-style `input_file` blocks and forwarded as they came: a `data:` URL or link in `file_data` or `file_url` goes out unchanged, and the pipe never downloads a file link. An Open WebUI file URL is read with the requester's access and sent inline.
 - **Audio** is converted to Responses-style `input_audio` blocks and must be **base64/data URL** (remote URLs are rejected).
 - **Video** is passed using Chat Completions-style `video_url` blocks (the Responses API does not provide a dedicated `input_video` block). Videos are **not** downloaded or re-hosted by the pipe; the pipe applies basic validation and SSRF checks for remote URLs.
+
+Nothing a person attaches is written to Open WebUI storage by the pipe, in any chat and by any request of a turn.
 
 ---
 
 ## Storage context resolution (uploads to Open WebUI)
 
-When the pipe needs to re-host content into Open WebUI storage, it resolves a storage context `(request, user)`:
+This input path never writes to Open WebUI storage. Open WebUI already converts a saved chat's stored pictures back to base64 before each model call, so a copy the pipe made would only be read straight back. Copies an earlier release made of a person's attachments stay where they are: ordinary files owned by that person (or by the fallback account below), listed in their Files. Nothing reads them, and the pipe does not delete them.
+
+The pipe stores only what a model generates, and for that it resolves a storage context `(request, user)`:
 
 - If a real Open WebUI request/user context exists, the pipe uploads via Open WebUI’s file APIs.
-- If a user context is missing (for example some automations), the pipe can fall back to a dedicated “storage owner” identity configured by:
+- If a user context is missing (for example some automations), a picture a model generates is stored under a dedicated “storage owner” identity configured by:
   - `FALLBACK_STORAGE_EMAIL`
   - `FALLBACK_STORAGE_NAME`
   - `FALLBACK_STORAGE_ROLE`
 
-If storage cannot be resolved (for example in tests or synthetic contexts), the pipe degrades by skipping uploads and returning minimal valid blocks.
+If storage cannot be resolved (for example in tests or synthetic contexts), the pipe skips the upload.
 
 ---
 
@@ -58,14 +62,14 @@ For cloud/unknown backends, a file whose declared `meta['size']` is missing or i
   - a nested object `{ "image_url": { "url": "..." } }`, or
   - a string `{ "image_url": "..." }`.
 
-### Storage behavior (important)
+### What is sent (important)
 
-The rules below apply to an image the person attached, in the request that ends on their message. A Continue and Open WebUI's calls back after each round of tool calls (Open-WebUI tool mode) send the same image without storing it again, and a temporary chat never stores it, since Open WebUI uploads nothing a person attaches in a temporary chat to its storage. An image the pipe reuses from an earlier turn is handled differently - see the note after them.
-- If the image is provided as a **data URL** (`data:image/...;base64,...`), the pipe validates size, decodes, and uploads it to Open WebUI storage. The block sent upstream is always a `data:` URL, so the stored file is for your history rather than for the provider to fetch.
-- If the image is provided as a **remote URL** (`https://`), the pipe downloads it (with retries/limits/SSRF protection), uploads it to Open WebUI storage, and sends the bytes upstream as a `data:` URL. Plain `http://` is disabled by default and requires explicit allowlisting.
-- If the image is already an **Open WebUI file URL** (for example `/api/v1/files/...`), the pipe streams it and inlines it as a `data:` URL to avoid requiring OpenRouter to fetch from your Open WebUI host.
+The pipe never writes an image the person attached to Open WebUI storage: not for a saved, channel or temporary chat, and not for any request of a turn (its first answer, a Regenerate, each further model answering it, a Continue, or Open WebUI's calls back after each round of tool calls). Every request sends the image as the message carries it:
+- A **data URL** (`data:image/...;base64,...`) is checked for size and sent as it came.
+- A **remote URL** (`https://`) is downloaded (with retries/limits/SSRF protection) and its bytes are sent upstream as a `data:` URL; one that cannot be downloaded is forwarded as its link, and one larger than `BASE64_MAX_SIZE_MB` once downloaded is not sent. Plain `http://` is disabled by default and requires explicit allowlisting.
+- An **Open WebUI file URL** (for example `/api/v1/files/...`) is streamed with the requester's access and inlined as a `data:` URL to avoid requiring OpenRouter to fetch from your Open WebUI host.
 
-This image re-hosting behavior is always on, except in a temporary chat, for data URLs and remote URLs the user attaches. An image the pipe **reuses** from an earlier turn is not re-hosted: it is inlined as a `data:` URL. Bytes that carry a recognisable image signature decide its media type, whatever the source declared; where they carry none, the declaration decides. A reuse is dropped only when the type settled on this way is not an image type - so a payload declaring an image type whose bytes the pipe does not recognise (BMP and TIFF among them) is forwarded under its declaration, and one the pipe could not fetch at all is dropped. Nothing on this input path writes a file for content the user did not attach - images the model *generates* are stored separately, and that is an output-side behavior.
+An image the pipe **reuses** from an earlier turn is inlined as a `data:` URL too. Bytes that carry a recognisable image signature decide its media type, whatever the source declared; where they carry none, the declaration decides. A reuse is dropped only when the type settled on this way is not an image type - so a payload declaring an image type whose bytes the pipe does not recognise (BMP and TIFF among them) is forwarded under its declaration, and one the pipe could not fetch at all is dropped. Nothing on this input path writes a file - images the model *generates* are stored separately, and that is an output-side behavior.
 
 ### Limits and selection
 - `MAX_INPUT_IMAGES_PER_REQUEST` caps how many images one of the person's messages forwards, counting a picture reused from earlier in the conversation. Pictures a tool returns are never cut by this limit. Whenever a tool round's result reaches the model, all of its pictures go with it.
@@ -84,19 +88,12 @@ The file transformer extracts and forwards the following Responses-compatible fi
 - `file_url` (URL to a file)
 - `filename`
 
-### Re-hosting behavior (defaults)
-The pipe can re-host both `file_data` and `file_url` into Open WebUI storage for each request that ends on the person's message (its first answer, each Regenerate and each further model answering it):
+### What is sent
+Every request forwards `file_data` and `file_url` as they came, for every chat and every request of a turn, and the pipe writes no file the person attached to Open WebUI storage:
 
-- When `SAVE_FILE_DATA_CONTENT=True` (default), and `file_data` is:
-  - a `data:` URL, it is decoded and stored; the outgoing block will prefer `file_url` pointing to internal storage and will clear `file_data`.
-  - an `https://` URL, it is downloaded and stored; the outgoing block will set `file_url` to internal storage and clear `file_data`. Plain `http://` is disabled by default and requires explicit allowlisting.
-- When `SAVE_REMOTE_FILE_URLS=True` (default), and `file_url` is:
-  - a `data:` URL, it is decoded and stored; the outgoing block rewrites `file_url` to the internal storage URL.
-  - an `https://` URL, it is downloaded and stored; the outgoing block rewrites `file_url` to the internal storage URL. Plain `http://` is disabled by default and requires explicit allowlisting.
-
-A Continue, Open WebUI's calls back after each round of tool calls (Open-WebUI tool mode) and every request of a temporary chat send them as they came.
-
-Chat replay does not depend on whether a file was re-hosted: later turns send it as the person's message carries it, so a remote file goes as its original link either way. To reduce storage growth, set `SAVE_REMOTE_FILE_URLS=False`.
+- A `data:` URL in either field is sent unchanged.
+- An `https://` link in either field is sent unchanged for the provider to fetch; the pipe does not download it. Plain `http://` is disabled by default and requires explicit allowlisting.
+- An Open WebUI file URL in either field becomes a `file_id`, which is read with the requester's access and sent inline as `file_data`.
 
 ---
 
@@ -110,7 +107,7 @@ OpenRouter audio inputs require base64-encoded audio, and the pipe enforces that
 
 Supported formats are normalized to `mp3` or `wav` based on MIME hints when available; unknown types default to `mp3`.
 
-**Limitation:** The pipe does not currently re-host audio into Open WebUI storage; audio remains inline in the request it sends upstream.
+The pipe never writes audio to Open WebUI storage; it stays inline in the request it sends upstream.
 
 ---
 
@@ -131,13 +128,13 @@ The pipe uses Chat Completions-style `video_url` blocks:
 - YouTube URLs are allowed (and may only work on certain model/provider combinations).
 - Remote URLs (`https://` by default; `http://` only when allowlisted) that are not Open WebUI file URLs are checked by the SSRF guard when `ENABLE_SSRF_PROTECTION=True`.
 
-**Limitation:** Videos are not downloaded or re-hosted by the pipe; it passes the URL (or data URL) through after applying basic checks. If you need durability for video content, you must ensure the URL remains reachable or implement a storage policy outside this pipe.
+**Limitation:** Videos are not downloaded or stored by the pipe; it passes the URL (or data URL) through after applying basic checks. If you need durability for video content, you must ensure the URL remains reachable or implement a storage policy outside this pipe.
 
 ---
 
 ## Remote downloads (`_download_remote_url`)
 
-Remote downloads are used for images and for files when re-hosting is enabled. The downloader enforces:
+Remote downloads are used for picture links: one in the conversation, or one a model returns for a picture it generated. The pipe never downloads a file link. The downloader enforces:
 
 - **Protocols:** `https://` only by default; `http://` requires `ALLOW_INSECURE_HTTP` + allowlisting.
 - **SSRF protection:** blocks private/internal address targets when enabled.
@@ -156,9 +153,7 @@ Remote downloads are used for images and for files when re-hosting is enabled. T
 | `REMOTE_DOWNLOAD_MAX_RETRIES` | `3` | Retry attempts for remote downloads. |
 | `REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS` | `5` | Initial retry delay (exponential backoff). |
 | `REMOTE_DOWNLOAD_MAX_RETRY_TIME_SECONDS` | `45` | Max total retry time budget for one download. |
-| `REMOTE_FILE_MAX_SIZE_MB` | `50` | Size cap for remote downloads (images/files) and related payload guards. |
-| `SAVE_FILE_DATA_CONTENT` | `True` | Re-host `file_data` content into Open WebUI storage, for each request that ends on the person's message (its first answer, a Regenerate, each further model answering it) and never in a temporary chat. |
-| `SAVE_REMOTE_FILE_URLS` | `True` | Re-host remote/data URLs in `file_url` into Open WebUI storage, for each request that ends on the person's message (its first answer, a Regenerate, each further model answering it) and never in a temporary chat. |
+| `REMOTE_FILE_MAX_SIZE_MB` | `50` | Size cap for downloading a picture from a link (a file link is never downloaded) and related payload guards. |
 | `BASE64_MAX_SIZE_MB` | `50` | Base64 payload size guard before decoding. |
 | `IMAGE_UPLOAD_CHUNK_BYTES` | `1048576 (1 MiB)` | Chunk size used when inlining Open WebUI-hosted images as `data:` URLs. |
 | `MAX_INPUT_IMAGES_PER_REQUEST` | `5` | Maximum images one of the person's messages forwards, counting a reused picture; pictures a tool returns are not counted. |
@@ -175,4 +170,4 @@ For the complete list, see [Valves & Configuration Atlas](valves_and_configurati
 1. Image attachments are ignored: confirm the selected model supports vision and that `MAX_INPUT_IMAGES_PER_REQUEST` is not exceeded.
 2. “Download blocked” / “URL blocked”: check SSRF controls (`ENABLE_SSRF_PROTECTION`) and confirm the URL is not internal/private.
 3. Large payload failures: review `REMOTE_FILE_MAX_SIZE_MB`, `BASE64_MAX_SIZE_MB`, and `VIDEO_MAX_SIZE_MB`.
-4. Video inputs do not work: provider/model support varies; the pipe does not re-host video and cannot force upstream providers to accept the URL.
+4. Video inputs do not work: provider/model support varies; the pipe does not download or store video and cannot force upstream providers to accept the URL.

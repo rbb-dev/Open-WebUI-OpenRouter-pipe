@@ -3898,7 +3898,6 @@ async def test_transform_messages_to_input_replays_owui_tool_results() -> None:
             artifact_loader=None,
             pruning_turns=0,
             replayed_reasoning_refs=replayed,
-            __request__=None,
             user_obj=None,
             event_emitter=None,
             model_id="pipe.model",

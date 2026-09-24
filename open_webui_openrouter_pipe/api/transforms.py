@@ -28,8 +28,6 @@ from pydantic import (
 )
 
 if TYPE_CHECKING:
-    from fastapi import Request
-
     from ..pipe import Pipe
 
 from ..core.config import (
@@ -284,7 +282,6 @@ class ResponsesBody(BaseModel):
         chat_id: str | None = None,
         openwebui_model_id: str | None = None,
         *,
-        request: Request | None = None,
         user_obj: Any | None = None,
         event_emitter: Callable | None = None,
         artifact_loader: Callable[[str | None, str | None, list[str]], Awaitable[dict[str, dict[str, Any]]]] | None = None,
@@ -292,7 +289,6 @@ class ResponsesBody(BaseModel):
         transformer_context: Any | None = None,
         transformer_valves: Pipe.Valves | None = None,
         capability_model_id: str | None = None,
-        rehost_attachments: bool = True,
         **extra_params,
     ) -> ResponsesBody:
         """
@@ -352,7 +348,7 @@ class ResponsesBody(BaseModel):
             if transformer_context is None:
                 raise RuntimeError(
                     "ResponsesBody.from_completions requires a transformer_context (usually the Pipe instance) "
-                    "so multimodal helpers (file uploads, status events, etc.) are available."
+                    "so multimodal helpers (downloads, status events, etc.) are available."
                 )
             transformer_owner = transformer_context
             raw_messages = completions_dict.get("messages", [])
@@ -376,13 +372,11 @@ class ResponsesBody(BaseModel):
                 artifact_loader=artifact_loader,
                 pruning_turns=pruning_turns,
                 replayed_reasoning_refs=replayed_reasoning_refs,
-                __request__=request,
                 user_obj=user_obj,
                 event_emitter=event_emitter,
                 model_id=completions_dict.get("model"),
                 valves=transformer_valves or getattr(transformer_owner, "valves", None),
                 capability_model_id=capability_model_id,
-                rehost_attachments=rehost_attachments,
             )
             if replayed_reasoning_refs:
                 sanitized_params["_replayed_reasoning_refs"] = replayed_reasoning_refs

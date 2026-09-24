@@ -16,13 +16,11 @@ from open_webui_openrouter_pipe.storage.owui_files import InlinedFile
 async def _transform_single_block(
     pipe_instance: Pipe,
     block: dict,
-    mock_request,
     mock_user,
 ):
     messages = [{"role": "user", "content": [block]}]
     transformed = await transform_messages_to_input(pipe_instance,
         messages,
-        __request__=mock_request,
         user_obj=mock_user,
         event_emitter=None,
     )
@@ -42,9 +40,9 @@ async def test_supported_image_formats_are_inlined(
     mime_type,
     monkeypatch,
 ):
-    """All documented OpenRouter image formats should survive the transform pipeline."""
+    """All documented OpenRouter image formats survive the transform pipeline as they came, never stored."""
 
-    inline_value = f"data:{mime_type};base64,{sample_image_base64}"
+    data_url = f"data:{mime_type};base64,{sample_image_base64}"
     ext = mime_type.split("/")[-1]
     if ext == "jpeg":
         ext = "jpg"
@@ -62,16 +60,17 @@ async def test_supported_image_formats_are_inlined(
     monkeypatch.setattr(
         pipe_instance._file_gateway,
         "inline_owui_file_id",
-        AsyncMock(return_value=InlinedFile(data_url=inline_value, filename=f"test.{ext}")),
+        AsyncMock(return_value=InlinedFile(data_url="data:image/png;base64,STORED", filename=f"test.{ext}")),
     )
 
-    block = {"type": "image_url", "image_url": f"data:{mime_type};base64,{sample_image_base64}"}
+    block = {"type": "image_url", "image_url": data_url}
 
-    result = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
+    result = await _transform_single_block(pipe_instance, block, mock_user)
 
     assert result["type"] == "input_image"
-    assert result["image_url"] == inline_value
-    pipe_instance._file_gateway.inline_owui_file_id.assert_awaited_once()
+    assert result["image_url"] == data_url
+    pipe_instance._file_gateway.upload_to_owui_storage.assert_not_awaited()
+    pipe_instance._file_gateway.inline_owui_file_id.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -97,7 +96,6 @@ async def test_supported_audio_formats_map_correctly(
     block,
     expected_format,
     sample_audio_base64,
-    mock_request,
     mock_user,
     monkeypatch,
 ):
@@ -112,7 +110,7 @@ async def test_supported_audio_formats_map_correctly(
 
     pipe_instance._ensure_error_formatter()._emit_error = AsyncMock()
 
-    result = await _transform_single_block(pipe_instance, payload, mock_request, mock_user)
+    result = await _transform_single_block(pipe_instance, payload, mock_user)
 
     assert result["type"] == "input_audio"
     assert result["input_audio"]["data"] == sample_audio_base64
@@ -123,7 +121,6 @@ async def test_supported_audio_formats_map_correctly(
 @pytest.mark.asyncio
 async def test_audio_requires_base64_not_urls(
     pipe_instance,
-    mock_request,
     mock_user,
 ):
     """Remote URLs should be rejected per OpenRouter's audio spec."""
@@ -132,7 +129,7 @@ async def test_audio_requires_base64_not_urls(
 
     block = {"type": "input_audio", "input_audio": "https://example.com/audio.mp3"}
 
-    result = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
+    result = await _transform_single_block(pipe_instance, block, mock_user)
 
     assert result["type"] == "input_audio"
     assert result["input_audio"]["data"] == ""

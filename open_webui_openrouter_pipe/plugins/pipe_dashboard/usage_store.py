@@ -22,6 +22,7 @@ from collections.abc import Callable
 from typing import Any
 
 from ...core.utils import _stable_crockford_id
+from ...storage.owui_files import is_temporary_chat, temporary_chat_prefixes
 from ...storage.persistence import _db_session, generate_item_id
 
 logger = logging.getLogger(__name__)
@@ -239,6 +240,8 @@ class UsageStore:
         instances = []
         for row in rows:
             data = {key: row.get(key) for key in USAGE_ROW_FIELDS}
+            if is_temporary_chat(data["chat_id"]):
+                data["chat_id"] = data["session_id"] = ""
             data["id"] = row.get("id") or generate_item_id()
             instances.append(model(**data))
         with _db_session(session_factory) as session:
@@ -311,6 +314,10 @@ class UsageStore:
                 return
             with _db_session(session_factory) as session:
                 session.query(model).filter(model.ts < cutoff).delete(synchronize_session=False)
+                for prefix in temporary_chat_prefixes():
+                    session.query(model).filter(model.chat_id.startswith(prefix)).update(
+                        {"chat_id": "", "session_id": ""}, synchronize_session=False
+                    )
                 session.commit()
         finally:
             if item_model is not None and acquired:

@@ -822,7 +822,7 @@ class Valves(BaseModel):
         default=3,
         ge=0,
         le=10,
-        description="Maximum number of retry attempts for downloading remote images and files. Set to 0 to disable retries.",
+        description="Maximum number of retry attempts for downloading a picture from a link or a video a model generated. Set to 0 to disable retries.",
     )
     REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS: int = Field(
         default=5,
@@ -841,15 +841,7 @@ class Valves(BaseModel):
         default=_REMOTE_FILE_MAX_SIZE_DEFAULT_MB,
         ge=1,
         le=_REMOTE_FILE_MAX_SIZE_MAX_MB,
-        description="Maximum size in MB for downloading remote files/images. Files exceeding this limit are skipped. When Open WebUI RAG is enabled, the pipe automatically caps downloads to Open WebUI's FILE_MAX_SIZE (if set).",
-    )
-    SAVE_REMOTE_FILE_URLS: bool = Field(
-        default=True,
-        description="When True, remote URLs and data URLs in the file_url field are downloaded/parsed and re-hosted in Open WebUI storage (default, at the cost of storage growth). When False, file_url values pass through untouched. Re-hosting happens for each request that ends on the person's message (its first answer, a Regenerate, each further model answering it), and never in a temporary chat. Note: This valve only affects the file_url field; see SAVE_FILE_DATA_CONTENT for file_data behavior.",
-    )
-    SAVE_FILE_DATA_CONTENT: bool = Field(
-        default=True,
-        description="When True, base64 content and URLs in the file_data field are parsed/downloaded and re-hosted in Open WebUI storage. When False, file_data values pass through untouched. Re-hosting happens for each request that ends on the person's message (its first answer, a Regenerate, each further model answering it), and never in a temporary chat.",
+        description="Maximum size in MB for downloading a picture from a link: one in the conversation, or one a model returns for a picture it generated. A picture over this limit is not downloaded. A file link a person attaches is passed on to the provider without being downloaded, so this limit does not apply to it. When Open WebUI RAG is enabled, the pipe automatically caps downloads to Open WebUI's FILE_MAX_SIZE (if set).",
     )
     BASE64_MAX_SIZE_MB: int = Field(
         default=50,
@@ -871,7 +863,7 @@ class Valves(BaseModel):
     )
     FALLBACK_STORAGE_EMAIL: str = Field(
         default=(os.getenv("OPENROUTER_STORAGE_USER_EMAIL") or "openrouter-pipe@system.local"),
-        description="Owner email used when multimodal uploads occur without a chat user (e.g., API automations).",
+        description="Owner email for the pictures a model generates in a request with no signed-in user (e.g., API automations).",
     )
     FALLBACK_STORAGE_NAME: str = Field(
         default=(os.getenv("OPENROUTER_STORAGE_USER_NAME") or "OpenRouter Pipe Storage"),

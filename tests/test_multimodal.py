@@ -2782,7 +2782,6 @@ from open_webui_openrouter_pipe import (
 async def _transform_single_block(
     pipe_instance: Pipe,
     block: dict,
-    mock_request,
     mock_user,
 ) -> dict | None:
     """Helper to transform a single user message block."""
@@ -2794,7 +2793,6 @@ async def _transform_single_block(
     ]
     transformed = await transform_messages_to_input(pipe_instance,
         messages,
-        __request__=mock_request,
         user_obj=mock_user,
         event_emitter=None,
     )
@@ -2877,49 +2875,6 @@ class TestDataURLParsing:
 
 class TestImageTransformations:
     """Tests focused on user image block transformations."""
-
-    @pytest.mark.asyncio
-    async def test_remote_images_rehosted_and_inlined(
-        self, pipe_instance, mock_request, mock_user, sample_image_base64
-    ):
-        """Remote images should be re-hosted and then inlined for provider delivery."""
-
-        pipe_instance._multimodal_handler._download_remote_url = AsyncMock(
-            return_value={
-                "data": base64.b64decode(sample_image_base64),
-                "mime_type": "image/png",
-                "url": "https://example.com/cat.png",
-            }
-        )
-        pipe_instance._file_gateway.upload_to_owui_storage = AsyncMock(
-            return_value="cat123"
-        )
-        pipe_instance._file_gateway.inline_owui_file_id = AsyncMock(
-            return_value=InlinedFile(data_url="data:image/png;base64,INLINED==", filename="test.png")
-        )
-
-        block = {
-            "type": "image_url",
-            "image_url": "https://example.com/cat.png",
-        }
-
-        transformed = await _transform_single_block(
-            pipe_instance,
-            block,
-            mock_request,
-            mock_user,
-        )
-
-        assert transformed is not None
-        assert transformed["type"] == "input_image"
-        assert transformed["image_url"] == "data:image/png;base64,INLINED=="
-        pipe_instance._multimodal_handler._download_remote_url.assert_awaited_once()
-        pipe_instance._file_gateway.upload_to_owui_storage.assert_awaited_once()
-        pipe_instance._file_gateway.inline_owui_file_id.assert_awaited_once()
-        inline_args = pipe_instance._file_gateway.inline_owui_file_id.await_args
-        assert inline_args is not None
-        assert inline_args.args[0] == "cat123"
-
 
 class TestFileEncoding:
     """Tests covering file path base64 encoding helpers."""
@@ -3329,80 +3284,9 @@ class TestImageTransformer:
     """Tests for _to_input_image transformer function."""
 
     @pytest.mark.asyncio
-    async def test_image_data_url_saved_to_storage(
-        self,
-        pipe_instance,
-        mock_request,
-        mock_user,
-        sample_image_base64,
-        monkeypatch,
-    ):
-        """Base64 images should be re-hosted and emit status updates."""
-        stored_id = "img123"
-        upload_mock = AsyncMock(return_value=stored_id)
-        inline_mock = AsyncMock(return_value=InlinedFile(data_url="data:image/png;base64,INLINE", filename="test.png"))
-        status_mock = AsyncMock()
-        monkeypatch.setattr(pipe_instance._file_gateway, "upload_to_owui_storage", upload_mock)
-        monkeypatch.setattr(pipe_instance._file_gateway, "inline_owui_file_id", inline_mock)
-        monkeypatch.setattr(pipe_instance._event_emitter_handler, "_emit_status", status_mock)
-
-        block = {
-            "type": "image_url",
-            "image_url": {"url": f"data:image/png;base64,{sample_image_base64}", "detail": "high"},
-        }
-        image_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
-        assert image_block is not None
-        assert image_block["image_url"] == "data:image/png;base64,INLINE"
-        assert image_block["detail"] == "high"
-        upload_mock.assert_awaited()
-        inline_mock.assert_awaited()
-        status_mock.assert_awaited_with(
-            None,
-            StatusMessages.IMAGE_BASE64_SAVED,
-            done=False,
-        )
-
-    @pytest.mark.asyncio
-    async def test_image_remote_url_downloaded_and_saved(
-        self,
-        pipe_instance,
-        mock_request,
-        mock_user,
-        monkeypatch,
-    ):
-        """Remote URLs are downloaded, uploaded, and statuses emitted."""
-        remote_url = "https://example.com/photo.png"
-        stored_id = "remote-img"
-        download_mock = AsyncMock(
-            return_value={"data": b"img", "mime_type": "image/png", "url": remote_url}
-        )
-        upload_mock = AsyncMock(return_value=stored_id)
-        inline_mock = AsyncMock(return_value=InlinedFile(data_url="data:image/png;base64,INLINE", filename="test.png"))
-        status_mock = AsyncMock()
-        monkeypatch.setattr(pipe_instance._multimodal_handler, "_download_remote_url", download_mock)
-        monkeypatch.setattr(pipe_instance._file_gateway, "upload_to_owui_storage", upload_mock)
-        monkeypatch.setattr(pipe_instance._file_gateway, "inline_owui_file_id", inline_mock)
-        monkeypatch.setattr(pipe_instance._event_emitter_handler, "_emit_status", status_mock)
-
-        block = {"type": "image_url", "image_url": {"url": remote_url, "detail": "auto"}}
-        image_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
-        assert image_block is not None
-        assert image_block["image_url"] == "data:image/png;base64,INLINE"
-        assert image_block["detail"] == "auto"
-        download_mock.assert_awaited_once_with(remote_url)
-        upload_mock.assert_awaited()
-        inline_mock.assert_awaited()
-        status_mock.assert_any_await(
-            None,
-            StatusMessages.IMAGE_REMOTE_SAVED,
-            done=False,
-        )
-
-    @pytest.mark.asyncio
     async def test_image_detail_level_preserved(
         self,
         pipe_instance,
-        mock_request,
         mock_user,
         monkeypatch,
     ):
@@ -3413,7 +3297,7 @@ class TestImageTransformer:
 
         monkeypatch.setattr(pipe_instance._file_gateway, "inline_owui_file_id", fake_inline)
         block = {"type": "image_url", "image_url": {"url": "/api/v1/files/abc", "detail": "low"}}
-        image_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
+        image_block = await _transform_single_block(pipe_instance, block, mock_user)
         assert image_block is not None
         assert image_block["detail"] == "low"
         assert image_block["image_url"] == "data:image/png;base64,abc"
@@ -3422,7 +3306,6 @@ class TestImageTransformer:
     async def test_internal_file_url_inlined_to_data_url(
         self,
         pipe_instance,
-        mock_request,
         mock_user,
         tmp_path,
         monkeypatch,
@@ -3440,7 +3323,7 @@ class TestImageTransformer:
 
         monkeypatch.setattr(owui_files_module, "get_file_by_id", fake_get_file)
         block = {"type": "image_url", "image_url": {"url": "/api/v1/files/inline/content"}}
-        image_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
+        image_block = await _transform_single_block(pipe_instance, block, mock_user)
         assert image_block is not None
         assert image_block["image_url"].startswith("data:image/png;base64,")
 
@@ -3448,7 +3331,6 @@ class TestImageTransformer:
     async def test_internal_file_url_missing_is_dropped(
         self,
         pipe_instance,
-        mock_request,
         mock_user,
         monkeypatch,
     ):
@@ -3461,21 +3343,21 @@ class TestImageTransformer:
         monkeypatch.setattr(pipe_instance._file_gateway, "inline_owui_file_id", fake_inline)
         block = {"type": "image_url", "image_url": {"url": "/api/v1/files/missing/content"}}
         with pytest.raises(RequiredInternalFileError):
-            await _transform_single_block(pipe_instance, block, mock_request, mock_user)
+            await _transform_single_block(pipe_instance, block, mock_user)
 
     @pytest.mark.asyncio
     async def test_image_error_returns_empty_block(
         self,
         pipe_instance,
-        mock_request,
         mock_user,
         monkeypatch,
     ):
         """Errors while processing images should not leak exceptions."""
-        boom = RuntimeError("boom")
-        monkeypatch.setattr(pipe_instance._file_gateway, "upload_to_owui_storage", AsyncMock(side_effect=boom))
+        parse_mock = Mock(side_effect=RuntimeError("boom"))
+        monkeypatch.setattr(pipe_instance._multimodal_handler, "_parse_data_url", parse_mock)
         block = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
-        image_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
+        image_block = await _transform_single_block(pipe_instance, block, mock_user)
+        parse_mock.assert_called_once()
         assert image_block is not None
         assert image_block["image_url"] == "data:image/png;base64,AAAA"
         assert image_block["detail"] == "auto"
@@ -3487,220 +3369,6 @@ class TestImageTransformer:
 class TestFileTransformer:
     """Tests for _to_input_file transformer function."""
 
-    @pytest.mark.asyncio
-    async def test_file_remote_url_downloaded_and_saved(
-        self,
-        pipe_instance,
-        mock_request,
-        mock_user,
-        monkeypatch,
-    ):
-        """Remote file_url inputs should be downloaded and re-hosted in OWUI."""
-        remote_url = "https://example.com/manual.pdf"
-        stored_id = "remote123"
-        pipe_instance.valves.SAVE_REMOTE_FILE_URLS = True
-
-        download_mock = AsyncMock(
-            return_value={
-                "data": b"%PDF-1.7",
-                "mime_type": "application/pdf",
-                "url": remote_url,
-            }
-        )
-        upload_mock = AsyncMock(return_value=stored_id)
-        status_mock = AsyncMock()
-
-        monkeypatch.setattr(pipe_instance._multimodal_handler, "_download_remote_url", download_mock)
-        monkeypatch.setattr(pipe_instance._file_gateway, "upload_to_owui_storage", upload_mock)
-        monkeypatch.setattr(pipe_instance._event_emitter_handler, "_emit_status", status_mock)
-
-        events: list[dict] = []
-
-        async def event_emitter(event: dict):
-            events.append(event)
-
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_file",
-                        "file_url": remote_url,
-                        "filename": "manual.pdf",
-                    }
-                ],
-            }
-        ]
-
-        transformed = await transform_messages_to_input(pipe_instance,
-            messages,
-            __request__=mock_request,
-            user_obj=mock_user,
-            event_emitter=event_emitter,
-        )
-
-        assert transformed
-        user_message = transformed[0]
-        assert user_message["role"] == "user"
-        file_block = user_message["content"][0]
-        assert file_block["type"] == "input_file"
-        assert file_block["file_id"] == stored_id
-        assert "file_url" not in file_block
-
-        download_mock.assert_awaited_once_with(remote_url)
-        upload_mock.assert_awaited_once()
-        status_mock.assert_awaited_with(
-            event_emitter,
-            StatusMessages.FILE_REMOTE_SAVED,
-            done=False,
-        )
-
-    @pytest.mark.asyncio
-    async def test_file_remote_url_passthrough_when_disabled(
-        self,
-        pipe_instance,
-        mock_request,
-        mock_user,
-        monkeypatch,
-    ):
-        """Remote file_url should pass through when valve disabled."""
-        remote_url = "https://example.com/manual.pdf"
-        pipe_instance.valves.SAVE_REMOTE_FILE_URLS = False
-
-        download_mock = AsyncMock()
-        upload_mock = AsyncMock()
-        status_mock = AsyncMock()
-
-        monkeypatch.setattr(pipe_instance._multimodal_handler, "_download_remote_url", download_mock)
-        monkeypatch.setattr(pipe_instance._file_gateway, "upload_to_owui_storage", upload_mock)
-        monkeypatch.setattr(pipe_instance._event_emitter_handler, "_emit_status", status_mock)
-
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_file",
-                        "file_url": remote_url,
-                    }
-                ],
-            }
-        ]
-
-        transformed = await transform_messages_to_input(pipe_instance,
-            messages,
-            __request__=mock_request,
-            user_obj=mock_user,
-            event_emitter=None,
-        )
-
-        file_block = transformed[0]["content"][0]
-        assert file_block["file_url"] == remote_url
-        download_mock.assert_not_called()
-        upload_mock.assert_not_called()
-        status_mock.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_file_remote_url_warns_when_download_returns_none(
-        self,
-        pipe_instance,
-        mock_request,
-        mock_user,
-        monkeypatch,
-    ):
-        remote_url = "https://example.com/manual.pdf"
-        pipe_instance.valves.SAVE_REMOTE_FILE_URLS = True
-
-        download_mock = AsyncMock(return_value=None)
-        upload_mock = AsyncMock()
-        notification_mock = AsyncMock()
-
-        monkeypatch.setattr(pipe_instance._multimodal_handler, "_download_remote_url", download_mock)
-        monkeypatch.setattr(pipe_instance._file_gateway, "upload_to_owui_storage", upload_mock)
-        monkeypatch.setattr(pipe_instance._event_emitter_handler, "_emit_notification", notification_mock)
-
-        async def event_emitter(_event: dict):
-            return
-
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_file",
-                        "file_url": remote_url,
-                        "filename": "manual.pdf",
-                    }
-                ],
-            }
-        ]
-
-        transformed = await transform_messages_to_input(pipe_instance,
-            messages,
-            __request__=mock_request,
-            user_obj=mock_user,
-            event_emitter=event_emitter,
-        )
-
-        file_block = transformed[0]["content"][0]
-        assert file_block["file_url"] == remote_url
-        assert "file_data" not in file_block
-
-        download_mock.assert_awaited_once_with(remote_url)
-        upload_mock.assert_not_called()
-        notification_mock.assert_awaited()
-
-    @pytest.mark.asyncio
-    async def test_file_data_remote_url_moves_to_file_url_when_download_returns_none(
-        self,
-        pipe_instance,
-        mock_request,
-        mock_user,
-        monkeypatch,
-    ):
-        remote_url = "https://example.com/manual.pdf"
-        pipe_instance.valves.SAVE_FILE_DATA_CONTENT = True
-
-        download_mock = AsyncMock(return_value=None)
-        upload_mock = AsyncMock()
-        notification_mock = AsyncMock()
-
-        monkeypatch.setattr(pipe_instance._multimodal_handler, "_download_remote_url", download_mock)
-        monkeypatch.setattr(pipe_instance._file_gateway, "upload_to_owui_storage", upload_mock)
-        monkeypatch.setattr(pipe_instance._event_emitter_handler, "_emit_notification", notification_mock)
-
-        async def event_emitter(_event: dict):
-            return
-
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_file",
-                        "file_data": remote_url,
-                        "filename": "manual.pdf",
-                    }
-                ],
-            }
-        ]
-
-        transformed = await transform_messages_to_input(pipe_instance,
-            messages,
-            __request__=mock_request,
-            user_obj=mock_user,
-            event_emitter=event_emitter,
-        )
-
-        file_block = transformed[0]["content"][0]
-        assert file_block["file_url"] == remote_url
-        assert "file_data" not in file_block
-
-        download_mock.assert_awaited_once_with(remote_url)
-        upload_mock.assert_not_called()
-        notification_mock.assert_awaited()
-
-
 # Audio Transformer Tests
 
 
@@ -3711,7 +3379,6 @@ class TestAudioTransformer:
     async def test_audio_already_correct_format_passthrough(
         self,
         pipe_instance,
-        mock_request,
         mock_user,
         sample_audio_base64,
     ):
@@ -3720,7 +3387,7 @@ class TestAudioTransformer:
             "type": "input_audio",
             "input_audio": {"data": sample_audio_base64, "format": "wav"},
         }
-        audio_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
+        audio_block = await _transform_single_block(pipe_instance, block, mock_user)
         assert audio_block is not None
         assert audio_block["input_audio"]["data"] == sample_audio_base64
         assert audio_block["input_audio"]["format"] == "wav"
@@ -3729,7 +3396,6 @@ class TestAudioTransformer:
     async def test_audio_chat_completions_format_converted(
         self,
         pipe_instance,
-        mock_request,
         mock_user,
         sample_audio_base64,
     ):
@@ -3739,7 +3405,7 @@ class TestAudioTransformer:
             "mime_type": "audio/wave",
             "input_audio": sample_audio_base64,
         }
-        audio_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
+        audio_block = await _transform_single_block(pipe_instance, block, mock_user)
         assert audio_block is not None
         assert audio_block["type"] == "input_audio"
         assert audio_block["input_audio"]["data"] == sample_audio_base64
@@ -3749,7 +3415,6 @@ class TestAudioTransformer:
     async def test_audio_tool_output_format_converted(
         self,
         pipe_instance,
-        mock_request,
         mock_user,
         sample_audio_base64,
     ):
@@ -3759,7 +3424,7 @@ class TestAudioTransformer:
             "mimeType": "audio/wav",
             "data": sample_audio_base64,
         }
-        audio_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
+        audio_block = await _transform_single_block(pipe_instance, block, mock_user)
         assert audio_block is not None
         assert audio_block["input_audio"]["format"] == "wav"
         assert audio_block["input_audio"]["data"] == sample_audio_base64
@@ -3780,7 +3445,6 @@ class TestAudioTransformer:
     async def test_audio_mime_type_to_format_mapping(
         self,
         pipe_instance,
-        mock_request,
         mock_user,
         sample_audio_base64,
         mime_type,
@@ -3792,7 +3456,7 @@ class TestAudioTransformer:
             "mimeType": mime_type,
             "data": sample_audio_base64,
         }
-        audio_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
+        audio_block = await _transform_single_block(pipe_instance, block, mock_user)
         assert audio_block is not None
         assert audio_block["input_audio"]["format"] == expected_format
 
@@ -3800,12 +3464,11 @@ class TestAudioTransformer:
     async def test_audio_invalid_payload_returns_empty_block(
         self,
         pipe_instance,
-        mock_request,
         mock_user,
     ):
         """Should return empty audio block for malformed payloads."""
         block = {"type": "input_audio", "input_audio": 12345}
-        audio_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
+        audio_block = await _transform_single_block(pipe_instance, block, mock_user)
         assert audio_block is not None
         assert audio_block["input_audio"]["data"] == ""
         assert audio_block["input_audio"]["format"] == "mp3"
@@ -3814,7 +3477,6 @@ class TestAudioTransformer:
     async def test_audio_error_returns_minimal_block(
         self,
         pipe_instance,
-        mock_request,
         mock_user,
         sample_audio_base64,
         monkeypatch,
@@ -3826,7 +3488,7 @@ class TestAudioTransformer:
             "type": "input_audio",
             "input_audio": f"DATA:audio/mp3;base64,{sample_audio_base64}",
         }
-        audio_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
+        audio_block = await _transform_single_block(pipe_instance, block, mock_user)
         assert audio_block is not None
         assert audio_block["input_audio"]["data"] == ""
         assert audio_block["input_audio"]["format"] == "mp3"
@@ -3835,7 +3497,6 @@ class TestAudioTransformer:
     async def test_audio_data_url_supported(
         self,
         pipe_instance,
-        mock_request,
         mock_user,
         sample_audio_base64,
     ):
@@ -3844,7 +3505,7 @@ class TestAudioTransformer:
             "type": "input_audio",
             "input_audio": f"data:audio/mp3;base64,{sample_audio_base64}",
         }
-        audio_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
+        audio_block = await _transform_single_block(pipe_instance, block, mock_user)
         assert audio_block is not None
         assert audio_block["input_audio"]["data"] == sample_audio_base64
         assert audio_block["input_audio"]["format"] == "mp3"
@@ -3853,7 +3514,6 @@ class TestAudioTransformer:
     async def test_audio_rejects_remote_urls(
         self,
         pipe_instance,
-        mock_request,
         mock_user,
     ):
         """Should reject remote URLs to match OpenRouter requirements."""
@@ -3861,7 +3521,7 @@ class TestAudioTransformer:
             "type": "input_audio",
             "input_audio": "https://example.com/audio.mp3",
         }
-        audio_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
+        audio_block = await _transform_single_block(pipe_instance, block, mock_user)
         assert audio_block is not None
         assert audio_block["input_audio"]["data"] == ""
         assert audio_block["input_audio"]["format"] == "mp3"
@@ -3870,7 +3530,6 @@ class TestAudioTransformer:
     async def test_audio_partial_dict_without_format(
         self,
         pipe_instance,
-        mock_request,
         mock_user,
         sample_audio_base64,
     ):
@@ -3880,7 +3539,7 @@ class TestAudioTransformer:
             "mime_type": "audio/wav",
             "data": sample_audio_base64,
         }
-        audio_block = await _transform_single_block(pipe_instance, block, mock_request, mock_user)
+        audio_block = await _transform_single_block(pipe_instance, block, mock_user)
         assert audio_block is not None
         assert audio_block["input_audio"]["format"] == "wav"
         assert audio_block["input_audio"]["data"] == sample_audio_base64
@@ -4001,13 +3660,11 @@ class TestMultimodalIntegration:
     async def test_combined_text_image_file(
         self,
         pipe_instance,
-        mock_request,
         mock_user,
         sample_image_base64,
         monkeypatch,
     ) -> None:
-        """Should handle message with text, image, and file."""
-        pipe_instance.valves.SAVE_REMOTE_FILE_URLS = True
+        """Should handle message with text, image, and file, storing neither."""
         pipe_instance._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
 
         remote_file_url = "https://example.com/manual.pdf"
@@ -4035,7 +3692,6 @@ class TestMultimodalIntegration:
         ]
         transformed = await transform_messages_to_input(pipe_instance,
             messages,
-            __request__=mock_request,
             user_obj=mock_user,
             event_emitter=None,
         )
@@ -4044,20 +3700,19 @@ class TestMultimodalIntegration:
         blocks = transformed[0]["content"]
         assert [b["type"] for b in blocks] == ["input_text", "input_image", "input_file"]
         assert blocks[0]["text"] == "hello"
-        assert blocks[1]["image_url"] == "data:image/png;base64,INLINE"
+        assert blocks[1]["image_url"] == f"data:image/png;base64,{sample_image_base64}"
         assert blocks[1]["detail"] == "low"
-        assert blocks[2]["file_id"] == "file123"
-        assert "file_url" not in blocks[2]
+        assert blocks[2]["file_url"] == remote_file_url
+        assert "file_id" not in blocks[2]
 
-        download_mock.assert_awaited_once_with(remote_file_url)
-        assert upload_mock.await_count == 2
-        inline_mock.assert_awaited()
+        download_mock.assert_not_awaited()
+        upload_mock.assert_not_awaited()
+        inline_mock.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_combined_text_audio_image(
         self,
         pipe_instance,
-        mock_request,
         mock_user,
         sample_audio_base64,
         monkeypatch,
@@ -4080,7 +3735,6 @@ class TestMultimodalIntegration:
         ]
         transformed = await transform_messages_to_input(pipe_instance,
             messages,
-            __request__=mock_request,
             user_obj=mock_user,
             event_emitter=None,
         )
@@ -4090,14 +3744,14 @@ class TestMultimodalIntegration:
         assert blocks[0]["text"] == "listen"
         assert blocks[1]["input_audio"]["data"] == sample_audio_base64
         assert blocks[1]["input_audio"]["format"] == "mp3"
-        assert blocks[2]["image_url"] == "data:image/png;base64,INLINE"
-        inline_mock.assert_awaited()
+        assert blocks[2]["image_url"] == "data:image/png;base64,AAAA"
+        upload_mock.assert_not_awaited()
+        inline_mock.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_multiple_images_in_message(
         self,
         pipe_instance,
-        mock_request,
         mock_user,
         sample_image_base64,
         monkeypatch,
@@ -4123,7 +3777,6 @@ class TestMultimodalIntegration:
         ]
         transformed = await transform_messages_to_input(pipe_instance,
             messages,
-            __request__=mock_request,
             user_obj=mock_user,
             event_emitter=None,
         )
@@ -4132,29 +3785,25 @@ class TestMultimodalIntegration:
         types = [b["type"] for b in blocks]
         assert types == ["input_text", "input_image", "input_image"]
         assert [b["image_url"] for b in blocks[1:]] == [
-            "data:image/png;base64,img1",
-            "data:image/png;base64,img2",
+            f"data:image/png;base64,{sample_image_base64}",
+            "data:image/png;base64,AAAA",
         ]
+        upload_mock.assert_not_awaited()
+        inline_mock.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_error_in_one_block_does_not_crash_others(
         self,
         pipe_instance,
-        mock_request,
         mock_user,
         monkeypatch,
     ) -> None:
         """Should process other blocks even if one fails."""
-        pipe_instance.valves.SAVE_REMOTE_FILE_URLS = True
         pipe_instance._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
 
         remote_file_url = "https://example.com/manual.pdf"
-        download_mock = AsyncMock(
-            return_value={"data": b"%PDF-1.7", "mime_type": "application/pdf", "url": remote_file_url}
-        )
-        upload_mock = AsyncMock(side_effect=[RuntimeError("boom"), "file-ok"])
-        monkeypatch.setattr(pipe_instance._multimodal_handler, "_download_remote_url", download_mock)
-        monkeypatch.setattr(pipe_instance._file_gateway, "upload_to_owui_storage", upload_mock)
+        parse_mock = Mock(side_effect=RuntimeError("boom"))
+        monkeypatch.setattr(pipe_instance._multimodal_handler, "_parse_data_url", parse_mock)
 
         messages = [
             {
@@ -4167,17 +3816,16 @@ class TestMultimodalIntegration:
         ]
         transformed = await transform_messages_to_input(pipe_instance,
             messages,
-            __request__=mock_request,
             user_obj=mock_user,
             event_emitter=None,
         )
 
+        parse_mock.assert_called_once()
         blocks = transformed[0]["content"]
         assert [b["type"] for b in blocks] == ["input_image", "input_file"]
         assert blocks[0]["image_url"] == "data:image/png;base64,AAAA"
         # File should still be processed.
-        assert blocks[1]["file_id"] == "file-ok"
-        assert "file_url" not in blocks[1]
+        assert blocks[1]["file_url"] == remote_file_url
 
 
 class TestSSRFBlockingSpecificIPTypes:

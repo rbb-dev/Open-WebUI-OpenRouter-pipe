@@ -18,6 +18,8 @@ Without Redis a single worker emits directly from its local collectors.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import inspect
 import json
 import logging
@@ -25,6 +27,7 @@ import os
 import time
 from typing import Any
 
+from ...storage.owui_files import is_temporary_chat
 from ._collectors import (
     PROCESS_START,
     collect_concurrency,
@@ -122,6 +125,14 @@ def _worker_health(pipe: Any) -> dict[str, Any]:
     }
 
 
+def _slice_chat_key(chat_id: str) -> str:
+    secret = os.getenv("WEBUI_SECRET_KEY")
+    if not secret:
+        return ""
+    digest = hmac.new(secret.encode("utf-8"), b"pipe-dashboard live chat\x00" + chat_id.encode("utf-8"), hashlib.sha256)
+    return "anon:" + digest.hexdigest()[:32]
+
+
 def _collect_worker_payload(pipe: Any) -> dict[str, Any]:
     """Collect compact per-worker stats for Redis publishing.
 
@@ -134,7 +145,12 @@ def _collect_worker_payload(pipe: Any) -> dict[str, Any]:
     rl = collect_rate_limits(pipe)
     s = collect_sessions(pipe)
     v = collect_video_pool(pipe)
-    snap = _snapshot_safe()
+    rows, costs = _snapshot_safe()
+    task_costs: dict[str, float] = {}
+    for cid, cost in costs.items():
+        key = _slice_chat_key(cid) if is_temporary_chat(cid) else cid
+        if key:
+            task_costs[key] = task_costs[key] + cost if key in task_costs else cost
 
     return {
         "pid": os.getpid(),
@@ -170,8 +186,13 @@ def _collect_worker_payload(pipe: Any) -> dict[str, Any]:
         "v": {"a": v["active"], "m": v["max"]},
         "s": s["in_flight"],
         "h": _worker_health(pipe),
-        "sl": snap[0],
-        "tc": snap[1],
+        "sl": [
+            {**row, "chat_id": _slice_chat_key(row["chat_id"])}
+            if isinstance(row, dict) and is_temporary_chat(row.get("chat_id"))
+            else row
+            for row in rows
+        ],
+        "tc": task_costs,
     }
 
 
