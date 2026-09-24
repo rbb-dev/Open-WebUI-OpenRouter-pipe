@@ -167,7 +167,6 @@ class _ToolExecutionContext:
     on_complete: Callable[[dict, dict], Awaitable[None]] | None = None
     card_carries_the_result: bool = False
     terminal_files_inline: bool = False
-    terminal_metadata: dict[str, Any] | None = None
 
 
 class ToolExecutor:
@@ -701,7 +700,10 @@ class ToolExecutor:
                                     "session_id": session_id,
                                 },
                             }
-                            return await _event_call(payload)  # type: ignore[misc]
+                            reply = await _event_call(payload)  # type: ignore[misc]
+                            if isinstance(reply, dict) and reply.get("error"):
+                                return [reply, None]
+                            return reply
                         except Exception as exc:
                             self.logger.debug("Direct tool '%s' failed: %s", _tool_name, exc, exc_info=True)
                             with contextlib.suppress(Exception):
@@ -816,6 +818,8 @@ class ToolExecutor:
                 pictures.append(await self._stored_picture_safe(url, context))
             else:
                 shown.append(entry)
+                if isinstance(entry, dict) and entry.get("type") == "image" and isinstance(url, str) and url:
+                    pictures.append(url)
         return pictures, shown
 
     async def _stored_picture_safe(self, url: str, context: _ToolExecutionContext) -> str:

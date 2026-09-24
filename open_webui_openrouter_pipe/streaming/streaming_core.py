@@ -76,6 +76,7 @@ from ..core.url_scheme import is_http_or_https_url
 
 # Imports from core.utils
 from ..core.utils import (
+    CONTINUED_REPLY,
     OWUI_UNRESOLVABLE_CALL_STATUSES,
     PIPE_ONLY_TOOL_ROUND_KEY,
     REASONING_ANCHOR_SEQ_KEY,
@@ -495,6 +496,7 @@ class StreamingHandler:
 
         emitter_supplied = event_emitter is not None
         continuation_newline_pending = bool(body._continues_after_marker)
+        continues_after_text = not continuation_newline_pending and bool((CONTINUED_REPLY.get() or "").strip())
         if event_emitter is None:
             event_emitter = _wrap_event_emitter(None)
 
@@ -1425,6 +1427,8 @@ class StreamingHandler:
                 return
             assistant_message += _continuation_lead()
             msg_before = len(assistant_message)
+            if not assistant_message and continues_after_text:
+                assistant_message = "\n\n"
             assistant_message = _append_hidden_marker_lines(assistant_message, markers)
             if reasoning_anchor_state["chars_at_last_chunk"] == msg_before:
                 reasoning_anchor_state["chars_at_last_chunk"] = len(assistant_message)
@@ -3235,7 +3239,7 @@ class StreamingHandler:
 
             if (
                 tool_loops_executed
-                and len(assistant_message) <= assistant_len_before_tool_loops
+                and not strip_hidden_marker_lines(assistant_message[assistant_len_before_tool_loops:]).strip()
                 and not has_actionable_continuation
             ):
                 await self._pipe._event_emitter_handler._emit_notification(
@@ -3307,7 +3311,7 @@ class StreamingHandler:
                     partial_answer=assistant_message,
                 )
             elif isinstance(e, (TimeoutError, aiohttp.ClientConnectionError, aiohttp.ClientPayloadError)):
-                if assistant_message.strip():
+                if strip_hidden_marker_lines(assistant_message).strip():
                     template, variables = valves.STREAM_INTERRUPTED_TEMPLATE, {"model": body.model or ""}
                 elif isinstance(e, aiohttp.ConnectionTimeoutError):
                     template, variables = valves.NETWORK_TIMEOUT_TEMPLATE, {"timeout_seconds": valves.HTTP_CONNECT_TIMEOUT_SECONDS}
@@ -3573,7 +3577,8 @@ class StreamingHandler:
             if (
                 (not handed_back_for_retry)
                 and (not was_cancelled)
-                and (emitted_output_items or (terminal and not error_occurred))
+                and terminal
+                and (emitted_output_items or not error_occurred)
             ):
                 await _capture_seeded_output()
                 terminal_output = _terminal_output_items()

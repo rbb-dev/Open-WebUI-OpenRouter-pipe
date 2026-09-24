@@ -51,6 +51,7 @@ from ..core.utils import (
     is_picture_output,
     is_server_tool_call_id,
     is_tool_image_handoff,
+    opens_a_turn,
     picture_output,
     server_tool_call_id,
     server_tool_status,
@@ -232,6 +233,12 @@ def _reinterleave_region(region: list[dict[str, Any]]) -> list[dict[str, Any]]:
         else:
             if ordinal in output_index_for_call:
                 pos = output_index_for_call[ordinal]
+                after = skeleton[pos + 1] if pos + 1 < len(skeleton) else None
+                if (
+                    isinstance(after, dict) and after.get("type") == "message" and after.get("role") == "user"
+                    and not opens_a_turn(skeleton, pos + 1)
+                ):
+                    pos += 1
             elif 0 <= ordinal < len(fc_items):
                 pos = fc_items[ordinal][0]
             bucket = inserts_after
@@ -260,8 +267,8 @@ def _reinterleave_reasoning_by_anchor(
     """
     out: list[dict[str, Any]] = []
     region: list[dict[str, Any]] = []
-    for it in items:
-        if isinstance(it, dict) and it.get("type") == "message" and it.get("role") == "user":
+    for index, it in enumerate(items):
+        if opens_a_turn(items, index):
             out.extend(_reinterleave_region(_one_copy_per_round(region)))
             region = []
             out.append(it)
@@ -1591,7 +1598,7 @@ async def transform_messages_to_input(
             vision_warning_sent = False
             latest_user_message = role == "user" and idx == len(messages) - 1
             include_user_images = (
-                (latest_user_message or tool_images) and vision_supported and image_limit > 0
+                ((latest_user_message and vision_supported) or tool_images) and image_limit > 0
             )
 
             for block_idx, block in enumerate(content_blocks):

@@ -761,56 +761,6 @@ async def test_a_lost_zdr_answer_is_not_reported_as_the_answer_the_user_gave():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("reader_is_async", [True, False], ids=["async-reader", "sync-reader"])
-async def test_the_valve_row_is_read_whether_the_owui_api_is_sync_or_async(reader_is_async):
-    """A sync reader must not make the ZDR gate deny every request.
-
-    `Functions.get_user_valves_by_id_and_user_id` is `async` in every Open WebUI I can
-    check, but the manifest floor is 0.9.1 and the package carries 57 other bare awaits
-    on Open WebUI model APIs. Those degrade when the shape differs; THIS one denies --
-    a TypeError here reports the row unreadable, and an unreadable row enforces ZDR,
-    which on a default install (ALLOW_USER_ZDR_OVERRIDE=True, ZDR_ENFORCE=False) turns
-    every request for a non-ZDR model into "Model restricted" instead of an answer.
-
-    Both arms, because a tolerant call that only ever sees one shape proves nothing
-    about the other.
-    """
-    import open_webui.models.functions as owf
-
-    from open_webui_openrouter_pipe import Pipe
-
-    async def _async_reader(_id, _uid, db=None):
-        return {"REQUEST_ZDR": True}
-
-    def _sync_reader(_id, _uid, db=None):
-        return {"REQUEST_ZDR": True}
-
-    class _Reader:
-        get_user_valves_by_id_and_user_id = staticmethod(
-            _async_reader if reader_is_async else _sync_reader
-        )
-
-    original = owf.Functions
-    owf.Functions = _Reader()
-    pipe = Pipe()
-    try:
-        stored = await pipe._stored_user_valves(
-            {"id": "u1", "valves": Pipe.UserValves()}
-        )
-    finally:
-        owf.Functions = original
-        await pipe.close()
-
-    assert isinstance(stored, dict) and stored.get("REQUEST_ZDR") is True, (
-        f"a {'async' if reader_is_async else 'sync'} valve reader did not yield the "
-        f"stored row: {stored!r}. A bare await on a sync reader raises TypeError, which "
-        "returns the instance Open WebUI supplied instead -- and that one is "
-        "default-constructed whenever its own parse failed, so the user's saved "
-        "preference is silently replaced by the default."
-    )
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("settings", "expect_refusal"),
     [

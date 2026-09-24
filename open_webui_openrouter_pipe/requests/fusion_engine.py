@@ -210,7 +210,6 @@ async def run_fusion_member(
             request=outer_ctx.request,
             user=outer_ctx.user,
             metadata=inner_metadata,
-            terminal_metadata=outer_ctx.metadata,
             request_id=SessionLogger.request_id.get() or "",
             fusion_inner=True,
             tool_breaker=invocation.tool_breaker,

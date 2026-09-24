@@ -3,10 +3,10 @@
 A reasoning model that thinks before and after a tool call produces thinking blocks with a tool round between them.
 When the round is missing, replay puts the blocks next to each other, and Anthropic rejects exactly that ("thinking
 blocks ... cannot be modified", recorded live in tests/fixtures/anthropic_reasoning_replay_probe.json). So the pipe
-keeps its own copy of every round it runs -- the call with empty arguments and a "not retained" result, committed
-where the round happened -- and replay uses it whenever Open WebUI does not hand the same round back. The thinking
-blocks stay apart, while nothing the tool returned, or the model sent it, is stored. The copy is a record of the
-round, not of the reasoning: it survives every path that drops reasoning (measured accepted without it, t233a).
+keeps its own copy of every round it runs -- the call and its result, committed where the round happened -- and
+replay uses it whenever Open WebUI does not hand the same round back; while results are not kept, the model is
+handed `{}` and a placeholder in their place. The thinking blocks stay apart. The copy is a record of the round,
+not of the reasoning: it survives every path that drops reasoning (measured accepted without it, t233a).
 
 Stage A is the real streaming loop. Stage B feeds the next request what Open WebUI would: its saved message when the
 turn published one, otherwise the content stage A produced (text plus hidden markers), through the real transformer.

@@ -703,18 +703,7 @@ class Pipe:
         try:
             from open_webui.models.functions import Functions
 
-            reader = getattr(Functions, "get_user_valves_by_id_and_user_id", None)
-            if reader is None:
-                # An Open WebUI whose Functions API does not offer this. Nothing to
-                # recover, and no diagnostic: the supplied instance is the documented
-                # input, not a failure -- so this is readable, not unreadable.
-                return supplied
-            # `_await_if_needed` rather than a bare await: this reader is `async` in
-            # every Open WebUI the manifest supports that I can check, but the floor is
-            # 0.9.1 and a sync one would raise TypeError here -- which lands in the
-            # except below and silently swaps every setting the user has for its
-            # default. The tolerant call keeps a sync reader from doing that.
-            stored = await _await_if_needed(reader(self.id, user_id))
+            stored = await Functions.get_user_valves_by_id_and_user_id(self.id, user_id)
         except Exception:
             self.logger.log(
                 warn_level(_warned_user_valves, "stored_read"),
@@ -1361,8 +1350,9 @@ class Pipe:
         state: dict,
     ) -> AsyncGenerator[dict[str, Any] | str, None]:
         try:
-            async for item in inner:
-                yield item
+            async with contextlib.aclosing(inner):
+                async for item in inner:
+                    yield item
         finally:
             Pipe._release_stream_counter(self, state)
 
@@ -3222,7 +3212,7 @@ class Pipe:
             try:
                 executor = self._ensure_tool_executor()
                 raw_result = executor._terminal_file_result_safe(
-                    origin_name, item.args, raw_result, item.tool_cfg, context.terminal_metadata or context.metadata
+                    origin_name, item.args, raw_result, item.tool_cfg, context.metadata
                 )
                 text, files, embeds = await executor._process_tool_result_safe(
                     tool_name=tool_name,

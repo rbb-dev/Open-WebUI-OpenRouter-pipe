@@ -210,9 +210,10 @@ Anchors are **scoped to a turn**, where a turn is the region between user messag
 not guaranteed unique across a conversation: in chats saved before the pipe made the ids it invents unique, the
 same id can appear in several turns, because the chat-completions adapters used to number calls per request.
 Binding an anchor only within its own turn is what keeps a reasoning item from
-attaching itself to an unrelated call with the same id. Open WebUI's own synthetic "Here are the images from
-the tool results above" message counts as a user message for this purpose, which splits the region at the same
-point on both the generating and the replaying side.
+attaching itself to an unrelated call with the same id. Open WebUI's own "Here are the images from the tool
+results above" message, which follows a round's results and carries that round's pictures, is not a user message
+for this purpose: it stays inside its round's turn on both the generating and the replaying side, and a thought
+the model had after the round is replayed after it.
 
 ### 6.2 An answer continued across more than one request
 
@@ -232,7 +233,8 @@ stored reply's last line. A hidden marker line that gains text after it is no lo
 replaying, and the line either shows its id as text or, when the added text contains no space, hides the added text
 along with the id. So when the stored reply ends on a marker line, the continuation's first model output starts on a
 new line, whether it is text, a marker line or a generated picture. When the stored reply ends on ordinary text
-instead, that output carries on the sentence. A card
+instead, model text and a generated picture carry on the sentence, while a hidden marker line that comes first
+starts a new paragraph, so it stays a line of its own. A card
 or a refusal that opens a continuation - the provider's error card when a model refuses prefill, the breaker's
 refusal, a busy or startup notice, or a configuration notice when the Continue is not streamed - starts a block of
 its own on any Continue; on a streamed Continue a configuration notice shows as Open WebUI's error instead, and the

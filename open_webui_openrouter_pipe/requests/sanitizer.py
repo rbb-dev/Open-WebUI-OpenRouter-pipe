@@ -22,6 +22,7 @@ from ..core.utils import (
     TOOL_CALL_STATUSES,
     _clean_str,
     is_picture_output,
+    opens_a_turn,
 )
 from ..integrations.anthropic import _is_anthropic_model_id
 
@@ -82,7 +83,7 @@ def _strip_unreplayable_anthropic_reasoning(items: list[Any]) -> list[Any]:
             span.append(idx)
             if _reasoning_item_unsigned(item):
                 tainted = True
-        elif isinstance(item, dict) and item.get("type") == "message" and item.get("role") == "user":
+        elif opens_a_turn(items, idx):
             if tainted:
                 drop_idx.update(span)
             span = []

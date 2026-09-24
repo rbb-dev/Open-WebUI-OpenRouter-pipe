@@ -225,10 +225,6 @@ def _unlinkable_chat_prefixes() -> tuple[str, ...]:
     addition of `channel:`, which reached exactly one of the gates that needed it. The
     next prefix Open WebUI adds would be silently uncovered.
 
-    Guarded because `utils.chat_id` does not exist in every supported Open WebUI: it is
-    absent from the 0.10.x line and the manifest requires only 0.9.1, so an unguarded
-    import would kill this module at import time on a deployment that works today.
-
     Cached because the answer cannot change inside a process and the miss is the
     expensive case -- a failed import re-walks sys.path, and this runs on every upload.
     `cache_clear()` is the reset seam.

@@ -72,7 +72,8 @@ def _answer_steps(text: str) -> list[tuple[float, dict[str, Any]]]:
 
 
 async def _published(
-    pipe, monkeypatch, *, continued: bool, steps, body_input, open_webui_runs_tools=False, on_event=None
+    pipe, monkeypatch, *, continued: bool, steps, body_input, open_webui_runs_tools=False, on_event=None,
+    handing_back=False,
 ):
     clock = _install_clock(monkeypatch)
     monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_timed_stream(steps, clock))
@@ -102,6 +103,9 @@ async def _published(
         user_id="user-123",
     )
     completions = _events_of(emitted, "response.completed")
+    if handing_back:
+        assert not completions, "a response that hands its calls to Open WebUI published a closing record"
+        return emitted
     assert completions, "the turn published no terminal output"
     return (completions[-1].get("response") or {}).get("output") or []
 
@@ -115,10 +119,16 @@ def _stored_after_one_call(existing, published, *, continued: bool):
     return prior_output + output
 
 
-def _stored_after_a_tool_round(existing, first_published, tool_results, second_published):
-    prior_output, output = list(existing), []
-    output = (first_published or output) + tool_results
-    return prior_output + output + (second_published or [])
+def _held_after_hand_back(events):
+    """What Open WebUI holds after a response that handed it calls: the items it folded in from the stream, with the
+    calls it built from the tool-call chunks settled once the stream ended."""
+    from tests.test_open_webui_mode_keeps_the_calls_it_runs import _open_webui_backend
+
+    return _open_webui_backend(events)
+
+
+def _stored_after_a_tool_round(existing, hand_back_events, tool_results, second_published):
+    return list(existing) + _held_after_hand_back(hand_back_events) + tool_results + (second_published or [])
 
 
 def _texts(items) -> list[str]:
@@ -166,7 +176,7 @@ async def test_an_open_webui_tool_round_inside_a_continued_turn_stores_the_earli
     call = {"type": "function_call", "id": "fc_A", "call_id": "call_A", "name": "lookup", "arguments": "{}",
             "status": "completed"}
     first = await _published(
-        pipe_instance_async, monkeypatch, continued=True, open_webui_runs_tools=True,
+        pipe_instance_async, monkeypatch, continued=True, open_webui_runs_tools=True, handing_back=True,
         steps=[
             (0.0, {"type": "response.output_item.added", "item": {"type": "reasoning", "id": "rs-1"}}),
             (1.0, {"type": "response.reasoning_text.delta", "item_id": "rs-1", "delta": "Thinking. "}),
@@ -223,7 +233,7 @@ async def test_a_tool_round_that_reuses_a_stored_call_id_still_stores_the_contin
     call = {"type": "function_call", "id": "fc_B", "call_id": call_id, "name": "lookup", "arguments": "{}",
             "status": "completed"}
     first = await _published(
-        pipe_instance_async, monkeypatch, continued=True, open_webui_runs_tools=True,
+        pipe_instance_async, monkeypatch, continued=True, open_webui_runs_tools=True, handing_back=True,
         steps=[
             (0.0, {"type": "response.output_item.added", "item": {"type": "reasoning", "id": "rs-B"}}),
             (1.0, {"type": "response.reasoning_text.delta", "item_id": "rs-B", "delta": "Thinking. "}),
@@ -320,7 +330,7 @@ async def test_a_tool_round_that_returns_an_image_stores_the_continued_answer_on
     call = {"type": "function_call", "id": "fc_A", "call_id": "call_A", "name": "lookup", "arguments": "{}",
             "status": "completed"}
     first = await _published(
-        pipe, monkeypatch, continued=True, open_webui_runs_tools=True,
+        pipe, monkeypatch, continued=True, open_webui_runs_tools=True, handing_back=True,
         steps=[
             (0.0, {"type": "response.output_item.added", "item": {"type": "reasoning", "id": "rs-1"}}),
             (1.0, {"type": "response.reasoning_text.delta", "item_id": "rs-1", "delta": "Thinking. "}),
@@ -332,25 +342,17 @@ async def test_a_tool_round_that_returns_an_image_stores_the_continued_answer_on
     parts: list[dict[str, Any]] = [{"type": "input_text", "text": "ok"}]
     if result == "image":
         parts.append({"type": "input_image", "image_url": _ONE_PIXEL_PNG})
-    # After the stream Open WebUI appends its own call item for each streamed tool call, then each result. The call
-    # starts in_progress and is settled to the result's status once the tool has run, so what is stored -- and what
-    # the re-call is rebuilt from -- carries the finished status. The converter drops a pair whose call is not
-    # finished, so a round written as still running is a shape Open WebUI never stores and never replays.
+    # Open WebUI built its own call item from the streamed tool-call chunks and settled it once the stream ended; it
+    # then appends the tool's result and rebuilds the round for its re-call from what it holds.
+    held = _held_after_hand_back(first)
+    assert [(i.get("call_id"), i.get("status")) for i in held if i.get("type") == "function_call"] == [
+        ("call_A", "completed")
+    ], held
     round_items: list[dict[str, Any]] = [
-        {"type": "function_call", "id": "call_A", "call_id": "call_A", "name": "lookup", "arguments": "{}",
-         "status": "completed"},
         {"type": "function_call_output", "id": "fco_A", "call_id": "call_A", "output": parts, "status": "completed"},
     ]
-    # The converter replays a pair only when the call is finished, so a round written as still running is
-    # silently discarded whole. Asserted here rather than left to the converter, so that a fixture drifting
-    # back to an unfinished call fails loudly instead of quietly testing nothing.
-    assert all(
-        item["status"] in {"completed", "failed", "rejected"}
-        for item in round_items
-        if item["type"] == "function_call"
-    ), round_items
-    re_call = history + convert_output_to_messages(first + round_items, raw=True, flatten_tool_images=True)
-    assert [message["role"] for message in re_call[len(history):]] == (
+    re_call = history + convert_output_to_messages(held + round_items, raw=True, flatten_tool_images=True)
+    assert [message["role"] for message in re_call[len(history):] if message["role"] != "assistant" or message.get("tool_calls")] == (
         ["assistant", "tool", "user"] if result == "image" else ["assistant", "tool"]
     ), re_call
     second = await _published(

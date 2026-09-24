@@ -70,7 +70,6 @@ Model icons + descriptions + capabilities sync automatically. Per-chat cost disp
 - **Native image generation** — 52 image-output models (Sourceful, FLUX, Seedream, Gemini Image, GPT Image, Recraft, Qwen, Krea, xAI Grok Imagine, Microsoft MAI, Meta Muse), each with its own settings panel built from the options that model publishes to OpenRouter.
 - **Video generation** — 29 OpenRouter video models with per-model filters and inline `<video>` rendering.
 - **OpenRouter Web Tools** — Web Search + Web Fetch + Datetime + **Advisor** + **Subagent** + **Model Search** as one toggleable filter; tool-execution cards with citations, plus a per-request `SERVER_TOOLS_MAX_COST_USD` cap that bounds the server-tool agent loop.
-- **Open WebUI 0.9.x compatibility** — fully migrated to the async DB stack.
 - **Provider routing filters** — admin + user-controlled routing, fallbacks, ZDR, sort order.
 - **Direct Uploads filter** — bypass OWUI RAG; forward chat attachments as `input_file` to OpenRouter.
 

@@ -203,10 +203,10 @@ def server_tool_result_text(item: dict[str, Any]) -> str:
 def continued_turn_counts(items: Any) -> tuple[int, int, bool]:
     turn: list[dict[str, Any]] = []
     if isinstance(items, list):
-        for item in items:
+        for index, item in enumerate(items):
             if not isinstance(item, dict):
                 continue
-            if item.get("type") == "message" and item.get("role") == "user":
+            if opens_a_turn(items, index):
                 turn = []
             else:
                 turn.append(item)
@@ -218,6 +218,26 @@ def continued_turn_counts(items: Any) -> tuple[int, int, bool]:
 
 
 OPEN_WEBUI_TOOL_IMAGES_TEXT = "Here are the images from the tool results above. Please analyze them."
+
+
+def opens_a_turn(items: list[Any], index: int) -> bool:
+    item = items[index]
+    if not (isinstance(item, dict) and item.get("type") == "message" and item.get("role") == "user"):
+        return False
+    content = item.get("content")
+    first, *rest = content if isinstance(content, list) and content else [None]
+    if not (
+        isinstance(first, dict)
+        and first.get("type") == "input_text"
+        and first.get("text") == OPEN_WEBUI_TOOL_IMAGES_TEXT
+        and all(isinstance(part, dict) and part.get("type") == "input_image" for part in rest)
+    ):
+        return True
+    before = next(
+        (it for it in reversed(items[:index]) if not (isinstance(it, dict) and it.get("type") == "reasoning")),
+        None,
+    )
+    return not (isinstance(before, dict) and before.get("type") == "function_call_output")
 
 
 def is_tool_image_handoff(previous: Any, message: Any) -> bool:
