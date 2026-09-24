@@ -2518,7 +2518,7 @@ class Pipe:
             )
             return self._build_chat_completion_payload(
                 model=str(body.get("model") or openwebui_model_id or "pipe"),
-                content=markdown,
+                content=join_answer_and_card("", markdown),
             )
 
         try:

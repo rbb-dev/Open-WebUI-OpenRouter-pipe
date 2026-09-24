@@ -283,6 +283,14 @@ def is_linkable_chat(chat_id: Any) -> bool:
     return bool(normalized) and not normalized.startswith(_unlinkable_chat_prefixes())
 
 
+def temporary_chat_prefixes() -> tuple[str, ...]:
+    return tuple(prefix for prefix in _unlinkable_chat_prefixes() if prefix != "channel:")
+
+
+def is_temporary_chat(chat_id: Any) -> bool:
+    return isinstance(chat_id, str) and chat_id.strip().startswith(temporary_chat_prefixes())
+
+
 def is_real_owui_file_record(file_obj: Any) -> bool:
     """True when the record carries a real OWUI file id (so it requires authorisation)."""
     return bool(getattr(file_obj, "id", None))

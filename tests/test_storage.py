@@ -44,6 +44,9 @@ class _Field:
     def in_(self, values):
         return ("in", self.name, list(values))
 
+    def startswith(self, prefix):
+        return ("startswith", self.name, prefix)
+
 
 class _FakeModel:
     id = _Field("id")
@@ -78,6 +81,8 @@ class _FakeQuery:
             return current in value
         if op == "lt":
             return current < value
+        if op == "startswith":
+            return isinstance(current, str) and current.startswith(value)
         return False
 
     def _apply(self) -> list[_FakeModel]:
@@ -2088,6 +2093,9 @@ class _Field:
     def in_(self, values):
         return ("in", self.name, list(values))
 
+    def startswith(self, prefix):
+        return ("startswith", self.name, prefix)
+
     def asc(self):
         return ("asc", self.name)
 
@@ -2173,6 +2181,8 @@ class _FakeQuery:
             return current in value
         if op == "lt":
             return current < value
+        if op == "startswith":
+            return isinstance(current, str) and current.startswith(value)
         return False
 
     def _apply(self) -> list[_FakeModel]:

@@ -46,6 +46,7 @@ from tenacity import (
 
 from ..core.timing_logger import timed
 from ..core.utils import _await_if_needed, is_picture_output
+from .owui_files import is_temporary_chat, temporary_chat_prefixes
 
 # Optional dependencies
 try:
@@ -850,7 +851,7 @@ class ArtifactStore:
         payload: dict[str, Any],
     ) -> dict[str, Any] | None:
         """Construct a persistence-ready row dict or return ``None`` when invalid."""
-        if not (chat_id and self._item_model):
+        if not (chat_id and self._item_model) or is_temporary_chat(chat_id):
             return None
         if not message_id:
             self.logger.warning("Skipping artifact persistence for chat_id=%s: missing message_id.", chat_id)
@@ -1859,7 +1860,15 @@ class ArtifactStore:
                 .filter(self._item_model.created_at < cutoff)
                 .delete(synchronize_session=False)
             )
+            left_by_temporary_chats = sum(
+                session.query(self._item_model)
+                .filter(self._item_model.chat_id.startswith(prefix))
+                .delete(synchronize_session=False)
+                for prefix in temporary_chat_prefixes()
+            )
             session.commit()
+            if left_by_temporary_chats:
+                self.logger.info("Removed %s artifact row(s) left by temporary chats", left_by_temporary_chats)
             if deleted:
                 self.logger.info(
                     "Retention removed %s artifact row(s) last read before %s "

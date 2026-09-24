@@ -37,7 +37,6 @@ from ..core.utils import (
     _select_best_effort_fallback,
     continued_turn_counts,
     ends_on_hidden_marker_line,
-    join_answer_and_card,
 )
 from ..core.warn_latch import warn_level
 from ..filters.fusion_filter_renderer import is_fusion_model
@@ -1224,12 +1223,13 @@ class RequestOrchestrator:
             metadata=__metadata__,
         ):
             if CONTINUED_REPLY.get() is not None:
-                notice = join_answer_and_card("", _FUSION_CONTINUE_NOTICE)
                 self.logger.info("Continue declined: internal Fusion replies cannot be continued")
+                await self._pipe._event_emitter_handler._emit_notification(
+                    __event_emitter__, _FUSION_CONTINUE_NOTICE, level="warning"
+                )
                 if __event_emitter__:
-                    await __event_emitter__({"type": "chat:message", "data": {"content": notice}})
                     await __event_emitter__({"type": "chat:completion", "data": {"done": True}})
-                return notice
+                return ""
             plan = resolve_fusion_run(find_fusion_entry(responses_body.plugins))
             self.logger.info(
                 "Diverting fusion request to internal engine model=%s panel=%s judge=%s",

@@ -18,6 +18,8 @@ Persisted artifacts include (at least):
   says. That setting decides what later turns receive; tool results are stored even while it is off. They are
   encrypted at rest only when `ARTIFACT_ENCRYPTION_KEY` is set and `ENCRYPT_ALL` is on.
 
+A temporary chat keeps nothing. Open WebUI keeps it only in the browser, and the pipe stores none of it either: no tool round, no reasoning and no session log. Rows an earlier release stored for a temporary chat are deleted at the next cleanup, whatever their age.
+
 **Note:** Not every artifact type is replayed verbatim. The pipe filters certain tool artifact types to avoid wasting context window and to reduce provider-side errors.
 
 ---
@@ -121,6 +123,7 @@ Retention has multiple layers:
 
 ### Time-based cleanup
 - A periodic cleanup worker deletes persisted rows older than `ARTIFACT_CLEANUP_DAYS` (as measured from `created_at`, which is refreshed on DB reads).
+- Each sweep also deletes every row a temporary chat left behind, whatever its age.
 - Cleanup cadence is controlled by `ARTIFACT_CLEANUP_INTERVAL_HOURS` (with jitter).
 
 ### Reasoning retention policy (`PERSIST_REASONING_TOKENS`)

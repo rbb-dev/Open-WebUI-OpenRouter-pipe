@@ -1086,7 +1086,7 @@ class Valves(BaseModel):
     PERSIST_REASONING_TOKENS: Literal["disabled", "next_reply", "conversation"] = Field(
         default="conversation",
         title="Reasoning retention",
-        description="Reasoning retention: 'disabled' keeps nothing, 'next_reply' keeps thoughts only until the following assistant reply finishes, and 'conversation' keeps them for the full chat history.",
+        description="Reasoning retention: 'disabled' keeps nothing, 'next_reply' keeps thoughts only until the following assistant reply finishes, and 'conversation' keeps them for the full chat history. A temporary chat keeps no reasoning at all.",
     )
     TASK_MODEL_REASONING_EFFORT: Literal["none", "minimal", "low", "medium", "high", "xhigh"] = Field(
         default="low",
@@ -1111,12 +1111,12 @@ class Valves(BaseModel):
     SHOW_TOOL_CARDS: bool = Field(
         default=True,
         title="Show tool execution cards",
-        description="Show each tool the model uses as a collapsible card in the chat, with its name, arguments and result, as Open WebUI does for the tools it runs itself. As in Open WebUI's own tool loop, a picture a tool returns as image data goes only to the model; a picture Open WebUI has stored as a file, such as an MCP tool's, goes to the model and the chat, as Open WebUI does since its fix after 0.11.4; other files go only to the chat. When off, the tools this pipe runs and OpenRouter's server tools get no card, except that a file the model shows through Open Terminal keeps its card for a person whose Open WebUI shows terminal files inline. On its next turn the model still learns which tools it used; after Stop, it learns of the calls before the first one still running if the reply was streamed, and of none if it was not. Tools Open WebUI runs in Open-WebUI mode always show Open WebUI's own cards.",
+        description="Show each tool the model uses as a collapsible card in the chat, with its name, arguments and result, as Open WebUI does for the tools it runs itself. As in Open WebUI's own tool loop, a picture a tool returns as image data goes only to the model; a picture Open WebUI has stored as a file, such as an MCP tool's, goes to the model and the chat, as Open WebUI does since its fix after 0.11.4; other files go only to the chat. When off, the tools this pipe runs and OpenRouter's server tools get no card, except that a file the model shows through Open Terminal keeps its card for a person whose Open WebUI shows terminal files inline. On its next turn the model still learns which tools it used, except in a temporary chat, for which the pipe keeps nothing; after Stop, it learns of the calls before the first one still running if the reply was streamed, and of none if it was not. Tools Open WebUI runs in Open-WebUI mode always show Open WebUI's own cards.",
     )
     PERSIST_TOOL_RESULTS: bool = Field(
         default=False,
         title="Keep tool results",
-        description="Give the model the full arguments and results of tool calls from earlier turns. When disabled, the model sees each tool call from an earlier turn as its name and a short note on whether it succeeded, and relies on its own earlier answers or runs the tool again. The setting applies in both tool execution modes and decides what the model is handed, not whether results are stored: a shown tool card keeps the full result in the message, and the pipe's own copy of each tool round keeps the full call and result, pictures included, encrypted only while ARTIFACT_ENCRYPTION_KEY is set and ENCRYPT_ALL is on.",
+        description="Give the model the full arguments and results of tool calls from earlier turns. When disabled, the model sees each tool call from an earlier turn as its name and a short note on whether it succeeded, and relies on its own earlier answers or runs the tool again. The setting applies in both tool execution modes and decides what the model is handed, not whether results are stored: a shown tool card keeps the full result in the message, and the pipe's own copy of each tool round keeps the full call and result, pictures included, encrypted only while ARTIFACT_ENCRYPTION_KEY is set and ENCRYPT_ALL is on. A temporary chat keeps nothing: the pipe stores none of its tool rounds or thinking.",
     )
     ARTIFACT_ENCRYPTION_KEY: EncryptedStr = Field(
         default_factory=_default_artifact_encryption_key,
@@ -1166,7 +1166,7 @@ class Valves(BaseModel):
         description=(
             "When True, save the full log of each request to encrypted zip files on disk. "
             "Archives capture the full OpenRouter request/response (prompts, model output, tool calls, provider errors) plus request identifiers — treat as sensitive conversation data at rest. "
-            "Persistence is skipped when any required IDs are missing (user_id, chat_id, message_id, request_id)."
+            "Persistence is skipped when any required IDs are missing (user_id, chat_id, message_id, request_id), and for every temporary chat."
         ),
     )
     SESSION_LOG_DIR: str = Field(
@@ -1584,7 +1584,7 @@ class Valves(BaseModel):
         default=90,
         ge=1,
         le=365,
-        description="Days an artifact is kept before cleanup. Its stored timestamp is refreshed on every database read, so retention runs from last access, not creation.",
+        description="Days an artifact is kept before cleanup. Its stored timestamp is refreshed on every database read, so retention runs from last access, not creation. Rows a temporary chat left behind are deleted at the next cleanup, whatever their age.",
     )
     ARTIFACT_CLEANUP_INTERVAL_HOURS: float = Field(
         default=1.0,
@@ -1642,14 +1642,14 @@ class Valves(BaseModel):
         default=5,
         ge=1,
         le=20,
-        description="Maximum number of image inputs (images attached by the user, plus reused images from earlier replies) to include in a single provider request.",
+        description="Maximum number of images one of the person's messages forwards to the provider, counting a picture reused from earlier in the conversation. Pictures a tool returns are not counted: a tool round's pictures always reach the model in full, as in Open WebUI's own tool loop.",
     )
     IMAGE_INPUT_SELECTION: Literal["user_turn_only", "user_then_assistant"] = Field(
         default="user_then_assistant",
         description=(
             "Controls which images are forwarded to the provider. "
             "'user_turn_only' restricts inputs to the images supplied with the current user message. "
-            "'user_then_assistant' falls back to the most recent image already in the conversation, from either side, when the user did not attach any."
+            "'user_then_assistant' falls back to the most recent image already in the conversation, from either side, when the user did not attach any; when the most recent picture came from a tool, nothing older is reused in its place."
         ),
     )
     IMAGE_REUSE_MAX_TURNS: int = Field(
@@ -2258,7 +2258,7 @@ class UserValves(BaseModel):
     SHOW_TOOL_CARDS: bool = Field(
         default=True,
         title="Show tool execution cards",
-        description="Show each tool the AI uses as a card in the chat. When off, no card appears, except for a file the AI shows through Open Terminal while Open WebUI is set to show terminal files inline; when it is not, a file the AI asks to show inline opens in the preview panel. The AI still remembers which tools it used; after Stop, it remembers the calls before the first one still running if the reply was streamed, and none if it was not. Tools Open WebUI runs itself (Tool execution mode set to Open-WebUI) always show their cards.",
+        description="Show each tool the AI uses as a card in the chat. When off, no card appears, except for a file the AI shows through Open Terminal while Open WebUI is set to show terminal files inline; when it is not, a file the AI asks to show inline opens in the preview panel. The AI still remembers which tools it used, except in a temporary chat, where nothing is kept; after Stop, it remembers the calls before the first one still running if the reply was streamed, and none if it was not. Tools Open WebUI runs itself (Tool execution mode set to Open-WebUI) always show their cards.",
     )
     REQUEST_ZDR: bool = Field(
         default=False,

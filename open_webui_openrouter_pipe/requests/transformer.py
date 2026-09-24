@@ -36,6 +36,7 @@ from ..core.url_scheme import is_cleartext_http_url, is_http_or_https_url
 
 # Import utility functions
 from ..core.utils import (
+    OPEN_WEBUI_TOOL_IMAGES_TEXT,
     PIPE_ONLY_TOOL_ROUND_KEY,
     REASONING_ANCHOR_KEYS,
     REASONING_ANCHOR_SEQ_KEY,
@@ -305,7 +306,17 @@ def _one_copy_per_round(region: list[Any]) -> list[Any]:
     }
     shadowed = raw_server_ids | {server_tool_call_id(raw_id) for raw_id in raw_server_ids}
     kept: list[Any] = []
+    pictures: list[str] = []
     for it in region:
+        if pictures and not (isinstance(it, dict) and it.get("type") in ("function_call", "function_call_output")):
+            kept.append(_tool_images_message(pictures))
+            pictures = []
+        replayed_pictures = (
+            isinstance(it, dict)
+            and bool(it.get(_PIPE_STORAGE_KEY))
+            and it.get("type") == "function_call_output"
+            and is_picture_output(it.get("output"))
+        )
         if isinstance(it, dict) and it.get("type") in ("function_call", "function_call_output"):
             from_pipe = bool(it.get(_PIPE_STORAGE_KEY))
             pipe_only = bool(it.get(PIPE_ONLY_TOOL_ROUND_KEY) or it.get(TOOL_ROUND_SKELETON_KEY))
@@ -317,8 +328,21 @@ def _one_copy_per_round(region: list[Any]) -> list[Any]:
             it = {key: value for key, value in it.items() if key not in _TRANSPORT_ONLY_KEYS}
             if it.get("type") == "function_call_output":
                 it.pop("status", None)
+        if replayed_pictures:
+            text, shown = tool_output_text_and_pictures(it["output"])
+            it = {**it, "output": text}
+            pictures.extend(shown)
         kept.append(it)
+    if pictures:
+        kept.append(_tool_images_message(pictures))
     return kept
+
+
+def _tool_images_message(pictures: list[str]) -> dict[str, Any]:
+    return {"type": "message", "role": "user", "content": [
+        {"type": "input_text", "text": OPEN_WEBUI_TOOL_IMAGES_TEXT},
+        *({"type": "input_image", "image_url": url, "detail": "auto"} for url in pictures),
+    ]}
 
 
 async def transform_messages_to_input(
@@ -489,6 +513,15 @@ async def transform_messages_to_input(
         return True
 
     turn_indices, total_turns = _compute_turn_indices()
+    current_turn_people = [
+        position
+        for position, message in enumerate(messages)
+        if (message.get("role") or "").lower() == "user"
+        and turn_indices[position] is not None
+        and turn_indices[position] == total_turns - 1
+        and not (position and is_tool_image_handoff(messages[position - 1], message))
+    ]
+    person_images_this_turn = False
     tool_names_by_call_id: dict[str, str] = {
         str(call.get("id")): str((call.get("function") or {}).get("name") or "")
         for message in messages
@@ -596,6 +629,8 @@ async def transform_messages_to_input(
 
         if role == "user":
             tool_images = bool(idx) and is_tool_image_handoff(messages[idx - 1], msg)
+            if tool_images:
+                last_image_blocks, last_image_turn = [], None
             if tool_images and _withheld(msg_turn_index):
                 continue
             content_blocks = msg.get("content") or []
@@ -1596,7 +1631,7 @@ async def transform_messages_to_input(
             encountered_user_images = False
             reusable_image_blocks: list[dict[str, Any]] = []
             vision_warning_sent = False
-            latest_user_message = role == "user" and idx == len(messages) - 1
+            latest_user_message = role == "user" and idx in current_turn_people
             include_user_images = (
                 ((latest_user_message and vision_supported) or tool_images) and image_limit > 0
             )
@@ -1635,7 +1670,7 @@ async def transform_messages_to_input(
                             )
                             vision_warning_sent = True
                         continue
-                    if user_images_used >= image_limit:
+                    if not tool_images and user_images_used >= image_limit:
                         dropped_images += 1
                         encountered_user_images = True
                         continue
@@ -1696,6 +1731,8 @@ async def transform_messages_to_input(
 
             if (
                 latest_user_message
+                and idx == current_turn_people[-1]
+                and not person_images_this_turn
                 and selection_mode == "user_then_assistant"
                 and include_user_images
                 and user_images_used == 0
@@ -1738,6 +1775,8 @@ async def transform_messages_to_input(
                     converted_blocks = fallback_blocks + converted_blocks
                     user_images_used = len(fallback_blocks)
 
+            if latest_user_message and (user_images_used or encountered_user_images):
+                person_images_this_turn = True
             if reusable_image_blocks:
                 last_image_blocks = reusable_image_blocks
                 last_image_turn = msg_turn_index
@@ -1896,6 +1935,8 @@ async def transform_messages_to_input(
                                 msg_id,
                             )
                             continue
+                        if item_type == "function_call_output" and is_picture_output(item.get("output")):
+                            last_image_blocks, last_image_turn = [], None
                         if _withheld(msg_turn_index):
                             withheld_items = _without_tool_result(item, tool_names_by_call_id)
                             if withheld_items is not None:

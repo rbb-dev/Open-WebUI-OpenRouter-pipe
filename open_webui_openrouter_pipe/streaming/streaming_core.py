@@ -571,6 +571,7 @@ class StreamingHandler:
         streamed_tool_call_args: dict[str, str] = {}
         streamed_tool_call_name_sent: set[str] = set()
         emitted_tool_call_items: set[str] = set()
+        calls_carded_this_round: set[str] = set()
         emitted_tool_output_items: set[str] = set()
         committed_call_rows: set[str] = set()
         committed_output_rows: set[str] = set()
@@ -1007,6 +1008,15 @@ class StreamingHandler:
             published_item_ids.insert(position, str(item["id"]))
             return position
 
+        async def _place_item(item: dict[str, Any]) -> int:
+            pending = assistant_message[recorded_message_chars:]
+            if pending and not strip_hidden_marker_lines(pending).strip():
+                await _capture_seeded_output()
+                emitted_output_items.append(copy.deepcopy(item))
+                return _output_index_before_open_message(item)
+            await _record_output_item(item)
+            return _output_index(item)
+
         async def _open_message() -> None:
             nonlocal open_message_id
             if open_message_id is not None or not (body.stream and emitter_supplied):
@@ -1047,6 +1057,7 @@ class StreamingHandler:
             if effective_id in emitted_tool_call_items:
                 return effective_id
             emitted_tool_call_items.add(effective_id)
+            calls_carded_this_round.add(effective_id)
             emitted_response_output_items = True
             call_item: dict[str, Any] = {
                 "type": "function_call",
@@ -1056,10 +1067,10 @@ class StreamingHandler:
                 "arguments": arguments,
                 "status": status,
             }
-            await _record_output_item(call_item)
+            call_index = await _place_item(call_item)
             await event_emitter({
                 "type": "response.output_item.added",
-                "output_index": _output_index(call_item),
+                "output_index": call_index,
                 "item": call_item,
             })
             return effective_id
@@ -1099,18 +1110,11 @@ class StreamingHandler:
                 output_item["files"] = files
             if embeds:
                 output_item["embeds"] = embeds
-            pending = assistant_message[recorded_message_chars:]
-            if pending and not strip_hidden_marker_lines(pending).strip():
-                await _capture_seeded_output()
-                emitted_output_items.append(copy.deepcopy(output_item))
-                output_index = _output_index_before_open_message(output_item)
-            else:
-                await _record_output_item(output_item)
-                output_index = _output_index(output_item)
+            output_index = await _place_item(output_item)
             await event_emitter({"type": "response.output_item.added", "output_index": output_index, "item": output_item})
 
         def _handed_to_open_webui(call_id: str) -> bool:
-            return bool(emitter_supplied and call_id in emitted_tool_call_items)
+            return bool(emitter_supplied and call_id in calls_carded_this_round)
 
         def _tool_rows(payloads: list[dict[str, Any]], call_id: str) -> list[dict[str, Any]]:
             rows: list[dict[str, Any]] = []
@@ -1317,11 +1321,11 @@ class StreamingHandler:
                 "ended_at": time.time(),
                 "duration": duration,
             }
-            await _record_output_item(reasoning_item)
+            reasoning_index = await _place_item(reasoning_item)
             await event_emitter(
                 {
                     "type": "response.output_item.added",
-                    "output_index": _output_index(reasoning_item),
+                    "output_index": reasoning_index,
                     "item": reasoning_item,
                 }
             )
@@ -2901,6 +2905,7 @@ class StreamingHandler:
                         tool_loops_executed = True
                         committed_call_rows.clear()
                         committed_output_rows.clear()
+                        calls_carded_this_round.clear()
 
                         if loop_limit_reached:
                             limit = valves.MAX_FUNCTION_CALL_LOOPS
@@ -2943,7 +2948,7 @@ class StreamingHandler:
                                             call_id=call_id,
                                             name=tool_name,
                                             arguments=args_text,
-                                            status="in_progress",
+                                            status="in_progress" if tool_name == "ask_user" else "completed",
                                         )
                                 except Exception as exc:
                                     self.logger.warning("Failed to emit in-progress tool cards: %s", exc, exc_info=True)

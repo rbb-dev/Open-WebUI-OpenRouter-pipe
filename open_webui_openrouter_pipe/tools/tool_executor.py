@@ -557,32 +557,30 @@ class ToolExecutor:
                     allowance = max(allowance, window)
         collected: dict[int, Any] = {}
         notified: set[int] = set()
-        try:
-            async with asyncio.timeout(allowance) if allowance else contextlib.nullcontext():
-                for index, (call, future, _window) in enumerate(pending):
-                    try:
-                        collected[index] = await future
-                    except TimeoutError:
-                        raise
-                    except Exception as exc:  # pragma: no cover - defensive
-                        if self.logger.isEnabledFor(logging.DEBUG):
-                            self.logger.debug(
-                                "Tool '%s' raised while awaiting result (call_id=%s).",
-                                call.get("name"),
-                                call.get("call_id"),
-                                exc_info=True,
-                            )
-                        collected[index] = self._build_tool_output(
-                            call,
-                            self._tool_error_text(exc),
-                            status="failed",
-                        )
-                    if _on_complete:
-                        with contextlib.suppress(Exception):
-                            await _on_complete(call, collected[index])
-                    notified.add(index)
-        except TimeoutError:
-            pass
+        deadline = asyncio.get_running_loop().time() + allowance if allowance else None
+        for index, (call, future, _window) in enumerate(pending):
+            try:
+                async with asyncio.timeout_at(deadline) if deadline is not None else contextlib.nullcontext():
+                    collected[index] = await future
+            except TimeoutError:
+                break
+            except Exception as exc:  # pragma: no cover - defensive
+                if self.logger.isEnabledFor(logging.DEBUG):
+                    self.logger.debug(
+                        "Tool '%s' raised while awaiting result (call_id=%s).",
+                        call.get("name"),
+                        call.get("call_id"),
+                        exc_info=True,
+                    )
+                collected[index] = self._build_tool_output(
+                    call,
+                    self._tool_error_text(exc),
+                    status="failed",
+                )
+            if _on_complete:
+                with contextlib.suppress(Exception):
+                    await _on_complete(call, collected[index])
+            notified.add(index)
 
         for index, (call, future, _window) in enumerate(pending):
             result = collected.get(index)

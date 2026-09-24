@@ -58,12 +58,13 @@ Open WebUI may provide user content as a string or as block objects. Text is nor
 ### 3.2 Images (vision gating + storage)
 Image handling is described in detail in [Multimodal Intake Pipeline](multimodal_ingestion_pipeline.md). Key behaviors relevant to history reconstruction:
 
-- Vision gating: if the target model is not vision-capable, image blocks are skipped and the pipe emits a status message indicating attachments were ignored.
+- Vision gating: if the target model is not vision-capable, the person's attachments and reused images are skipped and the pipe emits a status message saying so. Pictures a tool returns still go to the model, whatever it accepts, as in Open WebUI's own tool loop (section 5.4).
 - Image forwarding policy:
-  - `MAX_INPUT_IMAGES_PER_REQUEST` caps images forwarded per request.
+  - `MAX_INPUT_IMAGES_PER_REQUEST` caps the images one of the person's messages forwards, its own or a reused one;
+    pictures a tool returns are never capped.
   - `IMAGE_INPUT_SELECTION` controls fallback behavior:
     - `user_turn_only`: only user-attached images are forwarded.
-    - `user_then_assistant`: if the user turn has no images, the pipe may reuse the most recent image already in the conversation - an assistant image extracted from Markdown image syntax, or one the user attached on an earlier turn - bounded by `IMAGE_REUSE_MAX_TURNS`. An image returned by a tool is never reused this way: it belongs to its tool round (section 5.4).
+    - `user_then_assistant`: if the user turn has no images, the pipe may reuse the most recent image already in the conversation - an assistant image extracted from Markdown image syntax, or one the user attached on an earlier turn - bounded by `IMAGE_REUSE_MAX_TURNS`. An image returned by a tool is never reused this way: it belongs to its tool round (section 5.4), and once a tool has returned a picture, nothing older is reused either.
 - Images attached to the current turn are re-hosted into Open WebUI storage when a storage context is available; an image reused from an earlier turn is inlined as a `data:` URL instead, under a media type the pipe resolves from the bytes. Where a storage context resolves, the block sent upstream carries the bytes, so providers never need to fetch from your Open WebUI host; a request made without one - API automation, for instance - keeps the original payload. Re-hosting on this path covers only what the user attached; images the model generates are stored by the output path.
 
 ### 3.3 Files, audio, and video
@@ -180,10 +181,13 @@ On replay each round reaches the model exactly once:
   `[tool call failed; result not retained]` when the call did not complete. An `ask_user` round is the exception:
   its question and the person's typed answer are always handed over, since the answer is the person's own words.
   The stored row is left alone, so turning the setting back on hands the full result over again.
-- An image returned by a tool comes back from Open WebUI as a separate message right after the round's results
-  ("Here are the images from the tool results above"). It is part of that round's result: handed over where it
-  sits, even when it is not the last message; withheld with the round on an earlier turn while results are not
-  kept; and never stored again, or reused on a later question, the way an image the person attached is.
+- An image returned by a tool comes back as a separate message right after the round's results ("Here are the
+  images from the tool results above"): Open WebUI builds it from its own record, and the pipe builds the same
+  message when its own copy carries the round, so the request is the same whatever the card switch says. It is
+  part of that round's result: handed over in full where it sits, whatever the attachment limit, even when it is
+  not the last message; withheld with the round on an earlier turn while results are not kept; never stored again,
+  or reused on a later question, the way an image the person attached is; and it ends the reuse of any older
+  picture.
 
 The copy does not depend on reasoning. Tool rounds were accepted without the reasoning around them when measured with
 Claude Opus 4.8 on `/responses` and `/chat/completions`, so the copy stays when reasoning is dropped from a request and outlives reasoning
@@ -236,11 +240,11 @@ new line, whether it is text, a marker line or a generated picture. When the sto
 instead, model text and a generated picture carry on the sentence, while a hidden marker line that comes first
 starts a new paragraph, so it stays a line of its own. A card
 or a refusal that opens a continuation - the provider's error card when a model refuses prefill, the breaker's
-refusal, a busy or startup notice, or a configuration notice when the Continue is not streamed - starts a block of
-its own on any Continue; on a streamed Continue a configuration notice shows as Open WebUI's error instead, and the
-stored reply stays as it was. A reply written by internal Fusion is not continued: a Continue on one ends with a
-notice saying that Continue is not available for Fusion replies and that regenerating runs Fusion again. The notice
-starts a block of its own.
+refusal, a busy or startup notice, the card saying the API key is missing, or the notice that the model catalog
+could not load when the Continue is not streamed - starts a block of its own on any Continue; on a streamed Continue
+the catalog notice shows as Open WebUI's error instead, and the stored reply stays as it was. A reply written by
+internal Fusion is not continued: a Continue on one leaves the reply as it was, and a notification says that Continue
+is not available for Fusion replies and that regenerating runs Fusion again.
 
 ---
 

@@ -4391,8 +4391,8 @@ class TestAdaptiveToolBudgeting:
         output_items = [e for e in emitted if e.get("type") == "response.output_item.added"]
         fc_items = [e for e in output_items if e.get("item", {}).get("type") == "function_call"]
         fco_items = [e for e in output_items if e.get("item", {}).get("type") == "function_call_output"]
-        assert fc_items, "Expected in-progress function_call card"
-        assert fc_items[0]["item"]["status"] == "in_progress"
+        assert fc_items, "Expected a function_call card"
+        assert fc_items[0]["item"]["status"] == "completed", "a call card reads as Open WebUI's own: arguments final"
         assert fco_items, "Expected a function_call_output card with error text"
         fco_text = fco_items[0]["item"]["output"][0]["text"]
         assert "failed before completion" in fco_text

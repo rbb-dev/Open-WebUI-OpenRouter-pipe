@@ -498,6 +498,7 @@ class SessionLogManager:
             _SessionLogArchiveJob,
             write_session_log_archive,
         )
+        from ..storage.owui_files import is_temporary_chat
         from ..storage.persistence import generate_item_id
 
         if not valves.SESSION_LOG_STORE_ENABLED:
@@ -518,6 +519,9 @@ class SessionLogManager:
                     bool(message_id),
                     bool(request_id),
                 )
+            return
+        if is_temporary_chat(chat_id):
+            self.logger.debug("Session log segment skipped (temporary chat): request_id=%s", request_id)
             return
         if not log_events:
             if self.logger.isEnabledFor(logging.DEBUG):

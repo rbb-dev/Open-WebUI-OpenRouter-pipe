@@ -198,6 +198,10 @@ def _install_open_webui_stubs() -> None:
             return {}
 
         @staticmethod
+        async def get_user_valves_by_id_and_user_id(id, user_id, db=None):
+            return {}
+
+        @staticmethod
         async def insert_new_function(user_id, type, form_data, db=None):
             return None
 

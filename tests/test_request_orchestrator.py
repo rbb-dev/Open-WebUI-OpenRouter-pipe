@@ -4880,11 +4880,23 @@ async def test_zdr_enforce_injects_provider_preference():
         await pipe.close()
 
 
+def _stored_valves_row(monkeypatch, row: dict) -> None:
+    """Open WebUI 0.11.4's reader hands the pipe the user's stored valves row; the pipe reads that row first and falls
+    back to what `__user__["valves"]` carries only when the read fails."""
+    import open_webui.models.functions as owf
+
+    async def reader(_id, _user_id, db=None):
+        return dict(row)
+
+    monkeypatch.setattr(owf.Functions, "get_user_valves_by_id_and_user_id", staticmethod(reader))
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("as_model", [False, True], ids=["mapping", "UserValves-instance"])
 @pytest.mark.parametrize("requested", [True, False], ids=["opted-in", "opted-out"])
-async def test_zdr_user_valve_injects_provider_preference(as_model, requested):
-    """The user's ZDR preference reaches the payload, in the shape Open WebUI sends.
+async def test_zdr_user_valve_injects_provider_preference(monkeypatch, as_model, requested):
+    """The user's ZDR preference reaches the payload, read from the stored row, with `__user__` in the shape Open
+    WebUI sends.
 
     Open WebUI does not hand the pipe a mapping. `functions.py` assigns
     `params["__user__"]["valves"] = function_module.UserValves(**user_valves)` -- a MODEL
@@ -4896,6 +4908,7 @@ async def test_zdr_user_valve_injects_provider_preference(as_model, requested):
     Parametrised over opted-in AND opted-out so a reader hardcoded to either answer
     fails one of the two arms; asserting only the True case is satisfied by `return True`.
     """
+    _stored_valves_row(monkeypatch, {"REQUEST_ZDR": requested})
     pipe = Pipe()
 
     try:
@@ -5798,7 +5811,8 @@ async def test_zdr_enforce_admits_suffixed_variant_and_stamps_provider():
 
 
 @pytest.mark.asyncio
-async def test_zdr_user_valve_admits_suffixed_variant_and_stamps_provider():
+async def test_zdr_user_valve_admits_suffixed_variant_and_stamps_provider(monkeypatch):
+    _stored_valves_row(monkeypatch, {"REQUEST_ZDR": True})
     pipe = Pipe()
 
     try:
@@ -5871,7 +5885,7 @@ async def test_zdr_user_valve_admits_suffixed_variant_and_stamps_provider():
     ],
     ids=["bool-true", "string-true", "bool-false", "absent", "sibling-field-invalid", "unreadable"],
 )
-async def test_an_unreadable_zdr_preference_does_not_route_without_zdr(user_valves, expect_zdr):
+async def test_an_unreadable_zdr_preference_does_not_route_without_zdr(monkeypatch, user_valves, expect_zdr):
     """The same decision must fail in one direction, not two.
 
     `UserValves.model_validate` is all-or-nothing, so an unrelated stale field --
@@ -5882,7 +5896,8 @@ async def test_an_unreadable_zdr_preference_does_not_route_without_zdr(user_valv
     model capability: one unknown granted the permissive answer, the other refused it.
 
     Reading the single field means a stale sibling can no longer change the routing,
-    and a value that genuinely cannot be read enforces ZDR rather than dropping it.
+    and a value that genuinely cannot be read enforces ZDR rather than dropping it. The values arrive as the stored
+    row Open WebUI's reader returns, which is what the pipe reads first.
 
     Unreachable gap, recorded rather than omitted: the `_coerce_bool(...) is None`
     branch cannot be reached through `pipe()` today, because pipe.py validates
@@ -5890,6 +5905,7 @@ async def test_an_unreadable_zdr_preference_does_not_route_without_zdr(user_valv
     request first. The branch is defensive depth and becomes live the moment that
     validate is guarded.
     """
+    _stored_valves_row(monkeypatch, user_valves)
     pipe = Pipe()
     try:
         pipe.valves.API_KEY = EncryptedStr("test-api-key")
