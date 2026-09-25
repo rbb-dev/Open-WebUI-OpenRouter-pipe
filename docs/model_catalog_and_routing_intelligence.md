@@ -108,7 +108,7 @@ When `ENABLE_REASONING=True`, the pipe decides how to request reasoning based on
 
 - If the model supports `reasoning`, the pipe populates a `reasoning` object (with defaults from valves such as `REASONING_EFFORT` and `REASONING_SUMMARY_MODE`).
 - If the model does not support `reasoning` but supports the legacy `include_reasoning`, the pipe uses that fallback.
-- If neither is supported, the pipe disables reasoning for that request.
+- If neither is supported, the request carries no reasoning field; `include_reasoning` goes only to a model whose catalog entry lists it.
 
 Provider mismatch recovery:
 - If a provider rejects reasoning due to a “thinking” configuration mismatch, the pipe may retry once with reasoning disabled (see [Error Handling & User Experience](error_handling_and_user_experience.md)).

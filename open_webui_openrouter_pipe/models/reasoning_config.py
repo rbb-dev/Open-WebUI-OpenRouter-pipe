@@ -44,6 +44,12 @@ class ReasoningConfigManager:
         self._pipe = pipe
         self.logger = logger
 
+    @staticmethod
+    def _set_include_reasoning(responses_body: ResponsesBody, value: bool | None) -> None:
+        if value is not None and "include_reasoning" not in ModelFamily.supported_parameters(responses_body.model):
+            value = None
+        responses_body.include_reasoning = value
+
     def _apply_reasoning_preferences(self, responses_body: ResponsesBody, valves: Pipe.Valves) -> None:
         """Automatically request reasoning traces when supported and enabled."""
         if not valves.ENABLE_REASONING:
@@ -69,15 +75,14 @@ class ReasoningConfigManager:
                 cfg["summary"] = requested_summary
             cfg.setdefault("enabled", True)
             responses_body.reasoning = cfg or None
-            if getattr(responses_body, "include_reasoning", None) is not None:
-                responses_body.include_reasoning = None
+            self._set_include_reasoning(responses_body, None)
         elif supports_legacy_only:
             responses_body.reasoning = None
             desired = target_effort not in {"none", ""}
-            responses_body.include_reasoning = desired
+            self._set_include_reasoning(responses_body, desired)
         else:
             responses_body.reasoning = None
-            responses_body.include_reasoning = False
+            self._set_include_reasoning(responses_body, None)
 
 
     def _apply_task_reasoning_preferences(self, responses_body: ResponsesBody, effort: str) -> None:
@@ -99,15 +104,14 @@ class ReasoningConfigManager:
             cfg["effort"] = target_effort
             cfg.setdefault("enabled", True)
             responses_body.reasoning = cfg
-            if getattr(responses_body, "include_reasoning", None) is not None:
-                responses_body.include_reasoning = None
+            self._set_include_reasoning(responses_body, None)
         elif supports_legacy_only:
             responses_body.reasoning = None
             desired = target_effort not in {"none", "minimal"}
-            responses_body.include_reasoning = desired
+            self._set_include_reasoning(responses_body, desired)
         else:
             responses_body.reasoning = None
-            responses_body.include_reasoning = False
+            self._set_include_reasoning(responses_body, None)
 
 
     def _apply_gemini_thinking_config(self, responses_body: ResponsesBody, valves: Pipe.Valves) -> None:
@@ -140,7 +144,7 @@ class ReasoningConfigManager:
         reasoning_requested = bool(include_flag) or (reasoning_cfg and enabled and not exclude)
         if not reasoning_requested:
             responses_body.thinking_config = None
-            responses_body.include_reasoning = False
+            self._set_include_reasoning(responses_body, False)
             return
 
         thinking_config: dict[str, Any] = {"include_thoughts": True}
@@ -151,13 +155,13 @@ class ReasoningConfigManager:
         # is contradictory and the provider rejects it, so disable here.
         if not budget:
             responses_body.thinking_config = None
-            responses_body.include_reasoning = False
+            self._set_include_reasoning(responses_body, False)
             return
         thinking_config["thinking_budget"] = budget
 
         responses_body.thinking_config = thinking_config
         responses_body.reasoning = None
-        responses_body.include_reasoning = None
+        self._set_include_reasoning(responses_body, None)
 
     def _apply_anthropic_verbosity(self, responses_body: ResponsesBody, valves: Pipe.Valves) -> None:
         """Map xhigh effort to verbosity: "max" for Claude Opus/Sonnet models.
@@ -222,7 +226,7 @@ class ReasoningConfigManager:
                 continue
             lowered = message.lower()
             if any(trigger in lowered for trigger in trigger_phrases):
-                responses_body.include_reasoning = False
+                self._set_include_reasoning(responses_body, False)
                 responses_body.reasoning = None
                 responses_body.thinking_config = None
                 self.logger.info(

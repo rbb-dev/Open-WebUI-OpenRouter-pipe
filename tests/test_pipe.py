@@ -5053,10 +5053,18 @@ def test_apply_task_reasoning_preferences_include_only():
         pipe.shutdown()
 
 
-def test_retry_without_reasoning_handles_thinking_error():
+@pytest.mark.parametrize(
+    ("listed", "expected"),
+    [(["reasoning", "include_reasoning"], False), (["reasoning"], None)],
+    ids=["row-lists-include_reasoning", "row-without-include_reasoning"],
+)
+def test_retry_without_reasoning_handles_thinking_error(listed, expected):
+    """The retry switches reasoning off: `include_reasoning: false` for a model whose row
+    lists the parameter, nothing for one whose row does not."""
     pipe = Pipe()
+    ModelFamily.set_dynamic_specs({"google.gemini-2.5-flash": {"supported_parameters": listed}})
     try:
-        body = ResponsesBody(model="fake", input=[])
+        body = ResponsesBody(model="google/gemini-2.5-flash", input=[])
         body.include_reasoning = True
         body.thinking_config = {"include_thoughts": True}
         err = OpenRouterAPIError(
@@ -5065,7 +5073,7 @@ def test_retry_without_reasoning_handles_thinking_error():
             openrouter_message="Unable to submit request because Thinking_config.include_thoughts is only enabled when thinking is enabled.",
         )
         assert pipe._ensure_reasoning_config_manager()._should_retry_without_reasoning(err, body) is True
-        assert body.include_reasoning is False
+        assert body.include_reasoning is expected
         assert body.reasoning is None
         assert body.thinking_config is None
     finally:

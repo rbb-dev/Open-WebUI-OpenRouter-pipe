@@ -36,7 +36,7 @@ Before sending requests to OpenRouter, the pipe filters request bodies to the al
 | `top_k` | Sampling parameter; numeric strings are coerced to numbers. When the pipe routes via `/chat/completions` (forced or fallback), `top_k` is rounded before sending upstream. |
 | `top_p` | Sampling parameter (passed through when present). |
 | `reasoning` | Reasoning configuration; only recognized subfields are forwarded (unknown keys dropped). |
-| `include_reasoning` | Legacy reasoning flag; may be used as a fallback depending on model/provider behavior. |
+| `include_reasoning` | OpenRouter's deprecated alias for `reasoning.exclude`. The pipe adds it only for a model whose catalog entry lists it, checked against the primary `model` (fallback models in `models` are not checked); while reasoning display is off (the admin's or the person's own setting), a value the chat itself carries, such as a custom parameter, can still reach a model whose catalog entry does not list it. |
 | `tools` | Tool definitions (merged from Open WebUI registry tools plus Open WebUI Direct Tool Servers when present). |
 | `tool_choice` | Tool selection directive. |
 | `plugins` | Legacy plugin configuration (retained for backward compatibility). |

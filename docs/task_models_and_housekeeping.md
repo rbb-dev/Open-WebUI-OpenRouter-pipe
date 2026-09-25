@@ -52,7 +52,7 @@ For housekeeping tasks targeting models the pipe “owns”, the pipe overrides 
 
 - If the model supports the modern `reasoning` parameter, the pipe sets `reasoning.effort` and keeps reasoning enabled.
 - If the model supports only the legacy `include_reasoning` flag, the pipe toggles it based on the configured effort.
-- If the model supports neither, reasoning is disabled.
+- If the model supports neither, the task request carries no reasoning field.
 
 ### Request-field filtering still applies
 
