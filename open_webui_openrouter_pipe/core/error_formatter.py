@@ -96,6 +96,17 @@ def _in_band_status(code: Any, error_type: str) -> int:
     return 400
 
 
+def _choice_error(event: dict[str, Any]) -> dict[str, Any] | None:
+    choices = event.get("choices")
+    first = choices[0] if isinstance(choices, list) and choices else None
+    error = first.get("error") if isinstance(first, dict) else None
+    return error if isinstance(error, dict) else None
+
+
+def _as_text(value: Any) -> str | None:
+    return value if isinstance(value, str) else None
+
+
 class ErrorFormatter:
     """Handles error formatting, template selection, and emission."""
 
@@ -204,13 +215,15 @@ class ErrorFormatter:
         error_block = error_value if isinstance(error_value, dict) else None
         if not error_block and isinstance(response_block.get("error"), dict):
             error_block = response_block.get("error")
+        if not error_block:
+            error_block = _choice_error(event)
         message = ""
         if isinstance(error_block, dict):
-            message = (error_block.get("message") or "").strip()
+            message = (_as_text(error_block.get("message")) or "").strip()
         if not message and isinstance(response_block.get("error"), dict):
-            message = (response_block.get("error", {}).get("message") or "").strip()
+            message = (_as_text(response_block.get("error", {}).get("message")) or "").strip()
         if not message:
-            message = (event.get("message") or "").strip() or "Streaming error"
+            message = (_as_text(event.get("message")) or "").strip() or "Streaming error"
         code = error_block.get("code") if isinstance(error_block, dict) else None
         choices = event.get("choices") or response_block.get("choices")
         native_finish_reason = None
@@ -219,8 +232,8 @@ class ErrorFormatter:
             native_finish_reason = first_choice.get("native_finish_reason") or first_choice.get("finish_reason")
         chunk_id = event.get("id") or response_block.get("id")
         chunk_created = event.get("created") or response_block.get("created")
-        chunk_model = event.get("model") or response_block.get("model")
-        chunk_provider = event.get("provider") or response_block.get("provider")
+        chunk_model = _as_text(event.get("model")) or _as_text(response_block.get("model"))
+        chunk_provider = _as_text(event.get("provider")) or _as_text(response_block.get("provider"))
         error_metadata_value = error_block.get("metadata") if isinstance(error_block, dict) else None
         error_metadata: dict[str, Any] = error_metadata_value if isinstance(error_metadata_value, dict) else {}
         metadata: dict[str, Any] = {
@@ -240,22 +253,35 @@ class ErrorFormatter:
             error_type = str(error_block.get("error_type") or "")
         if not error_type:
             error_type = str(event.get("error_type") or response_block.get("error_type") or "")
+        reasons = error_metadata.get("reasons")
         raw_body = _pretty_json(event)
         return OpenRouterAPIError(
             status=_in_band_status(code, error_type),
             openrouter_error_type=error_type or None,
             reason=message,
-            provider=chunk_provider or error_metadata.get("provider_name"),
+            provider=chunk_provider or _as_text(error_metadata.get("provider_name")),
             openrouter_message=message,
             openrouter_code=code,
             upstream_message=message,
-            upstream_type=(str(code) if code is not None else "") or event.get("type") or "stream_error",
-            request_id=response_block.get("id") or event.get("response_id") or event.get("request_id"),
+            upstream_type=(str(code) if code is not None else "") or _as_text(event.get("type")) or "stream_error",
+            request_id=next(
+                (
+                    candidate
+                    for candidate in (
+                        response_block.get("id"),
+                        event.get("response_id"),
+                        event.get("request_id"),
+                        chunk_id,
+                    )
+                    if isinstance(candidate, str) and candidate.strip()
+                ),
+                None,
+            ),
             raw_body=raw_body,
             metadata=metadata,
-            moderation_reasons=[str(reason) for reason in error_metadata.get("reasons") or [] if reason],
-            flagged_input=error_metadata.get("flagged_input"),
-            model_slug=chunk_model or error_metadata.get("model_slug"),
+            moderation_reasons=[str(reason) for reason in reasons if reason] if isinstance(reasons, list) else [],
+            flagged_input=_as_text(error_metadata.get("flagged_input")),
+            model_slug=chunk_model or _as_text(error_metadata.get("model_slug")),
             requested_model=requested_model,
             metadata_json=_pretty_json(metadata),
             provider_raw=event,
@@ -277,12 +303,12 @@ class ErrorFormatter:
         if not isinstance(event, dict):
             return None
         event_data: dict[str, Any] = event
-        event_type = (event_data.get("type") or "").strip()
+        event_type = (_as_text(event_data.get("type")) or "").strip()
         response_raw = event_data.get("response")
         response_block = response_raw if isinstance(response_raw, dict) else None
         error_raw = event_data.get("error")
         error_block = error_raw if isinstance(error_raw, dict) else None
-        has_error = error_block is not None
+        has_error = error_block is not None or _choice_error(event_data) is not None
         if isinstance(response_block, dict) and (
             response_block.get("status") == "failed"
             or isinstance(response_block.get("error"), dict)

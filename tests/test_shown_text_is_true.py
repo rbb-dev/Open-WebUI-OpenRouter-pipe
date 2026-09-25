@@ -1717,6 +1717,50 @@ def _dict_keys(node: ast.expr | None, bindings: dict[str, list[ast.expr]], hops:
     return None
 
 
+def _statement_lists(scope: ast.AST):
+    """The scope's own body and every body, `else` and `finally` block inside it, but not a nested scope's body."""
+    yield getattr(scope, "body", [])
+    for node in _own_nodes(scope):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            continue
+        for field in ("body", "orelse", "finalbody"):
+            block = getattr(node, field, None)
+            if isinstance(block, list):
+                yield block
+
+
+def _paired_bindings(scope: ast.AST) -> dict[tuple[str, str], list[tuple[ast.expr, ast.expr]]]:
+    """`(first, second) -> [(value of first, value of second)]`, one pair per block that assigns both names.
+
+    A block is one statement list, so each branch of an `if` is its own. Both `a, b = x, y` and `a = x` followed
+    by `b = y` assign there, and the last value a block gives a name is the one it pairs. Kept per block so that a
+    branch's template is only ever paired with that branch's own variables, however the branch is written: a
+    union across branches would hand every template every branch's keys.
+    """
+    found: dict[tuple[str, str], list[tuple[ast.expr, ast.expr]]] = {}
+    for block in _statement_lists(scope):
+        latest: dict[str, ast.expr] = {}
+        for statement in block:
+            if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
+                continue
+            target = statement.targets[0]
+            if isinstance(target, ast.Name):
+                latest[target.id] = statement.value
+            elif (
+                isinstance(target, ast.Tuple)
+                and isinstance(statement.value, ast.Tuple)
+                and len(target.elts) == len(statement.value.elts)
+            ):
+                for element, value in zip(target.elts, statement.value.elts):
+                    if isinstance(element, ast.Name):
+                        latest[element.id] = value
+        for first, first_value in latest.items():
+            for second, second_value in latest.items():
+                if first != second:
+                    found.setdefault((first, second), []).append((first_value, second_value))
+    return found
+
+
 def _emit_sites() -> tuple[dict[str, set[str]], set[str]]:
     """Read off the package: which keys each template is handed, and which get the context block.
 
@@ -1732,6 +1776,7 @@ def _emit_sites() -> tuple[dict[str, set[str]], set[str]]:
     for _path, _source, tree in parsed_sources("open_webui_openrouter_pipe"):
         for scope in _scopes(tree):
             bindings = _bindings(scope)
+            paired = _paired_bindings(scope)
             for node in _own_nodes(scope):
                 if not isinstance(node, ast.Call):
                     continue
@@ -1743,6 +1788,20 @@ def _emit_sites() -> tuple[dict[str, set[str]], set[str]]:
                     template = node.args[0] if node.args else None
                     supplied = node.args[1] if len(node.args) > 1 else None
                 else:
+                    continue
+                pairs = (
+                    paired.get((template.id, supplied.id), [])
+                    if isinstance(template, ast.Name) and isinstance(supplied, ast.Name)
+                    else []
+                )
+                if pairs:
+                    for bound_template, bound_supplied in pairs:
+                        branch_targets = _template_names(bound_template, bindings)
+                        if helper in _EMIT_HELPERS:
+                            enriched |= branch_targets
+                        branch_keys = _dict_keys(bound_supplied, bindings)
+                        for target in branch_targets:
+                            variables.setdefault(target, set()).update(branch_keys or set())
                     continue
                 targets = _template_names(template, bindings)
                 if not targets:
@@ -1938,7 +1997,7 @@ def test_a_template_description_promises_no_placeholder_the_card_cannot_fill():
         if conditional and not _CONDITIONAL_WARNING_RE.search(description):
             unflagged[valve] = conditional
 
-    assert checked >= 10, f"only {checked} template descriptions were read; the scan has gone blind"
+    assert checked >= 12, f"only {checked} template descriptions were read; the scan has gone blind"
     assert not dead, (
         "these descriptions name placeholders no caller supplies, so an admin who uses one ships "
         f"the braces to a reader: {dead}"

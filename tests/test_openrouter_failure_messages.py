@@ -12,6 +12,8 @@ the requests go through ``pipe.pipe()`` and the real transports, retries include
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 from collections.abc import AsyncIterator
 from typing import Any
 

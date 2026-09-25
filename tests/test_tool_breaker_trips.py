@@ -1550,6 +1550,25 @@ _REPORTED_INSIDE_A_200: dict[str, tuple[str, bool, dict[str, Any]]] = {
         {"status": 200, "payload": {"id": "resp-1", "status": "failed", "error": {"code": 502, "message": "Provider returned error"}}},
     ),
     "chat-body-error": ("chat_completions", False, {"status": 200, "payload": {"error": {"code": 502, "message": "Provider returned error"}}}),
+    "chat-body-choice-error": (
+        "chat_completions",
+        False,
+        {
+            "status": 200,
+            "payload": {
+                "id": "cmpl-1",
+                "object": "chat.completion",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "Partial answer "},
+                        "finish_reason": "error",
+                        "error": {"code": 502, "message": "Provider returned error"},
+                    }
+                ],
+            },
+        },
+    ),
     "responses-stream-cut-off-after-text": ("responses", True, {"status": 200, "body": _sse_events([_TEXT_DELTA], done=False)}),
     "chat-stream-cut-off-after-text": ("chat_completions", True, {"status": 200, "body": _sse_events([_CHAT_PARTIAL], done=False)}),
 }

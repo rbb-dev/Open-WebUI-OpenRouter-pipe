@@ -785,7 +785,8 @@ class Valves(BaseModel):
         default=True,
         description=(
             "When True, retry the request against /chat/completions if /responses fails with an "
-            "endpoint/model support error before any streaming output is produced."
+            "endpoint/model support error before any streaming output is produced. A failure OpenRouter "
+            "reports inside a reply /responses has already started is shown, never retried."
         ),
     )
     API_KEY: EncryptedStr = Field(
@@ -1359,7 +1360,7 @@ class Valves(BaseModel):
     AUTHENTICATION_ERROR_TEMPLATE: str = Field(
         default=DEFAULT_AUTHENTICATION_ERROR_TEMPLATE,
         description=(
-            "Markdown template for HTTP 401 errors, for an authentication failure OpenRouter reports inside a reply it has already started, and for the pipe's own failure to read a usable API key. All three fill {error_id}, {timestamp}, {session_id}, {user_id}, {support_email}, {support_url}, {openrouter_code} and {openrouter_message}. A 401 returned by OpenRouter also fills the shared error-context fields — {request_id}, {provider}, {model_identifier}, {requested_model}, {reason}, {metadata_json} and the rest of the set the rejected-request template lists. A failure reported inside a started reply fills the same set, except for the fields OpenRouter has to send for them to exist: {request_id} only on the Responses transport, where the failed response carries its own id, and {provider} only when the error itself names the provider. Nothing is sent when the key itself cannot be read, so on that path those extra fields have no value and any line using one prints the braces verbatim; wrap such a line in {{#if request_id}}...{{/if}} and it is left out instead. A name nothing supplies is never substituted, whichever path rendered the card."
+            "Markdown template for HTTP 401 errors, for an authentication failure OpenRouter reports inside a reply it has already started, and for the pipe's own failure to read a usable API key. All three fill {error_id}, {timestamp}, {session_id}, {user_id}, {support_email}, {support_url}, {openrouter_code} and {openrouter_message}. A 401 returned by OpenRouter also fills the shared error-context fields — {request_id}, {provider}, {model_identifier}, {requested_model}, {reason}, {metadata_json} and the rest of the set the rejected-request template lists. A failure reported inside a started reply fills the same set, except for the fields OpenRouter has to send for them to exist: {request_id} only when the failure carries an id: the generation id on Chat Completions, the failed response's id on Responses, and {provider} only when the error itself names the provider. Nothing is sent when the key itself cannot be read, so on that path those extra fields have no value and any line using one prints the braces verbatim; wrap such a line in {{#if request_id}}...{{/if}} and it is left out instead. A name nothing supplies is never substituted, whichever path rendered the card."
         ),
     )
 
@@ -1426,7 +1427,7 @@ class Valves(BaseModel):
     SERVICE_ERROR_TEMPLATE: str = Field(
         default=DEFAULT_SERVICE_ERROR_TEMPLATE,
         description=(
-            "Markdown template for OpenRouter 5xx errors, and for a failure OpenRouter reports inside a reply it has already started under one of its own typed codes: provider_unavailable, provider_overloaded, timeout, server or unmapped, or under its native code server_error. Available variables: {error_id}, {status_code}, {reason}, {timestamp}, {session_id}, {user_id}, {support_email}. A 5xx that OpenRouter itself returned also fills {request_id}, its own reference for that request. A 5xx reported inside a started reply fills it only on the Responses transport, because on Chat Completions the id OpenRouter sends is carried as {error_chunk_id} instead; {provider} likewise appears only when the error names the provider. A 5xx raised by the connection to OpenRouter, or by a failure inside the pipe, carries no such reference and a line using it prints the braces verbatim unless it is wrapped in a conditional. Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to show them only when that value is set."
+            "Markdown template for OpenRouter 5xx errors, and for a failure OpenRouter reports inside a reply it has already started under one of its own typed codes: provider_unavailable, provider_overloaded, timeout, server or unmapped, or under its native code server_error. Available variables: {error_id}, {status_code}, {reason}, {timestamp}, {session_id}, {user_id}, {support_email}. A 5xx that OpenRouter itself returned also fills {request_id}, its own reference for that request. A 5xx reported inside a started reply fills it whenever the failure carries an id: the failed response's id on Responses, the generation id on Chat Completions, also available as {error_chunk_id}; {provider} likewise appears only when the error names the provider. A 5xx raised by the connection to OpenRouter, or by a failure inside the pipe, carries no such reference and a line using it prints the braces verbatim unless it is wrapped in a conditional. Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to show them only when that value is set."
         )
     )
 

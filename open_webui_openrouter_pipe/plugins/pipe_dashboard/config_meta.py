@@ -130,7 +130,7 @@ CONFIG_META: dict[str, dict[str, str]] = {
     "AUTO_FALLBACK_CHAT_COMPLETIONS": {
         "title": "Automatic endpoint fallback",
         "group": "Connection & Routing/Endpoints",
-        "detail": "When enabled, a request the `/responses` endpoint rejects as unsupported is automatically retried once against `/chat/completions`.\n\nThe retry fires only when the failure looks like a model or endpoint that cannot serve `/responses`, and only before any visible output has streamed. The default `true` keeps chats working when a model routed to `/responses` - whether by `Default API endpoint` or a force pattern - cannot actually serve it. Disable it to make such failures surface as errors instead of silently switching endpoints."
+        "detail": "When enabled, a request the `/responses` endpoint rejects as unsupported is automatically retried once against `/chat/completions`.\n\nThe retry fires only when the failure looks like a model or endpoint that cannot serve `/responses`, and only before any visible output has streamed. A failure OpenRouter reports inside a reply `/responses` has already started is shown, never retried. The default `true` keeps chats working when a model routed to `/responses` - whether by `Default API endpoint` or a force pattern - cannot actually serve it. Disable it to make such failures surface as errors instead of silently switching endpoints."
     },
     "AUTO_INSTALL_DIRECT_UPLOADS_FILTER": {
         "title": "Install Direct Uploads filter",

@@ -12,7 +12,8 @@ the requests go through ``pipe.pipe()`` and the real transports.
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+import re
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 import pytest
@@ -34,7 +35,8 @@ _MARKERS = {
 }
 
 
-def _pipe_reaching_the_model(monkeypatch, endpoint: str) -> Pipe:
+def _pipe_reaching_the_model(monkeypatch, endpoint: str, templates: dict[str, str] | None = None) -> Pipe:
+    """``templates`` replaces the marker set; an empty dict leaves every factory template in place."""
     import open_webui_openrouter_pipe.pipe as pipe_mod
 
     async def loaded(*_args: Any, **_kwargs: Any) -> None:
@@ -47,12 +49,13 @@ def _pipe_reaching_the_model(monkeypatch, endpoint: str) -> Pipe:
     monkeypatch.setattr(
         pipe_mod.OpenRouterModelRegistry, "list_models", lambda: [{"id": "m1", "name": "Model m1", "norm_id": "m1"}]
     )
-    pipe.valves = pipe.valves.model_copy(update={"DEFAULT_LLM_ENDPOINT": endpoint, **_MARKERS})
+    update = {"DEFAULT_LLM_ENDPOINT": endpoint, **(_MARKERS if templates is None else templates)}
+    pipe.valves = pipe.valves.model_copy(update=update)
     return pipe
 
 
-async def _turn(pipe: Pipe, *, stream: bool) -> str:
-    result = await pipe.pipe(
+async def _reply(pipe: Pipe, *, stream: bool) -> Any:
+    return await pipe.pipe(
         body={"model": "m1", "messages": [{"role": "user", "content": "Look it up."}], "stream": stream},
         __user__={"id": "user-1", "role": "user"},
         __request__=None,
@@ -61,6 +64,10 @@ async def _turn(pipe: Pipe, *, stream: bool) -> str:
         __metadata__={"chat_id": "chat-1", "message_id": "message-1", "model": {"id": "m1"}},
         __tools__=None,
     )
+
+
+async def _turn(pipe: Pipe, *, stream: bool) -> str:
+    result = await _reply(pipe, stream=stream)
     if isinstance(result, AsyncIterator):
         return "".join([str(chunk) async for chunk in result])
     return str(result)
@@ -74,24 +81,25 @@ def _sse(payload: dict[str, Any]) -> str:
     return f"data: {json.dumps(payload)}\n\n"
 
 
-def _chat_stream(code: Any, error_type: str) -> bytes:
+def _chat_stream(code: Any, error_type: str, *, chunk_id: Any = "gen-1") -> bytes:
     chunk = {
-        "id": "gen-1", "object": "chat.completion.chunk", "created": 1, "model": "m1", "provider": "P",
+        "id": chunk_id, "object": "chat.completion.chunk", "created": 1, "model": "m1", "provider": "P",
         "error": {"code": code, "message": "reported inside the reply", "metadata": {"error_type": error_type}},
         "choices": [{"index": 0, "delta": {"content": ""}, "finish_reason": "error"}],
     }
     return (_sse(chunk) + "data: [DONE]\n\n").encode("utf-8")
 
 
-def _chat_body(code: Any, error_type: str) -> bytes:
-    body = {"error": {"code": code, "message": "reported inside the reply", "metadata": {"error_type": error_type}}}
+def _chat_body(code: Any, error_type: str, *, body_id: str | None = None) -> bytes:
+    body: dict[str, Any] = {} if body_id is None else {"id": body_id}
+    body["error"] = {"code": code, "message": "reported inside the reply", "metadata": {"error_type": error_type}}
     return json.dumps(body).encode("utf-8")
 
 
-def _responses_stream(code: str, error_type: str) -> bytes:
+def _responses_stream(code: str, error_type: str, *, response_id: Any = "resp-1") -> bytes:
     event = {
         "type": "response.failed",
-        "response": {"id": "resp-1", "status": "failed", "error": {"code": code, "message": "reported inside the reply"},
+        "response": {"id": response_id, "status": "failed", "error": {"code": code, "message": "reported inside the reply"},
                      "error_type": error_type},
     }
     return (_sse(event) + "data: [DONE]\n\n").encode("utf-8")
@@ -112,8 +120,8 @@ def _responses_error_event(event_type: str, code: str) -> bytes:
     return (_sse(event) + "data: [DONE]\n\n").encode("utf-8")
 
 
-def _responses_body(code: str, error_type: str) -> bytes:
-    body = {"id": "resp-1", "status": "failed", "error": {"code": code, "message": "reported inside the reply"},
+def _responses_body(code: str, error_type: str, *, response_id: str = "resp-1") -> bytes:
+    body = {"id": response_id, "status": "failed", "error": {"code": code, "message": "reported inside the reply"},
             "error_type": error_type}
     return json.dumps(body).encode("utf-8")
 
@@ -277,3 +285,10 @@ def test_the_service_cards_routing_advice_is_offered_as_a_possibility_not_a_diag
     advice = next(ln for ln in template.splitlines() if "routing constraints" in ln)
     assert advice.lstrip("- ").startswith("If a `503` keeps repeating"), advice
     assert "may be" in advice, f"the advice names routing as the cause rather than a possibility: {advice}"
+
+
+def _rejection(code: Any, message: str, **metadata: Any) -> bytes:
+    error: dict[str, Any] = {"code": code, "message": message}
+    if metadata:
+        error["metadata"] = metadata
+    return json.dumps({"error": error}).encode("utf-8")

@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import open_webui_openrouter_pipe.pipe as pipe_module
+import open_webui_openrouter_pipe.storage.multimodal as multimodal_module
 from open_webui_openrouter_pipe import Pipe, StatusMessages
 
 
@@ -166,14 +166,19 @@ async def test_download_remote_url_halts_when_ssrf_blocks(pipe_instance_async, m
     """
     guard = AsyncMock(return_value=None)
     monkeypatch.setattr(pipe_instance_async._multimodal_handler, "_prepare_pinned_request", guard)
+    created: list[tuple[tuple, dict]] = []
 
-    class _FailingClient:
+    class _RecordingClient:
+        """Records every construction: the download swallows whatever the constructor raises, so a raise proves nothing."""
+
         def __init__(self, *args, **kwargs):
+            created.append((args, kwargs))
             raise AssertionError("HTTP client should not be created when SSRF blocks the URL")
 
-    monkeypatch.setattr(pipe_module.httpx, "AsyncClient", _FailingClient)
+    monkeypatch.setattr(multimodal_module.httpx, "AsyncClient", _RecordingClient)
     result = await pipe_instance_async._multimodal_handler._download_remote_url("https://internal.local/secret.png")
     assert result is None
+    assert created == [], f"an HTTP client was created for a URL the SSRF check blocked: {created}"
     guard.assert_awaited_once()
 
 

@@ -3851,6 +3851,8 @@ class StreamingHandler:
     @staticmethod
     def _looks_like_responses_unsupported(exc: BaseException) -> bool:
         """Heuristic: detect 'model doesn't support /responses' so we can retry via /chat/completions."""
+        if getattr(exc, "is_streaming_error", False):
+            return False
         if isinstance(exc, OpenRouterAPIError):
             code = exc.openrouter_code
             code_lower = code.strip().lower() if isinstance(code, str) else ""
@@ -3869,7 +3871,7 @@ class StreamingHandler:
                 str(exc),
             ]
             haystack = " ".join(part for part in message_parts if part).lower()
-            if "response" not in haystack and "responses" not in haystack:
+            if not _NAMES_THE_RESPONSES_ENDPOINT.search(haystack):
                 return False
             if any(token in haystack for token in ("not supported", "unsupported", "does not support")):
                 return True
@@ -3883,13 +3885,16 @@ class StreamingHandler:
             if isinstance(value, str) and value:
                 haystack_parts.append(value)
         haystack = " ".join(haystack_parts).lower()
-        if "response" not in haystack and "responses" not in haystack:
+        if not _NAMES_THE_RESPONSES_ENDPOINT.search(haystack):
             return False
         if any(token in haystack for token in ("not supported", "unsupported", "does not support")):
             return True
         if any(token in haystack for token in ("chat/completions", "chat completions")):
             return True
         return bool(any(token in haystack for token in ("openai-responses-v1", "xai-responses-v1")))
+
+
+_NAMES_THE_RESPONSES_ENDPOINT = re.compile(r"\bresponses\b|\bresponse\s+(?:api|endpoint)\b")
 
 
 def _wrap_event_emitter(

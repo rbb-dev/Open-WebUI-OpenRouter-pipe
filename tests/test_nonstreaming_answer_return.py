@@ -27,7 +27,6 @@ import asyncio
 import json
 from typing import Any, cast
 
-import httpx
 import pytest
 
 import open_webui_openrouter_pipe.pipe as pipe_mod
@@ -119,37 +118,6 @@ async def _call(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("raised", "marker"),
-    [
-        (httpx.TimeoutException("slow"), "NETWORK_TIMEOUT_TEMPLATE"),
-        (httpx.ConnectError("refused"), "CONNECTION_ERROR_TEMPLATE"),
-    ],
-)
-async def test_a_templated_card_is_returned_as_well_as_shown(
-    monkeypatch, pipe_instance_async, raised, marker
-) -> None:
-    """Two different templates, so a card hardcoded in production fails one of them."""
-    pipe = pipe_instance_async
-    _prepared(pipe, monkeypatch)
-    pipe.valves.NETWORK_TIMEOUT_TEMPLATE = "### Timed out\n\nWaited too long for {endpoint}."
-    pipe.valves.CONNECTION_ERROR_TEMPLATE = "### Unreachable\n\nCould not open {endpoint}."
-
-    async def _raise(*_args: Any, **_kwargs: Any) -> None:
-        raise raised
-
-    monkeypatch.setattr(pipe, "_process_transformed_request", _raise)
-
-    events: list[dict[str, Any]] = []
-    result = await _call(pipe, events)
-
-    shown = _shown_card(events)
-    assert result == shown
-    expected_heading = "Timed out" if marker == "NETWORK_TIMEOUT_TEMPLATE" else "Unreachable"
-    assert expected_heading in shown
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("template", ["### Boom\n\nInternal.", "### Kaput\n\nAlso internal."])
 async def test_the_generic_card_is_returned_as_well_as_shown(
     monkeypatch, pipe_instance_async, template
@@ -205,66 +173,6 @@ async def test_an_openrouter_rejection_card_is_returned_as_well_as_shown(
     assert result == shown
     assert heading in shown
     assert f"provider said {status}" in shown
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(("status", "heading"), [(502, "Upstream down"), (503, "Upstream down")])
-async def test_an_http_status_error_card_is_returned_as_well_as_shown(
-    monkeypatch, pipe_instance_async, status, heading
-) -> None:
-    pipe = pipe_instance_async
-    _prepared(pipe, monkeypatch)
-    pipe.valves.SERVICE_ERROR_TEMPLATE = "### Upstream down\n\nHTTP {status_code} {reason}."
-
-    request = httpx.Request("POST", "https://openrouter.ai/api/v1/responses")
-    response = httpx.Response(status, request=request)
-
-    async def _raise(*_args: Any, **_kwargs: Any) -> None:
-        raise httpx.HTTPStatusError("boom", request=request, response=response)
-
-    monkeypatch.setattr(pipe, "_process_transformed_request", _raise)
-
-    events: list[dict[str, Any]] = []
-    result = await _call(pipe, events)
-
-    shown = _shown_card(events)
-    assert result == shown
-    assert heading in shown
-    assert str(status) in shown
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("status", "heading"),
-    [(429, "Too many requests"), (413, "Too large")],
-)
-async def test_a_sub_500_http_status_error_card_is_returned_as_well_as_shown(
-    monkeypatch, pipe_instance_async, status, heading
-) -> None:
-    """Below 500 the handler rebuilds the failure as an OpenRouter rejection instead.
-
-    Two statuses select two different templates, so this cannot be satisfied by a
-    constant, and neither row overlaps the 5xx branch above.
-    """
-    pipe = pipe_instance_async
-    _prepared(pipe, monkeypatch)
-    pipe.valves.RATE_LIMIT_TEMPLATE = "### Too many requests\n\nHTTP {openrouter_code}."
-    pipe.valves.PAYLOAD_TOO_LARGE_TEMPLATE = "### Too large\n\nHTTP {openrouter_code}."
-
-    request = httpx.Request("POST", "https://openrouter.ai/api/v1/responses")
-    response = httpx.Response(status, request=request, content=b'{"error": {"message": "no"}}')
-
-    async def _raise(*_args: Any, **_kwargs: Any) -> None:
-        raise httpx.HTTPStatusError("boom", request=request, response=response)
-
-    monkeypatch.setattr(pipe, "_process_transformed_request", _raise)
-
-    events: list[dict[str, Any]] = []
-    result = await _call(pipe, events)
-
-    shown = _shown_card(events)
-    assert result == shown
-    assert heading in shown
 
 
 # ---------------------------------------------------------------------------
@@ -348,14 +256,12 @@ _TASK_ROWS = [
 ]
 
 _TASK_FAILURES = [
-    httpx.TimeoutException("slow"),
-    httpx.ConnectError("refused"),
     OpenRouterAPIError(status=402, reason="rejected", openrouter_message="no credit left"),
     RequiredInternalFileError("that attachment is not yours", denied=True),
     ValueError("unexpected"),
 ]
 
-_TASK_FAILURE_IDS = ["timeout", "connect", "rejection", "internal-file", "unexpected"]
+_TASK_FAILURE_IDS = ["rejection", "internal-file", "unexpected"]
 
 _VISIBLE_MESSAGE_FRAMES = (
     "chat:message",
@@ -392,9 +298,9 @@ async def test_a_failed_task_call_returns_parseable_data_not_a_card(
 ) -> None:
     """The same failure that yields a card on a chat turn must not title a chat with one.
 
-    Five failures are driven because five different branches build the reply, and each
-    reaches a different emitter helper: two templated cards, an OpenRouter rejection
-    card, an error frame and the generic catch-all. A guard added to one of them cannot
+    Three failures are driven because three different branches build the reply, and each
+    reaches a different emitter helper: an OpenRouter rejection card, an error frame and
+    the generic catch-all. A guard added to one of them cannot
     satisfy the set. Three tasks name three different objects, so a constant returned by
     the fallback builder cannot satisfy the set either.
     """
@@ -1041,7 +947,6 @@ async def _call_without_emitter(pipe: Pipe, *, task: Any = None, stream: bool = 
 def _arrange_failure(pipe: Pipe, monkeypatch, branch: str, variant: str) -> str:
     """Make one branch of ``_handle_pipe_call`` fire, and return the words it must carry."""
     _prepared(pipe, monkeypatch)
-    request = httpx.Request("POST", "https://openrouter.ai/api/v1/responses")
 
     def _from_request(exc: BaseException):
         async def _raise(*_args: Any, **_kwargs: Any) -> None:
@@ -1049,18 +954,7 @@ def _arrange_failure(pipe: Pipe, monkeypatch, branch: str, variant: str) -> str:
 
         monkeypatch.setattr(pipe, "_process_transformed_request", _raise)
 
-    if branch == "network timeout":
-        pipe.valves.NETWORK_TIMEOUT_TEMPLATE = f"### {variant}\n\nWaited too long for {{endpoint}}."
-        _from_request(httpx.TimeoutException("slow"))
-    elif branch == "connection refused":
-        pipe.valves.CONNECTION_ERROR_TEMPLATE = f"### {variant}\n\nCould not open {{endpoint}}."
-        _from_request(httpx.ConnectError("refused"))
-    elif branch == "service error":
-        pipe.valves.SERVICE_ERROR_TEMPLATE = f"### {variant}\n\nHTTP {{status_code}}."
-        _from_request(
-            httpx.HTTPStatusError("boom", request=request, response=httpx.Response(503, request=request))
-        )
-    elif branch == "openrouter rejection":
+    if branch == "openrouter rejection":
         pipe.valves.INSUFFICIENT_CREDITS_TEMPLATE = "### Out of credits\n\n{openrouter_message}"
         _from_request(
             OpenRouterAPIError(status=402, reason="rejected", openrouter_message=variant)
@@ -1090,9 +984,6 @@ def _arrange_failure(pipe: Pipe, monkeypatch, branch: str, variant: str) -> str:
 
 
 _EMITTERLESS_BRANCHES = [
-    "network timeout",
-    "connection refused",
-    "service error",
     "openrouter rejection",
     "unexpected",
     "required file",

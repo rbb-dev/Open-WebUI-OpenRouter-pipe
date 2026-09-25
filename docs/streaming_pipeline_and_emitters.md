@@ -141,7 +141,7 @@ a round's calls when the round starts and each result when its call returns, in 
 
 ## 5. Streaming errors and how they surface
 
-OpenRouter sends `200 OK` as soon as a provider accepts a request, so a failure after that point arrives inside the answer. On both `/responses` and `/chat/completions`, the pipe detects such error payloads (for example `response.failed`, or a chunk carrying an `error` block) and converts them into an `OpenRouterAPIError`. A non-streaming reply whose body carries an `error` is treated the same way.
+OpenRouter sends `200 OK` as soon as a provider accepts a request, so a failure after that point arrives inside the answer. On both `/responses` and `/chat/completions`, the pipe detects such error payloads (for example `response.failed`, or a chunk carrying an `error` block) and converts them into an `OpenRouterAPIError`. A non-streaming reply whose body carries an `error`, at the top level or in its first choice, is treated the same way.
 
 That error is then handled by the same OpenRouter template system described in:
 - [Error Handling & User Experience](error_handling_and_user_experience.md)

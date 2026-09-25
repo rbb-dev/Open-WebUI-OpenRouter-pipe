@@ -35,7 +35,6 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast, no_type_check
 
 # Third-party imports
 import aiohttp
-import httpx
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -129,13 +128,11 @@ from .core.error_formatter import ErrorFormatter
 from .core.errors import (
     OpenRouterAPIError,
     RequiredInternalFileError,
-    _build_openrouter_api_error,
 )
 from .core.logging_system import SessionLogger, resolve_level
 from .core.url_scheme import is_http_or_https_url
 from .core.utils import (
     CONTINUED_REPLY,
-    _apply_retry_after_metadata,
     _await_if_needed,
     _extract_feature_flags,
     _render_error_template,
@@ -2632,76 +2629,6 @@ class Pipe:
                 normalized_model_id=body.get("model"),
                 api_model_id=None,
             )
-
-        # Network timeouts
-        except httpx.TimeoutException as e:
-            shown = await self._ensure_error_formatter()._emit_templated_error(
-                __event_emitter__,
-                template=valves.NETWORK_TIMEOUT_TEMPLATE,
-                variables={
-                    "timeout_seconds": getattr(e, 'timeout', valves.HTTP_TOTAL_TIMEOUT_SECONDS),
-                    "endpoint": "https://openrouter.ai/api/v1/responses",
-                },
-                log_message=f"Network timeout: {e}",
-            )
-
-        # Connection failures
-        except httpx.ConnectError as e:
-            shown = await self._ensure_error_formatter()._emit_templated_error(
-                __event_emitter__,
-                template=valves.CONNECTION_ERROR_TEMPLATE,
-                variables={
-                    "error_type": type(e).__name__,
-                    "endpoint": "https://openrouter.ai",
-                },
-                log_message=f"Connection failed: {e}",
-            )
-
-        # HTTP 5xx errors
-        except httpx.HTTPStatusError as e:
-            status_code = e.response.status_code if e.response else None
-            reason_phrase = e.response.reason_phrase if e.response else None
-            if status_code and status_code >= 500:
-                shown = await self._ensure_error_formatter()._emit_templated_error(
-                    __event_emitter__,
-                    template=valves.SERVICE_ERROR_TEMPLATE,
-                    variables={
-                        "status_code": status_code,
-                        "reason": reason_phrase or "Server Error",
-                    },
-                    log_message=f"OpenRouter service error: {status_code} {reason_phrase}",
-                )
-            else:
-                body_text = None
-                if e.response is not None:
-                    try:
-                        raw_bytes = await e.response.aread()
-                        body_text = raw_bytes.decode("utf-8", errors="replace") if isinstance(raw_bytes, bytes) else str(raw_bytes)
-                    except Exception:
-                        self.logger.debug("Failed to read HTTP error response body", exc_info=True)
-                        body_text = None
-                extra_meta: dict[str, Any] = {}
-                if e.response is not None:
-                    _apply_retry_after_metadata(extra_meta, e.response.headers)
-                    rate_scope = (
-                        e.response.headers.get("X-RateLimit-Scope")
-                        or e.response.headers.get("x-ratelimit-scope")
-                    )
-                    if rate_scope:
-                        extra_meta["rate_limit_type"] = rate_scope
-                error = _build_openrouter_api_error(
-                    status=status_code or 0,
-                    reason=reason_phrase or "HTTP error",
-                    body_text=body_text,
-                    requested_model=body.get("model"),
-                    extra_metadata=extra_meta or None,
-                )
-                shown = await self._ensure_error_formatter()._report_openrouter_error(
-                    error,
-                    event_emitter=__event_emitter__,
-                    normalized_model_id=body.get("model"),
-                    api_model_id=None,
-                )
 
         except RequiredInternalFileError as e:
             shown = await self._ensure_error_formatter()._emit_error(

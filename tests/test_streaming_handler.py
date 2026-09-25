@@ -240,6 +240,17 @@ class TestEndpointSelection:
             assert result == "chat_completions"
 
 
+# The two ways a failure reaches the fallback decision: as OpenRouter's own rejection, and as any other exception.
+# Each branch of the decision reads the words on its own, so a sentence has to mean the same thing to both.
+_A_FAILURE_SAYING = [
+    pytest.param(
+        lambda text: OpenRouterAPIError(status=400, reason="Bad Request", provider="test", openrouter_message=text),
+        id="openrouter-rejection",
+    ),
+    pytest.param(Exception, id="plain-exception"),
+]
+
+
 class TestLooksLikeResponsesUnsupported:
     """Tests for detecting unsupported responses endpoint errors."""
 
@@ -7996,15 +8007,12 @@ class TestStreamingCoreAdditionalCoverage:
         assert result == "Hello"
         monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", original_upsert)
 
-    def test_looks_like_responses_unsupported_non_api_error_chat_completions(self):
-        """Test _looks_like_responses_unsupported with non-API error (lines 1996-1997)."""
-        class CustomError(Exception):
-            def __init__(self):
-                super().__init__("Please use chat/completions endpoint for this response type")
-
-        error = CustomError()
+    @pytest.mark.parametrize("failure_saying", _A_FAILURE_SAYING)
+    def test_looks_like_responses_unsupported_non_api_error_chat_completions(self, failure_saying):
+        """A pointer to chat/completions about a "response type" does not name the Responses endpoint."""
+        error = failure_saying("Please use chat/completions endpoint for this response type")
         result = StreamingHandler._looks_like_responses_unsupported(error)
-        assert result is True
+        assert result is False
 
     def test_looks_like_responses_unsupported_non_api_error_xai_responses(self):
         """Test _looks_like_responses_unsupported with xai-responses pattern (lines 1998-1999)."""
@@ -8681,15 +8689,12 @@ class TestStreamingCoreAdditionalCoverage:
         # Exception path exercised
         monkeypatch.setattr(Chats, "upsert_message_to_chat_by_id_and_message_id", original_upsert_for_reasoning)
 
-    def test_looks_like_responses_unsupported_with_not_supported_pattern(self):
-        """Test _looks_like_responses_unsupported with 'not supported' pattern (line 1994-1995)."""
-        class CustomError(Exception):
-            def __init__(self):
-                super().__init__("This response format is not supported")
-
-        error = CustomError()
+    @pytest.mark.parametrize("failure_saying", _A_FAILURE_SAYING)
+    def test_looks_like_responses_unsupported_with_not_supported_pattern(self, failure_saying):
+        """A "not supported" about a response format does not name the Responses endpoint."""
+        error = failure_saying("This response format is not supported")
         result = StreamingHandler._looks_like_responses_unsupported(error)
-        assert result is True
+        assert result is False
 
     def test_looks_like_responses_unsupported_with_does_not_support(self):
         """Test _looks_like_responses_unsupported with 'does not support' pattern (line 1994)."""
@@ -8722,15 +8727,14 @@ class TestStreamingCoreAdditionalCoverage:
         result = StreamingHandler._looks_like_responses_unsupported(error)
         assert result is True
 
-    def test_looks_like_responses_unsupported_api_error_message_patterns(self):
-        """Test _looks_like_responses_unsupported with various message patterns (lines 1976-1984)."""
-        error1 = OpenRouterAPIError(
-            status=400,
-            reason="Bad Request",
-            provider="test",
-            openrouter_message="This response feature is not supported",
-        )
-        assert StreamingHandler._looks_like_responses_unsupported(error1) is True
+    @pytest.mark.parametrize("failure_saying", _A_FAILURE_SAYING)
+    def test_looks_like_responses_unsupported_api_error_message_patterns(self, failure_saying):
+        """Test _looks_like_responses_unsupported with various message patterns.
+
+        The first names a response feature, not the Responses endpoint, so it is not a reason to fall back.
+        """
+        error1 = failure_saying("This response feature is not supported")
+        assert StreamingHandler._looks_like_responses_unsupported(error1) is False
 
         error2 = OpenRouterAPIError(
             status=400,
@@ -8780,15 +8784,12 @@ class TestNonAPIErrorResponsesUnsupported:
         result = StreamingHandler._looks_like_responses_unsupported(error)
         assert result is True
 
-    def test_non_api_error_with_chat_completions_pattern(self):
-        """Test non-API error with chat/completions pattern (line 1996-1997)."""
-        class CustomError(Exception):
-            def __init__(self):
-                super().__init__("Please use chat/completions for response requests")
-
-        error = CustomError()
+    @pytest.mark.parametrize("failure_saying", _A_FAILURE_SAYING)
+    def test_non_api_error_with_chat_completions_pattern(self, failure_saying):
+        """A pointer to chat/completions about "response requests" does not name the Responses endpoint."""
+        error = failure_saying("Please use chat/completions for response requests")
         result = StreamingHandler._looks_like_responses_unsupported(error)
-        assert result is True
+        assert result is False
 
     def test_non_api_error_without_response_keyword(self):
         """Test non-API error returns False without response keyword (line 1992-1993)."""
