@@ -2100,8 +2100,14 @@ async def test_redis_client_enables_a_pubsub_keepalive(pipe_instance, monkeypatc
     captured: dict[str, object] = {}
 
     class _FakeClient:
+        def __init__(self):
+            self.closed = False
+
         async def ping(self):
             return True
+
+        async def close(self) -> None:
+            self.closed = True
 
     def _from_url(url, **kwargs):
         captured.update(kwargs)
@@ -2124,3 +2130,6 @@ async def test_redis_client_enables_a_pubsub_keepalive(pipe_instance, monkeypatc
         f"health_check_interval={interval!r}; the pub/sub connection has no keepalive, "
         "so a half-open socket looks idle and the flush listener goes deaf silently"
     )
+    client = pipe_instance._redis_client
+    await pipe_instance.close()
+    assert client.closed is True, "Pipe.close() did not close the Redis client it was given"

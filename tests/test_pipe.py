@@ -5882,6 +5882,7 @@ async def test_maybe_dump_costs_snapshot_writes_to_redis(pipe_instance):
 
     class _FakeRedis:
         def __init__(self):
+            self.closed = False
             self.writes = []
 
         def set(self, key, payload, ex=None):
@@ -5907,10 +5908,13 @@ async def test_maybe_dump_costs_snapshot_writes_to_redis(pipe_instance):
         pipe_id="openrouter",
     )
 
-    assert pipe._redis_client.writes
-    key, payload, ttl = pipe._redis_client.writes[0]
+    redis = pipe._redis_client
+    assert redis.writes
+    key, payload, ttl = redis.writes[0]
     assert key.startswith("costs:openrouter:")
     assert ttl == 60
+    await pipe.close()
+    assert redis.closed is True, "Pipe.close() did not close the Redis client it was given"
 
 
 # ===== From test_pipe_session_logs.py =====

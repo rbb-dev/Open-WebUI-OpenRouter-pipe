@@ -875,7 +875,10 @@ def _responses_input_to_chat_messages(
                             filename = block.get("filename")
                             file_data = block.get("file_data")
                             file_url = block.get("file_url")
+                            file_id = block.get("file_id")
                             file_payload: dict[str, Any] = {}
+                            if isinstance(file_id, str) and file_id.strip():
+                                file_payload["file_id"] = file_id.strip()
                             if isinstance(filename, str) and filename.strip():
                                 file_payload["filename"] = filename.strip()
                             file_value: str | None = None

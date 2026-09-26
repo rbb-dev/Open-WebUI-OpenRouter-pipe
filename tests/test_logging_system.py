@@ -2635,7 +2635,7 @@ for key, spec in __CASES__:
     if not raw:
         raw = json.dumps({"ok": False, "out": "child produced nothing, status=%d" % status})
     results[key] = json.loads(raw)
-print("CONSOLE_JSON:" + json.dumps(results))
+print("CONSOLE_JSON:" + json.dumps({"results": results, "dont_write_bytecode": sys.dont_write_bytecode}))
 """
 
 
@@ -2679,7 +2679,12 @@ def _run_console_script(cases: list) -> dict:
         f"console probe produced no output (rc={result.returncode}) "
         f"stderr={result.stderr[-400:]!r}"
     )
-    return json.loads(line[len("CONSOLE_JSON:") :])
+    payload = json.loads(line[len("CONSOLE_JSON:") :])
+    assert payload["dont_write_bytecode"] is True, (
+        "the console subprocess was started with bytecode writing enabled, so it leaves "
+        "__pycache__ behind in the workspace"
+    )
+    return payload["results"]
 
 
 def _console_probe(

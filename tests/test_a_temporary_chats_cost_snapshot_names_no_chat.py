@@ -23,6 +23,7 @@ USAGE = {"input_tokens": 7, "output_tokens": 3, "cost": 0.25}
 
 class _FakeRedis:
     def __init__(self) -> None:
+        self.closed = False
         self.writes: list[tuple[str, dict, int | None]] = []
 
     def set(self, key, payload, ex=None):
