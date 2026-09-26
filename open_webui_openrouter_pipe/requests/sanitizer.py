@@ -23,6 +23,7 @@ from ..core.utils import (
     _clean_str,
     is_picture_output,
     opens_a_turn,
+    strip_hidden_marker_lines,
 )
 from ..integrations.anthropic import _is_anthropic_model_id
 
@@ -33,6 +34,18 @@ _ORPHAN_STUB_OUTPUT = (
 if TYPE_CHECKING:
     from ..api.transforms import ResponsesBody
     from ..pipe import Pipe
+
+
+def _without_hidden_marker_lines(output: Any) -> Any:
+    if isinstance(output, str):
+        return strip_hidden_marker_lines(output)
+    if is_picture_output(output):
+        return [
+            {**part, "text": strip_hidden_marker_lines(part["text"])}
+            if part.get("type") == "input_text" and isinstance(part.get("text"), str) else part
+            for part in output
+        ]
+    return output
 
 
 def _reasoning_item_unsigned(item: dict[str, Any]) -> bool:
@@ -170,6 +183,10 @@ def _sanitize_request_input(pipe: Pipe, body: ResponsesBody) -> BudgetOutcome | 
             output = item.get("output")
             if not isinstance(output, str) and not is_picture_output(output):
                 output = json.dumps(output, ensure_ascii=False)
+                changed = True
+            cleaned = _without_hidden_marker_lines(output)
+            if cleaned != output:
+                output = cleaned
                 changed = True
             minimal: dict[str, Any] = {
                 "type": "function_call_output",

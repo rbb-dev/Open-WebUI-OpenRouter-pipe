@@ -75,7 +75,7 @@ async def test_execute_function_calls_with_context_missing_tool_name():
             assert len(outputs) == 1
             assert outputs[0]["type"] == "function_call_output"
             assert outputs[0]["status"] == "incomplete"
-            assert "Tool call missing name" in outputs[0]["output"]
+            assert outputs[0]["output"] == 'Error: Tool "" not found.'
         finally:
             pipe._TOOL_CONTEXT.reset(token)
     finally:
@@ -100,7 +100,7 @@ async def test_execute_function_calls_with_context_tool_not_found():
 
             assert len(outputs) == 1
             assert outputs[0]["type"] == "function_call_output"
-            assert "Tool not found" in outputs[0]["output"]
+            assert outputs[0]["output"] == 'Error: Tool "nonexistent_tool" not found.'
         finally:
             pipe._TOOL_CONTEXT.reset(token)
     finally:
@@ -181,17 +181,23 @@ async def test_execute_function_calls_with_context_no_callable():
 
 @pytest.mark.asyncio
 async def test_execute_function_calls_with_context_empty_args_required_params():
-    """Test that empty string args with required params raise error (lines 137-149)."""
+    """Blank arguments are no parameters, so the tool runs, as Open WebUI's loop runs it."""
     pipe = Pipe()
     try:
         pipe.valves.API_KEY = EncryptedStr("test-key")
 
         loop = asyncio.get_running_loop()
         context = create_tool_context(loop)
+        context.workers.append(
+            asyncio.create_task(pipe._ensure_tool_executor()._tool_worker_loop(context))
+        )
         token = pipe._TOOL_CONTEXT.set(context)
 
         try:
+            called: dict[str, Any] = {"count": 0}
+
             async def my_tool(**kwargs):
+                called["count"] += 1
                 return "result"
 
             tools = {
@@ -213,9 +219,14 @@ async def test_execute_function_calls_with_context_empty_args_required_params():
             outputs = await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
 
             assert len(outputs) == 1
-            assert "Missing tool arguments" in outputs[0]["output"] or "Invalid arguments" in outputs[0]["output"]
+            assert called["count"] == 1, "blank arguments are no arguments, so the tool must run"
+            assert outputs[0]["status"] == "completed"
+            assert "result" in str(outputs[0]["output"])
         finally:
             pipe._TOOL_CONTEXT.reset(token)
+            for worker in context.workers:
+                worker.cancel()
+            await asyncio.gather(*context.workers, return_exceptions=True)
     finally:
         await pipe.close()
 
@@ -247,7 +258,10 @@ async def test_execute_function_calls_with_context_invalid_json_args():
             outputs = await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
 
             assert len(outputs) == 1
-            assert "Invalid arguments" in outputs[0]["output"]
+            assert outputs[0]["output"] == (
+                "Error: Tool call arguments could not be parsed. The model generated malformed or "
+                "incomplete JSON for `my_tool`. Please try again."
+            )
         finally:
             pipe._TOOL_CONTEXT.reset(token)
     finally:
@@ -1063,7 +1077,7 @@ async def test_execute_function_calls_whitespace_tool_name():
             outputs = await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
 
             assert len(outputs) == 1
-            assert "Tool call missing name" in outputs[0]["output"] or "Tool not found" in outputs[0]["output"]
+            assert outputs[0]["output"] == 'Error: Tool "" not found.'
         finally:
             pipe._TOOL_CONTEXT.reset(token)
     finally:
@@ -4744,14 +4758,20 @@ async def test_execute_function_calls_rejects_empty_string_args_when_required() 
 
     loop = asyncio.get_running_loop()
     context = create_tool_context(loop)
+    context.workers.append(
+        asyncio.create_task(pipe._ensure_tool_executor()._tool_worker_loop(context))
+    )
     token = pipe._TOOL_CONTEXT.set(context)
     try:
         outputs = await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
-        assert called["count"] == 0
+        assert called["count"] == 1, "blank arguments are no arguments, so the tool must run"
         assert outputs and outputs[0]["type"] == "function_call_output"
-        assert "Missing tool arguments" in (outputs[0].get("output") or "")
+        assert "ok" in str(outputs[0].get("output") or "")
     finally:
         pipe._TOOL_CONTEXT.reset(token)
+        for worker in context.workers:
+            worker.cancel()
+        await asyncio.gather(*context.workers, return_exceptions=True)
         await pipe.close()
 
 

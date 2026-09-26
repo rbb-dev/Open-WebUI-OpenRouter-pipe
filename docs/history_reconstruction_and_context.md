@@ -149,16 +149,16 @@ This keeps replay payloads smaller while preserving recency and high-level conte
 
 Every tool round the pipe runs itself, and every round of an OpenRouter server tool, is also stored by the pipe: the
 call and its output as a pair, behind a hidden marker placed in the answer where the round happened. Four exceptions:
-with results kept, a server tool whose own item OpenRouter takes back unchanged -- the advisor, the subagent -- is
-stored as that item instead; image generation, whose picture is already part of the answer, is not stored; a
+with results kept, a server tool whose own item OpenRouter takes back unchanged -- the advisor, the subagent, model
+search -- is stored as that item instead, while every other server tool, including one the pipe does not know, keeps
+the pair; image generation, whose picture is already part of the answer, is not stored; a
 request that belongs to no chat message, such as a direct API call, stores no copy at all; and a temporary chat
 keeps nothing, so with tool cards off its rounds reach no later request. (In Open-WebUI tool mode the rounds of a
 temporary chat's reply are held in memory until that reply ends, so Open WebUI's calls back after each round of tool
 calls still hand them to the model; see [Persistence](persistence_encryption_and_storage.md).) The calls are written when
 the round starts and each result when its call returns, in call order. So in a streamed reply, Stop keeps a round's
 calls before the first one still running. A call refused before it ran, such as one naming an unknown tool, is answered
-at once and kept wherever it sits. A call the model sends without a name or without arguments is answered only after
-the round and is not kept.
+at once and kept wherever it sits. A call the model sends malformed is answered as Open WebUI's own tool loop answers it on the same route and is kept like any other call; several argument objects sent back to back become one call each.
 
 The copy carries the call's arguments and its full result, pictures included, whatever `PERSIST_TOOL_RESULTS`
 says, as a shown card does in the message Open WebUI saves; that setting decides what later turns receive, not
@@ -180,7 +180,8 @@ only through the card Open WebUI keeps for it in the browser, and none with card
   running (the pipe fills a round's cards in call order) and marks that call and every later call unfinished; its
   converter hands back only the finished calls, and the pipe's copy of them is dropped as a duplicate. With cards
   off, or where no card was saved, the pipe's copy carries the round's calls before the first one still running.
-- Where the pipe replays OpenRouter's own item for a server tool unchanged (the advisor, with results kept), that item
+- Where the pipe replays OpenRouter's own item for a server tool unchanged (the advisor, the subagent or model
+  search, with results kept), that item
   wins over the card pair Open WebUI saved for it.
 - An earlier turn's results are withheld by the same rule whichever copy carries them: with `PERSIST_TOOL_RESULTS` off
   the model gets `{}` in place of the arguments and a placeholder result -- `[tool result not retained]`, or

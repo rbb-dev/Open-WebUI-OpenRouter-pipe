@@ -2955,13 +2955,17 @@ class TestParseToolArguments:
             result = executor._parse_tool_arguments({"key": "value"})
             assert result == {"key": "value"}
 
-            # Invalid JSON raises ValueError
-            with pytest.raises(ValueError, match="Unable to parse tool arguments"):
-                executor._parse_tool_arguments("not json")
+            # Text that is not JSON, and not a Python literal either, is unparsed:
+            # Open WebUI answers that the arguments could not be parsed.
+            assert executor._parse_tool_arguments("not json") is None
 
-            # None raises ValueError
-            with pytest.raises(ValueError, match="Unsupported argument type"):
-                executor._parse_tool_arguments(None)
+            # No arguments at all is no parameters
+            assert executor._parse_tool_arguments(None) == {}
+            assert executor._parse_tool_arguments("") == {}
+            assert executor._parse_tool_arguments("   ") == {}
+
+            # A Python literal is read as one, and comes back as JSON
+            assert executor._parse_tool_arguments("{'q': 1}") == {"q": 1}
 
             # Valid JSON that isn't an object (null/scalar/list) must raise
             # ValueError, not return a non-dict that crashes downstream

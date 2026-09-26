@@ -13,6 +13,7 @@ These utilities have minimal dependencies and can be used by any module.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import datetime
 import hashlib
@@ -97,6 +98,46 @@ REASONING_ANCHOR_KEYS = (
     REASONING_TEXT_ORDINAL_KEY,
     REASONING_FOLLOWING_SERVER_ITEM_KEY,
 )
+
+
+def parse_tool_arguments(raw: Any) -> dict[str, Any] | None:
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    text = raw if isinstance(raw, str) else json.dumps(raw, ensure_ascii=False)
+    if not text.strip():
+        return {}
+    try:
+        params = json.loads(text)
+    except (ValueError, RecursionError):
+        try:
+            params = ast.literal_eval(text)
+        except (ValueError, SyntaxError, MemoryError, RecursionError):
+            return None
+    if not isinstance(params, dict):
+        raise ValueError("Tool call arguments must be a JSON object.")  # noqa: TRY004
+    return params
+
+
+def split_tool_argument_objects(raw: Any) -> list[str]:
+    if not isinstance(raw, str):
+        return [raw]
+    decoder = json.JSONDecoder()
+    found: list[str] = []
+    position = 0
+    while position < len(raw):
+        while position < len(raw) and raw[position].isspace():
+            position += 1
+        if position >= len(raw):
+            break
+        try:
+            _value, end = decoder.raw_decode(raw, position)
+        except (ValueError, RecursionError):
+            return [raw]
+        found.append(raw[position:end].strip())
+        position = end
+    return found if len(found) > 1 else [raw]
 
 
 def server_tool_call_id(item_id: Any) -> str:

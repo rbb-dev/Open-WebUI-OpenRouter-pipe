@@ -360,9 +360,6 @@ class ArtifactStore:
     def _initialize_circuit_breakers(self):
         """Initialize circuit breaker tracking."""
         breaker_threshold = self.valves.BREAKER_MAX_FAILURES
-        self._breaker_records: dict[str, deque[float]] = defaultdict(
-            lambda: deque(maxlen=breaker_threshold)
-        )
         self._breaker_threshold = breaker_threshold
         self._breaker_window_seconds = self.valves.BREAKER_WINDOW_SECONDS
         self._db_breaker_maxlen = breaker_threshold
@@ -1173,7 +1170,6 @@ class ArtifactStore:
                     "DB ops skipped due to repeated errors.",
                     level="warning",
                 )
-            self._record_failure(user_id)
             return []
 
         for row in rows:
@@ -1374,7 +1370,6 @@ class ArtifactStore:
                     "DB ops skipped due to repeated errors.",
                     level="warning",
                 )
-            self._record_failure(user_id)
             return cached
 
         try:
@@ -2004,12 +1999,6 @@ class ArtifactStore:
     def _reset_db_failure(self, user_id: str) -> None:
         if user_id and user_id in self._db_breakers:
             self._db_breakers[user_id].clear()
-
-    def _record_failure(self, user_id: str) -> None:
-        """Record a generic failure (fallback for compatibility)."""
-        if not user_id:
-            return
-        self._breaker_records[user_id].append(time.time())
 
     # 7. LIFECYCLE MANAGEMENT
 

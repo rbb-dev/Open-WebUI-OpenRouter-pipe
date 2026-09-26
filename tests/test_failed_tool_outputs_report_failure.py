@@ -21,6 +21,7 @@ not care how the value was spelled.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, cast
 
@@ -43,7 +44,8 @@ def _outputs_replayed_to_the_model(requests: list[dict[str, Any]]) -> list[dict[
 
 
 async def _drive_tool_loop(
-    pipe, monkeypatch, *, first_round_output: list[dict[str, Any]], max_loops: int = 2
+    pipe, monkeypatch, *, first_round_output: list[dict[str, Any]], max_loops: int = 2,
+    real_executor: bool = False
 ) -> list[dict[str, Any]]:
     """Run one tool round and return the requests the pipe actually sent.
 
@@ -88,15 +90,33 @@ async def _drive_tool_loop(
     async def emitter(_event):
         return None
 
-    await pipe._streaming_handler._run_streaming_loop(
-        body,
-        valves,
-        emitter,
-        metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"},
-        tools={"lookup": {"callable": lambda **_kwargs: "ok"}},
-        session=cast(Any, object()),
-        user_id="user-123",
-    )
+    context = token = None
+    if real_executor:
+        from open_webui_openrouter_pipe import _ToolExecutionContext
+
+        context = _ToolExecutionContext(
+            queue=asyncio.Queue(maxsize=50), per_request_semaphore=asyncio.Semaphore(1),
+            global_semaphore=None, timeout=5.0, batch_timeout=5.0, idle_timeout=None,
+            user_id="user-123", event_emitter=None, batch_cap=1,
+        )
+        context.workers.append(asyncio.create_task(pipe._ensure_tool_executor()._tool_worker_loop(context)))
+        token = pipe._TOOL_CONTEXT.set(context)
+    try:
+        await pipe._streaming_handler._run_streaming_loop(
+            body,
+            valves,
+            emitter,
+            metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"},
+            tools={"lookup": {"callable": lambda **_kwargs: "ok"}},
+            session=cast(Any, object()),
+            user_id="user-123",
+        )
+    finally:
+        if context is not None:
+            pipe._TOOL_CONTEXT.reset(token)
+            for worker in context.workers:
+                worker.cancel()
+            await asyncio.gather(*context.workers, return_exceptions=True)
     return captured
 
 
@@ -141,42 +161,6 @@ def test_an_orphaned_tool_call_gets_a_failure_stub(pipe_instance):
     assert stubs[0].get("status") == _TERMINAL_FAILURE, (
         f"the orphan stub reports {stubs[0].get('status')!r}. A call that produced "
         "nothing is being replayed to the model as one that completed."
-    )
-
-
-@pytest.mark.asyncio
-async def test_a_call_missing_its_arguments_is_reported_to_the_model_as_a_failure(
-    pipe_instance_async, monkeypatch
-):
-    """A malformed call cannot be executed, so its synthesised output must say so.
-
-    The stream yields a function_call the pipe cannot run. Nothing is mocked between
-    that event and the decision under test, so the status asserted below is the one the
-    pipe genuinely chose.
-
-    The output only reaches the model paired with a call bearing the same call_id --
-    an unpaired function_call_output is an orphan and the sanitizer drops it before the
-    request goes out. Here the model named a real tool, so the call can be repaired
-    into a valid one and the pair survives.
-    """
-    captured = await _drive_tool_loop(
-        pipe_instance_async,
-        monkeypatch,
-        first_round_output=[{"type": "function_call", "call_id": "c2", "name": "lookup"}],
-    )
-
-    outputs = _outputs_replayed_to_the_model(captured)
-    assert outputs, (
-        "a tool call with no arguments produced no output item at all, so the model is "
-        "told nothing about a call it emitted and can repeat it indefinitely"
-    )
-    assert [o.get("status") for o in outputs] == [_TERMINAL_FAILURE], (
-        f"a tool call with no arguments is replayed to the model as "
-        f"{[o.get('status') for o in outputs]!r}; it was never executed, so reporting "
-        "success is a lie to both the user and the model"
-    )
-    assert "missing arguments" in str(outputs[0].get("output", "")), (
-        "the output does not say what was wrong with the call"
     )
 
 

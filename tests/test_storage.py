@@ -22,6 +22,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from open_webui_openrouter_pipe import Pipe
+from open_webui_openrouter_pipe.core.logging_system import SessionLogger
 from open_webui_openrouter_pipe.storage import persistence as persistence_mod
 from open_webui_openrouter_pipe.storage.persistence import (
     ArtifactStore,
@@ -1398,21 +1399,6 @@ def test_reset_db_failure_no_user_id(pipe_instance):
     store._reset_db_failure("")
 
 
-def test_record_failure_generic_no_user(pipe_instance):
-    """Test _record_failure does nothing without user_id."""
-    store = pipe_instance._artifact_store
-    initial_len = len(store._breaker_records.get("", deque()))
-    store._record_failure("")
-    assert len(store._breaker_records.get("", deque())) == initial_len
-
-
-def test_record_failure_generic_with_user(pipe_instance):
-    """Test _record_failure records failure for user."""
-    store = pipe_instance._artifact_store
-    store._record_failure("user1")
-    assert len(store._breaker_records["user1"]) == 1
-
-
 # -----------------------------------------------------------------------------
 # Shutdown Tests
 # -----------------------------------------------------------------------------
@@ -2756,12 +2742,19 @@ async def test_db_persist_skips_when_breaker_open(monkeypatch, pipe_instance) ->
         calls.append("notify")
 
     monkeypatch.setattr(store, "_emit_notification", _emit_notification)
-    monkeypatch.setattr(store, "_record_failure", lambda _user_id: calls.append("record"))
-
-    result = await store._db_persist([_make_row("chat", "msg", {"type": "note"})])
+    monkeypatch.setattr(store, "_db_persist_direct", lambda *_a, **_k: calls.append("write"))
+    windows = {user: list(window) for user, window in store._db_breakers.items()}
+    token = SessionLogger.user_id.set("user-1")
+    try:
+        result = await store._db_persist([_make_row("chat", "msg", {"type": "note"})])
+    finally:
+        SessionLogger.user_id.reset(token)
 
     assert result == []
-    assert "record" in calls
+    assert calls == ["notify"], "a refused write must not reach the database"
+    assert {user: list(window) for user, window in store._db_breakers.items()} == windows, (
+        "a refused write must not count as a database failure, or the breaker could never close"
+    )
 
 
 @pytest.mark.asyncio
@@ -2827,12 +2820,17 @@ async def test_db_fetch_breaker_disables_reads(monkeypatch, pipe_instance) -> No
         calls.append("notify")
 
     monkeypatch.setattr(store, "_emit_notification", _emit_notification)
-    monkeypatch.setattr(store, "_record_failure", lambda _user_id: calls.append("record"))
-
-    result = await store._db_fetch("chat", "msg", ["id-1"])
+    monkeypatch.setattr(store, "_db_fetch_direct", lambda *_a, **_k: calls.append("read"))
+    windows = {user: list(window) for user, window in store._db_breakers.items()}
+    token = SessionLogger.user_id.set("user-1")
+    try:
+        result = await store._db_fetch("chat", "msg", ["id-1"])
+    finally:
+        SessionLogger.user_id.reset(token)
 
     assert result == {}
-    assert "record" in calls
+    assert calls == ["notify"], "a refused read must not reach the database"
+    assert {user: list(window) for user, window in store._db_breakers.items()} == windows
 
 
 @pytest.mark.asyncio

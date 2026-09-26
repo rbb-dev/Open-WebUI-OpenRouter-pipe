@@ -145,7 +145,7 @@ removes them. Under `next_reply` the cleanup that runs at the end of a request s
 request is still writing, so continuing an answer does not delete the reasoning of the generation it continues.
 
 ### Tool output pruning
-When an earlier turn's tool result is handed to the model again, `TOOL_OUTPUT_RETENTION_TURNS` decides how much of it goes: results from the most recent turns go in full, while a long result from an older turn is cut to its first and last few hundred characters with a note of how much was removed. OpenRouter's own advisor and subagent items go back whole. The stored row is not changed.
+When an earlier turn's tool result is handed to the model again, `TOOL_OUTPUT_RETENTION_TURNS` decides how much of it goes: results from the most recent turns go in full, while a long result from an older turn is cut to its first and last few hundred characters with a note of how much was removed. OpenRouter's own advisor, subagent and model-search items go back whole. The stored row is not changed.
 
 ---
 

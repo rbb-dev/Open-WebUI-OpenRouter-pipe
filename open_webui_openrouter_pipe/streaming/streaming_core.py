@@ -49,6 +49,7 @@ from ..api.transforms import (
 from ..core.config import (
     _NON_REPLAYABLE_TOOL_ARTIFACTS,
     _PIPE_METADATA_KEY,
+    _RAW_REPLAYED_SERVER_TOOLS,
     DEFAULT_STREAM_INTERRUPTED_TEMPLATE,
     NO_CONTENT_AFTER_TOOLS_FALLBACK,
     EncryptedStr,
@@ -94,12 +95,14 @@ from ..core.utils import (
     join_answer_and_card,
     merge_usage_stats,
     owui_call_status,
+    parse_tool_arguments,
     picture_output,
     recorded_tool_text,
     server_tool_arguments,
     server_tool_call_id,
     server_tool_result_text,
     server_tool_status,
+    split_tool_argument_objects,
     strip_hidden_marker_lines,
     tool_output_text_and_pictures,
     wrap_code_block,
@@ -130,7 +133,7 @@ _REPLAY_DROPPED_OPENING = (
 # Imports from storage.persistence
 from ..storage.multimodal import _guess_image_mime_type, image_extension_for_mime
 from ..storage.owui_files import is_temporary_chat
-from ..storage.persistence import normalize_persisted_item
+from ..storage.persistence import generate_item_id, normalize_persisted_item
 from ..tools.citation_harvester import (
     BUILTIN_CITATION_TOOLS,
     UNCITED_TOOLS,
@@ -247,6 +250,13 @@ def _phase_marker_for_output_item(item: dict[str, Any]) -> str | None:
         if normalized_phase in {"commentary", "final_answer"}:
             return _serialize_phase_marker(normalized_phase)
     return None
+
+
+def _read_arguments_as_open_webui_reads_them(item: dict[str, Any]) -> str:
+    arguments = item.get("arguments", "{}")
+    if not isinstance(arguments, str):
+        arguments = json.dumps(arguments, ensure_ascii=False)
+    return arguments.strip() or "{}"
 
 
 def _chat_messages_to_responses_input(messages: list) -> list:
@@ -1188,7 +1198,7 @@ class StreamingHandler:
         ) -> None:
             if not message_id:
                 return
-            if persist_tools_enabled and item_type not in _NON_REPLAYABLE_TOOL_ARTIFACTS:
+            if persist_tools_enabled and item_type in _RAW_REPLAYED_SERVER_TOOLS:
                 normalized = normalize_persisted_item(raw_item) if raw_item else None
                 row = (
                     self._pipe._artifact_store._make_db_row(chat_id, message_id, openwebui_model, normalized)
@@ -1557,6 +1567,8 @@ class StreamingHandler:
         error_occurred = False
         was_cancelled = False
         loop_limit_reached = False
+        ran_out = False
+        last_round_had_calls = False
         retry_barrier_crossed = False
         handed_back_for_retry = False
         content_handed_back = False
@@ -1571,6 +1583,7 @@ class StreamingHandler:
         try:
             for loop_index in range(valves.MAX_FUNCTION_CALL_LOOPS + 1):
                 if loop_index >= valves.MAX_FUNCTION_CALL_LOOPS and not loop_limit_reached:
+                    ran_out = True
                     break
 
                 if loop_index > 0:
@@ -2123,7 +2136,12 @@ class StreamingHandler:
 
                         elif item_type == "function_call":
                             should_persist = False
-                            reasoning_anchor_state["stream_calls"] += 1
+                            if item.get("name"):
+                                reasoning_anchor_state["stream_calls"] += len(
+                                    split_tool_argument_objects(
+                                        _read_arguments_as_open_webui_reads_them(item)
+                                    )
+                                )
 
                         elif isinstance(item_type, str) and item_type.startswith("openrouter:"):
                             should_persist = False
@@ -2642,7 +2660,8 @@ class StreamingHandler:
                 message_count = 0
                 call_items: list[dict[str, Any]] = []
                 invalid_call_outputs: list[dict[str, Any]] = []
-                for item in final_response.get("output") or []:
+                _carried_positions: list[int] = []
+                for _position, item in enumerate(final_response.get("output") or []):
                     if not isinstance(item, dict):
                         continue
                     item_type = item.get("type")
@@ -2653,10 +2672,39 @@ class StreamingHandler:
                         continuation_input_items.append(item)
                         message_count += 1
                     elif item_type == "function_call":
-                        normalized_call = normalize_persisted_item(item)
-                        if normalized_call:
-                            call_items.append(normalized_call)
-                            continuation_input_items.append(normalized_call)
+                        arguments = _read_arguments_as_open_webui_reads_them(item)
+                        parts = (
+                            split_tool_argument_objects(arguments)
+                            if not owui_tool_passthrough else [arguments]
+                        )
+                        carried: list[dict[str, Any]] = []
+                        for _part in parts:
+                            try:
+                                _params = parse_tool_arguments(_part)
+                            except ValueError:
+                                _params = None
+                            _stored = (
+                                json.dumps(_params, ensure_ascii=False)
+                                if isinstance(_params, dict) else _part
+                            )
+                            _candidate = normalize_persisted_item(
+                                {
+                                    **item,
+                                    "arguments": _stored,
+                                    **(
+                                        {"id": generate_item_id(),
+                                         "call_id": f"call_{uuid.uuid4().hex[:24]}"}
+                                        if len(parts) > 1 else {}
+                                    ),
+                                }
+                            )
+                            if _candidate is None:
+                                break
+                            carried.append(_candidate)
+                            _carried_positions.append(_position)
+                        if carried:
+                            call_items.extend(carried)
+                            continuation_input_items.extend(carried)
                             continue
                         raw_call_id = item.get("call_id") or item.get("id")
                         call_id = raw_call_id.strip() if isinstance(raw_call_id, str) else ""
@@ -2666,37 +2714,15 @@ class StreamingHandler:
                                 item.get("name"),
                             )
                             continue
-                        if not item.get("name"):
-                            reason = "Tool call missing name"
-                        elif item.get("arguments") is None:
-                            reason = "Tool call missing arguments"
-                        else:
-                            reason = "Invalid tool call"
-                        repaired_call = None
-                        if item.get("name"):
-                            repaired_call = normalize_persisted_item(
-                                {
-                                    "type": "function_call",
-                                    "call_id": call_id,
-                                    "name": item["name"],
-                                    "arguments": (
-                                        item["arguments"]
-                                        if isinstance(item.get("arguments"), str)
-                                        else "{}"
-                                    ),
-                                }
-                            )
                         normalized_output = normalize_persisted_item(
                             {
                                 "type": "function_call_output",
                                 "call_id": call_id,
-                                "output": reason,
+                                "output": "Tool call missing name",
                                 "status": "incomplete",
                             }
                         )
                         if normalized_output:
-                            if repaired_call:
-                                continuation_input_items.append(repaired_call)
                             invalid_call_outputs.append(normalized_output)
                         else:
                             self.logger.warning(
@@ -2705,10 +2731,7 @@ class StreamingHandler:
                             )
 
                 _ordered = final_response.get("output") or []
-                _fc_local = [
-                    _j for _j, _o in enumerate(_ordered)
-                    if isinstance(_o, dict) and _o.get("type") == "function_call"
-                ]
+                _fc_local = _carried_positions
                 _calls_seen = reasoning_anchor_state["calls_seen"]
                 _derived: list[tuple[str, int]] = []
                 _derived_by_id: dict[str, tuple[str, int]] = {}
@@ -2807,6 +2830,7 @@ class StreamingHandler:
                 if call_items or invalid_call_outputs:
                     if call_items and loop_index >= (valves.MAX_FUNCTION_CALL_LOOPS - 1):
                         loop_limit_reached = True
+                        ran_out = True
 
                     if call_items and hand_back:
                         handed_back = True
@@ -2943,7 +2967,7 @@ class StreamingHandler:
 
                         break
 
-                    has_actionable_continuation = bool(call_items or invalid_call_outputs)
+                    has_actionable_continuation = last_round_had_calls = bool(call_items or invalid_call_outputs)
 
                     if call_items:
                         if not tool_loops_executed:
@@ -3068,7 +3092,7 @@ class StreamingHandler:
                                     _tool_ctx.on_complete = None
                                     _tool_ctx.carded_calls = set()
 
-                        all_function_outputs = list(function_outputs) + list(invalid_call_outputs)
+                        all_function_outputs = list(function_outputs)
                         budgeted_outputs = [
                             dict(output) if isinstance(output, dict) else output
                             for output in all_function_outputs
@@ -3286,7 +3310,21 @@ class StreamingHandler:
                         break
                 else:
                     has_actionable_continuation = False
+                    last_round_had_calls = False
                     break
+
+            if ran_out and tool_loops_executed and last_round_had_calls:
+                limit_note = f"Tool-call limit reached ({valves.MAX_FUNCTION_CALL_LOOPS} iterations)."
+                if event_emitter:
+                    await _open_message()
+                    await event_emitter(
+                        {
+                            "type": "chat:message:error",
+                            "data": {"error": {"content": limit_note}},
+                        }
+                    )
+                else:
+                    assistant_message = join_answer_and_card(assistant_message, limit_note)
 
             if (
                 tool_loops_executed

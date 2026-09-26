@@ -845,7 +845,7 @@ CONFIG_META: dict[str, dict[str, str]] = {
     "TOOL_OUTPUT_RETENTION_TURNS": {
         "title": "Tool output history depth",
         "group": "Tools/Execution",
-        "detail": "How many recent turns hand the model full tool results before older, longer ones are cut to save tokens.\n\nApart from long `ask_user` answers, it matters only while `Keep tool results across turns` is on; otherwise earlier results already reach the model as short notes. A cut result, whether from a saved tool card or the pipe's own copy, keeps only its beginning and end plus a note of how much was removed; short results pass untouched, and OpenRouter's own advisor and subagent items go back whole. A turn runs from one user message to the next; `0` keeps every result in full.\n\n**Tip:** Lower it to cut token cost on long, tool-heavy chats."
+        "detail": "How many recent turns hand the model full tool results before older, longer ones are cut to save tokens.\n\nApart from long `ask_user` answers, it matters only while `Keep tool results across turns` is on; otherwise earlier results already reach the model as short notes. A cut result, whether from a saved tool card or the pipe's own copy, keeps only its beginning and end plus a note of how much was removed; short results pass untouched, and OpenRouter's own advisor, subagent and model-search items go back whole. A turn runs from one user message to the next; `0` keeps every result in full.\n\n**Tip:** Lower it to cut token cost on long, tool-heavy chats."
     },
     "TOOL_SHUTDOWN_TIMEOUT_SECONDS": {
         "title": "Tool shutdown grace period",

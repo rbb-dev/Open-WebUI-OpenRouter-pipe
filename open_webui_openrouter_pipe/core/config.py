@@ -120,6 +120,14 @@ _NON_REPLAYABLE_TOOL_ARTIFACTS = frozenset(
     }
 )
 
+_RAW_REPLAYED_SERVER_TOOLS = frozenset(
+    {
+        "openrouter:advisor",
+        "openrouter:subagent",
+        "openrouter:experimental__search_models",
+    }
+)
+
 _REMOTE_FILE_MAX_SIZE_DEFAULT_MB = 50
 _REMOTE_FILE_MAX_SIZE_MAX_MB = 500
 _INTERNAL_FILE_ID_PATTERN = re.compile(r"/files/([A-Za-z0-9-]+)(?:/|\\?|$)")
@@ -1508,7 +1516,7 @@ class Valves(BaseModel):
         default=10,
         ge=0,
         description=(
-            "How many recent logical turns have their tool outputs sent in full. A turn runs from one user message to the next, including the assistant and tool responses in between. In older turns, long tool outputs are shortened to save tokens, whether they come from a saved tool card or the pipe's own storage; OpenRouter's own advisor and subagent items go back whole. Apart from answers given through ask_user, this matters only while tool results are kept across turns. Set to 0 to keep every tool output in full."
+            "How many recent logical turns have their tool outputs sent in full. A turn runs from one user message to the next, including the assistant and tool responses in between. In older turns, long tool outputs are shortened to save tokens, whether they come from a saved tool card or the pipe's own storage; OpenRouter's own advisor, subagent and model-search items go back whole. Apart from answers given through ask_user, this matters only while tool results are kept across turns. Set to 0 to keep every tool output in full."
         ),
     )
     TOOL_TIMEOUT_SECONDS: int = Field(

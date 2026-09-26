@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 from ..core.config import (
     _MARKDOWN_IMAGE_RE,
     _NON_REPLAYABLE_TOOL_ARTIFACTS,
+    _RAW_REPLAYED_SERVER_TOOLS,
 )
 
 # Import status messages
@@ -48,7 +49,10 @@ from ..core.utils import (
     is_tool_image_handoff,
     opens_a_turn,
     picture_output,
+    recorded_tool_text,
+    server_tool_arguments,
     server_tool_call_id,
+    server_tool_result_text,
     server_tool_status,
     split_text_by_markers,
     split_text_by_phase_markers,
@@ -101,6 +105,32 @@ def _strip_reasoning_anchor_keys(item: dict[str, Any]) -> dict[str, Any]:
 logger = logging.getLogger(__name__)
 
 
+def _server_round(
+    item: dict[str, Any], arguments: str, output: Any, fallback_id: Any = None
+) -> list[dict[str, Any]]:
+    item_type = str(item.get("type") or "")
+    call_id = server_tool_call_id(item.get("id") or fallback_id)
+    return [
+        {"type": "function_call", "call_id": call_id, "name": item_type.split(":", 1)[1] or item_type,
+         "arguments": arguments},
+        {"type": "function_call_output", "call_id": call_id, "output": output},
+    ]
+
+
+def _as_replayed(item: dict[str, Any], fallback_id: Any = None) -> list[dict[str, Any]]:
+    item_type = item.get("type")
+    if not (isinstance(item_type, str) and item_type.startswith("openrouter:")) or (
+        item_type in _RAW_REPLAYED_SERVER_TOOLS
+    ):
+        return [item]
+    return _server_round(
+        item,
+        json.dumps(server_tool_arguments(item), ensure_ascii=False),
+        recorded_tool_text(server_tool_result_text(item), server_tool_status(item)),
+        fallback_id,
+    )
+
+
 def _without_tool_result(item: dict[str, Any], names: dict[str, str]) -> list[dict[str, Any]] | None:
     item_type = item.get("type")
     call_id = item.get("call_id")
@@ -112,16 +142,10 @@ def _without_tool_result(item: dict[str, Any], names: dict[str, str]) -> list[di
     if item_type == "function_call_output":
         if names.get(str(call_id)) == "ask_user":
             return None
-        output = item.get("output")
-        text = output if isinstance(output, str) else json.dumps(output, ensure_ascii=False)
+        text = tool_output_text_and_pictures(item.get("output"))[0]
         return [{**item, "output": unretained_tool_result(_tool_result_failed(text, item.get("status")))}]
     if isinstance(item_type, str) and item_type.startswith("openrouter:"):
-        round_id = server_tool_call_id(item.get("id"))
-        failed = server_tool_status(item) != "completed"
-        return [
-            {"type": "function_call", "call_id": round_id, "name": item_type.split(":", 1)[1], "arguments": "{}"},
-            {"type": "function_call_output", "call_id": round_id, "output": unretained_tool_result(failed)},
-        ]
+        return _server_round(item, "{}", unretained_tool_result(server_tool_status(item) != "completed"))
     return None
 _REUSE_DOWNLOAD_MEMO_MAX_BYTES = 8 * 1024 * 1024
 _reuse_download_memo: OrderedDict[tuple[str, str], tuple[bytes, str]] = OrderedDict()
@@ -315,7 +339,7 @@ def _one_copy_per_round(region: list[Any]) -> list[Any]:
     kept: list[Any] = []
     pictures: list[str] = []
     for it in region:
-        if pictures and not (isinstance(it, dict) and it.get("type") in ("function_call", "function_call_output")):
+        if pictures and not (isinstance(it, dict) and it.get("type") == "function_call_output"):
             kept.append(_tool_images_message(pictures))
             pictures = []
         replayed_pictures = (
@@ -1683,18 +1707,19 @@ async def transform_messages_to_input(
                             if withheld_items is not None:
                                 openai_input.extend(_from_pipe_storage(withheld) for withheld in withheld_items)
                                 continue
-                        if (
-                            is_old_message
-                            and pruning_turns > 0
-                            and prune_before_turn is not None
-                        ):
-                            _prune_tool_output(
-                                item,
-                                marker=segment["marker"],
-                                turn_index=msg_turn_index,
-                                retention_turns=pruning_turns,
-                            )
-                        openai_input.append(_from_pipe_storage(item))
+                        for part in _as_replayed(item, fallback_id=segment["marker"]):
+                            if (
+                                is_old_message
+                                and pruning_turns > 0
+                                and prune_before_turn is not None
+                            ):
+                                _prune_tool_output(
+                                    part,
+                                    marker=segment["marker"],
+                                    turn_index=msg_turn_index,
+                                    retention_turns=pruning_turns,
+                                )
+                            openai_input.append(_from_pipe_storage(part))
                 elif segment["type"] == "text":
                     _append_assistant_text_chunks(segment["text"])
         else:

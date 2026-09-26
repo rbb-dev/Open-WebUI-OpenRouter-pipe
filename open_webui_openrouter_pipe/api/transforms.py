@@ -792,7 +792,7 @@ def _responses_input_to_chat_messages(
         if not isinstance(item, dict):
             continue
         itype = item.get("type")
-        if itype not in ("function_call", "function_call_output"):
+        if itype != "function_call_output":
             _hand_over_tool_pictures()
 
         if itype == "message":
@@ -1022,7 +1022,7 @@ def _responses_input_to_chat_messages(
                             "id": call_id,
                             "type": "function",
                             "function": {
-                                "name": itype.split(":", 1)[1],
+                                "name": itype.split(":", 1)[1] or itype,
                                 "arguments": json.dumps(arguments, ensure_ascii=False),
                             },
                         }
@@ -1668,6 +1668,8 @@ def _filter_replayable_input_items(
     if not isinstance(items, list):
         return items
 
+    from ..requests.transformer import _as_replayed
+
     filtered: list[dict[str, Any]] = []
     for idx, item in enumerate(items):
         if not isinstance(item, dict):
@@ -1681,6 +1683,9 @@ def _filter_replayable_input_items(
                 idx,
                 item.get("id"),
             )
+            continue
+        if item_type.startswith("openrouter:"):
+            filtered.extend(_as_replayed(item))
             continue
         filtered.append(item)
 

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
@@ -19,7 +18,11 @@ from typing import TYPE_CHECKING, Any
 
 from ..api.transforms import ResponsesBody
 from ..core.timing_logger import timed, timing_mark
-from ..core.utils import TOOL_CALL_STATUSES, picture_output
+from ..core.utils import (
+    TOOL_CALL_STATUSES,
+    parse_tool_arguments,
+    picture_output,
+)
 from ..core.warn_latch import warn_level
 
 _OWUI_RESULT_WARN_COOLDOWN_S = 300.0
@@ -235,31 +238,8 @@ class ToolExecutor:
         )
         return refusal
 
-    def _parse_tool_arguments(self, raw_args: Any) -> dict[str, Any]:
-        """Parse raw tool arguments into a dictionary.
-
-        Args:
-            raw_args: Raw arguments (dict, JSON string, or other)
-
-        Returns:
-            Parsed arguments dictionary
-
-        Raises:
-            ValueError: If arguments cannot be parsed
-        """
-        if isinstance(raw_args, dict):
-            return raw_args
-        if isinstance(raw_args, str):
-            try:
-                parsed = json.loads(raw_args)
-            except json.JSONDecodeError as exc:
-                raise ValueError("Unable to parse tool arguments") from exc
-            if not isinstance(parsed, dict):
-                raise ValueError(  # noqa: TRY004 - the caller catches ValueError to build a clean tool error
-                    f"Tool arguments must be a JSON object, got {type(parsed).__name__}"
-                )
-            return parsed
-        raise ValueError(f"Unsupported argument type: {type(raw_args).__name__}")
+    def _parse_tool_arguments(self, raw_args: Any) -> dict[str, Any] | None:
+        return parse_tool_arguments(raw_args)
 
     @timed
     def _terminal_file_result_safe(
@@ -436,17 +416,32 @@ class ToolExecutor:
         for call in calls:
             raw_name = call.get("name")
             tool_name = raw_name.strip() if isinstance(raw_name, str) else ""
-            if not tool_name:
+            try:
+                args = parse_tool_arguments(call.get("arguments"))
+            except ValueError:
                 await _append_and_notify(call, self._build_tool_output(
-                    call, "Tool call missing name", status="failed",
+                    call,
+                    f"Error: Tool call arguments for `{tool_name}` must be a JSON object. Please try again.",
+                    status="failed",
+                ))
+                continue
+            if args is None:
+                await _append_and_notify(call, self._build_tool_output(
+                    call,
+                    "Error: Tool call arguments could not be parsed. The model generated malformed or "
+                    f"incomplete JSON for `{tool_name}`. Please try again.",
+                    status="failed",
                 ))
                 continue
             tool_cfg = tools.get(tool_name)
             if not tool_cfg:
                 await _append_and_notify(call, self._build_tool_output(
-                    call, "Tool not found", status="failed",
+                    call, f'Error: Tool "{tool_name}" not found.', status="failed",
                 ))
                 continue
+            if _owui_normalize_ask_user_request is not None and self._is_builtin_ask_user(tool_cfg):
+                with contextlib.suppress(ValueError):
+                    args = _owui_normalize_ask_user_request(args)
             if ask_user_refusal and self._is_builtin_ask_user(tool_cfg):
                 await _append_and_notify(call, self._build_tool_output(
                     call, ask_user_refusal, status="failed",
@@ -472,37 +467,6 @@ class ToolExecutor:
                     status="failed",
                 ))
                 continue
-            try:
-                raw_args_value = call.get("arguments")
-                if isinstance(raw_args_value, str) and not raw_args_value.strip():
-                    required: list[str] = []
-                    spec = tool_cfg.get("spec")
-                    if isinstance(spec, dict):
-                        params = spec.get("parameters")
-                        if isinstance(params, dict):
-                            req = params.get("required")
-                            if isinstance(req, list):
-                                required = [r for r in req if isinstance(r, str) and r.strip()]
-                    if required:
-                        raise ValueError("Missing tool arguments (provider sent empty string)")
-                    raw_args_value = "{}"
-                if raw_args_value is None:
-                    raw_args_value = "{}"
-                args = self._parse_tool_arguments(raw_args_value)
-                if _owui_normalize_ask_user_request is not None and self._is_builtin_ask_user(tool_cfg):
-                    with contextlib.suppress(ValueError):
-                        args = _owui_normalize_ask_user_request(args)
-            except (RecursionError, ValueError) as exc:
-                self.logger.warning(
-                    "Model sent unusable arguments for tool '%s'",
-                    call.get("name"),
-                    exc_info=True,
-                )
-                await _append_and_notify(call, self._build_tool_output(
-                    call, f"Invalid arguments: {exc}", status="failed",
-                ))
-                continue
-
             if context.tool_call_budget is not None:
                 if context.tool_call_budget <= 0:
                     await _append_and_notify(call, self._build_tool_output(
