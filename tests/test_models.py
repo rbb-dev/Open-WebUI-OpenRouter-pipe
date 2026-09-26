@@ -4207,7 +4207,13 @@ async def test_the_web_tools_filter_is_not_installed_when_every_tool_is_off(
             payload={"data": [{"id": "openai/gpt-4o-mini", "name": "GPT-4o Mini"}]},
             repeat=True,
         )
+        mock_http.get("https://openrouter.ai/api/frontend/v1/catalog/models", payload={"data": []}, repeat=True)
         models = await pipe.pipes()
+        sync = pipe._ensure_catalog_manager()._model_metadata_sync_task
+        assert sync is not None, (
+            "pipes() scheduled no metadata sync, so an install the sync would make was never checked"
+        )
+        await sync
 
     assert models and not any("error" in str(m.get("id", "")).lower() for m in models), (
         f"pipes() returned {models!r}; the catalog did not load, so this test would "
@@ -4463,15 +4469,22 @@ async def test_an_empty_rebuild_keeps_the_previous_provider_map_and_says_so(
         ("VIDEO_INTENT_CONFIRM_MODE", "never"),
         ("VIDEO_INTENT_MAX_CLARIFICATIONS", 3),
         ("VIDEO_INTENT_FRAME_EXTRACTION_INDEX", "first"),
+        ("ENABLE_WEB_SEARCH", False),
+        ("ENABLE_WEB_FETCH", False),
+        ("ENABLE_DATETIME", False),
+        ("ENABLE_ADVISOR", False),
+        ("ENABLE_SUBAGENT", False),
+        ("ENABLE_SEARCH_MODELS", False),
     ],
 )
 def test_a_valve_baked_into_a_rendered_filter_reschedules_the_sync(
     pipe_instance, monkeypatch, attribute, value
 ) -> None:
-    """Every valve build_video_filter_spec bakes into a default must invalidate the key.
+    """Every valve a rendered filter bakes in must invalidate the key.
 
-    Four distinct valves with four distinct new values, so a key that happens to differ
-    for an unrelated reason cannot satisfy all four.
+    That is every default build_video_filter_spec bakes in, and each Web Tools switch, which
+    decides whether the sync installs and attaches that filter at all. Each valve moves on its
+    own, so a key that happens to differ for an unrelated reason cannot satisfy them all.
     """
     pipe = pipe_instance
     pipe._ensure_catalog_manager()

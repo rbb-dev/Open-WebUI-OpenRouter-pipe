@@ -23,6 +23,7 @@ from aiohttp import web
 
 from open_webui_openrouter_pipe import Pipe
 from open_webui_openrouter_pipe.core.config import EncryptedStr
+from tests.vetting_helpers import open_live_listener
 
 
 class _UpstreamRecorder:
@@ -99,8 +100,13 @@ async def _start_sse_upstream() -> tuple[str, _UpstreamRecorder, web.AppRunner]:
     app.router.add_post("/responses", responses_handler)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "127.0.0.1", 0)
-    await site.start()
+
+    async def _open() -> tuple[web.TCPSite, Any]:
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        return site, cast(Any, site._server).sockets
+
+    site = await open_live_listener("127.0.0.1", _open, lambda site: site.stop())
     port = cast(Any, site._server).sockets[0].getsockname()[1]
     return f"http://127.0.0.1:{port}", recorder, runner
 

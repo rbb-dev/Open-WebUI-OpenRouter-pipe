@@ -1489,14 +1489,6 @@ class Valves(BaseModel):
             "Number of seconds a failure keeps counting. The request and database breakers use it as a trailing window. A tool's failure count clears on a success, or when the tool is next called more than this long after its last failure; inside an internal Fusion run, only a success clears the run's count for that tool."
         ),
     )
-    BREAKER_HISTORY_SIZE: int = Field(
-        default=5,
-        ge=1,
-        le=200,
-        description=(
-            "How many failure timestamps the per-user database breaker keeps, never fewer than BREAKER_MAX_FAILURES; a larger value has no effect on when that breaker trips or recovers. The request and per-tool breakers keep BREAKER_MAX_FAILURES."
-        ),
-    )
     TOOL_BATCH_CAP: int = Field(
         default=4,
         ge=1,
@@ -2238,7 +2230,7 @@ class UserValves(BaseModel):
     PERSIST_TOOL_RESULTS: bool = Field(
         default=False,
         title="Remember tool and search results",
-        description="Let the AI reuse outputs from tools (for example pages it fetched or other apps) later in the conversation, using more tokens on long chats. When off, the AI relies on its own summaries and can re-run tools as needed. Tool cards in the chat, while shown, still show every result.",
+        description="Let the AI reuse outputs from tools (for example pages it fetched or other apps) later in the conversation, using more tokens on long chats. When off, the AI relies on its own summaries and can re-run tools as needed, but a question the AI asked you and your answer always go back to it. A temporary chat stores none of its tool results. Tool cards in the chat, while shown, still show every result.",
     )
     TOOL_EXECUTION_MODE: Literal["Pipeline", "Open-WebUI"] = Field(
         default="Pipeline",

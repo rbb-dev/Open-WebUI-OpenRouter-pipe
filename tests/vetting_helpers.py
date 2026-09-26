@@ -22,11 +22,13 @@ map rather than with the gate.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import socket
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import contextmanager
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, TypeVar, cast
 
 import pytest_asyncio
 from aiohttp import web
@@ -35,6 +37,76 @@ from open_webui_openrouter_pipe.storage.multimodal import MultimodalHandler
 
 # conftest._STUB_PUBLIC_IP: the address every non-loopback name resolves to in tests.
 STUB_PUBLIC_IP = "93.184.216.34"
+
+logger = logging.getLogger(__name__)
+_T178_CAUSE = "on this development host, WSL's port mirroring (T178)"
+_MAX_REOPENS = 3
+_Listener = TypeVar("_Listener")
+
+
+def _dead_listener(host: str, sockets: Sequence[Any]) -> str | None:
+    """What shows that a listener just opened on `host`, port 0, cannot take connections; None when nothing does.
+
+    Two deaths have been seen on this development host. A listener killed right after `listen()` reads
+    SO_ACCEPTCONN 0 at once. A bind that silently did not take effect leaves `listen()` to pick the wildcard address
+    and another port, so SO_ACCEPTCONN reads 1 while connects to `host` are refused; only `getsockname()` shows it.
+    A raw connect proves nothing: it completes through the port relay even to a dead listener.
+    """
+    for sock in sockets:
+        bound_host, bound_port = sock.getsockname()[:2]
+        if not sock.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN):
+            return f"{host}:{bound_port} read SO_ACCEPTCONN 0 right after listen()"
+        if bound_port == 0 or ipaddress.ip_address(bound_host) != ipaddress.ip_address(host):
+            return f"{host}:{bound_port} is bound to {bound_host}:{bound_port} instead, so connects to {host} fail"
+    return None
+
+
+def _after_a_dead_start(problem: str, reopened: int) -> None:
+    if reopened >= _MAX_REOPENS:
+        raise RuntimeError(
+            f"Test listener {problem}, and still dead after {_MAX_REOPENS} reopens on port 0; {_T178_CAUSE}."
+        )
+    logger.warning(
+        "Test listener %s; %s. Reopening it on port 0 (%d of %d).",
+        problem, _T178_CAUSE, reopened + 1, _MAX_REOPENS,
+    )
+
+
+async def open_live_listener(
+    host: str,
+    open_once: Callable[[], Awaitable[tuple[_Listener, Sequence[Any]]]],
+    close: Callable[[_Listener], Awaitable[Any]],
+) -> _Listener:
+    """Open a test server's listener with `open_once()`, which binds `host`, port 0, and returns (listener, sockets).
+
+    A listener that is dead on arrival is closed with `close()` and opened again on port 0, at most three times, each
+    time with a WARNING; a fourth dead one raises. Only the server's own start-up is repeated, before the test sends
+    anything, so no request or connect a test makes is ever retried.
+    """
+    for reopened in range(_MAX_REOPENS + 1):
+        listener, sockets = await open_once()
+        problem = _dead_listener(host, sockets)
+        if problem is None:
+            return listener
+        await close(listener)
+        _after_a_dead_start(problem, reopened)
+    raise AssertionError("unreachable: the last dead start raises")
+
+
+def open_live_listener_sync(
+    host: str,
+    open_once: Callable[[], tuple[_Listener, Sequence[Any]]],
+    close: Callable[[_Listener], Any],
+) -> _Listener:
+    """`open_live_listener` for a plain blocking socket."""
+    for reopened in range(_MAX_REOPENS + 1):
+        listener, sockets = open_once()
+        problem = _dead_listener(host, sockets)
+        if problem is None:
+            return listener
+        close(listener)
+        _after_a_dead_start(problem, reopened)
+    raise AssertionError("unreachable: the last dead start raises")
 
 
 def vetting_handler(**valve_over: Any) -> MultimodalHandler:
@@ -94,11 +166,17 @@ class LocalServer:
         self.app.router.add_get(path, _wrapped)
 
     async def start(self) -> LocalServer:
-        self._runner = web.AppRunner(self.app)
-        await self._runner.setup()
-        site = web.TCPSite(self._runner, self.bind, 0, ssl_context=self.ssl_context)
-        await site.start()
-        self.port = self._runner.addresses[0][1]
+        runner = web.AppRunner(self.app)
+        await runner.setup()
+        self._runner = runner
+
+        async def _open() -> tuple[web.TCPSite, Sequence[Any]]:
+            site = web.TCPSite(runner, self.bind, 0, ssl_context=self.ssl_context)
+            await site.start()
+            return site, cast(Any, site._server).sockets
+
+        await open_live_listener(self.bind, _open, lambda site: site.stop())
+        self.port = runner.addresses[0][1]
         return self
 
     async def stop(self) -> None:

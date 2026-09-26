@@ -46,6 +46,7 @@ from tests.vetting_helpers import (
     address_routed_to_loopback,
     counted_dns,
     dns_answering,
+    open_live_listener,
     single_san_cert,
     public_ip_routed_to_loopback,
     rebinding_dns,
@@ -972,7 +973,15 @@ async def test_a_dot_lookalike_loopback_host_never_reaches_a_socket(vetting):
         connections.append(writer.get_extra_info("peername"))
         writer.close()
 
-    server = await asyncio.start_server(_record, "127.0.0.1", 0)
+    async def _open() -> tuple[asyncio.Server, Any]:
+        opened = await asyncio.start_server(_record, "127.0.0.1", 0)
+        return opened, opened.sockets
+
+    async def _close(opened: asyncio.Server) -> None:
+        opened.close()
+        await opened.wait_closed()
+
+    server = await open_live_listener("127.0.0.1", _open, _close)
     port = server.sockets[0].getsockname()[1]
     handler = vetting()
     url = f"https://127\uff0e0\uff0e0\uff0e1:{port}/latest/meta-data/"

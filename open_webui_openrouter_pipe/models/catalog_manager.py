@@ -350,6 +350,17 @@ def schedules_owui_model_sync(valves: Any, provider_routing_enabled: bool) -> bo
     )
 
 
+def every_web_tool_is_off(valves: Any) -> bool:
+    return not (
+        valves.ENABLE_WEB_SEARCH
+        or valves.ENABLE_WEB_FETCH
+        or valves.ENABLE_DATETIME
+        or valves.ENABLE_ADVISOR
+        or valves.ENABLE_SUBAGENT
+        or valves.ENABLE_SEARCH_MODELS
+    )
+
+
 class ModelCatalogManager:
     """Manages model metadata synchronization from OpenRouter to Open WebUI."""
 
@@ -609,6 +620,9 @@ class ModelCatalogManager:
             valves.ENABLE_WEB_SEARCH,
             valves.ENABLE_WEB_FETCH,
             valves.ENABLE_DATETIME,
+            valves.ENABLE_ADVISOR,
+            valves.ENABLE_SUBAGENT,
+            valves.ENABLE_SEARCH_MODELS,
             valves.ENABLE_IMAGE_GENERATION,
             valves.VIDEO_INTENT_ENABLED,
             valves.VIDEO_INTENT_MAX_CLARIFICATIONS,
@@ -1203,7 +1217,9 @@ class ModelCatalogManager:
 
             semaphore = asyncio.Semaphore(10)
             web_tools_filter_function_id: str | None = None
-            if valves.AUTO_ATTACH_WEB_TOOLS_FILTER or valves.AUTO_INSTALL_WEB_TOOLS_FILTER:
+            if (
+                valves.AUTO_ATTACH_WEB_TOOLS_FILTER or valves.AUTO_INSTALL_WEB_TOOLS_FILTER
+            ) and not every_web_tool_is_off(valves):
                 try:
                     web_tools_filter_function_id = await self._pipe._ensure_filter_manager().ensure_openrouter_web_tools_filter_function_id(
                         enable_web_search=valves.ENABLE_WEB_SEARCH,
@@ -1298,7 +1314,7 @@ class ModelCatalogManager:
                     )
                     direct_uploads_filter_function_id = None
 
-            if valves.AUTO_ATTACH_WEB_TOOLS_FILTER:
+            if valves.AUTO_ATTACH_WEB_TOOLS_FILTER and not every_web_tool_is_off(valves):
                 if not web_tools_filter_function_id:
                     self.logger.warning(
                         "AUTO_ATTACH_WEB_TOOLS_FILTER is enabled but the OpenRouter Web Tools filter is not installed. "

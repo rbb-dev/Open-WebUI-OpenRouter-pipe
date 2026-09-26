@@ -88,8 +88,8 @@ def _merged_meta(row: Any, desired_meta: dict[str, Any]) -> dict[str, Any]:
 
 _REPLACE_IMPORTS_REFUSAL = (
     "Open WebUI rewrites this source when it loads it and stores the result, so the pipe "
-    "would rewrite it back on the next refresh: its unanchored replace of 'from utils', "
-    "'from apps', 'from main' or 'from config' matched somewhere in the generated text"
+    "would rewrite it back on the next refresh: its unanchored replace of 'from " "utils', "
+    "'from " "apps', 'from " "main' or 'from " "config' matched somewhere in the generated text"
 )
 
 

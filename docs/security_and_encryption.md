@@ -104,7 +104,7 @@ Operational impact:
 
 ## SSRF protection for remote downloads
 
-Remote file/image/video URLs are security-sensitive because they can be used for SSRF (Server-Side Request Forgery).
+Remote picture and video URLs are security-sensitive because they can be used for SSRF (Server-Side Request Forgery).
 
 ### Supported URL schemes
 
@@ -148,8 +148,8 @@ then let the HTTP client resolve the name again:
   spellings), the pipe logs one warning naming it, because on a deployment that can only
   reach GitHub through that proxy the self-update check will fail to connect and the
   Updates tab is the only other place that is reported.
-- Remote file, image and video downloads take a different path: they do not follow
-  redirects at all, and they pin the validated address into the request.
+- Picture and video downloads take a different path: they do not follow redirects at
+  all, and they pin the validated address into the request.
 - The three transport fetches do follow redirects, up to a small fixed number of hops.
   Every hop is validated the same way as the first, covering both the release metadata
   and the release asset in the self-update flow. A redirect to a private or internal
@@ -170,8 +170,8 @@ then let the HTTP client resolve the name again:
 A refused address is logged with the host, the port that was targeted and the resolved
 IP that failed the check, at WARNING the first time and DEBUG on repeats, with the
 warning repeating after a cooldown rather than latching for the life of the worker. The
-query string is deliberately not recorded: this gate is reached for any image, file or
-video URL pasted into a chat, and those can carry credentials.
+query string is deliberately not recorded: this gate is reached for any picture or video
+URL pasted into a chat, and those can carry credentials.
 
 ### Additional mitigations for downloads
 

@@ -1,9 +1,11 @@
 
 import asyncio
+import math
 from typing import Any
 
 import pytest
 
+from open_webui_openrouter_pipe.core.circuit_breaker import CircuitBreaker
 from open_webui_openrouter_pipe.tools.tool_executor import _ToolExecutionContext
 
 
@@ -28,6 +30,8 @@ class _CtxHarness:
         self.pipe = pipe
         self.fusion_inner = fusion_inner
         self.tool_call_budget = tool_call_budget
+        if fusion_inner and tool_breaker is None:
+            tool_breaker = CircuitBreaker(threshold=pipe.valves.BREAKER_MAX_FAILURES, window_seconds=math.inf)
         self.tool_breaker = tool_breaker
         self.batch_timeout = batch_timeout
         self.ctx: Any = None
@@ -84,18 +88,30 @@ class TestInnerToolBreakerSuppression:
         assert "skipped" in str(outputs[0])
 
     @pytest.mark.asyncio
-    async def test_inner_tool_failures_not_recorded(self, monkeypatch, pipe_instance_async):
+    @pytest.mark.parametrize("threshold", [1, 2])
+    async def test_inner_tool_failures_not_recorded(self, monkeypatch, pipe_instance_async, threshold):
         pipe = pipe_instance_async
         recorded: list[Any] = []
         monkeypatch.setattr(
             pipe._circuit_breaker, "record_tool_failure",
             lambda *a, **k: recorded.append(a),
         )
-        async with _CtxHarness(pipe, fusion_inner=True):
-            await pipe._ensure_tool_executor()._execute_function_calls(
-                _calls(1), _registry(_boom_tool)
-            )
+        attempts: list[dict[str, Any]] = []
+
+        async def _counting_boom_tool(**kwargs: Any) -> str:
+            attempts.append(kwargs)
+            raise RuntimeError("tool exploded")
+
+        run_breaker = CircuitBreaker(threshold=threshold, window_seconds=math.inf)
+        async with _CtxHarness(pipe, fusion_inner=True, tool_breaker=run_breaker):
+            for _ in range(threshold):
+                await pipe._ensure_tool_executor()._execute_function_calls(
+                    _calls(1), _registry(_counting_boom_tool)
+                )
+        assert len(attempts) == threshold
+        assert run_breaker.tool_allows("u1", "function", "mytool") is False
         assert recorded == []
+        assert pipe._circuit_breaker.tool_allows("u1", "function", "mytool") is True
 
     @pytest.mark.asyncio
     async def test_normal_tool_failures_still_recorded(self, monkeypatch, pipe_instance_async):

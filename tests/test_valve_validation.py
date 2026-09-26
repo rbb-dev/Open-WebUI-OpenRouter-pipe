@@ -175,7 +175,6 @@ class TestValveValidation:
         valves = Pipe.Valves()
         assert valves.BREAKER_MAX_FAILURES > 0
         assert valves.BREAKER_WINDOW_SECONDS > 0
-        assert valves.BREAKER_HISTORY_SIZE > 0
 
     def test_valve_concurrency_settings(self) -> None:
         """Concurrency settings are validated."""

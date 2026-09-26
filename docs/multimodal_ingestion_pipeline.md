@@ -16,7 +16,7 @@ For user messages that include multimodal content, the pipe normalizes content b
 At a high level:
 
 - **Images** are converted to Responses-style `input_image` blocks. A `data:` URL is sent as it came, a remote image is downloaded and sent inline (or forwarded as its link when it cannot be downloaded), and an Open WebUI file URL is read with the requester's access and sent inline.
-- **Files** are converted to Responses-style `input_file` blocks and forwarded as they came: a `data:` URL or link in `file_data` or `file_url` goes out unchanged, and the pipe never downloads a file link. An Open WebUI file URL is read with the requester's access and sent inline.
+- **Files** are converted to Responses-style `input_file` blocks and forwarded as they came: a `data:` URL or link in `file_data` or `file_url` goes out unchanged, and the pipe never downloads a file link. Inline data over `BASE64_MAX_SIZE_MB` is the exception: it is not sent, and the person sees "Files: skipped …" for their latest message, as with pictures. An Open WebUI file URL is read with the requester's access and sent inline.
 - **Audio** is converted to Responses-style `input_audio` blocks and must be **base64/data URL** (remote URLs are rejected).
 - **Video** is passed using Chat Completions-style `video_url` blocks (the Responses API does not provide a dedicated `input_video` block). Videos are **not** downloaded or re-hosted by the pipe; the pipe applies basic validation and SSRF checks for remote URLs.
 
@@ -89,9 +89,10 @@ The file transformer extracts and forwards the following Responses-compatible fi
 - `filename`
 
 ### What is sent
-Every request forwards `file_data` and `file_url` as they came, for every chat and every request of a turn, and the pipe writes no file the person attached to Open WebUI storage:
+Every request forwards `file_data` and `file_url` as they came, except inline data over the size limit, for every chat and every request of a turn, and the pipe writes no file the person attached to Open WebUI storage:
 
-- A `data:` URL in either field is sent unchanged.
+- Inline data (a `data:` URL in either field, or raw base64 in `file_data`) up to `BASE64_MAX_SIZE_MB` is sent unchanged.
+- Larger inline data is not sent. Without a `file_id` the file is dropped, and the person sees "Files: skipped …" for their latest message, as with pictures; when the block has a `file_id`, only the oversized field is dropped and the `file_id` is sent.
 - An `https://` link in either field is sent unchanged for the provider to fetch; the pipe does not download it. Plain `http://` is disabled by default and requires explicit allowlisting.
 - An Open WebUI file URL in either field becomes a `file_id`, which is read with the requester's access and sent inline as `file_data`.
 

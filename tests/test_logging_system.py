@@ -2670,7 +2670,7 @@ def _run_console_script(cases: list) -> dict:
         capture_output=True,
         text=True,
         timeout=600,
-        env={"PATH": "/usr/bin:/bin"},
+        env={"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"},
     )
     line = next(
         (ln for ln in result.stdout.splitlines() if ln.startswith("CONSOLE_JSON:")), None

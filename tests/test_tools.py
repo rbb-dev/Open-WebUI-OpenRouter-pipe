@@ -5063,38 +5063,6 @@ class TestEventEmitterFilesEmbeds:
         assert "replace" not in sent["data"]
 
 
-class TestOwuiImports:
-    """Tests for OpenWebUI function imports."""
-
-    def test_citation_function_import_fallback(self):
-        """Test that get_citation_source_from_tool_result import has fallback."""
-        from open_webui_openrouter_pipe.streaming.streaming_core import (
-            get_citation_source_from_tool_result,
-        )
-
-        assert get_citation_source_from_tool_result is None or callable(
-            get_citation_source_from_tool_result
-        )
-
-    def test_source_context_function_import_fallback(self):
-        """Test that _owui_apply_source_context import has fallback."""
-        from open_webui_openrouter_pipe.streaming.streaming_core import (
-            _owui_apply_source_context,
-        )
-
-        assert _owui_apply_source_context is None or callable(
-            _owui_apply_source_context
-        )
-
-    def test_process_tool_result_import_fallback(self):
-        """Test that process_tool_result import has fallback."""
-        from open_webui_openrouter_pipe.tools.tool_executor import (
-            _owui_process_tool_result,
-        )
-
-        assert _owui_process_tool_result is None or callable(_owui_process_tool_result)
-
-
 def _is_open_webui_installed():
     """Check if open_webui package is available."""
     try:

@@ -5888,6 +5888,9 @@ async def test_maybe_dump_costs_snapshot_writes_to_redis(pipe_instance):
             self.writes.append((key, payload, ex))
             return True
 
+        async def close(self) -> None:
+            self.closed = True
+
     pipe._redis_enabled = True
     pipe._redis_client = _FakeRedis()
 

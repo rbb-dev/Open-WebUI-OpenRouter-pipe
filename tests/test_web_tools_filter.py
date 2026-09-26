@@ -10,12 +10,15 @@ test guarantees the two never drift.
 """
 from __future__ import annotations
 
+import logging
 import re
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
+from typing import Any
 
 import pytest
+from aioresponses import aioresponses
 
 from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
 
@@ -359,3 +362,18 @@ def test_no_surface_puts_a_price_on_the_model_the_subagent_delegates_to():
 
     assert read >= 7, f"only {read} sentences describe the worker model; the sweep went hollow"
     assert not offenders, "\n".join(offenders)
+
+
+_CATALOG = {"data": [
+    {"id": "openai/gpt-4o-mini", "name": "GPT-4o Mini"},
+    {"id": "anthropic/claude-sonnet-4.6", "name": "Claude Sonnet 4.6"},
+]}
+
+
+def _configure(pipe, **switches: bool) -> None:
+    pipe.valves.API_KEY = "sk-test-key"
+    pipe.valves.ENABLE_VIDEO_GENERATION = False
+    pipe.valves.ENABLE_OPENROUTER_IMAGE_GENERATION = False
+    pipe.valves.AUTO_INSTALL_WEB_TOOLS_FILTER = True
+    for name, value in switches.items():
+        setattr(pipe.valves, name, value)

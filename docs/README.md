@@ -75,7 +75,7 @@ See: [Model Variants & Presets](model_variants_and_presets.md).
 - Validate the configured key and confirm it is being provided where you expect (valves vs environment variables).
 - If you run Open WebUI behind a proxy/gateway, verify `BASE_URL` points to your gateway and that the gateway is correctly forwarding auth headers.
 
-### Remote files or images fail to load
+### Remote pictures fail to load
 - Remote downloads are subject to SSRF filtering and size limits, with HTTPS-only defaults (HTTP allowlist available). Review your remote download settings in [Valves & Configuration Atlas](valves_and_configuration_atlas.md) and the deep-dive in [Multimodal Ingestion Pipeline](multimodal_ingestion_pipeline.md).
 
 ### Requests fail under load

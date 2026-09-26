@@ -172,11 +172,6 @@ CONFIG_META: dict[str, dict[str, str]] = {
         "group": "Connection & Routing/Endpoints",
         "detail": "The root URL the pipe prepends to every OpenRouter API path, such as `/responses`, `/chat/completions`, and `/models`.\n\nBy default it targets OpenRouter directly; when left unset in the panel it is seeded from the `OPENROUTER_API_BASE_URL` environment variable. Override it only to route through a gateway or proxy that mirrors the OpenRouter API, for example `https://gateway.internal/or/api/v1`. Trailing slashes are trimmed automatically, and the value applies to every request from this process, for all users.\n\n**Warning:** A custom endpoint must provide all of OpenRouter's API paths (chat, `/models`, and the media paths); a proxy missing any of these breaks model listing or generation."
     },
-    "BREAKER_HISTORY_SIZE": {
-        "title": "Retained failure history",
-        "group": "Reliability/Circuit Breaker",
-        "detail": "How many recent failure times the database breaker remembers for each user.\n\nIt always remembers at least as many as `Failures before tripping`. Remembering more does not change when that breaker trips or when it lets database work through again, so this rarely needs adjusting. The request and per-tool breakers remember exactly as many as `Failures before tripping`."
-    },
     "BREAKER_MAX_FAILURES": {
         "title": "Failures before tripping",
         "group": "Reliability/Circuit Breaker",

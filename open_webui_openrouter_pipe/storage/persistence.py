@@ -59,7 +59,6 @@ try:
 except ImportError:
     aioredis = None
 
-# Import ULID constants from config
 from ..core.config import (
     _ULID_TIME_MASK,
     CROCKFORD_ALPHABET,
@@ -360,18 +359,18 @@ class ArtifactStore:
 
     def _initialize_circuit_breakers(self):
         """Initialize circuit breaker tracking."""
-        breaker_history_size = self.valves.BREAKER_HISTORY_SIZE
+        breaker_threshold = self.valves.BREAKER_MAX_FAILURES
         self._breaker_records: dict[str, deque[float]] = defaultdict(
-            lambda: deque(maxlen=breaker_history_size)
+            lambda: deque(maxlen=breaker_threshold)
         )
-        self._breaker_threshold = self.valves.BREAKER_MAX_FAILURES
+        self._breaker_threshold = breaker_threshold
         self._breaker_window_seconds = self.valves.BREAKER_WINDOW_SECONDS
-        self._db_breaker_maxlen = breaker_history_size
+        self._db_breaker_maxlen = breaker_threshold
         self._db_breakers: dict[str, deque[float]] = defaultdict(
-            lambda: deque(maxlen=breaker_history_size)
+            lambda: deque(maxlen=breaker_threshold)
         )
 
-    def configure_breaker(self, threshold: int, window_seconds: int, history_size: int | None = None) -> None:
+    def configure_breaker(self, threshold: int, window_seconds: int) -> None:
         """Update circuit breaker thresholds.
 
         Args:
@@ -380,7 +379,7 @@ class ArtifactStore:
         """
         self._breaker_threshold = threshold
         self._breaker_window_seconds = window_seconds
-        maxlen = max(threshold, self._db_breaker_maxlen if history_size is None else history_size)
+        maxlen = threshold
         if maxlen != self._db_breaker_maxlen:
             self._db_breaker_maxlen = maxlen
             self._db_breakers = defaultdict(

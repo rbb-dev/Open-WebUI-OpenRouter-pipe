@@ -102,9 +102,15 @@ def test_outbound_connections_are_refused_instantly():
 
 def test_loopback_connections_are_still_allowed():
     """Tests that bind a local server or a Redis stub must keep working."""
-    server = socket.socket()
-    server.bind(("127.0.0.1", 0))
-    server.listen(1)
+    from tests.vetting_helpers import open_live_listener_sync
+
+    def _open() -> tuple[socket.socket, list[socket.socket]]:
+        opened = socket.socket()
+        opened.bind(("127.0.0.1", 0))
+        opened.listen(1)
+        return opened, [opened]
+
+    server = open_live_listener_sync("127.0.0.1", _open, lambda opened: opened.close())
     try:
         client = socket.socket()
         client.settimeout(5)

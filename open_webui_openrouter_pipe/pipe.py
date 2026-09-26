@@ -150,7 +150,7 @@ from .integrations.anthropic import _is_anthropic_model_id
 from .logging.session_log_manager import SessionLogManager
 
 # Import model management
-from .models.catalog_manager import ModelCatalogManager
+from .models.catalog_manager import ModelCatalogManager, every_web_tool_is_off
 from .models.reasoning_config import ReasoningConfigManager
 from .models.registry import (
     ModelFamily,
@@ -1119,14 +1119,7 @@ class Pipe:
         except Exception:
             self.logger.debug("Old OpenRouter Search filter cleanup failed", exc_info=True)
 
-        all_web_tools_disabled = not (
-            self.valves.ENABLE_WEB_SEARCH
-            or self.valves.ENABLE_WEB_FETCH
-            or self.valves.ENABLE_DATETIME
-            or self.valves.ENABLE_ADVISOR
-            or self.valves.ENABLE_SUBAGENT
-            or self.valves.ENABLE_SEARCH_MODELS
-        )
+        all_web_tools_disabled = every_web_tool_is_off(self.valves)
         if self.valves.AUTO_INSTALL_WEB_TOOLS_FILTER and not all_web_tools_disabled:
             try:
                 await self._ensure_filter_manager().ensure_openrouter_web_tools_filter_function_id(
@@ -1425,9 +1418,7 @@ class Pipe:
                 breaker.threshold = valves.BREAKER_MAX_FAILURES
             if breaker.window_seconds != valves.BREAKER_WINDOW_SECONDS:
                 breaker.window_seconds = valves.BREAKER_WINDOW_SECONDS
-            self._artifact_store.configure_breaker(
-                valves.BREAKER_MAX_FAILURES, valves.BREAKER_WINDOW_SECONDS, valves.BREAKER_HISTORY_SIZE
-            )
+            self._artifact_store.configure_breaker(valves.BREAKER_MAX_FAILURES, valves.BREAKER_WINDOW_SECONDS)
             if not breaker.allows(user_id) and not _brings_tool_results(body):
                 message = "Temporarily disabled due to repeated errors. Please retry later."
                 if safe_event_emitter:

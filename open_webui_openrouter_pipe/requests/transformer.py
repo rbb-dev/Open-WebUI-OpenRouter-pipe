@@ -19,7 +19,6 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
-# Import from config
 from ..core.config import (
     _MARKDOWN_IMAGE_RE,
     _NON_REPLAYABLE_TOOL_ARTIFACTS,
@@ -27,7 +26,7 @@ from ..core.config import (
 
 # Import status messages
 from ..core.errors import RequiredInternalFileError, StatusMessages
-from ..core.url_scheme import is_cleartext_http_url, is_http_or_https_url
+from ..core.url_scheme import is_cleartext_http_url, is_http_or_https_url, url_scheme
 
 # Import utility functions
 from ..core.utils import (
@@ -135,6 +134,19 @@ class ImageRefusal(NamedTuple):
     cause: str
     severity: Literal["status", "error", "fatal"] = "status"
     subject: str = ""
+
+
+def _inline_payload_bytes(value: str) -> int:
+    if url_scheme(value) != "data":
+        return (len(value) * 3) // 4
+    header, _, payload = value.partition(",")
+    return (len(payload) * 3) // 4 if ";base64" in header.lower() else len(payload)
+
+
+def _inline_media_type(value: str) -> str:
+    if url_scheme(value) != "data":
+        return "raw base64"
+    return value.partition(",")[0][len("data:"):].split(";", 1)[0][:64]
 
 
 def _reinterleave_region(region: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -667,7 +679,6 @@ async def transform_messages_to_input(
                     image_payload = block.get("image_url")
                     detail: str | None = None
                     url: str = ""
-                    owui_file_id: str | None = None
 
                     if isinstance(image_payload, dict):
                         url = image_payload.get("url", "")
@@ -732,9 +743,7 @@ async def transform_messages_to_input(
                                 else None
                             )
                             downloaded = (
-                                None
-                                if owui_file_id
-                                else {"data": remembered[0], "mime_type": remembered[1]}
+                                {"data": remembered[0], "mime_type": remembered[1]}
                                 if remembered is not None
                                 else await pipe._multimodal_handler._download_remote_url(url)
                             )
@@ -779,8 +788,7 @@ async def transform_messages_to_input(
                                 f"Failed to download image: {exc}",
                                 show_error_message=False
                             )
-                    if owui_file_id is None and is_internal_file_url(url):
-                        owui_file_id = extract_internal_file_id(url)
+                    owui_file_id = extract_internal_file_id(url) if is_internal_file_url(url) else None
 
                     if owui_file_id:
                         inlined = await pipe._file_gateway.inline_owui_file_id(
@@ -840,7 +848,7 @@ async def transform_messages_to_input(
                         subject=str(block.get("image_url") or "")[:64],
                     )
 
-            async def _to_input_file(block: dict) -> dict:
+            async def _to_input_file(block: dict) -> dict | ImageRefusal:
                 """Convert Open WebUI file blocks into Responses API format.
 
                 Responses API File Input Fields (per OpenAPI spec):
@@ -917,6 +925,25 @@ async def transform_messages_to_input(
                             file_url = None
                         else:
                             return result
+
+                    oversized = {
+                        name: value
+                        for name, value in (("file_data", file_data), ("file_url", file_url))
+                        if isinstance(value, str)
+                        and value
+                        and (url_scheme(value) == "data" or (name == "file_data" and not url_scheme(value)))
+                        and _inline_payload_bytes(value) > max_inline_bytes
+                    }
+                    if oversized and not file_id:
+                        return ImageRefusal(
+                            f"larger than the {max_inline_bytes}-byte inline limit",
+                            "oversized_inline_file",
+                            subject=_inline_media_type(next(iter(oversized.values()))),
+                        )
+                    if "file_data" in oversized:
+                        file_data = None
+                    if "file_url" in oversized:
+                        file_url = None
 
                     if file_id:
                         result["file_id"] = file_id
@@ -1329,6 +1356,7 @@ async def transform_messages_to_input(
             user_images_used = 0
             dropped_images = 0
             refused_images: list[str] = []
+            refused_files: list[str] = []
             encountered_user_images = False
             reusable_image_blocks: list[dict[str, Any]] = []
             vision_warning_sent = False
@@ -1382,6 +1410,15 @@ async def transform_messages_to_input(
                     else:
                         result = transformer(block)
                     if isinstance(result, ImageRefusal):
+                        if not is_image_block:
+                            pipe.logger.log(
+                                warn_level(_warned_oversized_inline, result.cause),
+                                "Skipping an attached file (%s): %s",
+                                result.subject or "no source",
+                                result.reason,
+                            )
+                            refused_files.append(result.reason)
+                            continue
                         if result.severity == "fatal":
                             raise RequiredInternalFileError(
                                 f"A referenced image ({result.subject}) is "
@@ -1491,10 +1528,13 @@ async def transform_messages_to_input(
                 image_notices.append(
                     f"dropped {dropped_images} over the limit of {image_limit}"
                 )
-            if image_notices and latest_user_message:
+            notices = ["Images: " + "; ".join(image_notices) + "."] if image_notices else []
+            if refused_files:
+                notices.append(f"Files: skipped {len(refused_files)} ({'; '.join(refused_files)}).")
+            if notices and latest_user_message:
                 await pipe._event_emitter_handler._emit_status(
                     event_emitter,
-                    "Images: " + "; ".join(image_notices) + ".",
+                    " ".join(notices),
                     done=False,
                 )
 

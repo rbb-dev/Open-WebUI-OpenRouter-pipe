@@ -35,7 +35,6 @@ Breakers stop repeated failures from turning into continuous retries and log sto
 
 - `BREAKER_MAX_FAILURES`
 - `BREAKER_WINDOW_SECONDS`
-- `BREAKER_HISTORY_SIZE` (the persistence breaker's memory; it never changes that breaker's verdict)
 
 Breaker scopes include:
 
