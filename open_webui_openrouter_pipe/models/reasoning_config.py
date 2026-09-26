@@ -3,7 +3,6 @@
 This module handles:
 - Automatic reasoning trace enablement for supported models
 - Task-specific reasoning effort overrides
-- Gemini thinking_config translation
 - Reasoning-related error detection and retry logic
 """
 
@@ -17,6 +16,7 @@ if TYPE_CHECKING:
     from ..pipe import Pipe
 
 from ..core.errors import OpenRouterAPIError
+from ..core.utils import _select_best_effort_fallback
 from ..integrations.anthropic import _is_anthropic_model_id
 from .registry import ModelFamily
 
@@ -31,7 +31,6 @@ class ReasoningConfigManager:
     This class encapsulates all reasoning-related configuration logic:
     - Applies reasoning preferences based on valve settings
     - Handles task-specific reasoning effort overrides
-    - Translates reasoning config to Gemini thinking_config
     - Detects reasoning errors and determines if retry is appropriate
     """
 
@@ -46,7 +45,7 @@ class ReasoningConfigManager:
 
     @staticmethod
     def _set_include_reasoning(responses_body: ResponsesBody, value: bool | None) -> None:
-        if value is not None and "include_reasoning" not in ModelFamily.supported_parameters(responses_body.model):
+        if value is not None and "include_reasoning" not in ModelFamily.supported_parameters(ModelFamily.catalog_norm_id(responses_body.model)):
             value = None
         responses_body.include_reasoning = value
 
@@ -55,7 +54,7 @@ class ReasoningConfigManager:
         if not valves.ENABLE_REASONING:
             return
 
-        supported = ModelFamily.supported_parameters(responses_body.model)
+        supported = ModelFamily.supported_parameters(ModelFamily.catalog_norm_id(responses_body.model))
         supports_reasoning = "reasoning" in supported
         supports_legacy_only = "include_reasoning" in supported and not supports_reasoning
         summary_mode = valves.REASONING_SUMMARY_MODE
@@ -80,16 +79,13 @@ class ReasoningConfigManager:
             responses_body.reasoning = None
             desired = target_effort not in {"none", ""}
             self._set_include_reasoning(responses_body, desired)
-        else:
-            responses_body.reasoning = None
-            self._set_include_reasoning(responses_body, None)
 
 
     def _apply_task_reasoning_preferences(self, responses_body: ResponsesBody, effort: str) -> None:
         """Override reasoning effort for task models."""
         if not effort:
             return
-        supported = ModelFamily.supported_parameters(responses_body.model)
+        supported = ModelFamily.supported_parameters(ModelFamily.catalog_norm_id(responses_body.model))
         supports_reasoning = "reasoning" in supported
         supports_legacy_only = "include_reasoning" in supported and not supports_reasoning
         target_effort = effort.strip().lower()
@@ -109,59 +105,54 @@ class ReasoningConfigManager:
             responses_body.reasoning = None
             desired = target_effort not in {"none", "minimal"}
             self._set_include_reasoning(responses_body, desired)
-        else:
-            responses_body.reasoning = None
-            self._set_include_reasoning(responses_body, None)
 
 
     def _apply_gemini_thinking_config(self, responses_body: ResponsesBody, valves: Pipe.Valves) -> None:
-        """Translate reasoning preferences into Vertex thinking_config for Gemini models."""
         # Lazy import to avoid circular dependency
         from .registry import (
             _classify_gemini_thinking_family,
             _map_effort_to_gemini_budget,
         )
 
-        normalized_model = ModelFamily.base_model(responses_body.model)
-        family = _classify_gemini_thinking_family(normalized_model)
-        if not family:
-            responses_body.thinking_config = None
+        responses_body.thinking_config = None
+        if not _classify_gemini_thinking_family(ModelFamily.base_model(responses_body.model)):
             return
-
-        reasoning_cfg = (
-            responses_body.reasoning if isinstance(responses_body.reasoning, dict) else {}
-        )
-        include_flag = getattr(responses_body, "include_reasoning", None)
-        effort_hint = (reasoning_cfg.get("effort") or "").strip().lower()
-        if not effort_hint:
-            effort_hint = valves.REASONING_EFFORT
-
-        enabled = reasoning_cfg.get("enabled", True)
-        exclude = reasoning_cfg.get("exclude", False)
-        if effort_hint == "none":
-            enabled = False
-
-        reasoning_requested = bool(include_flag) or (reasoning_cfg and enabled and not exclude)
-        if not reasoning_requested:
-            responses_body.thinking_config = None
+        if "reasoning" not in ModelFamily.supported_parameters(ModelFamily.catalog_norm_id(responses_body.model)):
+            return
+        cfg = dict(responses_body.reasoning) if isinstance(responses_body.reasoning, dict) else {}
+        requested = bool(responses_body.include_reasoning) or bool(cfg and cfg.get("enabled", True) and not cfg.get("exclude", False))
+        if not requested:
             self._set_include_reasoning(responses_body, False)
             return
-
-        thinking_config: dict[str, Any] = {"include_thoughts": True}
-        budget = _map_effort_to_gemini_budget(effort_hint, valves.GEMINI_THINKING_BUDGET)
-        # A budget of 0 (GEMINI_THINKING_BUDGET=0, the documented "disable
-        # thinking" value) means thinking is off, same as None — valid budgets
-        # are always >= 1. Emitting include_thoughts=True with thinking_budget=0
-        # is contradictory and the provider rejects it, so disable here.
+        if valves.GEMINI_THINKING_BUDGET == 0:
+            mandatory = ModelFamily.reasoning_contract(responses_body.model).get("mandatory") is True
+            responses_body.reasoning = {**cfg, "effort": "none"} if mandatory else {"effort": "none"}
+            self._set_include_reasoning(responses_body, None)
+            return
+        effort = str(cfg.get("effort") or "").strip().lower() or valves.REASONING_EFFORT
+        budget = _map_effort_to_gemini_budget(effort, valves.GEMINI_THINKING_BUDGET)
         if not budget:
-            responses_body.thinking_config = None
-            self._set_include_reasoning(responses_body, False)
             return
-        thinking_config["thinking_budget"] = budget
-
-        responses_body.thinking_config = thinking_config
-        responses_body.reasoning = None
+        cfg.pop("effort", None)
+        cfg["max_tokens"] = budget
+        cfg.setdefault("enabled", True)
+        responses_body.reasoning = cfg
         self._set_include_reasoning(responses_body, None)
+
+    def _fit_effort_none_to_model(self, responses_body: ResponsesBody, *, settings_applied: bool) -> None:
+        cfg = responses_body.reasoning
+        if not isinstance(cfg, dict) or str(cfg.get("effort") or "").strip().lower() != "none":
+            return
+        row = ModelFamily.reasoning_contract(responses_body.model)
+        if row.get("mandatory") is True:
+            fitted = {key: value for key, value in cfg.items() if key != "effort"}
+            lowest = _select_best_effort_fallback("none", [e for e in row.get("supported_efforts") or [] if e != "none"])
+            if lowest:
+                fitted["effort"] = lowest
+            responses_body.reasoning = fitted or None
+        elif settings_applied and "reasoning" in ModelFamily.supported_parameters(ModelFamily.catalog_norm_id(responses_body.model)):
+            responses_body.reasoning = {"effort": "none"}
+            self._set_include_reasoning(responses_body, None)
 
     def _apply_anthropic_verbosity(self, responses_body: ResponsesBody, valves: Pipe.Valves) -> None:
         """Map xhigh effort to verbosity: "max" for Claude Opus/Sonnet models.
@@ -191,7 +182,7 @@ class ReasoningConfigManager:
         # priority, then fall back to the valve default.
         effort = ""
         if isinstance(responses_body.reasoning, dict):
-            effort = (responses_body.reasoning.get("effort") or "").strip().lower()
+            effort = str(responses_body.reasoning.get("effort") or "").strip().lower()
         if not effort:
             effort = (valves.REASONING_EFFORT or "").strip().lower()
 

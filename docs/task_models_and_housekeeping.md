@@ -50,9 +50,9 @@ Important nuance:
 
 For housekeeping tasks targeting models the pipe “owns”, the pipe overrides the request’s reasoning configuration using `TASK_MODEL_REASONING_EFFORT` (default: `low`):
 
-- If the model supports the modern `reasoning` parameter, the pipe sets `reasoning.effort` and keeps reasoning enabled.
+- If the model supports the modern `reasoning` parameter, the pipe sets `reasoning.effort` and keeps reasoning enabled. A `none` on a model whose reasoning is mandatory becomes the lowest level its catalog entry lists other than `none`, and no level at all when it lists no other level.
 - If the model supports only the legacy `include_reasoning` flag, the pipe toggles it based on the configured effort.
-- If the model supports neither, the task request carries no reasoning field.
+- If the model supports neither, the pipe adds no reasoning field; any the task request itself carries (for example Open WebUI's task-model parameters) goes out as sent.
 
 ### Request-field filtering still applies
 
@@ -100,7 +100,7 @@ Housekeeping tasks run frequently. The safest approach is to configure housekeep
 - Configured to produce concise strings (titles/tags/summaries) rather than long prose.
 - Not dependent on external tools or plugins (task requests do not execute tool loops).
 
-If you need tasks to be as fast as possible, reduce `TASK_MODEL_REASONING_EFFORT` (for example to `minimal` or `none`). If task quality is inadequate, increase it (for example `medium`).
+If you need tasks to be as fast as possible, reduce `TASK_MODEL_REASONING_EFFORT` (for example to `minimal` or `none`). `none` switches reasoning off where the model allows it; a model whose reasoning is mandatory answers at the lowest level its catalog entry lists other than `none` instead. If task quality is inadequate, increase it (for example `medium`).
 
 ---
 

@@ -139,7 +139,6 @@ Some providers reject “reasoning” requests when their own “thinking” mod
 When the pipe detects this condition, it can retry once with reasoning disabled by:
 - clearing `reasoning`
 - turning the legacy `include_reasoning` flag off, only for a model whose catalog entry lists it
-- clearing `thinking_config`
 
 This behavior is intended to convert certain provider-side “configuration mismatch” failures into a successful answer without requiring the user to change settings mid-conversation.
 

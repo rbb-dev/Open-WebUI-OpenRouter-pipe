@@ -5067,24 +5067,27 @@ def test_apply_gemini_thinking_config_sets_budget():
         body = ResponsesBody(model="google/gemini-2.5-flash", input=[])
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences(body, valves)
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config(body, valves)
-        assert body.thinking_config == {"include_thoughts": True, "thinking_budget": 512}
+        assert body.reasoning == {"summary": "auto", "enabled": True, "max_tokens": 512}
+        assert body.thinking_config is None
     finally:
         pipe.shutdown()
 
 
 def test_apply_gemini_thinking_config_budget_zero_disables_thinking():
-    """GEMINI_THINKING_BUDGET=0 (the documented disable value) must turn thinking
-    OFF, not emit the contradictory {include_thoughts: True, thinking_budget: 0}
-    that the provider rejects."""
+    """GEMINI_THINKING_BUDGET=0 switches thinking off with OpenRouter's `effort: "none"`,
+    the control measured to stop gemini-2.5-flash thinking (T371); the old body reasoned
+    and hid it."""
     pipe = Pipe()
     ModelFamily.set_dynamic_specs({
-        "google.gemini-2.5-flash": {"supported_parameters": ["reasoning"]}
+        "google.gemini-2.5-flash": {"supported_parameters": ["reasoning", "include_reasoning"]}
     })
     try:
         valves = pipe.Valves(REASONING_EFFORT="medium", GEMINI_THINKING_BUDGET=0)
         body = ResponsesBody(model="google/gemini-2.5-flash", input=[])
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences(body, valves)
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config(body, valves)
+        assert body.reasoning == {"effort": "none"}
+        assert body.include_reasoning is None
         assert body.thinking_config is None
     finally:
         pipe.shutdown()

@@ -142,6 +142,20 @@ class ModelFamily:
         return cls._DYNAMIC_SPECS.get(norm) or {}
 
     @classmethod
+    def catalog_norm_id(cls, model_id: str) -> str:
+        norm = cls.base_model(model_id)
+        base, _, tag = norm.rpartition(":")
+        if not base or tag.startswith("preset/") or norm in cls._DYNAMIC_SPECS:
+            return norm
+        return base
+
+    @classmethod
+    def reasoning_contract(cls, model_id: str) -> dict[str, Any]:
+        full = cls._lookup_spec(cls.catalog_norm_id(model_id)).get("full_model")
+        row = full.get("reasoning") if isinstance(full, dict) else None
+        return row if isinstance(row, dict) else {}
+
+    @classmethod
     def display_name(cls, model_id: str) -> str | None:
         """Return the OpenRouter catalog display name for ``model_id`` if cached."""
         spec = cls._lookup_spec(model_id)

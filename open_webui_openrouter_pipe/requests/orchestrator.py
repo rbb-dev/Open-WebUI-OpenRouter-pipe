@@ -715,6 +715,7 @@ class RequestOrchestrator:
             )
         self._pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences(responses_body, valves)
         self._pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config(responses_body, valves)
+        self._pipe._ensure_reasoning_config_manager()._fit_effort_none_to_model(responses_body, settings_applied=valves.ENABLE_REASONING)
         self._pipe._ensure_reasoning_config_manager()._apply_anthropic_verbosity(responses_body, valves)
         apply_context_transforms(responses_body, auto_context_trimming=valves.AUTO_CONTEXT_TRIMMING)
 
@@ -914,6 +915,7 @@ class RequestOrchestrator:
                 task_effort = valves.TASK_MODEL_REASONING_EFFORT
                 self._pipe._ensure_reasoning_config_manager()._apply_task_reasoning_preferences(responses_body, task_effort)
                 self._pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config(responses_body, valves)
+                self._pipe._ensure_reasoning_config_manager()._fit_effort_none_to_model(responses_body, settings_applied=True)
                 self._pipe._ensure_reasoning_config_manager()._apply_anthropic_verbosity(responses_body, valves)
 
             result = await self._pipe._ensure_task_model_adapter()._run_task_model_request(

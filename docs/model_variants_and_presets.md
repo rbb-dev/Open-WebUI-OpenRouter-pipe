@@ -191,6 +191,7 @@ Variant models automatically inherit all properties from their base model:
 | **Capabilities** | ✅ Yes | Vision, audio, video, tools - all preserved |
 | **Pricing** | ✅ Yes | Same pricing structure (unless variant modifies it) |
 | **Context Length** | ✅ Yes | Base context (`:extended` may increase this) |
+| **Reasoning** | ✅ Yes | Sent the reasoning settings its base model is sent; a suffixed id with its own catalog entry (for example a `:free` model) follows that entry |
 | **Display Name** | ⚙️ Modified | Appends variant tag (e.g., "Exacto", "Free") |
 | **Model ID** | ⚙️ Modified | Includes `:variant` suffix for API routing |
 
@@ -233,8 +234,8 @@ Variant models respect all existing filters:
 - Filter applies based on base model's capabilities
 
 **ENABLE_REASONING:**
-- `:thinking` variants work with reasoning token extraction
-- All reasoning features apply automatically
+- A variant is sent the reasoning settings its base model is sent, a person's own reasoning effort included
+- A suffixed id the catalog lists as a model of its own (for example a `:free` model) follows its own catalog entry instead
 
 ### Direct Upload Functionality
 
@@ -534,6 +535,8 @@ When you select a preset model:
 4. **OpenRouter:** Applies the preset configuration before processing
 
 Note: The internal separator (`:`) is converted to `@` when sending to OpenRouter, matching their API expectations.
+
+**Reasoning:** unlike a routing variant, a preset model does not take its base model's reasoning settings. The pipe adds no reasoning settings of its own to it, so the preset's saved ones apply. A reasoning effort the chat itself sets (for example Open WebUI's per-chat reasoning effort) still goes out with the request, and OpenRouter lets request fields override a preset's saved ones, so it overrides the preset's setting for that request.
 
 ### Creating Presets
 

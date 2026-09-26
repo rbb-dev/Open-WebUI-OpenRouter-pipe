@@ -104,11 +104,28 @@ See: [Tooling & Integrations](tooling_and_integrations.md).
 
 ### 4.3 Reasoning defaults and compatibility
 
-When `ENABLE_REASONING=True`, the pipe decides how to request reasoning based on `ModelFamily.supported_parameters(...)` for the selected model:
+The pipe decides how to request reasoning from the selected model's catalog entry: its `supported_parameters` and its `reasoning` object (`ModelFamily.catalog_norm_id`, `ModelFamily.supported_parameters` and `ModelFamily.reasoning_contract`). Which entry is used:
+
+- A routing variant with no catalog entry of its own (for example `:nitro` or `:online`) uses its base model's entry, so it is sent what its base model is sent.
+- A suffixed id the catalog lists as a model of its own (for example a `:free` model) uses its own entry.
+- A preset model (`base_id@preset/slug`) gets no reasoning field of the pipe's own, so the preset's saved settings apply; a reasoning field the chat itself carries still goes out and overrides them for that request.
+
+When `ENABLE_REASONING=True`:
 
 - If the model supports `reasoning`, the pipe populates a `reasoning` object (with defaults from valves such as `REASONING_EFFORT` and `REASONING_SUMMARY_MODE`).
 - If the model does not support `reasoning` but supports the legacy `include_reasoning`, the pipe uses that fallback.
-- If neither is supported, the request carries no reasoning field; `include_reasoning` goes only to a model whose catalog entry lists it.
+- If neither is supported, the pipe adds no reasoning field of its own; a reasoning effort or reasoning parameter the chat itself carries goes out as Open WebUI would send it.
+
+Gemini 2.5 models:
+
+- The thinking budget (`GEMINI_THINKING_BUDGET`, scaled by the reasoning effort) is sent as OpenRouter's `reasoning.max_tokens`, with no `effort` beside it.
+- A budget of `0` sends `reasoning: {"effort": "none"}`, which switches thinking off, except on Gemini 2.5 Pro, which cannot stop thinking and thinks at its own default.
+- When nothing asks for reasoning (reasoning display off, and nothing in the chat requests it), the pipe sends only `include_reasoning: false`, to a model whose entry lists it.
+
+Effort `none`:
+
+- A model whose reasoning is mandatory (its entry's `reasoning.mandatory`) is never sent `none`: it gets the lowest level its entry lists other than `none`, and no level at all when it lists no other level.
+- On other models, a `none` that comes from the pipe's own settings goes out as exactly `reasoning: {"effort": "none"}`, OpenRouter's off switch.
 
 Provider mismatch recovery:
 - If a provider rejects reasoning due to a “thinking” configuration mismatch, the pipe may retry once with reasoning disabled (see [Error Handling & User Experience](error_handling_and_user_experience.md)).

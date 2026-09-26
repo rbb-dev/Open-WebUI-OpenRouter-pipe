@@ -978,6 +978,10 @@ class Valves(BaseModel):
             "Example: 'openai/gpt-4o:exacto,anthropic/claude-sonnet-4.5:extended'. "
             "Each entry creates a virtual model that inherits the base model's metadata "
             "(description, icon, capabilities) with the variant tag appended to the display name. "
+            "A routing variant also gets the base model's reasoning settings, "
+            "unless the catalog lists the suffixed id itself; "
+            "a `base_id@preset/slug` entry gets none of the pipe's own, so the preset's saved ones apply, "
+            "though a reasoning effort the chat itself sets still goes out and overrides them for that request. "
             "Supported tags: free, thinking, online, nitro, exacto, extended. "
             "The full model ID with ':variant' suffix is sent to OpenRouter for specialized routing."
         ),
@@ -1057,8 +1061,10 @@ class Valves(BaseModel):
         default="medium",
         title="Reasoning effort",
         description=(
-            "Default reasoning effort to request from supported models. Use 'none' to skip reasoning entirely "
-            "or 'xhigh' when maximum depth is desired (only on supporting models)."
+            "Default reasoning effort to request from supported models. 'none' switches reasoning off where the "
+            "model allows it; a model that always reasons gets the lightest level its catalog entry lists other than "
+            "`none` instead, and no level at all when it lists no other level. Use 'xhigh' when maximum depth is "
+            "desired (only on supporting models)."
         ),
     )
     REASONING_SUMMARY_MODE: Literal["auto", "concise", "detailed", "disabled"] = Field(
@@ -1072,8 +1078,9 @@ class Valves(BaseModel):
         le=65536,
         title="Gemini 2.5 thinking budget",
         description=(
-            "Base thinking budget (tokens) for Gemini 2.5 models. When 0, thinking is disabled. "
-            "When non-zero, the pipe scales this value based on reasoning effort (minimal -> smaller, xhigh -> larger)."
+            "Base thinking budget (tokens) for Gemini 2.5 models, sent as OpenRouter's reasoning.max_tokens and "
+            "scaled by reasoning effort (minimal -> smaller, xhigh -> larger). When 0, thinking is switched off, "
+            "except on Gemini 2.5 Pro, which cannot stop thinking."
         ),
     )
     PERSIST_REASONING_TOKENS: Literal["disabled", "next_reply", "conversation"] = Field(
@@ -2215,7 +2222,7 @@ class UserValves(BaseModel):
     REASONING_EFFORT: Literal["none", "minimal", "low", "medium", "high", "xhigh"] = Field(
         default="medium",
         title="Reasoning depth",
-        description="Choose how much thinking the AI should do before answering (higher depth is slower but more thorough). Use 'none' to disable reasoning or 'xhigh' for maximum depth when available.",
+        description="Choose how much thinking the AI should do before answering (higher depth is slower but more thorough). 'none' switches reasoning off where the model allows it; a model that always reasons gets the lightest level its catalog entry lists other than `none` instead, and no level at all when it lists no other level. Use 'xhigh' for maximum depth when available.",
     )
     REASONING_SUMMARY_MODE: Literal["auto", "concise", "detailed", "disabled"] = Field(
         default="auto",
