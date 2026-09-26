@@ -140,6 +140,10 @@ def _normalize_responses_function_tool_spec(tool: Any, *, strictify: bool) -> di
     parameters = tool.get("parameters")
     if isinstance(parameters, dict):
         spec["parameters"] = _strictify_schema(parameters) if strictify else parameters
+    if isinstance(tool.get("cache_control"), dict):
+        spec["cache_control"] = tool["cache_control"]
+    if "strict" in tool:
+        spec["strict"] = tool["strict"]
     return spec
 
 
@@ -294,7 +298,11 @@ def _build_collision_safe_tool_specs_and_registry(
 
     # 1) Request-provided tool specs (OWUI-native `tools`).
     for raw_tool in request_tool_specs:
-        spec = _normalize_responses_function_tool_spec(raw_tool, strictify=strictify)
+        raw_name = raw_tool.get("name") if isinstance(raw_tool, dict) else None
+        lookup_name = raw_name.strip() if isinstance(raw_name, str) else ""
+        tool_cfg = _pick_executor(lookup_name) if lookup_name else None
+        runnable = isinstance(tool_cfg, dict) and tool_cfg.get("callable") is not None
+        spec = _normalize_responses_function_tool_spec(raw_tool, strictify=strictify and runnable)
         if not spec:
             continue
         origin_name = spec["name"]
@@ -306,10 +314,8 @@ def _build_collision_safe_tool_specs_and_registry(
         if same_name_entries > 1:
             log.debug("Skipping request tool %s: %d registry tools share the name.", origin_name, same_name_entries)
             continue
-        tool_cfg = _pick_executor(origin_name)
-        if (not owui_tool_passthrough) and (not tool_cfg or tool_cfg.get("callable") is None):
-            log.debug("Skipping unexecutable request tool %s (no callable).", origin_name)
-            continue
+        if owui_tool_passthrough or not runnable:
+            spec = {**raw_tool, "name": origin_name}
         resolved_request_names.add(origin_name)
         candidates.append(
             {
@@ -392,6 +398,19 @@ def _build_collision_safe_tool_specs_and_registry(
                 "origin_key": f"extra::{origin_name}",
             }
         )
+
+    survivors: list[dict[str, Any]] = []
+    seen_executors: set[tuple[str, int]] = set()
+    for c in candidates:
+        tool_cfg = c.get("tool_cfg")
+        if tool_cfg is not None:
+            key = (c["origin_name"], id(tool_cfg))
+            if key in seen_executors:
+                log.debug("Skipping duplicate advertisement %s; the same tool already has one.", c["origin_name"])
+                continue
+            seen_executors.add(key)
+        survivors.append(c)
+    candidates = survivors
 
     # Collision-safe rename: only rename when multiple origins share the same name.
     by_name: dict[str, list[dict[str, Any]]] = {}

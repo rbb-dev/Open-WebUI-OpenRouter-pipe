@@ -500,23 +500,13 @@ def test_a_name_that_is_already_usable_is_returned_unchanged():
 
 # Prescription 125 asked for a registry-level arm built from "three request specs named `x`". It is writable: in
 # Open-WebUI mode the caller's specs are passed through and the collision loop names them apart. An earlier
-# deviation claimed it could not be written because such specs are dropped -- true in Pipeline mode only, which
-# is the mode that had been measured. Both modes are pinned here.
+# deviation claimed it could not be written because such specs were dropped in Pipeline mode; since the tool
+# hand-back landed they are offered in both modes and the collision loop names them apart in both. Both modes are
+# pinned here.
 REQUEST_SPECS_WITH_NO_TOOL = [
     pytest.param(("x", "x", "x"), id="three-request-specs-sharing-one-name"),
     pytest.param(("alpha", "beta"), id="two-request-specs-with-distinct-names"),
 ]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("names", REQUEST_SPECS_WITH_NO_TOOL)
-async def test_request_specs_the_pipe_cannot_run_are_dropped_in_pipeline_mode(names):
-    """In Pipeline mode the pipe runs the tools, so a spec it has nothing to run is offered to nobody."""
-    tools, exec_registry, exposed_to_origin = _build_request_only(names, passthrough=False)
-
-    assert tools == [], tools
-    assert exec_registry == {}, exec_registry
-    assert exposed_to_origin == {}, exposed_to_origin
 
 
 @pytest.mark.asyncio

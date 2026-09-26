@@ -602,6 +602,7 @@ def _chat_tools_to_responses_tools(tools: Any) -> list[dict[str, Any]]:
             spec["parameters"] = parameters
         if isinstance(tool.get("cache_control"), dict):
             spec["cache_control"] = tool["cache_control"]
+        spec["strict"] = fn.get("strict", False) if isinstance(fn, dict) else tool.get("strict", False)
 
         out.append(spec)
 

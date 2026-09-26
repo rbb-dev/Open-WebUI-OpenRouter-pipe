@@ -2201,7 +2201,7 @@ class TestBuildCollisionSafeToolSpecsAndRegistry:
         assert origin_map["my_tool"] == "my_tool"
 
     def test_request_tools_without_callable_skipped(self):
-        """Test that request tools without callable are skipped in pipeline mode."""
+        """A request tool with nothing behind it is offered and left unrunnable in pipeline mode."""
         request_tools = [
             {"type": "function", "name": "no_exec", "description": "Tool"},
         ]
@@ -2217,7 +2217,7 @@ class TestBuildCollisionSafeToolSpecsAndRegistry:
             logger=logging.getLogger("test"),
         )
 
-        assert tools == []
+        assert [t["name"] for t in tools] == ["no_exec"]
         assert exec_reg == {}
 
     def test_request_tools_without_callable_included_in_passthrough(self):
@@ -4832,6 +4832,7 @@ def test_chat_tools_to_responses_tools_converts_function_shape():
                 "properties": {"q": {"type": "string"}},
                 "required": ["q"],
             },
+            "strict": False,
         }
     ]
 
@@ -4868,6 +4869,7 @@ async def test_responsesbody_from_completions_keeps_and_normalizes_tools():
             "type": "function",
             "name": "get_current_timestamp",
             "parameters": {"type": "object", "properties": {}},
+            "strict": False,
         }
     ]
 

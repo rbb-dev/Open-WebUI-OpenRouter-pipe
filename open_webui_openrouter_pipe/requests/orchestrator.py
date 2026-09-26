@@ -858,8 +858,6 @@ class RequestOrchestrator:
             responses_body.model, fusion_model, valves.ENABLE_OPENROUTER_FUSION, is_direct, fusion_live_enabled,
         )
 
-        capability_model_id = vvb.get(normalized_model_id, responses_body.model)
-
         task_mode = use_task_model_adapter
         if task_mode:
             if allowlist_norm_ids and normalized_model_id not in allowlist_norm_ids:
@@ -1161,11 +1159,12 @@ class RequestOrchestrator:
         if isinstance(__metadata__, dict) and exposed_to_origin:
             __metadata__["_pipe_exposed_to_origin"] = exposed_to_origin
 
-        if tools and (
-            owui_tool_passthrough
-            or ModelFamily.supports("function_calling", capability_model_id)
-        ):
-            responses_body.tools = tools
+        server_tool_entries = [
+            t for t in (responses_body.tools or [])
+            if isinstance(t, dict) and t.get("type") != "function"
+        ]
+        offered_tools = [*server_tool_entries, *(tools or [])]
+        responses_body.tools = offered_tools or None
 
         pdf_parser = direct_uploads.get("pdf_parser") if direct_uploads else None
         if isinstance(pdf_parser, str) and pdf_parser.strip():

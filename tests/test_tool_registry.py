@@ -359,7 +359,7 @@ class TestBuildCollisionSafeToolSpecsAndRegistry:
         assert exposed_to_origin["my_tool"] == "my_tool"
 
     def test_request_tools_without_callable_skipped(self):
-        """Request tools without callable executor are skipped (non-passthrough mode)."""
+        """A request tool with no executor behind it is offered, and nothing can run it."""
         request_tools = [{"type": "function", "name": "my_tool", "description": "test"}]
         # No registry entry with callable
         tools, registry, exposed_to_origin = _build_collision_safe_tool_specs_and_registry(
@@ -372,7 +372,7 @@ class TestBuildCollisionSafeToolSpecsAndRegistry:
             owui_tool_passthrough=False,
             logger=logging.getLogger("test"),
         )
-        assert tools == []
+        assert [t["name"] for t in tools] == ["my_tool"]
         assert registry == {}
 
     def test_passthrough_mode_includes_without_callable(self):
@@ -516,10 +516,11 @@ class TestBuildCollisionSafeToolSpecsAndRegistry:
         assert "owui_only" in registry
 
     def test_pick_executor_falls_back_to_direct(self):
-        """_pick_executor falls back to direct when builtin and owui not available.
+        """An extra schema naming a resolvable direct tool is dropped and the direct entry wins.
 
-        Note: direct_registry tools are added independently in step 2, so we use
-        extra_tools to test the _pick_executor fallback to direct registry.
+        This no longer demonstrates the _pick_executor extra-route fallback on its own:
+        the extra candidate is collapsed into the direct entry before the rename loop,
+        so there is only ever one advertisement to inspect.
         """
         # Use extra_tools which use _pick_executor to find executors
         extra_tools = [{"type": "function", "name": "direct_only", "description": "extra"}]
@@ -540,11 +541,10 @@ class TestBuildCollisionSafeToolSpecsAndRegistry:
             owui_tool_passthrough=False,
             logger=None,
         )
-        # Should have 2 tools: one from direct_registry (added in step 2), one from extra_tools
-        # Both will have the same origin but different sources
-        assert len(tools) == 2
-        # One from extra_tools uses direct executor
-        assert any("extra__direct_only" in t["name"] or "direct__direct_only" in t["name"] for t in tools)
+        # The extra schema names a tool the pipe can already run, so the resolved
+        # direct entry is advertised once and the extra advertisement is dropped.
+        assert len(tools) == 1
+        assert tools[0]["name"] == "direct_only"
 
     def test_duplicate_collision_with_hash(self):
         """Multiple collisions with same prefix get hash suffix."""
@@ -732,8 +732,8 @@ class TestBuildCollisionSafeToolSpecsAndRegistry:
             owui_tool_passthrough=False,
             logger=logging.getLogger("test"),
         )
-        # Tool should be skipped entirely because callable is None
-        assert tools == []
+        # The tool is still offered; only the execution registry stays empty
+        assert [t["name"] for t in tools] == ["no_exec"]
         assert registry == {}
 
 
@@ -877,11 +877,11 @@ class TestPickExecutorPreferences:
         assert "owui_tool" in registry
 
     def test_prefer_direct_fallback(self):
-        """Test fallback to direct when builtin and owui not found.
+        """The extra schema that resolves to the direct entry is dropped; it is advertised once.
 
-        Note: direct_registry tools are added separately in step 2.
-        To properly test _pick_executor fallback to direct, we use extra_tools
-        which go through _pick_executor to find an executor.
+        This no longer demonstrates the _pick_executor extra-route fallback on its own:
+        the extra candidate is collapsed into the direct entry before the rename loop,
+        so there is only ever one advertisement to inspect.
         """
         direct_registry = {
             "direct_tool": {
@@ -904,12 +904,10 @@ class TestPickExecutorPreferences:
             logger=None,
         )
 
-        # Should have 2 tools: one from direct_registry (step 2), one from extra_tools (step 4)
-        # Both have callable so both are included
-        assert len(tools) == 2
-        # Verify the extra_tool found an executor in direct_registry
-        tool_names = [t["name"] for t in tools]
-        assert any("extra__" in name or "direct__" in name for name in tool_names)
+        # The extra schema resolves to the same direct executor, so it is advertised
+        # once, under its own name; there is no second, hash-suffixed advertisement.
+        assert len(tools) == 1
+        assert [t["name"] for t in tools] == ["direct_tool"]
 
     def test_no_executor_found(self):
         """Test when no executor is found in any registry."""
@@ -926,8 +924,8 @@ class TestPickExecutorPreferences:
             logger=logging.getLogger("test"),
         )
 
-        # Tool should be skipped
-        assert tools == []
+        # The name is offered; nothing behind it can run
+        assert [t["name"] for t in tools] == ["orphan"]
         assert registry == {}
 
 
@@ -1296,8 +1294,8 @@ class TestAdditionalCoverage:
             logger=logging.getLogger("test"),
         )
 
-        # Tool should be skipped entirely because callable is None
-        assert tools == []
+        # The tool is offered and nothing can run it
+        assert [t["name"] for t in tools] == ["test_tool"]
         assert registry == {}
 
     def test_passthrough_with_valid_tool_cfg_skips_registry(self):

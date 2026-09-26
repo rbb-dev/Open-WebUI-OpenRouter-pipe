@@ -540,6 +540,7 @@ class StreamingHandler:
 
         owui_tool_passthrough = valves.TOOL_EXECUTION_MODE == "Open-WebUI"
         persist_tools_enabled = valves.PERSIST_TOOL_RESULTS
+        handed_back = False
         is_continuation = False
         if owui_tool_passthrough and isinstance(body.input, list):
             is_continuation = any(
@@ -634,6 +635,11 @@ class StreamingHandler:
         unhandled_citation_notified = False
         chat_id = metadata.get("chat_id")
         message_id = metadata.get("message_id")
+        offered_function_names = {
+            str(t.get("name"))
+            for t in (body.tools or [])
+            if isinstance(t, dict) and t.get("type") == "function"
+        }
         holds_the_reply = bool(owui_tool_passthrough and body.stream and message_id and is_temporary_chat(chat_id))
         if holds_the_reply:
             self._pipe._artifact_store._reply_memory.open(chat_id, message_id)
@@ -2767,7 +2773,13 @@ class StreamingHandler:
                 reasoning_anchor_state["awaiting"] = []
                 reasoning_anchor_state["calls_seen"] = _calls_seen + len(_fc_local)
 
-                if (call_items or invalid_call_outputs) and not owui_tool_passthrough:
+                hand_back = bool(call_items) and (
+                    owui_tool_passthrough
+                    or any(str(c.get("name") or "") in offered_function_names and str(c.get("name") or "") not in tool_registry
+                           for c in call_items)
+                )
+
+                if (call_items or invalid_call_outputs) and not hand_back:
                     note_model_activity()
                     if continuation_input_items:
                         body.input.extend(continuation_input_items)
@@ -2796,7 +2808,8 @@ class StreamingHandler:
                     if call_items and loop_index >= (valves.MAX_FUNCTION_CALL_LOOPS - 1):
                         loop_limit_reached = True
 
-                    if call_items and owui_tool_passthrough:
+                    if call_items and hand_back:
+                        handed_back = True
                         tool_calls_payload: list[dict[str, Any]] = []
                         try:
                             for call in call_items:
@@ -3389,19 +3402,7 @@ class StreamingHandler:
             surrogate_carry["assistant"] = ""
             surrogate_carry["reasoning"] = ""
 
-            has_function_calls = False
-            if owui_tool_passthrough and final_response and isinstance(final_response.get("output"), list):
-                with contextlib.suppress(Exception):
-                    has_function_calls = any(
-                        isinstance(item, dict) and item.get("type") == "function_call"
-                        for item in final_response.get("output", [])
-                    )
-            terminal = bool(
-                was_cancelled
-                or error_occurred
-                or (not owui_tool_passthrough)
-                or (owui_tool_passthrough and (not has_function_calls))
-            )
+            terminal = bool(was_cancelled or error_occurred or not handed_back)
             if holds_the_reply and terminal and not handed_back_for_retry:
                 self._pipe._artifact_store._reply_memory.release(chat_id, message_id)
 
@@ -3468,7 +3469,7 @@ class StreamingHandler:
                     segment_status = "cancelled"
                 elif error_occurred:
                     segment_status = "error"
-                elif owui_tool_passthrough and has_function_calls:
+                elif handed_back:
                     segment_status = "needs_tool"
                 try:
                     await asyncio.shield(
