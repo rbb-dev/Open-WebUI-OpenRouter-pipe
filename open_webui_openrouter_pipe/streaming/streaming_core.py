@@ -488,985 +488,993 @@ class StreamingHandler:
             for t in (body.tools or [])
             if isinstance(t, dict) and t.get("type") == "function"
         }
-        may_hand_back = owui_tool_passthrough or bool(offered_function_names - set(tool_registry))
-        holds_the_reply = bool(
-            may_hand_back and body.stream and message_id and is_temporary_chat(chat_id)
-        )
-        if holds_the_reply:
-            self._pipe._artifact_store._reply_memory.open(chat_id, message_id)
-        model_started = asyncio.Event()
-        responding_status_sent = False
-        provider_status_seen = False
-        generation_started_at: float | None = None
-        generation_last_event_at: float | None = None
-        response_completed_at: float | None = None
-        stream_started_at: float | None = None
-        surrogate_carry: dict[str, str] = {"assistant": "", "reasoning": ""}
-        storage_context_cache: tuple[Request | None, Any | None] | None = None
-        processed_image_item_ids: set[str] = set()
-        opened_image_windows: set[str] = set()
-        generated_image_count = 0
-        thinking_mode = valves.THINKING_OUTPUT_MODE
-        thinking_box_enabled = thinking_mode in {"open_webui", "both"}
-        thinking_status_enabled = thinking_mode in {"status", "both"}
-        reasoning_throttle = ReasoningStatusThrottle()
-
-        fusion_armed = bool(fusion_live_enabled)
-        fusion_state = FusionDeliberationState() if fusion_armed else None
-        fusion_batcher = FusionDeltaBatcher() if fusion_armed else None
-        fusion_embed_emitted = False
-        fusion_embed_task: asyncio.Task[None] | None = None
-        fell_back_to_chat = False
-
-        def _add_fusion_name(names: dict[str, str], mid: str) -> None:
-            if mid in names:
-                return
-            display = ModelFamily.display_name(mid)
-            if not display and mid.startswith("~"):
-                display = ModelFamily.display_name(mid[1:])
-            if display:
-                names[mid] = display
-
-        def _fusion_model_names() -> dict[str, str]:
-            names: dict[str, str] = {}
-            if fusion_state is None:
-                return names
-            for fusion_ev in fusion_state.events:
-                if not isinstance(fusion_ev, dict):
-                    continue
-                for _name_key in ("model", "judge_model"):
-                    _mid = fusion_ev.get(_name_key)
-                    if isinstance(_mid, str):
-                        _add_fusion_name(names, _mid)
-                _resp = fusion_ev.get("response")
-                if isinstance(_resp, dict) and isinstance(_resp.get("model"), str):
-                    _add_fusion_name(names, _resp["model"])
-            return names
-
-        async def _emit_fusion_embed_once() -> None:
-            nonlocal fusion_embed_emitted
-            if fusion_embed_emitted or not (fusion_armed and fusion_state is not None and event_emitter):
-                return
-            fusion_embed_emitted = True
-            _prior = 0
-            if retry_handoff is not None:
-                _prior = retry_handoff.get(FUSION_EMBED_ATTEMPTS, 0)
-                retry_handoff[FUSION_EMBED_ATTEMPTS] = _prior + 1
-            _card = build_fusion_embed_html(fusion_state, _fusion_model_names())
-            _set = [_card]
-            if _prior > 0 and chat_id and message_id and Chats is not None:
-                try:
-                    _existing = await Chats.get_message_by_id_and_message_id(
-                        str(chat_id), str(message_id)
-                    )
-                    _raw = (_existing or {}).get("embeds")
-                    if isinstance(_raw, list):
-                        _set = [
-                            e for e in _raw
-                            if not (isinstance(e, str) and "<title>OpenRouter Fusion" in e)
-                        ] + [_card]
-                except Exception:
-                    self.logger.debug(
-                        "Failed to read message embeds for fusion retry merge", exc_info=True
-                    )
-                    _set = [_card]
-            try:
-                await self._pipe._event_emitter_handler._emit_embeds(
-                    event_emitter, _set,
-                    replace=_prior > 0,
-                )
-            except Exception:
-                self.logger.debug("Failed to emit fusion embed", exc_info=True)
-
-        async def _emit_fusion_embed_after_roster() -> None:
-            try:
-                await asyncio.sleep(0.05)
-            except asyncio.CancelledError:
-                return
-            await _emit_fusion_embed_once()
-
-        async def _emit_fusion_event(fusion_ev: dict) -> None:
-            if not (fusion_armed and event_emitter):
-                return
-            try:
-                await event_emitter({"type": "fusion:event", "data": {"event": fusion_ev}})
-            except Exception:
-                self.logger.debug("Failed to emit fusion event", exc_info=True)
-
-        async def _emit_fusion_sources(raw_sources: Any) -> None:
-            """Emit openrouter:fusion item-level sources as citations (per-URL dedup)."""
-            if not isinstance(raw_sources, list):
-                return
-            for src in raw_sources:
-                if not isinstance(src, dict):
-                    continue
-                url = (src.get("url") or "").strip()
-                if not url or url in ordinal_by_url:
-                    continue
-                ordinal_by_url[url] = len(ordinal_by_url) + 1
-                title = (src.get("title") or "").strip()
-                host = _citation_host(url)
-                citation = {
-                    "source": {"name": host or "source", "url": url},
-                    "document": [title or url],
-                    "metadata": [{
-                        "source": url,
-                        "date_accessed": citation_access_stamp(),
-                    }],
-                }
-                try:
-                    await self._pipe._event_emitter_handler._emit_citation(event_emitter, citation)
-                except Exception as exc:
-                    self.logger.debug("Failed to emit fusion source citation: %s", exc, exc_info=True)
-                emitted_citations.append(citation)
-
-        async def _maybe_emit_reasoning_status(delta_text: str, *, force: bool = False) -> None:
-            """Emit readable status updates for reasoning text without flooding."""
-            if not thinking_status_enabled or not event_emitter:
-                return
-            text = reasoning_throttle.feed(delta_text, force=force)
-            if text:
-                await event_emitter({"type": "status", "data": {"description": text, "done": False}})
-
-        async def _get_storage_context() -> tuple[Request | None, Any | None]:
-            nonlocal storage_context_cache
-            if storage_context_cache is None:
-                storage_context_cache = await self._pipe._file_gateway.resolve_storage_context(request_context, user_obj)
-            return storage_context_cache or (None, None)
-
-        @timed
-        async def _persist_generated_image(data: bytes, mime_type: str) -> str | None:
-            upload_request, upload_user = await _get_storage_context()
-            if not upload_request or not upload_user:
-                return None
-            filename = f"generated-image-{uuid.uuid4().hex}.{image_extension_for_mime(mime_type)}"
-            return await self._pipe._file_gateway.upload_to_owui_storage(
-                request=upload_request,
-                user=upload_user,
-                file_data=data,
-                filename=filename,
-                mime_type=mime_type,
-                chat_id=chat_id if isinstance(chat_id, str) else None,
-                message_id=message_id if isinstance(message_id, str) else None,
-                owui_user_id=user_id,
+        try:
+            may_hand_back = owui_tool_passthrough or bool(offered_function_names - set(tool_registry))
+            holds_the_reply = bool(
+                may_hand_back and body.stream and message_id and is_temporary_chat(chat_id)
             )
+            _release_armed = holds_the_reply
+            if holds_the_reply:
+                self._pipe._artifact_store._reply_memory.open(chat_id, message_id)
+            model_started = asyncio.Event()
+            responding_status_sent = False
+            provider_status_seen = False
+            generation_started_at: float | None = None
+            generation_last_event_at: float | None = None
+            response_completed_at: float | None = None
+            stream_started_at: float | None = None
+            surrogate_carry: dict[str, str] = {"assistant": "", "reasoning": ""}
+            storage_context_cache: tuple[Request | None, Any | None] | None = None
+            processed_image_item_ids: set[str] = set()
+            opened_image_windows: set[str] = set()
+            generated_image_count = 0
+            thinking_mode = valves.THINKING_OUTPUT_MODE
+            thinking_box_enabled = thinking_mode in {"open_webui", "both"}
+            thinking_status_enabled = thinking_mode in {"status", "both"}
+            reasoning_throttle = ReasoningStatusThrottle()
 
-        @timed
-        async def _materialize_image_from_str(data_str: str) -> str | None:
-            text = (data_str or "").strip()
-            if not text:
-                return None
-            if text.startswith("data:"):
-                parsed = self._pipe._multimodal_handler._parse_data_url(text)
-                if parsed:
-                    stored = await _persist_generated_image(parsed["data"], parsed["mime_type"])
-                    if stored:
-                        await self._pipe._event_emitter_handler._emit_status(event_emitter, StatusMessages.IMAGE_BASE64_SAVED, done=False)
-                        return f"/api/v1/files/{stored}/content"
+            fusion_armed = bool(fusion_live_enabled)
+            fusion_state = FusionDeliberationState() if fusion_armed else None
+            fusion_batcher = FusionDeltaBatcher() if fusion_armed else None
+            fusion_embed_emitted = False
+            fusion_embed_task: asyncio.Task[None] | None = None
+            fell_back_to_chat = False
+
+            def _add_fusion_name(names: dict[str, str], mid: str) -> None:
+                if mid in names:
+                    return
+                display = ModelFamily.display_name(mid)
+                if not display and mid.startswith("~"):
+                    display = ModelFamily.display_name(mid[1:])
+                if display:
+                    names[mid] = display
+
+            def _fusion_model_names() -> dict[str, str]:
+                names: dict[str, str] = {}
+                if fusion_state is None:
+                    return names
+                for fusion_ev in fusion_state.events:
+                    if not isinstance(fusion_ev, dict):
+                        continue
+                    for _name_key in ("model", "judge_model"):
+                        _mid = fusion_ev.get(_name_key)
+                        if isinstance(_mid, str):
+                            _add_fusion_name(names, _mid)
+                    _resp = fusion_ev.get("response")
+                    if isinstance(_resp, dict) and isinstance(_resp.get("model"), str):
+                        _add_fusion_name(names, _resp["model"])
+                return names
+
+            async def _emit_fusion_embed_once() -> None:
+                nonlocal fusion_embed_emitted
+                if fusion_embed_emitted or not (fusion_armed and fusion_state is not None and event_emitter):
+                    return
+                fusion_embed_emitted = True
+                _prior = 0
+                if retry_handoff is not None:
+                    _prior = retry_handoff.get(FUSION_EMBED_ATTEMPTS, 0)
+                    retry_handoff[FUSION_EMBED_ATTEMPTS] = _prior + 1
+                _card = build_fusion_embed_html(fusion_state, _fusion_model_names())
+                _set = [_card]
+                if _prior > 0 and chat_id and message_id and Chats is not None:
+                    try:
+                        _existing = await Chats.get_message_by_id_and_message_id(
+                            str(chat_id), str(message_id)
+                        )
+                        _raw = (_existing or {}).get("embeds")
+                        if isinstance(_raw, list):
+                            _set = [
+                                e for e in _raw
+                                if not (isinstance(e, str) and "<title>OpenRouter Fusion" in e)
+                            ] + [_card]
+                    except Exception:
+                        self.logger.debug(
+                            "Failed to read message embeds for fusion retry merge", exc_info=True
+                        )
+                        _set = [_card]
+                try:
+                    await self._pipe._event_emitter_handler._emit_embeds(
+                        event_emitter, _set,
+                        replace=_prior > 0,
+                    )
+                except Exception:
+                    self.logger.debug("Failed to emit fusion embed", exc_info=True)
+
+            async def _emit_fusion_embed_after_roster() -> None:
+                try:
+                    await asyncio.sleep(0.05)
+                except asyncio.CancelledError:
+                    return
+                await _emit_fusion_embed_once()
+
+            async def _emit_fusion_event(fusion_ev: dict) -> None:
+                if not (fusion_armed and event_emitter):
+                    return
+                try:
+                    await event_emitter({"type": "fusion:event", "data": {"event": fusion_ev}})
+                except Exception:
+                    self.logger.debug("Failed to emit fusion event", exc_info=True)
+
+            async def _emit_fusion_sources(raw_sources: Any) -> None:
+                """Emit openrouter:fusion item-level sources as citations (per-URL dedup)."""
+                if not isinstance(raw_sources, list):
+                    return
+                for src in raw_sources:
+                    if not isinstance(src, dict):
+                        continue
+                    url = (src.get("url") or "").strip()
+                    if not url or url in ordinal_by_url:
+                        continue
+                    ordinal_by_url[url] = len(ordinal_by_url) + 1
+                    title = (src.get("title") or "").strip()
+                    host = _citation_host(url)
+                    citation = {
+                        "source": {"name": host or "source", "url": url},
+                        "document": [title or url],
+                        "metadata": [{
+                            "source": url,
+                            "date_accessed": citation_access_stamp(),
+                        }],
+                    }
+                    try:
+                        await self._pipe._event_emitter_handler._emit_citation(event_emitter, citation)
+                    except Exception as exc:
+                        self.logger.debug("Failed to emit fusion source citation: %s", exc, exc_info=True)
+                    emitted_citations.append(citation)
+
+            async def _maybe_emit_reasoning_status(delta_text: str, *, force: bool = False) -> None:
+                """Emit readable status updates for reasoning text without flooding."""
+                if not thinking_status_enabled or not event_emitter:
+                    return
+                text = reasoning_throttle.feed(delta_text, force=force)
+                if text:
+                    await event_emitter({"type": "status", "data": {"description": text, "done": False}})
+
+            async def _get_storage_context() -> tuple[Request | None, Any | None]:
+                nonlocal storage_context_cache
+                if storage_context_cache is None:
+                    storage_context_cache = await self._pipe._file_gateway.resolve_storage_context(request_context, user_obj)
+                return storage_context_cache or (None, None)
+
+            @timed
+            async def _persist_generated_image(data: bytes, mime_type: str) -> str | None:
+                upload_request, upload_user = await _get_storage_context()
+                if not upload_request or not upload_user:
                     return None
-                return None
-            if is_http_or_https_url(text):
-                downloaded = await self._pipe._multimodal_handler._download_remote_url(text)
-                if downloaded:
-                    stored = await _persist_generated_image(downloaded["data"], downloaded["mime_type"])
-                    if stored:
-                        await self._pipe._event_emitter_handler._emit_status(event_emitter, StatusMessages.IMAGE_REMOTE_SAVED, done=False)
-                        return f"/api/v1/files/{stored}/content"
-                return text
-            if text.startswith("/"):
-                return text
-            cleaned = text
-            if "," in cleaned and ";base64" in cleaned.split(",", 1)[0]:
-                cleaned = cleaned.split(",", 1)[1]
-            cleaned = cleaned.strip()
-            if not cleaned:
-                return None
-            if not self._pipe._file_gateway.validate_base64_size(cleaned):
-                return None
-            try:
-                decoded = base64.b64decode(cleaned, validate=True)
-            except (binascii.Error, ValueError):
-                return None
-            mime_type = _guess_image_mime_type("", None, decoded) or "image/png"
-            stored = await _persist_generated_image(decoded, mime_type)
-            if stored:
-                await self._pipe._event_emitter_handler._emit_status(event_emitter, StatusMessages.IMAGE_BASE64_SAVED, done=False)
-                return f"/api/v1/files/{stored}/content"
-            return None
+                filename = f"generated-image-{uuid.uuid4().hex}.{image_extension_for_mime(mime_type)}"
+                return await self._pipe._file_gateway.upload_to_owui_storage(
+                    request=upload_request,
+                    user=upload_user,
+                    file_data=data,
+                    filename=filename,
+                    mime_type=mime_type,
+                    chat_id=chat_id if isinstance(chat_id, str) else None,
+                    message_id=message_id if isinstance(message_id, str) else None,
+                    owui_user_id=user_id,
+                )
 
-        @timed
-        async def _materialize_image_entry(entry: Any) -> str | None:
-            if entry is None:
-                return None
-            if isinstance(entry, str):
-                return await _materialize_image_from_str(entry)
-            if isinstance(entry, dict):
-                for key in ("url", "image_url", "imageUrl", "content_url"):
-                    candidate = entry.get(key)
-                    if isinstance(candidate, str) and candidate.strip():
-                        return candidate.strip()
-                    if isinstance(candidate, dict):
-                        nested = await _materialize_image_entry(candidate)
-                        if nested:
-                            return nested
-                for key in ("b64_json", "b64", "base64", "data", "image_base64", "imageB64"):
-                    b64_val = entry.get(key)
-                    if isinstance(b64_val, str) and b64_val.strip():
-                        cleaned = b64_val.strip()
-                        if not self._pipe._file_gateway.validate_base64_size(cleaned):
-                            continue
-                        try:
-                            decoded = base64.b64decode(cleaned, validate=True)
-                        except (binascii.Error, ValueError):
-                            continue
-                        explicit_mime = (
-                            entry.get("mime_type")
-                            or entry.get("mimeType")
-                            or entry.get("content_type")
-                        )
-                        mime_type = (
-                            _guess_image_mime_type("", explicit_mime, decoded)
-                            or "image/png"
-                        )
-                        if mime_type == "image/jpg":
-                            mime_type = "image/jpeg"
-                        stored = await _persist_generated_image(decoded, mime_type)
+            @timed
+            async def _materialize_image_from_str(data_str: str) -> str | None:
+                text = (data_str or "").strip()
+                if not text:
+                    return None
+                if text.startswith("data:"):
+                    parsed = self._pipe._multimodal_handler._parse_data_url(text)
+                    if parsed:
+                        stored = await _persist_generated_image(parsed["data"], parsed["mime_type"])
                         if stored:
                             await self._pipe._event_emitter_handler._emit_status(event_emitter, StatusMessages.IMAGE_BASE64_SAVED, done=False)
                             return f"/api/v1/files/{stored}/content"
                         return None
-                nested_result = entry.get("result")
-                if nested_result is not None:
-                    return await _materialize_image_entry(nested_result)
-            return None
-
-        async def _collect_image_output_urls(item: dict[str, Any]) -> list[str]:
-            urls: list[str] = []
-            seen_blobs: set[int] = set()
-
-            async def _resolve_and_dedup(value: Any) -> None:
-                if value is None:
-                    return
-                if isinstance(value, str) and len(value) > 256:
-                    blob_hash = hash(value)
-                    if blob_hash in seen_blobs:
-                        return
-                    seen_blobs.add(blob_hash)
-                resolved = await _materialize_image_entry(value)
-                if resolved:
-                    urls.append(resolved)
-
-            payload = item.get("result")
-            if isinstance(payload, list):
-                for entry in payload:
-                    await _resolve_and_dedup(entry)
-            else:
-                await _resolve_and_dedup(payload)
-
-            for extra_key in ("imageUrl", "imageB64"):
-                extra = item.get(extra_key)
-                if extra is not None:
-                    await _resolve_and_dedup(extra)
-
-            return urls
-
-        async def _render_image_markdown(item: dict[str, Any]) -> list[str]:
-            nonlocal generated_image_count
-            urls = await _collect_image_output_urls(item)
-            markdowns: list[str] = []
-            for url in urls:
-                generated_image_count += 1
-                label = item.get("label") or f"Generated image {generated_image_count}"
-                alt_text = re.sub(r"[\r\n]+", " ", str(label)).strip() or f"Generated image {generated_image_count}"
-                markdowns.append(f"![{alt_text}]({url})")
-            return markdowns
-
-        def _append_output_block(current: str, block: str) -> str:
-            snippet = (block or "").strip()
-            if not snippet:
-                return current
-            if current:
-                if not current.endswith("\n"):
-                    current += "\n"
-                if not current.endswith("\n\n"):
-                    current += "\n"
-            return f"{current}{snippet}\n"
-
-        async def _capture_seeded_output() -> list[dict[str, Any]]:
-            nonlocal seeded_output_items
-            if seeded_output_items is not None:
-                return seeded_output_items
-            seeded_output_items = []
-            if open_webui_keeps_stored_output:
-                return seeded_output_items
-            if chat_id and message_id and Chats is not None:
+                    return None
+                if is_http_or_https_url(text):
+                    downloaded = await self._pipe._multimodal_handler._download_remote_url(text)
+                    if downloaded:
+                        stored = await _persist_generated_image(downloaded["data"], downloaded["mime_type"])
+                        if stored:
+                            await self._pipe._event_emitter_handler._emit_status(event_emitter, StatusMessages.IMAGE_REMOTE_SAVED, done=False)
+                            return f"/api/v1/files/{stored}/content"
+                    return text
+                if text.startswith("/"):
+                    return text
+                cleaned = text
+                if "," in cleaned and ";base64" in cleaned.split(",", 1)[0]:
+                    cleaned = cleaned.split(",", 1)[1]
+                cleaned = cleaned.strip()
+                if not cleaned:
+                    return None
+                if not self._pipe._file_gateway.validate_base64_size(cleaned):
+                    return None
                 try:
-                    stored = await Chats.get_message_by_id_and_message_id(
-                        str(chat_id), str(message_id)
-                    )
-                except Exception:
-                    self.logger.debug(
-                        "Could not read seeded output items (chat_id=%s message_id=%s)",
-                        chat_id,
-                        message_id,
-                        exc_info=True,
-                    )
-                    return seeded_output_items
-                prior = (stored or {}).get("output")
-                if isinstance(prior, list):
-                    stored_items = [
-                        copy.deepcopy(entry) for entry in prior if isinstance(entry, dict)
-                    ]
-                    seeded_output_items = stored_items
-            return seeded_output_items
-
-        def _flush_recorded_message() -> dict[str, Any] | None:
-            nonlocal recorded_message_chars, open_message_id
-            pending = assistant_message[recorded_message_chars:]
-            segment_id = open_message_id or f"msg-{uuid.uuid4().hex}"
-            open_message_id = None
-            if not pending:
+                    decoded = base64.b64decode(cleaned, validate=True)
+                except (binascii.Error, ValueError):
+                    return None
+                mime_type = _guess_image_mime_type("", None, decoded) or "image/png"
+                stored = await _persist_generated_image(decoded, mime_type)
+                if stored:
+                    await self._pipe._event_emitter_handler._emit_status(event_emitter, StatusMessages.IMAGE_BASE64_SAVED, done=False)
+                    return f"/api/v1/files/{stored}/content"
                 return None
-            recorded_message_chars = len(assistant_message)
-            item = {
-                "type": "message",
-                "id": segment_id,
-                "role": "assistant",
-                "status": "completed",
-                "content": [{"type": "output_text", "text": pending}],
-            }
-            emitted_output_items.append(item)
-            return item
 
-        async def _record_output_item(item: dict[str, Any]) -> None:
-            await _capture_seeded_output()
-            _flush_recorded_message()
-            recorded = copy.deepcopy(item)
-            item_id = recorded.get("id")
-            if item_id:
-                for index, existing in enumerate(emitted_output_items):
-                    if existing.get("id") == item_id:
-                        emitted_output_items[index] = recorded
+            @timed
+            async def _materialize_image_entry(entry: Any) -> str | None:
+                if entry is None:
+                    return None
+                if isinstance(entry, str):
+                    return await _materialize_image_from_str(entry)
+                if isinstance(entry, dict):
+                    for key in ("url", "image_url", "imageUrl", "content_url"):
+                        candidate = entry.get(key)
+                        if isinstance(candidate, str) and candidate.strip():
+                            return candidate.strip()
+                        if isinstance(candidate, dict):
+                            nested = await _materialize_image_entry(candidate)
+                            if nested:
+                                return nested
+                    for key in ("b64_json", "b64", "base64", "data", "image_base64", "imageB64"):
+                        b64_val = entry.get(key)
+                        if isinstance(b64_val, str) and b64_val.strip():
+                            cleaned = b64_val.strip()
+                            if not self._pipe._file_gateway.validate_base64_size(cleaned):
+                                continue
+                            try:
+                                decoded = base64.b64decode(cleaned, validate=True)
+                            except (binascii.Error, ValueError):
+                                continue
+                            explicit_mime = (
+                                entry.get("mime_type")
+                                or entry.get("mimeType")
+                                or entry.get("content_type")
+                            )
+                            mime_type = (
+                                _guess_image_mime_type("", explicit_mime, decoded)
+                                or "image/png"
+                            )
+                            if mime_type == "image/jpg":
+                                mime_type = "image/jpeg"
+                            stored = await _persist_generated_image(decoded, mime_type)
+                            if stored:
+                                await self._pipe._event_emitter_handler._emit_status(event_emitter, StatusMessages.IMAGE_BASE64_SAVED, done=False)
+                                return f"/api/v1/files/{stored}/content"
+                            return None
+                    nested_result = entry.get("result")
+                    if nested_result is not None:
+                        return await _materialize_image_entry(nested_result)
+                return None
+
+            async def _collect_image_output_urls(item: dict[str, Any]) -> list[str]:
+                urls: list[str] = []
+                seen_blobs: set[int] = set()
+
+                async def _resolve_and_dedup(value: Any) -> None:
+                    if value is None:
                         return
-            emitted_output_items.append(recorded)
+                    if isinstance(value, str) and len(value) > 256:
+                        blob_hash = hash(value)
+                        if blob_hash in seen_blobs:
+                            return
+                        seen_blobs.add(blob_hash)
+                    resolved = await _materialize_image_entry(value)
+                    if resolved:
+                        urls.append(resolved)
 
-        def _terminal_output_items() -> list[dict[str, Any]]:
-            seeded = seeded_output_items or []
-            combined = seeded + emitted_output_items
-            result_status_by_call_id: dict[str, Any] = {}
-            for entry in combined:
-                if entry.get("type") != "function_call_output":
-                    continue
-                result_id = entry.get("call_id")
-                if isinstance(result_id, str) and result_id:
-                    result_status_by_call_id[result_id] = entry.get("status")
-            resolved: list[dict[str, Any]] = []
-            for index, entry in enumerate(combined):
-                item = copy.deepcopy(entry)
-                if item.get("type") == "function_call":
-                    call_id = item.get("call_id") or item.get("id")
-                    resolvable = item.get("status") not in OWUI_UNRESOLVABLE_CALL_STATUSES
-                    addressable = index >= len(seeded) or call_id in result_status_by_call_id
-                    if resolvable and addressable and call_id in result_status_by_call_id:
-                        item["status"] = owui_call_status(result_status_by_call_id.get(call_id))
-                resolved.append(item)
-            trailing = assistant_message[recorded_message_chars:]
-            if trailing:
-                resolved.append({
+                payload = item.get("result")
+                if isinstance(payload, list):
+                    for entry in payload:
+                        await _resolve_and_dedup(entry)
+                else:
+                    await _resolve_and_dedup(payload)
+
+                for extra_key in ("imageUrl", "imageB64"):
+                    extra = item.get(extra_key)
+                    if extra is not None:
+                        await _resolve_and_dedup(extra)
+
+                return urls
+
+            async def _render_image_markdown(item: dict[str, Any]) -> list[str]:
+                nonlocal generated_image_count
+                urls = await _collect_image_output_urls(item)
+                markdowns: list[str] = []
+                for url in urls:
+                    generated_image_count += 1
+                    label = item.get("label") or f"Generated image {generated_image_count}"
+                    alt_text = re.sub(r"[\r\n]+", " ", str(label)).strip() or f"Generated image {generated_image_count}"
+                    markdowns.append(f"![{alt_text}]({url})")
+                return markdowns
+
+            def _append_output_block(current: str, block: str) -> str:
+                snippet = (block or "").strip()
+                if not snippet:
+                    return current
+                if current:
+                    if not current.endswith("\n"):
+                        current += "\n"
+                    if not current.endswith("\n\n"):
+                        current += "\n"
+                return f"{current}{snippet}\n"
+
+            async def _capture_seeded_output() -> list[dict[str, Any]]:
+                nonlocal seeded_output_items
+                if seeded_output_items is not None:
+                    return seeded_output_items
+                seeded_output_items = []
+                if open_webui_keeps_stored_output:
+                    return seeded_output_items
+                if chat_id and message_id and Chats is not None:
+                    try:
+                        stored = await Chats.get_message_by_id_and_message_id(
+                            str(chat_id), str(message_id)
+                        )
+                    except Exception:
+                        self.logger.debug(
+                            "Could not read seeded output items (chat_id=%s message_id=%s)",
+                            chat_id,
+                            message_id,
+                            exc_info=True,
+                        )
+                        return seeded_output_items
+                    prior = (stored or {}).get("output")
+                    if isinstance(prior, list):
+                        stored_items = [
+                            copy.deepcopy(entry) for entry in prior if isinstance(entry, dict)
+                        ]
+                        seeded_output_items = stored_items
+                return seeded_output_items
+
+            def _flush_recorded_message() -> dict[str, Any] | None:
+                nonlocal recorded_message_chars, open_message_id
+                pending = assistant_message[recorded_message_chars:]
+                segment_id = open_message_id or f"msg-{uuid.uuid4().hex}"
+                open_message_id = None
+                if not pending:
+                    return None
+                recorded_message_chars = len(assistant_message)
+                item = {
                     "type": "message",
-                    "id": open_message_id or f"msg-{uuid.uuid4().hex}",
+                    "id": segment_id,
                     "role": "assistant",
                     "status": "completed",
-                    "content": [{"type": "output_text", "text": trailing}],
-                })
-            return resolved
+                    "content": [{"type": "output_text", "text": pending}],
+                }
+                emitted_output_items.append(item)
+                return item
 
-        def _output_index(item: dict[str, Any]) -> int:
-            item_id = item.get("id")
-            if isinstance(item_id, str) and item_id in published_item_ids:
-                return published_item_ids.index(item_id)
-            published_item_ids.append(item_id if isinstance(item_id, str) and item_id else f"#{len(published_item_ids)}")
-            return len(published_item_ids) - 1
+            async def _record_output_item(item: dict[str, Any]) -> None:
+                await _capture_seeded_output()
+                _flush_recorded_message()
+                recorded = copy.deepcopy(item)
+                item_id = recorded.get("id")
+                if item_id:
+                    for index, existing in enumerate(emitted_output_items):
+                        if existing.get("id") == item_id:
+                            emitted_output_items[index] = recorded
+                            return
+                emitted_output_items.append(recorded)
 
-        def _output_index_before_open_message(item: dict[str, Any]) -> int:
-            if open_message_id not in published_item_ids:
-                return _output_index(item)
-            position = published_item_ids.index(open_message_id)
-            published_item_ids.insert(position, str(item["id"]))
-            return position
-
-        async def _place_item(item: dict[str, Any]) -> int:
-            nonlocal retry_barrier_crossed
-            if emitter_supplied:
-                retry_barrier_crossed = True
-            pending = assistant_message[recorded_message_chars:]
-            if item.get("type") == "function_call" and not strip_hidden_marker_lines(pending).strip():
-                recorded = [*(await _capture_seeded_output() or []), *emitted_output_items]
-                if recorded and recorded[-1].get("type") == "function_call_output":
-                    divider: dict[str, Any] = {
+            def _terminal_output_items() -> list[dict[str, Any]]:
+                seeded = seeded_output_items or []
+                combined = seeded + emitted_output_items
+                result_status_by_call_id: dict[str, Any] = {}
+                for entry in combined:
+                    if entry.get("type") != "function_call_output":
+                        continue
+                    result_id = entry.get("call_id")
+                    if isinstance(result_id, str) and result_id:
+                        result_status_by_call_id[result_id] = entry.get("status")
+                resolved: list[dict[str, Any]] = []
+                for index, entry in enumerate(combined):
+                    item = copy.deepcopy(entry)
+                    if item.get("type") == "function_call":
+                        call_id = item.get("call_id") or item.get("id")
+                        resolvable = item.get("status") not in OWUI_UNRESOLVABLE_CALL_STATUSES
+                        addressable = index >= len(seeded) or call_id in result_status_by_call_id
+                        if resolvable and addressable and call_id in result_status_by_call_id:
+                            item["status"] = owui_call_status(result_status_by_call_id.get(call_id))
+                    resolved.append(item)
+                trailing = assistant_message[recorded_message_chars:]
+                if trailing:
+                    resolved.append({
                         "type": "message",
-                        "id": f"msg-{uuid.uuid4().hex}",
+                        "id": open_message_id or f"msg-{uuid.uuid4().hex}",
                         "role": "assistant",
                         "status": "completed",
-                        "content": [{"type": "output_text", "text": ""}],
-                    }
-                    await event_emitter({
-                        "type": "response.output_item.added",
-                        "output_index": await _place_item(divider),
-                        "item": divider,
+                        "content": [{"type": "output_text", "text": trailing}],
                     })
-            if pending and not strip_hidden_marker_lines(pending).strip():
-                await _capture_seeded_output()
-                emitted_output_items.append(copy.deepcopy(item))
-                return _output_index_before_open_message(item)
-            if open_message_id is None and strip_hidden_marker_lines(pending).strip():
-                published = _flush_recorded_message()
-                if published is not None:
-                    await event_emitter({
-                        "type": "response.output_item.added",
-                        "output_index": _output_index(published),
-                        "item": published,
-                    })
-            await _record_output_item(item)
-            return _output_index(item)
+                return resolved
 
-        async def _open_message() -> None:
-            nonlocal open_message_id
-            if open_message_id is not None or not (body.stream and emitter_supplied):
-                return
-            open_message_id = f"msg-{uuid.uuid4().hex}"
-            opened: dict[str, Any] = {
-                "type": "message",
-                "id": open_message_id,
-                "role": "assistant",
-                "status": "in_progress",
-                "content": [{"type": "output_text", "text": ""}],
-            }
-            await event_emitter({"type": "response.output_item.added", "output_index": _output_index(opened), "item": opened})
+            def _output_index(item: dict[str, Any]) -> int:
+                item_id = item.get("id")
+                if isinstance(item_id, str) and item_id in published_item_ids:
+                    return published_item_ids.index(item_id)
+                published_item_ids.append(item_id if isinstance(item_id, str) and item_id else f"#{len(published_item_ids)}")
+                return len(published_item_ids) - 1
 
-        async def _publish_turn_frame(event: dict[str, Any]) -> None:
-            nonlocal retry_barrier_crossed
-            published = await event_emitter(event)
-            if body.stream and published is not False:
-                retry_barrier_crossed = True
+            def _output_index_before_open_message(item: dict[str, Any]) -> int:
+                if open_message_id not in published_item_ids:
+                    return _output_index(item)
+                position = published_item_ids.index(open_message_id)
+                published_item_ids.insert(position, str(item["id"]))
+                return position
 
-        def _shows_a_file_inline(name: str) -> bool:
-            context = self._pipe._TOOL_CONTEXT.get()
-            return name == "display_file" and bool(
-                context and context.terminal_files_inline and not context.fusion_inner
-            )
+            async def _place_item(item: dict[str, Any]) -> int:
+                nonlocal retry_barrier_crossed
+                if emitter_supplied:
+                    retry_barrier_crossed = True
+                pending = assistant_message[recorded_message_chars:]
+                if item.get("type") == "function_call" and not strip_hidden_marker_lines(pending).strip():
+                    recorded = [*(await _capture_seeded_output() or []), *emitted_output_items]
+                    if recorded and recorded[-1].get("type") == "function_call_output":
+                        divider: dict[str, Any] = {
+                            "type": "message",
+                            "id": f"msg-{uuid.uuid4().hex}",
+                            "role": "assistant",
+                            "status": "completed",
+                            "content": [{"type": "output_text", "text": ""}],
+                        }
+                        await event_emitter({
+                            "type": "response.output_item.added",
+                            "output_index": await _place_item(divider),
+                            "item": divider,
+                        })
+                if pending and not strip_hidden_marker_lines(pending).strip():
+                    await _capture_seeded_output()
+                    emitted_output_items.append(copy.deepcopy(item))
+                    return _output_index_before_open_message(item)
+                if open_message_id is None and strip_hidden_marker_lines(pending).strip():
+                    published = _flush_recorded_message()
+                    if published is not None:
+                        await event_emitter({
+                            "type": "response.output_item.added",
+                            "output_index": _output_index(published),
+                            "item": published,
+                        })
+                await _record_output_item(item)
+                return _output_index(item)
 
-        async def _emit_tool_start(
-            *,
-            call_id: str,
-            name: str,
-            arguments: str,
-            status: str = "in_progress",
-        ) -> str:
-            """Emit a function_call tool card. Returns the effective call_id (UUID-generated if input was empty).
+            async def _open_message() -> None:
+                nonlocal open_message_id
+                if open_message_id is not None or not (body.stream and emitter_supplied):
+                    return
+                open_message_id = f"msg-{uuid.uuid4().hex}"
+                opened: dict[str, Any] = {
+                    "type": "message",
+                    "id": open_message_id,
+                    "role": "assistant",
+                    "status": "in_progress",
+                    "content": [{"type": "output_text", "text": ""}],
+                }
+                await event_emitter({"type": "response.output_item.added", "output_index": _output_index(opened), "item": opened})
 
-            CALLERS MUST capture the return value and pass it to _emit_tool_result for correct pairing.
-            If the caller threads the wrong id, _emit_tool_result will short-circuit and the card will
-            stay in spinner state indefinitely.
-            """
-            nonlocal emitted_response_output_items
-            if not event_emitter or not (valves.SHOW_TOOL_CARDS or _shows_a_file_inline(_origin_tool_name(name))):
-                return call_id
-            effective_id = call_id or f"st-{uuid.uuid4().hex}"
-            if effective_id in emitted_tool_call_items:
+            async def _publish_turn_frame(event: dict[str, Any]) -> None:
+                nonlocal retry_barrier_crossed
+                published = await event_emitter(event)
+                if body.stream and published is not False:
+                    retry_barrier_crossed = True
+
+            def _shows_a_file_inline(name: str) -> bool:
+                context = self._pipe._TOOL_CONTEXT.get()
+                return name == "display_file" and bool(
+                    context and context.terminal_files_inline and not context.fusion_inner
+                )
+
+            async def _emit_tool_start(
+                *,
+                call_id: str,
+                name: str,
+                arguments: str,
+                status: str = "in_progress",
+            ) -> str:
+                """Emit a function_call tool card. Returns the effective call_id (UUID-generated if input was empty).
+
+                CALLERS MUST capture the return value and pass it to _emit_tool_result for correct pairing.
+                If the caller threads the wrong id, _emit_tool_result will short-circuit and the card will
+                stay in spinner state indefinitely.
+                """
+                nonlocal emitted_response_output_items
+                if not event_emitter or not (valves.SHOW_TOOL_CARDS or _shows_a_file_inline(_origin_tool_name(name))):
+                    return call_id
+                effective_id = call_id or f"st-{uuid.uuid4().hex}"
+                if effective_id in emitted_tool_call_items:
+                    return effective_id
+                emitted_tool_call_items.add(effective_id)
+                calls_carded_this_round.add(effective_id)
+                emitted_response_output_items = True
+                call_item: dict[str, Any] = {
+                    "type": "function_call",
+                    "id": effective_id,
+                    "call_id": effective_id,
+                    "name": _origin_tool_name(name) if not valves.SHOW_TOOL_CARDS else name,
+                    "arguments": arguments,
+                    "status": status,
+                }
+                call_index = await _place_item(call_item)
+                await event_emitter({
+                    "type": "response.output_item.added",
+                    "output_index": call_index,
+                    "item": call_item,
+                })
                 return effective_id
-            emitted_tool_call_items.add(effective_id)
-            calls_carded_this_round.add(effective_id)
-            emitted_response_output_items = True
-            call_item: dict[str, Any] = {
-                "type": "function_call",
-                "id": effective_id,
-                "call_id": effective_id,
-                "name": _origin_tool_name(name) if not valves.SHOW_TOOL_CARDS else name,
-                "arguments": arguments,
-                "status": status,
-            }
-            call_index = await _place_item(call_item)
-            await event_emitter({
-                "type": "response.output_item.added",
-                "output_index": call_index,
-                "item": call_item,
-            })
-            return effective_id
 
-        async def _emit_tool_result(
-            *,
-            call_id: str,
-            result_text: str,
-            files: list | None = None,
-            embeds: list | None = None,
-            status: str,
-            pictures: list[str] | None = None,
-        ) -> None:
-            """Emit a tool result card. Used by both pipeline and server tools.
+            async def _emit_tool_result(
+                *,
+                call_id: str,
+                result_text: str,
+                files: list | None = None,
+                embeds: list | None = None,
+                status: str,
+                pictures: list[str] | None = None,
+            ) -> None:
+                """Emit a tool result card. Used by both pipeline and server tools.
 
-            The status is a parameter, not a constant: this is the display card for
-            EVERY output, including the failure stubs built when a tool raises or the
-            call loop is cut short. Open WebUI appends the item verbatim into the
-            persisted message, so hardcoding "completed" stores a failure as a success.
-            """
-            nonlocal emitted_response_output_items
-            if not event_emitter or not call_id or call_id in emitted_tool_output_items:
-                return
-            if not valves.SHOW_TOOL_CARDS and call_id not in emitted_tool_call_items:
-                return
-            result_text = recorded_tool_text(result_text, status)
-            emitted_tool_output_items.add(call_id)
-            emitted_response_output_items = True
-            output_item: dict[str, Any] = {
-                "type": "function_call_output",
-                "id": f"fco-{uuid.uuid4().hex}",
-                "call_id": call_id,
-                "output": picture_output(result_text, pictures or []),
-                "status": status,
-            }
-            if files:
-                output_item["files"] = files
-            if embeds:
-                output_item["embeds"] = embeds
-            output_index = await _place_item(output_item)
-            await event_emitter({"type": "response.output_item.added", "output_index": output_index, "item": output_item})
-            call_item = next(
-                (entry for entry in emitted_output_items
-                 if entry.get("type") == "function_call" and entry.get("call_id") == call_id),
-                None,
-            )
-            if call_item is not None and call_item.get("status") not in OWUI_UNRESOLVABLE_CALL_STATUSES:
-                settled = owui_call_status(status)
-                if call_item.get("status") != settled:
-                    call_item["status"] = settled
-                    await event_emitter({
-                        "type": "response.output_item.added",
-                        "output_index": _output_index(call_item),
-                        "item": copy.deepcopy(call_item),
-                    })
-
-        def _handed_to_open_webui(call_id: str) -> bool:
-            return bool(emitter_supplied and call_id in calls_carded_this_round)
-
-        def _tool_rows(payloads: list[dict[str, Any]], call_id: str) -> list[dict[str, Any]]:
-            rows: list[dict[str, Any]] = []
-            for payload in payloads:
-                if not _handed_to_open_webui(call_id):
-                    payload[PIPE_ONLY_TOOL_ROUND_KEY] = True
-                normalized = normalize_persisted_item(payload)
-                row = (
-                    self._pipe._artifact_store._make_db_row(chat_id, message_id, openwebui_model, normalized)
-                    if normalized
-                    else None
+                The status is a parameter, not a constant: this is the display card for
+                EVERY output, including the failure stubs built when a tool raises or the
+                call loop is cut short. Open WebUI appends the item verbatim into the
+                persisted message, so hardcoding "completed" stores a failure as a success.
+                """
+                nonlocal emitted_response_output_items
+                if not event_emitter or not call_id or call_id in emitted_tool_output_items:
+                    return
+                if not valves.SHOW_TOOL_CARDS and call_id not in emitted_tool_call_items:
+                    return
+                result_text = recorded_tool_text(result_text, status)
+                emitted_tool_output_items.add(call_id)
+                emitted_response_output_items = True
+                output_item: dict[str, Any] = {
+                    "type": "function_call_output",
+                    "id": f"fco-{uuid.uuid4().hex}",
+                    "call_id": call_id,
+                    "output": picture_output(result_text, pictures or []),
+                    "status": status,
+                }
+                if files:
+                    output_item["files"] = files
+                if embeds:
+                    output_item["embeds"] = embeds
+                output_index = await _place_item(output_item)
+                await event_emitter({"type": "response.output_item.added", "output_index": output_index, "item": output_item})
+                call_item = next(
+                    (entry for entry in emitted_output_items
+                     if entry.get("type") == "function_call" and entry.get("call_id") == call_id),
+                    None,
                 )
-                if row:
-                    rows.append(row)
-            return rows
+                if call_item is not None and call_item.get("status") not in OWUI_UNRESOLVABLE_CALL_STATUSES:
+                    settled = owui_call_status(status)
+                    if call_item.get("status") != settled:
+                        call_item["status"] = settled
+                        await event_emitter({
+                            "type": "response.output_item.added",
+                            "output_index": _output_index(call_item),
+                            "item": copy.deepcopy(call_item),
+                        })
 
-        def _round_call_row(call: dict[str, Any], cid: str) -> list[dict[str, Any]]:
-            return _tool_rows([dict(call)], cid)
+            def _handed_to_open_webui(call_id: str) -> bool:
+                return bool(emitter_supplied and call_id in calls_carded_this_round)
 
-        def _round_output_row(output: dict[str, Any], cid: str) -> list[dict[str, Any]]:
-            recorded = output.get("output")
-            if is_picture_output(recorded):
-                text, pictures = tool_output_text_and_pictures(recorded)
-                recorded = picture_output(recorded_tool_text(text, output.get("status")), pictures)
-            elif isinstance(recorded, str):
-                recorded = recorded_tool_text(recorded, output.get("status"))
-            return _tool_rows([{**output, "output": recorded}], cid)
+            def _tool_rows(payloads: list[dict[str, Any]], call_id: str) -> list[dict[str, Any]]:
+                rows: list[dict[str, Any]] = []
+                for payload in payloads:
+                    if not _handed_to_open_webui(call_id):
+                        payload[PIPE_ONLY_TOOL_ROUND_KEY] = True
+                    normalized = normalize_persisted_item(payload)
+                    row = (
+                        self._pipe._artifact_store._make_db_row(chat_id, message_id, openwebui_model, normalized)
+                        if normalized
+                        else None
+                    )
+                    if row:
+                        rows.append(row)
+                return rows
 
-        async def _commit_server_tool_round(
-            call_id: str, name: str, status: str, *, item_type: str, result_text: str, arguments: str = "{}",
-            raw_item: dict[str, Any] | None = None,
-        ) -> None:
-            if not message_id:
-                return
-            if persist_tools_enabled and item_type in _RAW_REPLAYED_SERVER_TOOLS:
-                normalized = normalize_persisted_item(raw_item) if raw_item else None
-                row = (
-                    self._pipe._artifact_store._make_db_row(chat_id, message_id, openwebui_model, normalized)
-                    if normalized
-                    else None
-                )
-                rows = [row] if row else []
-            else:
-                rows = _tool_rows(
-                    [
-                        {"type": "function_call", "call_id": call_id, "name": name, "arguments": arguments},
-                        {"type": "function_call_output", "call_id": call_id, "status": status,
-                         "output": recorded_tool_text(result_text, status)},
-                    ],
-                    call_id,
-                )
-            ulids = await _persist_rows(rows, "server_tool") if rows else []
-            if ulids:
-                await _append_assistant_hidden_markers([_serialize_marker(ulid) for ulid in ulids])
+            def _round_call_row(call: dict[str, Any], cid: str) -> list[dict[str, Any]]:
+                return _tool_rows([dict(call)], cid)
 
-        def _normalize_surrogate_chunk(text: str, bucket: str) -> str:
-            """Coalesce surrogate pairs in streaming chunks to keep UTF-8 happy."""
-            prev = surrogate_carry.get(bucket, "")
-            combined = f"{prev}{text or ''}"
-            if not combined:
-                surrogate_carry[bucket] = ""
+            def _round_output_row(output: dict[str, Any], cid: str) -> list[dict[str, Any]]:
+                recorded = output.get("output")
+                if is_picture_output(recorded):
+                    text, pictures = tool_output_text_and_pictures(recorded)
+                    recorded = picture_output(recorded_tool_text(text, output.get("status")), pictures)
+                elif isinstance(recorded, str):
+                    recorded = recorded_tool_text(recorded, output.get("status"))
+                return _tool_rows([{**output, "output": recorded}], cid)
+
+            async def _commit_server_tool_round(
+                call_id: str, name: str, status: str, *, item_type: str, result_text: str, arguments: str = "{}",
+                raw_item: dict[str, Any] | None = None,
+            ) -> None:
+                if not message_id:
+                    return
+                if persist_tools_enabled and item_type in _RAW_REPLAYED_SERVER_TOOLS:
+                    normalized = normalize_persisted_item(raw_item) if raw_item else None
+                    row = (
+                        self._pipe._artifact_store._make_db_row(chat_id, message_id, openwebui_model, normalized)
+                        if normalized
+                        else None
+                    )
+                    rows = [row] if row else []
+                else:
+                    rows = _tool_rows(
+                        [
+                            {"type": "function_call", "call_id": call_id, "name": name, "arguments": arguments},
+                            {"type": "function_call_output", "call_id": call_id, "status": status,
+                             "output": recorded_tool_text(result_text, status)},
+                        ],
+                        call_id,
+                    )
+                ulids = await _persist_rows(rows, "server_tool") if rows else []
+                if ulids:
+                    await _append_assistant_hidden_markers([_serialize_marker(ulid) for ulid in ulids])
+
+            def _normalize_surrogate_chunk(text: str, bucket: str) -> str:
+                """Coalesce surrogate pairs in streaming chunks to keep UTF-8 happy."""
+                prev = surrogate_carry.get(bucket, "")
+                combined = f"{prev}{text or ''}"
+                if not combined:
+                    surrogate_carry[bucket] = ""
+                    return ""
+                new_carry = ""
+                try:
+                    normalized = combined.encode("utf-16", "surrogatepass").decode("utf-16")
+                except UnicodeDecodeError:
+                    if combined:
+                        last_char = combined[-1]
+                        if 0xD800 <= ord(last_char) <= 0xDBFF:
+                            new_carry = last_char
+                            combined = combined[:-1]
+                    normalized = combined.encode("utf-16", "surrogatepass").decode("utf-16", "ignore")
+                surrogate_carry[bucket] = new_carry
+                return normalized
+
+            def _extract_reasoning_text(event: dict[str, Any]) -> str:
+                """Return best-effort reasoning text from assorted event payloads."""
+                if not isinstance(event, dict):
+                    return ""
+                for key in ("delta", "text"):
+                    value = event.get(key)
+                    if isinstance(value, str) and value:
+                        return value
+                part = event.get("part")
+                if isinstance(part, dict):
+                    part_text = part.get("text")
+                    if isinstance(part_text, str) and part_text:
+                        return part_text
+                    content = part.get("content")
+                    if isinstance(content, list):
+                        fragments: list[str] = []
+                        for entry in content:
+                            if isinstance(entry, dict):
+                                text_val = entry.get("text")
+                                if isinstance(text_val, str):
+                                    fragments.append(text_val)
+                            elif isinstance(entry, str):
+                                fragments.append(entry)
+                        if fragments:
+                            return "".join(fragments)
                 return ""
-            new_carry = ""
-            try:
-                normalized = combined.encode("utf-16", "surrogatepass").decode("utf-16")
-            except UnicodeDecodeError:
-                if combined:
-                    last_char = combined[-1]
-                    if 0xD800 <= ord(last_char) <= 0xDBFF:
-                        new_carry = last_char
-                        combined = combined[:-1]
-                normalized = combined.encode("utf-16", "surrogatepass").decode("utf-16", "ignore")
-            surrogate_carry[bucket] = new_carry
-            return normalized
 
-        def _extract_reasoning_text(event: dict[str, Any]) -> str:
-            """Return best-effort reasoning text from assorted event payloads."""
-            if not isinstance(event, dict):
-                return ""
-            for key in ("delta", "text"):
-                value = event.get(key)
-                if isinstance(value, str) and value:
-                    return value
-            part = event.get("part")
-            if isinstance(part, dict):
-                part_text = part.get("text")
-                if isinstance(part_text, str) and part_text:
-                    return part_text
-                content = part.get("content")
+            def _reasoning_stream_key(event: dict[str, Any], etype: str | None) -> str:
+                """Associate reasoning deltas/snapshots with a stable upstream item id when possible."""
+                item_id = event.get("item_id")
+                if isinstance(item_id, str) and item_id:
+                    return item_id
+                if etype in {"response.output_item.added", "response.output_item.done"}:
+                    item_raw = event.get("item")
+                    item = item_raw if isinstance(item_raw, dict) else {}
+                    iid = item.get("id")
+                    if isinstance(iid, str) and iid:
+                        return iid
+                if active_reasoning_item_id:
+                    return active_reasoning_item_id
+                return "__reasoning__"
+
+            def _extract_reasoning_text_from_item(item: dict[str, Any]) -> str:
+                """Extract reasoning content/summary from a completed output item."""
+                if not isinstance(item, dict):
+                    return ""
+                fragments: list[str] = []
+                content = item.get("content")
                 if isinstance(content, list):
-                    fragments: list[str] = []
                     for entry in content:
                         if isinstance(entry, dict):
                             text_val = entry.get("text")
-                            if isinstance(text_val, str):
+                            if isinstance(text_val, str) and text_val:
                                 fragments.append(text_val)
-                        elif isinstance(entry, str):
-                            fragments.append(entry)
-                    if fragments:
-                        return "".join(fragments)
-            return ""
-
-        def _reasoning_stream_key(event: dict[str, Any], etype: str | None) -> str:
-            """Associate reasoning deltas/snapshots with a stable upstream item id when possible."""
-            item_id = event.get("item_id")
-            if isinstance(item_id, str) and item_id:
-                return item_id
-            if etype in {"response.output_item.added", "response.output_item.done"}:
-                item_raw = event.get("item")
-                item = item_raw if isinstance(item_raw, dict) else {}
-                iid = item.get("id")
-                if isinstance(iid, str) and iid:
-                    return iid
-            if active_reasoning_item_id:
-                return active_reasoning_item_id
-            return "__reasoning__"
-
-        def _extract_reasoning_text_from_item(item: dict[str, Any]) -> str:
-            """Extract reasoning content/summary from a completed output item."""
-            if not isinstance(item, dict):
-                return ""
-            fragments: list[str] = []
-            content = item.get("content")
-            if isinstance(content, list):
-                for entry in content:
-                    if isinstance(entry, dict):
-                        text_val = entry.get("text")
-                        if isinstance(text_val, str) and text_val:
-                            fragments.append(text_val)
-            if fragments:
+                if fragments:
+                    return "".join(fragments)
+                summary = item.get("summary")
+                if isinstance(summary, list):
+                    for entry in summary:
+                        if isinstance(entry, dict):
+                            text_val = entry.get("text")
+                            if isinstance(text_val, str) and text_val:
+                                fragments.append(text_val)
                 return "".join(fragments)
-            summary = item.get("summary")
-            if isinstance(summary, list):
-                for entry in summary:
-                    if isinstance(entry, dict):
-                        text_val = entry.get("text")
-                        if isinstance(text_val, str) and text_val:
-                            fragments.append(text_val)
-            return "".join(fragments)
 
-        def _append_reasoning_text(key: str, incoming: str, *, allow_misaligned: bool) -> str:
-            """Coalesce cumulative/snapshot reasoning payloads into a single stream without replay."""
-            candidate = (incoming or "")
-            if not candidate:
-                return ""
-            current = reasoning_stream_buffers.get(key, "")
-            append = ""
-            if not current:
-                append = candidate
-            elif candidate == current:
+            def _append_reasoning_text(key: str, incoming: str, *, allow_misaligned: bool) -> str:
+                """Coalesce cumulative/snapshot reasoning payloads into a single stream without replay."""
+                candidate = (incoming or "")
+                if not candidate:
+                    return ""
+                current = reasoning_stream_buffers.get(key, "")
                 append = ""
-            elif candidate.startswith(current):
-                append = candidate[len(current) :]
-            elif current.startswith(candidate):
-                append = ""
-            else:
-                append = candidate if allow_misaligned else ""
-            if append:
-                reasoning_stream_buffers[key] = f"{current}{append}"
-            return append
+                if not current:
+                    append = candidate
+                elif candidate == current:
+                    append = ""
+                elif candidate.startswith(current):
+                    append = candidate[len(current) :]
+                elif current.startswith(candidate):
+                    append = ""
+                else:
+                    append = candidate if allow_misaligned else ""
+                if append:
+                    reasoning_stream_buffers[key] = f"{current}{append}"
+                return append
 
-        def _reasoning_display_state(key: str) -> dict[str, Any]:
-            state = reasoning_display.get(key)
-            if state is None:
-                state = {
-                    "wall_open": time.time(),
-                    "mono_open": _monotonic(),
-                    "mono_close": None,
-                    "emitted": False,
-                }
-                reasoning_display[key] = state
-            return state
+            def _reasoning_display_state(key: str) -> dict[str, Any]:
+                state = reasoning_display.get(key)
+                if state is None:
+                    state = {
+                        "wall_open": time.time(),
+                        "mono_open": _monotonic(),
+                        "mono_close": None,
+                        "emitted": False,
+                    }
+                    reasoning_display[key] = state
+                return state
 
-        def _close_open_reasoning_windows() -> None:
-            now = _monotonic()
-            for state in reasoning_display.values():
-                if not state["emitted"] and state["mono_close"] is None:
-                    state["mono_close"] = now
+            def _close_open_reasoning_windows() -> None:
+                now = _monotonic()
+                for state in reasoning_display.values():
+                    if not state["emitted"] and state["mono_close"] is None:
+                        state["mono_close"] = now
 
-        async def _emit_reasoning_item(key: str) -> None:
-            nonlocal emitted_response_output_items
-            if event_emitter is None or not thinking_box_enabled:
-                return
-            if key in reasoning_stream_completed:
-                return
-            text = reasoning_stream_buffers.get(key, "")
-            if not text.strip():
-                return
-            state = _reasoning_display_state(key)
-            if state["emitted"]:
-                return
-            mono_end = state["mono_close"] if state["mono_close"] is not None else _monotonic()
-            duration = max(0.1, round(mono_end - state["mono_open"], 1))
-            item_id = key if key != "__reasoning__" else f"rs-{uuid.uuid4().hex}"
-            state["emitted"] = True
-            reasoning_stream_completed.add(key)
-            emitted_response_output_items = True
-            reasoning_item: dict[str, Any] = {
-                "type": "reasoning",
-                "id": item_id,
-                "summary": [{"type": "summary_text", "text": text}],
-                "status": "completed",
-                "started_at": state["wall_open"],
-                "ended_at": time.time(),
-                "duration": duration,
-            }
-            reasoning_index = await _place_item(reasoning_item)
-            await event_emitter(
-                {
-                    "type": "response.output_item.added",
-                    "output_index": reasoning_index,
-                    "item": reasoning_item,
-                }
-            )
-
-        async def _flush_trailing_reasoning() -> None:
-            if event_emitter is None or not thinking_box_enabled:
-                return
-            for reasoning_key in list(reasoning_display):
-                try:
-                    await _emit_reasoning_item(reasoning_key)
-                except Exception:
-                    self.logger.exception("Failed to emit trailing reasoning item")
-
-        @timed
-        async def _persist_rows(rows: list[dict[str, Any]], reason: str) -> list[str]:
-            try:
-                return await self._pipe._artifact_store._db_persist(rows)
-            except Exception:
-                self.logger.exception("Failed to persist response artifacts (%s)", reason)
-                if event_emitter:
-                    await event_emitter(
-                        {
-                            "type": "status",
-                            "data": {"description": "⚠️ Tool storage unavailable", "done": False},
-                        }
-                    )
-                return []
-
-        async def _flush_pending(reason: str) -> None:
-            if not pending_items:
-                return
-            rows = pending_items[:]
-            pending_items.clear()
-            pending_ulids.extend(await _persist_rows(rows, reason))
-
-        async def _mark_committed_rows() -> None:
-            if not pending_ulids:
-                return
-            ulids = pending_ulids[:]
-            pending_ulids.clear()
-            await _append_assistant_hidden_markers([_serialize_marker(ulid) for ulid in ulids])
-
-        thinking_tasks: list[asyncio.Task] = []
-        thinking_cancelled = False
-        if event_emitter and not is_continuation:
-            async def _later(delay: float, msg: str) -> None:
-                """Emit a delayed status update to reassure the user during long thoughts."""
-                try:
-                    await asyncio.wait_for(model_started.wait(), timeout=delay)
+            async def _emit_reasoning_item(key: str) -> None:
+                nonlocal emitted_response_output_items
+                if event_emitter is None or not thinking_box_enabled:
                     return
-                except TimeoutError:
-                    if model_started.is_set():
-                        return
-                await event_emitter({"type": "status", "data": {"description": msg}})
-
-            thinking_tasks = []
-            for delay, msg in [
-                (0, "Thinking…"),
-                (1.5, "Reading the user's question…"),
-                (4.0, "Gathering my thoughts…"),
-                (6.0, "Exploring possible responses…"),
-                (7.0, "Building a plan…"),
-            ]:
-                if delay == 0:
-                    await event_emitter({"type": "status", "data": {"description": msg}})
-                    continue
-                thinking_tasks.append(
-                    asyncio.create_task(_later(delay + random.uniform(0, 0.5), msg))
-                )
-
-        def cancel_thinking() -> None:
-            """Cancel any scheduled reasoning status updates once the loop completes."""
-            nonlocal thinking_cancelled
-            if thinking_cancelled:
-                return
-            thinking_cancelled = True
-            for t in thinking_tasks:
-                t.cancel()
-
-        def note_model_activity() -> None:
-            """Mark the stream as active and stop any pending thinking statuses."""
-            if not model_started.is_set():
-                model_started.set()
-                cancel_thinking()
-
-        def note_generation_activity() -> None:
-            """Record when output tokens start/continue streaming."""
-            nonlocal generation_started_at, generation_last_event_at
-            now = perf_counter()
-            generation_last_event_at = now
-            if generation_started_at is None:
-                generation_started_at = now
-
-        def _continuation_lead() -> str:
-            nonlocal continuation_newline_pending
-            lead = "\n" if continuation_newline_pending and not assistant_message else ""
-            continuation_newline_pending = False
-            return lead
-
-        async def _append_assistant_hidden_markers(markers: list[str]) -> None:
-            nonlocal assistant_message, retry_barrier_crossed
-            if not markers:
-                return
-            assistant_message += _continuation_lead()
-            msg_before = len(assistant_message)
-            if not assistant_message and continues_after_text:
-                assistant_message = "\n\n"
-            assistant_message = _append_hidden_marker_lines(assistant_message, markers)
-            if reasoning_anchor_state["chars_at_last_chunk"] == msg_before:
-                reasoning_anchor_state["chars_at_last_chunk"] = len(assistant_message)
-            marker_delta = assistant_message[msg_before:]
-            if body.stream:
-                await _open_message()
-                await event_emitter({"type": "chat:message:delta", "data": {"content": marker_delta}})
-                retry_barrier_crossed = True
-            elif content_handed_back:
-                self.logger.warning(
-                    "Committed artifact row(s) left unaddressed: the content was handed back before its "
-                    "markers were added (chat_id=%s markers=%s)",
-                    chat_id,
-                    markers,
-                )
-            else:
-                self.logger.debug(
-                    "Hidden markers added to the content this turn returns (chat_id=%s markers=%s)",
-                    chat_id,
-                    markers,
-                )
-
-        def _extract_call_id(item: Any) -> str:
-            """Best-effort call_id extraction for tool call/output items."""
-            if not isinstance(item, dict):
-                return ""
-            candidate = item.get("call_id") or item.get("id")
-            if isinstance(candidate, str):
-                return candidate.strip()
-            return ""
-
-        async def _notify_unhandled_citations(raw_annotations: Any) -> None:
-            """Warn (status + toast) once if the response carries a citation type we can't
-            render yet (e.g. file_citation). Never alters or halts the answer."""
-            nonlocal unhandled_citation_notified
-            if unhandled_citation_notified:
-                return
-            unhandled = _unhandled_citation_types(raw_annotations)
-            if not unhandled:
-                return
-            unhandled_citation_notified = True
-            type_label = ", ".join(sorted(unhandled))
-            self.logger.debug("Unhandled citation annotation type(s): %s", type_label)
-            await self._pipe._event_emitter_handler._emit_status(
-                event_emitter,
-                "Some source citations in this response couldn't be displayed.",
-                done=True,
-            )
-            await self._pipe._event_emitter_handler._emit_notification(
-                event_emitter,
-                f"This response included a citation type this pipe can't render yet ({type_label}). "
-                "Your answer is unaffected — please report this so support can be added.",
-                level="warning",
-            )
-
-        async def _emit_annotation_citations(raw_annotations: Any) -> None:
-            """Emit url_citation citations, skipping any URL already emitted (per-URL dedup)."""
-            await _notify_unhandled_citations(raw_annotations)
-            if not isinstance(raw_annotations, list) or not raw_annotations:
-                return
-            for url, title, content in _parse_url_citation_annotations(raw_annotations):
-                url = url.removesuffix("?utm_source=openai")
-                if url in ordinal_by_url:
-                    continue
-                ordinal_by_url[url] = len(ordinal_by_url) + 1
-                host = _citation_host(url)
-                citation = {
-                    "source": {"name": host or "source", "url": url},
-                    "document": [content[:citation_excerpt_max] if content else title],
-                    "metadata": [{
-                        "source": url,
-                        "date_accessed": citation_access_stamp(),
-                    }],
+                if key in reasoning_stream_completed:
+                    return
+                text = reasoning_stream_buffers.get(key, "")
+                if not text.strip():
+                    return
+                state = _reasoning_display_state(key)
+                if state["emitted"]:
+                    return
+                mono_end = state["mono_close"] if state["mono_close"] is not None else _monotonic()
+                duration = max(0.1, round(mono_end - state["mono_open"], 1))
+                item_id = key if key != "__reasoning__" else f"rs-{uuid.uuid4().hex}"
+                state["emitted"] = True
+                reasoning_stream_completed.add(key)
+                emitted_response_output_items = True
+                reasoning_item: dict[str, Any] = {
+                    "type": "reasoning",
+                    "id": item_id,
+                    "summary": [{"type": "summary_text", "text": text}],
+                    "status": "completed",
+                    "started_at": state["wall_open"],
+                    "ended_at": time.time(),
+                    "duration": duration,
                 }
+                reasoning_index = await _place_item(reasoning_item)
+                await event_emitter(
+                    {
+                        "type": "response.output_item.added",
+                        "output_index": reasoning_index,
+                        "item": reasoning_item,
+                    }
+                )
+
+            async def _flush_trailing_reasoning() -> None:
+                if event_emitter is None or not thinking_box_enabled:
+                    return
+                for reasoning_key in list(reasoning_display):
+                    try:
+                        await _emit_reasoning_item(reasoning_key)
+                    except Exception:
+                        self.logger.exception("Failed to emit trailing reasoning item")
+
+            @timed
+            async def _persist_rows(rows: list[dict[str, Any]], reason: str) -> list[str]:
                 try:
-                    await self._pipe._event_emitter_handler._emit_citation(event_emitter, citation)
-                except Exception as exc:
-                    self.logger.debug("Failed to emit annotation citation (final): %s", exc, exc_info=True)
-                emitted_citations.append(citation)
+                    return await self._pipe._artifact_store._db_persist(rows)
+                except Exception:
+                    self.logger.exception("Failed to persist response artifacts (%s)", reason)
+                    if event_emitter:
+                        await event_emitter(
+                            {
+                                "type": "status",
+                                "data": {"description": "⚠️ Tool storage unavailable", "done": False},
+                            }
+                        )
+                    return []
 
-        request_started_at = perf_counter()
+            async def _flush_pending(reason: str) -> None:
+                if not pending_items:
+                    return
+                rows = pending_items[:]
+                pending_items.clear()
+                pending_ulids.extend(await _persist_rows(rows, reason))
 
-        error_occurred = False
-        was_cancelled = False
-        loop_limit_reached = False
-        ran_out = False
-        last_round_had_calls = False
-        retry_barrier_crossed = False
-        handed_back_for_retry = False
-        content_handed_back = False
+            async def _mark_committed_rows() -> None:
+                if not pending_ulids:
+                    return
+                ulids = pending_ulids[:]
+                pending_ulids.clear()
+                await _append_assistant_hidden_markers([_serialize_marker(ulid) for ulid in ulids])
 
-        def _record_outcome() -> None:
-            if outcome_sink is None:
-                return
-            outcome_sink["error_occurred"] = error_occurred
-            outcome_sink["was_cancelled"] = was_cancelled
-            outcome_sink["reason"] = session_log_reason or None
+            thinking_tasks: list[asyncio.Task] = []
+            thinking_cancelled = False
+            if event_emitter and not is_continuation:
+                async def _later(delay: float, msg: str) -> None:
+                    """Emit a delayed status update to reassure the user during long thoughts."""
+                    try:
+                        await asyncio.wait_for(model_started.wait(), timeout=delay)
+                        return
+                    except TimeoutError:
+                        if model_started.is_set():
+                            return
+                    await event_emitter({"type": "status", "data": {"description": msg}})
 
-        final_response: dict[str, Any] | None = None
-        dispatched_metered_chars: int | None = None
-        dispatched_model_id: str = ""
+                thinking_tasks = []
+                for delay, msg in [
+                    (0, "Thinking…"),
+                    (1.5, "Reading the user's question…"),
+                    (4.0, "Gathering my thoughts…"),
+                    (6.0, "Exploring possible responses…"),
+                    (7.0, "Building a plan…"),
+                ]:
+                    if delay == 0:
+                        await event_emitter({"type": "status", "data": {"description": msg}})
+                        continue
+                    thinking_tasks.append(
+                        asyncio.create_task(_later(delay + random.uniform(0, 0.5), msg))
+                    )
+
+            def cancel_thinking() -> None:
+                """Cancel any scheduled reasoning status updates once the loop completes."""
+                nonlocal thinking_cancelled
+                if thinking_cancelled:
+                    return
+                thinking_cancelled = True
+                for t in thinking_tasks:
+                    t.cancel()
+
+            def note_model_activity() -> None:
+                """Mark the stream as active and stop any pending thinking statuses."""
+                if not model_started.is_set():
+                    model_started.set()
+                    cancel_thinking()
+
+            def note_generation_activity() -> None:
+                """Record when output tokens start/continue streaming."""
+                nonlocal generation_started_at, generation_last_event_at
+                now = perf_counter()
+                generation_last_event_at = now
+                if generation_started_at is None:
+                    generation_started_at = now
+
+            def _continuation_lead() -> str:
+                nonlocal continuation_newline_pending
+                lead = "\n" if continuation_newline_pending and not assistant_message else ""
+                continuation_newline_pending = False
+                return lead
+
+            async def _append_assistant_hidden_markers(markers: list[str]) -> None:
+                nonlocal assistant_message, retry_barrier_crossed
+                if not markers:
+                    return
+                assistant_message += _continuation_lead()
+                msg_before = len(assistant_message)
+                if not assistant_message and continues_after_text:
+                    assistant_message = "\n\n"
+                assistant_message = _append_hidden_marker_lines(assistant_message, markers)
+                if reasoning_anchor_state["chars_at_last_chunk"] == msg_before:
+                    reasoning_anchor_state["chars_at_last_chunk"] = len(assistant_message)
+                marker_delta = assistant_message[msg_before:]
+                if body.stream:
+                    await _open_message()
+                    await event_emitter({"type": "chat:message:delta", "data": {"content": marker_delta}})
+                    retry_barrier_crossed = True
+                elif content_handed_back:
+                    self.logger.warning(
+                        "Committed artifact row(s) left unaddressed: the content was handed back before its "
+                        "markers were added (chat_id=%s markers=%s)",
+                        chat_id,
+                        markers,
+                    )
+                else:
+                    self.logger.debug(
+                        "Hidden markers added to the content this turn returns (chat_id=%s markers=%s)",
+                        chat_id,
+                        markers,
+                    )
+
+            def _extract_call_id(item: Any) -> str:
+                """Best-effort call_id extraction for tool call/output items."""
+                if not isinstance(item, dict):
+                    return ""
+                candidate = item.get("call_id") or item.get("id")
+                if isinstance(candidate, str):
+                    return candidate.strip()
+                return ""
+
+            async def _notify_unhandled_citations(raw_annotations: Any) -> None:
+                """Warn (status + toast) once if the response carries a citation type we can't
+                render yet (e.g. file_citation). Never alters or halts the answer."""
+                nonlocal unhandled_citation_notified
+                if unhandled_citation_notified:
+                    return
+                unhandled = _unhandled_citation_types(raw_annotations)
+                if not unhandled:
+                    return
+                unhandled_citation_notified = True
+                type_label = ", ".join(sorted(unhandled))
+                self.logger.debug("Unhandled citation annotation type(s): %s", type_label)
+                await self._pipe._event_emitter_handler._emit_status(
+                    event_emitter,
+                    "Some source citations in this response couldn't be displayed.",
+                    done=True,
+                )
+                await self._pipe._event_emitter_handler._emit_notification(
+                    event_emitter,
+                    f"This response included a citation type this pipe can't render yet ({type_label}). "
+                    "Your answer is unaffected — please report this so support can be added.",
+                    level="warning",
+                )
+
+            async def _emit_annotation_citations(raw_annotations: Any) -> None:
+                """Emit url_citation citations, skipping any URL already emitted (per-URL dedup)."""
+                await _notify_unhandled_citations(raw_annotations)
+                if not isinstance(raw_annotations, list) or not raw_annotations:
+                    return
+                for url, title, content in _parse_url_citation_annotations(raw_annotations):
+                    url = url.removesuffix("?utm_source=openai")
+                    if url in ordinal_by_url:
+                        continue
+                    ordinal_by_url[url] = len(ordinal_by_url) + 1
+                    host = _citation_host(url)
+                    citation = {
+                        "source": {"name": host or "source", "url": url},
+                        "document": [content[:citation_excerpt_max] if content else title],
+                        "metadata": [{
+                            "source": url,
+                            "date_accessed": citation_access_stamp(),
+                        }],
+                    }
+                    try:
+                        await self._pipe._event_emitter_handler._emit_citation(event_emitter, citation)
+                    except Exception as exc:
+                        self.logger.debug("Failed to emit annotation citation (final): %s", exc, exc_info=True)
+                    emitted_citations.append(citation)
+
+            request_started_at = perf_counter()
+
+            error_occurred = False
+            was_cancelled = False
+            loop_limit_reached = False
+            ran_out = False
+            last_round_had_calls = False
+            retry_barrier_crossed = False
+            handed_back_for_retry = False
+            content_handed_back = False
+
+            def _record_outcome() -> None:
+                if outcome_sink is None:
+                    return
+                outcome_sink["error_occurred"] = error_occurred
+                outcome_sink["was_cancelled"] = was_cancelled
+                outcome_sink["reason"] = session_log_reason or None
+
+            final_response: dict[str, Any] | None = None
+            dispatched_metered_chars: int | None = None
+            dispatched_model_id: str = ""
+            _release_armed = False
+        except BaseException:
+            if _release_armed:
+                self._pipe._artifact_store._reply_memory.release(chat_id, message_id)
+            raise
+
         try:
             for loop_index in range(valves.MAX_FUNCTION_CALL_LOOPS + 1):
                 if loop_index >= valves.MAX_FUNCTION_CALL_LOOPS and not loop_limit_reached:

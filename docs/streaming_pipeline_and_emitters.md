@@ -209,11 +209,17 @@ Flush triggers:
 - **Idle timeout** — `STREAMING_IDLE_FLUSH_MS` flushes buffers when producer pauses
 - **End of micro-drain cycle** — flush if buffered chars >= `STREAMING_NAGLE_MIN_FLUSH_CHARS` (drain is bounded to 32 events and only runs while no output has been produced yet)
 - **End of stream** — unconditional final flush
+- **Error mid-stream** — the buffered tail is force-flushed before the streaming error is re-raised
 
 ### Coverage: both streaming paths
 
 - **Responses API path** (`responses_adapter.py`): Uses `NagleCoalescer` directly in the existing consumer loop (already has `event_queue` with workers).
 - **Chat Completions API path** (`chat_completions_adapter.py`): Wrapped with `nagle_coalesce_stream()` which creates a lightweight pump task + queue + bounded micro-drain.
+
+On both paths the tail the coalescer is holding is delivered to the consumer when a
+streaming error arrives, on the Responses path by the consumer loop's own force flush
+before the re-raise and on the Chat Completions path by the final flush in
+`nagle_coalesce_stream()`.
 
 ### Valves
 

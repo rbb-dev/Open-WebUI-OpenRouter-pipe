@@ -662,7 +662,6 @@ class TestIdleFlushTimeout:
             "loop has its own copy again, which is how it went unguarded the first time"
         )
 
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("nagle_min_chars", [1, 3], ids=["floor-1", "floor-3"])
 async def test_the_responses_loop_also_flushes_while_the_producer_is_idle(

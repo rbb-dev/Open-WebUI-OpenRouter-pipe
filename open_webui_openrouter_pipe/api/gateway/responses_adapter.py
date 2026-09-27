@@ -219,13 +219,10 @@ class ResponsesAdapter:
         passthrough_deltas = delta_char_limit <= 0 and idle_flush_ms <= 0
         requested_model = request_body.get("model")
 
-        def _raise_in_band_error(current: dict[str, Any] | None) -> None:
+        def _raise_in_band_error(current: dict[str, Any] | None):
             if current is None:
                 return
-            streaming_error = self._pipe._ensure_error_formatter()._extract_streaming_error_event(current, requested_model)
-            if streaming_error is not None:
-                _record_failed_call(self._pipe, breaker_key)
-                raise streaming_error
+            return self._pipe._ensure_error_formatter()._extract_streaming_error_event(current, requested_model)
 
         @timed
         async def _producer() -> None:
@@ -504,7 +501,14 @@ class ResponsesAdapter:
                                 "Discarding a non-object SSE frame: %s", type(current).__name__
                             )
                         continue
-                    _raise_in_band_error(current)
+                    streaming_error = _raise_in_band_error(current)
+                    if streaming_error is not None:
+                        _record_failed_call(self._pipe, breaker_key)
+                        tail: list[dict[str, Any]] = []
+                        coalescer.flush_all_to(tail)
+                        for item in tail:
+                            yield item
+                        raise streaming_error
                     stream_ended = stream_ended or current.get("type") in _STREAM_END_EVENTS
                     coalescer.process_event(current, yield_queue, passthrough=passthrough_deltas)
 
@@ -529,7 +533,14 @@ class ResponsesAdapter:
                                     "Discarding a non-object SSE frame: %s", type(current).__name__
                                 )
                             continue
-                        _raise_in_band_error(current)
+                        streaming_error = _raise_in_band_error(current)
+                        if streaming_error is not None:
+                            _record_failed_call(self._pipe, breaker_key)
+                            tail: list[dict[str, Any]] = []
+                            coalescer.flush_all_to(tail)
+                            for item in tail:
+                                yield item
+                            raise streaming_error
                         stream_ended = stream_ended or current.get("type") in _STREAM_END_EVENTS
                         coalescer.process_event(current, yield_queue, passthrough=passthrough_deltas)
 

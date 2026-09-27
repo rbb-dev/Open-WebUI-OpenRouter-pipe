@@ -10,6 +10,12 @@ added, and reports the three categories separately.
 The diff runs from the baseline commit to the WORKING TREE. ``base..HEAD`` cannot see a
 staged or unstaged edit, which is the state this gate runs in.
 
+A re-indent is not prose, so it is not reported: a four-space re-indent of a whole region
+rewrites every line's text, and without an exemption the most conservative change this
+codebase can make is scored as thirty lines of new prose. Exemption is decided by aligning
+the added lines against the removed ones and keeping only a pair that differs by leading
+whitespace and nothing else.
+
 Directive comments survive, sourced from the bundler's own rule rather than a second
 copy of it: the bundler is what decides which comments are load-bearing.
 
@@ -30,6 +36,7 @@ import re
 import subprocess
 import sys
 import tokenize
+from difflib import SequenceMatcher
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -38,6 +45,9 @@ BUNDLER = PROJECT_ROOT / "scripts" / "bundle_v2.py"
 CATEGORIES = ("comment", "bare-string", "docstring")
 
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+
+_REINDENT_MIN_BLOCK = 2   # a re-indent rewrites a contiguous REGION, so its lines arrive as a
+                          # multi-line aligned block; a lone match is a move, or a coincidence
 
 
 def directive_comment_re(bundler: Path | None = None) -> re.Pattern[str]:
@@ -78,8 +88,22 @@ def _untracked_files(tree_root: Path, path_spec: str) -> list[str]:
     return [line for line in listing.splitlines() if line.strip()]
 
 
-def added_lines(base: str, path_spec: str, *, root: Path | None = None) -> dict[str, set[int]]:
-    """Line numbers added in the working tree, per repo-relative path."""
+def _diff_positions(
+    base: str, path_spec: str, *, root: Path | None = None
+) -> tuple[dict[str, set[int]], dict[str, set[int]]]:
+    """Added line numbers per file, and the subset that only re-indents a removed line.
+
+    A re-indent rewrites every line's text, so ``git diff`` reports the whole region as
+    added. Without the second half, the most conservative change this codebase can
+    make -- one that moves code and says nothing -- is scored as thirty lines of new
+    prose.
+
+    The alignment is over the whole file, not per hunk. A four-space re-indent leaves
+    only blank lines and a few coincidences byte-identical, so ``git diff`` shatters
+    one contiguous region into dozens of hunks whose added and removed sides no longer
+    line up; pairing within a hunk then misses most of the region. Across the file the
+    two sides are the same lines in the same order, which is what the matcher needs.
+    """
     tree_root = root or PROJECT_ROOT
     diff = subprocess.run(
         ["git", "diff", "--unified=0", "--no-color", base, "--", path_spec],
@@ -89,32 +113,105 @@ def added_lines(base: str, path_spec: str, *, root: Path | None = None) -> dict[
         check=True,
     ).stdout
     per_file: dict[str, set[int]] = {}
-    current: set[int] | None = None
+    added_by_file: dict[str, list[tuple[int, str]]] = {}
+    removed_by_file: dict[str, list[str]] = {}
+    current: str | None = None
     cursor = 0
+
     for raw in diff.splitlines():
         if raw.startswith("+++ "):
             target = raw[4:].strip()
-            current = (
-                None
-                if target == "/dev/null"
-                else per_file.setdefault(target.removeprefix("b/"), set())
-            )
+            if target == "/dev/null":
+                current = None
+            else:
+                current = target.removeprefix("b/")
+                per_file.setdefault(current, set())
+                added_by_file.setdefault(current, [])
+                removed_by_file.setdefault(current, [])
             continue
         if raw.startswith("@@"):
             match = _HUNK_RE.match(raw)
             if match is not None:
                 cursor = int(match.group(1))
             continue
-        if current is not None and raw.startswith("+"):
-            current.add(cursor)
+        if current is None:
+            continue
+        if raw.startswith("+"):
+            per_file[current].add(cursor)
+            added_by_file[current].append((cursor, raw[1:]))
             cursor += 1
+        elif raw.startswith("-"):
+            removed_by_file[current].append(raw[1:])
+
+    reindented: dict[str, set[int]] = {}
+    for rel, added_lines_here in added_by_file.items():
+        removed_here = removed_by_file[rel]
+        if not added_lines_here or not removed_here:
+            continue
+        _exempt_reindents(rel, added_lines_here, removed_here, reindented)
+
     for rel in _untracked_files(tree_root, path_spec):
         target = tree_root / rel
         if not target.is_file():
             continue
         body = target.read_text(encoding="utf-8", errors="replace")
         per_file.setdefault(rel, set()).update(range(1, len(body.splitlines()) + 1))
-    return per_file
+    return per_file, reindented
+
+
+def _exempt_reindents(
+    rel: str,
+    added_lines_here: list[tuple[int, str]],
+    removed_here: list[str],
+    reindented: dict[str, set[int]],
+) -> None:
+    """Exempt added lines that only re-indent a line already there.
+
+    A line is exempt when it pairs, in order, with a removed line carrying the same
+    stripped text and differs from it by leading whitespace and nothing else.
+
+    Order alone is not enough and text alone is not enough. A line that MOVED within a
+    hunk keeps its exact text, so text matching would exempt prose that changed
+    position to explain something else. Two clauses separate the two. A line that
+    carries text is exempt only when it is by definition NOT byte-identical to the
+    removed line it pairs with, so a moved line -- byte-identical to the one it
+    replaced -- is never exempt; and the pair must arrive as part of a multi-line
+    block, because a re-indent rewrites a contiguous region while a move is a lone
+    line. The first clause alone is not sufficient: a line that moves into a deeper
+    scope both changes position and re-indents, so it is no longer byte-identical and
+    it is that second clause, the block, that keeps it counted.
+
+    A blank line is exempt whenever it pairs with a blank one, with or without the
+    indentation change, because a blank line is not prose and there is nothing in it to
+    have moved. This is not a hole: a blank line is only ever counted because it falls
+    inside some other node's line range, and that node's text lines are matched on the
+    strict rule above and still reported. Exempting the interior blank of a docstring
+    that the gate has already flagged on its first line changes nothing about the
+    verdict. The blank line inside a multi-line docstring is the case that needs it: a
+    re-indent shifts such a line right, but a formatter that left it empty means it
+    arrives byte-identical.
+    """
+    matcher = SequenceMatcher(
+        a=[text.strip() for _, text in added_lines_here],
+        b=[text.strip() for text in removed_here],
+        autojunk=False,
+    )
+    for a_start, b_start, size in matcher.get_matching_blocks():
+        if size < _REINDENT_MIN_BLOCK:
+            continue
+        for offset in range(size):
+            line_no, text = added_lines_here[a_start + offset]
+            paired = removed_here[b_start + offset]
+            if not text.strip():
+                if not paired.strip():
+                    reindented.setdefault(rel, set()).add(line_no)
+            elif text != text.lstrip() and paired != text:
+                reindented.setdefault(rel, set()).add(line_no)
+
+
+def added_lines(base: str, path_spec: str, *, root: Path | None = None) -> dict[str, set[int]]:
+    """Line numbers added in the working tree, per repo-relative path."""
+    return _diff_positions(base, path_spec, root=root)[0]
 
 
 def _docstring_statements(tree: ast.AST) -> set[int]:
@@ -163,15 +260,17 @@ def sweep(
     """Added prose per changed module, per category."""
     tree_root = root or PROJECT_ROOT
     directive = directive_comment_re(bundler)
+    per_file, reindented = _diff_positions(base, path_spec, root=tree_root)
     report: dict[str, dict[str, list[int]]] = {}
-    for rel, added in sorted(added_lines(base, path_spec, root=tree_root).items()):
+    for rel, added in sorted(per_file.items()):
         if not rel.endswith(".py"):
             continue
         target = tree_root / rel
         if not target.is_file():
             continue
+        counted = added - reindented.get(rel, set())
         hits = {
-            name: sorted(lines & added)
+            name: sorted(lines & counted)
             for name, lines in prose_lines(
                 target.read_text(encoding="utf-8"), directive
             ).items()

@@ -4,8 +4,10 @@ Open WebUI stores what it folds together from the pipe's events, not what the pi
 published `response.completed` output the way Open WebUI's middleware does and check the stored array:
 
 - A continued turn (the request carries `assistant_message_id`) sets the message's stored output aside as
-  `prior_output`, lets `response.completed` replace `output`, and saves `prior_output + output`. Open WebUI keeps
-  the stored items itself, so the pipe must not republish them.
+  `prior_output`, lets `response.completed` replace `output`, and saves what its own `full_output()` returns: the
+  two arrays concatenated, except when both ends are a `message` item, in which case the last stored message and the
+  first published one are merged into a single item carrying the stored item's `id` and both rounds' content parts.
+  Open WebUI keeps the stored items itself, so the pipe must not republish them.
 - A tool-loop re-call sets everything accumulated so far aside (`full_output()`), streams the re-call into a fresh
   `output`, and puts the set-aside items back in front. Such a re-call carries no `assistant_message_id`, because
   the frontend sends that only when continuing, so it is on that path that the pipe reads the stored output.
@@ -112,9 +114,10 @@ async def _published(
 
 def _stored_after_one_call(existing, published, *, continued: bool):
     if continued:
-        prior_output, output = list(existing), []
-    else:
-        prior_output, output = [], list(existing)
+        from tests.test_tool_rounds_reach_the_model_once import _open_webui_0_11_4_full_output
+
+        return _open_webui_0_11_4_full_output(list(existing), list(published or []))
+    prior_output, output = [], list(existing)
     output = published or output
     return prior_output + output
 
@@ -156,6 +159,10 @@ async def test_the_stored_turn_holds_each_earlier_item_exactly_once(monkeypatch,
     assert sorted(i for i in ids if i in STORED_IDS) == sorted(STORED_IDS), ids
     assert len(ids) == len(set(ids)), ids
     assert "Part two." in "".join(_texts(stored))
+
+
+def _ids(items) -> list[str | None]:
+    return [item.get("id") for item in items]
 
 
 @pytest.mark.asyncio
@@ -501,10 +508,12 @@ async def test_a_continue_keeps_the_stored_answer_when_the_pipes_own_tool_result
         pipe, monkeypatch, continued=True, steps=_answer_steps("Part two."), body_input=continue_input
     )
 
-    after = _stored_after_one_call(stored, published, continued=True)
-    stored_ids = [item.get("id") for item in stored]
-    after_ids = [item.get("id") for item in after]
-    assert sorted(i for i in after_ids if i in stored_ids) == sorted(stored_ids), after_ids
+    after: list[dict[str, Any]] = _stored_after_one_call(stored, published, continued=True)
+    stored_ids = _ids(stored)
+    after_ids = _ids(after)
+    assert sorted(i for i in after_ids if i is not None and i in stored_ids) == sorted(
+        i for i in stored_ids if i is not None
+    ), after_ids
     assert len(after_ids) == len(set(after_ids)), after_ids
     assert "".join(_texts(after)).count("Part one.") == 1, _texts(after)
     assert "Part two." in "".join(_texts(after))

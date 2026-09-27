@@ -223,3 +223,10 @@ def test_an_unknown_allow_category_is_refused_rather_than_ignored(tmp_path, monk
 
     with pytest.raises(SystemExit):
         gate.main(["HEAD", "--path", "pkg", "--allow", "docstrings"])
+
+
+_REINDENT_BUNDLER = Path("scripts/bundle_v2.py").resolve()
+
+
+def _sweep(root):
+    return gate.sweep("HEAD", "pkg", root=root, bundler=_REINDENT_BUNDLER)

@@ -101,3 +101,23 @@ import re  # noqa: E402
 from typing import cast  # noqa: E402
 
 from open_webui_openrouter_pipe import Pipe, ResponsesBody  # noqa: E402
+
+_FULL_OUTPUT_CODE: list[Any] = []
+
+
+def _open_webui_0_11_4_full_output(prior: list[dict[str, Any]], output: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """What Open WebUI saves for a Continue: its own `full_output()` (nested in its streaming response handler),
+    compiled from the installed source, so an upstream change reaches every test that relies on it. The continued
+    message's last text item and the continuation's first become one item by joining their content parts."""
+    if not _FULL_OUTPUT_CODE:
+        import ast
+        import sysconfig
+        from pathlib import Path
+
+        source = Path(sysconfig.get_paths()["purelib"]) / "open_webui" / "utils" / "middleware.py"
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        (node,) = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "full_output"]
+        _FULL_OUTPUT_CODE.append(compile(ast.Module(body=[node], type_ignores=[]), str(source), "exec"))
+    namespace: dict[str, Any] = {"continuing": True, "prior_output": prior, "output": output}
+    exec(_FULL_OUTPUT_CODE[0], namespace)
+    return namespace["full_output"]()

@@ -823,14 +823,23 @@ async def test_responses_streaming_final_delta_flush(pipe_instance_async):
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            delta_char_limit=100,
-        valves=valves,
+            valves=valves,
+            delta_char_limit=256,
+            idle_flush_ms=30,
+            nagle_min_chars=3,
         ):
             events.append(event)
 
         await session.close()
 
     assert any(e.get("type") == "response.completed" for e in events)
+    # This test cannot observe double delivery, and does not claim to: `response.completed`
+    # is a stream-end event, so the coalescer force-flushes the tail on it before the final
+    # flush and the final flush yields nothing. The double-delivery discriminator is
+    # `test_the_error_flush_does_not_run_on_the_success_path`, whose fixture has no
+    # stream-end event; this one keeps its fixture because the `response.completed`
+    # assertion above is the point of it.
+    assert _joined_text(events) == "AB"
 
 
 @pytest.mark.asyncio
@@ -1503,53 +1512,101 @@ async def test_responses_streaming_reasoning_events(pipe_instance_async):
     assert len(reasoning_events) >= 1
 
 
-@pytest.mark.asyncio
-async def test_responses_streaming_error_event_in_stream(pipe_instance_async):
-    """Test that error events in stream trigger error handling (line 351)."""
-    pipe = pipe_instance_async
+_STREAM_ERROR_SSE = _sse({
+    "type": "error",
+    "error": {
+        "message": "Model overloaded",
+        "type": "server_error",
+        "code": "server_overloaded",
+    },
+})
+
+
+def _text_delta_sse(delta: str) -> str:
+    return _sse({
+        "type": "response.output_text.delta",
+        "delta": delta,
+        "item_id": "m1",
+        "output_index": 0,
+        "content_index": 0,
+    })
+
+
+async def _collect_responses_stream(pipe, sse_body, **kwargs):
+    """Drive the real /responses streaming request, returning (events, error)."""
     valves = pipe.valves
     session = pipe._create_http_session(valves)
+    events = []
+    error_raised = False
+    try:
+        with aioresponses() as mock_http:
+            mock_http.post(
+                "https://openrouter.ai/api/v1/responses",
+                body=sse_body.encode("utf-8"),
+                headers={"Content-Type": "text/event-stream"},
+                status=200,
+            )
+            try:
+                async for event in pipe.send_openai_responses_streaming_request(
+                    session,
+                    {"model": "openai/gpt-4o", "stream": True, "input": []},
+                    api_key="test-key",
+                    base_url="https://openrouter.ai/api/v1",
+                    valves=valves,
+                    **kwargs,
+                ):
+                    events.append(event)
+            except OpenRouterAPIError:
+                error_raised = True
+            except Exception:
+                error_raised = True
+    finally:
+        await session.close()
+    return events, error_raised
 
-    sse_response = (
-        _sse({"type": "response.output_text.delta", "delta": "Hello"})
-        + _sse({
-            "type": "error",
-            "error": {
-                "message": "Model overloaded",
-                "type": "server_error",
-                "code": "server_overloaded"
-            }
-        })
-        + "data: [DONE]\n\n"
+
+def _joined_text(events) -> str:
+    return "".join(
+        e.get("delta", "")
+        for e in events
+        if e.get("type") == "response.output_text.delta"
     )
 
-    with aioresponses() as mock_http:
-        mock_http.post(
-            "https://openrouter.ai/api/v1/responses",
-            body=sse_response.encode("utf-8"),
-            headers={"Content-Type": "text/event-stream"},
-            status=200,
-        )
 
-        events = []
-        error_raised = False
-        try:
-            async for event in pipe.send_openai_responses_streaming_request(
-                session,
-                {"model": "openai/gpt-4o", "stream": True, "input": []},
-                api_key="test-key",
-                base_url="https://openrouter.ai/api/v1",
-            valves=valves,
-            ):
-                events.append(event)
-        except OpenRouterAPIError:
-            error_raised = True
-        except Exception:
-            error_raised = True
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "batching",
+    [
+        pytest.param(
+            {"delta_char_limit": 256, "idle_flush_ms": 30, "nagle_min_chars": 3},
+            id="buffering-on",
+        ),
+        pytest.param(
+            {"delta_char_limit": 0, "idle_flush_ms": 0},
+            id="buffering-off",
+        ),
+    ],
+)
+async def test_responses_streaming_error_event_in_stream(pipe_instance_async, batching):
+    """An error event mid-stream raises, and the coalescer's tail is delivered first.
 
-        await session.close()
+    The valves are passed EXPLICITLY in every arm. Relying on the signature defaults
+    takes `delta_char_limit=0, idle_flush_ms=0, nagle_min_chars=1`, which is
+    passthrough mode: nothing is ever buffered, so the text arrives whatever the
+    flush logic does and the test is green against a defect that loses the whole tail
+    on the shipped production valves.
+    """
+    events, error_raised = await _collect_responses_stream(
+        pipe_instance_async,
+        _text_delta_sse("Hello") + _STREAM_ERROR_SSE + "data: [DONE]\n\n",
+        **batching,
+    )
 
-    assert len(events) > 0 or error_raised
+    assert error_raised is True
+    if batching["delta_char_limit"] > 0:
+        # Exact equality against the fixture's own literal, never `in` and never a
+        # length: a hardcode that returns "Hello" + "X"*115 satisfies both of those.
+        assert _joined_text(events) == "Hello"
 
 
 @pytest.mark.asyncio
