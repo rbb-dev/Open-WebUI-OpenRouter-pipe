@@ -13,6 +13,7 @@ These tests target previously uncovered branches including:
 # pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 from __future__ import annotations
 
+import contextlib
 import json
 from typing import Any
 from unittest.mock import AsyncMock, patch

@@ -70,6 +70,27 @@ def _should_retry_stream(emitted_any: bool, exc: BaseException | None) -> bool:
 
 _STREAM_END_EVENTS = frozenset({"response.completed", "response.done", "response.incomplete"})
 
+_RESPONSES_INVISIBLE_EVENTS = frozenset(
+    {"response.created", "response.in_progress", "response.queued", "response.heartbeat"}
+)
+
+
+def _responses_event_is_user_visible(event: dict[str, Any]) -> bool:
+    if not isinstance(event, dict):
+        return False
+    etype = event.get("type")
+    if not isinstance(etype, str) or not etype:
+        return True
+    return etype not in _RESPONSES_INVISIBLE_EVENTS
+
+
+def _parse_or_none(data_blob: bytes) -> dict[str, Any]:
+    try:
+        parsed = json.loads(data_blob.decode("utf-8"))
+    except (RecursionError, UnicodeDecodeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
 
 def _is_ordered_object(event: Any) -> TypeGuard[dict[str, Any]]:
     return isinstance(event, dict)
@@ -195,15 +216,29 @@ class ResponsesAdapter:
         passthrough_deltas = delta_char_limit <= 0 and idle_flush_ms <= 0
         requested_model = request_body.get("model")
 
+        def _raise_in_band_error(current: dict[str, Any] | None) -> None:
+            if current is None:
+                return
+            streaming_error = self._pipe._ensure_error_formatter()._extract_streaming_error_event(current, requested_model)
+            if streaming_error is not None:
+                _record_failed_call(self._pipe, breaker_key)
+                raise streaming_error
+
         @timed
         async def _producer() -> None:
             seq = 0
             first_chunk_received = False
             emitted_any = False
+            delivered_any = False
+
+            async def _put_seq(data_blob: bytes) -> None:
+                nonlocal seq
+                await chunk_queue.put((seq, data_blob))
+                seq += 1
 
             def _retry_streaming(retry_state) -> bool:
                 exc = retry_state.outcome.exception() if retry_state.outcome else None
-                return _should_retry_stream(emitted_any, exc)
+                return _should_retry_stream(delivered_any, exc)
 
             retryer = AsyncRetrying(
                 stop=stop_after_attempt(3),
@@ -217,6 +252,17 @@ class ResponsesAdapter:
                         buf = bytearray()
                         event_data_parts: list[bytes] = []
                         stream_complete = False
+                        held: list[bytes] = []
+
+                        async def _emit(data_blob: bytes, _held: list[bytes] = held) -> None:
+                            nonlocal delivered_any
+                            for pending in _held:
+                                await _put_seq(pending)
+                            _held.clear()
+                            if _responses_event_is_user_visible(_parse_or_none(data_blob)):
+                                delivered_any = True
+                            await _put_seq(data_blob)
+
                         try:
                             timing_mark("responses_http_request_start")
                             async with _count_failed_call(self._pipe, breaker_key), session.post(
@@ -274,9 +320,11 @@ class ResponsesAdapter:
                                                 if not first_event_queued:
                                                     first_event_queued = True
                                                     timing_mark("producer_first_event_queued")
-                                                await chunk_queue.put((seq, data_blob))
-                                                seq += 1
                                                 emitted_any = True
+                                                if _responses_event_is_user_visible(_parse_or_none(data_blob)):
+                                                    await _emit(data_blob)
+                                                else:
+                                                    held.append(data_blob)
                                             continue
                                         if stripped.startswith(b":"):
                                             continue
@@ -292,9 +340,11 @@ class ResponsesAdapter:
                                     data_blob = b"\n".join(event_data_parts).strip()
                                     event_data_parts.clear()
                                     if data_blob and data_blob != b"[DONE]":
-                                        await chunk_queue.put((seq, data_blob))
-                                        seq += 1
                                         emitted_any = True
+                                        if _responses_event_is_user_visible(_parse_or_none(data_blob)):
+                                            await _emit(data_blob)
+                                        else:
+                                            held.append(data_blob)
                                 if not emitted_any:
                                     raise aiohttp.ClientPayloadError("OpenRouter closed the stream before sending anything")
                         except Exception as producer_exc:
@@ -312,6 +362,9 @@ class ResponsesAdapter:
                                     "Producer encountered error while streaming from OpenRouter"
                                 )
                             raise
+                        for pending in held:
+                            await _put_seq(pending)
+                        held.clear()
                         if stream_complete:
                             break
             finally:
@@ -447,10 +500,7 @@ class ResponsesAdapter:
                                 "Discarding a non-object SSE frame: %s", type(current).__name__
                             )
                         continue
-                    streaming_error = self._pipe._ensure_error_formatter()._extract_streaming_error_event(current, requested_model)
-                    if streaming_error is not None:
-                        _record_failed_call(self._pipe, breaker_key)
-                        raise streaming_error
+                    _raise_in_band_error(current)
                     stream_ended = stream_ended or current.get("type") in _STREAM_END_EVENTS
                     coalescer.process_event(current, yield_queue, passthrough=passthrough_deltas)
 
@@ -475,10 +525,7 @@ class ResponsesAdapter:
                                     "Discarding a non-object SSE frame: %s", type(current).__name__
                                 )
                             continue
-                        streaming_error = self._pipe._ensure_error_formatter()._extract_streaming_error_event(current, requested_model)
-                        if streaming_error is not None:
-                            _record_failed_call(self._pipe, breaker_key)
-                            raise streaming_error
+                        _raise_in_band_error(current)
                         stream_ended = stream_ended or current.get("type") in _STREAM_END_EVENTS
                         coalescer.process_event(current, yield_queue, passthrough=passthrough_deltas)
 

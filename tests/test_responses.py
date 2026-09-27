@@ -30,12 +30,13 @@ Remaining uncovered paths (23 lines):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from typing import Any
 
 import aiohttp
-
 import pytest
+import tenacity
 from aioresponses import aioresponses, CallbackResult
 
 from open_webui_openrouter_pipe import Pipe, OpenRouterAPIError

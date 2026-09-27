@@ -58,6 +58,7 @@ from .responses_adapter import (
     _count_failed_call,
     _decode_json_body,
     _record_failed_call,
+    _responses_event_is_user_visible,
     _should_retry_accepted,
     _should_retry_stream,
 )
@@ -206,11 +207,46 @@ class ChatCompletionsAdapter:
             current["id"] = generated
             return generated
 
+        def _arguments_parse(arguments: Any) -> bool:
+            if not isinstance(arguments, str) or not arguments:
+                return False
+            try:
+                json.loads(arguments)
+            except (RecursionError, UnicodeDecodeError, ValueError):
+                return False
+            return True
+
+        def _match_open_tool_call(
+            slots: dict[int, dict[str, Any]], raw_call: dict[str, Any]
+        ) -> int:
+            raw_id = raw_call.get("id")
+            has_raw_id = isinstance(raw_id, str) and bool(raw_id.strip())
+            function_frame = raw_call.get("function")
+            frame_name = function_frame.get("name") if isinstance(function_frame, dict) else None
+            has_frame_name = isinstance(frame_name, str) and bool(frame_name)
+            matched = None
+            if slots and has_raw_id:
+                for open_index, slot in slots.items():
+                    if slot.get("id") == raw_id and not _arguments_parse(slot.get("arguments")):
+                        matched = open_index
+                        break
+            if matched is None and slots and not has_raw_id and has_frame_name:
+                for open_index, slot in slots.items():
+                    if slot.get("name") == frame_name and not _arguments_parse(slot.get("arguments")):
+                        matched = open_index
+                        break
+            if matched is None and slots and not has_raw_id and not has_frame_name and len(slots) == 1 and not _arguments_parse(slots[max(slots.keys())].get("arguments")):
+                matched = max(slots.keys())
+            if matched is None:
+                matched = max(slots.keys(), default=-1) + 1
+            return matched
+
         emitted_any = False
+        delivered_any = False
 
         def _retry_streaming(retry_state) -> bool:
             exc = retry_state.outcome.exception() if retry_state.outcome else None
-            return _should_retry_stream(emitted_any, exc)
+            return _should_retry_stream(delivered_any, exc)
 
         retryer = AsyncRetrying(
             stop=stop_after_attempt(3),
@@ -287,7 +323,7 @@ class ChatCompletionsAdapter:
             nonlocal emitted_any, latest_usage, reasoning_item_id, reasoning_text_seen, \
                 reasoning_summary_text, latest_message_annotations, image_item_id, \
                 image_output_item, images_emitted, refusal_text_seen, tool_calls_completed, \
-                truncating_reason
+                truncating_reason, delivered_any
             try:
                 chunk_obj = json.loads(data_blob.decode("utf-8"))
             except (RecursionError, UnicodeDecodeError, ValueError) as exc:
@@ -335,6 +371,7 @@ class ChatCompletionsAdapter:
                             reasoning_item_id = candidate_id.strip()
                         else:
                             reasoning_item_id = f"reasoning-{generate_item_id()}"
+                        delivered_any = True
                         yield {
                             "type": "response.output_item.added",
                             "item": {
@@ -348,6 +385,7 @@ class ChatCompletionsAdapter:
                         if isinstance(text, str) and text:
                             reasoning_text_parts.append(text)
                             reasoning_text_seen = True
+                            delivered_any = True
                             yield {
                                 "type": "response.reasoning_text.delta",
                                 "item_id": reasoning_item_id,
@@ -357,6 +395,7 @@ class ChatCompletionsAdapter:
                         summary = entry.get("summary")
                         if isinstance(summary, str) and summary.strip():
                             reasoning_summary_text = summary.strip()
+                            delivered_any = True
                             yield {
                                 "type": "response.reasoning_summary_text.done",
                                 "item_id": reasoning_item_id,
@@ -372,6 +411,7 @@ class ChatCompletionsAdapter:
             if delta_reasoning_text:
                 if reasoning_item_id is None:
                     reasoning_item_id = f"reasoning-{generate_item_id()}"
+                    delivered_any = True
                     yield {
                         "type": "response.output_item.added",
                         "item": {
@@ -382,6 +422,7 @@ class ChatCompletionsAdapter:
                     }
                 reasoning_text_parts.append(delta_reasoning_text)
                 reasoning_text_seen = True
+                delivered_any = True
                 yield {
                     "type": "response.reasoning_text.delta",
                     "item_id": reasoning_item_id,
@@ -415,6 +456,7 @@ class ChatCompletionsAdapter:
                     if message_reasoning_text:
                         if reasoning_item_id is None:
                             reasoning_item_id = f"reasoning-{generate_item_id()}"
+                            delivered_any = True
                             yield {
                                 "type": "response.output_item.added",
                                 "item": {
@@ -425,6 +467,7 @@ class ChatCompletionsAdapter:
                             }
                         reasoning_text_parts.append(message_reasoning_text)
                         reasoning_text_seen = True
+                        delivered_any = True
                         yield {
                             "type": "response.reasoning_text.delta",
                             "item_id": reasoning_item_id,
@@ -433,6 +476,7 @@ class ChatCompletionsAdapter:
                 if not refusal_text_seen:
                     message_refusal = message_obj.get("refusal")
                     if isinstance(message_refusal, str) and message_refusal.strip():
+                        delivered_any = True
                         refusal_text_parts.append(message_refusal)
                         refusal_text_seen = True
                 message_images = message_obj.get("images")
@@ -456,10 +500,12 @@ class ChatCompletionsAdapter:
                             "status": "completed",
                             "result": image_results,
                         }
+                        delivered_any = True
                         yield {
                             "type": "response.output_item.added",
                             "item": dict(image_output_item, status="in_progress"),
                         }
+                        delivered_any = True
                         yield {
                             "type": "response.output_item.done",
                             "item": image_output_item,
@@ -471,6 +517,7 @@ class ChatCompletionsAdapter:
                     if url in seen_citation_urls:
                         continue
                     seen_citation_urls.add(url)
+                    delivered_any = True
                     yield {
                         "type": "response.output_text.annotation.added",
                         "annotation": {"type": "url_citation", "url": url, "title": title, "content": content},
@@ -479,10 +526,12 @@ class ChatCompletionsAdapter:
             content_delta = delta_obj.get("content")
             if isinstance(content_delta, str) and content_delta:
                 assistant_text_parts.append(content_delta)
+                delivered_any = True
                 yield {"type": "response.output_text.delta", "delta": content_delta}
 
             delta_refusal = delta_obj.get("refusal")
             if isinstance(delta_refusal, str) and delta_refusal.strip():
+                delivered_any = True
                 refusal_text_parts.append(delta_refusal)
                 refusal_text_seen = True
 
@@ -493,8 +542,9 @@ class ChatCompletionsAdapter:
                         continue
                     index = raw_call.get("index")
                     if not isinstance(index, int):
-                        index = max(tool_calls_by_index.keys(), default=-1) + 1
+                        index = _match_open_tool_call(tool_calls_by_index, raw_call)
                     current = tool_calls_by_index.setdefault(index, {})
+                    delivered_any = True
                     raw_id = raw_call.get("id")
                     if isinstance(raw_id, str) and raw_id.strip():
                         current["id"] = raw_id
@@ -511,6 +561,7 @@ class ChatCompletionsAdapter:
                     if index not in tool_call_added:
                         tool_call_added.add(index)
                         call_id = _ensure_tool_call_id(index, current)
+                        delivered_any = True
                         yield {
                             "type": "response.output_item.added",
                             "item": {
@@ -537,6 +588,24 @@ class ChatCompletionsAdapter:
         first_chunk_received = False
         async for attempt in retryer:
             with attempt:
+                if attempt.retry_state.attempt_number > 1:
+                    tool_calls_by_index.clear()
+                    tool_call_added.clear()
+                    assistant_text_parts.clear()
+                    refusal_text_parts.clear()
+                    refusal_text_seen = False
+                    reasoning_text_parts.clear()
+                    reasoning_summary_text = None
+                    reasoning_details_by_key.clear()
+                    reasoning_details_order.clear()
+                    seen_citation_urls.clear()
+                    latest_message_annotations = []
+                    images_emitted = False
+                    emitted_any = False
+                    delivered_any = False
+                    cut_off = False
+                    tool_calls_completed = False
+
                 await self._inline_internal_chat_files(chat_payload, effective_valves, user=user)
 
                 timing_mark("chat_http_request_start")
@@ -840,19 +909,6 @@ class ChatCompletionsAdapter:
         passthrough_deltas = delta_char_limit <= 0 and idle_flush_ms <= 0
         model_id = (responses_request_body or {}).get("model") or ""
         endpoint = endpoint_override or self._pipe._streaming_handler._select_llm_endpoint(str(model_id), valves=effective_valves)
-
-        @timed
-        def _responses_event_is_user_visible(event: dict[str, Any]) -> bool:
-            etype = event.get("type")
-            if not isinstance(etype, str) or not etype:
-                return True
-            if etype.startswith("response.output_"):
-                return True
-            if etype.startswith("response.content_part"):
-                return True
-            if etype.startswith("response.reasoning"):
-                return True
-            return etype in {"response.completed", "response.incomplete", "response.failed", "response.error", "error"}
 
         responses_emitted_user_visible = False
         responses_buffer: list[dict[str, Any]] = []
