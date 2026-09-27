@@ -60,8 +60,8 @@ Defaults are `0` (unbounded) for both queues.
 **Warning:** A bounded queue applies backpressure: when it fills, the pipe stops reading from OpenRouter until the backlog clears. The chain runs the other way from what it used to — a slow drain (tool-heavy or persistence-heavy workloads) → event queue fills → workers block → chunk queue fills → producer blocks on its next put → and the source stops being read. As long as the consumer keeps draining, the cost is added latency on a slow drain, not a stalled stream: the reply still ends on its own. A consumer that stops reading entirely, such as a closed browser tab, is held by that backpressure rather than ended.
 
 Monitoring:
-- `STREAMING_CHUNK_QUEUE_WARN_SIZE` emits a backend warning (rate-limited) when the raw-chunk queue backlog is high.
-- `STREAMING_EVENT_QUEUE_WARN_SIZE` emits a backend warning (rate-limited) when the event queue backlog is high.
+- `STREAMING_CHUNK_QUEUE_WARN_SIZE` emits a backend warning (rate-limited per request) when the raw-chunk queue backlog is high.
+- `STREAMING_EVENT_QUEUE_WARN_SIZE` emits a backend warning (rate-limited per request) when the event queue backlog is high.
 
 ### Middleware streaming bridge queue (Open WebUI generator)
 

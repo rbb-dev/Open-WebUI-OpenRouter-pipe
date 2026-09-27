@@ -131,7 +131,7 @@ Behavior note (no valve):
 | `MAX_CONCURRENT_REQUESTS` | `int` | `200` | Maximum number of in-flight OpenRouter requests allowed per process. |
 | `SSE_WORKERS_PER_REQUEST` | `int` | `4` | Number of stream processing workers spawned per request (fan-out for parsing/emitting). |
 | `STREAMING_CHUNK_QUEUE_MAXSIZE` | `int` | `0` | Maximum number of raw SSE chunks buffered before applying backpressure. `0` means unbounded. |
-| `STREAMING_CHUNK_QUEUE_WARN_SIZE` | `int` | `1000` | Warning threshold for the buffered raw-chunk queue; logs a rate-limited backend warning when the backlog is high (monitoring only). |
+| `STREAMING_CHUNK_QUEUE_WARN_SIZE` | `int` | `1000` | Warning threshold for the buffered raw-chunk queue; logs a rate-limited per request backend warning when the backlog is high (monitoring only). |
 | `STREAMING_EVENT_QUEUE_MAXSIZE` | `int` | `0` | Maximum number of parsed stream events buffered before applying backpressure. `0` means unbounded. |
 | `STREAMING_EVENT_QUEUE_WARN_SIZE` | `int` | `1000` | Warning threshold for buffered stream events. |
 | `STREAMING_DELTA_CHAR_LIMIT` | `int` | `256` | Nagle coalescing toggle. `> 0` enables adaptive backpressure-driven batching for both text and reasoning deltas. `0` (with `IDLE_FLUSH_MS=0`) = passthrough mode (1:1 emission). See [Streaming Pipeline § 6](streaming_pipeline_and_emitters.md#6-nagle-inspired-adaptive-delta-coalescing). |

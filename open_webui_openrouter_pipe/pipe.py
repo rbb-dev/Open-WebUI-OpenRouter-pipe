@@ -115,6 +115,7 @@ except ImportError:
     pyzipper = None  # type: ignore
 
 # Import subsystems
+from .api.gateway.responses_adapter import _drop_backlog_latch
 from .core.circuit_breaker import CircuitBreaker
 from .core.config import (
     _OPENROUTER_CATEGORIES,
@@ -2473,6 +2474,7 @@ class Pipe:
                 job.future.set_exception(exc)
         finally:
             try:
+                _drop_backlog_latch(job.request_id)
                 if stream_queue is not None:
                     self._event_emitter_handler._try_put_middleware_stream_nowait(stream_queue, None)
                 if tool_context:

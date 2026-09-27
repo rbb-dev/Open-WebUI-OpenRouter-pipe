@@ -54,6 +54,17 @@ _warned_responses_chunk_parse: dict[str, float] = {}
 _warned_queue_backlog: dict[str, float] = {}
 
 
+def _backlog_cause(queue: str, request_id: str) -> str:
+    return f"{queue}:{request_id}" if request_id else f"{queue}:unknown"
+
+
+def _drop_backlog_latch(request_id: str) -> None:
+    if not request_id:
+        return
+    for queue_name in ("chunk_queue", "event_queue"):
+        _warned_queue_backlog.pop(_backlog_cause(queue_name, request_id), None)
+
+
 def _should_retry_stream(emitted_any: bool, exc: BaseException | None) -> bool:
     """Decide whether a streaming attempt may be retried.
 
@@ -182,6 +193,7 @@ class ResponsesAdapter:
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Producer/worker SSE pipeline with configurable delta batching."""
 
+        _backlog_request_id = SessionLogger.request_id.get() or ""
         effective_valves = valves or self._pipe.valves
         chunk_size = effective_valves.IMAGE_UPLOAD_CHUNK_BYTES
         max_bytes = effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024
@@ -390,7 +402,9 @@ class ResponsesAdapter:
                     ):
                         self.logger.log(
                             warn_level(
-                                _warned_queue_backlog, "chunk_queue", cooldown_s=30.0
+                                _warned_queue_backlog,
+                                _backlog_cause("chunk_queue", _backlog_request_id),
+                                cooldown_s=30.0,
                             ),
                             "Chunk queue backlog high: %d items (session=%s)",
                             chunk_queue.qsize(),
@@ -475,7 +489,9 @@ class ResponsesAdapter:
                 ):
                     self.logger.log(
                         warn_level(
-                            _warned_queue_backlog, "event_queue", cooldown_s=30.0
+                            _warned_queue_backlog,
+                            _backlog_cause("event_queue", _backlog_request_id),
+                            cooldown_s=30.0,
                         ),
                         "Event queue backlog high: %d items (session=%s)",
                         event_queue.qsize(),

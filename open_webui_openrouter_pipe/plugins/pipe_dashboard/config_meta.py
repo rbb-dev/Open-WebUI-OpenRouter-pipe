@@ -755,7 +755,7 @@ CONFIG_META: dict[str, dict[str, str]] = {
     "STREAMING_CHUNK_QUEUE_WARN_SIZE": {
         "title": "Chunk backlog warning threshold",
         "group": "Streaming & Performance/Streaming",
-        "detail": "How far the raw-chunk buffer may back up before the pipe logs a backlog warning.\n\nThis is monitoring only - it writes a rate-limited log line and never throttles, drops, or reshapes the stream. It watches the `/responses` path's first queue, the one bounded by `Raw chunk buffer limit`, so it does nothing for replies on `/chat/completions` or non-streaming replies. Because that buffer is unbounded by default, a rising backlog here is often the only early sign that decoding has fallen behind the incoming stream.\n\n**Tip:** Rarely worth changing - raise it only if backlog warnings flood the log on healthy high-load streams."
+        "detail": "How far the raw-chunk buffer may back up before the pipe logs a backlog warning.\n\nThis is monitoring only - it writes a rate-limited per request log line and never throttles, drops, or reshapes the stream. It watches the `/responses` path's first queue, the one bounded by `Raw chunk buffer limit`, so it does nothing for replies on `/chat/completions` or non-streaming replies. Because that buffer is unbounded by default, a rising backlog here is often the only early sign that decoding has fallen behind the incoming stream.\n\n**Tip:** Rarely worth changing - raise it only if backlog warnings flood the log on healthy high-load streams."
     },
     "STREAMING_DELTA_CHAR_LIMIT": {
         "title": "Stream batching toggle",
@@ -770,7 +770,7 @@ CONFIG_META: dict[str, dict[str, str]] = {
     "STREAMING_EVENT_QUEUE_WARN_SIZE": {
         "title": "Event backlog warning threshold",
         "group": "Streaming & Performance/Streaming",
-        "detail": "How many parsed events may pile up before the pipe logs a backlog warning.\n\nThe effect is purely diagnostic - crossing it emits a rate-limited `WARNING` log line and never alters the stream. It watches the `/responses` path's event queue, the one bounded by `Decoded event buffer limit`, so it has no effect on replies routed to `/chat/completions` or on non-streaming replies. It matters most when that buffer is left unbounded (the recommendation), because then a growing backlog is the only signal that processing further along has fallen behind.\n\n**Tip:** Rarely worth changing - raise it only if healthy streams flood the log with backlog warnings."
+        "detail": "How many parsed events may pile up before the pipe logs a backlog warning.\n\nThe effect is purely diagnostic - crossing it emits a rate-limited per request `WARNING` log line and never alters the stream. It watches the `/responses` path's event queue, the one bounded by `Decoded event buffer limit`, so it has no effect on replies routed to `/chat/completions` or on non-streaming replies. It matters most when that buffer is left unbounded (the recommendation), because then a growing backlog is the only signal that processing further along has fallen behind.\n\n**Tip:** Rarely worth changing - raise it only if healthy streams flood the log with backlog warnings."
     },
     "STREAMING_IDLE_FLUSH_MS": {
         "title": "Idle flush delay",

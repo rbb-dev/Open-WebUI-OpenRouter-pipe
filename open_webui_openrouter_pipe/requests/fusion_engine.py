@@ -12,6 +12,7 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple
 
+from ..api.gateway.responses_adapter import _drop_backlog_latch
 from ..core.circuit_breaker import CircuitBreaker
 from ..core.config import _PIPE_METADATA_KEY, NO_CONTENT_AFTER_TOOLS_FALLBACK
 from ..core.errors import OpenRouterAPIError
@@ -279,6 +280,7 @@ async def run_fusion_member(
             sources=tuple(collector.sources),
         )
     finally:
+        _drop_backlog_latch(SessionLogger.request_id.get() or "")
         CONTINUED_REPLY.reset(continued_token)
         SessionLogger.request_id.reset(request_token)
         if token is not None:

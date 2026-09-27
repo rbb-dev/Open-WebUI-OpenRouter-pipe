@@ -509,6 +509,10 @@ def _filter_openrouter_chat_request(payload: dict[str, Any]) -> dict[str, Any]:
     filtered: dict[str, Any] = {}
     for key, value in payload.items():
         if key in ALLOWED_OPENROUTER_CHAT_FIELDS:
+            if key == "metadata":
+                value = _sanitize_openrouter_metadata(value)
+                if value is None:
+                    continue
             filtered[key] = value
     return filtered
 
