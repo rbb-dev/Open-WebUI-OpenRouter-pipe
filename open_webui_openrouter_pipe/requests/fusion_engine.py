@@ -189,6 +189,11 @@ async def run_fusion_member(
             pipe_meta["server_tools"] = merged
         if stop_when and not isinstance(turn_stop, list):
             pipe_meta["stop_server_tools_when"] = copy.deepcopy(stop_when)
+    identifier_metadata = {
+        **inner_metadata,
+        "chat_id": (invocation.metadata or {}).get("chat_id"),
+        _PIPE_METADATA_KEY: copy.deepcopy(pipe_meta),
+    }
     request_token = SessionLogger.request_id.set(f"fusion-inner-{uuid.uuid4().hex[:12]}")
     continued_token = CONTINUED_REPLY.set(None)
     outer_ctx = pipe._TOOL_CONTEXT.get()
@@ -219,7 +224,7 @@ async def run_fusion_member(
             batch_cap=outer_ctx.batch_cap,
             request=outer_ctx.request,
             user=outer_ctx.user,
-            metadata=inner_metadata,
+            metadata=identifier_metadata,
             request_id=SessionLogger.request_id.get() or "",
             fusion_inner=True,
             tool_breaker=invocation.tool_breaker,
@@ -239,7 +244,7 @@ async def run_fusion_member(
             invocation.request,
             collector,
             invocation.event_call,
-            inner_metadata,
+            identifier_metadata,
             invocation.tools,
             None,
             None,

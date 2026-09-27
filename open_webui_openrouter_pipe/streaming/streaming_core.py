@@ -556,7 +556,7 @@ class StreamingHandler:
             if api_hold_key:
                 self._pipe._artifact_store._api_reply_memory.open("", api_hold_key)
                 holds_the_reply = True
-            persist_chat_id = chat_id
+            persist_chat_id = None if fusion_inner_call else chat_id
             persist_message_id = message_id if message_id else (api_hold_key or None)
             model_started = asyncio.Event()
             responding_status_sent = False
@@ -710,7 +710,7 @@ class StreamingHandler:
                     file_data=data,
                     filename=filename,
                     mime_type=mime_type,
-                    chat_id=chat_id if isinstance(chat_id, str) else None,
+                    chat_id=persist_chat_id if isinstance(persist_chat_id, str) else None,
                     message_id=message_id if isinstance(message_id, str) else None,
                     owui_user_id=user_id,
                 )

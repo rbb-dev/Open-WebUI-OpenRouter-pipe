@@ -19,6 +19,8 @@ rather than where the rule lives, and nothing compared the gates to each other.
 from __future__ import annotations
 
 import re
+from typing import Any
+
 import pytest
 
 from tests.test_request_orchestrator import _consume_stream, _smart_callback

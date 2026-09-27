@@ -123,7 +123,7 @@ An API call has no `chat_id` and no `message_id`, so letting the empty strings t
 
 The task files sit beside the answer's in the same `<chat_id>/` directory and keep the `message_id` as their prefix, so `ls <chat_id>/` and `grep <message_id>` both still work. The message id is truncated from the right to fit a 64-character column, with the task name's space reserved first — the qualifier is never the part that gets cut.
 
-**Scope:** task archives are written for the housekeeping tasks Open WebUI dispatches with a resolvable `message_id` and a `task` name. **Fusion panel members are not archived** — their metadata deliberately carries no `chat_id` or `message_id` and no `task`, so they resolve to nothing and their segments are dropped.
+**Scope:** task archives are written for the housekeeping tasks Open WebUI dispatches with a resolvable `message_id` and a `task` name. **Fusion panel members are not archived** — they carry no `message_id` and no `task`, so they resolve to nothing and their segments are dropped.
 
 Path safety:
 

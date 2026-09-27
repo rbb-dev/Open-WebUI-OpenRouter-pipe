@@ -1142,9 +1142,10 @@ class Valves(BaseModel):
             "provider and maximizes prompt-cache hits across turns. Opaque; no raw identifiers. "
             "Skipped if WEBUI_SECRET_KEY is unset. A temporary chat is pinned like any "
             "other chat: the value is a keyed hash, so no identifier is exposed. The pin is "
-            "computed from the chat id and the Fusion inner-call metadata removes it, so "
-            "internal panel-member calls carry no session_id and are not pinned; the outer "
-            "call is.\n\n"
+            "computed from the chat id, and a Fusion panel-member call is pinned like any "
+            "other turn of the same conversation: it follows the outer turn's identity "
+            "rules exactly, so a saved or `channel:` chat is pinned and a temporary chat "
+            "is pinned by hash.\n\n"
             "A call that carries no chat id falls back to a hash of the caller's own "
             "`session_id` under an `api-session:` prefix, so the raw value never leaves the "
             "pipe. The API caller is the only party that knows what \"the same conversation\" "
@@ -1317,7 +1318,7 @@ class Valves(BaseModel):
             "One zip is written per message turn, plus one for each housekeeping task Open WebUI dispatches on that turn, named <message_id>.<task>.zip. Open WebUI defines nine task types, so a turn that triggers all of them produces up to ten archives. "
             "Persistence needs a user_id and a request_id; with it on, a call that carries no usable chat_id or message_id is archived under "
             "`api/api-<request_id>.zip` (see SESSION_LOG_ARCHIVE_API_CALLS), and every temporary chat is still dropped. "
-            "A task invocation that resolves to no message id is skipped the same way, which includes every Fusion panel member — those carry no chat or message id at all, so they are not archived. "
+            "A task invocation that resolves to no message id is skipped the same way, which includes every Fusion panel member — those carry no message id at all, so they are not archived. "
             "Turning this off also stops the retention sweep, leaving every archive already on disk untouched until it is re-enabled and the retention window passes."
         ),
     )

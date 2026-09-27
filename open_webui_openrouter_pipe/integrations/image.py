@@ -943,13 +943,14 @@ class ImageGenerationAdapter:
         if not upload_request or not upload_user:
             return None
         meta = metadata if isinstance(metadata, dict) else {}
+        fusion_inner = bool((meta.get(_PIPE_METADATA_KEY) or {}).get("fusion_inner"))
         file_id = await self._pipe._file_gateway.upload_to_owui_storage(
             request=upload_request,
             user=upload_user,
             file_data=image.data,
             filename=f"generated-image-{uuid.uuid4().hex}.{image.extension}",
             mime_type=image.mime_type,
-            chat_id=meta.get("chat_id"),
+            chat_id=None if fusion_inner else meta.get("chat_id"),
             message_id=meta.get("message_id"),
             owui_user_id=requester_id or None,
         )

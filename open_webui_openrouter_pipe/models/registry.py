@@ -1062,6 +1062,25 @@ class OpenRouterModelRegistry:
         return cls._zdr_model_ids is not None
 
     @classmethod
+    def _zdr_candidate_keys(cls, norm: str, specs: dict[str, dict[str, Any]]) -> list[str]:
+        keys: list[str] = []
+        for source in (ModelFamily._resolve_spec_key(norm, specs), norm):
+            if source in keys:
+                continue
+            keys.append(source)
+            suffix_base, separator, _suffix = norm.rpartition(":")
+            if separator and source == norm and suffix_base in specs:
+                continue
+            full = (specs.get(source) or {}).get("full_model") or {}
+            target = full.get("alias_target")
+            slug = target.get("slug") if isinstance(target, dict) else None
+            if isinstance(slug, str) and slug.strip():
+                hop = ModelFamily.base_model(sanitize_model_id(slug.strip()))
+                if hop in specs and hop not in keys:
+                    keys.append(hop)
+        return keys
+
+    @classmethod
     def is_zdr_capable(cls, model_id: str) -> bool | None:
         """Return True/False if ZDR list is available, otherwise None.
 
@@ -1084,10 +1103,9 @@ class OpenRouterModelRegistry:
         # fallback is for the ids the catalog does NOT know: the routing variants the
         # pipe itself synthesises (`:nitro`, `:floor`, `:online`), whose endpoints ARE
         # the base model's.
-        lookup = ModelFamily._resolve_spec_key(norm, cls._specs)
         if cls._zdr_model_ids is None:
             return None
-        return lookup in cls._zdr_model_ids
+        return any(key in cls._zdr_model_ids for key in cls._zdr_candidate_keys(norm, cls._specs))
 
     @classmethod
     @timed

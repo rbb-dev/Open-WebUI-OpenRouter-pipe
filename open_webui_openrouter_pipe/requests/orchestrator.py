@@ -1039,10 +1039,15 @@ class RequestOrchestrator:
         responses_body = await ResponsesBody.from_completions(
             completions_body=completions_body,
 
-            **_chat_id_kwarg(__metadata__),
+            **({} if fusion_inner else _chat_id_kwarg(__metadata__)),
             **_openwebui_model_id_kwarg(openwebui_model_id),
-            artifact_loader=functools.partial(
-                self._pipe._artifact_store._db_fetch, reply_id=__metadata__.get("message_id")
+            artifact_loader=(
+                None
+                if fusion_inner
+                else functools.partial(
+                    self._pipe._artifact_store._db_fetch,
+                    reply_id=__metadata__.get("message_id"),
+                )
             ),
             pruning_turns=valves.TOOL_OUTPUT_RETENTION_TURNS,
             transformer_context=self._pipe,
