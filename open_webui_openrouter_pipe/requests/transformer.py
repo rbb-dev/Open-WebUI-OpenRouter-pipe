@@ -27,7 +27,12 @@ from ..core.config import (
 
 # Import status messages
 from ..core.errors import RequiredInternalFileError, StatusMessages
-from ..core.url_scheme import is_cleartext_http_url, is_http_or_https_url, url_scheme
+from ..core.url_scheme import (
+    is_cleartext_http_url,
+    is_http_or_https_url,
+    split_base64_data_url,
+    url_scheme,
+)
 
 # Import utility functions
 from ..core.utils import (
@@ -164,8 +169,10 @@ class ImageRefusal(NamedTuple):
 def _inline_payload_bytes(value: str) -> int:
     if url_scheme(value) != "data":
         return (len(value) * 3) // 4
-    header, _, payload = value.partition(",")
-    return (len(payload) * 3) // 4 if ";base64" in header.lower() else len(payload)
+    split = split_base64_data_url(value)
+    if split is not None:
+        return (len(split[1]) * 3) // 4
+    return len(value.partition(",")[2])
 
 
 def _inline_media_type(value: str) -> str:
@@ -742,7 +749,8 @@ async def transform_messages_to_input(
 
                     if url.startswith("data:"):
                         try:
-                            if ";base64," not in url:
+                            split = split_base64_data_url(url)
+                            if split is None:
                                 return ImageRefusal(
                                     "a data URL that is not base64-encoded, which "
                                     "OpenRouter does not accept",
@@ -751,8 +759,7 @@ async def transform_messages_to_input(
                                 )
                             parsed = pipe._multimodal_handler._parse_data_url(url)
                             if not parsed:
-                                encoded = url.split(";base64,", 1)[1]
-                                oversized = (len(encoded) * 3) // 4 > max_inline_bytes
+                                oversized = (len(split[1]) * 3) // 4 > max_inline_bytes
                                 return ImageRefusal(
                                     f"larger than the {max_inline_bytes}-byte inline limit"
                                     if oversized
@@ -856,7 +863,8 @@ async def transform_messages_to_input(
                         url = inlined.data_url
 
                     if mode == "reuse":
-                        head, _, body = url.partition(";base64,")
+                        split = split_base64_data_url(url)
+                        head, body = split if split is not None else ("", "")
                         if not body:
                             return ImageRefusal(
                                 "could not be fetched, so its type could not be established",

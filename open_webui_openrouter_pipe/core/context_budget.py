@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..models.registry import ModelFamily
+from .url_scheme import split_base64_data_url
 from .utils import (
     TOOL_CALL_STATUSES,
     _coerce_positive_int,
@@ -296,10 +297,10 @@ def _payload_bytes(value: Any) -> tuple[int, str, tuple[str, ...] | None] | None
     if isinstance(value, str):
         media_type = ""
         payload_head: tuple[str, ...] | None = None
-        if ";base64," in value[:_DATA_URL_PREFIX_CHARS]:
-            prefix, raw = value.split(";base64,", 1)
-            if prefix.startswith("data:"):
-                media_type = prefix[len("data:") :].split(";", 1)[0].strip().lower()
+        if split_base64_data_url(value[:_DATA_URL_PREFIX_CHARS]) is not None:
+            header, _, raw = value.partition(",")
+            if header.startswith("data:"):
+                media_type = header[len("data:") :].split(";", 1)[0].strip().lower()
                 payload_head = _payload_windows(raw)
         elif _LOCATOR_RE.match(value):
             return _NAMES_CONTENT

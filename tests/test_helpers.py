@@ -1406,11 +1406,21 @@ def test_extract_openrouter_error_details_non_dict_metadata():
 
 def test_extract_openrouter_error_details_non_dict_error_section():
     """The top-level `error` value may itself be a non-dict (string/list/null);
-    message/code/metadata extraction must not crash on it."""
-    for bad_error in ["bad", ["a", "b"], 42, None]:
+    message/code/metadata extraction must not crash on it.
+
+    A truthy non-dict carries the provider's own text: dropping it left the operator told a
+    request was rejected and not why, on the one leg where the body is all there is to go on.
+    A falsy one carries nothing, and a non-dict never has a code or a metadata block.
+    """
+    for bad_error, expected_message in [
+        ("bad", "bad"),
+        (["a", "b"], "['a', 'b']"),
+        (42, "42"),
+        (None, None),
+    ]:
         payload = json.dumps({"error": bad_error})
         details = ow._extract_openrouter_error_details(payload)  # must not raise
-        assert details["openrouter_message"] is None
+        assert details["openrouter_message"] == expected_message, (bad_error, details)
         assert details["openrouter_code"] is None
         assert details["metadata"] == {}
         err = ow._build_openrouter_api_error(400, "Bad request", payload, requested_model="demo")

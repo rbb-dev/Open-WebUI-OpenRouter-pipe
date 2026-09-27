@@ -35,3 +35,19 @@ def is_cleartext_http_url(url: Any) -> bool:
 
 def is_http_or_https_url(url: Any) -> bool:
     return url_scheme(url) in HTTP_SCHEMES
+
+
+def split_base64_data_url(value: Any) -> tuple[str, str] | None:
+    if url_scheme(value) != "data" or not isinstance(value, str):
+        return None
+    header, sep, payload = value.partition(",")
+    if not sep:
+        return None
+    lowered = header.lower()
+    at = lowered.find(";base64")
+    while at != -1:
+        end = at + len(";base64")
+        if end == len(header) or header[end] == ";":
+            return header, payload
+        at = lowered.find(";base64", at + 1)
+    return None

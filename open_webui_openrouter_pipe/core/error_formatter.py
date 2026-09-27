@@ -96,11 +96,14 @@ def _in_band_status(code: Any, error_type: str) -> int:
     return 400
 
 
-def _choice_error(event: dict[str, Any]) -> dict[str, Any] | None:
+def _choice_error(event: dict[str, Any]) -> Any:
     choices = event.get("choices")
     first = choices[0] if isinstance(choices, list) and choices else None
-    error = first.get("error") if isinstance(first, dict) else None
-    return error if isinstance(error, dict) else None
+    return first.get("error") if isinstance(first, dict) else None
+
+
+def _error_is_present(value: Any) -> bool:
+    return isinstance(value, dict) or bool(value)
 
 
 def _as_text(value: Any) -> str | None:
@@ -215,11 +218,20 @@ class ErrorFormatter:
         error_block = error_value if isinstance(error_value, dict) else None
         if not error_block and isinstance(response_block.get("error"), dict):
             error_block = response_block.get("error")
+        choice_error = _choice_error(event)
         if not error_block:
-            error_block = _choice_error(event)
+            error_block = choice_error if isinstance(choice_error, dict) else None
         message = ""
-        if isinstance(error_block, dict):
-            message = (_as_text(error_block.get("message")) or "").strip()
+        for candidate in (error_value, response_block.get("error"), choice_error):
+            if not _error_is_present(candidate):
+                continue
+            if isinstance(candidate, dict):
+                text = (_as_text(candidate.get("message")) or "").strip()
+            else:
+                text = str(candidate).strip()
+            if text:
+                message = text
+                break
         if not message and isinstance(response_block.get("error"), dict):
             message = (_as_text(response_block.get("error", {}).get("message")) or "").strip()
         if not message:
@@ -307,11 +319,10 @@ class ErrorFormatter:
         response_raw = event_data.get("response")
         response_block = response_raw if isinstance(response_raw, dict) else None
         error_raw = event_data.get("error")
-        error_block = error_raw if isinstance(error_raw, dict) else None
-        has_error = error_block is not None or _choice_error(event_data) is not None
+        has_error = _error_is_present(error_raw) or _error_is_present(_choice_error(event_data))
         if isinstance(response_block, dict) and (
             response_block.get("status") == "failed"
-            or isinstance(response_block.get("error"), dict)
+            or _error_is_present(response_block.get("error"))
         ):
             has_error = True
         if event_type in {"response.failed", "response.error", "error"}:

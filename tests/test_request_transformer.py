@@ -4712,10 +4712,11 @@ class TestImageReuseRegister:
         ],
     )
     @pytest.mark.parametrize("wrapped", [False, True], ids=["one-line", "rfc2045"])
+    @pytest.mark.parametrize("marker", [";base64,", ";BASE64,"], ids=["lower", "upper"])
     @pytest.mark.parametrize("source", ["data-url", "remote", "internal-file"])
     @pytest.mark.asyncio
     async def test_every_reuse_source_is_typed_by_the_pipe(
-        self, pipe_instance, source, wrapped, declared, payload, expected
+        self, pipe_instance, source, marker, wrapped, declared, payload, expected
     ):
         """The type check guarded one of the three ways a reused block is built.
 
@@ -4736,6 +4737,17 @@ class TestImageReuseRegister:
         may legitimately send: slicing the window without stripping the newlines leaves a
         character count that is not a multiple of four, the decode raises, and a perfectly
         good PNG was being refused.
+
+        The `marker` axis is the one spelling a client controls: this is the only test that
+        drives the reuse split, and it splits on `;base64,` directly, so a `;BASE64,` data
+        URL used to be refused as "could not be fetched, so its type could not be
+        established" -- a claim about the network about a URL that was sitting in the
+        message. The one spelling the pipe rewrites is the re-sniff, which lowercases the
+        marker when the sniffed type differs from the declared one; that is the single
+        exception to verbatim forwarding, and the assertion below names it. The
+        ``remote`` source is exempt from the verbatim check: its bytes are fetched and the
+        pipe builds that block itself, so the test's own URL is never the one forwarded.
+        The verbatim form covers the line-wrapped axis too, modulo a trailing newline.
         """
         import base64 as _b64
 
@@ -4746,7 +4758,7 @@ class TestImageReuseRegister:
             if wrapped
             else _b64.b64encode(raw).decode("ascii")
         )
-        data_url = f"data:{declared};base64,{body}"
+        data_url = f"data:{declared}{marker}{body}"
 
         async def _download(*_a, **_k):
             return {"data": payload + b"\x00" * 32, "mime_type": declared}
@@ -4776,10 +4788,33 @@ class TestImageReuseRegister:
                 f"{[b[:60] for b in blocks]}"
             )
         else:
-            assert blocks and blocks[0].startswith(f"data:{expected};base64,"), (
-                f"a {source} declaring {declared or 'nothing'} produced "
-                f"{[b[:60] for b in blocks]}; the pipe must assert the type from the bytes"
+            assert blocks, (
+                f"a {source} declaring {declared or 'nothing'} produced no block: "
+                f"expected an image typed {expected}"
             )
+            if expected != declared:
+                # The one spelling the pipe rewrites: the re-sniff found a different type
+                # than the URL declared, so the block is rebuilt -- lowercased marker and all.
+                assert blocks[0].startswith(f"data:{expected};base64,"), (
+                    f"a {source} declaring {declared or 'nothing'} produced "
+                    f"{[b[:60] for b in blocks]}; the pipe must assert the type from the bytes"
+                )
+            elif source != "remote":
+                # Forwarded as it came, wrapping newlines and marker case included. A
+                # line-wrapped body ends in a newline and the two sources obtain the URL
+                # differently -- one through a markdown image link, one through the file
+                # gateway -- so a trailing newline survives one and not the other. It
+                # carries no base64, so both sides are compared without it; everything
+                # else, including every inner newline, is pinned.
+                assert blocks[0].rstrip() == data_url.rstrip(), (
+                    f"a {source} whose declaration the bytes confirmed was rewritten to "
+                    f"{blocks[0][:60]!r}; a data URL is forwarded as it came"
+                )
+            else:
+                assert blocks[0].startswith(f"data:{expected};base64,"), (
+                    f"a {source} declaring {declared or 'nothing'} produced "
+                    f"{[b[:60] for b in blocks]}; the pipe must assert the type from the bytes"
+                )
 
     @pytest.mark.parametrize(
         ("fetch", "expect_block", "reason", "not_reason"),

@@ -274,6 +274,8 @@ def _extract_openrouter_error_details(body_text: str | None) -> dict[str, Any]:
     )
 
     own_message = error_section.get("message")
+    if not own_message and raw_error_section and not isinstance(raw_error_section, dict):
+        own_message = str(raw_error_section).strip()
     nested = _unnest_provider_error(own_message)
     if nested:
         own_message = nested.get("prefix") or own_message

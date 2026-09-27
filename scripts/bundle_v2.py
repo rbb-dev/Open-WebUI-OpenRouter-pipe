@@ -481,6 +481,61 @@ def analyze_module(mod: ModuleInfo, all_modules: dict[str, ModuleInfo]) -> None:
             mod.top_level_names |= _try_block_bindings(node)
 
 
+def _plugin_valve_registrants(modules: dict[str, ModuleInfo]) -> set[str]:
+    """Modules whose *body execution* registers plugin-contributed valve fields.
+
+    A plugin module contributes settings by decorating its class at import time, so
+    the merge that reads them only works if that body ran first. Both sets below are
+    reached by rule — a module under ``plugins.`` that imports the registry at module
+    level — so no plugin is named here and a newly added one is covered as it is
+    written. The framework's own modules are excluded by the same rule rather than by
+    a list: the registry never imports itself, and ``base``/``_utils`` do not import it.
+    """
+    prefix = f"{PACKAGE_NAME}.plugins."
+    registry = f"{PACKAGE_NAME}.plugins.registry"
+    found: set[str] = set()
+    for name, mod in modules.items():
+        if not name.startswith(prefix):
+            continue
+        for node in ast.iter_child_nodes(mod.tree):
+            if (
+                isinstance(node, ast.ImportFrom)
+                and _resolve_relative_import(node, name) == registry
+            ):
+                found.add(name)
+                break
+    return found
+
+
+def _plugin_valve_consumers(modules: dict[str, ModuleInfo]) -> set[str]:
+    """Modules that merge plugin valves during their own module-level execution.
+
+    The import is also matched at any depth inside a module-level ``try``, because
+    that is how the pipe reads the registry: a merge that may fail is guarded, and an
+    ``ImportFrom`` nested in that ``try`` is not a direct child of the module body, so a
+    top-level-only scan would order nothing and the guard would become the only thing
+    standing between a refactor and this defect.
+    """
+    prefix = f"{PACKAGE_NAME}.plugins."
+    registry = f"{PACKAGE_NAME}.plugins.registry"
+    found: set[str] = set()
+    for name, mod in modules.items():
+        if name.startswith(prefix):
+            continue
+        nodes: list[ast.AST] = list(ast.iter_child_nodes(mod.tree))
+        for node in ast.iter_child_nodes(mod.tree):
+            if isinstance(node, ast.Try):
+                nodes.extend(ast.walk(node))
+        for node in nodes:
+            if (
+                isinstance(node, ast.ImportFrom)
+                and _resolve_relative_import(node, name) == registry
+            ):
+                found.add(name)
+                break
+    return found
+
+
 def topological_sort(modules: dict[str, ModuleInfo]) -> list[ModuleInfo]:
     """Kahn's algorithm — returns modules in dependency order (leaves first)."""
     # Build adjacency and in-degree
@@ -492,6 +547,18 @@ def topological_sort(modules: dict[str, ModuleInfo]) -> list[ModuleInfo]:
             if dep in modules and dep != name:
                 dependents[dep].append(name)
                 in_degree[name] += 1
+
+    # The plugin-valve merge is invisible to `internal_deps`: a consumer that reads
+    # the registry inside a module-level try records no edge, and nothing imports the
+    # plugin bodies, so Kahn's order is free to place the merge first. The merge then
+    # finds an empty registry, returns the base class unchanged, and raises nothing --
+    # every plugin-contributed setting silently absent from the installed valve class.
+    # Order each registrant before each consumer so the merge cannot depend on it.
+    for source in _plugin_valve_registrants(modules):
+        for target in _plugin_valve_consumers(modules):
+            if source != target and source in modules and target in modules:
+                dependents[source].append(target)
+                in_degree[target] += 1
 
     queue: deque[str] = deque()
     for name, deg in in_degree.items():

@@ -54,7 +54,11 @@ try:
     out["schema"] = {
         "valves": len(valves.model_json_schema().get("properties") or {}),
         "user_valves": len(user_valves.model_json_schema().get("properties") or {}),
+        "valve_names": sorted(valves.model_json_schema().get("properties") or {}),
     }
+    import importlib as _il
+    _pd = _il.import_module("open_webui_openrouter_pipe.plugins.pipe_dashboard.plugin")
+    out["plugin_valve_fields"] = sorted(_pd.PipeDashboardPlugin.plugin_valves)
 
     proxy = module.__dict__.get("logging")
     attrs = sorted(getattr(module, "_SUBMODULE_ATTRS", None) or [])

@@ -34,6 +34,7 @@ from .config import (
     DEFAULT_OPENROUTER_ERROR_TEMPLATE,
     ULID_LENGTH,
 )
+from .url_scheme import split_base64_data_url
 
 logger = logging.getLogger(__name__)
 
@@ -787,9 +788,10 @@ def _redact_payload_blobs(value: Any, *, max_chars: int = 256) -> Any:
 
     def _redact_data_url(text: str) -> str:
         candidate = text.strip()
-        if not candidate.startswith("data:") or ";base64," not in candidate:
+        split = split_base64_data_url(candidate)
+        if split is None:
             return text
-        header, b64 = candidate.split(",", 1)
+        header, b64 = split
         if len(candidate) <= max_chars:
             return candidate
         keep = max(8, min(64, max_chars // 4))

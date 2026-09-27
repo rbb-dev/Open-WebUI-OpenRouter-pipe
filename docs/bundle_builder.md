@@ -61,7 +61,7 @@ Pyodide (the Python-in-WebAssembly runtime) runs inside a dedicated [Web Worker]
 2. Download all relevant `.py` source files via `raw.githubusercontent.com`.
 3. Patch `plugins/__init__.py` to include only the selected plugins.
 4. Send files to the Worker, which writes them to Pyodide's virtual filesystem.
-5. Execute `bundle_v2.py` inside Pyodide — the same bundler that CI uses.
+5. Execute `bundle_v2.py` inside Pyodide — the same bundler that CI uses. It orders the emitted modules so that every plugin body is written before the module that merges plugin valves, so a plugin's settings are present in the built artifact's `Pipe.Valves` (see [Plugin System](plugin_system.md#how-it-works)).
 6. Read the output file and return it to the main thread for download/clipboard.
 
 ---

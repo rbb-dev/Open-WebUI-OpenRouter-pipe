@@ -437,6 +437,8 @@ The handler receives the pipe, the resolved OWUI user, and the validated `args` 
 
 `whoami` and `echo` are reference implementations; `usage_stats` powers the Usage tab; `config_get` and `config_set` power the Config tab (see the [Operations Guide](plugins_pipe_dashboard.md#editing-configuration)). A new action is registered by importing its module at plugin load -- the same explicit-import requirement as commands.
 
+`config_get` returns a `drift` report with two lists: `unenriched` (valves with no `CONFIG_META` entry) and `orphaned` (entries with no valve). The Config tab renders `unenriched` only. So `orphaned` names settings this plugin declares and the Config tab cannot show, and nothing on screen says so; a `drift.orphaned` that is not empty is a signal to read, not a state any install should be left in.
+
 ---
 
 ## Authorization Helpers

@@ -67,7 +67,7 @@ For cloud/unknown backends, a file whose declared `meta['size']` is missing or i
 ### What is sent (important)
 
 The pipe never writes an image the person attached to Open WebUI storage: not for a saved, channel or temporary chat, and not for any request of a turn (its first answer, a Regenerate, each further model answering it, a Continue, or Open WebUI's calls back after each round of tool calls). Every request sends the image as the message carries it:
-- A **data URL** (`data:image/...;base64,...`) is checked for size and sent as it came; one that fails validation is dropped and reported, never sent unvalidated.
+- A **data URL** (`data:image/...;base64,...`) is checked for size and sent as it came; one that fails validation is dropped and reported, never sent unvalidated. The `;base64` marker is matched case-insensitively, as the data-URL standard requires, so `;BASE64,` is a spelling of the same thing and the URL is still forwarded with its own spelling intact. A token-free `data:` URL — the word `base64` in a payload, or a parameter that merely starts with those letters — is not base64 and is refused, in every spelling.
 - A **remote URL** (`https://`) is downloaded (with retries/limits/SSRF protection) and its bytes are sent upstream as a `data:` URL; one that cannot be downloaded is forwarded as its link, and one larger than `BASE64_MAX_SIZE_MB` once downloaded is not sent. Plain `http://` is disabled by default and requires explicit allowlisting.
 - An **Open WebUI file URL** (for example `/api/v1/files/...`) is streamed with the requester's access and inlined as a `data:` URL to avoid requiring OpenRouter to fetch from your Open WebUI host.
 
@@ -105,7 +105,7 @@ Every request forwards `file_data` and `file_url` as they came, except inline da
 OpenRouter audio inputs require base64-encoded audio, and the pipe enforces that:
 
 - Remote URLs (`http://` / `https://`) are rejected and replaced with an empty `input_audio` block.
-- Data URLs (`data:audio/...;base64,...`) are accepted if valid and within size limits.
+- Data URLs (`data:audio/...;base64,...`) are accepted if valid and within size limits. The same parser serves pictures and audio, so the `;base64` marker is matched case-insensitively here too: `;BASE64,` is the same marker, spelled differently, and is accepted rather than refused as "Audio input must be base64-encoded audio data".
 - Raw base64 strings are accepted if valid.
 
 Supported formats are normalized to `mp3` or `wav` based on MIME hints when available; unknown types default to `mp3`.

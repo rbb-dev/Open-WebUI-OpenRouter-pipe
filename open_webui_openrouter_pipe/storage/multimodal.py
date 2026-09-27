@@ -52,7 +52,7 @@ from ..core.errors import (
     _RetryWait,
 )
 from ..core.timing_logger import timed
-from ..core.url_scheme import is_http_or_https_url
+from ..core.url_scheme import is_http_or_https_url, split_base64_data_url
 from ..core.warn_latch import warn_level
 
 if TYPE_CHECKING:
@@ -1739,16 +1739,16 @@ class MultimodalHandler:
             if not data_url or not data_url.startswith("data:"):
                 return None
 
-            parts = data_url.split(";base64,", 1)
-            if len(parts) != 2:
+            split = split_base64_data_url(data_url)
+            if split is None:
                 return None
 
             # Extract and normalize MIME type
-            mime_type = parts[0].replace("data:", "", 1).lower().strip()
+            mime_type = split[0].replace("data:", "", 1).split(";", 1)[0].lower().strip()
             if mime_type == "image/jpg":
                 mime_type = "image/jpeg"
 
-            b64_data = parts[1]
+            b64_data = split[1]
 
             if not self._file_gateway.validate_base64_size(b64_data):
                 return None

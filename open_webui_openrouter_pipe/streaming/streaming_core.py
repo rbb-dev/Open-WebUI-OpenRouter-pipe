@@ -959,21 +959,23 @@ class StreamingHandler:
                     seeded_output_items = stored_items
             return seeded_output_items
 
-        def _flush_recorded_message() -> None:
+        def _flush_recorded_message() -> dict[str, Any] | None:
             nonlocal recorded_message_chars, open_message_id
             pending = assistant_message[recorded_message_chars:]
             segment_id = open_message_id or f"msg-{uuid.uuid4().hex}"
             open_message_id = None
             if not pending:
-                return
+                return None
             recorded_message_chars = len(assistant_message)
-            emitted_output_items.append({
+            item = {
                 "type": "message",
                 "id": segment_id,
                 "role": "assistant",
                 "status": "completed",
                 "content": [{"type": "output_text", "text": pending}],
-            })
+            }
+            emitted_output_items.append(item)
+            return item
 
         async def _record_output_item(item: dict[str, Any]) -> None:
             await _capture_seeded_output()
@@ -1056,6 +1058,14 @@ class StreamingHandler:
                 await _capture_seeded_output()
                 emitted_output_items.append(copy.deepcopy(item))
                 return _output_index_before_open_message(item)
+            if open_message_id is None and strip_hidden_marker_lines(pending).strip():
+                published = _flush_recorded_message()
+                if published is not None:
+                    await event_emitter({
+                        "type": "response.output_item.added",
+                        "output_index": _output_index(published),
+                        "item": published,
+                    })
             await _record_output_item(item)
             return _output_index(item)
 

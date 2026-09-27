@@ -2126,7 +2126,6 @@ class TestParseDataUrl:
         result = pipe_instance._multimodal_handler._parse_data_url("data:image/png;base64,!!!invalid!!!")
         assert result is None
 
-
 class TestFetchImageAsDataUrl:
     """Tests for fetching and converting images to data URLs."""
 

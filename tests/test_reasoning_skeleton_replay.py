@@ -75,7 +75,9 @@ async def _stage_a(pipe, monkeypatch, valves, rounds, *, stream=True, emitter=No
     writing nothing, the second reasoning first; ("search-then-calls", [call ids]), which reasons, has OpenRouter run a web
     search (item id "ws-<round>"), writes and calls; ("advise-then-calls", [call ids]) and ("search-think-then-calls",
     [call ids]), which reason, have OpenRouter consult its advisor (item id "adv-<round>") or run a web search, reason
-    again ("THOUGHT-<round>-AFTER"), write and call; or ("answer", reasons_first). ``signed=False`` streams reasoning with
+    again ("THOUGHT-<round>-AFTER"), write and call; or ("answer", reasons_first); or ("answer-then-reasoning", None),
+    which writes and only then reports its reasoning, a provider that reasons after its own message item.
+    ``signed=False`` streams reasoning with
     no signature, which Anthropic cannot take back; ``signed="at-completion"`` streams it unsigned and signs it only in
     the completed response, as Anthropic does. ``message_id=None`` sends no message id, as an API request does;
     ``real_row_builder`` builds rows with the store's own `_make_db_row` instead of a stand-in, and ``real_store`` keeps
@@ -104,6 +106,17 @@ async def _stage_a(pipe, monkeypatch, valves, rounds, *, stream=True, emitter=No
             output.append(block)
             streamed = {k: v for k, v in block.items() if k != "signature"} if signed == "at-completion" else block
             return {"type": "response.output_item.done", "item": streamed}
+
+        if kind == "answer-then-reasoning":
+            # A provider that returns its reasoning *after* its own message item. The
+            # input order is the point, so it is written out here rather than reused from
+            # the "answer" shape: a future edit that reasons first would neuter the row
+            # that depends on it, and the test asserts this order for that reason.
+            yield {"type": "response.output_text.delta", "delta": f"text {index} "}
+            yield thought("")
+            yield {"type": "response.completed", "response": {"output": output, "usage": {}}}
+            return
+
 
         consulting = kind in ("advise-then-calls", "search-think-then-calls")
         silent = kind in ("silent-calls", "silent-search-then-calls", "think-silent-search-then-calls")
