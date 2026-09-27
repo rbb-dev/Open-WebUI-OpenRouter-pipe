@@ -8,7 +8,7 @@ import pytest
 import pytest_asyncio
 
 from open_webui_openrouter_pipe import Pipe
-from open_webui_openrouter_pipe.core.config import _PIPE_METADATA_KEY, Valves
+from open_webui_openrouter_pipe.core.config import NO_CONTENT_AFTER_TOOLS_FALLBACK, _PIPE_METADATA_KEY, Valves
 from open_webui_openrouter_pipe.core.errors import OpenRouterAPIError
 from open_webui_openrouter_pipe.core.fusion_defaults import FusionRunPlan
 from open_webui_openrouter_pipe.requests.fusion_engine import (

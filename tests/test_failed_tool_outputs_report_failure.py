@@ -32,26 +32,28 @@ from open_webui_openrouter_pipe import Pipe, ResponsesBody
 _TERMINAL_FAILURE = "incomplete"
 
 
-def _outputs_replayed_to_the_model(requests: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Every function_call_output the pipe sent back on the follow-up request."""
-    if len(requests) < 2:
-        return []
+def _outputs_in_request(request: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         item
-        for item in (requests[1].get("input") or [])
+        for item in (request.get("input") or [])
         if isinstance(item, dict) and item.get("type") == "function_call_output"
     ]
 
 
 async def _drive_tool_loop(
-    pipe, monkeypatch, *, first_round_output: list[dict[str, Any]], max_loops: int = 2,
-    real_executor: bool = False
+    pipe, monkeypatch, *, first_round_output: list[dict[str, Any]] | None = None, max_loops: int = 2,
+    real_executor: bool = False, script: list[list[dict[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
     """Run one tool round and return the requests the pipe actually sent.
 
     Mocks only the transport. The tool-call bookkeeping under test -- validating each
     call, deciding what to synthesise for the ones that cannot run, and assembling the
     continuation input -- is the real code.
+
+    ``script`` is the per-round list of `response.completed` output lists, the last entry
+    repeating; it is the only way to say "the model calls again on the next round", which a
+    ceiling test needs, because a single call round never reaches a ceiling above one. With
+    ``script`` None the default is one call round then an answer.
     """
     body = ResponsesBody(model="test/model", input=[], stream=True)
     valves = pipe.valves.model_copy(
@@ -63,13 +65,16 @@ async def _drive_tool_loop(
         }
     )
 
-    rounds = [
-        [{"type": "response.completed", "response": {"output": first_round_output, "usage": {}}}],
-        [
-            {"type": "response.output_text.delta", "delta": "Done."},
-            {"type": "response.completed", "response": {"output": [], "usage": {}}},
-        ],
-    ]
+    if script is None:
+        if first_round_output is None:
+            raise TypeError("_drive_tool_loop needs either first_round_output or script")
+        script = [
+            first_round_output,
+            [{"type": "message", "role": "assistant", "status": "completed",
+              "content": [{"type": "output_text", "text": "Done."}]}],
+        ]
+    rounds = [[{"type": "response.completed", "response": {"output": listed, "usage": {}}}]
+              for listed in script]
     captured: list[dict[str, Any]] = []
     call_index = 0
 
@@ -209,17 +214,26 @@ async def test_calls_skipped_by_the_loop_limit_are_carded_as_failures(
     With the limit reached the pipe injects an output for every call it will not run.
     Reporting those as completed tells the model it has results it never received, and
     the text it then writes is grounded in nothing.
+
+    The cap is 2 and the model calls on all three rounds, because a cap of 1 is now spent by the
+    first round's own call and a cap of 2 is spent by the third: reaching a ceiling takes a call on
+    every round up to it, so a script of two calls stops the loop before the ceiling ever fires.
     """
+    call = {"type": "function_call", "call_id": "limit-1", "name": "lookup", "arguments": "{}"}
     captured = await _drive_tool_loop(
         pipe_instance_async,
         monkeypatch,
-        first_round_output=[
-            {"type": "function_call", "call_id": "limit-1", "name": "lookup", "arguments": "{}"}
+        script=[
+            [call],
+            [{**call, "call_id": "limit-2"}],
+            [{**call, "call_id": "limit-3"}],
+            [{"type": "message", "role": "assistant", "status": "completed",
+              "content": [{"type": "output_text", "text": "Done."}]}],
         ],
-        max_loops=1,
+        max_loops=2,
     )
 
-    outputs = _outputs_replayed_to_the_model(captured)
+    outputs = _outputs_in_request(captured[-1])
     assert outputs, (
         "the loop limit was reached and no stub was injected for the pending call, so "
         "the model sees a tool call that never resolves"

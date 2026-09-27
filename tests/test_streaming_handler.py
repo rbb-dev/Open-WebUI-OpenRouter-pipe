@@ -3297,12 +3297,17 @@ class TestLoopLimitAndFunctionExecution:
 
     @pytest.mark.asyncio
     async def test_loop_limit_reached(self, monkeypatch, pipe_instance_async):
-        """Stub responses are injected and the model gets a synthesis turn."""
+        """Stub responses are injected and the model gets a synthesis turn.
+
+        The cap is spent by rounds that run tools, so the model calls once more than the cap before
+        the ceiling: a script of one call answers at a cap of 1 with its tool having run, and two
+        answer at a cap of 2, so this test would be measuring a turn that never reached the limit.
+        """
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
         valves = pipe.valves.model_copy(update={
             "TOOL_EXECUTION_MODE": "Pipeline",
-            "MAX_FUNCTION_CALL_LOOPS": 1,
+            "MAX_FUNCTION_CALL_LOOPS": 2,
         })
 
         async def mock_tool(**kwargs):
@@ -3318,14 +3323,14 @@ class TestLoopLimitAndFunctionExecution:
         async def fake_stream(self, session, request_body, **_kwargs):
             captured_requests.append(request_body)
             call_count[0] += 1
-            if call_count[0] == 1:
+            if call_count[0] <= 3:
                 yield {
                     "type": "response.completed",
                     "response": {
                         "output": [
                             {
                                 "type": "function_call",
-                                "call_id": "call-1",
+                                "call_id": f"call-{call_count[0]}",
                                 "name": "get_weather",
                                 "arguments": '{"city":"NYC"}',
                             }
@@ -3355,22 +3360,47 @@ class TestLoopLimitAndFunctionExecution:
         async def emitter(event):
             emitted.append(event)
 
-        result = await pipe._streaming_handler._run_streaming_loop(
-            body,
-            valves,
-            emitter,
-            metadata={"model": {"id": "test"}},
-            tools=tool_registry,
-            session=cast(Any, object()),
+        # A real tool context, so the first round's call actually runs: without one the executor
+        # reports an error instead, and the cap would be spent by a round that called nothing.
+        context = _ToolExecutionContext(
+            queue=asyncio.Queue(),
+            per_request_semaphore=asyncio.Semaphore(1),
+            global_semaphore=None,
+            timeout=5.0,
+            batch_timeout=None,
+            idle_timeout=None,
             user_id="user-123",
+            event_emitter=emitter,
+            batch_cap=4,
         )
+        executor = pipe._ensure_tool_executor()
+        worker = asyncio.create_task(executor._tool_worker_loop(context))
+        context.workers.append(worker)
+        token = pipe._TOOL_CONTEXT.set(context)
+        try:
+            result = await pipe._streaming_handler._run_streaming_loop(
+                body,
+                valves,
+                emitter,
+                metadata={"model": {"id": "test"}},
+                tools=tool_registry,
+                session=cast(Any, object()),
+                user_id="user-123",
+            )
+        finally:
+            pipe._TOOL_CONTEXT.reset(token)
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
 
-        assert not execute_called[0], "Tools should not be executed when loop limit is reached"
-        assert call_count[0] == 2, f"Expected 2 API calls (tool + synthesis), got {call_count[0]}"
-        second_input = captured_requests[1].get("input", [])
-        stub_outputs = [i for i in second_input if isinstance(i, dict) and i.get("type") == "function_call_output"]
+        assert execute_called[0], "No tool ran at all, so the loop limit was never reached"
+        assert call_count[0] == 4, (
+            f"Expected 4 API calls (two tool rounds, the ceiling round, and the synthesis round), "
+            f"got {call_count[0]}"
+        )
+        last_input = captured_requests[-1].get("input", [])
+        stub_outputs = [i for i in last_input if isinstance(i, dict) and i.get("type") == "function_call_output"]
         assert stub_outputs, "Expected stub function_call_output in synthesis request"
-        assert "TOOL_CALL_SKIPPED" in stub_outputs[0].get("output", "")
+        assert "TOOL_CALL_SKIPPED" in stub_outputs[-1].get("output", "")
         assert "Based on what I gathered" in result
 
     @pytest.mark.asyncio
@@ -6578,14 +6608,18 @@ def test_anthropic_interleaved_thinking_header_applied(pipe_instance):
 
 @pytest.mark.asyncio
 async def test_function_call_loop_limit_injects_stubs(monkeypatch, pipe_instance_async):
-    """When MAX_FUNCTION_CALL_LOOPS is reached, stubs are injected and model gets a synthesis turn."""
+    """When MAX_FUNCTION_CALL_LOOPS is reached, stubs are injected and model gets a synthesis turn.
+
+    The cap is spent by rounds that run tools, so the model calls once more than the cap before the
+    ceiling; a script of one call answers at a cap of 1 with its tool having run.
+    """
     pipe = pipe_instance_async
     body = ResponsesBody(
         model="openrouter/test-loops",
         input=[{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]}],
         stream=True,
     )
-    valves = pipe.valves.model_copy(update={"MAX_FUNCTION_CALL_LOOPS": 1})
+    valves = pipe.valves.model_copy(update={"MAX_FUNCTION_CALL_LOOPS": 2})
 
     ModelFamily.set_dynamic_specs({
         "openrouter.test-loops": {
@@ -6599,15 +6633,15 @@ async def test_function_call_loop_limit_injects_stubs(monkeypatch, pipe_instance
     async def fake_stream(self, session, request_body, **_kwargs):
         captured_requests.append(request_body)
         call_count[0] += 1
-        if call_count[0] == 1:
+        if call_count[0] <= 3:
             yield {
                 "type": "response.completed",
                 "response": {
                     "output": [
                         {
                             "type": "function_call",
-                            "id": "call-1",
-                            "call_id": "call-1",
+                            "id": f"call-{call_count[0]}",
+                            "call_id": f"call-{call_count[0]}",
                             "name": "lookup",
                             "arguments": "{}",
                         },
@@ -6628,7 +6662,8 @@ async def test_function_call_loop_limit_injects_stubs(monkeypatch, pipe_instance
 
     async def spy_execute(calls, registry):
         execute_called[0] = True
-        return [{"type": "function_call_output", "call_id": "call-1", "output": "ok"}]
+        return [{"type": "function_call_output", "call_id": c.get("call_id"), "output": "ok"}
+                for c in calls]
 
     monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", spy_execute)
 
@@ -6647,15 +6682,15 @@ async def test_function_call_loop_limit_injects_stubs(monkeypatch, pipe_instance
         user_id="user-123",
     )
 
-    # Tools should NOT have been executed
-    assert not execute_called[0], "Tools should not be executed when loop limit is reached"
-    # Model got a synthesis turn
-    assert call_count[0] == 2, f"Expected 2 API calls, got {call_count[0]}"
-    # Stub present in synthesis request
-    second_input = captured_requests[1].get("input", [])
-    stub_outputs = [i for i in second_input if isinstance(i, dict) and i.get("type") == "function_call_output"]
+    # The first two rounds ran their tools; only the third was cut off
+    assert execute_called[0], "No tool ran at all, so the loop limit was never reached"
+    # Model got a synthesis turn after the stub round
+    assert call_count[0] == 4, f"Expected 4 API calls, got {call_count[0]}"
+    # Stub present in the request that writes the answer
+    last_input = captured_requests[-1].get("input", [])
+    stub_outputs = [i for i in last_input if isinstance(i, dict) and i.get("type") == "function_call_output"]
     assert stub_outputs, "Expected stub function_call_output in synthesis request"
-    assert "TOOL_CALL_SKIPPED" in stub_outputs[0].get("output", "")
+    assert "TOOL_CALL_SKIPPED" in stub_outputs[-1].get("output", "")
 
 
 """Real integration tests for streaming queue behavior.

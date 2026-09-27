@@ -474,6 +474,7 @@ class StreamingHandler:
         emitted_tool_output_items: set[str] = set()
         committed_call_rows: set[str] = set()
         committed_output_rows: set[str] = set()
+        executed_tool_call_ids: set[tuple[str, str, str]] = set()
         emitted_response_output_items = False
         emitted_output_items: list[dict[str, Any]] = []
         published_item_ids: list[str] = []
@@ -1468,6 +1469,17 @@ class StreamingHandler:
                     return candidate.strip()
                 return ""
 
+            def _extract_call_key(call: Any) -> tuple[str, str, str] | None:
+                call_id = _extract_call_id(call)
+                if not call_id or not isinstance(call, dict):
+                    return None
+                raw_args = call.get("arguments")
+                if isinstance(raw_args, str):
+                    args_text = raw_args.strip()
+                else:
+                    args_text = json.dumps(raw_args, ensure_ascii=False) if raw_args is not None else "{}"
+                return (call_id, (call.get("name") or "").strip(), args_text)
+
             async def _notify_unhandled_citations(raw_annotations: Any) -> None:
                 """Warn (status + toast) once if the response carries a citation type we can't
                 render yet (e.g. file_citation). Never alters or halts the answer."""
@@ -1523,6 +1535,7 @@ class StreamingHandler:
             was_cancelled = False
             fusion_no_usable_member = False
             loop_limit_reached = False
+            loop_limit_announced = False
             ran_out = False
             last_round_had_calls = False
             retry_barrier_crossed = False
@@ -1546,8 +1559,9 @@ class StreamingHandler:
             raise
 
         try:
-            for loop_index in range(valves.MAX_FUNCTION_CALL_LOOPS + 1):
-                if loop_index >= valves.MAX_FUNCTION_CALL_LOOPS and not loop_limit_reached:
+            max_loops = max(1, int(valves.MAX_FUNCTION_CALL_LOOPS))
+            for loop_index in range(max_loops + 2):
+                if loop_index > max_loops and not loop_limit_reached:
                     ran_out = True
                     break
 
@@ -2853,7 +2867,7 @@ class StreamingHandler:
                 self.logger.debug("📞 Found %d function_call items in response", len(call_items))
                 function_outputs: list[dict[str, Any]] = []
                 if call_items or invalid_call_outputs:
-                    if call_items and loop_index >= (valves.MAX_FUNCTION_CALL_LOOPS - 1):
+                    if call_items and loop_index >= max_loops:
                         loop_limit_reached = True
                         ran_out = True
 
@@ -3027,11 +3041,14 @@ class StreamingHandler:
                                 self.logger.warning("Failed to emit in-progress tool cards: %s", exc, exc_info=True)
 
                         if loop_limit_reached:
-                            limit = valves.MAX_FUNCTION_CALL_LOOPS
-                            self.logger.info(
-                                "Tool-call loop limit reached (%d/%d); injecting stubs for %d pending call(s).",
-                                limit, limit, len(call_items),
-                            )
+                            has_actionable_continuation = False
+                            limit = max_loops
+                            if not loop_limit_announced:
+                                loop_limit_announced = True
+                                self.logger.info(
+                                    "Tool-call loop limit reached (%d/%d); injecting stubs for %d pending call(s).",
+                                    limit, limit, len(call_items),
+                                )
                             function_outputs = []
                             for call in call_items:
                                 call_id = _extract_call_id(call) or f"call-{uuid.uuid4().hex}"
@@ -3047,76 +3064,111 @@ class StreamingHandler:
                                         "status": "incomplete",
                                     }
                                 )
+                            if loop_index > max_loops:
+                                break
                         else:
+                            fresh_calls = [
+                                call for call in call_items
+                                if _extract_call_key(call) not in executed_tool_call_ids
+                            ]
+                            repeated_calls = [
+                                call for call in call_items
+                                if _extract_call_key(call) in executed_tool_call_ids
+                            ]
+                            repeated_outputs = [
+                                {
+                                    "type": "function_call_output",
+                                    "call_id": _extract_call_id(call) or f"call-{uuid.uuid4().hex}",
+                                    "output": (
+                                        "TOOL_CALL_ALREADY_RUN: this identical call already has a result "
+                                        "in this reply, so the tool is not run again. Use the result "
+                                        "already provided, or call the tool again with a new call_id."
+                                    ),
+                                    "status": "incomplete",
+                                }
+                                for call in repeated_calls
+                            ]
+                            if not fresh_calls:
+                                function_outputs = repeated_outputs
+                                if loop_index > max_loops:
+                                    break
+                            else:
+                                executed_tool_call_ids.update(
+                                    key for key in (_extract_call_key(call) for call in fresh_calls)
+                                    if key is not None
+                                )
+                                call_items = fresh_calls
 
-                            _tool_ctx = self._pipe._TOOL_CONTEXT.get()
-                            if _tool_ctx:
-                                async def _on_tool_complete(call: dict, result: dict) -> None:
-                                    cid = _extract_call_id(call) or _extract_call_id(result)
-                                    if not cid:
-                                        return
-                                    result_str, pictures = tool_output_text_and_pictures(result.get("output"))
-                                    await _emit_tool_result(
-                                        call_id=cid,
-                                        result_text=result_str,
-                                        files=result.get("files") or None,
-                                        embeds=result.get("embeds") or None,
-                                        status=str(result.get("status") or "completed"),
-                                        pictures=pictures,
+                                _tool_ctx = self._pipe._TOOL_CONTEXT.get()
+                                if _tool_ctx:
+                                    async def _on_tool_complete(call: dict, result: dict) -> None:
+                                        cid = _extract_call_id(call) or _extract_call_id(result)
+                                        if not cid:
+                                            return
+                                        result_str, pictures = tool_output_text_and_pictures(result.get("output"))
+                                        await _emit_tool_result(
+                                            call_id=cid,
+                                            result_text=result_str,
+                                            files=result.get("files") or None,
+                                            embeds=result.get("embeds") or None,
+                                            status=str(result.get("status") or "completed"),
+                                            pictures=pictures,
+                                        )
+                                        if persist_message_id and cid in committed_call_rows and cid not in committed_output_rows:
+                                            committed_output_rows.add(cid)
+                                            rows = _round_output_row(result, cid)
+                                            ulids = await _persist_rows(rows, "tool_result") if rows else []
+                                            if ulids and not api_hold_key:
+                                                await _append_assistant_hidden_markers(
+                                                    [_serialize_marker(ulid) for ulid in ulids]
+                                                )
+
+                                    _tool_ctx.on_complete = _on_tool_complete
+                                    _tool_ctx.carded_calls = (
+                                        calls_carded_this_round if emitter_supplied and not _tool_ctx.fusion_inner else set()
                                     )
-                                    if persist_message_id and cid in committed_call_rows and cid not in committed_output_rows:
-                                        committed_output_rows.add(cid)
-                                        rows = _round_output_row(result, cid)
-                                        ulids = await _persist_rows(rows, "tool_result") if rows else []
-                                        if ulids and not api_hold_key:
-                                            await _append_assistant_hidden_markers(
-                                                [_serialize_marker(ulid) for ulid in ulids]
-                                            )
 
-                                _tool_ctx.on_complete = _on_tool_complete
-                                _tool_ctx.carded_calls = (
-                                    calls_carded_this_round if emitter_supplied and not _tool_ctx.fusion_inner else set()
-                                )
+                                call_rows_at_start: list[dict[str, Any]] = []
+                                for call in call_items if persist_message_id else []:
+                                    cid = _extract_call_id(call)
+                                    if cid and cid not in committed_call_rows:
+                                        committed_call_rows.add(cid)
+                                        call_rows_at_start.extend(_round_call_row(call, cid))
+                                if call_rows_at_start:
+                                    if thinking_tasks:
+                                        cancel_thinking()
+                                    pending_items.extend(call_rows_at_start)
+                                    await _flush_pending("tool_calls")
+                                    await _mark_committed_rows()
 
-                            call_rows_at_start: list[dict[str, Any]] = []
-                            for call in call_items if persist_message_id else []:
-                                cid = _extract_call_id(call)
-                                if cid and cid not in committed_call_rows:
-                                    committed_call_rows.add(cid)
-                                    call_rows_at_start.extend(_round_call_row(call, cid))
-                            if call_rows_at_start:
-                                if thinking_tasks:
-                                    cancel_thinking()
-                                pending_items.extend(call_rows_at_start)
-                                await _flush_pending("tool_calls")
-                                await _mark_committed_rows()
-
-                            try:
-                                function_outputs = await self._pipe._ensure_tool_executor()._execute_function_calls(
-                                    call_items,
-                                    tool_registry,
-                                )
-                            except Exception as exc:
-                                self.logger.warning(
-                                    "Tool execution failed; continuing loop with model-visible error outputs: %s",
-                                    exc,
-                                    exc_info=True,
-                                )
-                                function_outputs = []
-                                for call in call_items:
-                                    call_id = _extract_call_id(call) or f"call-{uuid.uuid4().hex}"
-                                    function_outputs.append(
-                                        {
-                                            "type": "function_call_output",
-                                            "call_id": call_id,
-                                            "output": self._pipe._ensure_tool_executor()._tool_error_text(exc),
-                                            "status": "incomplete",
-                                        }
+                                try:
+                                    function_outputs = await self._pipe._ensure_tool_executor()._execute_function_calls(
+                                        call_items,
+                                        tool_registry,
                                     )
-                            finally:
-                                if _tool_ctx and _tool_ctx.on_complete is not None:
-                                    _tool_ctx.on_complete = None
-                                    _tool_ctx.carded_calls = set()
+                                except Exception as exc:
+                                    self.logger.warning(
+                                        "Tool execution failed; continuing loop with model-visible error outputs: %s",
+                                        exc,
+                                        exc_info=True,
+                                    )
+                                    function_outputs = []
+                                    for call in call_items:
+                                        call_id = _extract_call_id(call) or f"call-{uuid.uuid4().hex}"
+                                        function_outputs.append(
+                                            {
+                                                "type": "function_call_output",
+                                                "call_id": call_id,
+                                                "output": self._pipe._ensure_tool_executor()._tool_error_text(exc),
+                                                "status": "incomplete",
+                                            }
+                                        )
+                                finally:
+                                    if _tool_ctx and _tool_ctx.on_complete is not None:
+                                        _tool_ctx.on_complete = None
+                                        _tool_ctx.carded_calls = set()
+                                if repeated_outputs:
+                                    function_outputs = list(function_outputs) + repeated_outputs
 
                         all_function_outputs = list(function_outputs)
                         budgeted_outputs = [
@@ -3280,7 +3332,7 @@ class StreamingHandler:
                     break
 
             if ran_out and tool_loops_executed and last_round_had_calls:
-                limit_note = f"Tool-call limit reached ({valves.MAX_FUNCTION_CALL_LOOPS} iterations)."
+                limit_note = f"Tool-call limit reached ({max_loops} iterations)."
                 if not emitter_supplied:
                     assistant_message = join_answer_and_card(assistant_message, limit_note)
                 else:
@@ -3421,7 +3473,7 @@ class StreamingHandler:
                 except Exception:
                     self.logger.debug("generation-complete dispatch failed", exc_info=True)
 
-            if (not error_occurred) and (not was_cancelled):
+            if (not error_occurred) and (not was_cancelled) and (not handed_back):
                 await self._cleanup_replayed_reasoning(body, valves, message_id)
             if (not error_occurred) and (not was_cancelled) and event_emitter:
                 effective_start = stream_started_at or request_started_at

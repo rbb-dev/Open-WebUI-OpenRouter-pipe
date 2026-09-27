@@ -373,14 +373,18 @@ function renderPendingInline(d,v){
   else if(html){ d.querySelector(".badges").insertAdjacentHTML("afterend",html); wireRevert(d,v); }
 }
 function wireRevert(d,v){ const r=d.querySelector(".revert"); if(r)r.onclick=()=>{delete edits[v.name];invalid.delete(v.name);updateBar();renderDetail(v);buildTree();}; }
-function validateNum(d,v,num){
-  const b=v.bounds||{}; const raw=num.value.trim(); let bad=null;
+function heldProblem(v,val){
+  const b=v.bounds||{}; const raw=String(val==null?"":val).trim(); let bad=null;
   if(raw===""){ if(v.default!=null) bad="Required"; }
   else { const x=Number(raw);
     if(Number.isNaN(x))bad="Must be a number";
     else if(b.ge!=null&&x<b.ge)bad="Must be ≥ "+b.ge;
-    else if(b.le!=null&&x>b.le)bad="Must be ≤ "+b.le;
-  }
+    else if(b.le!=null&&x>b.le)bad="Must be ≤ "+b.le; }
+  return bad;
+}
+function validateNum(d,v,num){
+  const bad=heldProblem(v,num.value.trim());
+  const b=v.bounds||{};
   num.classList.toggle("err",!!bad);
   let slot=d.querySelector(".err-slot"); slot.innerHTML=bad?'<div class="errmsg">'+bad+'</div>':"";
   if(bad)invalid.add(v.name); else invalid.delete(v.name);
@@ -463,7 +467,11 @@ function applySnapshot(r){
   VALVES=r.valves||[]; if(r.rev!=null)REV=r.rev;
   byName={}; baseline={};
   VALVES.forEach(v=>{ byName[v.name]=v; baseline[v.name]=v.value; });
-  Object.keys(edits).forEach(n=>delete edits[n]); invalid.clear();
+  Object.keys(edits).forEach(n=>{ if(!Object.prototype.hasOwnProperty.call(baseline,n)){ delete edits[n]; invalid.delete(n); } });
+  Object.keys(edits).forEach(n=>{ const v=byName[n]; if(!v)return;
+    if(v.enum&&!v.enum.some(o=>String(o)===String(edits[n])))invalid.add(n);
+    else if(v.bounds){ const bad=heldProblem(v,edits[n]); if(bad)invalid.add(n); else invalid.delete(n); } });
+  updateBar();
   renderResetNote(r.reset||[]);
   driftCache=r.drift; paintDriftNote($("#driftnote"),r);
   hideConflict(); updateBar();

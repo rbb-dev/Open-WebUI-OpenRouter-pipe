@@ -1500,9 +1500,9 @@ class SessionLogManager:
             return
         with self._lock:
             dirs = set(self._dirs)
-        retention_days = int(self.valves.SESSION_LOG_RETENTION_DAYS)
         if not dirs:
             return
+        retention_days = int(self.valves.SESSION_LOG_RETENTION_DAYS)
         cutoff = time.time() - retention_days * 86400
 
         for base_dir in dirs:

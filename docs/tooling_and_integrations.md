@@ -106,7 +106,7 @@ Tool execution happens in the request loop that follows each Responses API call:
 4. The pipe executes the tools and converts each result into `function_call_output` items.
 5. The `function_call` items (normalized) and their outputs are appended to the next request’s `input[]`, and the loop continues until either:
    - no more `function_call` items are returned, or
-   - `MAX_FUNCTION_CALL_LOOPS` is reached — pending tool calls receive stub responses and the model gets one additional turn to synthesize a final answer. Each abandoned call is also shown to the person as a **failed** card, the shape a genuinely failed tool produces.
+   - `MAX_FUNCTION_CALL_LOOPS` is reached — pending tool calls receive stub responses and the model gets one additional turn after them to synthesize a final answer, so a turn that reaches the cap bills `MAX_FUNCTION_CALL_LOOPS + 2` model requests. Each abandoned call is also shown to the person as a **failed** card, the shape a genuinely failed tool produces, when tool cards are on.
 
 Notes:
 

@@ -1210,7 +1210,7 @@ class Valves(BaseModel):
     PERSIST_REASONING_TOKENS: Literal["disabled", "next_reply", "conversation"] = Field(
         default="conversation",
         title="Reasoning retention",
-        description="Reasoning retention: 'disabled' keeps nothing, 'next_reply' keeps thoughts only until the following assistant reply finishes, and 'conversation' keeps them for the full chat history. Reasoning is kept when the provider sends it as a replayable output item; reasoning that arrives only as streamed deltas is shown in the thinking box but not replayed on later turns. A temporary chat stores no reasoning; in Open-WebUI tool mode the thinking of a streamed reply is held in memory for that reply only, and dropped when the pipe answers its last call back or after 15 minutes unused. A call that carries no chat_id has its reasoning and tool records held in memory for the length of that request only and never written to the database (see API_CALL_ARTIFACT_MEMORY), so an API call's records last for the request, not the conversation.",
+        description="Reasoning retention: 'disabled' keeps nothing, 'next_reply' keeps thoughts only until the following assistant reply finishes, when that reply happens in this chat; rows whose answering request never arrives are dropped by the periodic cleanup, and 'conversation' keeps them for the full chat history. Reasoning is kept when the provider sends it as a replayable output item; reasoning that arrives only as streamed deltas is shown in the thinking box but not replayed on later turns. A temporary chat stores no reasoning; in Open-WebUI tool mode the thinking of a streamed reply is held in memory for that reply only, and dropped when the pipe answers its last call back or after 15 minutes unused. A call that carries no chat_id has its reasoning and tool records held in memory for the length of that request only and never written to the database (see API_CALL_ARTIFACT_MEMORY), so an API call's records last for the request, not the conversation.",
     )
     TASK_MODEL_REASONING_EFFORT: Literal["none", "minimal", "low", "medium", "high", "xhigh"] = Field(
         default="low",
@@ -1241,7 +1241,7 @@ class Valves(BaseModel):
     SHOW_TOOL_CARDS: bool = Field(
         default=True,
         title="Show tool execution cards",
-        description="Show each tool the model uses as a collapsible card in the chat, with its name, arguments and result, as Open WebUI does for the tools it runs itself. As in Open WebUI's own tool loop, a picture a tool returns as image data goes only to the model; a picture Open WebUI has stored as a file, such as an MCP tool's, goes to the model and the chat, as Open WebUI does since its fix after 0.11.4; other files go only to the chat. When off, the tools this pipe runs and OpenRouter's server tools get no card, except that a file the model shows through Open Terminal keeps its card for a person whose Open WebUI shows terminal files inline. On its next turn the model still learns which tools it used, except in a temporary chat, for which the pipe keeps nothing; after Stop, it learns of the calls before the first one still running if the reply was streamed, and of none if it was not. Open WebUI draws its own cards for the calls it runs, which now means a streamed reply in Open-WebUI mode and calls approved under 'ask'.",
+        description="Show each tool the model uses as a collapsible card in the chat, with its name, arguments and result, as Open WebUI does for the tools it runs itself. As in Open WebUI's own tool loop, a picture a tool returns as image data goes only to the model; a picture Open WebUI has stored as a file, such as an MCP tool's, goes to the model and the chat, as Open WebUI does since its fix after 0.11.4; other files go only to the chat. When off, the tools this pipe runs and OpenRouter's server tools get no card, except that a file the model shows through Open Terminal keeps its card for a person whose Open WebUI shows terminal files inline. On its next turn the model still learns which tools it used, except in a temporary chat, for which the pipe keeps nothing; after Stop, it learns of the calls before the first one still running if the reply was streamed, and of none if it was not. Open WebUI draws its own cards for the calls it runs, which now means a streamed reply in Open-WebUI mode and calls approved under 'ask'. With tool cards on, a call the loop cut off at `MAX_FUNCTION_CALL_LOOPS` is shown as a card marked failed, so a round that never ran is visible rather than missing.",
     )
     PERSIST_TOOL_RESULTS: bool = Field(
         default=False,
@@ -1298,8 +1298,12 @@ class Valves(BaseModel):
             "Maximum number of full execution cycles (loops) allowed per request whenever "
             "this pipe runs the calls. Each loop involves the model generating "
             "one or more function/tool calls, executing all requested functions, and feeding "
-            "the results back into the model. When the limit is reached, pending tool calls "
-            "are returned to the model marked as skipped so it can write a final answer. "
+            "the results back into the model. The count is of rounds in which tools actually "
+            "run, not of model requests: a request that only carries the skipped-call stub and "
+            "the one after it that writes the answer are both outside it. When the limit is "
+            "reached, pending tool calls are returned to the model marked as skipped so it can "
+            "write a final answer, and, with tool cards on, each skipped call is shown in the "
+            "transcript as a failed call card rather than being dropped silently. "
             "The model always gets at least one generation turn, so 0 and below are stored as 1. "
             "Has no effect on the calls Open WebUI runs, where the round limit is managed by Open WebUI."
         )
@@ -2477,7 +2481,7 @@ class UserValves(BaseModel):
     SHOW_TOOL_CARDS: bool = Field(
         default=True,
         title="Show tool execution cards",
-        description="Show each tool the AI uses as a card in the chat. When off, no card appears, except for a file the AI shows through Open Terminal while Open WebUI is set to show terminal files inline; when it is not, a file the AI asks to show inline opens in the preview panel. The AI still remembers which tools it used, except in a temporary chat, where nothing is kept; after Stop, it remembers the calls before the first one still running if the reply was streamed, and none if it was not. Open WebUI draws its own cards for the calls it runs, which now means a streamed reply in Open-WebUI mode and calls approved under 'ask'.",
+        description="Show each tool the AI uses as a card in the chat. When off, no card appears, except for a file the AI shows through Open Terminal while Open WebUI is set to show terminal files inline; when it is not, a file the AI asks to show inline opens in the preview panel. The AI still remembers which tools it used, except in a temporary chat, where nothing is kept; after Stop, it remembers the calls before the first one still running if the reply was streamed, and none if it was not. Open WebUI draws its own cards for the calls it runs, which now means a streamed reply in Open-WebUI mode and calls approved under 'ask'. With tool cards on, a call the loop cut off at `MAX_FUNCTION_CALL_LOOPS` is shown as a card marked failed, so a round that never ran is visible rather than missing.",
     )
     REQUEST_ZDR: bool = Field(
         default=False,

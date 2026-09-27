@@ -149,14 +149,16 @@ Retention has multiple layers:
 ### Reasoning retention policy (`PERSIST_REASONING_TOKENS`)
 Reasoning retention controls whether replayed reasoning artifacts are deleted after use:
 - `disabled`: no reasoning is retained.
-- `next_reply`: reasoning is kept only until the next assistant reply finishes, then deleted.
+- `next_reply`: reasoning is kept only until the next assistant reply finishes, then deleted. A reply still waiting on a tool result is not finished: a turn that hands its calls back keeps the rows, and when the later request that answers those results arrives it is the one that deletes them; if it never arrives, the rows wait for the periodic cleanup. A turn that was cancelled or errored keeps them too, since it produced no reply at all.
 - `conversation`: reasoning is kept for the full chat history (until time-based cleanup removes it).
 
 `PERSIST_REASONING_TOKENS` governs what is kept and what later turns replay. A stored reasoning item is replayed on both endpoints: on `/responses` as its own top-level `input` item, and on `/chat/completions` moved onto the assistant message that carries the round as `reasoning_details` — the shape Open WebUI itself sends to a chat-completions connection.
 
 Tool-round copies do not follow this setting: they stay for the whole conversation, until time-based cleanup
-removes them. Under `next_reply` the cleanup that runs at the end of a request spares the rows of the message that
-request is still writing, so continuing an answer does not delete the reasoning of the generation it continues. The
+removes them. Under `next_reply` the cleanup runs at the end of a reply-producing generation only. It spares the rows
+of the message that generation is still writing, so continuing an answer does not delete the reasoning of the
+generation it continues, and it spares the rows of a generation that was cancelled, errored, or handed its tool calls
+back, none of which finished a reply. The
 sparing holds on the Redis write-behind path too: a spared row still in the pending queue is committed and re-cached
 rather than dropped, because the decision is read from the queued row's own message id.
 
