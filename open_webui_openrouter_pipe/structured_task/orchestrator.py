@@ -11,10 +11,41 @@ deployment shapes.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Literal
+
+logger = logging.getLogger(__name__)
 
 TaskModelMode = Literal["internal", "external"]
 TaskModelFallback = Literal["none", "other_task_model"]
+
+_OWUI_TASK_MODEL_KEYS = ("task.model.default", "task.model.external")
+
+
+async def _owui_task_model_ids() -> dict[str, str] | None:
+    try:
+        from open_webui.models.config import Config as _OwuiConfig
+    except Exception:
+        logger.debug(
+            "structured_task: Open WebUI's config table is not importable",
+            exc_info=True,
+        )
+        return None
+
+    try:
+        rows = await _OwuiConfig.get_many(*_OWUI_TASK_MODEL_KEYS)
+    except Exception:
+        logger.debug(
+            "structured_task: Open WebUI's Task Model settings could not be read",
+            exc_info=True,
+        )
+        return None
+
+    return {
+        key: str(rows[key]).strip()
+        for key in _OWUI_TASK_MODEL_KEYS
+        if rows.get(key)
+    }
 
 
 async def resolve_task_model_candidates(
@@ -32,18 +63,15 @@ async def resolve_task_model_candidates(
         fallback: "none" returns only primary; "other_task_model" appends the
             other OWUI task model.
     """
-    internal = external = ""
-    try:
-        from open_webui.models.config import Config
-
-        values = await Config.get_many("task.model.default", "task.model.external")
-        internal = (values.get("task.model.default") or "").strip()
-        external = (values.get("task.model.external") or "").strip()
-    except Exception:  # noqa: BLE001
+    rows = await _owui_task_model_ids()
+    if rows is None:
         config = getattr(getattr(request, "app", None), "state", None)
         config = getattr(config, "config", None) if config is not None else None
         internal = (getattr(config, "TASK_MODEL", "") or "").strip() if config else ""
         external = (getattr(config, "TASK_MODEL_EXTERNAL", "") or "").strip() if config else ""
+    else:
+        internal = rows.get("task.model.default", "")
+        external = rows.get("task.model.external", "")
 
     primary = internal if mode == "internal" else external
     other = external if mode == "internal" else internal

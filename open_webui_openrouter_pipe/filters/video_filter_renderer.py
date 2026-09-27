@@ -1324,11 +1324,6 @@ def _render_intent_inlet_block() -> str:
     reads ``__metadata__["openrouter_pipe"]["video_intent"]`` first and falls
     back to the admin Valves when no key is set, so emitting None for an unset
     user valve preserves the admin default.
-
-    Always emitted alongside the four UserValves fields above (i.e. only when
-    admin VIDEO_INTENT_ENABLED=True). When disabled, the consumer never sees
-    a `video_intent` key and falls back to the admin valve which itself is
-    False, short-circuiting the classifier.
     """
     return (
         "            intent_settings: dict[str, Any] = {}\n"

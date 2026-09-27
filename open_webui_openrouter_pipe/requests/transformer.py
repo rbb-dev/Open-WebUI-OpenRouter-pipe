@@ -387,6 +387,15 @@ def _tool_images_message(pictures: list[str]) -> dict[str, Any]:
     ]}
 
 
+async def _memo_hit_is_still_permitted(
+    pipe: Pipe, memo_key: Any, url: str
+) -> bool:
+    if not await pipe._multimodal_handler._is_safe_url(url):
+        _reuse_download_memo.pop(memo_key, None)
+        return False
+    return True
+
+
 async def transform_messages_to_input(
     pipe: Pipe,
     messages: list[dict[str, Any]],
@@ -802,6 +811,10 @@ async def transform_messages_to_input(
                                 if memo_key is not None
                                 else None
                             )
+                        if remembered is not None and not await (
+                            _memo_hit_is_still_permitted(pipe, memo_key, url)
+                        ):
+                            remembered = None
                         try:
                             downloaded = (
                                 {"data": remembered[0], "mime_type": remembered[1]}

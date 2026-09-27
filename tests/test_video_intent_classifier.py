@@ -1,15 +1,19 @@
 """Tests for video_intent classifier orchestration, history hygiene, disclosure."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import time
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from open_webui_openrouter_pipe.integrations.video_intent import (
     ClarificationPayload,
+    _warned_no_task_model,
     FramePlanEntry,
     IntentLiteral,
     VideoIntentResult,
@@ -351,12 +355,7 @@ class TestResolveIntent:
             VIDEO_INTENT_TASK_MODEL_FALLBACK="none",
             VIDEO_INTENT_TIMEOUT_S=5,
         )
-        request = SimpleNamespace(
-            app=SimpleNamespace(state=SimpleNamespace(
-                config=SimpleNamespace(TASK_MODEL="", TASK_MODEL_EXTERNAL=""),
-                MODELS={},
-            )),
-        )
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(MODELS={})))
         result = await resolve_intent(
             body={},
             video_meta={},
@@ -379,12 +378,7 @@ class TestResolveIntent:
             VIDEO_INTENT_TASK_MODEL_FALLBACK="none",
             VIDEO_INTENT_TIMEOUT_S=5,
         )
-        request = SimpleNamespace(
-            app=SimpleNamespace(state=SimpleNamespace(
-                config=SimpleNamespace(TASK_MODEL="", TASK_MODEL_EXTERNAL=""),
-                MODELS={},
-            )),
-        )
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(MODELS={})))
         result = await resolve_intent(
             body={"messages": [{"role": "user", "content": "hi"}]},
             video_meta={},
@@ -407,12 +401,8 @@ class TestResolveIntent:
             VIDEO_INTENT_TASK_MODEL_FALLBACK="none",
             VIDEO_INTENT_TIMEOUT_S=5,
         )
-        request = SimpleNamespace(
-            app=SimpleNamespace(state=SimpleNamespace(
-                config=SimpleNamespace(TASK_MODEL="", TASK_MODEL_EXTERNAL="task-llm"),
-                MODELS={},
-            )),
-        )
+        _set_task_model(external="task-llm")
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(MODELS={})))
         # Mock the chat-completion invocation
         async def mock_invoke(form_data):
             return {
@@ -464,12 +454,8 @@ class TestResolveIntent:
             VIDEO_INTENT_TASK_MODEL_FALLBACK="none",
             VIDEO_INTENT_TIMEOUT_S=5,
         )
-        request = SimpleNamespace(
-            app=SimpleNamespace(state=SimpleNamespace(
-                config=SimpleNamespace(TASK_MODEL="", TASK_MODEL_EXTERNAL="task-llm"),
-                MODELS={},
-            )),
-        )
+        _set_task_model(external="task-llm")
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(MODELS={})))
 
         async def bad_invoke(form_data):
             return {"choices": [{"message": {"content": "not json"}}]}
@@ -496,12 +482,8 @@ class TestResolveIntent:
             VIDEO_INTENT_TASK_MODEL_FALLBACK="none",
             VIDEO_INTENT_TIMEOUT_S=5,
         )
-        request = SimpleNamespace(
-            app=SimpleNamespace(state=SimpleNamespace(
-                config=SimpleNamespace(TASK_MODEL="", TASK_MODEL_EXTERNAL="task-llm"),
-                MODELS={},
-            )),
-        )
+        _set_task_model(external="task-llm")
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(MODELS={})))
 
         async def boom(form_data):
             raise RuntimeError("network down")
@@ -657,13 +639,16 @@ def _intent_valves():
     )
 
 
+def _set_task_model(*, internal: str = "", external: str = "") -> None:
+    from open_webui.models.config import Config as _OwuiConfig
+
+    _OwuiConfig._rows["task.model.default"] = internal
+    _OwuiConfig._rows["task.model.external"] = external
+
+
 def _intent_request():
-    return SimpleNamespace(
-        app=SimpleNamespace(state=SimpleNamespace(
-            config=SimpleNamespace(TASK_MODEL="", TASK_MODEL_EXTERNAL="task-llm"),
-            MODELS={},
-        )),
-    )
+    _set_task_model(external="task-llm")
+    return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(MODELS={})))
 
 
 @pytest.mark.asyncio

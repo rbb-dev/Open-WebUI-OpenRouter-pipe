@@ -29,13 +29,17 @@ from open_webui_openrouter_pipe.integrations.video_intent import (
 from open_webui_openrouter_pipe.structured_task import call_with_candidates
 
 
-def _fake_request(task_model_external: str = "") -> SimpleNamespace:
+def _fake_request() -> SimpleNamespace:
     return SimpleNamespace(
-        app=SimpleNamespace(state=SimpleNamespace(
-            config=SimpleNamespace(TASK_MODEL="", TASK_MODEL_EXTERNAL=task_model_external),
-            MODELS={},
-        )),
+        app=SimpleNamespace(state=SimpleNamespace(MODELS={})),
     )
+
+
+def _set_task_model(*, internal: str = "", external: str = "") -> None:
+    from open_webui.models.config import Config as _OwuiConfig
+
+    _OwuiConfig._rows["task.model.default"] = internal
+    _OwuiConfig._rows["task.model.external"] = external
 
 
 def _make_valves(**overrides) -> SimpleNamespace:
@@ -64,7 +68,7 @@ class TestResolveIntentNeverRaises:
     async def test_handles_invalid_body(self, body):
         result = await resolve_intent(
             body=body, video_meta={}, video_model={},
-            valves=_make_valves(), request=_fake_request("task-llm"),
+            valves=_make_valves(), request=_fake_request(),
             user_obj=None, chat_id="c1", logger=logging.getLogger("test"),
             fallback_prompt_text="hi",
         )
@@ -76,7 +80,7 @@ class TestResolveIntentNeverRaises:
         result = await resolve_intent(
             body={"messages": [{"role": "user", "content": "hi"}]},
             video_meta=None, video_model={},  # type: ignore[arg-type]
-            valves=_make_valves(), request=_fake_request("task-llm"),
+            valves=_make_valves(), request=_fake_request(),
             user_obj=None, chat_id="c1", logger=logging.getLogger("test"),
             fallback_prompt_text="hi",
         )
@@ -87,7 +91,7 @@ class TestResolveIntentNeverRaises:
         result = await resolve_intent(
             body={"messages": [{"role": "user", "content": "hi"}]},
             video_meta={}, video_model=None,  # type: ignore[arg-type]
-            valves=_make_valves(), request=_fake_request("task-llm"),
+            valves=_make_valves(), request=_fake_request(),
             user_obj=None, chat_id="c1", logger=logging.getLogger("test"),
             fallback_prompt_text="hi",
         )
@@ -100,7 +104,7 @@ class TestResolveIntentNeverRaises:
         result = await resolve_intent(
             body={"messages": [{"role": "user", "content": "hi"}]},
             video_meta={}, video_model={},
-            valves=_make_valves(), request=_fake_request("task-llm"),
+            valves=_make_valves(), request=_fake_request(),
             user_obj=None, chat_id="c1", logger=logging.getLogger("test"),
             invoke_chat_completion=bad, fallback_prompt_text="hi",
         )
@@ -114,13 +118,17 @@ class TestResolveIntentNeverRaises:
 class TestCancelledErrorPropagation:
     @pytest.mark.asyncio
     async def test_resolve_intent_re_raises_cancelled(self):
+        # A candidate is required to reach the mock at all: with none, resolve_intent
+        # returns the fallback before the call and the exception under test never fires.
+        _set_task_model(external="task-llm")
+
         async def boom(form_data):
             raise asyncio.CancelledError()
         with pytest.raises(asyncio.CancelledError):
             await resolve_intent(
                 body={"messages": [{"role": "user", "content": "hi"}]},
                 video_meta={}, video_model={},
-                valves=_make_valves(), request=_fake_request("task-llm"),
+                valves=_make_valves(), request=_fake_request(),
                 user_obj=None, chat_id="c1", logger=logging.getLogger("test"),
                 invoke_chat_completion=boom, fallback_prompt_text="hi",
             )

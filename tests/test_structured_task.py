@@ -29,66 +29,70 @@ from open_webui_openrouter_pipe.structured_task import (
 )
 
 
-def _fake_request(task_model: str = "", task_model_external: str = "") -> SimpleNamespace:
+def _fake_request() -> SimpleNamespace:
+    """A real Open WebUI Request: `app.state` has MODELS and no `config`."""
     return SimpleNamespace(
-        app=SimpleNamespace(
-            state=SimpleNamespace(
-                config=SimpleNamespace(
-                    TASK_MODEL=task_model,
-                    TASK_MODEL_EXTERNAL=task_model_external,
-                ),
-                MODELS={},
-            ),
-        ),
+        app=SimpleNamespace(state=SimpleNamespace(MODELS={})),
     )
+
+
+def _set_task_models(
+    *, internal: str = "", external: str = "", unknown: str = "",
+) -> None:
+    """Write the two Task Model rows an admin sets in OWUI's own settings."""
+    from open_webui.models.config import Config as _OwuiConfig
+
+    _OwuiConfig._rows["task.model.default"] = internal
+    _OwuiConfig._rows["task.model.external"] = external
+    if unknown:
+        _OwuiConfig._rows["task.model.unknown"] = unknown
 
 
 class TestResolveCandidates:
     @pytest.mark.asyncio
     async def test_internal_mode_picks_TASK_MODEL(self):
-        req = _fake_request(task_model="local-llm", task_model_external="external-llm")
+        _set_task_models(internal="local-llm", external="external-llm")
         result = await resolve_task_model_candidates(
-            request=req, mode="internal", fallback="none",
+            request=_fake_request(), mode="internal", fallback="none",
         )
         assert "local-llm" in result
 
     @pytest.mark.asyncio
     async def test_external_mode_picks_TASK_MODEL_EXTERNAL(self):
-        req = _fake_request(task_model="local-llm", task_model_external="external-llm")
+        _set_task_models(internal="local-llm", external="external-llm")
         result = await resolve_task_model_candidates(
-            request=req, mode="external", fallback="none",
+            request=_fake_request(), mode="external", fallback="none",
         )
         assert "external-llm" in result
 
     @pytest.mark.asyncio
     async def test_fallback_other_task_model_appends(self):
-        req = _fake_request(task_model="local", task_model_external="ext")
+        _set_task_models(internal="local", external="ext")
         result = await resolve_task_model_candidates(
-            request=req, mode="external", fallback="other_task_model",
+            request=_fake_request(), mode="external", fallback="other_task_model",
         )
         assert result.index("ext") < result.index("local")
 
     @pytest.mark.asyncio
     async def test_fallback_none_returns_only_primary(self):
-        req = _fake_request(task_model_external="ext")
+        _set_task_models(external="ext")
         result = await resolve_task_model_candidates(
-            request=req, mode="external", fallback="none",
+            request=_fake_request(), mode="external", fallback="none",
         )
         assert result == ["ext"]
 
     @pytest.mark.asyncio
     async def test_dedupes_when_internal_equals_external(self):
-        req = _fake_request(task_model="same", task_model_external="same")
+        _set_task_models(internal="same", external="same")
         result = await resolve_task_model_candidates(
-            request=req, mode="external", fallback="other_task_model",
+            request=_fake_request(), mode="external", fallback="other_task_model",
         )
         assert result.count("same") == 1
 
     @pytest.mark.asyncio
     async def test_returns_empty_when_unconfigured_no_fallback(self):
-        req = _fake_request()
         result = await resolve_task_model_candidates(
-            request=req, mode="external", fallback="none",
+            request=_fake_request(), mode="external", fallback="none",
         )
         assert result == []
 

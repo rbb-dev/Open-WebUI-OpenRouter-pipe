@@ -352,10 +352,12 @@ class TestFailureMetadata:
                 VIDEO_INTENT_MAX_CLARIFICATIONS=1,
                 VIDEO_INTENT_LOG_DECISIONS=False,
             )
+            from open_webui.models.config import Config as _OwuiConfig
+
+            _OwuiConfig._rows["task.model.default"] = ""
+            _OwuiConfig._rows["task.model.external"] = "some/model"
             request = SimpleNamespace(
-                app=SimpleNamespace(state=SimpleNamespace(
-                    config=SimpleNamespace(TASK_MODEL_EXTERNAL="some/model"),
-                )),
+                app=SimpleNamespace(state=SimpleNamespace(MODELS={})),
             )
             return await resolve_intent(
                 body={"model": "x/y", "messages": [{"role": "user", "content": "hi"}]},
@@ -388,10 +390,12 @@ class TestFailureMetadata:
                 VIDEO_INTENT_MAX_CLARIFICATIONS=1,
                 VIDEO_INTENT_LOG_DECISIONS=False,
             )
+            from open_webui.models.config import Config as _OwuiConfig
+
+            _OwuiConfig._rows["task.model.default"] = ""
+            _OwuiConfig._rows["task.model.external"] = ""
             request = SimpleNamespace(
-                app=SimpleNamespace(state=SimpleNamespace(
-                    config=SimpleNamespace(TASK_MODEL_EXTERNAL=""),
-                )),
+                app=SimpleNamespace(state=SimpleNamespace(MODELS={})),
             )
             return await resolve_intent(
                 body={"model": "x/y", "messages": [{"role": "user", "content": "hi"}]},

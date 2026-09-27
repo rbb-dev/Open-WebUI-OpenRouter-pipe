@@ -2135,8 +2135,9 @@ class Valves(BaseModel):
     VIDEO_INTENT_TASK_MODEL_MODE: Literal["internal", "external"] = Field(
         default="external",
         description=(
-            "Which Open WebUI global Task Model to use as the intent classifier. "
-            "'internal' uses TASK_MODEL, 'external' uses TASK_MODEL_EXTERNAL, both read from Open WebUI's Settings → Tasks."
+            "Which of Open WebUI's two Task Models, as configured in Open WebUI's "
+            "admin Task Model settings, to use as the intent classifier. 'internal' "
+            "uses the one for local models, 'external' the one for API models."
         ),
     )
     VIDEO_INTENT_TASK_MODEL_FALLBACK: Literal["none", "other_task_model"] = Field(
@@ -2179,10 +2180,12 @@ class Valves(BaseModel):
         ge=1,
         le=60,
         description=(
-            "Hard timeout (seconds) for the classifier task-model call. If the "
-            "call exceeds this or fails for any reason, the pipe falls back to "
-            "sending only the latest user message to the video model. The paid "
-            "video generation request still proceeds — the classifier never "
+            "Hard timeout (seconds) for the classifier task-model call. The limit "
+            "covers the model call only; the lookup of those Task Model settings "
+            "happens before it and is a database read, so it is not counted against "
+            "this window. If the call exceeds this or fails for any reason, the pipe "
+            "falls back to sending only the latest user message to the video model. "
+            "The paid video generation request still proceeds — the classifier never "
             "blocks generation."
         ),
     )

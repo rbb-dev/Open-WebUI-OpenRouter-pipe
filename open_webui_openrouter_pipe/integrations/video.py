@@ -80,6 +80,7 @@ from .video_help import render_video_help
 from .video_intent import (
     FramePlanEntry,
     VideoIntentResult,
+    _admin_intent_floor,
     collect_attachments_from_video_meta,
     emit_telemetry_log,
     render_clarification_message,
@@ -582,9 +583,17 @@ class VideoGenerationAdapter:
                         await self._emit_completion(event_emitter, clar_content)
                         self._emit_intent_telemetry(intent_result, valves=valves, chat_id=chat_id)
                         return clar_content
-                    overshoot_pref_raw = resolve_intent_user_setting(
-                        metadata, "frame_extraction_index",
-                        valves, "VIDEO_INTENT_FRAME_EXTRACTION_INDEX", "last",
+                    overshoot_pref_raw = (
+                        resolve_intent_user_setting(
+                            metadata, "frame_extraction_index",
+                            valves, "VIDEO_INTENT_FRAME_EXTRACTION_INDEX", "last",
+                        )
+                        if _admin_intent_floor(
+                            valves, "VIDEO_INTENT_ENABLED", True,
+                        )
+                        else _admin_intent_floor(
+                            valves, "VIDEO_INTENT_FRAME_EXTRACTION_INDEX", "last",
+                        )
                     )
                     overshoot_pref: Literal["first", "last"] = (
                         "first" if overshoot_pref_raw == "first" else "last"
@@ -606,9 +615,17 @@ class VideoGenerationAdapter:
                         if isinstance(pipe_meta, dict):
                             pipe_meta["video_generation"] = video_meta_pre
                     confirm_mode = str(
-                        resolve_intent_user_setting(
-                            metadata, "confirm_mode",
-                            valves, "VIDEO_INTENT_CONFIRM_MODE", "on_reference",
+                        (
+                            resolve_intent_user_setting(
+                                metadata, "confirm_mode",
+                                valves, "VIDEO_INTENT_CONFIRM_MODE", "on_reference",
+                            )
+                            if _admin_intent_floor(
+                                valves, "VIDEO_INTENT_ENABLED", True,
+                            )
+                            else _admin_intent_floor(
+                                valves, "VIDEO_INTENT_CONFIRM_MODE", "on_reference",
+                            )
                         )
                         or "on_reference"
                     )
@@ -2263,10 +2280,9 @@ class VideoGenerationAdapter:
     ) -> bool:
         """Apply short-circuit conditions for the intent classifier.
 
-        Reads `VIDEO_INTENT_ENABLED` from the per-request metadata first
-        (the per-model video filter writes the user's setting here when
-        admin has the master switch on); falls back to the admin valve.
         """
+        if not bool(_admin_intent_floor(valves, "VIDEO_INTENT_ENABLED", True)):
+            return False
         if not bool(resolve_intent_user_setting(
             metadata, "enabled", valves, "VIDEO_INTENT_ENABLED", True,
         )):

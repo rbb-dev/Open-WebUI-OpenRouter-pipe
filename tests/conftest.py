@@ -497,7 +497,21 @@ def _reset_warn_latches():
     memo = getattr(_transformer, "_reuse_download_memo", None)
     if memo is not None:
         memo.clear()
+    _clear_stub_task_models()
     yield
+
+
+def _clear_stub_task_models() -> None:
+    """Empty the Open WebUI Config stub's Task Model rows.
+
+    The rows stand in for a database read, so they are module-global mutable state
+    with no other reset: a test that configures a model id would otherwise leak it
+    into every later test's stub, and the next test would silently get a candidate
+    it never set.
+    """
+    from open_webui.models.config import Config as _OwuiConfig
+
+    _OwuiConfig._rows.clear()
 
 
 @pytest.fixture(autouse=True)

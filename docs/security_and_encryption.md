@@ -164,6 +164,20 @@ then let the HTTP client resolve the name again:
   the address cache alone was not enough, because a keep-alive connection opened while
   the gate was off is reused without consulting any resolver, and an answer from a lookup
   that was already in flight lands in the cache after it has been cleared.
+- The gate also re-runs on a **re-use**: an image a worker already downloaded is
+  answered from its in-process memo on later turns, and the memo does not stand in for
+  the gate. Every turn re-checks the URL before those bytes are sent, and a URL the
+  current valve values refuse is dropped from the memo and fetched through the gated
+  path instead. So every byte that reaches the provider passed the gate under the valve
+  values in force at the moment it was sent, and tightening the valve or editing a host
+  allowlist takes effect on the next turn rather than the next fetch. The re-check
+  costs one address resolution and no download; a URL the check then refuses is fetched
+  once more through the already-gated path, which runs its own address check, so a
+  refusal pays two resolutions. A resolution that does not finish inside the
+  address-check budget counts as a refusal, so a slow nameserver costs a re-fetch
+  rather than a permission. Nothing has to be refused for the re-check to be paid for:
+  a request that reuses `MAX_INPUT_IMAGES_PER_REQUEST` pictures pays one blocking
+  resolution per reused picture, one after another (5 by default, 20 at the ceiling).
 
 ### What a blocked address is recorded as
 

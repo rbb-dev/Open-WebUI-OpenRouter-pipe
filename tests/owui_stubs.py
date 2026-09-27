@@ -218,6 +218,26 @@ def _install_open_webui_stubs() -> None:
     functions_mod.FunctionForm = _FunctionForm
     functions_mod.FunctionMeta = _FunctionMeta
 
+    models_config_mod = cast(Any, _ensure_module("open_webui.models.config"))
+
+    class _Config:
+        # The Task Model settings an admin picks in OWUI land here as
+        # `task.model.default` / `task.model.external` (routers/tasks.py:41-44).
+        # Module-global so a test can set rows, and a conftest sweep clears them
+        # per test; the real one reads a DB row per call and caches nothing.
+        _rows: dict[str, Any] = {}
+
+        @staticmethod
+        async def get_many(*keys: str) -> dict[str, Any]:
+            return {k: _Config._rows[k] for k in keys if k in _Config._rows}
+
+        @staticmethod
+        async def get(key: str) -> Any:
+            return _Config._rows.get(key)
+
+    models_config_mod.Config = _Config
+    models_pkg.config = models_config_mod
+
     chats_mod.Chats = _Chats
     models_mod.ModelForm = _ModelForm
     models_mod.ModelMeta = _ModelMeta

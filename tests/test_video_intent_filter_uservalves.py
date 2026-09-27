@@ -12,6 +12,9 @@ in v2.6.x. Covers:
 from __future__ import annotations
 
 import ast
+import json
+import asyncio
+import inspect
 from typing import Any
 from types import SimpleNamespace
 
@@ -424,17 +427,18 @@ class TestConsumerWiring:
         )
 
     def test_should_run_returns_false_when_admin_disabled_even_if_user_enabled(self):
-        # Admin disabling overrides any per-user setting because the filter
-        # never even emits the user field when admin is off — but defensively,
-        # the resolver still returns the user value here. So the behavior
-        # is: a user CAN still keep the classifier running for themselves
-        # even if admin disabled it. That's intentional: per-user filter
-        # UserValves take precedence over admin defaults.
-        # (In practice the filter wouldn't expose the field in this case,
-        # so the user couldn't actually set it.)
+        # VIDEO_INTENT_ENABLED is a FLOOR, checked live at the consumer and
+        # before the per-request metadata is consulted. A per-model filter
+        # row whose baked-in inlet block was rendered while the switch was
+        # on still pushes {"enabled": True} into request metadata — with
+        # AUTO_INSTALL_VIDEO_FILTERS=False the row is never rewritten — and
+        # before this fix that stale metadata beat the live admin valve and
+        # re-enabled a classifier the operator had switched off. No installed
+        # row can raise the floor; only a per-request value may turn the
+        # feature on when the floor is already on.
         adapter = self._adapter()
         meta = {"openrouter_pipe": {"video_intent": {"enabled": True}}}
-        assert adapter._intent_classifier_should_run(
+        assert not adapter._intent_classifier_should_run(
             valves=self._valves(VIDEO_INTENT_ENABLED=False),
             persisted_content="", prompt="make it red",
             body={"messages": [{"role": "user", "content": "x"},

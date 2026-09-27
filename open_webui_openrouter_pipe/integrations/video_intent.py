@@ -26,6 +26,7 @@ from ..core.utils import (
     _safe_marker_body,
     _serialize_kind_marker,
 )
+from ..core.warn_latch import warn_level
 from ..requests.fusion_engine import latest_user_text
 from ..structured_task import (
     build_response_format,
@@ -58,6 +59,8 @@ INTENT_CLARIFICATION = "intent_clarification"
 VIDEO_JOB_MARKER = "videojob"
 VIDEO_MODEL_MARKER = "videomodel"
 
+_warned_no_task_model: set[str] = set()
+
 
 def resolve_intent_user_setting(
     metadata: Any,
@@ -70,14 +73,6 @@ def resolve_intent_user_setting(
 ) -> Any:
     """Prefer the per-request user value pushed by the per-model video filter
     inlet, fall back to the admin valve.
-
-    The video filter (when admin VIDEO_INTENT_ENABLED=True) writes user-set
-    intent values into ``metadata[_PIPE_METADATA_KEY]["video_intent"]`` keyed
-    by the short field name (``enabled``, ``max_clarifications``,
-    ``frame_extraction_index``, ``confirm_mode``). When admin disables the
-    feature, the filter never writes that key, so callers fall straight
-    through to the admin valve — which itself is False, short-circuiting
-    the classifier.
 
     Args:
         metadata: the request metadata dict (may be None/non-dict).
@@ -99,6 +94,10 @@ def resolve_intent_user_setting(
                 value = intent_meta[field]
                 if value is not None:
                     return coerce(value) if coerce is not None else value
+    return getattr(valves, admin_field, default)
+
+
+def _admin_intent_floor(valves: Any, admin_field: str, default: Any) -> Any:
     return getattr(valves, admin_field, default)
 
 _INTENT_BLOCK_REGION_RE = re.compile(
@@ -789,9 +788,15 @@ async def resolve_intent(
             isinstance(video_meta, dict) and video_meta.get("frame_images")
         )
         prior_clar = count_prior_clarifications(messages)
-        max_clar_raw = resolve_intent_user_setting(
-            metadata, "max_clarifications",
-            valves, "VIDEO_INTENT_MAX_CLARIFICATIONS", 1,
+        max_clar_raw = (
+            resolve_intent_user_setting(
+                metadata, "max_clarifications",
+                valves, "VIDEO_INTENT_MAX_CLARIFICATIONS", 1,
+            )
+            if _admin_intent_floor(valves, "VIDEO_INTENT_ENABLED", True)
+            else _admin_intent_floor(
+                valves, "VIDEO_INTENT_MAX_CLARIFICATIONS", 1,
+            )
         )
         try:
             max_clar = max(0, min(3, int(max_clar_raw)))
@@ -813,7 +818,12 @@ async def resolve_intent(
             fallback=getattr(valves, "VIDEO_INTENT_TASK_MODEL_FALLBACK", "other_task_model"),
         )
         if not candidates:
-            logger.debug("video_intent: no task-model candidates configured; degrade-open")
+            logger.log(
+                warn_level(_warned_no_task_model, chat_id or "no-chat"),
+                "video_intent: Open WebUI reported no usable task model under "
+                "task.model.default / task.model.external; the classifier is skipped "
+                "and this turn degrades open",
+            )
             return fallback
 
         response_format = build_response_format(

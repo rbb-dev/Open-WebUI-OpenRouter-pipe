@@ -112,8 +112,8 @@ All admin-scoped on the global `Valves` model. User-tunable per-chat versions of
 | Valve | Type | Default | Purpose |
 |---|---|---|---|
 | `VIDEO_INTENT_ENABLED` | `bool` | `True` | Master switch. When False, the classifier is bypassed entirely; only the latest user message is sent to the video model. |
-| `VIDEO_INTENT_TASK_MODEL_MODE` | `internal` / `external` | `external` | Which Open WebUI Task Model to use as the classifier. `internal` reads `TASK_MODEL`; `external` reads `TASK_MODEL_EXTERNAL`, both read from Open WebUI's Settings → Tasks. |
-| `VIDEO_INTENT_TASK_MODEL_FALLBACK` | `none` / `other_task_model` | `other_task_model` | Failure fallback strategy. `none` returns only the primary task model; `other_task_model` also tries the other (internal/external) Task Model. |
+| `VIDEO_INTENT_TASK_MODEL_MODE` | `internal` / `external` | `external` | Which of Open WebUI's two Task Models to use as the classifier, as configured in Open WebUI's admin Task Model settings. `internal` reads the local-model setting; `external` reads the API-model one. |
+| `VIDEO_INTENT_TASK_MODEL_FALLBACK` | `none` / `other_task_model` | `other_task_model` | Failure fallback strategy. `none` returns only the primary task model; `other_task_model` also tries the other (internal/external) Task Model. With neither configured the classifier is skipped, with one warning logged per chat. |
 | `VIDEO_INTENT_SKIP_WHEN_EMPTY_CHAT` | `bool` | `True` | Skip the classifier when the chat has no prior turns and no attachments — there is nothing to classify against, so the call is wasted. Turn off if you want clarifying questions on first-turn ambiguous prompts. |
 | `VIDEO_INTENT_MAX_CLARIFICATIONS` | `0`–`3` | `1` | Per-session cap on consecutive clarifying questions. `0` disables the clarification loop entirely. |
 | `VIDEO_INTENT_FRAME_EXTRACTION_INDEX` | `first` / `last` | `last` | Default frame to extract from a prior video when the requested frame is unavailable. |
@@ -138,7 +138,7 @@ When admin `VIDEO_INTENT_ENABLED=True`, each video model's companion filter expo
 name the model's `help` panel lists it under; the field name is what the
 generated filter source calls it.
 
-When admin `VIDEO_INTENT_ENABLED=False`, the four user fields do not appear in the filter UI at all — the next time the pipe rebuilds filters (i.e. on the next `pipes()` refresh) the filter source is regenerated without them.
+When admin `VIDEO_INTENT_ENABLED=False`, the four user fields do not appear in the filter UI at all — the next time the pipe rebuilds filters (i.e. on the next `pipes()` refresh) the filter source is regenerated without them. The switch is enforced at request time regardless: it is re-read live on every request and treated as a floor, so a filter row installed while it was on (which keeps pushing `video_intent` into request metadata) cannot re-enable a classifier the operator has switched off.
 
 ## Anti-overasking guardrails
 
@@ -196,8 +196,8 @@ The **first** classifier infrastructure failure per chat surfaces a notification
 
 ## Rollback
 
-- **Site-wide kill switch**: set admin `VIDEO_INTENT_ENABLED=False`. The classifier is bypassed for every user; the pipe restores its pre-classifier behaviour with no code redeploy.
-- **Per-user opt-out**: a user can disable the classifier just for their own chats via the filter UserValve (`VIDEO_INTENT_ENABLED` on the per-model video filter). Useful when an individual user prefers raw control.
+- **Site-wide kill switch**: set admin `VIDEO_INTENT_ENABLED=False`. The classifier is bypassed for every user on every path; the pipe restores its pre-classifier behaviour with no code redeploy. This switch is admin-only: it is read live on every request, so a stale installed filter row cannot re-enable it.
+- **Per-user opt-out**: with the admin switch on, a user can disable the classifier just for their own chats via the filter UserValve (`VIDEO_INTENT_ENABLED` on the per-model video filter). Useful when an individual user prefers raw control. This applies to the three non-master settings and to the per-chat opt-out only; the master switch itself is never user-settable.
 
 ## Notes for operators
 

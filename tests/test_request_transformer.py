@@ -4193,7 +4193,11 @@ class TestImageReuseRegister:
             async def none(*a, **k):
                 return None
 
+            async def permit(*a, **k):
+                return True
+
             pipe_instance._file_gateway.inline_owui_file_id = gateway or none
+            pipe_instance._multimodal_handler._is_safe_url = permit
             pipe_instance._multimodal_handler._download_remote_url = downloader or none
             return await transform_messages_to_input(
                 pipe_instance, messages, chat_id=chat_id, event_emitter=emitter
@@ -5152,8 +5156,12 @@ async def test_one_chat_s_download_is_not_handed_to_another(pipe_instance):
     async def none(*_a, **_k):
         return None
 
+    async def permit(*_a, **_k):
+        return True
+
     pipe_instance._file_gateway.resolve_storage_context = none
     pipe_instance._file_gateway.inline_owui_file_id = none
+    pipe_instance._multimodal_handler._is_safe_url = permit
     pipe_instance._multimodal_handler._download_remote_url = counting_download
 
     messages = [
