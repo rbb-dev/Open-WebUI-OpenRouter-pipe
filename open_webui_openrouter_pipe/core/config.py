@@ -1149,14 +1149,18 @@ class Valves(BaseModel):
         title="Tool execution mode",
         description=(
             "Where to execute tools. 'Pipeline' executes tool calls inside this pipe "
-            "(with its own batching, failure limits, and special tool handling). 'Open-WebUI' hands tool calls back rather than "
-            "running them here, so Open WebUI executes them and renders the native tool UI."
+            "(with its own batching, failure limits, and special tool handling). 'Open-WebUI' hands a streamed reply's "
+            "tool calls back rather than running them here, so Open WebUI executes them and renders the native tool UI; "
+            "the pipe runs a non-streamed reply's calls and a Fusion panel model's calls in either mode. A tool the "
+            "request itself declared with nothing behind it goes back to its sender instead. With 'ask' tool approval, "
+            "a streamed saved chat hands every call to Open WebUI in both modes. With legacy function calling, no "
+            "Open WebUI tool is offered. A model the catalogue rules out for tool use is sent no function tools."
         ),
     )
     SHOW_TOOL_CARDS: bool = Field(
         default=True,
         title="Show tool execution cards",
-        description="Show each tool the model uses as a collapsible card in the chat, with its name, arguments and result, as Open WebUI does for the tools it runs itself. As in Open WebUI's own tool loop, a picture a tool returns as image data goes only to the model; a picture Open WebUI has stored as a file, such as an MCP tool's, goes to the model and the chat, as Open WebUI does since its fix after 0.11.4; other files go only to the chat. When off, the tools this pipe runs and OpenRouter's server tools get no card, except that a file the model shows through Open Terminal keeps its card for a person whose Open WebUI shows terminal files inline. On its next turn the model still learns which tools it used, except in a temporary chat, for which the pipe keeps nothing; after Stop, it learns of the calls before the first one still running if the reply was streamed, and of none if it was not. Tools Open WebUI runs in Open-WebUI mode always show Open WebUI's own cards.",
+        description="Show each tool the model uses as a collapsible card in the chat, with its name, arguments and result, as Open WebUI does for the tools it runs itself. As in Open WebUI's own tool loop, a picture a tool returns as image data goes only to the model; a picture Open WebUI has stored as a file, such as an MCP tool's, goes to the model and the chat, as Open WebUI does since its fix after 0.11.4; other files go only to the chat. When off, the tools this pipe runs and OpenRouter's server tools get no card, except that a file the model shows through Open Terminal keeps its card for a person whose Open WebUI shows terminal files inline. On its next turn the model still learns which tools it used, except in a temporary chat, for which the pipe keeps nothing; after Stop, it learns of the calls before the first one still running if the reply was streamed, and of none if it was not. Open WebUI draws its own cards for the calls it runs, which now means a streamed reply in Open-WebUI mode and calls approved under 'ask'.",
     )
     PERSIST_TOOL_RESULTS: bool = Field(
         default=False,
@@ -1185,19 +1189,19 @@ class Valves(BaseModel):
         default=True,
         description=(
             "When True, converts Open WebUI registry tools to strict JSON Schema for OpenAI tools, "
-            "enforcing explicit types, required fields, and disallowing additionalProperties."
+            "enforcing explicit types, required fields, and disallowing additionalProperties. Only the "
+            "registry tools this pipe runs are made strict; a schema that will be handed back is forwarded untouched."
         ),
     )
     MAX_FUNCTION_CALL_LOOPS: int = Field(
         default=25,
         description=(
-            "Maximum number of full execution cycles (loops) allowed per request when "
-            "TOOL_EXECUTION_MODE is 'Pipeline'. Each loop involves the model generating "
+            "Maximum number of full execution cycles (loops) allowed per request whenever "
+            "this pipe runs the calls. Each loop involves the model generating "
             "one or more function/tool calls, executing all requested functions, and feeding "
             "the results back into the model. When the limit is reached, pending tool calls "
             "are returned to the model marked as skipped so it can write a final answer. "
-            "Has no effect when TOOL_EXECUTION_MODE is 'Open-WebUI' (the round limit is managed "
-            "by Open WebUI in that mode)."
+            "Has no effect on the calls Open WebUI runs, where the round limit is managed by Open WebUI."
         )
     )
 
@@ -1800,7 +1804,7 @@ class Valves(BaseModel):
     )
     AUTO_ATTACH_IMAGE_GEN_FILTER: bool = Field(
         default=True,
-        description="Automatically attach the OpenRouter Image Generation filter to all pipe models. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone.",
+        description="Automatically attach the OpenRouter Image Generation filter to every pipe model that can send the tool: not a model whose catalogue entry rules tool use out, not a picture-only model, not a video model, not the hosted Fusion model. A model that stops qualifying loses the switch at the next refresh. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone.",
     )
     ENABLE_OPENROUTER_IMAGE_GENERATION: bool = Field(
         default=True,
@@ -2322,13 +2326,13 @@ class UserValves(BaseModel):
         title="Tool execution mode",
         description=(
             "Where to execute tools. 'Pipeline' executes tool calls inside this pipe. "
-            "'Open-WebUI' hands tool calls to Open WebUI to run instead."
+            "'Open-WebUI' hands a streamed reply's tool calls to Open WebUI to run instead."
         ),
     )
     SHOW_TOOL_CARDS: bool = Field(
         default=True,
         title="Show tool execution cards",
-        description="Show each tool the AI uses as a card in the chat. When off, no card appears, except for a file the AI shows through Open Terminal while Open WebUI is set to show terminal files inline; when it is not, a file the AI asks to show inline opens in the preview panel. The AI still remembers which tools it used, except in a temporary chat, where nothing is kept; after Stop, it remembers the calls before the first one still running if the reply was streamed, and none if it was not. Tools Open WebUI runs itself (Tool execution mode set to Open-WebUI) always show their cards.",
+        description="Show each tool the AI uses as a card in the chat. When off, no card appears, except for a file the AI shows through Open Terminal while Open WebUI is set to show terminal files inline; when it is not, a file the AI asks to show inline opens in the preview panel. The AI still remembers which tools it used, except in a temporary chat, where nothing is kept; after Stop, it remembers the calls before the first one still running if the reply was streamed, and none if it was not. Open WebUI draws its own cards for the calls it runs, which now means a streamed reply in Open-WebUI mode and calls approved under 'ask'.",
     )
     REQUEST_ZDR: bool = Field(
         default=False,

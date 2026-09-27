@@ -136,7 +136,7 @@ class ModelFamily:
         params = cls.supported_parameters(model_id)
         if not params:
             return False
-        return not {"tools", "tool_choice"} & set(params)
+        return not ({"tools", "tool_choice"} & params)
 
     @classmethod
     def set_dynamic_specs(cls, specs: dict[str, dict[str, Any]] | None) -> None:

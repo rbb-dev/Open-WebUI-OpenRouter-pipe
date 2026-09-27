@@ -76,7 +76,7 @@ async def test_chat_completions_streaming_tool_call_without_id(pipe_instance_asy
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -132,7 +132,7 @@ async def test_chat_completions_streaming_tool_call_without_index(pipe_instance_
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -204,7 +204,7 @@ async def test_chat_completions_streaming_reasoning_text_merge(pipe_instance_asy
             {"model": "anthropic/claude-sonnet-4.5", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -266,7 +266,7 @@ async def test_chat_completions_streaming_reasoning_summary(pipe_instance_async)
             {"model": "anthropic/claude-sonnet-4.5", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -330,7 +330,7 @@ async def test_chat_completions_streaming_reasoning_encrypted(pipe_instance_asyn
             {"model": "anthropic/claude-sonnet-4.5", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -380,7 +380,7 @@ async def test_chat_completions_streaming_reasoning_no_id(pipe_instance_async):
             {"model": "anthropic/claude-sonnet-4.5", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -420,7 +420,7 @@ async def test_chat_completions_streaming_error_with_retry_after(pipe_instance_a
                 {"model": "openai/gpt-4o", "stream": True, "input": []},
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
-                valves=valves,
+            valves=valves,
             ):
                 events.append(event)
 
@@ -455,7 +455,7 @@ async def test_chat_completions_streaming_error_http_date_retry_after(pipe_insta
                 {"model": "openai/gpt-4o", "stream": True, "input": []},
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
-                valves=valves,
+            valves=valves,
             ):
                 pass
 
@@ -490,7 +490,7 @@ async def test_chat_completions_streaming_error_500(pipe_instance_async):
                 {"model": "openai/gpt-4o", "stream": True, "input": []},
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
-                valves=valves,
+            valves=valves,
             ):
                 events.append(event)
 
@@ -526,8 +526,8 @@ async def test_chat_completions_streaming_with_breaker_key(pipe_instance_async):
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             breaker_key="test_user_123",
+        valves=valves,
         ):
             events.append(event)
 
@@ -570,7 +570,7 @@ async def test_chat_completions_streaming_invalid_json_chunk(pipe_instance_async
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -609,7 +609,7 @@ async def test_chat_completions_streaming_empty_choices(pipe_instance_async):
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -648,7 +648,7 @@ async def test_chat_completions_streaming_sse_comment_lines(pipe_instance_async)
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -703,7 +703,7 @@ async def test_chat_completions_streaming_annotation_no_url_citation_key(pipe_in
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -764,7 +764,7 @@ async def test_chat_completions_streaming_duplicate_citation_urls(pipe_instance_
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -814,7 +814,7 @@ async def test_chat_completions_streaming_annotation_non_string_title(pipe_insta
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -873,7 +873,7 @@ async def test_chat_completions_streaming_message_reasoning_details(pipe_instanc
             {"model": "anthropic/claude-sonnet-4.5", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -909,9 +909,8 @@ async def test_chat_completions_nonstreaming_error_with_retry_after(pipe_instanc
                 session,
                 {"model": "openai/gpt-4o", "input": []},
                 api_key="test-key",
-                base_url="https://openrouter.ai/api/v1",
                 valves=valves,
-            )
+                base_url="https://openrouter.ai/api/v1",            )
 
         await session.close()
 
@@ -941,9 +940,8 @@ async def test_chat_completions_nonstreaming_error_500(pipe_instance_async):
                 session,
                 {"model": "openai/gpt-4o", "input": []},
                 api_key="test-key",
-                base_url="https://openrouter.ai/api/v1",
                 valves=valves,
-            )
+                base_url="https://openrouter.ai/api/v1",            )
 
         await session.close()
 
@@ -970,8 +968,8 @@ async def test_chat_completions_nonstreaming_with_breaker_key_failure(pipe_insta
                 {"model": "openai/gpt-4o", "input": []},
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
-                valves=valves,
                 breaker_key="user_456",
+            valves=valves,
             )
 
         await session.close()
@@ -995,9 +993,8 @@ async def test_chat_completions_nonstreaming_non_dict_response(pipe_instance_asy
             session,
             {"model": "openai/gpt-4o", "input": []},
             api_key="test-key",
-            base_url="https://openrouter.ai/api/v1",
             valves=valves,
-        )
+            base_url="https://openrouter.ai/api/v1",        )
 
         await session.close()
 
@@ -1037,7 +1034,7 @@ async def test_chat_completions_streaming_finish_reason_length(pipe_instance_asy
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -1078,7 +1075,7 @@ async def test_chat_completions_streaming_finish_reason_content_filter(pipe_inst
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -1134,7 +1131,7 @@ async def test_chat_completions_streaming_tool_call_no_name(pipe_instance_async)
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -1191,7 +1188,7 @@ async def test_chat_completions_streaming_reasoning_entry_no_type(pipe_instance_
             {"model": "anthropic/claude-sonnet-4.5", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -1240,7 +1237,7 @@ async def test_chat_completions_streaming_reasoning_entry_not_dict(pipe_instance
             {"model": "anthropic/claude-sonnet-4.5", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -1435,7 +1432,7 @@ async def test_chat_completions_streaming_annotation_empty_url(pipe_instance_asy
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -1490,7 +1487,7 @@ async def test_chat_completions_streaming_annotation_other_type(pipe_instance_as
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -1532,9 +1529,8 @@ async def test_chat_completions_nonstreaming_json_text_fallback(pipe_instance_as
             session,
             {"model": "openai/gpt-4o", "input": []},
             api_key="test-key",
-            base_url="https://openrouter.ai/api/v1",
             valves=valves,
-        )
+            base_url="https://openrouter.ai/api/v1",        )
 
         await session.close()
 
@@ -1571,7 +1567,7 @@ async def test_chat_completions_streaming_rate_limit_scope(pipe_instance_async):
                 {"model": "openai/gpt-4o", "stream": True, "input": []},
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
-                valves=valves,
+            valves=valves,
             ):
                 events.append(event)
 
@@ -1616,7 +1612,7 @@ async def test_chat_completions_streaming_empty_chunk(pipe_instance_async):
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -1670,7 +1666,7 @@ async def test_chat_completions_streaming_tool_call_done_events(pipe_instance_as
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -1739,7 +1735,7 @@ async def test_chat_completions_streaming_reasoning_done_item(pipe_instance_asyn
             {"model": "anthropic/claude-sonnet-4.5", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -1792,8 +1788,8 @@ async def test_a_tripped_breaker_does_not_stop_a_chat_stream_already_under_way(p
                 {"model": "openai/gpt-4o", "stream": True, "input": []},
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
-                valves=valves,
                 breaker_key=breaker_key,
+            valves=valves,
             )
         ]
 
@@ -1825,8 +1821,8 @@ async def test_chat_completions_streaming_error_with_breaker_recording(pipe_inst
                 {"model": "openai/gpt-4o", "stream": True, "input": []},
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
-                valves=valves,
                 breaker_key=breaker_key,
+            valves=valves,
             ):
                 events.append(event)
 
@@ -1888,7 +1884,7 @@ async def test_chat_completions_streaming_reasoning_text_merge_with_next_only(pi
             {"model": "anthropic/claude-sonnet-4.5", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -1950,7 +1946,7 @@ async def test_chat_completions_streaming_reasoning_summary_merge(pipe_instance_
             {"model": "anthropic/claude-sonnet-4.5", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -2011,7 +2007,7 @@ async def test_chat_completions_streaming_reasoning_encrypted_next_only(pipe_ins
             {"model": "anthropic/claude-sonnet-4.5", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -2060,7 +2056,7 @@ async def test_chat_completions_streaming_annotation_not_dict(pipe_instance_asyn
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -2108,7 +2104,7 @@ async def test_chat_completions_streaming_tool_call_not_dict(pipe_instance_async
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -2145,9 +2141,8 @@ async def test_chat_completions_nonstreaming_with_rate_limit_scope(pipe_instance
                 session,
                 {"model": "openai/gpt-4o", "input": []},
                 api_key="test-key",
-                base_url="https://openrouter.ai/api/v1",
                 valves=valves,
-            )
+                base_url="https://openrouter.ai/api/v1",            )
 
         await session.close()
 
@@ -2177,8 +2172,8 @@ async def test_a_tripped_breaker_does_not_stop_a_chat_request_already_under_way(
             {"model": "openai/gpt-4o", "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             breaker_key=breaker_key,
+        valves=valves,
         )
         posts = sum(len(calls) for (method, _url), calls in mock_http.requests.items() if method == "POST")
 
@@ -2466,7 +2461,7 @@ async def test_chat_completions_streaming_data_blob_empty(pipe_instance_async):
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -2505,7 +2500,7 @@ async def test_chat_completions_streaming_no_choices_in_chunk(pipe_instance_asyn
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -2544,7 +2539,7 @@ async def test_chat_completions_streaming_choices_not_list(pipe_instance_async):
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -2582,7 +2577,7 @@ async def test_chat_completions_streaming_choice_not_dict(pipe_instance_async):
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -2620,7 +2615,7 @@ async def test_chat_completions_streaming_delta_not_dict(pipe_instance_async):
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -2762,7 +2757,7 @@ async def test_chat_completions_streaming_simple_text(pipe_instance_async):
             {"model": "openai/gpt-4o", "stream": True, "input": [{"role": "user", "content": "Hi"}]},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -2811,7 +2806,7 @@ async def test_chat_completions_streaming_with_usage(pipe_instance_async):
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -2881,7 +2876,7 @@ async def test_chat_completions_streaming_with_tool_calls(pipe_instance_async):
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -2943,7 +2938,7 @@ async def test_chat_completions_streaming_with_reasoning(pipe_instance_async):
             {"model": "anthropic/claude-sonnet-4.5", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -2987,7 +2982,7 @@ async def test_chat_completions_streaming_reasoning_field(pipe_instance_async):
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -3044,7 +3039,7 @@ async def test_chat_completions_streaming_message_images(pipe_instance_async):
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -3096,7 +3091,7 @@ async def test_chat_completions_streaming_refusal_field(pipe_instance_async):
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -3164,7 +3159,7 @@ async def test_chat_completions_streaming_with_annotations(pipe_instance_async):
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -3217,9 +3212,8 @@ async def test_chat_completions_nonstreaming_simple(pipe_instance_async):
             session,
             {"model": "openai/gpt-4o", "input": [{"role": "user", "content": "Hi"}]},
             api_key="test-key",
-            base_url="https://openrouter.ai/api/v1",
             valves=valves,
-        )
+            base_url="https://openrouter.ai/api/v1",        )
 
         await session.close()
 
@@ -3273,9 +3267,8 @@ async def test_chat_completions_nonstreaming_with_tool_calls(pipe_instance_async
             session,
             {"model": "openai/gpt-4o", "input": []},
             api_key="test-key",
-            base_url="https://openrouter.ai/api/v1",
             valves=valves,
-        )
+            base_url="https://openrouter.ai/api/v1",        )
 
         await session.close()
 
@@ -3319,9 +3312,8 @@ async def test_chat_completions_nonstreaming_error_response(pipe_instance_async)
                 session,
                 {"model": "openai/gpt-4o", "input": []},
                 api_key="test-key",
-                base_url="https://openrouter.ai/api/v1",
                 valves=valves,
-            )
+                base_url="https://openrouter.ai/api/v1",            )
 
         await session.close()
 
@@ -3505,8 +3497,8 @@ async def test_send_openrouter_streaming_with_chat_override(pipe_instance_async)
             {"model": "openai/gpt-4o", "input": [], "stream": True},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             endpoint_override="chat_completions",
+            valves=valves,
         ):
             events.append(event)
 
@@ -3574,7 +3566,7 @@ async def test_chat_completions_streaming_multiple_tool_calls(pipe_instance_asyn
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -3642,8 +3634,8 @@ async def test_full_pipe_call_with_chat_completions(pipe_instance_async):
                 __tools__=None,
                 __task__=None,
                 __task_body__=None,
-                valves=valves,
                 session=session,
+            valves=valves,
             )
 
             assert isinstance(result, dict)
@@ -3982,8 +3974,8 @@ async def test_chat_completions_stream_adapts_tool_calls_and_usage() -> None:
                 },
                 api_key="test",
                 base_url="https://openrouter.ai/api/v1",
-                valves=valves,
                 breaker_key=None,
+            valves=valves,
             ):
                 events.append(event)
 
@@ -4053,8 +4045,8 @@ async def test_chat_completions_inlines_internal_file_urls(monkeypatch) -> None:
                 },
                 api_key="test",
                 base_url="https://openrouter.ai/api/v1",
-                valves=valves,
                 breaker_key=None,
+            valves=valves,
             ):
                 pass
 
@@ -4179,9 +4171,9 @@ async def test_send_openrouter_streaming_request_falls_back_to_chat(monkeypatch)
             {"model": "anthropic/claude-sonnet-4.5", "stream": True, "input": []},
             api_key="test",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             workers=1,
             breaker_key=None,
+            valves=valves,
         ):
             got.append(event)
 
@@ -4228,9 +4220,9 @@ async def test_send_openrouter_streaming_request_does_not_fallback_after_output(
                 {"model": "anthropic/claude-sonnet-4.5", "stream": True, "input": []},
                 api_key="test",
                 base_url="https://openrouter.ai/api/v1",
-                valves=valves,
                 workers=1,
                 breaker_key=None,
+                valves=valves,
             ):
                 got.append(event)
 
@@ -4287,9 +4279,9 @@ async def test_send_openrouter_streaming_request_fallback_discards_nonvisible_ev
             {"model": "anthropic/claude-sonnet-4.5", "stream": True, "input": []},
             api_key="test",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             workers=1,
             breaker_key=None,
+            valves=valves,
         ):
             got.append(event)
 
@@ -4380,8 +4372,8 @@ async def test_send_openrouter_nonstreaming_request_as_events_chat_adapter() -> 
                 },
                 api_key="test",
                 base_url="https://openrouter.ai/api/v1",
-                valves=valves,
                 breaker_key=None,
+                valves=valves,
             ):
                 events.append(event)
 
@@ -4441,8 +4433,8 @@ async def test_chat_completions_nonstreaming_inlines_internal_file_urls(monkeypa
                 },
                 api_key="test",
                 base_url="https://openrouter.ai/api/v1",
-                valves=valves,
                 breaker_key=None,
+            valves=valves,
             )
 
     await pipe.close()
@@ -4503,8 +4495,8 @@ async def test_chat_completions_input_file_file_id_preinlined_to_file_data(monke
                 },
                 api_key="test",
                 base_url="https://openrouter.ai/api/v1",
-                valves=valves,
                 breaker_key=None,
+            valves=valves,
             ):
                 pass
 
@@ -4567,9 +4559,9 @@ async def test_chat_completions_denied_internal_file_aborts_before_http(monkeypa
                     },
                     api_key="test",
                     base_url="https://openrouter.ai/api/v1",
-                    valves=valves,
                     breaker_key=None,
                     user={"id": "u1"},
+                valves=valves,
                 ):
                     pass
             except RequiredInternalFileError as exc:
@@ -4625,9 +4617,9 @@ async def test_chat_completions_preinline_threads_user(monkeypatch) -> None:
                 },
                 api_key="test",
                 base_url="https://openrouter.ai/api/v1",
-                valves=valves,
                 breaker_key=None,
                 user=request_user,
+            valves=valves,
             ):
                 pass
 
@@ -4717,7 +4709,7 @@ async def test_chat_completions_streaming_no_retry_after_emit(pipe_instance_asyn
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -4751,7 +4743,7 @@ async def test_chat_completions_streaming_retries_before_first_emit(pipe_instanc
         {"model": "openai/gpt-4o", "stream": True, "input": []},
         api_key="test-key",
         base_url="https://openrouter.ai/api/v1",
-        valves=valves,
+    valves=valves,
     ):
         events.append(event)
 

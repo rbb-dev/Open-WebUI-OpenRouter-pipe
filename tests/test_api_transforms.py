@@ -2066,9 +2066,9 @@ class TestApplyIdentifierValvesToPayload:
         pipe = Pipe()
         _apply_identifier_valves_to_payload(
             "not a dict",
-            valves=pipe.valves,
             owui_metadata={},
             owui_user_id="user123",
+            valves=pipe.valves,
         )
 
     def test_user_id_added_when_valve_enabled(self, pipe_instance):
@@ -2078,9 +2078,9 @@ class TestApplyIdentifierValvesToPayload:
         payload = {}
         _apply_identifier_valves_to_payload(
             payload,
-            valves=valves,
             owui_metadata={},
             owui_user_id="user123",
+            valves=valves,
         )
         assert payload["user"] == "user123"
         assert payload["metadata"]["user_id"] == "user123"
@@ -2092,9 +2092,9 @@ class TestApplyIdentifierValvesToPayload:
         payload = {"user": "existing"}
         _apply_identifier_valves_to_payload(
             payload,
-            valves=valves,
             owui_metadata={},
             owui_user_id="user123",
+            valves=valves,
         )
         assert "user" not in payload
 
@@ -2105,9 +2105,9 @@ class TestApplyIdentifierValvesToPayload:
         payload = {}
         _apply_identifier_valves_to_payload(
             payload,
-            valves=valves,
             owui_metadata={"session_id": "session123"},
             owui_user_id="",
+            valves=valves,
         )
         assert "session_id" not in payload
         assert payload["metadata"]["session_id"] == "session123"
@@ -2119,9 +2119,9 @@ class TestApplyIdentifierValvesToPayload:
         payload = {"session_id": "existing"}
         _apply_identifier_valves_to_payload(
             payload,
-            valves=valves,
             owui_metadata={"session_id": "session123"},
             owui_user_id="",
+            valves=valves,
         )
         assert "session_id" not in payload
 
@@ -2132,9 +2132,9 @@ class TestApplyIdentifierValvesToPayload:
         payload = {}
         _apply_identifier_valves_to_payload(
             payload,
-            valves=valves,
             owui_metadata={"chat_id": "chat123"},
             owui_user_id="",
+            valves=valves,
         )
         assert payload["metadata"]["chat_id"] == "chat123"
 
@@ -2145,9 +2145,9 @@ class TestApplyIdentifierValvesToPayload:
         payload = {}
         _apply_identifier_valves_to_payload(
             payload,
-            valves=valves,
             owui_metadata={"message_id": "msg123"},
             owui_user_id="",
+            valves=valves,
         )
         assert payload["metadata"]["message_id"] == "msg123"
 
@@ -2165,9 +2165,9 @@ class TestApplyIdentifierValvesToPayload:
         payload = {"metadata": {"existing": "value"}}
         _apply_identifier_valves_to_payload(
             payload,
-            valves=valves,
             owui_metadata={},
             owui_user_id="",
+            valves=valves,
         )
         assert "metadata" not in payload
 
@@ -2179,9 +2179,9 @@ class TestApplyIdentifierValvesToPayload:
         with caplog.at_level(logging.DEBUG):
             _apply_identifier_valves_to_payload(
                 payload,
-                valves=valves,
                 owui_metadata={},
                 owui_user_id="",  # Empty user ID
+                valves=valves,
             )
         assert "user" not in payload
 
@@ -2193,9 +2193,9 @@ class TestApplyIdentifierValvesToPayload:
         with caplog.at_level(logging.DEBUG):
             _apply_identifier_valves_to_payload(
                 payload,
-                valves=valves,
                 owui_metadata={"session_id": "  "},  # Whitespace only
                 owui_user_id="",
+                valves=valves,
             )
         assert "session_id" not in payload.get("metadata", {})
 
@@ -2752,7 +2752,7 @@ class TestPipeIntegration:
                 },
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
-                valves=valves,
+            valves=valves,
             ):
                 events.append(event)
 
@@ -2814,7 +2814,7 @@ class TestPipeIntegration:
                 },
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
-                valves=valves,
+            valves=valves,
             ):
                 events.append(event)
 
@@ -2871,7 +2871,7 @@ class TestPipeIntegration:
                 },
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
-                valves=valves,
+            valves=valves,
             ):
                 events.append(event)
 

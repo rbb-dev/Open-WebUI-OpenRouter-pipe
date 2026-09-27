@@ -238,9 +238,9 @@ class TestShortCircuit:
 
         def _ask():
             return adapter._intent_classifier_should_run(
-                valves=valves,
                 persisted_content="", prompt="make a video",
                 body={"messages": [{}, {}]}, video_meta={}, chat_id="chat1",
+                valves=valves,
             )
 
         allowed = 0
@@ -264,9 +264,9 @@ class TestShortCircuit:
         allowed = 0
         for _turn in range(cap + 2):
             if not adapter._intent_classifier_should_run(
-                valves=valves,
                 persisted_content="", prompt="make a video",
                 body={"messages": [{}, {}]}, video_meta={}, user_id="user-1",
+                valves=valves,
             ):
                 break
             allowed += 1

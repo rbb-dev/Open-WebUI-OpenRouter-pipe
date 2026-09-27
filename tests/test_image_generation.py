@@ -827,10 +827,10 @@ async def test_image_catalog_happy_path_registers_models():
     try:
         await image_catalog.ensure_image_catalog_loaded(
             session=MagicMock(),
-            valves=valves,
             api_key="test-key",
             logger=MagicMock(),
             cache_seconds=3600,
+            valves=valves,
         )
     finally:
         image_catalog.OpenRouterImageClient = original_client  # type: ignore[misc]
@@ -878,10 +878,10 @@ async def test_image_catalog_network_failure_records_attempt_no_models():
     try:
         await image_catalog.ensure_image_catalog_loaded(
             session=MagicMock(),
-            valves=valves,
             api_key="test-key",
             logger=logger,
             cache_seconds=3600,
+            valves=valves,
         )
     finally:
         image_catalog.OpenRouterImageClient = original_client  # type: ignore[misc]
@@ -939,10 +939,10 @@ async def test_image_catalog_empty_response_records_attempt_warns():
     try:
         await image_catalog.ensure_image_catalog_loaded(
             session=MagicMock(),
-            valves=valves,
             api_key="test-key",
             logger=logger,
             cache_seconds=3600,
+            valves=valves,
         )
     finally:
         image_catalog.OpenRouterImageClient = original_client  # type: ignore[misc]
@@ -2379,10 +2379,10 @@ async def test_the_catalog_publishes_contracts_the_installer_can_actually_read(f
     try:
         await image_catalog.ensure_image_catalog_loaded(
             session=MagicMock(),
-            valves=valves,
             api_key="k",
             logger=logging.getLogger("t"),
             cache_seconds=0,
+            valves=valves,
         )
     finally:
         image_catalog.OpenRouterImageClient = original  # type: ignore[misc]

@@ -21,7 +21,6 @@ from open_webui_openrouter_pipe.tools.tool_registry import (
     _normalize_responses_function_tool_spec,
     _responses_spec_from_owui_tool_cfg,
     _tool_prefix_for_collision,
-    build_tools,
 )
 from open_webui_openrouter_pipe.models.registry import ModelFamily
 
@@ -736,78 +735,6 @@ class TestBuildCollisionSafeToolSpecsAndRegistry:
         assert [t["name"] for t in tools] == ["no_exec"]
         assert registry == {}
 
-
-# -----------------------------------------------------------------------------
-# Tests for build_tools (high-level API)
-# -----------------------------------------------------------------------------
-
-class TestBuildTools:
-    """Tests for the build_tools function."""
-
-    def test_no_function_calling_support_returns_empty(self, mock_valves, mock_responses_body):
-        """Model without function calling returns empty tools."""
-        mock_responses_body.model = "no-tool-model"
-        result = build_tools(mock_responses_body, mock_valves, None)
-        assert result == []
-
-    def test_passthrough_mode_bypasses_model_check(self, mock_valves, mock_responses_body):
-        """Passthrough mode bypasses model capability check."""
-        mock_responses_body.model = "no-tool-model"
-        mock_valves.TOOL_EXECUTION_MODE = "Open-WebUI"
-
-        tools = [{"type": "function", "name": "test", "description": "test"}]
-        result = build_tools(mock_responses_body, mock_valves, tools)
-        # Should not be empty even though model doesn't support function calling
-        assert len(result) == 1
-
-    def test_dict_tools_transformed(self, mock_valves, mock_responses_body):
-        """Dict-style __tools__ are transformed via ResponsesBody."""
-        mock_valves.TOOL_EXECUTION_MODE = "Open-WebUI"
-        tools_dict = {
-            "my_tool": {
-                "spec": {"name": "my_tool", "description": "test"},
-                "callable": lambda: None,
-            }
-        }
-        # This test exercises the dict branch
-        result = build_tools(mock_responses_body, mock_valves, tools_dict)
-        # Result depends on ResponsesBody.transform_owui_tools implementation
-        assert isinstance(result, list)
-
-    def test_list_tools_filtered(self, mock_valves, mock_responses_body):
-        """List-style tools are filtered to include only dicts."""
-        mock_valves.TOOL_EXECUTION_MODE = "Open-WebUI"
-        tools_list = [
-            {"type": "function", "name": "valid"},
-            "not a dict",
-            None,
-            {"type": "function", "name": "also_valid"},
-        ]
-        result = build_tools(mock_responses_body, mock_valves, tools_list)
-        # Only dict items should be included
-        names = [t.get("name") for t in result]
-        assert "valid" in names
-        assert "also_valid" in names
-
-    def test_extra_tools_appended(self, mock_valves, mock_responses_body):
-        """Extra tools are appended to the result."""
-        mock_valves.TOOL_EXECUTION_MODE = "Open-WebUI"
-        extra = [{"type": "function", "name": "extra_tool", "description": "extra"}]
-        result = build_tools(mock_responses_body, mock_valves, None, extra_tools=extra)
-        assert any(t.get("name") == "extra_tool" for t in result)
-
-    def test_features_parameter_accepted(self, mock_valves, mock_responses_body):
-        """Features parameter is accepted (for future use)."""
-        mock_valves.TOOL_EXECUTION_MODE = "Open-WebUI"
-        result = build_tools(
-            mock_responses_body, mock_valves, None, features={"some_feature": True}
-        )
-        assert isinstance(result, list)
-
-
-# -----------------------------------------------------------------------------
-# Tests for _pick_executor preference branches (lines 223-236)
-# -----------------------------------------------------------------------------
 
 class TestPickExecutorPreferences:
     """Tests specifically targeting _pick_executor preference branches."""

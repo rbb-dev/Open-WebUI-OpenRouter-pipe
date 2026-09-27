@@ -107,8 +107,8 @@ async def _call(
         None,
         task,
         None,
-        valves=pipe.valves,
         session=cast(Any, _NoSession()),
+    valves=pipe.valves,
     )
 
 
@@ -544,7 +544,6 @@ async def test_a_restricted_model_card_is_returned_as_well_as_shown(
             __tools__=None,
             __task__=None,
             __task_body__=None,
-            valves=pipe.valves,
             session=cast(Any, _NoSession()),
             openwebui_model_id="blocked/model",
             pipe_identifier="test-pipe",
@@ -552,6 +551,7 @@ async def test_a_restricted_model_card_is_returned_as_well_as_shown(
             enforced_norm_ids={"other/model"},
             catalog_norm_ids={"other/model", "blocked/model"},
             features={},
+            valves=pipe.valves,
         )
 
         shown = _shown_card(events)
@@ -602,7 +602,6 @@ async def test_a_preset_endpoint_conflict_never_hands_a_card_to_a_task(
             __tools__=None,
             __task__=task,
             __task_body__=None,
-            valves=pipe.valves,
             session=cast(Any, _NoSession()),
             openwebui_model_id="forced/model",
             pipe_identifier="test-pipe",
@@ -610,6 +609,7 @@ async def test_a_preset_endpoint_conflict_never_hands_a_card_to_a_task(
             enforced_norm_ids=set(),
             catalog_norm_ids=set(),
             features={},
+            valves=pipe.valves,
         )
 
         shown = _shown_card(events)
@@ -664,7 +664,6 @@ async def test_an_unverifiable_zdr_card_is_returned_as_well_as_shown(
             __tools__=None,
             __task__=None,
             __task_body__=None,
-            valves=pipe.valves,
             session=cast(Any, _NoSession()),
             openwebui_model_id="some/model",
             pipe_identifier="test-pipe",
@@ -672,6 +671,7 @@ async def test_an_unverifiable_zdr_card_is_returned_as_well_as_shown(
             enforced_norm_ids=set(),
             catalog_norm_ids=set(),
             features={},
+            valves=pipe.valves,
         )
 
         from open_webui_openrouter_pipe.pipe import _RESTRICTION_REASON_PHRASES
@@ -743,7 +743,6 @@ async def test_a_direct_upload_endpoint_conflict_card_is_returned_as_well_as_sho
             __tools__=None,
             __task__=None,
             __task_body__=None,
-            valves=pipe.valves,
             session=cast(Any, _NoSession()),
             openwebui_model_id="forced/model",
             pipe_identifier="test-pipe",
@@ -751,6 +750,7 @@ async def test_a_direct_upload_endpoint_conflict_card_is_returned_as_well_as_sho
             enforced_norm_ids=set(),
             catalog_norm_ids=set(),
             features={},
+            valves=pipe.valves,
         )
 
         shown = _shown_card(events)
@@ -939,8 +939,8 @@ async def _call_without_emitter(pipe: Pipe, *, task: Any = None, stream: bool = 
         None,
         task,
         None,
-        valves=pipe.valves,
         session=cast(Any, _NoSession()),
+    valves=pipe.valves,
     )
 
 

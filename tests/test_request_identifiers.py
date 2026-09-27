@@ -31,9 +31,9 @@ def test_identifier_valves_default_omit_everything():
 
     _apply_identifier_valves_to_payload(
         payload,
-        valves=valves,
         owui_metadata={"session_id": "sess", "chat_id": "chat", "message_id": "msg"},
         owui_user_id="user",
+        valves=valves,
     )
     assert "user" not in payload
     assert "session_id" not in payload
@@ -78,9 +78,9 @@ def test_identifier_valves_populate_expected_fields(valves_kwargs, expected_payl
     payload = _base_payload()
     _apply_identifier_valves_to_payload(
         payload,
-        valves=valves,
         owui_metadata={"session_id": "s1", "chat_id": "c1", "message_id": "m1"},
         owui_user_id="u1",
+        valves=valves,
     )
 
     for key, value in expected_payload.items():
@@ -93,9 +93,9 @@ def test_filter_openrouter_request_sanitizes_metadata_constraints():
 
     _apply_identifier_valves_to_payload(
         payload,
-        valves=valves,
         owui_metadata={},
         owui_user_id="u1",
+        valves=valves,
     )
     # Add invalid metadata entries that should be dropped by sanitizer.
     payload["metadata"].update(
@@ -249,10 +249,10 @@ def test_end_user_id_source_default_sends_guid():
     payload = _base_payload()
     _apply_identifier_valves_to_payload(
         payload,
-        valves=valves,
         owui_metadata={},
         owui_user_id="guid-1",
         owui_user={"id": "guid-1", "email": "person@example.com", "name": "Person"},
+        valves=valves,
     )
     assert payload["user"] == "guid-1"
     assert payload["metadata"]["user_id"] == "guid-1"
@@ -265,10 +265,10 @@ def test_end_user_id_source_email_sends_email_keeps_guid_metadata():
     payload = _base_payload()
     _apply_identifier_valves_to_payload(
         payload,
-        valves=valves,
         owui_metadata={},
         owui_user_id="guid-1",
         owui_user={"id": "guid-1", "email": "person@example.com", "name": "Person"},
+        valves=valves,
     )
     assert payload["user"] == "person@example.com"
     assert payload["metadata"]["user_id"] == "guid-1"
@@ -281,10 +281,10 @@ def test_end_user_id_source_name_sends_display_name():
     payload = _base_payload()
     _apply_identifier_valves_to_payload(
         payload,
-        valves=valves,
         owui_metadata={},
         owui_user_id="guid-1",
         owui_user={"id": "guid-1", "email": "person@example.com", "name": "Person"},
+        valves=valves,
     )
     assert payload["user"] == "Person"
     assert payload["metadata"]["user_id"] == "guid-1"
@@ -297,19 +297,19 @@ def test_end_user_id_source_email_falls_back_to_guid_when_missing():
     payload = _base_payload()
     _apply_identifier_valves_to_payload(
         payload,
-        valves=valves,
         owui_metadata={},
         owui_user_id="guid-1",
         owui_user={"id": "guid-1", "email": "", "name": "Person"},
+        valves=valves,
     )
     assert payload["user"] == "guid-1"
 
     payload_no_user_obj = _base_payload()
     _apply_identifier_valves_to_payload(
         payload_no_user_obj,
-        valves=valves,
         owui_metadata={},
         owui_user_id="guid-1",
+        valves=valves,
     )
     assert payload_no_user_obj["user"] == "guid-1"
 
@@ -321,10 +321,10 @@ def test_end_user_id_source_oversized_email_falls_back_to_guid():
     payload = _base_payload()
     _apply_identifier_valves_to_payload(
         payload,
-        valves=valves,
         owui_metadata={},
         owui_user_id="guid-1",
         owui_user={"email": "x" * 5000},
+        valves=valves,
     )
     assert payload["user"] == "guid-1"
 
@@ -339,10 +339,10 @@ def test_end_user_id_source_email_reads_attribute_objects():
     user_model = SimpleNamespace(id="guid-1", email="person@example.com", name="Person")
     _apply_identifier_valves_to_payload(
         payload,
-        valves=valves,
         owui_metadata={},
         owui_user_id="guid-1",
         owui_user=user_model,
+        valves=valves,
     )
     assert payload["user"] == "person@example.com"
     assert payload["metadata"]["user_id"] == "guid-1"
@@ -357,9 +357,9 @@ def test_end_user_id_source_name_reads_attribute_objects():
     payload = _base_payload()
     _apply_identifier_valves_to_payload(
         payload,
-        valves=valves,
         owui_metadata={},
         owui_user_id="guid-1",
         owui_user=SimpleNamespace(id="guid-1", email="e@example.com", name="Person"),
+        valves=valves,
     )
     assert payload["user"] == "Person"

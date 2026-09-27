@@ -17,7 +17,6 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from ..api.transforms import ResponsesBody
 from ..core.timing_logger import timed, timing_mark
 from ..core.utils import (
     TOOL_CALL_STATUSES,
@@ -610,29 +609,19 @@ class ToolExecutor:
         self,
         __metadata__: dict[str, Any],
         *,
-        valves: Pipe.Valves,
         event_call: Callable[[dict[str, Any]], Awaitable[Any]] | None,
         event_emitter: EventEmitter | None,
-    ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
-        """Return OWUI-style "direct tool server" entries (callables + tool specs).
-
-        Open WebUI direct tool servers are executed client-side via Socket.IO.
-        The model-visible tool names are plain OpenAPI ``operationId`` values
-        (no namespacing). Collisions are preserved here and resolved later by
-        the pipe's collision-safe tool registry builder.
-        """
-
+    ) -> dict[str, dict[str, Any]]:
         direct_registry: dict[str, dict[str, Any]] = {}
-        direct_tool_specs: list[dict[str, Any]] = []
 
         try:
             if not isinstance(__metadata__, dict):
-                return {}, []
+                return {}
             resolved = __metadata__.get("tools")
             if not isinstance(resolved, dict) or not resolved:
-                return {}, []
+                return {}
             if event_call is None:
-                return {}, []
+                return {}
 
             def _browser_call(
                 allowed: set[str],
@@ -709,24 +698,10 @@ class ToolExecutor:
                     self.logger.debug("Skipping malformed direct tool spec", exc_info=True)
                     continue
 
-            if direct_registry:
-                try:
-                    direct_tool_specs = ResponsesBody.transform_owui_tools(
-                        direct_registry,
-                        strict=valves.ENABLE_STRICT_TOOL_CALLING
-                        and (valves.TOOL_EXECUTION_MODE != "Open-WebUI"),
-                    )
-                except Exception:
-                    self.logger.warning(
-                        "Direct tool spec transform failed; the direct tools are still "
-                        "offered this request, re-derived from their registry entries",
-                        exc_info=True,
-                    )
-                    direct_tool_specs = []
-            return direct_registry, direct_tool_specs
+            return direct_registry
         except Exception:
             self.logger.debug("Direct tool server registry build failed", exc_info=True)
-            return {}, []
+            return {}
 
     async def _notify_tool_breaker(
         self,

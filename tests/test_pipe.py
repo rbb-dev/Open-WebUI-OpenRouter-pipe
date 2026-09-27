@@ -794,9 +794,9 @@ class TestModelSelectionAndFiltering:
         try:
             reasons = pipe._model_restriction_reasons(
                 "unknown.model",
-                valves=pipe.valves,
                 allowlist_norm_ids=set(),
                 catalog_norm_ids={"known.model"},
+                valves=pipe.valves,
             )
 
             assert "not_in_catalog" in reasons
@@ -811,9 +811,9 @@ class TestModelSelectionAndFiltering:
         try:
             reasons = pipe._model_restriction_reasons(
                 "other.model",
-                valves=pipe.valves,
                 allowlist_norm_ids={"allowed.model"},
                 catalog_norm_ids={"other.model", "allowed.model"},
+                valves=pipe.valves,
             )
 
             assert "MODEL_ID" in reasons
@@ -836,9 +836,9 @@ class TestModelSelectionAndFiltering:
 
             reasons = pipe._model_restriction_reasons(
                 "paid.model",
-                valves=pipe.valves,
                 allowlist_norm_ids=set(),
                 catalog_norm_ids={"paid.model"},
+                valves=pipe.valves,
             )
 
             assert "FREE_MODEL_FILTER=only" in reasons
@@ -862,9 +862,9 @@ class TestModelSelectionAndFiltering:
 
             reasons = pipe._model_restriction_reasons(
                 "free.model",
-                valves=pipe.valves,
                 allowlist_norm_ids=set(),
                 catalog_norm_ids={"free.model"},
+                valves=pipe.valves,
             )
 
             assert "FREE_MODEL_FILTER=exclude" in reasons
@@ -886,9 +886,9 @@ class TestModelSelectionAndFiltering:
         try:
             reasons = pipe._model_restriction_reasons(
                 "no.tool.model",
-                valves=pipe.valves,
                 allowlist_norm_ids=set(),
                 catalog_norm_ids={"no.tool.model"},
+                valves=pipe.valves,
             )
 
             assert "TOOL_CALLING_FILTER=only" in reasons
@@ -910,9 +910,9 @@ class TestModelSelectionAndFiltering:
         try:
             reasons = pipe._model_restriction_reasons(
                 "tool.model",
-                valves=pipe.valves,
                 allowlist_norm_ids=set(),
                 catalog_norm_ids={"tool.model"},
+                valves=pipe.valves,
             )
 
             assert "TOOL_CALLING_FILTER=exclude" in reasons
@@ -935,9 +935,9 @@ class TestModelSelectionAndFiltering:
             OpenRouterModelRegistry._zdr_model_ids = {"zdr.model"}
             reasons = pipe._model_restriction_reasons(
                 "non.zdr",
-                valves=pipe.valves,
                 allowlist_norm_ids=set(),
                 catalog_norm_ids={"zdr.model", "non.zdr"},
+                valves=pipe.valves,
             )
 
             assert "ZDR_MODELS_ONLY" in reasons
@@ -970,9 +970,9 @@ class TestVariantEnforcement:
         try:
             reasons = pipe._model_restriction_reasons(
                 "arcee-ai.trinity-mini:free",
-                valves=pipe.valves,
                 allowlist_norm_ids={"arcee-ai.trinity-mini:free"},
                 catalog_norm_ids={"arcee-ai.trinity-mini:free"},
+                valves=pipe.valves,
             )
             assert "MODEL_ID" not in reasons
         finally:
@@ -985,9 +985,9 @@ class TestVariantEnforcement:
         try:
             reasons = pipe._model_restriction_reasons(
                 "arcee-ai.trinity-mini:free",
-                valves=pipe.valves,
                 allowlist_norm_ids={"arcee-ai.trinity-mini"},
                 catalog_norm_ids={"arcee-ai.trinity-mini:free", "arcee-ai.trinity-mini"},
+                valves=pipe.valves,
             )
             assert "MODEL_ID" in reasons
         finally:
@@ -1008,9 +1008,9 @@ class TestVariantEnforcement:
             }
             reasons = pipe._model_restriction_reasons(
                 "arcee-ai.trinity-mini:free",
-                valves=pipe.valves,
                 allowlist_norm_ids=set(),
                 catalog_norm_ids={"arcee-ai.trinity-mini:free"},
+                valves=pipe.valves,
             )
             assert "FREE_MODEL_FILTER=only" not in reasons
         finally:
@@ -1038,10 +1038,10 @@ class TestVariantEnforcement:
             OpenRouterModelRegistry._zdr_model_ids = {"openai.gpt-4o"}
             reasons = pipe._model_restriction_reasons(
                 "openai.gpt-4o:nitro",
-                valves=pipe.valves,
                 allowlist_norm_ids={"openai.gpt-4o:nitro"},
                 catalog_norm_ids={"openai.gpt-4o"},
                 virtual_variant_bases={"openai.gpt-4o:nitro": "openai.gpt-4o"},
+                valves=pipe.valves,
             )
             assert "ZDR_MODELS_ONLY" not in reasons, (
                 "the :nitro variant of a ZDR-capable base was restricted by "
@@ -1068,10 +1068,10 @@ class TestVariantEnforcement:
             }
             reasons = pipe._model_restriction_reasons(
                 "openai.gpt-4o:nitro",
-                valves=pipe.valves,
                 allowlist_norm_ids={"openai.gpt-4o:nitro"},
                 catalog_norm_ids={"openai.gpt-4o"},
                 virtual_variant_bases={"openai.gpt-4o:nitro": "openai.gpt-4o"},
+                valves=pipe.valves,
             )
             # Base is paid → FREE_MODEL_FILTER=only should block
             assert "FREE_MODEL_FILTER=only" in reasons
@@ -2875,9 +2875,9 @@ class TestEnqueueJob:
                 tools=None,
                 task=None,
                 task_body=None,
-                valves=pipe.valves,
                 future=future,
                 request_id="test123",
+                valves=pipe.valves,
             )
 
             result = pipe._enqueue_job(job)
@@ -2918,9 +2918,9 @@ class TestLoggingContext:
                 tools=None,
                 task=None,
                 task_body=None,
-                valves=pipe.valves,
                 future=future,
                 request_id="req789",
+                valves=pipe.valves,
             )
 
             tokens = pipe._apply_logging_context(job)
@@ -3037,8 +3037,8 @@ class TestHandlePipeCallEdgeCases:
                     __event_call__=None,
                     __metadata__={},
                     __tools__=None,
-                    valves=pipe.valves,
                     session=None,
+                valves=pipe.valves,
                 )
         finally:
             await pipe.close()
@@ -3069,8 +3069,8 @@ class TestHandlePipeCallEdgeCases:
                     __metadata__={},
                     __tools__=None,
                     __task__="title",  # This is a task call
-                    valves=pipe.valves,
                     session=session,
+                valves=pipe.valves,
                 )
 
                 # Should return a chat completion payload with fallback content
@@ -3116,8 +3116,8 @@ class TestHandlePipeCallEdgeCases:
                     __metadata__={"model": {"id": "test/model"}},
                     __tools__=None,
                     __task__="moa_response_generation",
-                    valves=pipe.valves,
                     session=session,
+                valves=pipe.valves,
                 )
 
             assert result == "processed"
@@ -3149,8 +3149,8 @@ class TestHandlePipeCallEdgeCases:
                 __event_call__=None,
                 __metadata__={},
                 __tools__=None,
-                valves=pipe.valves,
                 session=session,
+            valves=pipe.valves,
             )
 
             # For streaming with error, should return empty string
@@ -3191,8 +3191,8 @@ class TestHandlePipeCallEdgeCases:
                     __event_call__=None,
                     __metadata__={},
                     __tools__=None,
-                    valves=pipe.valves,
                     session=session,
+                valves=pipe.valves,
                 )
 
                 assert isinstance(result, str) and result.strip(), (
@@ -3260,8 +3260,8 @@ class TestHandlePipeCallEdgeCases:
                     __event_call__=None,
                     __metadata__={},
                     __tools__=None,
-                    valves=pipe.valves,
                     session=session,
+                valves=pipe.valves,
                 )
 
                 assert result == denied_message
@@ -3734,7 +3734,7 @@ class TestAnthropicBetaHeaders:
             pipe._maybe_apply_anthropic_beta_headers(
                 headers,
                 "anthropic/claude-3-opus",
-                valves=pipe.valves,
+            valves=pipe.valves,
             )
 
             assert "x-anthropic-beta" not in headers
@@ -3752,7 +3752,7 @@ class TestAnthropicBetaHeaders:
             pipe._maybe_apply_anthropic_beta_headers(
                 headers,
                 "openai/gpt-4",
-                valves=pipe.valves,
+            valves=pipe.valves,
             )
 
             assert "x-anthropic-beta" not in headers
@@ -3770,7 +3770,7 @@ class TestAnthropicBetaHeaders:
             pipe._maybe_apply_anthropic_beta_headers(
                 headers,
                 "anthropic/claude-3-opus",
-                valves=pipe.valves,
+            valves=pipe.valves,
             )
 
             assert "x-anthropic-beta" in headers
@@ -3789,7 +3789,7 @@ class TestAnthropicBetaHeaders:
             pipe._maybe_apply_anthropic_beta_headers(
                 headers,
                 "~anthropic/claude-fable-latest",
-                valves=pipe.valves,
+            valves=pipe.valves,
             )
 
             assert "x-anthropic-beta" in headers
@@ -3808,7 +3808,7 @@ class TestAnthropicBetaHeaders:
             pipe._maybe_apply_anthropic_beta_headers(
                 headers,
                 "anthropic/claude-3-opus",
-                valves=pipe.valves,
+            valves=pipe.valves,
             )
 
             assert "existing-feature" in headers["x-anthropic-beta"]
@@ -3825,7 +3825,7 @@ class TestAnthropicBetaHeaders:
             pipe._maybe_apply_anthropic_beta_headers(
                 None,  # type: ignore
                 "anthropic/claude-3-opus",
-                valves=pipe.valves,
+            valves=pipe.valves,
             )
             # Should return early without error
         finally:
@@ -3842,7 +3842,7 @@ class TestAnthropicBetaHeaders:
             pipe._maybe_apply_anthropic_beta_headers(
                 headers,
                 123,  # Non-string model
-                valves=pipe.valves,
+            valves=pipe.valves,
             )
 
             # Should return early without setting header
@@ -4160,8 +4160,8 @@ async def test_handle_pipe_call_auth_error_streaming_emits(monkeypatch, pipe_ins
         None,
         None,
         None,
-        valves=pipe.valves,
         session=_DummySession(),
+    valves=pipe.valves,
     )
 
     assert result == ""
@@ -4190,8 +4190,8 @@ async def test_handle_pipe_call_auth_error_nonstreaming_fallback(monkeypatch, pi
         None,
         None,
         None,
-        valves=pipe.valves,
         session=_DummySession(),
+    valves=pipe.valves,
     )
 
     assert isinstance(result, dict)
@@ -4216,8 +4216,8 @@ async def test_handle_pipe_call_auth_error_task_fallback(monkeypatch, pipe_insta
         None,
         object(),
         None,
-        valves=pipe.valves,
         session=_DummySession(),
+    valves=pipe.valves,
     )
 
     assert "title" in result["choices"][0]["message"]["content"]
@@ -4254,8 +4254,8 @@ async def test_handle_pipe_call_openrouter_catalog_unavailable(monkeypatch, pipe
         None,
         None,
         None,
-        valves=pipe.valves,
         session=_DummySession(),
+    valves=pipe.valves,
     )
 
     assert result == surfaced
@@ -4296,8 +4296,8 @@ async def test_handle_pipe_call_reports_openrouter_api_error(monkeypatch, pipe_i
         None,
         None,
         None,
-        valves=pipe.valves,
         session=_DummySession(),
+    valves=pipe.valves,
     )
 
     assert result == surfaced
@@ -4769,6 +4769,7 @@ async def test_from_completions_preserves_system_message_in_input():
         responses_body = await ResponsesBody.from_completions(
             completions_body,
             transformer_context=pipe,
+            valves=pipe.valves,
         )
         assert responses_body.instructions is None
         assert isinstance(responses_body.input, list)
@@ -5299,7 +5300,6 @@ async def test_task_reasoning_valve_applies_only_for_owned_models(monkeypatch):
                     __tools__=None,
                     __task__={"type": "title"},
                     __task_body__=None,
-                    valves=pipe.valves,
                     session=session,
                     openwebui_model_id=openwebui_model_id,
                     pipe_identifier=pipe_identifier,
@@ -5307,6 +5307,7 @@ async def test_task_reasoning_valve_applies_only_for_owned_models(monkeypatch):
                     enforced_norm_ids=allowed_norm_ids,
                     catalog_norm_ids=catalog_norm_ids,
                     features={},
+                    valves=pipe.valves,
                 )
 
                 # Verify result
@@ -5401,7 +5402,6 @@ async def test_task_reasoning_valve_skips_unowned_models(monkeypatch):
                     __tools__=None,
                     __task__={"type": "title"},
                     __task_body__=None,
-                    valves=pipe.valves,
                     session=session,
                     openwebui_model_id=openwebui_model_id,
                     pipe_identifier=pipe_identifier,
@@ -5409,6 +5409,7 @@ async def test_task_reasoning_valve_skips_unowned_models(monkeypatch):
                     enforced_norm_ids=allowed_norm_ids,
                     catalog_norm_ids=catalog_norm_ids,
                     features={},
+                    valves=pipe.valves,
                 )
 
                 assert result == "Generated title"
@@ -6790,7 +6791,6 @@ async def test_persist_session_log_segment_skips_when_disabled():
     try:
         # This should return early without doing anything
         await pipe._session_log_manager.persist_segment_to_db(
-            valves=pipe.valves,
             user_id="user1",
             session_id="sess1",
             chat_id="chat1",
@@ -6799,6 +6799,7 @@ async def test_persist_session_log_segment_skips_when_disabled():
             log_events=[{"event": "test"}],
             terminal=False,
             status="success",
+        valves=pipe.valves,
         )
     finally:
         await pipe.close()
@@ -6813,7 +6814,6 @@ async def test_persist_session_log_segment_skips_when_missing_ids():
     try:
         # Missing chat_id
         await pipe._session_log_manager.persist_segment_to_db(
-            valves=pipe.valves,
             user_id="user1",
             session_id="sess1",
             chat_id="",
@@ -6822,6 +6822,7 @@ async def test_persist_session_log_segment_skips_when_missing_ids():
             log_events=[{"event": "test"}],
             terminal=False,
             status="success",
+        valves=pipe.valves,
         )
         # Should return without error
     finally:
@@ -6836,7 +6837,6 @@ async def test_persist_session_log_segment_skips_when_no_events():
 
     try:
         await pipe._session_log_manager.persist_segment_to_db(
-            valves=pipe.valves,
             user_id="user1",
             session_id="sess1",
             chat_id="chat1",
@@ -6845,6 +6845,7 @@ async def test_persist_session_log_segment_skips_when_no_events():
             log_events=[],
             terminal=False,
             status="success",
+        valves=pipe.valves,
         )
     finally:
         await pipe.close()
@@ -6860,7 +6861,6 @@ async def test_persist_session_log_segment_skips_when_archive_settings_unavailab
 
     try:
         await pipe._session_log_manager.persist_segment_to_db(
-            valves=pipe.valves,
             user_id="user1",
             session_id="sess1",
             chat_id="chat1",
@@ -6869,6 +6869,7 @@ async def test_persist_session_log_segment_skips_when_archive_settings_unavailab
             log_events=[{"event": "test"}],
             terminal=False,
             status="success",
+        valves=pipe.valves,
         )
     finally:
         await pipe.close()
@@ -7272,7 +7273,6 @@ async def test_persist_session_log_segment_to_db_with_successful_persist():
         pipe._session_log_manager.start_assembler_worker = Mock()
 
         await pipe._session_log_manager.persist_segment_to_db(
-            valves=pipe.valves,
             user_id="user1",
             session_id="sess1",
             chat_id="chat1",
@@ -7281,6 +7281,7 @@ async def test_persist_session_log_segment_to_db_with_successful_persist():
             log_events=[{"event": "test", "created": time.time()}],
             terminal=False,
             status="success",
+        valves=pipe.valves,
         )
 
         # Should have called _db_persist
@@ -7305,7 +7306,6 @@ async def test_persist_session_log_segment_to_db_handles_exception():
 
         # Should not raise, just log and continue
         await pipe._session_log_manager.persist_segment_to_db(
-            valves=pipe.valves,
             user_id="user1",
             session_id="sess1",
             chat_id="chat1",
@@ -7315,6 +7315,7 @@ async def test_persist_session_log_segment_to_db_handles_exception():
             terminal=True,
             status="error",
             reason="test error",
+        valves=pipe.valves,
         )
     finally:
         await pipe.close()
@@ -8396,7 +8397,6 @@ class TestPersistSessionLogDbFallback:
             # Mock write_session_log_archive
             with patch("open_webui_openrouter_pipe.core.logging_system.write_session_log_archive") as mock_write:
                 await pipe._session_log_manager.persist_segment_to_db(
-                    valves=pipe.valves,
                     user_id="user1",
                     session_id="sess1",
                     chat_id="chat1",
@@ -8405,6 +8405,7 @@ class TestPersistSessionLogDbFallback:
                     log_events=[{"event": "test", "created": time.time()}],
                     terminal=True,
                     status="success",
+                valves=pipe.valves,
                 )
 
                 mock_write.assert_not_called()
@@ -9089,13 +9090,13 @@ class TestEnqueueSessionLogArchive:
 
             # Enqueue a job using the correct method signature
             pipe._session_log_manager.enqueue_archive(
-                valves=pipe.valves,
                 user_id="test_user",
                 session_id="test_session",
                 chat_id="test_chat",
                 message_id="test_message",
                 request_id="test_request",
                 log_events=[{"event": "test", "created": time.time()}],
+            valves=pipe.valves,
             )
 
             # Check that queue is not empty

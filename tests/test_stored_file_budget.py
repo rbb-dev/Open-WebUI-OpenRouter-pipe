@@ -947,7 +947,6 @@ async def test_the_orchestrator_sizes_every_attachment_before_the_budget_runs(
                 __tools__=None,
                 __task__=None,
                 __task_body__=None,
-                valves=pipe.valves,
                 session=cast(Any, _Session()),
                 openwebui_model_id="test/model",
                 pipe_identifier="test-pipe",
@@ -955,6 +954,7 @@ async def test_the_orchestrator_sizes_every_attachment_before_the_budget_runs(
                 enforced_norm_ids=set(),
                 catalog_norm_ids={"test/model"},
                 features={},
+                valves=pipe.valves,
             )
     finally:
         await pipe.close()
@@ -1048,7 +1048,6 @@ async def test_the_pre_dispatch_pass_tells_the_user_when_the_request_is_hopeless
                 __tools__=None,
                 __task__=None,
                 __task_body__=None,
-                valves=pipe.valves,
                 session=cast(Any, _Session()),
                 openwebui_model_id="test/model",
                 pipe_identifier="test-pipe",
@@ -1056,6 +1055,7 @@ async def test_the_pre_dispatch_pass_tells_the_user_when_the_request_is_hopeless
                 enforced_norm_ids=set(),
                 catalog_norm_ids={"test/model"},
                 features={},
+                valves=pipe.valves,
             )
     finally:
         await pipe.close()
@@ -1184,7 +1184,6 @@ async def test_the_futility_notice_is_silent_on_background_tasks(
                 __tools__=None,
                 __task__=task,
                 __task_body__=None,
-                valves=pipe.valves,
                 session=cast(Any, _Session()),
                 openwebui_model_id="test/model",
                 pipe_identifier="test-pipe",
@@ -1192,6 +1191,7 @@ async def test_the_futility_notice_is_silent_on_background_tasks(
                 enforced_norm_ids=set(),
                 catalog_norm_ids={"test/model"},
                 features={},
+                valves=pipe.valves,
             )
     finally:
         await pipe.close()
@@ -1285,7 +1285,6 @@ async def test_the_reply_allowance_is_decided_before_the_budget_reads_it(
                 __tools__=None,
                 __task__=None,
                 __task_body__=None,
-                valves=valves,
                 session=cast(Any, _Session()),
                 openwebui_model_id="test/model",
                 pipe_identifier="test-pipe",
@@ -1293,6 +1292,7 @@ async def test_the_reply_allowance_is_decided_before_the_budget_reads_it(
                 enforced_norm_ids=set(),
                 catalog_norm_ids={"test/model"},
                 features={},
+                valves=valves,
             )
     finally:
         await pipe.close()
@@ -1389,7 +1389,6 @@ async def test_one_futility_notice_per_turn_across_both_dispatch_paths(monkeypat
             __tools__={"lookup": {"callable": lambda **_kwargs: "ok"}},
             __task__=None,
             __task_body__=None,
-            valves=valves,
             session=cast(Any, _Session()),
             openwebui_model_id="test/model",
             pipe_identifier="test-pipe",
@@ -1397,6 +1396,7 @@ async def test_one_futility_notice_per_turn_across_both_dispatch_paths(monkeypat
             enforced_norm_ids={"test.model"},
             catalog_norm_ids={"test.model"},
             features={},
+            valves=valves,
         )
     finally:
         await pipe.close()

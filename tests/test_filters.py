@@ -1550,8 +1550,8 @@ async def test_filter_integration_with_pipe_direct_uploads(pipe_instance_async):
                 __tools__=None,
                 __task__=None,
                 __task_body__=None,
-                valves=valves,
                 session=session,
+            valves=valves,
             )
 
             assert isinstance(result, dict)

@@ -117,6 +117,7 @@ def _install_capture(pipe: Pipe, monkeypatch) -> list[dict[str, Any]]:
     async def fake_persist(rows):
         return [generate_item_id() for _ in rows]
 
+        valves=pipe.valves,
     monkeypatch.setattr(pipe._ensure_tool_executor(), "_execute_function_calls", mock_exec)
     monkeypatch.setattr(pipe._artifact_store, "_make_db_row", fake_row)
     monkeypatch.setattr(pipe._artifact_store, "_db_persist", fake_persist)

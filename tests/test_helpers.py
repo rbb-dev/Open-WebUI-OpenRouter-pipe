@@ -1538,36 +1538,6 @@ def test_sanitize_table_fragment():
     assert ow._sanitize_table_fragment("Model-Name!@#") == "model_name"
 
 
-def test_build_tools_and_dedupe():
-    """Test tool building and deduplication logic.
-
-    Real infrastructure exercised:
-    - Real ModelFamily.supports checking from registry
-    - Real tool building and merging
-    - Real deduplication logic
-    """
-    # Set up model with function_calling support
-    ow.ModelFamily.set_dynamic_specs({
-        "demo": {
-            "features": ["function_calling"],
-            "context_length": 8192,
-            "full_model": {"name": "Demo"},
-        }
-    })
-
-    try:
-        body = ow.ResponsesBody(model="demo", input="hi")
-        valves = ow.Pipe.Valves()
-        registry = {
-            "tool": {"spec": {"name": "search", "parameters": {"type": "object", "properties": {}}}}
-        }
-        tools = ow.build_tools(body, valves, __tools__=registry, extra_tools=[{"type": "function", "name": "search"}])
-        assert len(tools) == 1
-    finally:
-        # Clean up
-        ow.ModelFamily.set_dynamic_specs(None)
-
-
 def test_strictify_schema_helpers():
     schema = {
         "type": "object",
@@ -1706,7 +1676,6 @@ from open_webui_openrouter_pipe import (
     _select_openrouter_http_referer,
     _strictify_schema,
     _template_value_present,
-    build_tools,
     contains_marker,
     generate_item_id,
     split_text_by_markers,
@@ -1803,44 +1772,6 @@ def test_strictify_schema_enforces_required_and_nullability():
     assert strict["properties"]["child"]["additionalProperties"] is False
 
 
-def test_build_tools_combines_registry_and_extras():
-    # Use a real model with function calling support
-    # Set up ModelFamily with proper features derived from supported_parameters
-    # Note: base_model() normalizes "openai/gpt-4" to "openai.gpt-4" (dot, not slash)
-    ModelFamily.set_dynamic_specs({
-        "openai.gpt-4": {  # Use dot notation as returned by base_model()
-            "id": "openai/gpt-4",
-            "features": {"function_calling"},  # Derived from tools+tool_choice support
-            "supported_parameters": frozenset(["tools", "tool_choice"]),
-        }
-    })
-
-    responses_body = ResponsesBody(model="openai/gpt-4", input=[])
-    valves = Pipe.Valves(ENABLE_STRICT_TOOL_CALLING=True)
-
-    registry = {
-        "alpha": {
-            "spec": {
-                "name": "alpha",
-                "description": "alpha tool",
-                "parameters": {"type": "object", "properties": {"foo": {"type": "string"}}},
-            }
-        }
-    }
-    extra_tools = [
-        {"type": "function", "name": "alpha", "parameters": {"type": "object", "properties": {}}},
-        {"type": "function", "name": "beta", "parameters": {"type": "object", "properties": {}}},
-    ]
-
-    tools = build_tools(responses_body, valves, __tools__=registry, extra_tools=extra_tools)
-
-    function_names = [tool["name"] for tool in tools if tool["type"] == "function"]
-    assert "beta" in function_names
-    assert "alpha" in function_names  # dedup keeps last occurrence
-    alpha_tool = next(tool for tool in tools if tool["type"] == "function" and tool["name"] == "alpha")
-    assert alpha_tool["parameters"]["properties"] == {}
-
-
 def test_tool_output_clamps_failed_status(pipe_instance):
     pipe = pipe_instance
     output = pipe._ensure_tool_executor()._build_tool_output(
@@ -1922,8 +1853,8 @@ def test_format_final_status_description_includes_cost_tokens_and_tps(pipe_insta
     description = pipe._ensure_error_formatter()._format_final_status_description(
         elapsed=3.21,
         total_usage=usage,
-        valves=pipe.valves,
         stream_duration=2.0,
+        valves=pipe.valves,
     )
 
     assert description.startswith("Time: 3.21s  20.0 tps")
@@ -1938,8 +1869,8 @@ def test_format_final_status_description_respects_disabled_flag(pipe_instance):
     description = pipe._ensure_error_formatter()._format_final_status_description(
         elapsed=4.5,
         total_usage={},
-        valves=valves,
         stream_duration=None,
+        valves=valves,
     )
 
     assert description == "Thought for 4.5 seconds"
@@ -1962,8 +1893,8 @@ def test_format_final_status_description_with_icons(pipe_instance):
     description = pipe._ensure_error_formatter()._format_final_status_description(
         elapsed=3.21,
         total_usage=usage,
-        valves=valves,
         stream_duration=2.0,
+        valves=valves,
     )
 
     assert (

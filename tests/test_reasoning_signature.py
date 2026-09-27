@@ -68,7 +68,7 @@ async def _drive_chat_stream(pipe: Pipe, sse_body: str) -> list[dict[str, Any]]:
             {"model": "anthropic/claude-sonnet-4.6", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=pipe.valves,
+        valves=pipe.valves,
         ):
             events.append(event)
         await session.close()

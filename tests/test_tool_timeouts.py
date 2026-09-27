@@ -786,8 +786,8 @@ async def _run_job(pipe, monkeypatch, registry, calls, *, model_seconds: float =
         tools=None,
         task=None,
         task_body=None,
-        valves=valves,
         future=asyncio.get_running_loop().create_future(),
+        valves=valves,
     )
     with _scaled_clock(monkeypatch):
         await pipe._execute_pipe_job(job)
@@ -938,8 +938,8 @@ async def _run_job_rounds(pipe, monkeypatch, registry, rounds, **valve_changes):
         tools=None,
         task=None,
         task_body=None,
-        valves=valves,
         future=asyncio.get_running_loop().create_future(),
+        valves=valves,
     )
     with _scaled_clock(monkeypatch):
         await pipe._execute_pipe_job(job)

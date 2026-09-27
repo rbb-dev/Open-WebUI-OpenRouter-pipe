@@ -82,8 +82,8 @@ async def test_nonstreaming_chat_message_not_dict(pipe_instance_async):
             {"model": "openai/gpt-4o", "input": [{"role": "user", "content": "Hi"}]},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             endpoint_override="chat_completions",
+            valves=valves,
         ):
             events.append(event)
 
@@ -132,8 +132,8 @@ async def test_nonstreaming_chat_message_content_list(pipe_instance_async):
             {"model": "openai/gpt-4o", "input": [{"role": "user", "content": "Hi"}]},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             endpoint_override="chat_completions",
+            valves=valves,
         ):
             events.append(event)
 
@@ -185,8 +185,8 @@ async def test_nonstreaming_responses_non_dict_output_item(pipe_instance_async):
             {"model": "openai/gpt-4o", "input": [{"role": "user", "content": "Hi"}]},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             endpoint_override="responses",
+            valves=valves,
         ):
             events.append(event)
 
@@ -235,8 +235,8 @@ async def test_nonstreaming_responses_special_item_types(pipe_instance_async):
             {"model": "openai/gpt-4o", "input": [{"role": "user", "content": "Search and generate"}]},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             endpoint_override="responses",
+            valves=valves,
         ):
             events.append(event)
 
@@ -290,8 +290,8 @@ async def test_nonstreaming_responses_reemits_openrouter_server_tool_items(pipe_
             {"model": "openai/gpt-4o", "input": [{"role": "user", "content": "What time is it?"}]},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             endpoint_override="responses",
+            valves=valves,
         ):
             events.append(event)
 
@@ -345,8 +345,8 @@ async def test_nonstreaming_responses_function_call(pipe_instance_async):
             {"model": "openai/gpt-4o", "input": [], "tools": [{"type": "function", "name": "get_weather"}]},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             endpoint_override="responses",
+            valves=valves,
         ):
             events.append(event)
 
@@ -394,8 +394,8 @@ async def test_nonstreaming_responses_preserves_assistant_message_boundaries(pip
             {"model": "openai/gpt-5.4", "input": [{"role": "user", "content": "Hi"}]},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             endpoint_override="responses",
+            valves=valves,
         ):
             events.append(event)
 
@@ -457,8 +457,8 @@ async def test_nonstreaming_chat_reasoning_details_non_dict_entry(pipe_instance_
             {"model": "openai/o1", "input": [{"role": "user", "content": "Think"}]},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             endpoint_override="chat_completions",
+            valves=valves,
         ):
             events.append(event)
 
@@ -506,8 +506,8 @@ async def test_nonstreaming_chat_reasoning_invalid_type(pipe_instance_async):
             {"model": "openai/o1", "input": [{"role": "user", "content": "Think"}]},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             endpoint_override="chat_completions",
+            valves=valves,
         ):
             events.append(event)
 
@@ -554,8 +554,8 @@ async def test_nonstreaming_chat_reasoning_summary(pipe_instance_async):
             {"model": "openai/o1", "input": [{"role": "user", "content": "What is 6 * 7?"}]},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             endpoint_override="chat_completions",
+            valves=valves,
         ):
             events.append(event)
 
@@ -599,8 +599,8 @@ async def test_nonstreaming_chat_reasoning_field(pipe_instance_async):
             {"model": "openai/o1", "input": [{"role": "user", "content": "Explain"}]},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             endpoint_override="chat_completions",
+            valves=valves,
         ):
             events.append(event)
 
@@ -649,8 +649,8 @@ async def test_nonstreaming_chat_message_images(pipe_instance_async):
             {"model": "openai/gpt-4o", "input": [{"role": "user", "content": "Show image"}]},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             endpoint_override="chat_completions",
+            valves=valves,
         ):
             events.append(event)
 
@@ -715,8 +715,8 @@ async def test_nonstreaming_chat_developer_role_and_usage_details(pipe_instance_
             },
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             endpoint_override="chat_completions",
+            valves=valves,
         ):
             events.append(event)
 
@@ -767,8 +767,8 @@ async def test_nonstreaming_chat_refusal_field(pipe_instance_async):
             {"model": "openai/gpt-4o", "input": [{"role": "user", "content": "Do the thing"}]},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             endpoint_override="chat_completions",
+            valves=valves,
         ):
             events.append(event)
 
@@ -825,8 +825,8 @@ async def test_nonstreaming_chat_annotations_non_dict_skipped(pipe_instance_asyn
             {"model": "openai/gpt-4o", "input": [{"role": "user", "content": "Search"}]},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             endpoint_override="chat_completions",
+            valves=valves,
         ):
             events.append(event)
 
@@ -872,8 +872,8 @@ async def test_nonstreaming_chat_annotations_non_url_citation_skipped(pipe_insta
             {"model": "openai/gpt-4o", "input": [{"role": "user", "content": "Search"}]},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             endpoint_override="chat_completions",
+            valves=valves,
         ):
             events.append(event)
 
@@ -920,8 +920,8 @@ async def test_nonstreaming_chat_annotations_flat_format(pipe_instance_async):
             {"model": "openai/gpt-4o", "input": [{"role": "user", "content": "Search"}]},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             endpoint_override="chat_completions",
+            valves=valves,
         ):
             events.append(event)
 
@@ -970,8 +970,8 @@ async def test_nonstreaming_chat_annotations_empty_url_skipped(pipe_instance_asy
             {"model": "openai/gpt-4o", "input": [{"role": "user", "content": "Search"}]},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             endpoint_override="chat_completions",
+            valves=valves,
         ):
             events.append(event)
 
@@ -1019,8 +1019,8 @@ async def test_nonstreaming_chat_annotations_duplicate_urls_skipped(pipe_instanc
             {"model": "openai/gpt-4o", "input": [{"role": "user", "content": "Search"}]},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             endpoint_override="chat_completions",
+            valves=valves,
         ):
             events.append(event)
 
@@ -1069,8 +1069,8 @@ async def test_nonstreaming_chat_annotations_non_string_title(pipe_instance_asyn
             {"model": "openai/gpt-4o", "input": [{"role": "user", "content": "Search"}]},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             endpoint_override="chat_completions",
+            valves=valves,
         ):
             events.append(event)
 
@@ -1120,8 +1120,8 @@ async def test_nonstreaming_chat_annotation_preserves_content(pipe_instance_asyn
             {"model": "openai/gpt-4o", "input": [{"role": "user", "content": "Search"}]},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             endpoint_override="chat_completions",
+            valves=valves,
         ):
             events.append(event)
 
@@ -1176,8 +1176,8 @@ async def test_nonstreaming_chat_tool_calls_non_dict_skipped(pipe_instance_async
             {"model": "openai/gpt-4o", "input": [], "tools": [{"type": "function", "name": "valid_tool"}]},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             endpoint_override="chat_completions",
+            valves=valves,
         ):
             events.append(event)
 
@@ -1224,8 +1224,8 @@ async def test_nonstreaming_chat_tool_calls_non_dict_function_skipped(pipe_insta
             {"model": "openai/gpt-4o", "input": [], "tools": [{"type": "function", "name": "good_tool"}]},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             endpoint_override="chat_completions",
+            valves=valves,
         ):
             events.append(event)
 
@@ -1274,8 +1274,8 @@ async def test_nonstreaming_chat_tool_calls_invalid_name_skipped(pipe_instance_a
             {"model": "openai/gpt-4o", "input": [], "tools": [{"type": "function", "name": "valid"}]},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             endpoint_override="chat_completions",
+            valves=valves,
         ):
             events.append(event)
 
@@ -1322,8 +1322,8 @@ async def test_nonstreaming_chat_tool_calls_non_string_arguments(pipe_instance_a
             {"model": "openai/gpt-4o", "input": [], "tools": [{"type": "function", "name": "tool_a"}, {"type": "function", "name": "tool_b"}]},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             endpoint_override="chat_completions",
+            valves=valves,
         ):
             events.append(event)
 
@@ -1376,8 +1376,8 @@ async def test_nonstreaming_chat_tool_calls_missing_id(pipe_instance_async):
             {"model": "openai/gpt-4o", "input": [], "tools": [{"type": "function", "name": "tool_no_id"}]},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             endpoint_override="chat_completions",
+            valves=valves,
         ):
             events.append(event)
 
@@ -1445,8 +1445,8 @@ async def test_nonstreaming_fallback_from_responses_to_chat(pipe_instance_async)
             {"model": "some/model", "input": [{"role": "user", "content": "Test"}]},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             # Don't override endpoint - let it try responses first
+            valves=valves,
         ):
             events.append(event)
 
@@ -1584,8 +1584,8 @@ async def test_nonstreaming_complete_chat_workflow(pipe_instance_async):
             {"model": "openai/o1", "input": [{"role": "user", "content": "Think and search"}], "tools": [{"type": "function", "name": "search"}]},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             endpoint_override="chat_completions",
+            valves=valves,
         ):
             events.append(event)
 
@@ -1653,8 +1653,8 @@ async def test_nonstreaming_responses_complete_workflow(pipe_instance_async):
             {"model": "openai/gpt-4o", "input": [{"role": "user", "content": "Process this"}]},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             endpoint_override="responses",
+            valves=valves,
         ):
             events.append(event)
 

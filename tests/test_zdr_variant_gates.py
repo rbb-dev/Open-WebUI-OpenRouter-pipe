@@ -74,9 +74,9 @@ def test_the_zdr_models_only_gate_admits_the_same_variants(zdr_registry, variant
     norm_id = ModelFamily.base_model(f"{_BASE}{variant}")
     reasons = pipe._model_restriction_reasons(
         norm_id,
-        valves=pipe.valves,
         allowlist_norm_ids={norm_id},
         catalog_norm_ids={norm_id},
+        valves=pipe.valves,
     )
     assert "ZDR_MODELS_ONLY" not in reasons, (
         f"{_BASE}{variant} was restricted by ZDR_MODELS_ONLY while ZDR_ENFORCE admits "
@@ -152,9 +152,9 @@ def test_show_only_zdr_models_keeps_the_media_models_openrouter_lists(media_regi
     norm_id = media_registry[model]
     reasons = pipe._model_restriction_reasons(
         norm_id,
-        valves=pipe.valves,
         allowlist_norm_ids={norm_id},
         catalog_norm_ids={norm_id},
+        valves=pipe.valves,
     )
     assert ("ZDR_MODELS_ONLY" in reasons) is restricted, reasons
 

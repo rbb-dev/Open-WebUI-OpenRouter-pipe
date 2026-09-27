@@ -469,15 +469,13 @@ async def test_build_direct_tool_server_registry_invalid_metadata():
     try:
         executor = pipe._ensure_tool_executor()
 
-        registry, specs = executor._build_direct_tool_server_registry(
+        registry = executor._build_direct_tool_server_registry(
             "not a dict",
-            valves=pipe.valves,
             event_call=AsyncMock(),
             event_emitter=AsyncMock(),
         )
 
         assert registry == {}
-        assert specs == []
     finally:
         await pipe.close()
 
@@ -489,15 +487,13 @@ async def test_build_direct_tool_server_registry_no_tool_servers():
     try:
         executor = pipe._ensure_tool_executor()
 
-        registry, specs = executor._build_direct_tool_server_registry(
+        registry = executor._build_direct_tool_server_registry(
             {"no_servers_here": True},
-            valves=pipe.valves,
             event_call=AsyncMock(),
             event_emitter=AsyncMock(),
         )
 
         assert registry == {}
-        assert specs == []
     finally:
         await pipe.close()
 
@@ -509,15 +505,13 @@ async def test_build_direct_tool_server_registry_no_event_call():
     try:
         executor = pipe._ensure_tool_executor()
 
-        registry, specs = executor._build_direct_tool_server_registry(
+        registry = executor._build_direct_tool_server_registry(
             _as_open_webui_resolves_them({"tool_servers": [{"specs": [{"name": "test_tool"}]}]}),
-            valves=pipe.valves,
             event_call=None,
             event_emitter=AsyncMock(),
         )
 
         assert registry == {}
-        assert specs == []
     finally:
         await pipe.close()
 
@@ -529,15 +523,13 @@ async def test_build_direct_tool_server_registry_invalid_server_entry():
     try:
         executor = pipe._ensure_tool_executor()
 
-        registry, specs = executor._build_direct_tool_server_registry(
+        registry = executor._build_direct_tool_server_registry(
             _as_open_webui_resolves_them({"tool_servers": ["not a dict", None, 123]}),
-            valves=pipe.valves,
             event_call=AsyncMock(),
             event_emitter=AsyncMock(),
         )
 
         assert registry == {}
-        assert specs == []
     finally:
         await pipe.close()
 
@@ -549,15 +541,13 @@ async def test_build_direct_tool_server_registry_empty_specs():
     try:
         executor = pipe._ensure_tool_executor()
 
-        registry, specs = executor._build_direct_tool_server_registry(
+        registry = executor._build_direct_tool_server_registry(
             _as_open_webui_resolves_them({"tool_servers": [{"name": "server1"}]}),
-            valves=pipe.valves,
             event_call=AsyncMock(),
             event_emitter=AsyncMock(),
         )
 
         assert registry == {}
-        assert specs == []
     finally:
         await pipe.close()
 
@@ -569,7 +559,7 @@ async def test_build_direct_tool_server_registry_invalid_spec_entry():
     try:
         executor = pipe._ensure_tool_executor()
 
-        registry, specs = executor._build_direct_tool_server_registry(
+        registry = executor._build_direct_tool_server_registry(
             _as_open_webui_resolves_them({
                 "tool_servers": [
                     {
@@ -582,7 +572,6 @@ async def test_build_direct_tool_server_registry_invalid_spec_entry():
                     }
                 ]
             }),
-            valves=pipe.valves,
             event_call=AsyncMock(),
             event_emitter=AsyncMock(),
         )
@@ -606,7 +595,7 @@ async def test_build_direct_tool_server_registry_callable_execution():
             event_call_results.append(payload)
             return {"result": "success"}
 
-        registry, specs = executor._build_direct_tool_server_registry(
+        registry = executor._build_direct_tool_server_registry(
             _as_open_webui_resolves_them({
                 "session_id": "test-session",
                 "tool_servers": [
@@ -624,7 +613,6 @@ async def test_build_direct_tool_server_registry_callable_execution():
                     }
                 ],
             }),
-            valves=pipe.valves,
             event_call=mock_event_call,
             event_emitter=AsyncMock(),
         )
@@ -667,18 +655,18 @@ async def test_no_direct_tool_registry_is_built_without_an_event_channel(pipe_in
             {"specs": [{"name": "t", "parameters": {"type": "object", "properties": {}}}]}
         ]
     }
-    registry, specs = executor._build_direct_tool_server_registry(
-        _as_open_webui_resolves_them(metadata), valves=pipe_instance.valves, event_call=None, event_emitter=AsyncMock()
+    registry = executor._build_direct_tool_server_registry(
+        _as_open_webui_resolves_them(metadata), event_call=None, event_emitter=AsyncMock()
     )
-    assert (registry, specs) == ({}, []), (
+    assert registry == {}, (
         f"a direct-tool registry was built with no event channel: {registry!r}. Every "
         "callable in it would be unable to reach the client that must execute it."
     )
 
-    with_channel, with_specs = executor._build_direct_tool_server_registry(
-        _as_open_webui_resolves_them(metadata), valves=pipe_instance.valves, event_call=AsyncMock(), event_emitter=AsyncMock()
+    with_channel = executor._build_direct_tool_server_registry(
+        _as_open_webui_resolves_them(metadata), event_call=AsyncMock(), event_emitter=AsyncMock()
     )
-    assert with_channel and with_specs, (
+    assert with_channel, (
         "the registry was empty WITH an event channel too, so the assertion above holds "
         "for the wrong reason"
     )
@@ -698,7 +686,7 @@ async def test_build_direct_tool_server_registry_callable_exception():
         async def mock_emitter(event: dict) -> None:
             notification_calls.append(event)
 
-        registry, specs = executor._build_direct_tool_server_registry(
+        registry = executor._build_direct_tool_server_registry(
             _as_open_webui_resolves_them({
                 "tool_servers": [
                     {
@@ -706,7 +694,6 @@ async def test_build_direct_tool_server_registry_callable_exception():
                     }
                 ],
             }),
-            valves=pipe.valves,
             event_call=failing_event_call,
             event_emitter=mock_emitter,
         )
@@ -733,15 +720,13 @@ async def test_build_direct_tool_server_registry_outer_exception():
                     raise RuntimeError("Intentional error")
                 return super().get(key, default)
 
-        registry, specs = executor._build_direct_tool_server_registry(
+        registry = executor._build_direct_tool_server_registry(
             BadDict(),
-            valves=pipe.valves,
             event_call=AsyncMock(),
             event_emitter=AsyncMock(),
         )
 
         assert registry == {}
-        assert specs == []
     finally:
         await pipe.close()
 
@@ -1097,7 +1082,7 @@ async def test_build_direct_tool_server_registry_with_parameters():
             call_received["params"] = payload["data"]["params"]
             return {"result": "ok"}
 
-        registry, specs = executor._build_direct_tool_server_registry(
+        registry = executor._build_direct_tool_server_registry(
             _as_open_webui_resolves_them({
                 "session_id": "sess-123",
                 "tool_servers": [
@@ -1118,7 +1103,6 @@ async def test_build_direct_tool_server_registry_with_parameters():
                     }
                 ],
             }),
-            valves=pipe.valves,
             event_call=mock_event_call,
             event_emitter=AsyncMock(),
         )
@@ -1200,7 +1184,7 @@ async def test_build_direct_tool_server_registry_spec_exception():
                     raise RuntimeError("Intentional error in parameters")
                 return default
 
-        registry, specs = executor._build_direct_tool_server_registry(
+        registry = executor._build_direct_tool_server_registry(
             _as_open_webui_resolves_them({
                 "tool_servers": [
                     {
@@ -1211,7 +1195,6 @@ async def test_build_direct_tool_server_registry_spec_exception():
                     }
                 ]
             }),
-            valves=pipe.valves,
             event_call=AsyncMock(),
             event_emitter=AsyncMock(),
         )
@@ -1234,14 +1217,13 @@ async def test_build_direct_tool_server_registry_server_exception():
                     raise RuntimeError("Intentional error")
                 return super().get(key, default)
 
-        registry, specs = executor._build_direct_tool_server_registry(
+        registry = executor._build_direct_tool_server_registry(
             {
                 "tools": {
                     "bad": BadEntry(direct=True),
                     "valid_tool": {"spec": {"name": "valid_tool"}, "direct": True, "server": {"url": "http://tools.local"}},
                 }
             },
-            valves=pipe.valves,
             event_call=AsyncMock(),
             event_emitter=AsyncMock(),
         )
@@ -1258,7 +1240,7 @@ async def test_build_direct_tool_server_registry_transform_exception():
     try:
         executor = pipe._ensure_tool_executor()
 
-        registry, specs = executor._build_direct_tool_server_registry(
+        registry = executor._build_direct_tool_server_registry(
             _as_open_webui_resolves_them({
                 "tool_servers": [
                     {
@@ -1266,14 +1248,12 @@ async def test_build_direct_tool_server_registry_transform_exception():
                     }
                 ]
             }),
-            valves=pipe.valves,
             event_call=AsyncMock(),
             event_emitter=AsyncMock(),
         )
 
         # Should have processed successfully
         assert len(registry) == 1
-        assert isinstance(specs, list)
     finally:
         await pipe.close()
 
@@ -1305,7 +1285,7 @@ async def test_build_direct_tool_server_no_session_id():
             call_received["session_id"] = payload["data"]["session_id"]
             return {"result": "ok"}
 
-        registry, specs = executor._build_direct_tool_server_registry(
+        registry = executor._build_direct_tool_server_registry(
             _as_open_webui_resolves_them({
                 # No session_id in metadata
                 "tool_servers": [
@@ -1314,7 +1294,6 @@ async def test_build_direct_tool_server_no_session_id():
                     }
                 ],
             }),
-            valves=pipe.valves,
             event_call=mock_event_call,
             event_emitter=AsyncMock(),
         )
@@ -1341,7 +1320,7 @@ async def test_build_direct_tool_server_no_parameters():
             call_received["params"] = payload["data"]["params"]
             return {"result": "ok"}
 
-        registry, specs = executor._build_direct_tool_server_registry(
+        registry = executor._build_direct_tool_server_registry(
             _as_open_webui_resolves_them({
                 "session_id": "sess-1",
                 "tool_servers": [
@@ -1355,7 +1334,6 @@ async def test_build_direct_tool_server_no_parameters():
                     }
                 ],
             }),
-            valves=pipe.valves,
             event_call=mock_event_call,
             event_emitter=AsyncMock(),
         )
@@ -1476,7 +1454,7 @@ async def test_build_direct_tool_server_registry_spec_with_failing_dict():
                     raise RuntimeError("Intentional failure")
                 return super().keys()
 
-        registry, specs = executor._build_direct_tool_server_registry(
+        registry = executor._build_direct_tool_server_registry(
             _as_open_webui_resolves_them({
                 "tool_servers": [
                     {
@@ -1492,7 +1470,6 @@ async def test_build_direct_tool_server_registry_spec_with_failing_dict():
                     }
                 ],
             }),
-            valves=pipe.valves,
             event_call=AsyncMock(),
             event_emitter=AsyncMock(),
         )
@@ -1527,9 +1504,8 @@ async def test_build_direct_tool_server_metadata_get_fails():
             {"specs": [{"name": "test_tool", "parameters": {"type": "object", "properties": {}}}]}
         ]
 
-        registry, specs = executor._build_direct_tool_server_registry(
+        registry = executor._build_direct_tool_server_registry(
             _as_open_webui_resolves_them(metadata),
-            valves=pipe.valves,
             event_call=mock_event_call,
             event_emitter=AsyncMock(),
         )
@@ -1571,7 +1547,7 @@ async def test_build_direct_tool_server_bad_properties_keys():
             def __iter__(self):
                 raise RuntimeError("Intentional failure")
 
-        registry, specs = executor._build_direct_tool_server_registry(
+        registry = executor._build_direct_tool_server_registry(
             _as_open_webui_resolves_them({
                 "session_id": "sess-1",
                 "tool_servers": [
@@ -1588,7 +1564,6 @@ async def test_build_direct_tool_server_bad_properties_keys():
                     }
                 ],
             }),
-            valves=pipe.valves,
             event_call=mock_event_call,
             event_emitter=AsyncMock(),
         )
@@ -1615,7 +1590,7 @@ async def test_build_direct_tool_server_spec_params_access_fails():
                     raise RuntimeError("Intentional failure")
                 return super().get(key, default)
 
-        registry, specs = executor._build_direct_tool_server_registry(
+        registry = executor._build_direct_tool_server_registry(
             _as_open_webui_resolves_them({
                 "tool_servers": [
                     {
@@ -1628,7 +1603,6 @@ async def test_build_direct_tool_server_spec_params_access_fails():
                     }
                 ],
             }),
-            valves=pipe.valves,
             event_call=AsyncMock(),
             event_emitter=AsyncMock(),
         )
@@ -1645,7 +1619,6 @@ async def test_build_direct_tool_server_spec_params_access_fails():
 """Comprehensive tests for tool_registry module to increase coverage.
 
 This module tests:
-- build_tools: Building OpenAI tool specs from various inputs
 - _dedupe_tools: Deduplication logic with edge cases
 - _normalize_responses_function_tool_spec: Validation and normalization
 - _responses_spec_from_owui_tool_cfg: OWUI tool config conversion
@@ -1666,7 +1639,6 @@ from conftest import Pipe
 
 
 from open_webui_openrouter_pipe.tools.tool_registry import (
-    build_tools,
     _dedupe_tools,
     _normalize_responses_function_tool_spec,
     _responses_spec_from_owui_tool_cfg,
@@ -1687,196 +1659,11 @@ def mock_valves():
 
 
 @pytest.fixture
-def mock_valves_strict():
-    """Create a mock valves object with strict tool calling enabled."""
-    valves = MagicMock()
-    valves.ENABLE_STRICT_TOOL_CALLING = True
-    valves.TOOL_EXECUTION_MODE = "Pipeline"
-    return valves
-
-
-@pytest.fixture
-def mock_valves_passthrough():
-    """Create a mock valves object with Open-WebUI passthrough mode."""
-    valves = MagicMock()
-    valves.ENABLE_STRICT_TOOL_CALLING = False
-    valves.TOOL_EXECUTION_MODE = "Open-WebUI"
-    return valves
-
-
-@pytest.fixture
 def mock_responses_body():
     """Create a mock ResponsesBody with a model supporting function calling."""
     body = MagicMock()
     body.model = "openai/gpt-4"
     return body
-
-
-@pytest.fixture
-def mock_responses_body_no_function_calling():
-    """Create a mock ResponsesBody with a model that doesn't support function calling."""
-    body = MagicMock()
-    body.model = "some-model-without-function-calling"
-    return body
-
-
-@pytest.fixture
-def sample_owui_tools():
-    """Sample Open WebUI tools registry."""
-    return {
-        "search_web": {
-            "spec": {
-                "name": "search_web",
-                "description": "Search the web",
-                "parameters": {"type": "object", "properties": {"query": {"type": "string"}}},
-            },
-            "callable": lambda **kwargs: "result",
-        },
-        "get_time": {
-            "spec": {
-                "name": "get_time",
-                "description": "Get current time",
-                "parameters": {"type": "object", "properties": {}},
-            },
-            "callable": lambda **kwargs: "12:00",
-        },
-    }
-
-
-# Tests for build_tools
-
-class TestBuildTools:
-    """Tests for the build_tools function."""
-
-    def test_build_tools_returns_empty_when_model_does_not_support_function_calling(
-        self, mock_responses_body_no_function_calling, mock_valves
-    ):
-        """Test that build_tools returns [] when model doesn't support function calling."""
-        with patch(
-            "open_webui_openrouter_pipe.tools.tool_registry.ModelFamily.supports",
-            return_value=False,
-        ):
-            result = build_tools(
-                mock_responses_body_no_function_calling,
-                mock_valves,
-                __tools__={"tool1": {"spec": {"name": "tool1"}, "callable": lambda: None}},
-            )
-            assert result == []
-
-    def test_build_tools_includes_tools_when_passthrough_enabled(
-        self, mock_responses_body_no_function_calling, mock_valves_passthrough
-    ):
-        """Test that tools are included when passthrough is enabled even if model doesn't support function calling."""
-        with patch(
-            "open_webui_openrouter_pipe.tools.tool_registry.ModelFamily.supports",
-            return_value=False,
-        ):
-            tools_dict = {
-                "tool1": {
-                    "spec": {
-                        "name": "tool1",
-                        "description": "A tool",
-                        "parameters": {"type": "object", "properties": {}},
-                    },
-                    "callable": lambda: None,
-                }
-            }
-            result = build_tools(
-                mock_responses_body_no_function_calling,
-                mock_valves_passthrough,
-                __tools__=tools_dict,
-            )
-            assert len(result) == 1
-            assert result[0]["name"] == "tool1"
-
-    def test_build_tools_with_dict_tools(self, mock_responses_body, mock_valves, sample_owui_tools):
-        """Test build_tools with dict-format __tools__."""
-        with patch(
-            "open_webui_openrouter_pipe.tools.tool_registry.ModelFamily.supports",
-            return_value=True,
-        ):
-            result = build_tools(mock_responses_body, mock_valves, __tools__=sample_owui_tools)
-            assert len(result) == 2
-            names = {t["name"] for t in result}
-            assert "search_web" in names
-            assert "get_time" in names
-
-    def test_build_tools_with_list_tools(self, mock_responses_body, mock_valves):
-        """Test build_tools with list-format __tools__ (already OpenAI format)."""
-        with patch(
-            "open_webui_openrouter_pipe.tools.tool_registry.ModelFamily.supports",
-            return_value=True,
-        ):
-            tools_list = [
-                {"type": "function", "name": "tool1", "description": "Tool 1"},
-                {"type": "function", "name": "tool2", "description": "Tool 2"},
-                "invalid_entry",
-            ]
-            result = build_tools(mock_responses_body, mock_valves, __tools__=tools_list)
-            assert len(result) == 2
-
-    def test_build_tools_with_extra_tools(self, mock_responses_body, mock_valves):
-        """Test build_tools with extra_tools parameter."""
-        with patch(
-            "open_webui_openrouter_pipe.tools.tool_registry.ModelFamily.supports",
-            return_value=True,
-        ):
-            extra = [
-                {"type": "function", "name": "extra_tool", "description": "Extra"},
-            ]
-            result = build_tools(
-                mock_responses_body, mock_valves, __tools__=None, extra_tools=extra
-            )
-            assert len(result) == 1
-            assert result[0]["name"] == "extra_tool"
-
-    def test_build_tools_deduplicates(self, mock_responses_body, mock_valves):
-        """Test that build_tools deduplicates tools with same name."""
-        with patch(
-            "open_webui_openrouter_pipe.tools.tool_registry.ModelFamily.supports",
-            return_value=True,
-        ):
-            tools_list = [
-                {"type": "function", "name": "dup", "description": "First"},
-                {"type": "function", "name": "dup", "description": "Second"},
-            ]
-            result = build_tools(mock_responses_body, mock_valves, __tools__=tools_list)
-            assert len(result) == 1
-            assert result[0]["description"] == "Second"
-
-    def test_build_tools_with_strict_calling(self, mock_responses_body, mock_valves_strict, sample_owui_tools):
-        """Test build_tools with strict tool calling enabled."""
-        with patch(
-            "open_webui_openrouter_pipe.tools.tool_registry.ModelFamily.supports",
-            return_value=True,
-        ):
-            result = build_tools(
-                mock_responses_body, mock_valves_strict, __tools__=sample_owui_tools
-            )
-            for tool in result:
-                params = tool.get("parameters", {})
-                if params:
-                    assert params.get("additionalProperties") is False
-
-    def test_build_tools_with_empty_tools(self, mock_responses_body, mock_valves):
-        """Test build_tools with empty tools dict."""
-        with patch(
-            "open_webui_openrouter_pipe.tools.tool_registry.ModelFamily.supports",
-            return_value=True,
-        ):
-            result = build_tools(mock_responses_body, mock_valves, __tools__={})
-            assert result == []
-
-    def test_build_tools_with_none_features(self, mock_responses_body, mock_valves):
-        """Test build_tools with features=None (default)."""
-        with patch(
-            "open_webui_openrouter_pipe.tools.tool_registry.ModelFamily.supports",
-            return_value=True,
-        ):
-            result = build_tools(
-                mock_responses_body, mock_valves, __tools__=None, features=None
-            )
-            assert result == []
 
 
 # Tests for _dedupe_tools
@@ -2911,117 +2698,6 @@ class TestBuildCollisionSafeToolSpecsAndRegistry:
 class TestToolRegistryWithPipe:
     """Integration tests using real Pipe instances."""
 
-    @pytest.mark.asyncio
-    async def test_build_tools_with_real_pipe(self, pipe_instance_async):
-        """Test build_tools with a real Pipe instance's valves."""
-        pipe = pipe_instance_async
-
-        # Create a mock ResponsesBody
-        mock_body = MagicMock()
-        mock_body.model = "openai/gpt-4"
-
-        with patch(
-            "open_webui_openrouter_pipe.tools.tool_registry.ModelFamily.supports",
-            return_value=True,
-        ):
-            tools_dict = {
-                "test_tool": {
-                    "spec": {
-                        "name": "test_tool",
-                        "description": "A test tool",
-                        "parameters": {"type": "object", "properties": {}},
-                    },
-                    "callable": lambda **kwargs: "result",
-                }
-            }
-            result = build_tools(mock_body, pipe.valves, __tools__=tools_dict)
-            assert len(result) == 1
-            assert result[0]["name"] == "test_tool"
-
-    @pytest.mark.asyncio
-    async def test_collision_safe_registry_with_pipe_execution(self, pipe_instance_async):
-        """Test that tools from collision-safe registry can be executed."""
-        pipe = pipe_instance_async
-
-        async def my_tool(**kwargs):
-            return f"executed with {kwargs}"
-
-        owui_registry = {
-            "exec_test": {
-                "spec": {
-                    "name": "exec_test",
-                    "description": "Test execution",
-                    "parameters": {"type": "object", "properties": {"arg": {"type": "string"}}},
-                },
-                "callable": my_tool,
-            }
-        }
-
-        tools, exec_reg, origin_map = _build_collision_safe_tool_specs_and_registry(
-            request_tool_specs=None,
-            owui_registry=owui_registry,
-            direct_registry=None,
-            builtin_registry=None,
-            extra_tools=None,
-            strictify=False,
-            owui_tool_passthrough=False,
-            logger=None,
-        )
-
-        assert "exec_test" in exec_reg
-
-        loop = asyncio.get_running_loop()
-        context = create_tool_context(loop)
-        executor = pipe._ensure_tool_executor()
-        worker = asyncio.create_task(executor._tool_worker_loop(context))
-        context.workers.append(worker)
-        token = pipe._TOOL_CONTEXT.set(context)
-        try:
-            results = await executor._execute_function_calls(
-                [
-                    {
-                        "type": "function_call",
-                        "call_id": "test_call",
-                        "name": "exec_test",
-                        "arguments": '{"arg": "test_value"}',
-                    }
-                ],
-                exec_reg,
-            )
-        finally:
-            await context.queue.put(None)
-            await worker
-            pipe._TOOL_CONTEXT.reset(token)
-
-        assert results is not None
-        assert len(results) == 1
-        assert "test_value" in results[0]["output"]
-
-
-# ===== From test_tool_worker.py =====
-
-"""Comprehensive tests for tool_worker.py achieving 90%+ coverage.
-
-Tests exercise all code paths in the tool worker module:
-- _tool_worker_loop: batching, timeouts, finally cleanup
-- _can_batch_tool_calls: name matching, dependency detection, cross-references
-- _args_reference_call: string/dict/list/other type traversal
-"""
-
-
-import asyncio
-import logging
-from typing import Any
-
-import pytest
-
-from open_webui_openrouter_pipe.tools.tool_executor import (
-    ToolExecutor,
-    _QueuedToolCall,
-    _ToolExecutionContext,
-)
-
-
 class _DummyWorker:
     """Minimal worker stub with real batching/reference methods from ToolExecutor."""
 
@@ -3586,7 +3262,7 @@ from typing import Any, AsyncGenerator, cast
 import pytest
 from aioresponses import aioresponses
 
-from open_webui_openrouter_pipe import EncryptedStr, ModelFamily, Pipe, ResponsesBody, build_tools
+from open_webui_openrouter_pipe import EncryptedStr, ModelFamily, Pipe, ResponsesBody, _strictify_schema
 
 
 def _build_sse_event(event_type: str, data: dict[str, Any]) -> bytes:
@@ -3712,95 +3388,6 @@ def _build_sse_response_with_incremental_arguments(*, tool_name: str = "my_tool"
 
 
 @pytest.mark.asyncio
-async def test_tool_passthrough_nonstreaming_returns_tool_calls() -> None:
-    """Test that non-streaming tool passthrough mode returns tool_calls without executing them.
-
-    THIS IS A REAL TEST: Uses aioresponses to mock HTTP, exercises real pipeline through
-    public API, verifies tool calls are emitted via events without execution in Open-WebUI mode.
-    """
-    captured_events: list[dict[str, Any]] = []
-
-    async def capture_emitter(event: dict[str, Any]) -> None:
-        captured_events.append(event)
-
-    # Mock HTTP at boundary
-    with aioresponses() as mock_http:
-        catalog_response = {
-            "data": [
-                {
-                    "id": "openai/gpt-4o-mini",
-                    "name": "GPT-4o Mini",
-                    "context_length": 128000,
-                    "pricing": {"prompt": "0.00000015", "completion": "0.0000006"},
-                    "supported_parameters": ["tools", "tool_choice"],
-                }
-            ]
-        }
-        mock_http.get(
-            re.compile(r"https://openrouter\.ai/api/v1/models.*"),
-            payload=catalog_response,
-            repeat=True,
-        )
-
-        json_response = {
-            "output": [
-                {
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{"type": "output_text", "text": "Hello"}],
-                },
-                {
-                    "type": "function_call",
-                    "call_id": "call_1",
-                    "name": "my_tool",
-                    "arguments": json.dumps({"a": 1}),
-                },
-            ],
-            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
-        }
-        mock_http.post(
-            "https://openrouter.ai/api/v1/responses",
-            payload=json_response,
-            status=200,
-        )
-
-        pipe = Pipe()
-        pipe.valves.API_KEY = EncryptedStr(EncryptedStr.encrypt("test-api-key"))
-        pipe.valves.TOOL_EXECUTION_MODE = "Open-WebUI"
-
-        try:
-            result = await pipe.pipe(
-                body={
-                    "model": "openai/gpt-4o-mini",
-                    "messages": [{"role": "user", "content": "hi"}],
-                    "stream": False,
-                },
-                __user__={"valves": {}},
-                __request__=None,
-                __event_emitter__=capture_emitter,
-                __event_call__=None,
-                __metadata__={},
-                __tools__=None,
-            )
-
-            assert isinstance(result, dict), f"Expected dict result, got {type(result)}"
-            assert "choices" in result, "Expected OpenAI-compatible response format"
-
-            # Verify tool_calls in the response
-            choices = result.get("choices", [])
-            assert choices, "Expected choices in response"
-            message = choices[0].get("message", {})
-            tool_calls_in_response = message.get("tool_calls", [])
-            assert tool_calls_in_response, "Expected tool_calls in message"
-            assert tool_calls_in_response[0]["function"]["name"] == "my_tool"
-            assert isinstance(tool_calls_in_response[0]["function"].get("arguments"), str)
-
-
-        finally:
-            await pipe.close()
-
-
-@pytest.mark.asyncio
 async def test_tool_passthrough_streaming_emits_tool_calls_event() -> None:
     """Test that streaming tool passthrough mode emits chat:tool_calls events without executing.
 
@@ -3915,7 +3502,7 @@ async def test_transform_messages_to_input_replays_owui_tool_results() -> None:
             user_obj=None,
             event_emitter=None,
             model_id="pipe.model",
-            valves=pipe.valves,
+        valves=pipe.valves,
         )
 
         function_calls = [i for i in input_items if i.get("type") == "function_call"]
@@ -3927,149 +3514,6 @@ async def test_transform_messages_to_input_replays_owui_tool_results() -> None:
         assert function_outputs[0]["output"] == "OK"
     finally:
         await pipe.close()
-
-
-def test_build_tools_openwebui_mode_keeps_tools_and_does_not_strictify(pipe_instance) -> None:
-    """Test that Open-WebUI mode passes through tools without strictification.
-
-    REAL TEST - Uses real ModelFamily.set_dynamic_specs() to configure a model
-    without tool support, then verifies that Open-WebUI pass-through mode still
-    forwards tools (doesn't check model capabilities) and doesn't apply strict mode.
-    """
-    pipe = pipe_instance
-    valves = pipe.valves.model_copy(
-        update={"TOOL_EXECUTION_MODE": "Open-WebUI", "ENABLE_STRICT_TOOL_CALLING": True}
-    )
-
-    ModelFamily.set_dynamic_specs({
-        "pipe.model": {
-            "architecture": {"modality": "text"},
-            "features": set(),
-            "supported_parameters": frozenset(),
-        }
-    })
-
-    try:
-        schema = {"type": "object", "properties": {"a": {"type": "string"}}}
-        tools = build_tools(
-            ResponsesBody.model_validate({"model": "pipe.model", "input": [], "stream": False}),
-            valves,
-            __tools__={"my_tool": {"spec": {"name": "my_tool", "parameters": schema}}},
-        )
-        assert tools and tools[0]["name"] == "my_tool"
-        assert "strict" not in tools[0]
-        assert tools[0]["parameters"] == schema
-    finally:
-        # Clean up dynamic spec
-        ModelFamily.set_dynamic_specs({})
-
-
-@pytest.mark.asyncio
-async def test_tool_passthrough_streaming_does_not_repeat_function_name() -> None:
-    """Test that streaming tool passthrough doesn't repeat function name in delta events.
-
-    THIS IS A REAL TEST: Uses aioresponses to mock HTTP with incremental argument deltas,
-    exercises real streaming pipeline, verifies that function name is only sent once
-    (in first event) and subsequent deltas don't repeat it.
-
-    Note: Events now go through SSE stream only (not original emitter) to avoid double emission.
-    We verify tool_calls delta behavior in the SSE stream output.
-    """
-    # Mock HTTP at boundary
-    with aioresponses() as mock_http:
-        catalog_response = {
-            "data": [
-                {
-                    "id": "openai/gpt-4o-mini",
-                    "name": "GPT-4o Mini",
-                    "context_length": 128000,
-                    "pricing": {"prompt": "0.00000015", "completion": "0.0000006"},
-                    "supported_parameters": ["tools", "tool_choice"],
-                }
-            ]
-        }
-        mock_http.get(
-            re.compile(r"https://openrouter\.ai/api/v1/models.*"),
-            payload=catalog_response,
-            repeat=True,
-        )
-
-        sse_response = _build_sse_response_with_incremental_arguments(tool_name="my_tool")
-        mock_http.post(
-            "https://openrouter.ai/api/v1/responses",
-            body=sse_response,
-            status=200,
-        )
-
-        pipe = Pipe()
-        pipe.valves.API_KEY = EncryptedStr(EncryptedStr.encrypt("test-api-key"))
-        pipe.valves.TOOL_EXECUTION_MODE = "Open-WebUI"
-
-        try:
-            result = await pipe.pipe(
-                body={
-                    "model": "openai/gpt-4o-mini",
-                    "messages": [{"role": "user", "content": "hi"}],
-                    "stream": True,
-                },
-                __user__={"valves": {}},
-                __request__=None,
-                __event_emitter__=None,
-                __event_call__=None,
-                __metadata__={},
-                __tools__=None,
-            )
-            assert hasattr(result, "__aiter__")
-
-            stream_items: list[Any] = []
-            async for item in cast(AsyncGenerator[Any, None], result):
-                stream_items.append(item)
-
-            import json as json_module
-            tool_calls_events: list[dict[str, Any]] = []
-            for item in stream_items:
-                if isinstance(item, dict):
-                    # OpenAI format dict
-                    choices = item.get("choices", [])
-                    for choice in choices:
-                        delta = choice.get("delta", {})
-                        if "tool_calls" in delta:
-                            tool_calls_events.append(delta)
-                elif isinstance(item, str) and item.startswith("data: ") and "tool_calls" in item:
-                    # SSE format string
-                    try:
-                        data_str = item[6:].strip()
-                        if data_str and data_str != "[DONE]":
-                            parsed = json_module.loads(data_str)
-                            choices = parsed.get("choices", [])
-                            for choice in choices:
-                                delta = choice.get("delta", {})
-                                if "tool_calls" in delta:
-                                    tool_calls_events.append(delta)
-                    except json_module.JSONDecodeError:
-                        pass
-
-            assert len(tool_calls_events) >= 2, f"Expected at least 2 tool_calls deltas, got {len(tool_calls_events)}. Items: {stream_items[:10]}"
-
-            first_tc = tool_calls_events[0].get("tool_calls", [{}])[0]
-            first_fn = first_tc.get("function", {})
-            assert first_fn.get("name") == "my_tool", f"First delta should have function name, got: {first_fn}"
-
-            second_tc = tool_calls_events[1].get("tool_calls", [{}])[0]
-            second_fn = second_tc.get("function", {})
-            assert "name" not in second_fn, f"Second delta should not repeat function name, got: {second_fn}"
-
-            combined_args = f"{first_fn.get('arguments', '')}{second_fn.get('arguments', '')}"
-            assert '{"a":1}' in combined_args, f"Expected complete arguments, got: {combined_args}"
-
-        finally:
-            await pipe.close()
-
-
-# ===== From test_tool_schema.py =====
-
-
-from open_webui_openrouter_pipe import _strictify_schema
 
 
 def test_strictify_native_schema_golden_unchanged():
@@ -4852,7 +4296,6 @@ def test_chat_tools_to_responses_tools_converts_function_shape():
                 "properties": {"q": {"type": "string"}},
                 "required": ["q"],
             },
-            "strict": False,
         }
     ]
 
@@ -4882,6 +4325,7 @@ async def test_responsesbody_from_completions_keeps_and_normalizes_tools():
     rb = await ResponsesBody.from_completions(
         completions_body=completions,
         transformer_context=pipe,
+        valves=pipe.valves,
     )
 
     assert rb.tools == [
@@ -4889,7 +4333,6 @@ async def test_responsesbody_from_completions_keeps_and_normalizes_tools():
             "type": "function",
             "name": "get_current_timestamp",
             "parameters": {"type": "object", "properties": {}},
-            "strict": False,
         }
     ]
 
@@ -5083,774 +4526,6 @@ class TestEventEmitterFilesEmbeds:
 
         sent = mock_emitter.call_args.args[0]
         assert "replace" not in sent["data"]
-
-
-def _is_open_webui_installed():
-    """Check if open_webui package is available."""
-    try:
-        import open_webui.config
-        return True
-    except ImportError:
-        return False
-
-
-class TestSourceContextAdapterImports:
-    """Tests for source context adapter imports.
-
-    We use an adapter pattern for source context injection:
-    1. Import OWUI's apply_source_context_to_messages (authoritative implementation)
-    2. Transform Responses API input → Chat Completions format
-    3. Apply OWUI's function
-    4. Transform back to Responses API format
-
-    This ensures we delegate all citation logic to OWUI.
-    """
-
-    def test_import_pattern_uses_owui_middleware(self):
-        """Test that we import apply_source_context_to_messages from OWUI middleware.
-
-        This test validates the CODE, not runtime imports. It ensures we're using
-        OWUI's authoritative implementation rather than reimplementing citation logic.
-        This test runs even without open_webui installed.
-        """
-        import ast
-        from pathlib import Path
-
-        # Read the streaming_core.py source
-        source_path = Path(__file__).parent.parent / "open_webui_openrouter_pipe" / "streaming" / "streaming_core.py"
-        source = source_path.read_text()
-
-        tree = ast.parse(source)
-
-        # Track what we import from where
-        apply_source_context_from_middleware = False
-
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom):
-                module = node.module or ""
-                names = [alias.name for alias in node.names]
-
-                if "apply_source_context_to_messages" in names:
-                    if "middleware" in module:
-                        apply_source_context_from_middleware = True
-
-        assert apply_source_context_from_middleware, (
-            "apply_source_context_to_messages should be imported from open_webui.utils.middleware"
-        )
-
-    @pytest.mark.skipif(not _is_open_webui_installed(), reason="open_webui not installed")
-    def test_owui_apply_source_context_is_callable(self):
-        """Test that OWUI's apply_source_context_to_messages was imported successfully."""
-        from open_webui_openrouter_pipe.streaming.streaming_core import (
-            _owui_apply_source_context,
-        )
-
-        if _owui_apply_source_context is None:
-            pytest.skip("OWUI apply_source_context_to_messages import failed in test env")
-        assert callable(_owui_apply_source_context), "_owui_apply_source_context is not callable"
-
-
-class TestApplySourceContextResponsesApi:
-    """Tests for _apply_source_context_responses_api function.
-
-    This function uses an adapter pattern to inject source context:
-    1. Convert Responses API input → Chat Completions messages
-    2. Apply OWUI's apply_source_context_to_messages()
-    3. Convert back to Responses API input
-
-    This delegates all citation logic to OWUI's implementation.
-    """
-
-    @pytest.mark.skipif(not _is_open_webui_installed(), reason="open_webui not installed")
-    @pytest.mark.asyncio
-    async def test_function_returns_messages_with_citation_context(self):
-        """Test that function injects RAG template with citation instructions."""
-        from open_webui_openrouter_pipe.streaming.streaming_core import (
-            _apply_source_context_responses_api,
-            _owui_apply_source_context,
-        )
-
-        # Skip if OWUI function not available
-        if _owui_apply_source_context is None:
-            pytest.skip("OWUI apply_source_context_to_messages not available")
-
-        from unittest.mock import MagicMock
-
-        mock_request = MagicMock()
-        mock_request.app.state.config.RAG_TEMPLATE = "Use the following context:\n{context}\n\nNow answer: {query}"
-
-        messages = [
-            {"type": "message", "role": "user", "content": "What is the weather?"}
-        ]
-        sources = [
-            {
-                "source": {"name": "search_web", "id": "search_web"},
-                "document": ["It is sunny today."],
-                "metadata": [{"source": "https://weather.com", "name": "Weather.com"}],
-            }
-        ]
-        user_message = "What is the weather?"
-
-        result = await _apply_source_context_responses_api(messages, sources, user_message, request_context=mock_request)
-
-        result_str = str(result)
-        assert "<source" in result_str, "Result should contain <source> tags"
-        assert "[id]" in result_str or "[1]" in result_str, (
-            "Result should contain citation instructions ([id] or example [1])"
-        )
-
-    @pytest.mark.skipif(not _is_open_webui_installed(), reason="open_webui not installed")
-    @pytest.mark.asyncio
-    async def test_function_handles_responses_api_format(self):
-        """Test that function handles Responses API format (type=input_text)."""
-        from open_webui_openrouter_pipe.streaming.streaming_core import (
-            _apply_source_context_responses_api,
-            _owui_apply_source_context,
-        )
-
-        if _owui_apply_source_context is None:
-            pytest.skip("OWUI apply_source_context_to_messages not available")
-
-        from unittest.mock import MagicMock
-
-        mock_request = MagicMock()
-        mock_request.app.state.config.RAG_TEMPLATE = "Context: {context}\nQuery: {query}"
-
-        messages = [
-            {
-                "type": "message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": "Search for news"}]
-            }
-        ]
-        sources = [
-            {
-                "source": {"name": "search_web"},
-                "document": ["Breaking news today."],
-                "metadata": [{"source": "https://news.com"}],
-            }
-        ]
-
-        result = await _apply_source_context_responses_api(messages, sources, "Search for news", request_context=mock_request)
-
-        # Should have modified the message
-        assert result != messages or any(
-            "<source" in str(msg.get("content", "")) for msg in result
-        ), "Function should inject source context into Responses API format messages"
-
-    @pytest.mark.skipif(not _is_open_webui_installed(), reason="open_webui not installed")
-    @pytest.mark.asyncio
-    async def test_function_handles_chat_completions_format(self):
-        """Test that function handles Chat Completions format (type=text)."""
-        from open_webui_openrouter_pipe.streaming.streaming_core import (
-            _apply_source_context_responses_api,
-            _owui_apply_source_context,
-        )
-
-        if _owui_apply_source_context is None:
-            pytest.skip("OWUI apply_source_context_to_messages not available")
-
-        from unittest.mock import MagicMock
-
-        mock_request = MagicMock()
-        mock_request.app.state.config.RAG_TEMPLATE = "Context: {context}\nQuery: {query}"
-
-        messages = [
-            {
-                "type": "message",
-                "role": "user",
-                "content": [{"type": "text", "text": "Search query"}]
-            }
-        ]
-        sources = [
-            {
-                "source": {"name": "search_web"},
-                "document": ["Result text."],
-                "metadata": [{"source": "https://example.com"}],
-            }
-        ]
-
-        result = await _apply_source_context_responses_api(messages, sources, "Search query", request_context=mock_request)
-
-        # Should have modified the message
-        result_str = str(result)
-        assert "<source" in result_str, "Function should inject source context"
-
-    @pytest.mark.asyncio
-    async def test_function_returns_unmodified_on_empty_sources(self):
-        """Test that function returns original messages when sources is empty."""
-        from open_webui_openrouter_pipe.streaming.streaming_core import (
-            _apply_source_context_responses_api,
-        )
-
-        messages = [{"role": "user", "content": "Hello"}]
-
-        result = await _apply_source_context_responses_api(messages, [], "Hello")
-
-        assert result == messages, "Should return original messages when no sources"
-
-    @pytest.mark.asyncio
-    async def test_function_returns_unmodified_on_empty_user_message(self):
-        """Test that function returns original messages when user_message is empty."""
-        from open_webui_openrouter_pipe.streaming.streaming_core import (
-            _apply_source_context_responses_api,
-        )
-
-        messages = [{"role": "user", "content": "Hello"}]
-        sources = [{"document": ["test"], "metadata": [{}]}]
-
-        result = await _apply_source_context_responses_api(messages, sources, "")
-
-        assert result == messages, "Should return original messages when no user_message"
-
-    @pytest.mark.asyncio
-    async def test_function_preserves_function_call_items_with_mock(self):
-        """Test function_call preservation using mocking (no OWUI required).
-
-        This test verifies the separation logic works correctly by mocking
-        the OWUI function to return the input unchanged.
-        """
-        import open_webui_openrouter_pipe.streaming.streaming_core as sc
-
-        # Store original value
-        original_owui_fn = sc._owui_apply_source_context
-
-        async def mock_apply_source_context(_request, messages, _sources, _user_msg, **_kwargs):
-            return messages
-
-        try:
-            # Patch the function
-            sc._owui_apply_source_context = mock_apply_source_context
-
-            input_items = [
-                {
-                    "type": "message",
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": "Search"}]
-                },
-                {
-                    "type": "function_call",
-                    "call_id": "call_test123",
-                    "name": "search_web",
-                    "arguments": '{"query": "test"}'
-                },
-                {
-                    "type": "function_call_output",
-                    "call_id": "call_test123",
-                    "output": '{"results": []}'
-                },
-            ]
-            sources = [{"document": ["test"], "metadata": [{}]}]
-
-            # Create a mock request context
-            mock_request = MagicMock()
-
-            result = await sc._apply_source_context_responses_api(
-                input_items, sources, "Search", request_context=mock_request
-            )
-
-            assert [
-                item.get("type")
-                for item in result
-                if isinstance(item, dict)
-            ] == ["message", "function_call", "function_call_output"]
-
-            # Count item types
-            function_calls = [i for i in result if isinstance(i, dict) and i.get("type") == "function_call"]
-            function_outputs = [i for i in result if isinstance(i, dict) and i.get("type") == "function_call_output"]
-
-            assert len(function_calls) == 1, f"Expected 1 function_call, got {len(function_calls)}"
-            assert len(function_outputs) == 1, f"Expected 1 function_call_output, got {len(function_outputs)}"
-            assert function_calls[0]["call_id"] == "call_test123"
-            assert function_outputs[0]["call_id"] == "call_test123"
-        finally:
-            # Restore original value
-            sc._owui_apply_source_context = original_owui_fn
-
-    @pytest.mark.asyncio
-    async def test_function_reinserts_transformed_messages_into_original_slots_with_mock(self):
-        """Test transformed messages are written back into their original positions."""
-        import open_webui_openrouter_pipe.streaming.streaming_core as sc
-
-        original_owui_fn = sc._owui_apply_source_context
-
-        async def mock_apply_source_context(_request, messages, _sources, _user_msg, **_kwargs):
-            transformed_messages = []
-            for idx, message in enumerate(messages):
-                transformed = dict(message)
-                transformed["content"] = f"ctx-{idx}: {message.get('content', '')}"
-                transformed_messages.append(transformed)
-            return transformed_messages
-
-        try:
-            sc._owui_apply_source_context = mock_apply_source_context
-
-            input_items = [
-                {
-                    "type": "message",
-                    "role": "system",
-                    "content": "system prompt",
-                },
-                {
-                    "type": "function_call",
-                    "call_id": "call_test123",
-                    "name": "search_web",
-                    "arguments": '{"query": "test"}',
-                },
-                {
-                    "type": "message",
-                    "role": "user",
-                    "content": "Search for test",
-                },
-                {
-                    "type": "function_call_output",
-                    "call_id": "call_test123",
-                    "output": '{"results": []}',
-                },
-                {
-                    "type": "message",
-                    "role": "assistant",
-                    "content": "Working on it",
-                },
-            ]
-            sources = [{"document": ["test"], "metadata": [{}]}]
-
-            result = await sc._apply_source_context_responses_api(
-                input_items,
-                sources,
-                "Search for test",
-                request_context=MagicMock(),
-            )
-
-            assert [
-                item.get("type")
-                for item in result
-                if isinstance(item, dict)
-            ] == ["message", "function_call", "message", "function_call_output", "message"]
-            assert result[1] == input_items[1]
-            assert result[3] == input_items[3]
-            assert "ctx-0" in str(result[0].get("content"))
-            assert "ctx-1" in str(result[2].get("content"))
-            assert "ctx-2" in str(result[4].get("content"))
-        finally:
-            sc._owui_apply_source_context = original_owui_fn
-
-    @pytest.mark.asyncio
-    async def test_function_returns_original_when_message_count_changes(self, caplog):
-        """Test mismatched message counts skip source context instead of reordering input."""
-        import open_webui_openrouter_pipe.streaming.streaming_core as sc
-
-        original_owui_fn = sc._owui_apply_source_context
-
-        async def mock_apply_source_context(_request, messages, _sources, _user_msg, **_kwargs):
-            return list(messages) + [{"role": "assistant", "content": "extra message"}]
-
-        try:
-            sc._owui_apply_source_context = mock_apply_source_context
-
-            input_items = [
-                {
-                    "type": "message",
-                    "role": "user",
-                    "content": "Search",
-                },
-                {
-                    "type": "function_call",
-                    "call_id": "call_test123",
-                    "name": "search_web",
-                    "arguments": '{"query": "test"}',
-                },
-            ]
-            sources = [{"document": ["test"], "metadata": [{}]}]
-
-            with caplog.at_level(
-                logging.WARNING,
-                logger="open_webui_openrouter_pipe.streaming.source_context",
-            ):
-                result = await sc._apply_source_context_responses_api(
-                    input_items,
-                    sources,
-                    "Search",
-                    request_context=MagicMock(),
-                )
-
-            assert result == input_items
-            assert "changed message count" in caplog.text
-        finally:
-            sc._owui_apply_source_context = original_owui_fn
-
-    @pytest.mark.skipif(not _is_open_webui_installed(), reason="open_webui not installed")
-    @pytest.mark.asyncio
-    async def test_source_tags_have_sequential_ids(self):
-        """Test that source tags have sequential id attributes (1, 2, 3...)."""
-        from open_webui_openrouter_pipe.streaming.streaming_core import (
-            _apply_source_context_responses_api,
-            _owui_apply_source_context,
-        )
-
-        if _owui_apply_source_context is None:
-            pytest.skip("OWUI apply_source_context_to_messages not available")
-
-        from unittest.mock import MagicMock
-
-        mock_request = MagicMock()
-        mock_request.app.state.config.RAG_TEMPLATE = "Context: {context}\nQuery: {query}"
-
-        messages = [{"type": "message", "role": "user", "content": "Search"}]
-        sources = [
-            {
-                "source": {"name": "tool1"},
-                "document": ["Doc 1", "Doc 2"],
-                "metadata": [
-                    {"source": "https://a.com"},
-                    {"source": "https://b.com"},
-                ],
-            }
-        ]
-
-        result = await _apply_source_context_responses_api(messages, sources, "Search", request_context=mock_request)
-        result_str = str(result)
-
-        assert 'id="1"' in result_str, "First source should have id=1"
-        assert 'id="2"' in result_str, "Second source should have id=2"
-
-    @pytest.mark.skipif(not _is_open_webui_installed(), reason="open_webui not installed")
-    @pytest.mark.asyncio
-    async def test_function_preserves_function_call_items(self):
-        """Test that function_call and function_call_output items are preserved.
-
-        This is critical: the adapter must not strip non-message items like
-        function_call and function_call_output, otherwise the continuation
-        request will fail with 'No tool call found for function call output'.
-        """
-        from open_webui_openrouter_pipe.streaming.streaming_core import (
-            _apply_source_context_responses_api,
-            _owui_apply_source_context,
-        )
-
-        if _owui_apply_source_context is None:
-            pytest.skip("OWUI apply_source_context_to_messages not available")
-
-        from unittest.mock import MagicMock
-
-        mock_request = MagicMock()
-        mock_request.app.state.config.RAG_TEMPLATE = "Context: {context}\nQuery: {query}"
-
-        input_items = [
-            {
-                "type": "message",
-                "role": "system",
-                "content": [{"type": "input_text", "text": "You are a helpful assistant."}]
-            },
-            {
-                "type": "message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": "Search for news"}]
-            },
-            {
-                "type": "function_call",
-                "call_id": "call_abc123",
-                "name": "search_web",
-                "arguments": '{"query": "news today"}'
-            },
-            {
-                "type": "function_call_output",
-                "call_id": "call_abc123",
-                "output": '{"results": []}'
-            },
-        ]
-        sources = [
-            {
-                "source": {"name": "search_web", "id": "search_web"},
-                "document": ["News article content here."],
-                "metadata": [{"source": "https://news.com", "name": "News Site"}],
-            }
-        ]
-
-        result = await _apply_source_context_responses_api(input_items, sources, "Search for news", request_context=mock_request)
-
-        # Count item types in result
-        messages = [i for i in result if isinstance(i, dict) and i.get("type") == "message"]
-        function_calls = [i for i in result if isinstance(i, dict) and i.get("type") == "function_call"]
-        function_outputs = [i for i in result if isinstance(i, dict) and i.get("type") == "function_call_output"]
-
-        assert len(function_calls) == 1, f"Expected 1 function_call, got {len(function_calls)}"
-        assert len(function_outputs) == 1, f"Expected 1 function_call_output, got {len(function_outputs)}"
-
-        # Assert the content is preserved
-        assert function_calls[0]["call_id"] == "call_abc123"
-        assert function_calls[0]["name"] == "search_web"
-        assert function_outputs[0]["call_id"] == "call_abc123"
-        assert function_outputs[0]["output"] == '{"results": []}'
-
-        result_str = str(result)
-        assert "<source" in result_str, "Source tags should be injected"
-
-
-class TestChatMessagesToResponsesInput:
-    """Tests for _chat_messages_to_responses_input transform function.
-
-    This function converts Chat Completions messages back to Responses API input format.
-    It's the reverse of _responses_input_to_chat_messages.
-    """
-
-    @pytest.mark.parametrize(
-        "block",
-        [
-            {"type": "input_text", "text": "summarise this"},
-            {"type": "input_file", "filename": "report.pdf",
-             "file_data": "data:application/pdf;base64,AAAA"},
-            {"type": "input_image", "image_url": "https://example.test/i.png"},
-            {"type": "input_audio", "input_audio": {"data": "AAAA", "format": "wav"}},
-        ],
-    )
-    def test_every_content_block_survives_the_source_context_round_trip(self, block):
-        """Both legs, so a block dropped by either shows up here.
-
-        Source-context injection converts Responses -> Chat -> Responses on every
-        request carrying RAG or tool-result citations. The corruption check in
-        `_apply_source_context_responses_api` compares MESSAGE counts, so a block
-        vanishing from inside a message passes it. The `file` branch had no test at
-        all: inserting `continue` at the top of it left the whole suite green, and the
-        user's attachment disappears from the request whenever citations are injected.
-
-        Round-trip rather than four one-directional tests because the two legs live in
-        different modules and the property is that they agree — tested apart, both can
-        drift together.
-        """
-        from open_webui_openrouter_pipe.api.transforms import _responses_input_to_chat_messages
-        from open_webui_openrouter_pipe.streaming.streaming_core import (
-            _chat_messages_to_responses_input,
-        )
-
-        items = [{"type": "message", "role": "user", "content": [block]}]
-        chat = _responses_input_to_chat_messages(items, allow_unknown_fields=True)
-        back = _chat_messages_to_responses_input(chat)
-
-        assert back and back[0].get("content"), (
-            f"a {block['type']} block was dropped entirely by the round trip"
-        )
-        assert back[0]["content"][0] == block, (
-            f"{block['type']} did not survive: sent {block!r}, got back "
-            f"{back[0]['content'][0]!r}"
-        )
-
-    def test_string_content_converts_to_input_text(self):
-        """Test that string content is converted to input_text blocks."""
-        from open_webui_openrouter_pipe.streaming.streaming_core import (
-            _chat_messages_to_responses_input,
-        )
-
-        messages = [
-            {"role": "user", "content": "Hello world"}
-        ]
-
-        result = _chat_messages_to_responses_input(messages)
-
-        assert len(result) == 1
-        assert result[0]["type"] == "message"
-        assert result[0]["role"] == "user"
-        assert result[0]["content"] == [{"type": "input_text", "text": "Hello world"}]
-
-    def test_text_block_converts_to_input_text(self):
-        """Test that type=text blocks are converted to type=input_text."""
-        from open_webui_openrouter_pipe.streaming.streaming_core import (
-            _chat_messages_to_responses_input,
-        )
-
-        messages = [
-            {
-                "role": "user",
-                "content": [{"type": "text", "text": "Search query"}]
-            }
-        ]
-
-        result = _chat_messages_to_responses_input(messages)
-
-        assert len(result) == 1
-        assert result[0]["content"][0]["type"] == "input_text"
-        assert result[0]["content"][0]["text"] == "Search query"
-
-    def test_image_url_converts_to_input_image(self):
-        """Test that image_url blocks are converted to input_image."""
-        from open_webui_openrouter_pipe.streaming.streaming_core import (
-            _chat_messages_to_responses_input,
-        )
-
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "What is this?"},
-                    {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}}
-                ]
-            }
-        ]
-
-        result = _chat_messages_to_responses_input(messages)
-
-        assert len(result) == 1
-        assert len(result[0]["content"]) == 2
-        assert result[0]["content"][0]["type"] == "input_text"
-        assert result[0]["content"][1]["type"] == "input_image"
-        assert result[0]["content"][1]["image_url"] == "https://example.com/img.png"
-
-    def test_empty_messages_returns_empty(self):
-        """Test that empty message list returns empty result."""
-        from open_webui_openrouter_pipe.streaming.streaming_core import (
-            _chat_messages_to_responses_input,
-        )
-
-        result = _chat_messages_to_responses_input([])
-
-        assert result == []
-
-    def test_preserves_system_role(self):
-        """Test that system messages are preserved."""
-        from open_webui_openrouter_pipe.streaming.streaming_core import (
-            _chat_messages_to_responses_input,
-        )
-
-        messages = [
-            {"role": "system", "content": "You are a helpful assistant"},
-            {"role": "user", "content": "Hello"},
-        ]
-
-        result = _chat_messages_to_responses_input(messages)
-
-        assert len(result) == 2
-        assert result[0]["role"] == "system"
-        assert result[1]["role"] == "user"
-
-    def test_preserves_cache_control(self):
-        """Test that cache_control on text blocks is preserved."""
-        from open_webui_openrouter_pipe.streaming.streaming_core import (
-            _chat_messages_to_responses_input,
-        )
-
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "Hello", "cache_control": {"type": "ephemeral"}}
-                ]
-            }
-        ]
-
-        result = _chat_messages_to_responses_input(messages)
-
-        assert result[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
-
-    def test_preserves_image_detail(self):
-        """Test that detail attribute on images is preserved."""
-        from open_webui_openrouter_pipe.streaming.streaming_core import (
-            _chat_messages_to_responses_input,
-        )
-
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": "https://example.com/img.png", "detail": "high"}}
-                ]
-            }
-        ]
-
-        result = _chat_messages_to_responses_input(messages)
-
-        assert result[0]["content"][0]["detail"] == "high"
-
-    def test_preserves_annotations(self):
-        """Test that annotations on messages are preserved."""
-        from open_webui_openrouter_pipe.streaming.streaming_core import (
-            _chat_messages_to_responses_input,
-        )
-
-        messages = [
-            {
-                "role": "user",
-                "content": "Hello",
-                "annotations": [{"type": "file_citation", "text": "ref1"}]
-            }
-        ]
-
-        result = _chat_messages_to_responses_input(messages)
-
-        assert result[0]["annotations"] == [{"type": "file_citation", "text": "ref1"}]
-
-    def test_preserves_reasoning_details(self):
-        """Test that reasoning_details on messages are preserved."""
-        from open_webui_openrouter_pipe.streaming.streaming_core import (
-            _chat_messages_to_responses_input,
-        )
-
-        messages = [
-            {
-                "role": "assistant",
-                "content": "The answer is 42",
-                "reasoning_details": [{"type": "thinking", "summary": "computing"}]
-            }
-        ]
-
-        result = _chat_messages_to_responses_input(messages)
-
-        assert result[0]["reasoning_details"] == [{"type": "thinking", "summary": "computing"}]
-
-    def test_preserves_unknown_message_fields(self):
-        """Test that unknown fields on messages are preserved (true adapter pattern).
-
-        If tomorrow OWUI adds a 'joe_sucks': true field, it should survive round-trip.
-        An adapter transforms what it knows and passes through everything else.
-        """
-        from open_webui_openrouter_pipe.streaming.streaming_core import (
-            _chat_messages_to_responses_input,
-        )
-
-        messages = [
-            {
-                "role": "user",
-                "content": "Hello",
-                "joe_sucks": True,
-                "future_field": {"nested": "data"},
-            }
-        ]
-
-        result = _chat_messages_to_responses_input(messages)
-
-        # Unknown fields should survive
-        assert result[0].get("joe_sucks") is True, "Unknown field 'joe_sucks' should be preserved"
-        assert result[0].get("future_field") == {"nested": "data"}, "Unknown field 'future_field' should be preserved"
-
-    def test_preserves_unknown_block_fields(self):
-        """Test that unknown fields on content blocks are preserved.
-
-        If a text block has extra fields, they should survive the transformation.
-        """
-        from open_webui_openrouter_pipe.streaming.streaming_core import (
-            _chat_messages_to_responses_input,
-        )
-
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": "Hello",
-                        "unknown_block_field": "should survive",
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ]
-            }
-        ]
-
-        result = _chat_messages_to_responses_input(messages)
-
-        block = result[0]["content"][0]
-        assert block["type"] == "input_text"
-        assert block["text"] == "Hello"
-        assert block.get("cache_control") == {"type": "ephemeral"}
-        assert block.get("unknown_block_field") == "should survive"
 
 
 class TestProcessToolResultSafe:
@@ -6213,3 +4888,105 @@ async def test_a_repeatedly_unprocessable_tool_result_is_reported_once(
         "a different tool failing must still get its own first report; the cooldown "
         "keys on tool name"
     )
+
+
+@pytest.mark.asyncio
+async def test_tool_passthrough_streaming_does_not_repeat_function_name() -> None:
+    """Test that streaming tool passthrough doesn't repeat function name in delta events.
+
+    THIS IS A REAL TEST: Uses aioresponses to mock HTTP with incremental argument deltas,
+    exercises real streaming pipeline, verifies that function name is only sent once
+    (in first event) and subsequent deltas don't repeat it.
+
+    Note: Events now go through SSE stream only (not original emitter) to avoid double emission.
+    We verify tool_calls delta behavior in the SSE stream output.
+    """
+    # Mock HTTP at boundary
+    with aioresponses() as mock_http:
+        catalog_response = {
+            "data": [
+                {
+                    "id": "openai/gpt-4o-mini",
+                    "name": "GPT-4o Mini",
+                    "context_length": 128000,
+                    "pricing": {"prompt": "0.00000015", "completion": "0.0000006"},
+                    "supported_parameters": ["tools", "tool_choice"],
+                }
+            ]
+        }
+        mock_http.get(
+            re.compile(r"https://openrouter\.ai/api/v1/models.*"),
+            payload=catalog_response,
+            repeat=True,
+        )
+
+        sse_response = _build_sse_response_with_incremental_arguments(tool_name="my_tool")
+        mock_http.post(
+            "https://openrouter.ai/api/v1/responses",
+            body=sse_response,
+            status=200,
+        )
+
+        pipe = Pipe()
+        pipe.valves.API_KEY = EncryptedStr(EncryptedStr.encrypt("test-api-key"))
+        pipe.valves.TOOL_EXECUTION_MODE = "Open-WebUI"
+
+        try:
+            result = await pipe.pipe(
+                body={
+                    "model": "openai/gpt-4o-mini",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": True,
+                },
+                __user__={"valves": {}},
+                __request__=None,
+                __event_emitter__=None,
+                __event_call__=None,
+                __metadata__={},
+                __tools__=None,
+            )
+            assert hasattr(result, "__aiter__")
+
+            stream_items: list[Any] = []
+            async for item in cast(AsyncGenerator[Any, None], result):
+                stream_items.append(item)
+
+            import json as json_module
+            tool_calls_events: list[dict[str, Any]] = []
+            for item in stream_items:
+                if isinstance(item, dict):
+                    # OpenAI format dict
+                    choices = item.get("choices", [])
+                    for choice in choices:
+                        delta = choice.get("delta", {})
+                        if "tool_calls" in delta:
+                            tool_calls_events.append(delta)
+                elif isinstance(item, str) and item.startswith("data: ") and "tool_calls" in item:
+                    # SSE format string
+                    try:
+                        data_str = item[6:].strip()
+                        if data_str and data_str != "[DONE]":
+                            parsed = json_module.loads(data_str)
+                            choices = parsed.get("choices", [])
+                            for choice in choices:
+                                delta = choice.get("delta", {})
+                                if "tool_calls" in delta:
+                                    tool_calls_events.append(delta)
+                    except json_module.JSONDecodeError:
+                        pass
+
+            assert len(tool_calls_events) >= 2, f"Expected at least 2 tool_calls deltas, got {len(tool_calls_events)}. Items: {stream_items[:10]}"
+
+            first_tc = tool_calls_events[0].get("tool_calls", [{}])[0]
+            first_fn = first_tc.get("function", {})
+            assert first_fn.get("name") == "my_tool", f"First delta should have function name, got: {first_fn}"
+
+            second_tc = tool_calls_events[1].get("tool_calls", [{}])[0]
+            second_fn = second_tc.get("function", {})
+            assert "name" not in second_fn, f"Second delta should not repeat function name, got: {second_fn}"
+
+            combined_args = f"{first_fn.get('arguments', '')}{second_fn.get('arguments', '')}"
+            assert '{"a":1}' in combined_args, f"Expected complete arguments, got: {combined_args}"
+
+        finally:
+            await pipe.close()

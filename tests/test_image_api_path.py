@@ -443,7 +443,6 @@ async def test_the_configured_ceiling_reaches_the_client_from_the_valve():
                 responses_body=_StubResponsesBody(
                     [{"role": "user", "content": [{"type": "input_text", "text": "a leaf"}]}]
                 ),
-                valves=valves,
                 session=session,
                 event_emitter=emitter,
                 metadata={},
@@ -452,6 +451,7 @@ async def test_the_configured_ceiling_reaches_the_client_from_the_valve():
                 user_obj=object(),
                 normalized_model_id="m.x",
                 api_model_id="m/x",
+                valves=valves,
             )
 
     assert "BASE64_MAX_SIZE_MB" in content, (
@@ -1349,7 +1349,6 @@ async def test_the_configured_referer_and_base_url_are_the_ones_used(referer):
                 responses_body=_StubResponsesBody(
                     [{"role": "user", "content": [{"type": "input_text", "text": "a leaf"}]}]
                 ),
-                valves=valves,
                 session=session,
                 event_emitter=None,
                 metadata={},
@@ -1358,6 +1357,7 @@ async def test_the_configured_referer_and_base_url_are_the_ones_used(referer):
                 user_obj=object(),
                 normalized_model_id="m.x",
                 api_model_id="m/x",
+                valves=valves,
             )
         (_key, calls) = next(iter(mocked.requests.items()))
 
@@ -1597,12 +1597,12 @@ async def test_the_final_status_honours_the_usage_valve(show, expected):
         responses_body=_StubResponsesBody(
             [{"role": "user", "content": [{"type": "input_text", "text": "a leaf"}]}]
         ),
-        valves=valves,
         event_emitter=_Emitter(),
         normalized_model_id="m.x",
         api_model_id="m/x",
         reply={"data": [{"b64_json": _b64(_png(8, 8))}], "usage": {"cost": 0.04, "total_tokens": 9}},
         show_usage=show,
+    valves=valves,
     )
 
     final = [d for d in result.statuses if d][-1]
@@ -2874,7 +2874,6 @@ async def test_the_base_url_valve_decides_where_the_request_goes(base_url):
                 responses_body=_StubResponsesBody(
                     [{"role": "user", "content": [{"type": "input_text", "text": "a leaf"}]}]
                 ),
-                valves=valves,
                 session=session,
                 event_emitter=None,
                 metadata={},
@@ -2883,6 +2882,7 @@ async def test_the_base_url_valve_decides_where_the_request_goes(base_url):
                 user_obj=object(),
                 normalized_model_id="m.x",
                 api_model_id="m/x",
+                valves=valves,
             )
         urls = [str(key[1]) for key in mocked.requests]
 

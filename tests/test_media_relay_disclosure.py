@@ -538,7 +538,6 @@ async def test_generate_puts_back_what_was_withheld_when_it_resumes_a_running_jo
         answered = await adapter.generate(
             body={"messages": [{"role": "user", "content": "make a video"}]},
             responses_body=SimpleNamespace(provider={}),
-            valves=pipe.valves,
             session=None,
             event_emitter=None,
             metadata={"chat_id": "chat-1", "message_id": "msg-1", "user_id": "user-1"},
@@ -547,6 +546,7 @@ async def test_generate_puts_back_what_was_withheld_when_it_resumes_a_running_jo
             user_obj={"id": "user-1"},
             normalized_model_id="openai.sora-2-pro",
             api_model_id="openai/sora-2-pro",
+            valves=pipe.valves,
         )
     finally:
         await pipe.close()

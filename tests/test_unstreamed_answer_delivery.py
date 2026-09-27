@@ -55,10 +55,10 @@ def _stream_emitter(pipe: Pipe, queue: asyncio.Queue[Any]) -> Any:
         request_id="req-unstreamed",
         metadata={"model": {"id": IMAGE_MODEL}},
         body={"model": IMAGE_MODEL},
-        valves=pipe.valves,
         future=asyncio.get_running_loop().create_future(),
         event_emitter=None,
         stream_queue=queue,
+    valves=pipe.valves,
     )
     return pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 
@@ -189,7 +189,6 @@ async def test_a_generated_image_reaches_open_webui_on_the_channel_it_accumulate
                         ],
                         provider=None,
                     ),
-                    valves=pipe.valves,
                     session=session,
                     event_emitter=emitter,
                     metadata={"chat_id": "chat-1", "message_id": "msg-1"},
@@ -198,6 +197,7 @@ async def test_a_generated_image_reaches_open_webui_on_the_channel_it_accumulate
                     user_obj=object(),
                     normalized_model_id=IMAGE_MODEL.replace("/", "."),
                     api_model_id=IMAGE_MODEL,
+                    valves=pipe.valves,
                 )
     finally:
         await pipe.close()
@@ -277,7 +277,6 @@ async def test_a_failed_image_generation_reaches_open_webui_on_the_channel_it_ac
                 ],
                 provider=None,
             ),
-            valves=pipe.valves,
             session=object(),
             event_emitter=emitter,
             metadata={"chat_id": "chat-1", "message_id": "msg-1"},
@@ -286,6 +285,7 @@ async def test_a_failed_image_generation_reaches_open_webui_on_the_channel_it_ac
             user_obj=object(),
             normalized_model_id=IMAGE_MODEL.replace("/", "."),
             api_model_id=IMAGE_MODEL,
+            valves=pipe.valves,
         )
     finally:
         await pipe.close()
@@ -513,7 +513,6 @@ async def test_a_rejected_image_generation_hands_back_the_card_it_showed(status,
                         ],
                         provider=None,
                     ),
-                    valves=pipe.valves,
                     session=session,
                     event_emitter=_emitter,
                     metadata={"chat_id": "chat-1", "message_id": "msg-1"},
@@ -522,6 +521,7 @@ async def test_a_rejected_image_generation_hands_back_the_card_it_showed(status,
                     user_obj=object(),
                     normalized_model_id=IMAGE_MODEL.replace("/", "."),
                     api_model_id=IMAGE_MODEL,
+                    valves=pipe.valves,
                 )
     finally:
         await pipe.close()

@@ -594,6 +594,18 @@ _TOOL_CALL_UPSTREAM = {
     },
 }
 
+_TOOL_RESULT_ANSWER_UPSTREAM = {
+    "status": 200,
+    "payload": {
+        "id": "resp-tool-answer",
+        "output": [
+            {"type": "message", "role": "assistant",
+             "content": [{"type": "output_text", "text": "lookup found it"}]}
+        ],
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+    },
+}
+
 
 def _open_webui_tool_mode(pipe, threshold: int) -> dict[str, dict[str, Any]]:
     """Save the breaker settings as Open WebUI does, with the tool backend switched to Open WebUI, and offer one tool."""
@@ -615,9 +627,9 @@ def _open_webui_tool_mode(pipe, threshold: int) -> dict[str, dict[str, Any]]:
     }
 
 
-async def _chat_turn_with_tools(pipe, tools: dict[str, dict[str, Any]]) -> str:
+async def _chat_turn_with_tools(pipe, tools: dict[str, dict[str, Any]], *, stream: bool = False) -> str:
     result = await pipe.pipe(
-        body={"model": "m1", "messages": [{"role": "user", "content": "hi"}], "stream": False},
+        body={"model": "m1", "messages": [{"role": "user", "content": "hi"}], "stream": stream},
         __user__={"id": "user-1", "role": "user"},
         __request__=None,
         __event_emitter__=None,
@@ -625,6 +637,8 @@ async def _chat_turn_with_tools(pipe, tools: dict[str, dict[str, Any]]) -> str:
         __metadata__={"chat_id": "chat-1", "message_id": "message-1", "model": {"id": "m1"}},
         __tools__=tools,
     )
+    if hasattr(result, "__aiter__"):
+        return str([chunk async for chunk in result])
     return str(result)
 
 
@@ -640,6 +654,7 @@ async def test_handing_tool_calls_back_to_open_webui_clears_the_failures_before_
             for _ in range(threshold - 1):
                 mock_http.post("https://openrouter.ai/api/v1/responses", **_FAILED_UPSTREAM)
             mock_http.post("https://openrouter.ai/api/v1/responses", **_TOOL_CALL_UPSTREAM)
+            mock_http.post("https://openrouter.ai/api/v1/responses", **_TOOL_RESULT_ANSWER_UPSTREAM, repeat=True)
             for _ in range(threshold - 1):
                 _saved_breaker_settings(pipe, threshold)
                 await _chat_turn(pipe, stream=False)
@@ -650,7 +665,10 @@ async def test_handing_tool_calls_back_to_open_webui_clears_the_failures_before_
         await pipe.close()
 
     assert before == threshold - 1, before
-    assert "tool_calls" in reply and "lookup" in reply, reply
+    assert "lookup" in reply and "found" in reply, (
+        "a non-streamed Open-WebUI-mode reply is answered by the pipe, so the call the model made runs here "
+        f"rather than being handed to nobody: {reply}"
+    )
     assert after == 0, (before, after, reply)
 
 

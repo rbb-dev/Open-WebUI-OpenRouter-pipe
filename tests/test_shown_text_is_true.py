@@ -2033,8 +2033,8 @@ async def test_an_authentication_card_prints_no_placeholder_verbatim(monkeypatch
             None,
             None,
             None,
-            valves=pipe.valves,
             session=cast(Any, object()),
+        valves=pipe.valves,
         )
         card = result["choices"][0]["message"]["content"]
     else:
@@ -2903,7 +2903,6 @@ async def _blocked_model_card(
             __tools__=None,
             __task__=None,
             __task_body__=None,
-            valves=pipe.valves,
             session=cast(Any, object()),
             openwebui_model_id=model,
             pipe_identifier="test-pipe",
@@ -2913,6 +2912,7 @@ async def _blocked_model_card(
             features={},
             user_valves=carried_user_valves,
             rejected_user_valves=user_valve_rejected,
+            valves=pipe.valves,
         )
     finally:
         OpenRouterModelRegistry._specs = kept_specs
@@ -3622,8 +3622,8 @@ async def test_the_document_records_the_one_template_reached_without_a_status(
             __event_call__=None,
             __metadata__={},
             __tools__=None,
-            valves=pipe.valves,
             session=pipe._http_session,
+        valves=pipe.valves,
         )
     finally:
         await pipe.close()

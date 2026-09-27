@@ -105,7 +105,7 @@ controls, and final answer look identical on both.
 | | `openrouter` | `internal` (default) |
 |---|---|---|
 | Where the panel runs | OpenRouter's servers | Inside the pipe, as ordinary pipe model calls |
-| Panel tools | OpenRouter web search + fetch only | The chatting user's full Open WebUI tool surface: knowledge bases, tool servers, and pipe server tools |
+| Panel tools | The full Open WebUI tool surface, run inside the pipe in either outer mode: knowledge bases, tool servers, and pipe server tools. Under `ask` approval a member is offered none of Open WebUI's tools |
 | Per-model dials | OpenRouter's own settings | Every pipe dial per member: ZDR/provider routing, reasoning effort, max output tokens, identity headers |
 | Cost attribution | One OpenRouter charge | Every inner call is cost-attributed to the user like a normal chat; the run's footer shows the aggregated total |
 | Failure behaviour | A dropped stream loses the whole run | One failed member degrades that card; the judge works from the survivors; the run completes |

@@ -123,7 +123,7 @@ if TYPE_CHECKING:
     from .tools.tool_registry import (
         _dedupe_tools,
         _responses_spec_from_owui_tool_cfg,
-        build_tools,
+        open_webui_runs_the_calls,
     )
     from .tools.tool_schema import _classify_function_call_artifacts, _strictify_schema
 
@@ -220,13 +220,13 @@ __all__ = [
     "_unwrap_config_value",
     "_wrap_event_emitter",
     # Tool subsystem
-    "build_tools",
     "contains_marker",
     "extract_internal_file_id",
     "generate_item_id",
     "is_internal_file_url",
     "merge_usage_stats",
     "normalize_persisted_item",
+    "open_webui_runs_the_calls",
     "run_in_threadpool",
     "sanitize_model_id",
     "split_text_by_markers",
@@ -336,7 +336,7 @@ _LAZY_IMPORTS = {
     "_classify_function_call_artifacts": (".tools.tool_schema", "_classify_function_call_artifacts"),
     "_strictify_schema": (".tools.tool_schema", "_strictify_schema"),
     "_responses_spec_from_owui_tool_cfg": (".tools.tool_registry", "_responses_spec_from_owui_tool_cfg"),
-    "build_tools": (".tools.tool_registry", "build_tools"),
+    "open_webui_runs_the_calls": (".tools.tool_registry", "open_webui_runs_the_calls"),
     "_dedupe_tools": (".tools.tool_registry", "_dedupe_tools"),
 
     # Streaming

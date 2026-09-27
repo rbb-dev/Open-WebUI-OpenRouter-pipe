@@ -2671,7 +2671,9 @@ class TestNonStreamingLoop:
     async def test_nonstreaming_tool_passthrough_returns_dict(self, monkeypatch, pipe_instance_async):
         """Test non-streaming with tool passthrough returns completion dict."""
         pipe = pipe_instance_async
-        body = ResponsesBody(model="test/model", input=[], stream=False)
+        body = ResponsesBody(model="test/model", input=[], stream=False,
+                               tools=[{"type": "function", "name": "get_weather",
+                                      "parameters": {"type": "object", "properties": {}}}])
         valves = pipe.valves.model_copy(update={"TOOL_EXECUTION_MODE": "Open-WebUI"})
 
         events = [
@@ -2717,7 +2719,9 @@ class TestNonStreamingLoop:
     async def test_nonstreaming_tool_passthrough_no_model_in_metadata(self, monkeypatch, pipe_instance_async):
         """Test non-streaming with tool passthrough when model not in metadata."""
         pipe = pipe_instance_async
-        body = ResponsesBody(model="test/fallback-model", input=[], stream=False)
+        body = ResponsesBody(model="test/fallback-model", input=[], stream=False,
+                               tools=[{"type": "function", "name": "get_weather",
+                                      "parameters": {"type": "object", "properties": {}}}])
         valves = pipe.valves.model_copy(update={"TOOL_EXECUTION_MODE": "Open-WebUI"})
 
         events = [
@@ -6717,12 +6721,12 @@ async def test_unbounded_queue_handles_large_event_burst(monkeypatch):
             input=[{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
             stream=True,
         ),
-        valves=pipe.valves,
         event_emitter=capture_emitter,
         metadata={"model": {"id": "test"}},
         tools={},
         session=object(),
         user_id="user-123",
+        valves=pipe.valves,
     )
 
     assert len(result) > 0, "Should have streamed content"
@@ -6784,12 +6788,12 @@ async def test_bounded_queue_configuration_affects_streaming(monkeypatch):
             input=[{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
             stream=True,
         ),
-        valves=pipe.valves,
         event_emitter=capture_emitter,
         metadata={"model": {"id": "test"}},
         tools={},
         session=object(),
         user_id="user-123",
+        valves=pipe.valves,
     )
 
     assert len(result) > 0, "Bounded queues should allow streaming"
@@ -6845,12 +6849,12 @@ async def test_event_queue_backlog_warning_triggers_during_streaming(monkeypatch
             input=[{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
             stream=True,
         ),
-        valves=pipe.valves,
         event_emitter=capture_emitter,
         metadata={"model": {"id": "test"}},
         tools={},
         session=object(),
         user_id="user-123",
+        valves=pipe.valves,
     )
 
     # Verify streaming completed
@@ -6907,12 +6911,12 @@ async def test_queue_handles_rapid_start_stop_cycles(monkeypatch):
                 input=[{"type": "message", "role": "user", "content": [{"type": "input_text", "text": f"Cycle {cycle}"}]}],
                 stream=True,
             ),
-            valves=pipe.valves,
             event_emitter=capture_emitter,
             metadata={"model": {"id": "test"}},
             tools={},
             session=object(),
             user_id="user-123",
+            valves=pipe.valves,
         )
 
         # Verify each cycle works
@@ -7694,7 +7698,9 @@ class TestStreamingCoreAdditionalCoverage:
     async def test_nonstreaming_tool_calls_response_exception(self, monkeypatch, pipe_instance_async, caplog):
         """Test non-streaming tool_calls response build exception (lines 1484-1490)."""
         pipe = pipe_instance_async
-        body = ResponsesBody(model="test/model", input=[], stream=False)
+        body = ResponsesBody(model="test/model", input=[], stream=False,
+                               tools=[{"type": "function", "name": "test_tool",
+                                      "parameters": {"type": "object", "properties": {}}}])
         valves = pipe.valves.model_copy(update={"TOOL_EXECUTION_MODE": "Open-WebUI"})
 
         events = [
@@ -8882,61 +8888,6 @@ class TestToolPassthroughExceptionHandling:
         assert any("Tool pass-through failed" in record.message or "Failed to stream tool-call" in record.message for record in caplog.records)
 
 
-class TestNonStreamingToolPassthroughException:
-    """Tests for non-streaming tool passthrough exception (lines 1484-1490)."""
-
-    @pytest.mark.asyncio
-    async def test_nonstreaming_tool_passthrough_build_response_exception(self, monkeypatch, pipe_instance_async, caplog):
-        """Test exception during non-streaming tool_calls response building (lines 1484-1490)."""
-        pipe = pipe_instance_async
-        body = ResponsesBody(model="test/model", input=[], stream=False)
-        valves = pipe.valves.model_copy(update={"TOOL_EXECUTION_MODE": "Open-WebUI"})
-
-        events = [
-            {
-                "type": "response.completed",
-                "response": {
-                    "output": [
-                        {
-                            "type": "function_call",
-                            "call_id": "call-1",
-                            "name": "get_weather",
-                            "arguments": '{"city":"NYC"}',
-                        }
-                    ],
-                    "usage": {"input_tokens": 10, "output_tokens": 5},
-                },
-            },
-        ]
-
-        monkeypatch.setattr(Pipe, "send_openrouter_nonstreaming_request_as_events", _make_fake_nonstream(events))
-
-        class BadMetadata(dict):
-            def get(self, key, default=None):
-                if key == "model":
-                    class BadModel:
-                        def get(self, k, d=None):
-                            raise TypeError("Simulated metadata access failure")
-                    return BadModel()
-                return super().get(key, default)
-
-        import logging
-        with caplog.at_level(logging.WARNING):
-            result = await pipe._streaming_handler._run_nonstreaming_loop(
-                body,
-                valves,
-                None,
-                metadata=BadMetadata(),
-                tools={},
-                session=cast(Any, object()),
-                user_id="user-123",
-            )
-
-        # Check if the warning was logged
-        has_warning = any("Failed to build non-streaming tool_calls response" in record.message for record in caplog.records)
-        assert has_warning or isinstance(result, dict) or result == ""
-
-
 class TestPersistToolsNormalizationFailure:
     """Tests for persist tools normalization failure path (lines 1515-1521)."""
 
@@ -9692,50 +9643,6 @@ class TestReasoningStatusReturnEarly:
         status_events = [e for e in emitted if e.get("type") == "status"]
         reasoning_status_texts = [e.get("data", {}).get("description", "") for e in status_events]
         assert not any(s.strip() == "" for s in reasoning_status_texts if s)
-
-
-class TestNonStreamingToolCallsNonDictItem:
-    """Test for non-dict items in tool_calls_payload (line 1465)."""
-
-    @pytest.mark.asyncio
-    async def test_nonstreaming_tool_calls_non_dict_item_skipped(self, monkeypatch, pipe_instance_async, caplog):
-        """Test that non-dict items in tool_calls_payload are skipped in debug logging (line 1464-1465)."""
-        pipe = pipe_instance_async
-        body = ResponsesBody(model="test/model", input=[], stream=False)
-        valves = pipe.valves.model_copy(update={"TOOL_EXECUTION_MODE": "Open-WebUI"})
-
-        events = [
-            {
-                "type": "response.completed",
-                "response": {
-                    "output": [
-                        {
-                            "type": "function_call",
-                            "call_id": "call-1",
-                            "name": "get_weather",
-                            "arguments": '{"city":"NYC"}',
-                        }
-                    ],
-                    "usage": {"input_tokens": 10, "output_tokens": 5},
-                },
-            },
-        ]
-
-        monkeypatch.setattr(Pipe, "send_openrouter_nonstreaming_request_as_events", _make_fake_nonstream(events))
-
-        import logging
-        with caplog.at_level(logging.DEBUG):
-            result = await pipe._streaming_handler._run_nonstreaming_loop(
-                body,
-                valves,
-                None,
-                metadata={"model": {"id": "test"}},
-                tools={},
-                session=cast(Any, object()),
-                user_id="user-123",
-            )
-
-        assert isinstance(result, dict) or result == ""
 
 
 class TestAnnotationsAndReasoningDetailsExtraction:
@@ -10941,60 +10848,6 @@ class TestToolCallsPayloadNonDict:
 
         tool_calls = _collect_events_of_type(emitted, "chat:tool_calls")
         assert tool_calls
-
-
-class TestNonStreamingToolCallsException:
-    """Tests for exception building non-streaming tool_calls response (lines 1484-1490)."""
-
-    @pytest.mark.asyncio
-    async def test_nonstreaming_tool_calls_build_exception(self, monkeypatch, pipe_instance_async, caplog):
-        """Test exception handling when building non-streaming tool_calls response (lines 1484-1490)."""
-        pipe = pipe_instance_async
-        body = ResponsesBody(model="test/model", input=[], stream=False)
-        valves = pipe.valves.model_copy(update={"TOOL_EXECUTION_MODE": "Open-WebUI"})
-
-        events = [
-            {
-                "type": "response.completed",
-                "response": {
-                    "output": [
-                        {
-                            "type": "function_call",
-                            "call_id": "call-1",
-                            "name": "get_weather",
-                            "arguments": '{"city":"NYC"}',
-                        }
-                    ],
-                    "usage": {},
-                },
-            },
-        ]
-
-        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
-
-        # Make json.dumps fail by patching it
-        original_dumps = json.dumps
-        call_count = [0]
-        def failing_dumps(*args, **kwargs):
-            call_count[0] += 1
-            if call_count[0] > 5:
-                raise ValueError("Simulated JSON error")
-            return original_dumps(*args, **kwargs)
-
-        import logging
-        with caplog.at_level(logging.WARNING):
-            with patch("json.dumps", side_effect=failing_dumps):
-                result = await pipe._streaming_handler._run_streaming_loop(
-                    body,
-                    valves,
-                    None,
-                    metadata={"model": {"id": "test"}},
-                    tools={},
-                    session=cast(Any, object()),
-                    user_id="user-123",
-                )
-
-        assert result is not None
 
 
 class TestPersistToolsNormalizationNone:
@@ -13088,7 +12941,6 @@ async def _orchestrated_turn(
         __tools__=None,
         __task__=None,
         __task_body__=None,
-        valves=pipe.valves,
         session=cast(Any, object()),
         openwebui_model_id="anthropic/claude-opus",
         pipe_identifier="test-pipe",
@@ -13096,6 +12948,7 @@ async def _orchestrated_turn(
         enforced_norm_ids=set(),
         catalog_norm_ids=set(),
         features={},
+        valves=pipe.valves,
     )
     return len(attempts), emitted, str(shown or "")
 

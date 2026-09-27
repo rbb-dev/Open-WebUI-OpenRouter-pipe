@@ -48,19 +48,20 @@ The pipe does **not** execute tools. Instead, it returns tool calls in an OpenAI
 - The pipe does not run tool batching, tool timeouts or tool breakers; Open WebUI’s behavior governs execution. The per-user request breaker still applies.
 - The pipe runs none of these tools, so it keeps no copy of their rounds; Open WebUI's saved tool cards carry them. `PERSIST_TOOL_RESULTS` still decides what the model is handed on later turns: off, a result from an earlier turn reaches the model as a placeholder; on, in full. OpenRouter's own server tools run on OpenRouter in either mode, and the pipe keeps their rounds exactly as in `Pipeline` mode. In a temporary chat those rounds, and the reply's thinking unless `PERSIST_REASONING_TOKENS` is `disabled`, are held only in memory in a streamed reply, for that reply's calls back after each round of tool calls, and dropped when the pipe answers its last call back or after 15 minutes unused (see [Persistence](persistence_encryption_and_storage.md)).
 - In pass-through, the pipe does not strictify or mutate tool schemas; Open WebUI’s schemas are forwarded as-is.
+- A caller's own tool is offered whatever the model's catalogue says about tool use, exactly as Open WebUI forwards it; a stripped tool is only one Open WebUI or this pipe added.
 
 Every call reaches Open WebUI, including one without arguments or with `null` or malformed ones, and Open WebUI answers it as its own loop does; on `/responses` missing arguments arrive as `{}` and `null` ones as `null`, as Open WebUI's own Responses connection reads them.
 
 ---
 
-## Tool schema assembly (`build_tools`)
+## Tool schema assembly
 
-Tool *schemas* are assembled by `build_tools(...)` and attached to the outgoing Responses request as `tools`.
+Tool *schemas* are assembled by the tool registry builder and attached to the outgoing Responses request as `tools`.
 
 ### Preconditions
 
-- Tools are only attached when the selected model is recognized as supporting `function_calling`.
-- In `TOOL_EXECUTION_MODE="Open-WebUI"`, the pipe does not block tools based on its model capability registry (it forwards tools as Open WebUI provided them).
+- A function tool reaches OpenRouter only if the model's catalogue row lists `tools` or `tool_choice`, publishes no parameters, or does not exist. This holds in every mode, whatever the tool's source, and for Fusion panel models; a model the catalogue rules out is sent no function tools at all, and a `tool_choice`, `parallel_tool_calls` or `stop_server_tools_when` left with nothing to point at is cleared.
+- The same row decides the per-chat Image Generation and Web Tools switches: a model whose tool use is ruled out is offered neither, so the switch and the request-time guarantee cannot disagree.
 
 ### Tool sources (in order)
 
@@ -87,9 +88,9 @@ Tool *schemas* are assembled by `build_tools(...)` and attached to the outgoing 
 3. **Extra tools** (`extra_tools`)
    - A caller-provided list of already OpenAI-format tool specs is offered as they arrive: in Pipeline mode an extra tool is offered only when a tool of that name can run it; a spec whose name several resolved Open WebUI tools share is left out, as on the request route (non-dict entries are ignored).
 
-### Deduplication
+### Duplicates and collisions
 
-After assembly, tools are deduplicated by `(type, name)` identity. If duplicates exist, the **later** entry wins.
+Two candidates that resolve to the *same* executor are advertised once, under the origin name, first candidate winning. Two candidates with *different* executors, or with none at all, both go out and take a source prefix plus a digest so neither loses its name; a replayed call naming a shared origin is rewritten to the name the model actually saw.
 
 ---
 
@@ -107,11 +108,13 @@ Tool execution happens in the request loop that follows each Responses API call:
 
 Notes:
 
-- If a tool name is missing or not present in the tool registry, the pipe returns a structured `function_call_output` indicating the failure.
+- A round that names an offered tool the pipe has nothing to run behind goes back whole after exactly one upstream request: an API caller gets it back directly, and a streamed saved chat hands it to Open WebUI. The pipe never answers `Tool not found` for a name the request itself offered.
+- A name nobody offered is answered `Tool not found` inside the loop.
+- A schema that will be handed back is forwarded exactly as written and never strictified. A caller's tool the pipe runs keeps the fields the request put on it (`cache_control`, `strict`), and its `strict` is the caller's.
 - A tool receives only the arguments its schema declares, as in Open WebUI's own tool loop: anything else the model sends is dropped before the tool runs, so it can never replace what Open WebUI bound into the tool (such as the user a built-in tool acts for) or point a browser-run call at another operation or server.
 - Before each call the pipe hands the tool the chat's messages and files as the current request carries them (`__messages__`, `__files__`), as Open WebUI's own loop does; a Fusion panel model's tools see the person's chat.
 - The pipe does not “stream” tool outputs mid-request. Tools are executed between Responses calls.
-- `MAX_FUNCTION_CALL_LOOPS` only applies when `TOOL_EXECUTION_MODE=”Pipeline”`. In Open-WebUI mode, loop control is managed by Open WebUI.
+- `MAX_FUNCTION_CALL_LOOPS` applies whenever the pipe runs the calls, whatever the mode: a non-streamed reply, a Fusion panel model, a tool a request declared with nothing behind it, and every call except the ones Open WebUI runs under 'ask' approval, legacy function calling, or a model it holds back. Where Open WebUI runs the calls, it applies the cap of its own.
 
 ---
 

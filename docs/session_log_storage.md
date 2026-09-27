@@ -18,7 +18,7 @@ When enabled, the pipe writes **one encrypted zip file per message turn** (Open 
 - any intermediate OpenRouter traffic
 - any tool calls/results that occur within the turn
 
-In `TOOL_EXECUTION_MODE=Open-WebUI`, Open WebUI may re-invoke the pipe multiple times for the same `message_id` during tool loops. In that case, the pipe stages per-invocation log “segments” into the persistence layer and a background assembler merges them into a single archive.
+A reply that may hand a call back -- in Open-WebUI mode, or in Pipeline mode for a tool the pipe cannot run -- may be re-invoked for the same `message_id` during its tool loops. In that case, the pipe stages per-invocation log “segments” into the persistence layer and a background assembler merges them into a single archive.
 
 - `meta.json` — a small JSON document with:
   - `created_at` (UTC ISO timestamp)

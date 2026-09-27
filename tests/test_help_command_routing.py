@@ -100,7 +100,6 @@ async def test_video_help_renders_the_panel_and_starts_no_job(
         result = await adapter.generate(
             body={"messages": _messages(system_text, user_text)},
             responses_body=SimpleNamespace(provider={}),
-            valves=pipe.valves,
             session=object(),
             event_emitter=None,
             metadata={"chat_id": "chat-1", "message_id": "msg-1", "user_id": "user-1"},
@@ -109,6 +108,7 @@ async def test_video_help_renders_the_panel_and_starts_no_job(
             user_obj={"id": "user-1"},
             normalized_model_id=model_id.replace("/", "."),
             api_model_id=model_id,
+            valves=pipe.valves,
         )
     finally:
         await pipe.close()
@@ -133,7 +133,6 @@ def test_video_help_never_pays_the_intent_classifier(system_text, user_text, sho
 
     assert (
         adapter._intent_classifier_should_run(
-            valves=pipe.valves,
             persisted_content="",
             prompt=adapter._extract_prompt(body),
             body=body,
@@ -141,6 +140,7 @@ def test_video_help_never_pays_the_intent_classifier(system_text, user_text, sho
             metadata=None,
             chat_id="chat-1",
             user_id="user-1",
+            valves=pipe.valves,
         )
         is should_run
     )
@@ -579,7 +579,6 @@ async def test_the_panel_the_help_command_returns_reads_the_admin_intent_valve(i
         result = await adapter.generate(
             body={"messages": _messages(None, "help")},
             responses_body=SimpleNamespace(provider={}),
-            valves=pipe.valves,
             session=object(),
             event_emitter=None,
             metadata={"chat_id": "chat-1", "message_id": "msg-1", "user_id": "user-1"},
@@ -588,6 +587,7 @@ async def test_the_panel_the_help_command_returns_reads_the_admin_intent_valve(i
             user_obj={"id": "user-1"},
             normalized_model_id=model_id.replace("/", "."),
             api_model_id=model_id,
+            valves=pipe.valves,
         )
     finally:
         await pipe.close()

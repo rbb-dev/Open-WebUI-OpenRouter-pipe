@@ -726,10 +726,10 @@ async def test_the_responses_loop_also_flushes_while_the_producer_is_idle(
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=pipe.valves,
             workers=1,
             idle_flush_ms=20,
             nagle_min_chars=nagle_min_chars,
+        valves=pipe.valves,
         ):
             if (
                 event.get("type") == "response.output_text.delta"

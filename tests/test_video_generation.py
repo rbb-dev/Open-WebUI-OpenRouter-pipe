@@ -430,7 +430,6 @@ async def test_video_lifecycle_bg_task_does_not_emit_chat_completion(monkeypatch
         job_id="job-1",
         api_model_id="openai/sora-2-pro",
         normalized_model_id="openai.sora-2-pro",
-        valves=pipe.valves,
         event_emitter=emitter,
         user={"id": "user-1"},
         user_obj={"id": "user-1"},
@@ -441,6 +440,7 @@ async def test_video_lifecycle_bg_task_does_not_emit_chat_completion(monkeypatch
         global_semaphore=semaphore,
         message_lock=message_lock,
         started_at=time.monotonic(),
+        valves=pipe.valves,
     )
 
     assert isinstance(result, VideoLifecycleResult)
@@ -1191,7 +1191,6 @@ async def test_video_adapter_completed_marker_returns_cached_content(monkeypatch
     result = await adapter.generate(
         body={"messages": [{"role": "user", "content": "make a video"}]},
         responses_body=SimpleNamespace(provider={}),
-        valves=pipe.valves,
         session=None,
         event_emitter=None,
         metadata={"chat_id": "chat-1", "message_id": "msg-1", "user_id": "user-1"},
@@ -1200,6 +1199,7 @@ async def test_video_adapter_completed_marker_returns_cached_content(monkeypatch
         user_obj=None,
         normalized_model_id="openai.sora-2-pro",
         api_model_id="openai/sora-2-pro",
+        valves=pipe.valves,
     )
 
     assert result == final
@@ -1258,7 +1258,6 @@ async def test_video_adapter_pending_marker_resumes_without_submit(monkeypatch, 
     result = await adapter.generate(
         body={"messages": [{"role": "user", "content": "make a video"}]},
         responses_body=SimpleNamespace(provider={}),
-        valves=pipe.valves,
         session=None,
         event_emitter=None,
         metadata={"chat_id": "chat-1", "message_id": "msg-1", "user_id": "user-1"},
@@ -1267,6 +1266,7 @@ async def test_video_adapter_pending_marker_resumes_without_submit(monkeypatch, 
         user_obj={"id": "user-1"},
         normalized_model_id="openai.sora-2-pro",
         api_model_id="openai/sora-2-pro",
+        valves=pipe.valves,
     )
 
     assert submit_calls == 0
@@ -1374,7 +1374,6 @@ async def test_video_adapter_terminal_failures_persist_visible_failure(monkeypat
     result = await adapter.generate(
         body={"messages": [{"role": "user", "content": "make a video"}]},
         responses_body=SimpleNamespace(provider={}),
-        valves=pipe.valves,
         session=None,
         event_emitter=emitter,
         metadata={"chat_id": "chat-1", "message_id": "msg-1", "user_id": "user-1"},
@@ -1383,6 +1382,7 @@ async def test_video_adapter_terminal_failures_persist_visible_failure(monkeypat
         user_obj={"id": "user-1"},
         normalized_model_id="openai.sora-2-pro",
         api_model_id="openai/sora-2-pro",
+        valves=pipe.valves,
     )
 
     assert "### Video generation failed" in result
@@ -1420,7 +1420,6 @@ async def test_video_adapter_releases_semaphore_when_submit_fails(monkeypatch):
     result = await adapter.generate(
         body={"messages": [{"role": "user", "content": "make a video"}]},
         responses_body=SimpleNamespace(provider={}),
-        valves=pipe.valves,
         session=object(),
         event_emitter=None,
         metadata={"chat_id": "chat-1", "message_id": "msg-1", "user_id": "user-1"},
@@ -1429,6 +1428,7 @@ async def test_video_adapter_releases_semaphore_when_submit_fails(monkeypatch):
         user_obj={"id": "user-1"},
         normalized_model_id="openai.sora-2-pro",
         api_model_id="openai/sora-2-pro",
+        valves=pipe.valves,
     )
 
     assert "submit exploded" in result
@@ -1506,7 +1506,6 @@ async def _assert_no_phantom_permit(adapter, pipe, semaphore):
         adapter.generate(
             body={"messages": [{"role": "user", "content": "make a video"}]},
             responses_body=SimpleNamespace(provider={}),
-            valves=pipe.valves,
             session=object(),
             event_emitter=None,
             metadata={"chat_id": "chat-9", "message_id": "msg-9", "user_id": "user-9"},
@@ -1515,6 +1514,7 @@ async def _assert_no_phantom_permit(adapter, pipe, semaphore):
             user_obj={"id": "user-9"},
             normalized_model_id="openai.sora-2-pro",
             api_model_id="openai/sora-2-pro",
+            valves=pipe.valves,
         )
     )
     for _ in range(200):
@@ -1623,7 +1623,6 @@ async def test_video_adapter_does_not_double_release_when_cancelled_mid_handoff(
             adapter.generate(
                 body={"messages": [{"role": "user", "content": "make a video"}]},
                 responses_body=SimpleNamespace(provider={}),
-                valves=pipe.valves,
                 session=object(),
                 event_emitter=None,
                 metadata={"chat_id": "chat-h", "message_id": "msg-h", "user_id": "user-h"},
@@ -1632,6 +1631,7 @@ async def test_video_adapter_does_not_double_release_when_cancelled_mid_handoff(
                 user_obj={"id": "user-h"},
                 normalized_model_id="openai.sora-2-pro",
                 api_model_id="openai/sora-2-pro",
+                valves=pipe.valves,
             )
         )
         await asyncio.wait_for(reached_handoff.wait(), timeout=5)
@@ -1685,7 +1685,6 @@ async def test_video_adapter_waiter_uses_active_task_before_user_cap():
     result = await adapter.generate(
         body={"messages": [{"role": "user", "content": "make a video"}]},
         responses_body=SimpleNamespace(provider={}),
-        valves=pipe.valves,
         session=None,
         event_emitter=emitter,
         metadata={"chat_id": "chat-1", "message_id": "msg-1", "user_id": "user-1"},
@@ -1694,6 +1693,7 @@ async def test_video_adapter_waiter_uses_active_task_before_user_cap():
         user_obj=None,
         normalized_model_id="openai.sora-2-pro",
         api_model_id="openai/sora-2-pro",
+        valves=pipe.valves,
     )
 
     assert result == "done"
@@ -3259,7 +3259,6 @@ async def test_cancellation_during_cleanup_still_releases_every_resource(monkeyp
                 job_id=job_id,
                 api_model_id="openai/sora-2-pro",
                 normalized_model_id="openai.sora-2-pro",
-                valves=pipe.valves,
                 event_emitter=None,
                 user={"id": user_id},
                 user_obj={"id": user_id},
@@ -3270,6 +3269,7 @@ async def test_cancellation_during_cleanup_still_releases_every_resource(monkeyp
                 global_semaphore=semaphore,
                 message_lock=message_lock,
                 started_at=time.monotonic(),
+                valves=pipe.valves,
             )
         )
         for _ in range(50):
@@ -3482,7 +3482,6 @@ async def test_the_pending_placeholder_is_only_emitted_for_a_storable_chat(
         adapter.generate(
             body={"messages": [{"role": "user", "content": "make a video"}]},
             responses_body=SimpleNamespace(provider={}),
-            valves=pipe.valves,
             session=object(),
             event_emitter=emitter,
             metadata={"chat_id": chat_id, "message_id": "msg-g", "user_id": "user-g"},
@@ -3491,6 +3490,7 @@ async def test_the_pending_placeholder_is_only_emitted_for_a_storable_chat(
             user_obj={"id": "user-g"},
             normalized_model_id="openai.sora-2-pro",
             api_model_id="openai/sora-2-pro",
+            valves=pipe.valves,
         )
     )
     try:
@@ -3600,7 +3600,6 @@ async def test_a_temp_directory_that_cannot_be_removed_is_reported(monkeypatch, 
                 job_id="job-leak",
                 api_model_id="openai/sora-2-pro",
                 normalized_model_id="openai.sora-2-pro",
-                valves=pipe.valves,
                 event_emitter=emitter,
                 user={"id": "user-1"},
                 user_obj={"id": "user-1"},
@@ -3611,6 +3610,7 @@ async def test_a_temp_directory_that_cannot_be_removed_is_reported(monkeypatch, 
                 global_semaphore=semaphore,
                 message_lock=message_lock,
                 started_at=time.monotonic(),
+                valves=pipe.valves,
             )
     finally:
         await pipe.close()
@@ -4624,7 +4624,6 @@ async def test_an_empty_prompt_with_a_frame_image_still_submits(
     result = await adapter.generate(
         body={"messages": [{"role": "user", "content": ""}]},
         responses_body=SimpleNamespace(provider={}),
-        valves=pipe.valves,
         session=None,
         event_emitter=None,
         metadata={
@@ -4645,6 +4644,7 @@ async def test_an_empty_prompt_with_a_frame_image_still_submits(
         user_obj={"id": "user-1"},
         normalized_model_id="google.veo-3.1",
         api_model_id="google/veo-3.1",
+        valves=pipe.valves,
     )
 
     assert submitted, f"the request never reached submit: {result!r}"
@@ -4684,7 +4684,6 @@ async def test_an_empty_prompt_with_nothing_attached_is_still_refused(monkeypatc
             {"role": "user", "content": "   "},
         ]},
         responses_body=SimpleNamespace(provider={}),
-        valves=pipe.valves,
         session=None,
         event_emitter=None,
         metadata={"chat_id": "chat-1", "message_id": "msg-1"},
@@ -4693,6 +4692,7 @@ async def test_an_empty_prompt_with_nothing_attached_is_still_refused(monkeypatc
         user_obj={"id": "user-1"},
         normalized_model_id=model_id.replace("/", "."),
         api_model_id=model_id,
+        valves=pipe.valves,
     )
 
     assert not submitted, (
@@ -5167,7 +5167,6 @@ async def test_a_clip_that_cannot_be_downloaded_is_declared_to_the_user(
     result = await adapter.generate(
         body={"messages": [{"role": "user", "content": "make a video"}]},
         responses_body=SimpleNamespace(provider={}),
-        valves=pipe.valves,
         session=None,
         event_emitter=None,
         metadata={"chat_id": "chat-1", "message_id": "msg-1"},
@@ -5176,6 +5175,7 @@ async def test_a_clip_that_cannot_be_downloaded_is_declared_to_the_user(
         user_obj={"id": "user-1"},
         normalized_model_id="openai.sora-2-pro",
         api_model_id="openai/sora-2-pro",
+        valves=pipe.valves,
     )
 
     match = re.search(r"(\d+) of the (\d+) clips this job produced could not be", result)
@@ -5296,7 +5296,6 @@ async def test_a_clip_that_cannot_be_stored_is_logged_and_declared_to_the_user(
         result = await adapter.generate(
             body={"messages": [{"role": "user", "content": "make a video"}]},
             responses_body=SimpleNamespace(provider={}),
-            valves=pipe.valves,
             session=None,
             event_emitter=None,
             metadata={"chat_id": "chat-1", "message_id": "msg-1"},
@@ -5305,6 +5304,7 @@ async def test_a_clip_that_cannot_be_stored_is_logged_and_declared_to_the_user(
             user_obj={"id": "user-1"},
             normalized_model_id="openai.sora-2-pro",
             api_model_id="openai/sora-2-pro",
+            valves=pipe.valves,
         )
     finally:
         adapter.logger.removeHandler(handler)
@@ -5397,7 +5397,6 @@ async def test_every_output_of_a_multi_clip_job_is_downloaded_and_rendered(
     result = await adapter.generate(
         body={"messages": [{"role": "user", "content": "make a video"}]},
         responses_body=SimpleNamespace(provider={}),
-        valves=pipe.valves,
         session=None,
         event_emitter=None,
         metadata={"chat_id": "chat-1", "message_id": "msg-1"},
@@ -5406,6 +5405,7 @@ async def test_every_output_of_a_multi_clip_job_is_downloaded_and_rendered(
         user_obj={"id": "user-1"},
         normalized_model_id="openai.sora-2-pro",
         api_model_id="openai/sora-2-pro",
+        valves=pipe.valves,
     )
 
     assert len(requested) == clip_count
@@ -5822,7 +5822,6 @@ async def test_the_video_lifecycle_records_its_cost_on_every_terminal_path(
             job_id="job-cost",
             api_model_id="openai/sora-2-pro",
             normalized_model_id="openai.sora-2-pro",
-            valves=pipe.valves,
             event_emitter=emitter,
             user={"id": "user-1"},
             user_obj={"id": "user-1"},
@@ -5833,6 +5832,7 @@ async def test_the_video_lifecycle_records_its_cost_on_every_terminal_path(
             global_semaphore=semaphore,
             message_lock=message_lock,
             started_at=time.monotonic(),
+            valves=pipe.valves,
         )
     )
     if exit_path == "is cancelled":
@@ -5947,7 +5947,6 @@ async def test_the_download_loop_never_turns_more_often_than_the_ceiling(
         job_id="job-ceiling",
         api_model_id="openai/sora-2-pro",
         normalized_model_id="openai.sora-2-pro",
-        valves=pipe.valves,
         event_emitter=emitter,
         user={"id": "user-1"},
         user_obj={"id": "user-1"},
@@ -5958,6 +5957,7 @@ async def test_the_download_loop_never_turns_more_often_than_the_ceiling(
         global_semaphore=semaphore,
         message_lock=message_lock,
         started_at=time.monotonic(),
+        valves=pipe.valves,
     )
 
     assert len(downloaded) == expected, (
@@ -6290,7 +6290,6 @@ async def test_a_rejected_video_reaches_the_user_as_the_operators_error_card(
     result = await adapter.generate(
         body={"messages": [{"role": "user", "content": "make a video"}]},
         responses_body=SimpleNamespace(provider={}),
-        valves=pipe.valves,
         session=object(),
         event_emitter=emitter,
         metadata={"chat_id": "chat-1", "message_id": "msg-1", "user_id": "user-1"},
@@ -6299,6 +6298,7 @@ async def test_a_rejected_video_reaches_the_user_as_the_operators_error_card(
         user_obj={"id": "user-1"},
         normalized_model_id="openai.sora-2-pro",
         api_model_id="openai/sora-2-pro",
+        valves=pipe.valves,
     )
 
     cards = [
@@ -6364,7 +6364,6 @@ async def test_the_error_card_says_which_provider_sentence_it_is_reporting(monke
     await adapter.generate(
         body={"messages": [{"role": "user", "content": "make a video"}]},
         responses_body=SimpleNamespace(provider={}),
-        valves=pipe.valves,
         session=object(),
         event_emitter=emitter,
         metadata={"chat_id": "chat-1", "message_id": "msg-1", "user_id": "user-1"},
@@ -6373,6 +6372,7 @@ async def test_the_error_card_says_which_provider_sentence_it_is_reporting(monke
         user_obj={"id": "user-1"},
         normalized_model_id="bytedance.seedance-2.0",
         api_model_id="bytedance/seedance-2.0",
+        valves=pipe.valves,
     )
 
     cards = [
@@ -6491,7 +6491,6 @@ async def test_the_key_the_operator_configured_is_the_key_the_video_job_is_submi
                 await adapter.generate(
                     body={"messages": [{"role": "user", "content": "make a video"}]},
                     responses_body=SimpleNamespace(provider={}),
-                    valves=pipe.valves,
                     session=session,
                     event_emitter=None,
                     metadata={"chat_id": "chat-key", "message_id": "msg-key"},
@@ -6500,6 +6499,7 @@ async def test_the_key_the_operator_configured_is_the_key_the_video_job_is_submi
                     user_obj={"id": "user-1"},
                     normalized_model_id="openai.sora-2-pro",
                     api_model_id="openai/sora-2-pro",
+                    valves=pipe.valves,
                 )
                 submits = [
                     call
@@ -6729,7 +6729,6 @@ async def test_a_generation_whose_later_clips_fail_keeps_the_ones_it_already_has
         job_id="job-partial",
         api_model_id="openai/sora-2-pro",
         normalized_model_id="openai.sora-2-pro",
-        valves=pipe.valves,
         event_emitter=emitter,
         user={"id": "user-1"},
         user_obj={"id": "user-1"},
@@ -6740,6 +6739,7 @@ async def test_a_generation_whose_later_clips_fail_keeps_the_ones_it_already_has
         global_semaphore=semaphore,
         message_lock=message_lock,
         started_at=time.monotonic(),
+        valves=pipe.valves,
     )
 
     assert seen == list(range(3)), (
@@ -7249,7 +7249,6 @@ async def _run_stalling_lifecycle(
         job_id="job-stall",
         api_model_id="openai/sora-2-pro",
         normalized_model_id="openai.sora-2-pro",
-        valves=pipe.valves,
         event_emitter=emitter,
         user={"id": "user-1"},
         user_obj={"id": "user-1"},
@@ -7260,6 +7259,7 @@ async def _run_stalling_lifecycle(
         global_semaphore=semaphore,
         message_lock=message_lock,
         started_at=clock.monotonic(),
+        valves=pipe.valves,
     )
     return result, events, window
 
@@ -7375,7 +7375,6 @@ async def test_a_terminal_failure_still_produces_a_failure_card(
             job_id="job-term",
             api_model_id="openai/sora-2-pro",
             normalized_model_id="openai.sora-2-pro",
-            valves=pipe.valves,
             event_emitter=emitter,
             user={"id": "user-1"},
             user_obj={"id": "user-1"},
@@ -7386,6 +7385,7 @@ async def test_a_terminal_failure_still_produces_a_failure_card(
             global_semaphore=semaphore,
             message_lock=message_lock,
             started_at=time.monotonic(),
+            valves=pipe.valves,
         )
 
     reason = adapter._status_failure_reason(dict(payload), terminal)

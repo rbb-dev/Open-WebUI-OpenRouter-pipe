@@ -126,13 +126,13 @@ async def test_direct_tool_servers_are_advertised_and_executable():
                 __tools__={},
                 __task__=None,
                 __task_body__=None,
-                valves=pipe.valves,
                 session=session,
                 openwebui_model_id="test-model",
                 pipe_identifier="pipe.test",
                 allowlist_norm_ids=set(),
                 enforced_norm_ids=set(),
                 catalog_norm_ids=set(),
+                valves=pipe.valves,
                 features={},
             )
 
@@ -259,13 +259,13 @@ async def test_direct_tool_servers_skipped_without_event_call():
                 __tools__={},
                 __task__=None,
                 __task_body__=None,
-                valves=pipe.valves,
                 session=session,
                 openwebui_model_id="test-model",
                 pipe_identifier="pipe.test",
                 allowlist_norm_ids=set(),
                 enforced_norm_ids=set(),
                 catalog_norm_ids=set(),
+                valves=pipe.valves,
                 features={},
             )
 

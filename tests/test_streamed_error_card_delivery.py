@@ -46,10 +46,10 @@ def _stream_emitter(pipe: Pipe, queue: asyncio.Queue[Any]) -> Any:
         request_id="req-streamed-card",
         metadata={"model": {"id": MODEL}},
         body={"model": MODEL},
-        valves=pipe.valves,
         future=asyncio.get_running_loop().create_future(),
         event_emitter=None,
         stream_queue=queue,
+    valves=pipe.valves,
     )
     return pipe._event_emitter_handler._make_middleware_stream_emitter(cast(Any, job), queue)
 

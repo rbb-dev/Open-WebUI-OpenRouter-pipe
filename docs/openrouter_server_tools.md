@@ -81,7 +81,7 @@ These control auto-installation, auto-attachment, and default-on behavior for th
 | `AUTO_ATTACH_WEB_TOOLS_FILTER` | `bool` | `True` | Automatically attach the OpenRouter Web Tools per-chat switch to every pipe model that is not an image-output, a video-generation or a Fusion model (so the toggle appears in the Integrations menu). |
 | `AUTO_DEFAULT_WEB_TOOLS_FILTER` | `bool` | `False` | When enabled, marks the OpenRouter Web Tools filter as a Default Filter on models (pre-enabled per chat; users can still turn it off). |
 | `AUTO_INSTALL_IMAGE_GEN_FILTER` | `bool` | `True` | Automatically install/update the OpenRouter Image Generation filter function in Open WebUI. |
-| `AUTO_ATTACH_IMAGE_GEN_FILTER` | `bool` | `True` | Automatically attach the OpenRouter Image Generation filter to all pipe models. |
+| `AUTO_ATTACH_IMAGE_GEN_FILTER` | `bool` | `True` | Automatically attach the OpenRouter Image Generation filter to every pipe model that can send the tool: not a model whose catalogue entry rules tool use out, not a picture-only model, not a video model, not the hosted Fusion model. A model that stops qualifying loses the switch at the next refresh. |
 
 ---
 

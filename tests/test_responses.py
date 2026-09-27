@@ -97,7 +97,7 @@ async def test_responses_streaming_simple_text(pipe_instance_async):
             {"model": "openai/gpt-4o", "stream": True, "input": [{"role": "user", "content": "Hi"}]},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -141,9 +141,9 @@ async def test_responses_streaming_with_passthrough_deltas(pipe_instance_async):
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             delta_char_limit=0,
             idle_flush_ms=0,
+        valves=valves,
         ):
             events.append(event)
 
@@ -187,8 +187,8 @@ async def test_responses_streaming_with_delta_batching(pipe_instance_async):
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             delta_char_limit=5,
+        valves=valves,
         ):
             events.append(event)
 
@@ -229,7 +229,7 @@ async def test_responses_streaming_error_400(pipe_instance_async):
                 {"model": "openai/gpt-4o", "stream": True, "input": []},
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
-                valves=valves,
+            valves=valves,
             ):
                 pass
 
@@ -266,7 +266,7 @@ async def test_responses_streaming_error_401_auth_failure(pipe_instance_async):
                 {"model": "openai/gpt-4o", "stream": True, "input": []},
                 api_key="invalid-key",
                 base_url="https://openrouter.ai/api/v1",
-                valves=valves,
+            valves=valves,
             ):
                 pass
 
@@ -302,7 +302,7 @@ async def test_responses_streaming_error_403_forbidden(pipe_instance_async):
                 {"model": "openai/gpt-4o", "stream": True, "input": []},
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
-                valves=valves,
+            valves=valves,
             ):
                 pass
 
@@ -342,7 +342,7 @@ async def test_responses_streaming_error_429_rate_limit_with_headers(pipe_instan
                 {"model": "openai/gpt-4o", "stream": True, "input": []},
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
-                valves=valves,
+            valves=valves,
             ):
                 pass
 
@@ -381,7 +381,7 @@ async def test_responses_streaming_error_402_insufficient_credits(pipe_instance_
                 {"model": "openai/gpt-4o", "stream": True, "input": []},
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
-                valves=valves,
+            valves=valves,
             ):
                 pass
 
@@ -417,7 +417,7 @@ async def test_responses_streaming_error_408_timeout(pipe_instance_async):
                 {"model": "openai/gpt-4o", "stream": True, "input": []},
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
-                valves=valves,
+            valves=valves,
             ):
                 pass
 
@@ -457,7 +457,7 @@ async def test_responses_streaming_error_4xx_non_special(pipe_instance_async):
                 {"model": "openai/gpt-4o", "stream": True, "input": []},
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
-                valves=valves,
+            valves=valves,
             ):
                 pass
 
@@ -503,8 +503,8 @@ async def test_a_tripped_breaker_does_not_stop_a_stream_already_under_way(pipe_i
                 {"model": "openai/gpt-4o", "stream": True, "input": []},
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
-                valves=valves,
                 breaker_key=test_user_id,
+            valves=valves,
             )
         ]
 
@@ -543,7 +543,7 @@ async def test_responses_streaming_empty_data_blob_skipped(pipe_instance_async):
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -582,7 +582,7 @@ async def test_responses_streaming_comment_lines_skipped(pipe_instance_async):
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -619,7 +619,7 @@ async def test_responses_streaming_trailing_data_after_done(pipe_instance_async)
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -661,8 +661,8 @@ async def test_responses_streaming_worker_handles_done_marker(pipe_instance_asyn
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             workers=1,
+        valves=valves,
         ):
             events.append(event)
 
@@ -706,8 +706,8 @@ async def test_responses_streaming_queue_backlog_warning(pipe_instance_async):
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             event_queue_warn_size=10,
+        valves=valves,
         ):
             events.append(event)
 
@@ -743,7 +743,7 @@ async def test_responses_streaming_null_event_skipped(pipe_instance_async):
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -782,7 +782,7 @@ async def test_responses_streaming_non_delta_events_yielded(pipe_instance_async)
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -820,8 +820,8 @@ async def test_responses_streaming_final_delta_flush(pipe_instance_async):
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             delta_char_limit=100,
+        valves=valves,
         ):
             events.append(event)
 
@@ -862,9 +862,8 @@ async def test_responses_nonstreaming_simple(pipe_instance_async):
             session,
             {"model": "openai/gpt-4o", "input": [{"role": "user", "content": "Hi"}]},
             api_key="test-key",
-            base_url="https://openrouter.ai/api/v1",
             valves=valves,
-        )
+            base_url="https://openrouter.ai/api/v1",        )
 
         await session.close()
 
@@ -903,9 +902,8 @@ async def test_responses_nonstreaming_error_429_with_headers(pipe_instance_async
                 session,
                 {"model": "openai/gpt-4o", "input": []},
                 api_key="test-key",
-                base_url="https://openrouter.ai/api/v1",
                 valves=valves,
-            )
+                base_url="https://openrouter.ai/api/v1",            )
 
         await session.close()
 
@@ -944,9 +942,8 @@ async def test_responses_nonstreaming_error_4xx_generic(pipe_instance_async):
                 session,
                 {"model": "openai/gpt-4o", "input": []},
                 api_key="test-key",
-                base_url="https://openrouter.ai/api/v1",
                 valves=valves,
-            )
+                base_url="https://openrouter.ai/api/v1",            )
 
         await session.close()
 
@@ -974,8 +971,8 @@ async def test_a_tripped_breaker_does_not_stop_a_non_streaming_request_already_u
             {"model": "openai/gpt-4o", "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             breaker_key=test_user_id,
+        valves=valves,
         )
 
         await session.close()
@@ -1009,9 +1006,8 @@ async def test_responses_nonstreaming_error_400(pipe_instance_async):
                 session,
                 {"model": "openai/gpt-4o", "input": []},
                 api_key="test-key",
-                base_url="https://openrouter.ai/api/v1",
                 valves=valves,
-            )
+                base_url="https://openrouter.ai/api/v1",            )
 
         await session.close()
 
@@ -1043,9 +1039,8 @@ async def test_responses_nonstreaming_error_401(pipe_instance_async):
                 session,
                 {"model": "openai/gpt-4o", "input": []},
                 api_key="test-key",
-                base_url="https://openrouter.ai/api/v1",
                 valves=valves,
-            )
+                base_url="https://openrouter.ai/api/v1",            )
 
         await session.close()
 
@@ -1077,9 +1072,8 @@ async def test_responses_nonstreaming_error_402(pipe_instance_async):
                 session,
                 {"model": "openai/gpt-4o", "input": []},
                 api_key="test-key",
-                base_url="https://openrouter.ai/api/v1",
                 valves=valves,
-            )
+                base_url="https://openrouter.ai/api/v1",            )
 
         await session.close()
 
@@ -1111,9 +1105,8 @@ async def test_responses_nonstreaming_error_408(pipe_instance_async):
                 session,
                 {"model": "openai/gpt-4o", "input": []},
                 api_key="test-key",
-                base_url="https://openrouter.ai/api/v1",
                 valves=valves,
-            )
+                base_url="https://openrouter.ai/api/v1",            )
 
         await session.close()
 
@@ -1152,9 +1145,9 @@ async def test_responses_streaming_idle_flush_timeout(pipe_instance_async):
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             delta_char_limit=100,
             idle_flush_ms=1,
+        valves=valves,
         ):
             events.append(event)
 
@@ -1197,7 +1190,7 @@ async def test_responses_streaming_multiline_data(pipe_instance_async):
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -1253,8 +1246,8 @@ async def test_responses_streaming_records_failure_with_breaker_key(pipe_instanc
                 {"model": "openai/gpt-4o", "stream": True, "input": []},
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
-                valves=valves,
                 breaker_key=test_user_id,
+            valves=valves,
             ):
                 pass
 
@@ -1311,8 +1304,8 @@ async def test_a_failed_stream_records_exactly_one_breaker_failure(
                 {"model": "openai/gpt-4o", "stream": True, "input": []},
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
-                valves=valves,
                 breaker_key=key,
+            valves=valves,
             ):
                 pass
         await session.close()
@@ -1357,8 +1350,8 @@ async def test_each_retried_attempt_records_its_own_breaker_failure(pipe_instanc
                 {"model": "openai/gpt-4o", "stream": True, "input": []},
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
-                valves=valves,
                 breaker_key=key,
+            valves=valves,
             ):
                 pass
         await session.close()
@@ -1410,8 +1403,8 @@ async def test_responses_nonstreaming_records_failure_with_breaker_key(pipe_inst
                 {"model": "openai/gpt-4o", "input": []},
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
-                valves=valves,
                 breaker_key=test_user_id,
+            valves=valves,
             )
 
         await session.close()
@@ -1457,8 +1450,8 @@ async def test_responses_streaming_multiple_workers(pipe_instance_async):
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
             workers=4,
+        valves=valves,
         ):
             events.append(event)
 
@@ -1496,7 +1489,7 @@ async def test_responses_streaming_reasoning_events(pipe_instance_async):
             {"model": "openai/o1", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -1543,7 +1536,7 @@ async def test_responses_streaming_error_event_in_stream(pipe_instance_async):
                 {"model": "openai/gpt-4o", "stream": True, "input": []},
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
-                valves=valves,
+            valves=valves,
             ):
                 events.append(event)
         except OpenRouterAPIError:
@@ -1584,7 +1577,7 @@ async def test_responses_streaming_done_marker(pipe_instance_async):
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             events.append(event)
 
@@ -2198,8 +2191,8 @@ async def _collect_sse_events(
                 {"model": "openai/gpt-4o", "stream": True, "input": []},
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
-                valves=valves,
                 workers=workers,
+            valves=valves,
             ):
                 events.append(event)
             return events
@@ -2460,7 +2453,7 @@ async def test_responses_streaming_injects_anthropic_toplevel_cache_control(pipe
             {"model": "anthropic/claude-sonnet-4.6", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             pass
         await session.close()
@@ -2493,9 +2486,8 @@ async def test_responses_nonstreaming_injects_anthropic_toplevel_cache_control(p
             session,
             {"model": "anthropic/claude-sonnet-4.6", "input": []},
             api_key="test-key",
-            base_url="https://openrouter.ai/api/v1",
             valves=valves,
-        )
+            base_url="https://openrouter.ai/api/v1",        )
         await session.close()
 
     assert captured.get("json", {}).get("cache_control") == {"type": "ephemeral", "ttl": "1h"}
@@ -2525,7 +2517,7 @@ async def test_responses_no_toplevel_cache_control_for_non_anthropic(pipe_instan
             {"model": "openai/gpt-4o", "stream": True, "input": []},
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
-            valves=valves,
+        valves=valves,
         ):
             pass
         await session.close()

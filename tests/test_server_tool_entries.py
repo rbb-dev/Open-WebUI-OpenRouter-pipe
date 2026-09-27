@@ -163,7 +163,7 @@ async def _image_size_notice(monkeypatch, size, ratio, *, image_generation_on=Tr
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
         pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(
-            return_value=({}, [])
+            return_value={}
         )
         pipe._streaming_handler._select_llm_endpoint_with_forced = Mock(
             return_value=("chat_completions", False)
@@ -196,7 +196,6 @@ async def _image_size_notice(monkeypatch, size, ratio, *, image_generation_on=Tr
             __tools__=None,
             __task__=None,
             __task_body__=None,
-            valves=valves,
             session=AsyncMock(spec=aiohttp.ClientSession),
             openwebui_model_id="openai/gpt-4o",
             pipe_identifier="test-pipe",
@@ -204,6 +203,7 @@ async def _image_size_notice(monkeypatch, size, ratio, *, image_generation_on=Tr
             enforced_norm_ids=set(),
             catalog_norm_ids=set(),
             features={},
+            valves=valves,
         )
     finally:
         await pipe.close()

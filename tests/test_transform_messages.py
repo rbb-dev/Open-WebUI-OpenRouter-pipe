@@ -35,7 +35,7 @@ def _run_transform(messages, artifacts):
                 chat_id="chat-1",
                 openwebui_model_id="model-1",
                 artifact_loader=loader,
-                valves=pipe.valves,
+            valves=pipe.valves,
             )
         finally:
             await pipe.close()
@@ -169,8 +169,8 @@ async def test_transform_limits_user_images(monkeypatch, pipe_instance_async):
     transformed = await transform_messages_to_input(pipe,
         messages,
         model_id="vision-model",
-        valves=valves,
         event_emitter=fake_emitter,
+        valves=valves,
     )
     content = transformed[0]["content"]
     assert len(content) == 1
@@ -200,7 +200,7 @@ async def test_transform_falls_back_to_assistant_images(monkeypatch, pipe_instan
     transformed = await transform_messages_to_input(pipe,
         messages,
         model_id="vision-model",
-        valves=pipe.valves,
+    valves=pipe.valves,
     )
     content = transformed[-1]["content"]
     assert any(
@@ -240,7 +240,7 @@ async def test_transform_rehydration_drops_uninlineable_assistant_images(monkeyp
     transformed = await transform_messages_to_input(pipe,
         messages,
         model_id="vision-model",
-        valves=pipe.valves,
+    valves=pipe.valves,
     )
     content = transformed[-1]["content"]
     images = [b for b in content if isinstance(b, dict) and b.get("type") == "input_image"]
@@ -300,8 +300,8 @@ async def test_transform_skips_images_when_model_lacks_vision(monkeypatch, pipe_
     transformed = await transform_messages_to_input(pipe,
         messages,
         model_id="text-only",
-        valves=pipe.valves,
         event_emitter=fake_emitter,
+    valves=pipe.valves,
     )
     content = transformed[0]["content"]
     assert all(block.get("type") != "input_image" for block in content)
@@ -481,8 +481,8 @@ async def test_an_insecure_http_image_url_is_dropped_unless_allowed(
         pipe,
         [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": url}}]}],
         model_id="vision-model",
-        valves=pipe.valves,
         event_emitter=_emitter,
+    valves=pipe.valves,
     )
 
     blocks = transformed[0]["content"] if transformed else []

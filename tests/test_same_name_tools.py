@@ -371,8 +371,8 @@ async def _upstream_after_open_webui_replays(
         tools_dict,
         None,
         None,
-        valves=valves,
         session=cast(Any, object()),
+    valves=valves,
     )
 
     assert len(sent) == 1, sent

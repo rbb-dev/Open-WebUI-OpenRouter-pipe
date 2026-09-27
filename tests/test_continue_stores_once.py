@@ -487,7 +487,7 @@ async def test_a_continue_keeps_the_stored_answer_when_the_pipes_own_tool_result
         openwebui_model_id="test",
         artifact_loader=loader,
         model_id="test/model",
-        valves=pipe.valves,
+    valves=pipe.valves,
     )
     # Cards are off, so the round is hidden from the user and not saved in the message; it comes back from the
     # pipe's own rows instead. That is exactly the case this test exists for.

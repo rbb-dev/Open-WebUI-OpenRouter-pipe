@@ -1,7 +1,6 @@
 """Tool registry building and collision resolution.
 
 This module handles tool spec management:
-- build_tools: Build OpenAI Responses-API tool spec list
 - _dedupe_tools: Remove duplicate tool definitions
 - _build_collision_safe_tool_specs_and_registry: Handle name collisions
 
@@ -16,10 +15,9 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any
 
+from ..core.config import _PIPE_METADATA_KEY
 from ..core.timing_logger import timed
-
-# Import ModelFamily for function calling support check
-from ..models.registry import ModelFamily
+from ..storage.owui_files import is_linkable_chat
 
 # Import tool schema functions
 from .tool_schema import _strictify_schema
@@ -45,53 +43,21 @@ _module_logger = logging.getLogger(__name__)
 
 
 
-@timed
-def build_tools(
-    responses_body: ResponsesBody,
-    valves: Pipe.Valves,
-    __tools__: dict[str, Any] | list[dict[str, Any]] | None = None,
-    *,
-    features: dict[str, Any] | None = None,
-    extra_tools: list[dict[str, Any]] | None = None,
-) -> list[dict[str, Any]]:
-    """
-    Build the OpenAI Responses-API tool spec list for this request.
-
-    - Returns [] if the target model doesn't support function calling.
-    - Includes Open WebUI registry tools (strictified if enabled).
-    - Appends any caller-provided extra_tools (already-valid OpenAI tool specs).
-    - Deduplicates by (type,name) identity; last one wins.
-
-    NOTE: This builds the *schema* to send to OpenAI. For executing function
-    calls at runtime, you can keep passing the raw `__tools__` registry into
-    your streaming/non-streaming loops; those functions expect name->callable.
-    """
-    features = features or {}
-
-    owui_tool_passthrough = valves.TOOL_EXECUTION_MODE == "Open-WebUI"
-
-    # 1) If model can't do function calling, no tools (unless Open-WebUI tool pass-through is enabled).
-    if (not owui_tool_passthrough) and (not ModelFamily.supports("function_calling", responses_body.model)):
-        return []
-
-    tools: list[dict[str, Any]] = []
-
-    # 2) Baseline: Open WebUI registry tools -> OpenAI tool specs
-    if isinstance(__tools__, dict) and __tools__:
-        tools.extend(
-            ResponsesBody.transform_owui_tools(
-                __tools__,
-                strict=valves.ENABLE_STRICT_TOOL_CALLING and (not owui_tool_passthrough),
-            )
-        )
-    elif isinstance(__tools__, list) and __tools__:
-        tools.extend([tool for tool in __tools__ if isinstance(tool, dict)])
-
-    # 3) Optional extra tools (already OpenAI-format)
-    if isinstance(extra_tools, list) and extra_tools:
-        tools.extend(extra_tools)
-
-    return _dedupe_tools(tools)
+def open_webui_runs_the_calls(valves: Pipe.Valves, metadata: Any, *, stream: bool) -> bool:
+    meta = metadata if isinstance(metadata, dict) else {}
+    pipe_meta = meta.get(_PIPE_METADATA_KEY)
+    if isinstance(pipe_meta, dict) and pipe_meta.get("fusion_inner"):
+        return False
+    params = meta.get("params")
+    approval_mode = params.get("tool_approval_mode") if isinstance(params, dict) else None
+    if (
+        approval_mode == "ask"
+        and is_linkable_chat(meta.get("chat_id"))
+        and meta.get("message_id")
+        and stream
+    ):
+        return True
+    return valves.TOOL_EXECUTION_MODE == "Open-WebUI" and bool(stream)
 
 
 def _dedupe_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -142,8 +108,10 @@ def _normalize_responses_function_tool_spec(tool: Any, *, strictify: bool) -> di
         spec["parameters"] = _strictify_schema(parameters) if strictify else parameters
     if isinstance(tool.get("cache_control"), dict):
         spec["cache_control"] = tool["cache_control"]
-    if "strict" in tool:
-        spec["strict"] = True if strictify else tool["strict"]
+    if strictify:
+        spec["strict"] = True
+    elif "strict" in tool:
+        spec["strict"] = tool["strict"]
     return spec
 
 

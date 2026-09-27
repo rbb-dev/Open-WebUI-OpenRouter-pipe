@@ -357,7 +357,6 @@ async def test_the_video_path_passes_both_valves_to_the_downloader(monkeypatch):
         job_id="job-1",
         api_model_id="openai/sora-2-pro",
         normalized_model_id="openai.sora-2-pro",
-        valves=pipe.valves,
         event_emitter=emitter,
         user={"id": "user-1"},
         user_obj={"id": "user-1"},
@@ -368,6 +367,7 @@ async def test_the_video_path_passes_both_valves_to_the_downloader(monkeypatch):
         global_semaphore=semaphore,
         message_lock=message_lock,
         started_at=time.monotonic(),
+        valves=pipe.valves,
     )
     assert isinstance(result, VideoLifecycleResult)
 

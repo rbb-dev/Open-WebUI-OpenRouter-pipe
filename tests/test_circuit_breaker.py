@@ -696,8 +696,8 @@ async def test_invalid_encrypted_api_key_returns_auth_error_and_skips_catalog(mo
                 __tools__=None,
                 __task__=None,
                 __task_body__=None,
-                valves=valves,
                 session=session,
+            valves=valves,
             )
 
             # Verify no HTTP calls were made (catalog was not called)
@@ -736,8 +736,8 @@ async def test_invalid_encrypted_api_key_task_returns_safe_stub(monkeypatch) -> 
                 __tools__=None,
                 __task__="tags_generation",
                 __task_body__={},
-                valves=valves,
                 session=session,
+            valves=valves,
             )
 
             assert isinstance(result, dict)
@@ -796,7 +796,6 @@ async def test_process_transformed_request_accepts_string_task() -> None:
                 __tools__=None,
                 __task__="tags_generation",
                 __task_body__={},
-                valves=valves,
                 session=session,
                 openwebui_model_id="",
                 pipe_identifier="pipe",
@@ -805,6 +804,7 @@ async def test_process_transformed_request_accepts_string_task() -> None:
                 catalog_norm_ids=set(),
                 features={},
                 user_id="",
+                valves=valves,
             )
             assert isinstance(result, str)
             assert "tags" in result.lower()

@@ -163,7 +163,7 @@ class TestAggregateSources:
 
 def _prepare_pipe(pipe):
     pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
-    pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+    pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
 
 
 def _invocation(orchestrator, pipe, valves, *, messages=None, enforced=None, catalog=None):
@@ -176,9 +176,9 @@ def _invocation(orchestrator, pipe, valves, *, messages=None, enforced=None, cat
         event_call=None,
         metadata={"chat_id": "outer-chat", "message_id": "outer-msg"},
         tools={},
-        valves=valves,
         session=cast(Any, object()),
         pipe_identifier="test-pipe",
+        valves=valves,
         allowlist_norm_ids=set(),
         enforced_norm_ids=set(enforced or set()),
         catalog_norm_ids=set(catalog or set()),
@@ -792,7 +792,7 @@ class TestOwuiSurfaceInheritance:
 
         def spy_registry(*a, **k):
             registry_calls.append((a, k))
-            return {}, []
+            return {}
 
         executor._build_direct_tool_server_registry = spy_registry
         inv = _invocation(orchestrator, pipe, Valves())

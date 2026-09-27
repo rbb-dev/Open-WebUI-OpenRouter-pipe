@@ -45,8 +45,8 @@ class TestRequestQueueLimits:
                 tools=None,
                 task=None,
                 task_body=None,
-                valves=pipe.valves,
                 future=loop.create_future(),
+                valves=pipe.valves,
             )
             queue.put_nowait(job)
 
@@ -65,8 +65,8 @@ class TestRequestQueueLimits:
             tools=None,
             task=None,
             task_body=None,
-            valves=pipe.valves,
             future=loop.create_future(),
+            valves=pipe.valves,
         )
 
         # Queue should reject the job

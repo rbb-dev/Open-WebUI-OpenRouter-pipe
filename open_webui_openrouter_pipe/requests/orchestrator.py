@@ -52,12 +52,14 @@ from ..storage.owui_files import (
     get_file_by_id,
     index_referenced_file_payloads,
     infer_file_mime_type,
+    is_linkable_chat,
 )
 from ..storage.users import get_user_by_id
 from ..streaming.constants import DEFERRED_REASONING_FLUSH
 from ..tools.tool_registry import (
     _advertised_names_for_replayed_calls,
     _build_collision_safe_tool_specs_and_registry,
+    open_webui_runs_the_calls,
 )
 from .fusion_engine import (
     FusionInnerInvocation,
@@ -223,6 +225,7 @@ def _fusion_plugin_injection(
 
 
 _warned_chat_provider_keys: set[str] = set()
+_warned_ruled_out_tool_use: set[str] = set()
 
 
 _FUSION_PARITY_DIALS = (
@@ -307,6 +310,45 @@ def _fusion_force_tool_choice(
     if tool_choice is not None:
         return False
     return _fusion_active_entry(model_id, plugins, fusion_enabled=fusion_enabled, is_task_request=is_task_request)
+
+
+def _resolved_tool_names(
+    owui_registry: dict[str, dict[str, Any]] | None,
+    direct_registry: dict[str, dict[str, Any]] | None,
+) -> frozenset[str]:
+    names: set[str] = set()
+
+    def _add(value: Any) -> None:
+        if isinstance(value, str) and value.strip():
+            names.add(value.strip())
+
+    for name, entry in (owui_registry or {}).items():
+        _add(name)
+        spec = entry.get("spec") if isinstance(entry, dict) else None
+        _add(spec.get("name") if isinstance(spec, dict) else None)
+    for entry in (direct_registry or {}).values():
+        spec = entry.get("spec") if isinstance(entry, dict) else None
+        _add(spec.get("name") if isinstance(spec, dict) else None)
+    return frozenset(names)
+
+
+def _ruled_out_tool_entries_stripped(
+    tools: Any,
+    *,
+    open_webui_names: frozenset[str],
+    pipe_server_tool_ids: frozenset[int],
+) -> list[Any] | None:
+    items = tools if isinstance(tools, list) else []
+    kept = [
+        t for t in items
+        if not (
+            id(t) in pipe_server_tool_ids
+            or (isinstance(t, dict) and t.get("type") == "function" and t.get("name") in open_webui_names)
+        )
+    ]
+    if len(kept) == len(items):
+        return None
+    return kept
 
 
 def _apply_server_tools_metadata(
@@ -1141,9 +1183,8 @@ class RequestOrchestrator:
 
         direct_registry: dict[str, dict[str, Any]] = {}
         try:
-            direct_registry, _ = self._pipe._ensure_tool_executor()._build_direct_tool_server_registry(
+            direct_registry = self._pipe._ensure_tool_executor()._build_direct_tool_server_registry(
                 __metadata__,
-                valves=valves,
                 event_call=__event_call__,
                 event_emitter=__event_emitter__,
             )
@@ -1166,7 +1207,9 @@ class RequestOrchestrator:
                 exc_info=True,
             )
 
-        owui_tool_passthrough = valves.TOOL_EXECUTION_MODE == "Open-WebUI"
+        owui_tool_passthrough = open_webui_runs_the_calls(
+            valves, __metadata__, stream=bool(responses_body.stream)
+        )
         incoming_tools_raw = body.get("tools")
         incoming_tools = _chat_tools_to_responses_tools(incoming_tools_raw)
         strictify = valves.ENABLE_STRICT_TOOL_CALLING and (not owui_tool_passthrough)
@@ -1209,6 +1252,30 @@ class RequestOrchestrator:
         if fusion_inner:
             is_builtin_ask_user = self._pipe._ensure_tool_executor()._is_builtin_ask_user
             owui_registry = {name: cfg for name, cfg in owui_registry.items() if not is_builtin_ask_user(cfg)}
+
+        request_params = __metadata__.get("params")
+        request_params = request_params if isinstance(request_params, dict) else {}
+        withhold_owui_tools = bool(
+            request_params.get("function_calling") == "legacy"
+            or (
+                request_params.get("tool_approval_mode") == "ask"
+                and (
+                    fusion_inner
+                    or (
+                        is_linkable_chat(__metadata__.get("chat_id"))
+                        and __metadata__.get("message_id")
+                    )
+                )
+            )
+        )
+        if withhold_owui_tools:
+            resolved_names = _resolved_tool_names(owui_registry, direct_registry)
+            owui_registry = {}
+            direct_registry = {}
+            incoming_tools = [
+                t for t in (incoming_tools or [])
+                if not (isinstance(t, dict) and t.get("name") in resolved_names)
+            ]
 
         tools, exec_registry, exposed_to_origin = _build_collision_safe_tool_specs_and_registry(
             request_tool_specs=incoming_tools if incoming_tools else None,
@@ -1253,19 +1320,7 @@ class RequestOrchestrator:
         ]
         offered_tools = [*server_tool_entries, *(tools or [])]
         responses_body.tools = offered_tools or None
-        builder_produced_names: set[str] = {
-            str(name)
-            for name, entry in (owui_registry or {}).items()
-            if isinstance(entry, dict)
-            for name in (name, (entry.get("spec") or {}).get("name"))
-            if isinstance(name, str) and name.strip()
-        }
-        builder_produced_names.update(
-            str((entry.get("spec") or {}).get("name"))
-            for entry in (direct_registry or {}).values()
-            if isinstance(entry, dict) and isinstance((entry.get("spec") or {}).get("name"), str)
-        )
-        rules_out_tool_use = ModelFamily.rules_out_tool_use(capability_model_id)
+        tool_use_ruled_out = ModelFamily.rules_out_tool_use(capability_model_id)
 
         pdf_parser = direct_uploads.get("pdf_parser") if direct_uploads else None
         if isinstance(pdf_parser, str) and pdf_parser.strip():
@@ -1321,6 +1376,9 @@ class RequestOrchestrator:
             return ImageGenerationAdapter._reachable_records(found, _image_requested) or found
 
         records = _image_model_records(_image_model)
+        resolved_tool_names = _resolved_tool_names(owui_registry, direct_registry)
+        tools_before_pipe_metadata = list(responses_body.tools or [])
+
         superseded = _apply_server_tools_metadata(
             responses_body,
             __metadata__,
@@ -1329,7 +1387,7 @@ class RequestOrchestrator:
             records=records,
             model_resolver=_image_model_records,
         )
-        if superseded:
+        if superseded and not tool_use_ruled_out:
             grouped: dict[str, list[Any]] = {}
             for drawn_by, note in superseded:
                 grouped.setdefault(drawn_by, []).append(note)
@@ -1338,6 +1396,9 @@ class RequestOrchestrator:
                 await adapter._report_notes(
                     notes, api_model_id=drawn_by, event_emitter=__event_emitter__
                 )
+        pipe_server_tool_ids = frozenset(
+            id(t) for t in (responses_body.tools or []) if id(t) not in {id(x) for x in tools_before_pipe_metadata}
+        )
         stripped_tools = _fusion_server_tools_stripped(
             responses_body.model,
             responses_body.plugins,
@@ -1352,20 +1413,27 @@ class RequestOrchestrator:
                 responses_body.model,
             )
 
-        if rules_out_tool_use:
-            kept_tools = [
-                t
-                for t in (responses_body.tools or [])
-                if not (isinstance(t, dict) and t.get("type") == "function"
-                        and str(t.get("name") or "") in builder_produced_names)
-            ]
-            if len(kept_tools) != len(responses_body.tools or []):
-                self.logger.debug(
-                    "Withheld %d pipe-built tool(s) from a model the catalogue rules out of tool use (model=%s)",
-                    len(responses_body.tools or []) - len(kept_tools),
-                    capability_model_id,
+        if tool_use_ruled_out:
+            ruled_out = _ruled_out_tool_entries_stripped(
+                responses_body.tools,
+                open_webui_names=resolved_tool_names,
+                pipe_server_tool_ids=pipe_server_tool_ids,
+            )
+            if ruled_out is not None:
+                responses_body.tools = ruled_out or None
+                self.logger.log(
+                    warn_level(
+                        _warned_ruled_out_tool_use,
+                        f"{responses_body.model}:tools",
+                    ),
+                    "Model %s is ruled out for tool use by the catalogue; the tools Open "
+                    "WebUI and this pipe added were not sent.",
+                    responses_body.model,
                 )
-            responses_body.tools = kept_tools or None
+            if not responses_body.tools:
+                responses_body.tool_choice = None
+                responses_body.parallel_tool_calls = None
+                responses_body.stop_server_tools_when = None
 
 
         setattr(responses_body, "api_model", OpenRouterModelRegistry.api_model_id(selected_model_id) or normalized_model_id)  # noqa: B010 - dynamic attribute not declared on ResponsesBody

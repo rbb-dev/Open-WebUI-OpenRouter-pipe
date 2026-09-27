@@ -151,7 +151,7 @@ class TestDecodeBase64PrefixEdgeCases:
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         pipe._streaming_handler._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
         pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
@@ -208,7 +208,7 @@ class TestDirectUploadSkipPaths:
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
         result = await orchestrator.process_request(
@@ -254,7 +254,7 @@ class TestDirectUploadSkipPaths:
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
         result = await orchestrator.process_request(
@@ -300,7 +300,7 @@ class TestDirectUploadSkipPaths:
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
         result = await orchestrator.process_request(
@@ -359,7 +359,7 @@ class TestCsvSetNonStringInput:
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         pipe._streaming_handler._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
         pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
@@ -408,7 +408,7 @@ class TestExtraToolsExceptionHandling:
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
         # Patch CompletionsBody.model_validate to return object with problematic extra_tools
@@ -474,7 +474,7 @@ class TestToolRenameLogging:
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
 
         # Mock to return tools with renames
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
         # Patch _build_collision_safe_tool_specs_and_registry to return renames
@@ -524,7 +524,7 @@ class TestInnerToolOriginDedup:
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="ok")
         with patch("open_webui_openrouter_pipe.requests.orchestrator._build_collision_safe_tool_specs_and_registry") as mock_build:
             mock_build.return_value = ([], {}, {})
@@ -611,7 +611,7 @@ class TestOpenRouterAPIErrorHandling:
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
 
         call_count = [0]
 
@@ -680,7 +680,7 @@ class TestOpenRouterAPIErrorHandling:
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         pipe._ensure_reasoning_config_manager()._should_retry_without_reasoning = Mock(return_value=True)
 
         call_count = [0]
@@ -739,7 +739,7 @@ class TestOpenRouterAPIErrorHandling:
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         pipe._ensure_reasoning_config_manager()._should_retry_without_reasoning = Mock(return_value=False)
         card = "### Provider rejected the request"
         pipe._ensure_error_formatter()._report_openrouter_error = AsyncMock(return_value=card)
@@ -793,7 +793,7 @@ class TestOpenRouterAPIErrorHandling:
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
 
         call_count = [0]
 
@@ -872,7 +872,7 @@ class TestNonStreamingPath:
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         pipe._streaming_handler._run_nonstreaming_loop = AsyncMock(return_value={"result": "complete"})
         pipe._streaming_handler._run_streaming_loop = AsyncMock()  # Should not be called
 
@@ -939,7 +939,7 @@ class TestAudioFormatSniffing:
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         pipe._streaming_handler._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
         pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
@@ -987,7 +987,7 @@ class TestAudioFormatSniffing:
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         pipe._streaming_handler._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
         pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
@@ -1035,7 +1035,7 @@ class TestAudioFormatSniffing:
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         pipe._streaming_handler._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
         pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
@@ -1084,7 +1084,7 @@ class TestAudioFormatSniffing:
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         pipe._streaming_handler._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
         pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
@@ -1133,7 +1133,7 @@ class TestAudioFormatSniffing:
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         pipe._streaming_handler._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
         pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
@@ -1182,7 +1182,7 @@ class TestAudioFormatSniffing:
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         pipe._streaming_handler._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
         pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
@@ -1231,7 +1231,7 @@ class TestAudioFormatSniffing:
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         pipe._streaming_handler._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
         pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
@@ -1273,7 +1273,7 @@ class TestToolsRegistryAsList:
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
         # Provide tools as a list with spec objects
@@ -1332,7 +1332,7 @@ class TestReasoningBodyInitialization:
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
 
         call_count = [0]
         captured_body = [None]
@@ -1473,7 +1473,7 @@ class TestDecodeBase64EdgeCases:
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         pipe._streaming_handler._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
         pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
@@ -1522,7 +1522,7 @@ class TestAttachmentSkipContinuePaths:
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
         result = await orchestrator.process_request(
@@ -1566,7 +1566,7 @@ class TestAttachmentSkipContinuePaths:
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
         result = await orchestrator.process_request(
@@ -1611,7 +1611,7 @@ class TestAttachmentSkipContinuePaths:
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
         result = await orchestrator.process_request(
@@ -1659,7 +1659,7 @@ class TestAttachmentSkipContinuePaths:
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         pipe._streaming_handler._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
         pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
@@ -1695,7 +1695,7 @@ class TestReasoningEffortNoEventEmitter:
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
 
         call_count = [0]
 
@@ -1757,7 +1757,7 @@ class TestReasoningEffortNoEventEmitter:
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
 
         call_count = [0]
 
@@ -1869,7 +1869,7 @@ class TestFusionLiveGate:
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         pipe._streaming_handler._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
         pipe._streaming_handler._run_streaming_loop = AsyncMock(side_effect=fake_loop)
 
@@ -1920,7 +1920,7 @@ class TestFusionLiveGate:
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
         pipe._ensure_reasoning_config_manager()._apply_task_reasoning_preferences = Mock()
         pipe._ensure_reasoning_config_manager()._apply_anthropic_verbosity = Mock()
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         pipe._streaming_handler._select_llm_endpoint_with_forced = Mock(return_value=("chat_completions", False))
         pipe._streaming_handler._run_streaming_loop = AsyncMock(side_effect=fake_loop)
         pipe._ensure_task_model_adapter()._run_task_model_request = AsyncMock(side_effect=fake_task)
@@ -2101,7 +2101,7 @@ class TestImageModelHelp:
 
         orchestrator, pipe = orchestrator_and_pipe
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
 
         def fake_spec(model_id):
             return {
@@ -2151,7 +2151,7 @@ class TestImageModelHelp:
 
         orchestrator, pipe = orchestrator_and_pipe
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
 
         def fake_spec(model_id):
             return {
@@ -2193,7 +2193,7 @@ class TestDedicatedImageApiDispatch:
         from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
 
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
-        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         monkeypatch.setattr(
             OpenRouterModelRegistry,
             "spec",

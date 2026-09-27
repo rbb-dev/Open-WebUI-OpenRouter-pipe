@@ -826,7 +826,7 @@ async def _chat_path_error_card(pipe, status: int) -> str:
     pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
     pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
     pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
-    pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
+    pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
     pipe._ensure_reasoning_config_manager()._should_retry_without_reasoning = Mock(return_value=False)
     pipe._ensure_reasoning_config_manager()._should_retry_dropping_signed_reasoning = Mock(return_value=False)
 
@@ -857,7 +857,6 @@ async def _chat_path_error_card(pipe, status: int) -> str:
             __tools__=None,
             __task__=None,
             __task_body__=None,
-            valves=pipe.valves,
             session=AsyncMock(spec=aiohttp.ClientSession),
             openwebui_model_id="openai/gpt-4o",
             pipe_identifier="test-pipe",
@@ -865,6 +864,7 @@ async def _chat_path_error_card(pipe, status: int) -> str:
             enforced_norm_ids=set(),
             catalog_norm_ids=set(),
             features={},
+            valves=pipe.valves,
         )
     return "\n".join(
         str(event.get("data", {}).get("content", ""))
@@ -1315,7 +1315,7 @@ class TestUsageFormatting:
                 elapsed=1.0,
                 stream_duration=1.0,
                 total_usage=usage,
-                valves=pipe.valves,
+                    valves=pipe.valves,
             )
             # True → 1, False → 0
             assert "Input: 1" in result
@@ -1336,7 +1336,7 @@ class TestUsageFormatting:
                 elapsed=1.0,
                 stream_duration=1.0,
                 total_usage=usage,
-                valves=pipe.valves,
+                    valves=pipe.valves,
             )
             # Floats truncated to ints
             assert "Input: 42" in result
@@ -1357,7 +1357,7 @@ class TestUsageFormatting:
                 elapsed=1.0,
                 stream_duration=1.0,
                 total_usage=usage,
-                valves=pipe.valves,
+                    valves=pipe.valves,
             )
             # Should use "Total tokens:" since we can compute total
             # But if we pass explicit None for total_tokens...
@@ -1366,7 +1366,7 @@ class TestUsageFormatting:
                 elapsed=1.0,
                 stream_duration=None,  # No TPS calculation
                 total_usage=usage_no_total,
-                valves=pipe.valves,
+                    valves=pipe.valves,
             )
             # When total_tokens is explicitly None but we have details,
             # the code computes total from candidates

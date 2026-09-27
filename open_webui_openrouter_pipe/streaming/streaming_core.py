@@ -11,7 +11,6 @@ import base64
 import binascii
 import contextlib
 import copy
-import inspect
 import json
 import logging
 import random
@@ -143,6 +142,7 @@ from ..tools.citation_harvester import (
     UNCITED_TOOLS,
     harvest_tool_citations,
 )
+from ..tools.tool_registry import open_webui_runs_the_calls
 from .constants import (
     DEFERRED_REASONING_FLUSH,
     FUSION_EMBED_ATTEMPTS,
@@ -198,16 +198,6 @@ except Exception:
     )
     _owui_apply_source_context = None  # type: ignore
 
-
-try:
-    _OWUI_SUPPORTS_INCLUDE_CONTENT = (
-        _owui_apply_source_context is not None
-        and "include_content" in inspect.signature(_owui_apply_source_context).parameters
-    )
-except (TypeError, ValueError):
-    _OWUI_SUPPORTS_INCLUDE_CONTENT = False
-
-from ..api.transforms import _responses_input_to_chat_messages
 
 _monotonic = time.monotonic
 
@@ -265,164 +255,6 @@ def _read_arguments_as_open_webui_reads_them(item: dict[str, Any]) -> str:
     if not isinstance(arguments, str):
         arguments = json.dumps(arguments, ensure_ascii=False)
     return arguments.strip() or "{}"
-
-
-def _chat_messages_to_responses_input(messages: list) -> list:
-    """
-    Convert Chat Completions messages back to Responses API input format.
-
-    TRUE ADAPTER PATTERN: Start with original, transform only what we know,
-    pass through everything else unchanged. Never filter/drop unknown fields.
-
-    Transforms applied:
-    - Block type: "text" → "input_text"
-    - Block type: "image_url" → "input_image" (also flattens nested url)
-    - Message: adds "type": "message" wrapper
-
-    Everything else passes through unchanged (unknown fields, future additions, etc.)
-    """
-    result = []
-    for msg in messages:
-        if not isinstance(msg, dict):
-            continue
-
-        content = msg.get("content")
-
-        # Transform content blocks
-        content_blocks: list[dict] = []
-        if isinstance(content, str):
-            content_blocks.append({"type": "input_text", "text": content})
-        elif isinstance(content, list):
-            for block in content:
-                if not isinstance(block, dict):
-                    continue
-                btype = block.get("type", "")
-
-                if btype == "text":
-                    transformed = dict(block)
-                    transformed["type"] = "input_text"
-                    content_blocks.append(transformed)
-
-                elif btype == "image_url":
-                    transformed = dict(block)
-                    transformed["type"] = "input_image"
-                    img_url = transformed.pop("image_url", {})
-                    if isinstance(img_url, dict):
-                        transformed["image_url"] = img_url.get("url", "")
-                        # Preserve detail if nested
-                        if "detail" in img_url and "detail" not in transformed:
-                            transformed["detail"] = img_url["detail"]
-                    else:
-                        transformed["image_url"] = str(img_url) if img_url else ""
-                    content_blocks.append(transformed)
-
-                elif btype == "file":
-                    transformed = dict(block)
-                    transformed["type"] = "input_file"
-                    file_payload = transformed.pop("file", {})
-                    if isinstance(file_payload, dict):
-                        if file_payload.get("filename"):
-                            transformed["filename"] = file_payload["filename"]
-                        if file_payload.get("file_data"):
-                            transformed["file_data"] = file_payload["file_data"]
-                    content_blocks.append(transformed)
-
-                else:
-                    content_blocks.append(block)
-
-        if content_blocks:
-            out_msg = dict(msg)
-            out_msg["type"] = "message"
-            out_msg["content"] = content_blocks
-            result.append(out_msg)
-
-    return result
-
-
-async def _apply_source_context_responses_api(
-    input_items: list,
-    sources: list,
-    user_message: str,
-    request_context: Request | None = None,
-) -> list:
-    """
-    Apply source context to messages in Responses API format.
-
-    Uses adapter pattern:
-    1. Collect message items and remember their original indices
-    2. Convert messages: Responses API input → Chat Completions messages
-    3. Apply OWUI's apply_source_context_to_messages()
-    4. Convert back: Chat Completions → Responses API input
-    5. Reinsert transformed messages into their original slots
-
-    Non-message items remain untouched and in their original positions. If the
-    OWUI round-trip changes the number of message items, the original input is
-    returned unchanged to avoid corrupting the request structure.
-    """
-    _logger = logging.getLogger(f"{__name__}.source_context")
-
-    if not sources or not user_message:
-        return input_items
-
-    if _owui_apply_source_context is None:
-        _logger.warning("OWUI apply_source_context_to_messages not available - skipping source context")
-        return input_items
-
-    if request_context is None:
-        _logger.warning("request_context is None - cannot apply source context")
-        return input_items
-
-    messages_only: list[dict[str, Any]] = []
-    message_indices: list[int] = []
-
-    for idx, item in enumerate(input_items):
-        if isinstance(item, dict) and item.get("type") == "message":
-            message_indices.append(idx)
-            messages_only.append(item)
-
-    _logger.debug(
-        "Separated input: %d messages, %d non-message items",
-        len(messages_only),
-        len(input_items) - len(message_indices),
-    )
-
-    if not messages_only:
-        return input_items
-
-    chat_messages = _responses_input_to_chat_messages(messages_only, allow_unknown_fields=True)
-    _logger.debug("Converted %d Responses API messages → %d Chat Completions messages", len(messages_only), len(chat_messages))
-
-    modified_chat_messages = await _owui_apply_source_context(
-        request_context,
-        chat_messages,
-        sources,
-        user_message,
-        **({"include_content": False} if _OWUI_SUPPORTS_INCLUDE_CONTENT else {}),
-    )
-    _logger.debug("Applied source context via OWUI adapter")
-
-    modified_messages = _chat_messages_to_responses_input(modified_chat_messages)
-    _logger.debug("Converted %d Chat Completions messages → %d Responses API messages", len(modified_chat_messages), len(modified_messages))
-
-    if len(modified_messages) != len(message_indices):
-        _logger.warning(
-            "Source context transform changed message count (%d -> %d); skipping source context for this turn.",
-            len(message_indices),
-            len(modified_messages),
-        )
-        return input_items
-
-    result = list(input_items)
-    for idx, message in zip(message_indices, modified_messages):
-        result[idx] = message
-
-    _logger.debug(
-        "Reassembled result: %d total items with %d transformed message(s) reinserted",
-        len(result),
-        len(modified_messages),
-    )
-
-    return result
 
 
 class StreamingHandler:
@@ -558,7 +390,7 @@ class StreamingHandler:
         fusion_inner_call = bool(isinstance(_loop_pipe_meta, dict) and _loop_pipe_meta.get("fusion_inner"))
         breaker_key_value = user_id or None
 
-        owui_tool_passthrough = valves.TOOL_EXECUTION_MODE == "Open-WebUI"
+        owui_tool_passthrough = open_webui_runs_the_calls(valves, metadata, stream=bool(body.stream))
         persist_tools_enabled = valves.PERSIST_TOOL_RESULTS
         handed_back = False
         is_continuation = owui_tool_passthrough and any(
@@ -569,8 +401,7 @@ class StreamingHandler:
             body._continued_turn if body._continued_turn is not None else continued_turn_counts(body.input)
         )
         self.logger.debug(
-            "🔧 TOOL_EXECUTION_MODE=%s owui_passthrough=%s PERSIST_TOOL_RESULTS=%s effective_persist_tools=%s is_continuation=%s",
-            valves.TOOL_EXECUTION_MODE,
+            "🔧 TOOL_EXECUTION_MODE decision=owui_passthrough=%s PERSIST_TOOL_RESULTS=%s effective_persist_tools=%s is_continuation=%s",
             owui_tool_passthrough,
             valves.PERSIST_TOOL_RESULTS,
             persist_tools_enabled,
@@ -657,7 +488,10 @@ class StreamingHandler:
             for t in (body.tools or [])
             if isinstance(t, dict) and t.get("type") == "function"
         }
-        holds_the_reply = bool(owui_tool_passthrough and body.stream and message_id and is_temporary_chat(chat_id))
+        may_hand_back = owui_tool_passthrough or bool(offered_function_names - set(tool_registry))
+        holds_the_reply = bool(
+            may_hand_back and body.stream and message_id and is_temporary_chat(chat_id)
+        )
         if holds_the_reply:
             self._pipe._artifact_store._reply_memory.open(chat_id, message_id)
         model_started = asyncio.Event()
@@ -2878,10 +2712,25 @@ class StreamingHandler:
                 reasoning_anchor_state["awaiting"] = []
                 reasoning_anchor_state["calls_seen"] = _calls_seen + len(_fc_local)
 
+                _origin_names = frozenset(
+                    o for o in (_origin_tool_name(nm) for nm in offered_function_names)
+                    if isinstance(o, str) and o
+                )
                 hand_back = bool(call_items) and (
                     owui_tool_passthrough
-                    or any(str(c.get("name") or "") in offered_function_names and str(c.get("name") or "") not in tool_registry
-                           for c in call_items)
+                    or any(
+                        (
+                            (nm := str(c.get("name") or "")) in offered_function_names
+                            or _origin_tool_name(nm) in _origin_names
+                        )
+                        and nm not in tool_registry
+                        for c in call_items
+                    )
+                    and any(
+                        str(c.get("name") or "") not in tool_registry
+                        or _origin_tool_name(str(c.get("name") or "")) not in tool_registry
+                        for c in call_items
+                    )
                 )
                 if hand_back:
                     reply_key = (metadata.get("chat_id"), metadata.get("message_id"))
@@ -3233,7 +3082,6 @@ class StreamingHandler:
                             except Exception as exc:
                                 self.logger.warning("Failed to emit completed tool cards: %s", exc, exc_info=True)
 
-                        collected_sources: list[dict[str, Any]] = []
                         for cid, output in output_by_call_id.items():
                             if cid in omitted_call_ids:
                                 continue
@@ -3257,7 +3105,6 @@ class StreamingHandler:
                                         tool_id=cid,
                                     )
                                     for source in citations:
-                                        collected_sources.append(source)
                                         if event_emitter:
                                             await self._pipe._event_emitter_handler._emit_citation(event_emitter, source)
                                             self.logger.debug(
@@ -3267,12 +3114,6 @@ class StreamingHandler:
                                             )
                                     continue
                                 result_text = tool_result if isinstance(tool_result, str) else str(tool_result)
-                                context_name = tool_name or "tool"
-                                collected_sources.append({
-                                    "source": {"name": context_name, "type": "tool", "id": cid or context_name},
-                                    "document": [result_text],
-                                    "metadata": [{"source": context_name, "name": context_name}],
-                                })
                                 for url, title, snippet in harvest_tool_citations(result_text):
                                     if url in ordinal_by_url:
                                         continue
@@ -3296,59 +3137,6 @@ class StreamingHandler:
                                 self.logger.warning(
                                     "Failed to extract citations from tool=%s: %s",
                                     tool_name,
-                                    exc,
-                                    exc_info=True,
-                                )
-
-                        is_native_fc = metadata.get("params", {}).get("function_calling") == "native"
-                        self.logger.debug(
-                            "Source context check: collected_sources=%d, native_fc=%s",
-                            len(collected_sources),
-                            is_native_fc,
-                        )
-                        if collected_sources and not is_native_fc:
-                            try:
-                                user_message = ""
-                                for item in reversed(body.input):
-                                    if isinstance(item, dict) and item.get("role") == "user":
-                                            content = item.get("content")
-                                            if isinstance(content, str):
-                                                user_message = content
-                                                break
-                                            elif isinstance(content, list):
-                                                for block in content:
-                                                    if isinstance(block, dict) and block.get("type") in ("text", "input_text"):
-                                                        user_message = block.get("text") or ""
-                                                        break
-                                                if user_message:
-                                                    break
-                                self.logger.debug(
-                                    "User message extraction: found=%s, input_items=%d",
-                                    bool(user_message),
-                                    len(body.input) if hasattr(body.input, '__len__') else -1,
-                                )
-                                if user_message:
-                                    input_before = len(body.input)
-                                    body.input = await _apply_source_context_responses_api(
-                                        list(body.input),
-                                        collected_sources,
-                                        user_message,
-                                        request_context=request_context,
-                                    )
-                                    has_source_tags = any(
-                                        '<source' in str(item.get('content', ''))
-                                        for item in body.input if isinstance(item, dict)
-                                    )
-                                    self.logger.debug(
-                                        "Applied source context: input=%d->%d items, sources=%d, has_source_tags=%s",
-                                        input_before,
-                                        len(body.input),
-                                        len(collected_sources),
-                                        has_source_tags,
-                                    )
-                            except Exception as exc:
-                                self.logger.debug(
-                                    "Failed to apply source context: %s",
                                     exc,
                                     exc_info=True,
                                 )

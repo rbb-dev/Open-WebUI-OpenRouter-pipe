@@ -361,12 +361,12 @@ class TestResolveIntent:
             body={},
             video_meta={},
             video_model={},
-            valves=valves,
             request=request,
             user_obj=None,
             chat_id="c1",
             logger=logging.getLogger("test"),
             fallback_prompt_text="my prompt",
+        valves=valves,
         )
         assert result.intent == "text_to_video"
         assert result.prompt == "my prompt"
@@ -389,12 +389,12 @@ class TestResolveIntent:
             body={"messages": [{"role": "user", "content": "hi"}]},
             video_meta={},
             video_model={},
-            valves=valves,
             request=request,
             user_obj=None,
             chat_id="c1",
             logger=logging.getLogger("test"),
             fallback_prompt_text="hi",
+        valves=valves,
         )
         # No candidates → fallback
         assert result.intent == "text_to_video"
@@ -444,13 +444,13 @@ class TestResolveIntent:
             ]},
             video_meta={},
             video_model={"supported_frame_images": ["first_frame", "last_frame"]},
-            valves=valves,
             request=request,
             user_obj=SimpleNamespace(id="u1"),
             chat_id="c1",
             logger=logging.getLogger("test"),
             invoke_chat_completion=mock_invoke,
             fallback_prompt_text="make it black",
+        valves=valves,
         )
         assert result.intent == "modify_prior_video"
         assert result.prompt == "a black cat"
@@ -478,13 +478,13 @@ class TestResolveIntent:
             body={"messages": [{"role": "user", "content": "hi"}]},
             video_meta={},
             video_model={},
-            valves=valves,
             request=request,
             user_obj=None,
             chat_id="c1",
             logger=logging.getLogger("test"),
             invoke_chat_completion=bad_invoke,
             fallback_prompt_text="hi",
+        valves=valves,
         )
         assert result.intent == "text_to_video"  # degrade-open
 
@@ -510,13 +510,13 @@ class TestResolveIntent:
             body={"messages": [{"role": "user", "content": "hi"}]},
             video_meta={},
             video_model={},
-            valves=valves,
             request=request,
             user_obj=None,
             chat_id="c1",
             logger=logging.getLogger("test"),
             invoke_chat_completion=boom,
             fallback_prompt_text="hi",
+        valves=valves,
         )
         assert result.intent == "text_to_video"
 

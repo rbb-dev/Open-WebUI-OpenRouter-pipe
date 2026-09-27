@@ -46,7 +46,7 @@ from ..core.config import (
     _PROVIDER_ROUTING_OVERLAY_MAX_MODELS,
 )
 from ..integrations.provider_options import options_key
-from .registry import ModelFamily, OpenRouterModelRegistry
+from .registry import ModelFamily, OpenRouterModelRegistry, uses_dedicated_image_api
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
@@ -175,6 +175,8 @@ def _apply_single_id_filter_ids(
     attaching = supported and auto_attach
     if attaching:
         wanted.add(filter_function_id)
+    elif not supported:
+        wanted.discard(filter_function_id)
     if wanted == had:
         return False
     if attaching and filter_function_id not in normalized:
@@ -1596,12 +1598,45 @@ class ModelCatalogManager:
                 from ..filters.fusion_filter_renderer import (
                     is_fusion_model as _is_fusion,
                 )
+                norm_id = model.get("norm_id") or ""
+                spec_lookup_id = (
+                    (model.get("variant_base_norm_id") or norm_id.rsplit(":", 1)[0])
+                    if model.get("variant_is_virtual")
+                    else (norm_id or openrouter_id)
+                )
+
+                def _safe_rules_out(mid: str) -> bool:
+                    try:
+                        return bool(ModelFamily.rules_out_tool_use(mid))
+                    except (AttributeError, TypeError):
+                        return False
+
+                tool_use_ruled_out = _safe_rules_out(spec_lookup_id)
+                picture_only = uses_dedicated_image_api(ModelFamily._lookup_spec(str(norm_id or "")))
+                fusion_model = bool(_is_fusion(openrouter_id) or _is_fusion(str(original_id or "")))
+                image_gen_filter_supported = not (
+                    tool_use_ruled_out
+                    or picture_only
+                    or pipe_capabilities.get("video_generation")
+                    or fusion_model
+                )
+                if not image_gen_filter_supported:
+                    self.logger.debug(
+                        "Image Generation switch withheld for %s: %s.",
+                        openrouter_id,
+                        "tool use is ruled out" if tool_use_ruled_out else (
+                            "picture-only model" if picture_only else (
+                                "video model" if pipe_capabilities.get("video_generation") else "fusion model"
+                            )
+                        ),
+                    )
                 web_tools_supported = bool(
                     web_tools_filter_function_id
                     and (
                         valves.AUTO_ATTACH_WEB_TOOLS_FILTER
                         or valves.AUTO_DEFAULT_WEB_TOOLS_FILTER
                     )
+                    and not tool_use_ruled_out
                     and not pipe_capabilities.get("image_output")
                     and not pipe_capabilities.get("video_generation")
                     and not _is_fusion(openrouter_id)
@@ -1698,6 +1733,7 @@ class ModelCatalogManager:
                             direct_uploads_filter_supported=native_supported,
                             auto_attach_direct_uploads_filter=auto_attach_direct_uploads,
                             image_gen_filter_function_id=image_gen_filter_function_id,
+                            image_gen_filter_supported=image_gen_filter_supported,
                             auto_attach_image_gen_filter=bool(valves.AUTO_ATTACH_IMAGE_GEN_FILTER),
                             video_gen_filter_function_id=video_gen_filter_function_id,
                             video_gen_filter_supported=bool(pipe_capabilities.get("video_generation")),
@@ -1863,6 +1899,7 @@ class ModelCatalogManager:
         direct_uploads_filter_supported: bool = False,
         auto_attach_direct_uploads_filter: bool = False,
         image_gen_filter_function_id: str | None = None,
+        image_gen_filter_supported: bool = True,
         auto_attach_image_gen_filter: bool = False,
         video_gen_filter_function_id: str | None = None,
         video_gen_filter_supported: bool = False,
@@ -2023,7 +2060,7 @@ class ModelCatalogManager:
             return _apply_single_id_filter_ids(
                 meta_dict,
                 filter_function_id=image_gen_filter_function_id,
-                supported=True,
+                supported=image_gen_filter_supported,
                 auto_attach=auto_attach_image_gen_filter,
                 record_key="image_gen_filter_id",
             )

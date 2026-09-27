@@ -187,9 +187,9 @@ async def _transform_block(pipe, block, *, user=None):
         pipe,
         [{"role": "user", "content": [block]}],
         model_id="vision-model",
-        valves=pipe.valves,
         event_emitter=_emitter,
         user_obj=user,
+    valves=pipe.valves,
     )
 
 

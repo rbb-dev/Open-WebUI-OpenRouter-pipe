@@ -200,7 +200,6 @@ async def test_no_named_gap_appears_in_the_payload_the_adapter_submits(
     result = await adapter.generate(
         body={"messages": [{"role": "user", "content": "a paper kite over a harbour"}]},
         responses_body=SimpleNamespace(provider={}),
-        valves=pipe.valves,
         session=None,
         event_emitter=None,
         metadata={
@@ -223,6 +222,7 @@ async def test_no_named_gap_appears_in_the_payload_the_adapter_submits(
         user_obj={"id": "user-1"},
         normalized_model_id=model_id.replace("/", "."),
         api_model_id=model_id,
+        valves=pipe.valves,
     )
 
     assert submitted, f"the request never reached submit, so this proves nothing: {result!r}"
