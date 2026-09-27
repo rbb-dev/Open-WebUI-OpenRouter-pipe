@@ -89,6 +89,10 @@ Templates are Markdown strings with:
 
 Rendering rules implemented by the pipe:
 - A line is dropped when a placeholder it uses was supplied but came out empty; a name the message never supplies is left in the text verbatim, so wrap such a line in `{{#if name}}` and it is left out instead.
+- A `{name}` token belongs to the template, never to a value: a substituted value is shown verbatim and is never re-read as a placeholder.
+- Provider-controlled values arrive already shaped for the card: inside a backtick span, on a heading or on a bare card line they are collapsed to one line and their backticks removed; inside a fence they arrive fenced, so a template must not fence such a value again.
+- A boolean placeholder renders `True`/`False`, and its line is dropped when the value is false; the `{{#if}}` form of the same value is equivalent.
+- A value made only of backticks renders as `_` rather than deleting its own line. Backticks are stripped after whitespace collapses, so a value of ` ``` ` would otherwise become empty and the drop rule above would remove the whole bullet — on the shipped card, one such word from a provider erased the entire `### Error:` section. A value that is legitimately empty (`""`, `"   "`, a blank line) still reads as empty, so its `{{#if}}` gate and the drop rule keep working.
 - Conditional blocks render only when the referenced variable is “present”.
 
 Minimal example:
@@ -118,10 +122,13 @@ The OpenRouter error formatter supports a larger set of optional values, includi
 - `retry_after_seconds`, `rate_limit_type`
 - `include_model_limits`, `context_limit_tokens`, `max_output_tokens`
 - `metadata_json`, `provider_raw_json`, `diagnostics`
+- `error_chunk_id`, `error_chunk_created`, `is_streaming_error`, `streaming_provider`, `streaming_model`, `native_finish_reason`, `request_id_reference`
 
 Because OpenRouter/provider responses vary, treat these fields as optional and wrap them in `{{#if ...}}` blocks.
 
 `max_output_tokens` on an error card is the provider's **advertised** ceiling, read straight from the catalog entry (`core/errors.py`). It is deliberately not the value the pipe sends when `USE_MODEL_MAX_OUTPUT_TOKENS` is on: that is the smaller of the advertised ceiling and half the model's context window. A diagnostic about a failure should report the provider's own limit, so the two numbers are meant to differ.
+
+The pipe does the span and fence work on these values itself: a value placed inside a backtick span, on a `### ` heading, or on a bare `**…**` / `- ` line arrives as one logical line with its backticks removed, and a value placed in a fenced block arrives inside a fence long enough to contain it, so a custom template does not have to. The pipe's own numbers and labels (`status_code`, `retry_after_seconds`, `context_limit_tokens`, `max_output_tokens`, `diagnostics`) are already single-line, and a boolean placeholder renders `True`/`False`.
 
 ### When the model-limits block renders
 
@@ -204,6 +211,17 @@ If this persists, contact support and include the Error ID.
 
 ### Example: operator-forward template (adds diagnostic JSON)
 
+A value that arrives already fenced must not be fenced again by the template: `metadata_json` carries its
+own fence, so a template that adds a ```json … ``` pair around it closes that fence early and the JSON
+escapes the block.
+
+You do not have to edit a stored template that already fences one of these values. The renderer tracks
+the template's own fences, so a row written as ` ```json ` / `{metadata_json}` / ` ``` ` — the shape
+shipped before 2.7.4, and the shape the pipe's own example used to show — renders as exactly one
+code block holding the payload, with the label above it and the card text after it. A template that
+does not fence the value is unaffected. The same holds for `{raw_body}`, `{flagged_excerpt}` and
+`{provider_raw_json}`; a value is only unwrapped when the template supplies the fence.
+
 ````markdown
 ### 🧾 Provider error
 **Error ID:** `{error_id}`
@@ -212,9 +230,7 @@ If this persists, contact support and include the Error ID.
 
 {{#if metadata_json}}
 **Metadata:**
-```json
 {metadata_json}
-```
 {{/if}}
 ````
 
@@ -229,6 +245,7 @@ If this persists, contact support and include the Error ID.
   - The variable may be empty for that error path; wrap the whole section in `{{#if var}}`.
 - Templates render blank:
   - A placeholder on a line can cause the entire line to be dropped if the variable is empty; prefer multi-line blocks with conditionals for optional sections.
+  - A line whose **own** placeholder resolves to a missing or empty value is omitted; a value that itself contains `{name}` is shown verbatim, never re-read as a placeholder.
 
 ---
 

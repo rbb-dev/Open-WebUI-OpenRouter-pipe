@@ -752,7 +752,6 @@ class TestTemplateValuePresent:
         assert _template_value_present(Truthy()) is True
         assert _template_value_present(Falsy()) is False
 
-
 # -----------------------------------------------------------------------------
 # _sanitize_path_component tests
 # -----------------------------------------------------------------------------

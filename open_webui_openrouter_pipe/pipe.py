@@ -2346,7 +2346,7 @@ class Pipe:
             raise
         except Exception as exc:
             self.logger.exception("Request job failed (request_id=%s)", job.request_id)
-            if reached_openrouter:
+            if reached_openrouter and not job.task:
                 self._circuit_breaker.record_failure(job.user_id)
             if stream_queue is not None and not job.future.cancelled():
                 self._event_emitter_handler._try_put_middleware_stream_nowait(

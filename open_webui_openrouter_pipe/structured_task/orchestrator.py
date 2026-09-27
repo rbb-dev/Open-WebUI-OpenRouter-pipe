@@ -17,7 +17,7 @@ TaskModelMode = Literal["internal", "external"]
 TaskModelFallback = Literal["none", "other_task_model"]
 
 
-def resolve_task_model_candidates(
+async def resolve_task_model_candidates(
     *,
     request: Any,
     mode: TaskModelMode,
@@ -25,19 +25,25 @@ def resolve_task_model_candidates(
 ) -> list[str]:
     """Return ordered list of task-model IDs per OWUI config.
 
-    Reads `request.app.state.config.TASK_MODEL` and `TASK_MODEL_EXTERNAL`.
     Empty strings are filtered. Duplicates are deduped while preserving order.
 
     Args:
-        request: FastAPI Request with app.state.config populated.
         mode: "internal" picks TASK_MODEL primary, "external" picks TASK_MODEL_EXTERNAL.
         fallback: "none" returns only primary; "other_task_model" appends the
             other OWUI task model.
     """
-    config = getattr(getattr(request, "app", None), "state", None)
-    config = getattr(config, "config", None) if config is not None else None
-    internal = (getattr(config, "TASK_MODEL", "") or "").strip() if config else ""
-    external = (getattr(config, "TASK_MODEL_EXTERNAL", "") or "").strip() if config else ""
+    internal = external = ""
+    try:
+        from open_webui.models.config import Config
+
+        values = await Config.get_many("task.model.default", "task.model.external")
+        internal = (values.get("task.model.default") or "").strip()
+        external = (values.get("task.model.external") or "").strip()
+    except Exception:  # noqa: BLE001
+        config = getattr(getattr(request, "app", None), "state", None)
+        config = getattr(config, "config", None) if config is not None else None
+        internal = (getattr(config, "TASK_MODEL", "") or "").strip() if config else ""
+        external = (getattr(config, "TASK_MODEL_EXTERNAL", "") or "").strip() if config else ""
 
     primary = internal if mode == "internal" else external
     other = external if mode == "internal" else internal

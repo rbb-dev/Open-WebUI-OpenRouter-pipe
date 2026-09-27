@@ -1033,7 +1033,7 @@ class StreamingHandler:
                     call_id = item.get("call_id") or item.get("id")
                     resolvable = item.get("status") not in OWUI_UNRESOLVABLE_CALL_STATUSES
                     addressable = index >= len(seeded) or call_id in result_status_by_call_id
-                    if resolvable and addressable:
+                    if resolvable and addressable and call_id in result_status_by_call_id:
                         item["status"] = owui_call_status(result_status_by_call_id.get(call_id))
                 resolved.append(item)
             trailing = assistant_message[recorded_message_chars:]

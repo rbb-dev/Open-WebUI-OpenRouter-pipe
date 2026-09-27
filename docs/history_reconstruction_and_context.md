@@ -97,6 +97,8 @@ If the assistant text contains embedded marker lines, the pipe splits the text i
 - text segments (emitted as assistant `output_text` messages), and
 - marker segments (used to replay persisted artifacts).
 
+When a marker split produces several `output_text` items for one assistant message, `annotations` and `reasoning_details` go on the **last** of them, once each, and on no other item.
+
 Marker detection and splitting is performed by helper functions (for example `contains_marker(...)` and `split_text_by_markers(...)`) and uses the marker format:
 
 ```text

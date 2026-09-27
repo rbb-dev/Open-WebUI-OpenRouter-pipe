@@ -8,6 +8,14 @@ The OpenRouter `/videos` endpoint takes `prompt`, optional `frame_images`, and o
 
 Other UIs work around this by automatically attaching a frame from the prior video as a reference. The pipe does the same thing now: a small task model reads the chat history, the latest message, and any attachments, then decides what visual reference (if any) to wire into the request before it's submitted.
 
+## What it costs, and how the classifier is found
+
+Every video follow-up that is not short-circuited makes **one small task-model call**. It is bounded by `VIDEO_INTENT_TIMEOUT_S` (default `8`) and is skipped entirely on a fresh chat with no prior turns and no attachments (`VIDEO_INTENT_SKIP_WHEN_EMPTY_CHAT`, default `True`), so the call is not wasted where there is nothing to classify against. It is a billable call at whatever the chosen Task Model's OpenRouter rate is, which is why the timeout, the skip valve and `VIDEO_INTENT_MAX_CALLS_PER_CHAT` all exist.
+
+The classifier's model id is read from Open WebUI's **config table** — `task.model.default` and `task.model.external`, the two settings behind Settings → Tasks. A host that populates the older `app.state.config.TASK_MODEL` / `TASK_MODEL_EXTERNAL` shape instead is still read, as a fallback. This matters because Open WebUI 0.11.4 assigns no `app.state.config` at all, so a resolver that read only that attribute answered nothing on a stock host and every video follow-up degraded open with the classifier silently inert — no warning, just a plain text-to-video with no cross-turn context.
+
+When the task model keeps failing, `classifier_failed` is set, the **60-second** intent breaker opens (so the next turns skip the call instead of retrying quietly forever), and a warning plus a toast say so. See "Failure modes" below.
+
 ## How it works
 
 ```
@@ -104,7 +112,7 @@ All admin-scoped on the global `Valves` model. User-tunable per-chat versions of
 | Valve | Type | Default | Purpose |
 |---|---|---|---|
 | `VIDEO_INTENT_ENABLED` | `bool` | `True` | Master switch. When False, the classifier is bypassed entirely; only the latest user message is sent to the video model. |
-| `VIDEO_INTENT_TASK_MODEL_MODE` | `internal` / `external` | `external` | Which Open WebUI Task Model to use as the classifier. `internal` reads `TASK_MODEL`; `external` reads `TASK_MODEL_EXTERNAL`. |
+| `VIDEO_INTENT_TASK_MODEL_MODE` | `internal` / `external` | `external` | Which Open WebUI Task Model to use as the classifier. `internal` reads `TASK_MODEL`; `external` reads `TASK_MODEL_EXTERNAL`, both read from Open WebUI's Settings → Tasks. |
 | `VIDEO_INTENT_TASK_MODEL_FALLBACK` | `none` / `other_task_model` | `other_task_model` | Failure fallback strategy. `none` returns only the primary task model; `other_task_model` also tries the other (internal/external) Task Model. |
 | `VIDEO_INTENT_SKIP_WHEN_EMPTY_CHAT` | `bool` | `True` | Skip the classifier when the chat has no prior turns and no attachments — there is nothing to classify against, so the call is wasted. Turn off if you want clarifying questions on first-turn ambiguous prompts. |
 | `VIDEO_INTENT_MAX_CLARIFICATIONS` | `0`–`3` | `1` | Per-session cap on consecutive clarifying questions. `0` disables the clarification loop entirely. |

@@ -95,7 +95,7 @@ Every request forwards `file_data` and `file_url` as they came, except inline da
 
 - Inline data (a `data:` URL in either field, or raw base64 in `file_data`) up to `BASE64_MAX_SIZE_MB` is sent unchanged.
 - Larger inline data is not sent. Without a `file_id` the file is dropped, and the person sees "Files: skipped …" for their latest message, as with pictures; when the block has a `file_id`, only the oversized field is dropped and the `file_id` is sent.
-- An `https://` link in either field is sent unchanged for the provider to fetch; the pipe does not download it. Plain `http://` is disabled by default and requires explicit allowlisting.
+- An `https://` link in either field is sent unchanged for the provider to fetch; the pipe does not download it. Plain `http://` is disabled by default and requires explicit allowlisting: a cleartext link whose host is not allowlisted has its **whole block dropped**, and the person sees "Files: skipped …", the same as an oversized file.
 - An Open WebUI file URL in either field becomes a `file_id`, which is read with the requester's access and sent inline as `file_data`.
 
 ---

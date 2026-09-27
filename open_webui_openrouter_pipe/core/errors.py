@@ -34,6 +34,7 @@ from .utils import (
     _retry_after_seconds,
     _safe_json_loads,
     _unwrap_config_value,
+    wrap_code_block,
 )
 
 # Supporting Classes
@@ -372,6 +373,17 @@ _CONTEXT_OVERFLOW_PHRASES = (
 )
 
 
+def _inline_span(text: str) -> str:
+    collapsed = " ".join(str(text).split()).replace("`", "")
+    if not collapsed.strip() and str(text).strip():
+        return "_"
+    return collapsed
+
+
+def _fenced_block(text: str) -> str:
+    return wrap_code_block(text, "") if text else ""
+
+
 def _build_error_template_values(
     error: OpenRouterAPIError,
     *,
@@ -385,7 +397,6 @@ def _build_error_template_values(
 ) -> dict[str, Any]:
     """Prepare placeholder values for the customizable error template."""
     detail = (error.upstream_message or error.openrouter_message or str(error)).strip()
-    sanitized_detail = detail.replace("`", "\\`")
 
     moderation_lines = [reason for reason in (error.moderation_reasons or []) if reason]
     flagged_excerpt = (error.flagged_input or "").strip()
@@ -409,45 +420,47 @@ def _build_error_template_values(
     if retry_after is None:
         retry_after = _resolve_retry_after_seconds(error.metadata)
     replacements: dict[str, Any] = {
-        "heading": heading,
-        "detail": detail,
-        "sanitized_detail": sanitized_detail,
-        "provider": (error.provider or "").strip(),
-        "reason": str(error),
-        "raw_body": raw_body,
-        "model_identifier": model_identifier or "",
-        "requested_model": error.requested_model or "",
-        "openrouter_code": str(error.openrouter_code or ""),
-        "upstream_type": error.upstream_type or "",
-        "upstream_message": (error.upstream_message or "").strip(),
-        "openrouter_message": (error.openrouter_message or "").strip(),
-        "request_id": error.request_id or "",
-        "request_id_reference": f"Request reference: `{error.request_id}`" if error.request_id else "",
-        "moderation_reasons": "\n".join(f"- {reason}" for reason in moderation_lines),
-        "flagged_excerpt": flagged_excerpt,
+        "heading": _inline_span(heading),
+        "detail": _inline_span(detail),
+        "sanitized_detail": _inline_span(detail),
+        "provider": _inline_span(error.provider or ""),
+        "reason": _inline_span(str(error)),
+        "raw_body": _fenced_block(raw_body),
+        "model_identifier": _inline_span(model_identifier or ""),
+        "requested_model": _inline_span(error.requested_model or ""),
+        "openrouter_code": _inline_span(str(error.openrouter_code or "")),
+        "upstream_type": _inline_span(error.upstream_type or ""),
+        "upstream_message": _inline_span(error.upstream_message or ""),
+        "openrouter_message": _inline_span(error.openrouter_message or ""),
+        "request_id": _inline_span(error.request_id or ""),
+        "request_id_reference": (
+            f"Request reference: `{_inline_span(error.request_id)}`" if error.request_id else ""
+        ),
+        "moderation_reasons": "\n".join(f"- {_inline_span(reason)}" for reason in moderation_lines),
+        "flagged_excerpt": _fenced_block(flagged_excerpt),
         "context_limit_tokens": f"{context_limit_value:,}" if context_limit_value else "",
         "max_output_tokens": f"{max_output_tokens_value:,}" if max_output_tokens_value else "",
         "include_model_limits": bool(include_model_limits),
-        "api_model_id": api_model_id or "",
-        "normalized_model_id": normalized_model_id or "",
-        "metadata_json": metadata_json,
-        "provider_raw_json": provider_raw_json,
-        "native_finish_reason": error.native_finish_reason or "",
-        "error_chunk_id": error.chunk_id or "",
-        "error_chunk_created": error.chunk_created or "",
-        "streaming_provider": error.chunk_provider or (error.provider or ""),
-        "streaming_model": error.chunk_model or "",
+        "api_model_id": _inline_span(api_model_id or ""),
+        "normalized_model_id": _inline_span(normalized_model_id or ""),
+        "metadata_json": _fenced_block(metadata_json),
+        "provider_raw_json": _fenced_block(provider_raw_json),
+        "native_finish_reason": _inline_span(error.native_finish_reason or ""),
+        "error_chunk_id": _inline_span(error.chunk_id or ""),
+        "error_chunk_created": _inline_span(error.chunk_created or ""),
+        "streaming_provider": _inline_span(error.chunk_provider or (error.provider or "")),
+        "streaming_model": _inline_span(error.chunk_model or ""),
         "is_streaming_error": bool(error.is_streaming_error),
-        "error_id": context.get("error_id", ""),
+        "error_id": _inline_span(context.get("error_id", "")),
         "timestamp": context.get("timestamp", ""),
-        "session_id": context.get("session_id", ""),
-        "user_id": context.get("user_id", ""),
+        "session_id": _inline_span(context.get("session_id", "")),
+        "user_id": _inline_span(context.get("user_id", "")),
         "support_email": context.get("support_email", ""),
         "support_url": context.get("support_url", ""),
         "retry_after_seconds": "" if retry_after is None else retry_after,
-        "rate_limit_type": error.metadata.get("rate_limit_type") or "",
-        "required_cost": error.metadata.get("required_cost") or "",
-        "account_balance": error.metadata.get("account_balance") or "",
+        "rate_limit_type": _inline_span(error.metadata.get("rate_limit_type") or ""),
+        "required_cost": _inline_span(error.metadata.get("required_cost") or ""),
+        "account_balance": _inline_span(error.metadata.get("account_balance") or ""),
         "status_code": error.status or "",
         "diagnostics": "\n".join(diagnostics),
     }

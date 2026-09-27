@@ -5500,3 +5500,13 @@ def test_a_reply_that_reported_no_counts_gets_no_counts_on_the_line(pipe_instanc
 
 
 _ROOT = Path(__file__).resolve().parents[1]
+
+
+"""A value carrying a backtick, a newline and a heading, so any missing sanitiser shows."""
+
+
+"""The three placements the sentence names, with NAME standing for the placeholder's own name.
+
+Written with a name rather than formatted, because `{name}` is the renderer's own syntax and a
+str.format on it would substitute the name into the template instead of into a value.
+"""

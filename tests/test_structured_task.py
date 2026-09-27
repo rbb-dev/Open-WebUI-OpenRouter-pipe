@@ -44,44 +44,50 @@ def _fake_request(task_model: str = "", task_model_external: str = "") -> Simple
 
 
 class TestResolveCandidates:
-    def test_internal_mode_picks_TASK_MODEL(self):
+    @pytest.mark.asyncio
+    async def test_internal_mode_picks_TASK_MODEL(self):
         req = _fake_request(task_model="local-llm", task_model_external="external-llm")
-        result = resolve_task_model_candidates(
+        result = await resolve_task_model_candidates(
             request=req, mode="internal", fallback="none",
         )
         assert "local-llm" in result
 
-    def test_external_mode_picks_TASK_MODEL_EXTERNAL(self):
+    @pytest.mark.asyncio
+    async def test_external_mode_picks_TASK_MODEL_EXTERNAL(self):
         req = _fake_request(task_model="local-llm", task_model_external="external-llm")
-        result = resolve_task_model_candidates(
+        result = await resolve_task_model_candidates(
             request=req, mode="external", fallback="none",
         )
         assert "external-llm" in result
 
-    def test_fallback_other_task_model_appends(self):
+    @pytest.mark.asyncio
+    async def test_fallback_other_task_model_appends(self):
         req = _fake_request(task_model="local", task_model_external="ext")
-        result = resolve_task_model_candidates(
+        result = await resolve_task_model_candidates(
             request=req, mode="external", fallback="other_task_model",
         )
         assert result.index("ext") < result.index("local")
 
-    def test_fallback_none_returns_only_primary(self):
+    @pytest.mark.asyncio
+    async def test_fallback_none_returns_only_primary(self):
         req = _fake_request(task_model_external="ext")
-        result = resolve_task_model_candidates(
+        result = await resolve_task_model_candidates(
             request=req, mode="external", fallback="none",
         )
         assert result == ["ext"]
 
-    def test_dedupes_when_internal_equals_external(self):
+    @pytest.mark.asyncio
+    async def test_dedupes_when_internal_equals_external(self):
         req = _fake_request(task_model="same", task_model_external="same")
-        result = resolve_task_model_candidates(
+        result = await resolve_task_model_candidates(
             request=req, mode="external", fallback="other_task_model",
         )
         assert result.count("same") == 1
 
-    def test_returns_empty_when_unconfigured_no_fallback(self):
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_unconfigured_no_fallback(self):
         req = _fake_request()
-        result = resolve_task_model_candidates(
+        result = await resolve_task_model_candidates(
             request=req, mode="external", fallback="none",
         )
         assert result == []

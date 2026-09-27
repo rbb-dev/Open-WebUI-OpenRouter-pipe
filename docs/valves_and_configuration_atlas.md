@@ -422,7 +422,7 @@ A task-model classifier that reads recent chat turns and attachments before an O
 | Valve | Type | Default (verified) | Purpose / notes |
 | --- | --- | --- | --- |
 | `VIDEO_INTENT_ENABLED` | `bool` | `True` | Master switch. When off, video requests bypass the classifier — only the latest user message is sent (no cross-turn context, clarifying questions, or frame reuse) — and all four user-facing controls come off every video filter. User-overridable per video model. |
-| `VIDEO_INTENT_TASK_MODEL_MODE` | `internal` / `external` | `external` | Which Open WebUI global Task Model runs the classifier: `external`=`TASK_MODEL_EXTERNAL`, `internal`=`TASK_MODEL`. |
+| `VIDEO_INTENT_TASK_MODEL_MODE` | `internal` / `external` | `external` | Which Open WebUI global Task Model runs the classifier: `external`=`TASK_MODEL_EXTERNAL`, `internal`=`TASK_MODEL`, both read from Open WebUI's Settings → Tasks. |
 | `VIDEO_INTENT_TASK_MODEL_FALLBACK` | `none` / `other_task_model` | `other_task_model` | Second-attempt strategy when the chosen Task Model fails: `none`=stop; `other_task_model`=try the other global Task Model (deduped if identical/unset). |
 | `VIDEO_INTENT_SKIP_WHEN_EMPTY_CHAT` | `bool` | `True` | Skip the classifier on a chat's first turn with no attachments (nothing to reference), saving a wasted Task Model call. |
 | `VIDEO_INTENT_MAX_CLARIFICATIONS` | `int` | `1` | Per-chat cap on consecutive clarifying questions before the classifier proceeds on its best guess. `0` disables the loop. User-overridable per video model. |

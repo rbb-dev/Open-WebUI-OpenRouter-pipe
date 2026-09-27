@@ -29,9 +29,7 @@ _FALLBACK_ERROR_TEMPLATE = """**Provider Error**
 
 The model provider returned an error:
 
-```
-{openrouter_message}
-```
+**Provider message**: `{openrouter_message}`
 
 **Model**: {model_identifier}
 **Error ID**: {error_id}

@@ -807,7 +807,7 @@ async def resolve_intent(
             selected_model=video_model or {},
         )
 
-        candidates = resolve_task_model_candidates(
+        candidates = await resolve_task_model_candidates(
             request=request,
             mode=getattr(valves, "VIDEO_INTENT_TASK_MODEL_MODE", "external"),
             fallback=getattr(valves, "VIDEO_INTENT_TASK_MODEL_FALLBACK", "other_task_model"),

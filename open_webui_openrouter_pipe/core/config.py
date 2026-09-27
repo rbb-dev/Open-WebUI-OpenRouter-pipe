@@ -230,20 +230,20 @@ DEFAULT_OPENROUTER_ERROR_TEMPLATE = (
     "{{/if}}\n"
     "{{#if flagged_excerpt}}\n"
     "\n**Flagged text excerpt:**\n"
-    "```\n{flagged_excerpt}\n```\n"
+    "{flagged_excerpt}\n"
     "Provide this excerpt when following up with your administrator.\n"
     "{{/if}}\n"
     "{{#if raw_body}}\n"
     "\n**Raw provider response:**\n"
-    "```\n{raw_body}\n```\n"
+    "{raw_body}\n"
     "{{/if}}\n"
     "{{#if metadata_json}}\n"
     "\n**Metadata:**\n"
-    "```\n{metadata_json}\n```\n"
+    "{metadata_json}\n"
     "{{/if}}\n"
     "{{#if provider_raw_json}}\n"
     "\n**Provider raw error:**\n"
-    "```\n{provider_raw_json}\n```\n"
+    "{provider_raw_json}\n"
     "{{/if}}\n\n"
     "Please adjust the request and try again, or contact your administrator if it keeps failing.\n"
     "{{#if request_id_reference}}\n"
@@ -1392,7 +1392,7 @@ class Valves(BaseModel):
     OPENROUTER_ERROR_TEMPLATE: str = Field(
         default=DEFAULT_OPENROUTER_ERROR_TEMPLATE,
         description=(
-            "Markdown template used when OpenRouter rejects a request with a status that has no template of its own (400, 403, 404, 422, and so on), and when a failure reported inside a started reply resolves to such a status, from the kind OpenRouter named or, when that kind is unknown, from the code it sent. Clear this box and save to restore this built-in text. Placeholders such as {heading}, {detail}, {sanitized_detail}, {provider}, {model_identifier}, {requested_model}, {api_model_id}, {normalized_model_id}, {openrouter_code}, {upstream_type}, {reason}, {request_id}, {request_id_reference}, {openrouter_message}, {upstream_message}, {moderation_reasons}, {flagged_excerpt}, {raw_body}, {context_limit_tokens}, {max_output_tokens}, {include_model_limits}, {metadata_json}, {provider_raw_json}, {error_id}, {timestamp}, {session_id}, {user_id}, {native_finish_reason}, {error_chunk_id}, {error_chunk_created}, {streaming_provider}, {streaming_model}, {retry_after_seconds}, {rate_limit_type}, {required_cost}, and {account_balance} are replaced when values are available. Lines containing placeholders are omitted automatically when the referenced value is missing or empty. Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to show them only when that value is set."
+            "Markdown template used when OpenRouter rejects a request with a status that has no template of its own (400, 403, 404, 422, and so on), and when a failure reported inside a started reply resolves to such a status, from the kind OpenRouter named or, when that kind is unknown, from the code it sent. Clear this box and save to restore this built-in text. Placeholders such as {heading}, {detail}, {sanitized_detail}, {provider}, {model_identifier}, {requested_model}, {api_model_id}, {normalized_model_id}, {openrouter_code}, {upstream_type}, {reason}, {request_id}, {request_id_reference}, {openrouter_message}, {upstream_message}, {moderation_reasons}, {flagged_excerpt}, {raw_body}, {context_limit_tokens}, {max_output_tokens}, {include_model_limits}, {metadata_json}, {provider_raw_json}, {error_id}, {timestamp}, {session_id}, {user_id}, {native_finish_reason}, {error_chunk_id}, {error_chunk_created}, {is_streaming_error}, {streaming_provider}, {streaming_model}, {retry_after_seconds}, {rate_limit_type}, {required_cost}, and {account_balance} are replaced when values are available. Lines whose **own** placeholder resolves to a missing or empty value are omitted automatically; a value that itself contains a placeholder in braces is shown verbatim, never re-read as a placeholder. A boolean placeholder renders `True`/`False`, and its line is dropped when the value is false; the `{{#if}}` form of the same value is equivalent. The pipe does the span and fence work on these values itself: a value placed inside a backtick span, on a `### ` heading, or on a bare `**…**` / `- ` line arrives as one logical line with its backticks removed, and a value placed in a fenced block arrives inside a fence long enough to contain it, so a custom template does not have to. The pipe's own numbers and labels (`status_code`, `retry_after_seconds`, `context_limit_tokens`, `max_output_tokens`, `diagnostics`) are already single-line, and a boolean placeholder renders `True`/`False`. Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to show them only when that value is set."
         ),
     )
     ENDPOINT_OVERRIDE_CONFLICT_TEMPLATE: str = Field(
@@ -2110,7 +2110,7 @@ class Valves(BaseModel):
         default="external",
         description=(
             "Which Open WebUI global Task Model to use as the intent classifier. "
-            "'internal' uses TASK_MODEL, 'external' uses TASK_MODEL_EXTERNAL."
+            "'internal' uses TASK_MODEL, 'external' uses TASK_MODEL_EXTERNAL, both read from Open WebUI's Settings → Tasks."
         ),
     )
     VIDEO_INTENT_TASK_MODEL_FALLBACK: Literal["none", "other_task_model"] = Field(

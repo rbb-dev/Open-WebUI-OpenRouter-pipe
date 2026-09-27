@@ -938,7 +938,6 @@ async def transform_messages_to_input(
 
                 Note:
                     All errors are caught and logged with status emissions.
-                    Failed processing returns minimal valid block rather than crashing.
                 """
                 try:
                     result = {"type": "input_file"}
@@ -978,7 +977,13 @@ async def transform_messages_to_input(
                         if file_id:
                             file_data = None
                         else:
-                            return result
+                            return ImageRefusal(
+                                "served over plain HTTP, which is blocked by security policy; "
+                                "set ALLOW_INSECURE_HTTP and list the host in "
+                                "ALLOW_INSECURE_HTTP_HOSTS to permit it",
+                                "insecure_http_file",
+                                subject="file_data",
+                            )
 
                     if (
                         isinstance(file_url, str)
@@ -996,7 +1001,13 @@ async def transform_messages_to_input(
                         if file_id:
                             file_url = None
                         else:
-                            return result
+                            return ImageRefusal(
+                                "served over plain HTTP, which is blocked by security policy; "
+                                "set ALLOW_INSECURE_HTTP and list the host in "
+                                "ALLOW_INSECURE_HTTP_HOSTS to permit it",
+                                "insecure_http_file",
+                                subject="file_url",
+                            )
 
                     oversized = {
                         name: value
@@ -1642,9 +1653,10 @@ async def transform_messages_to_input(
                 )
 
             if not converted_blocks and (refused_images or refused_files):
+                reasons = "; ".join(reason.rstrip(".") for reason in refused_files + refused_images)
                 converted_blocks.append({
                     "type": "input_text",
-                    "text": f"[An attached item was not sent: it is larger than the {max_inline_bytes}-byte inline limit.]",
+                    "text": f"[An attached item was not sent: {reasons}.]",
                 })
             openai_input.append({
                 "type": "message",
@@ -1679,8 +1691,11 @@ async def transform_messages_to_input(
             ]
             last_image_turn = msg_turn_index
 
+        appended_text_chunks: list[dict[str, Any]] = []
+
         def _append_assistant_text_chunks(
             text: str,
+            appended: list[dict[str, Any]] = appended_text_chunks,
             msg_annotations: list[Any] = msg_annotations,
             msg_reasoning_details: list[Any] = msg_reasoning_details,
         ) -> None:
@@ -1700,11 +1715,8 @@ async def transform_messages_to_input(
 
             if not chunk_items:
                 return
-            if msg_annotations:
-                chunk_items[-1]["annotations"] = msg_annotations
-            if msg_reasoning_details:
-                chunk_items[-1]["reasoning_details"] = msg_reasoning_details
             openai_input.extend(chunk_items)
+            appended.extend(chunk_items)
 
         if contains_marker(assistant_text):
             segments = split_text_by_markers(assistant_text)
@@ -1808,6 +1820,12 @@ async def transform_messages_to_input(
                     _append_assistant_text_chunks(segment["text"])
         else:
             _append_assistant_text_chunks(assistant_text)
+
+        if appended_text_chunks:
+            if msg_annotations:
+                appended_text_chunks[-1]["annotations"] = msg_annotations
+            if msg_reasoning_details:
+                appended_text_chunks[-1]["reasoning_details"] = msg_reasoning_details
 
         if msg_tool_calls:
             for index, tool_call in enumerate(msg_tool_calls):

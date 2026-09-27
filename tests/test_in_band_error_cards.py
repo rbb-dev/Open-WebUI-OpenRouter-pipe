@@ -219,7 +219,7 @@ def _rendered_values(error: Any) -> dict[str, Any]:
             _MODERATION_METADATA,
             {
                 "moderation_reasons": "- hate\n- violence",
-                "flagged_excerpt": "the exact words that were flagged",
+                "flagged_excerpt": "```\nthe exact words that were flagged\n```",
                 "provider": "Google",
             },
             id="a-content-block-says-why",

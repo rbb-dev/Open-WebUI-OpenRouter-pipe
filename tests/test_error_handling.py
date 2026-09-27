@@ -566,7 +566,7 @@ class TestTemplateValueBuilding:
         assert values["openrouter_message"] == "Rate limit exceeded"
         assert values["request_id"] == "req_12345"
         assert values["moderation_reasons"] == "- content_policy"
-        assert values["flagged_excerpt"] == "flagged text"
+        assert values["flagged_excerpt"] == "```\nflagged text\n```"
         assert values["context_limit_tokens"] == ""
         assert values["max_output_tokens"] == ""
         assert values["include_model_limits"] is False

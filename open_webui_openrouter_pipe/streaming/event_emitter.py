@@ -15,12 +15,22 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal
 
+from ..core.errors import _inline_span
 from ..core.logging_system import SessionLogger
 from ..core.utils import (
     _render_error_template,
     citation_access_stamp,
     join_answer_and_card,
 )
+
+_PIPE_GENERATED_TEMPLATE_KEYS = frozenset({
+    "error_type",
+    "enforced_endpoint",
+    "required_endpoint",
+    "restriction_reasons",
+    "status_code",
+    "context_defaults",
+})
 
 EventEmitter = Callable[[dict[str, Any]], Awaitable[bool | None]]
 
@@ -281,7 +291,17 @@ class EventEmitterHandler:
             log_level: Logging level (default: ERROR)
         """
         error_id, context_defaults = self._create_error_context()
-        enriched_variables = {**context_defaults, **variables}
+        enriched_variables = {
+            **context_defaults,
+            **{
+                key: (
+                    value
+                    if key in _PIPE_GENERATED_TEMPLATE_KEYS
+                    else (_inline_span(value) if isinstance(value, str) else value)
+                )
+                for key, value in variables.items()
+            },
+        }
 
         # Log with error ID for correlation
         self.logger.log(

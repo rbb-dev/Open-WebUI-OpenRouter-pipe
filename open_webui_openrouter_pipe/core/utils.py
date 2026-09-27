@@ -77,6 +77,9 @@ def owui_call_status(result_status: str | None) -> str:
     return "failed"
 
 _TEMPLATE_IF_TOKEN_RE = re.compile(r"\{\{\s*(#if\s+(\w+)|/if)\s*\}\}")
+_TEMPLATE_PLACEHOLDER_RE = re.compile(r"\{(\w+)\}")
+_FENCE_RUN_RE = re.compile(r"(`{3,}|~{3,})")
+_FENCE_OWNED_KEYS = frozenset({"raw_body", "flagged_excerpt", "metadata_json", "provider_raw_json"})
 _MARKER_SUFFIX = "]: #"
 _CROCKFORD_SET = frozenset(CROCKFORD_ALPHABET)
 _PHASE_MARKER_RE = re.compile(r"^\[P:([a-z_]+)\]: #$")
@@ -403,10 +406,76 @@ def _render_error_template(template: str, values: dict[str, Any]) -> str:
 
     rendered_lines: list[str] = []
     condition_stack: list[bool] = []
+    fence_marker = ""
+    fence_open = False
+    fence_carried_content = False
+    pending_opener = -1
 
     def _conditions_active() -> bool:
         """Return True when the current {{#if}} stack has no falsy guards."""
         return all(condition_stack) if condition_stack else True
+
+    def _strip_fence(value: str) -> str:
+        text = value.strip("\n")
+        runs = _FENCE_RUN_RE.findall(text)
+        if len(runs) < 2 or runs[0][0] != runs[-1][0] or not text.startswith(runs[0]):
+            return value
+        tail = text[len(runs[0]) :]
+        language = ""
+        newline = tail.find("\n")
+        if newline < 0:
+            return value
+        language = tail[:newline].strip()
+        if language and not re.fullmatch(r"[\w.+-]*", language):
+            return value
+        return tail[newline + 1 :][: -len(runs[-1])].rstrip("\n")
+
+    def _replace(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name not in values:
+            return match.group(0)
+        value = values[name]
+        if fence_open and name in _FENCE_OWNED_KEYS:
+            value = _strip_fence(str(value))
+        return "" if value is None else str(value)
+
+    def _fence_language(run: str, between: str) -> str:
+        candidate = between.strip()
+        if candidate and re.fullmatch(r"[\w.+-]*", candidate):
+            return candidate
+        return ""
+
+    def _wrapped_fence_block(line: str) -> list[str]:
+        match = _TEMPLATE_PLACEHOLDER_RE.search(line)
+        if match is None or match.group(1) not in _FENCE_OWNED_KEYS:
+            return []
+        opener = _FENCE_RUN_RE.search(line[: match.start()])
+        closer = _FENCE_RUN_RE.search(line[match.end() :])
+        if opener is None or closer is None or opener.group(1)[0] != closer.group(1)[0]:
+            return []
+        if len(closer.group(1)) < len(opener.group(1)):
+            return []
+        label = line[: opener.start()].rstrip()
+        tail = line[match.end() :][closer.end() :].strip()
+        body = _strip_fence(str(values.get(match.group(1), "")))
+        if not body:
+            return [label] if label else []
+        block = [label, opener.group(0) + _fence_language(opener.group(0), line[match.end() : closer.start() + match.end()])]
+        block.extend(body.splitlines())
+        block.append(closer.group(0))
+        if tail:
+            block.append(tail)
+        return block
+
+    def _wrapped_fence_key(line: str) -> bool:
+        match = _TEMPLATE_PLACEHOLDER_RE.search(line)
+        if match is None or match.group(1) not in _FENCE_OWNED_KEYS:
+            return False
+        opener = _FENCE_RUN_RE.search(line[: match.start()])
+        closer = _FENCE_RUN_RE.search(line[match.end() :])
+        if opener is None or closer is None or opener.group(1)[0] != closer.group(1)[0]:
+            return False
+        return len(closer.group(1)) >= len(opener.group(1))
 
     for raw_line in template.splitlines():
         last_index = 0
@@ -441,15 +510,35 @@ def _render_error_template(template: str, values: dict[str, Any]) -> str:
 
         line = "".join(line_parts)
 
-        drop_line = False
-        for name, value in values.items():
-            placeholder = f"{{{name}}}"
-            if placeholder in line:
-                if not _template_value_present(value):
-                    drop_line = True
-                line = line.replace(placeholder, "" if value is None else str(value))
-        if drop_line:
+        if any(
+            f"{{{name}}}" in line and not _template_value_present(value)
+            for name, value in values.items()
+        ):
             continue
+        opened_on_this_line = fence_open
+        stripped = line.strip()
+        if not opened_on_this_line and _wrapped_fence_key(line):
+            rendered_lines.extend(_wrapped_fence_block(line))
+            continue
+        if not opened_on_this_line:
+            leading = _FENCE_RUN_RE.match(stripped)
+            if leading and stripped[: len(leading.group(0))] == leading.group(0):
+                if stripped[len(leading.group(0)) :].strip().startswith("`"):
+                    line = _TEMPLATE_PLACEHOLDER_RE.sub(_replace, line)
+                    rendered_lines.append(line)
+                    continue
+                fence_marker = leading.group(0)
+                fence_open = True
+                fence_carried_content = False
+                pending_opener = len(rendered_lines)
+        elif stripped and set(stripped) == set(fence_marker):
+            fence_open = False
+            if not fence_carried_content:
+                del rendered_lines[pending_opener:]
+                continue
+        elif stripped:
+            fence_carried_content = True
+        line = _TEMPLATE_PLACEHOLDER_RE.sub(_replace, line)
         rendered_lines.append(line)
     return "\n".join(rendered_lines).strip()
 
@@ -912,6 +1001,8 @@ def _template_value_present(value: Any) -> bool:
         return value != ""
     if isinstance(value, (list, tuple, set, dict)):
         return bool(value)
+    if isinstance(value, bool):
+        return value
     if isinstance(value, (int, float)):
         return True
     return bool(value)
