@@ -221,6 +221,14 @@ Variant models work seamlessly with existing model selection:
 - If base model is selected, its configured variants are added automatically
 - Example: Selecting `gpt-4o` enables both "GPT-4o" and "GPT-4o Exacto"
 
+**By construction:** `MODEL_ID` matches catalogue rows by their normalized ID. A `base_id:tag` entry is therefore
+*not* an allowlist entry - it names a routing variant, not a model the catalogue holds - and an allowlist naming
+only `openai/gpt-4o:exacto` resolves to nothing, publishes nothing, and refuses every request. A
+`base_id@preset/slug` entry is the one form that does resolve: with no preset row in the catalogue it falls back
+to the model before the `@`, so `openai/gpt-4o@preset/x` publishes `openai/gpt-4o`. A value of only commas or
+spaces is the other exception: it is read as blank and imports the whole catalogue. Listing the base ID is still
+the clearer way to say it.
+
 ### Model Filters
 
 Variant models respect all existing filters:
@@ -294,6 +302,28 @@ Variant models inherit tool-calling capabilities:
    ```
    **Issue:** Base GPT-4o is excluded because MODEL_ID lists only the Claude model — MODEL_ID matches exact IDs, not wildcards
    **Solution:** Add the base model's exact ID to MODEL_ID (e.g. `anthropic/claude-sonnet-4.5, openai/gpt-4o`)
+
+   **Note:** this is a one-sided disagreement. A `VARIANT_MODELS` entry whose base is outside `MODEL_ID` still
+   enters the request-time allowlist, because variant expansion resolves against the whole catalogue — so the
+   pipe will serve `openai/gpt-4o:exacto` on the wire while the picker does not list it. The request-time gate
+   is the security boundary; the picker is a convenience, and here the two disagree.
+
+### After a Model Rename
+
+**Symptom:** the picker is empty and every request is refused after OpenRouter renames or retires a model you
+had listed.
+
+**What happens:** an allowlist that resolves to nothing fails closed. The pipe publishes no models and turns
+every request away with the `Blocked model message`; one `WARNING` in the log names the IDs it could not find.
+This is the intended behaviour — a list that matches nothing no longer serves the whole catalogue — so the fix
+is to correct the list, not to look for a setting that widens it back.
+
+**Resolution:**
+```
+MODEL_ID = "openai/gpt-4o"          # the current id
+```
+Matching ignores letter case and trailing date stamps, so a rename that only moves the date stamp keeps
+resolving. An id that no longer exists at all has to be replaced with the one OpenRouter publishes today.
 
 ### Variant Tag Capitalization
 

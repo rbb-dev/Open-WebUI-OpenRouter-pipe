@@ -57,6 +57,7 @@ from ..core.utils import (
 )
 from ..filters.fusion_filter_renderer import is_fusion_model
 from ..models.registry import ModelFamily
+from ..storage.owui_files import is_temporary_chat
 from ..tools.tool_schema import _strictify_schema
 
 # Pydantic Body Classes
@@ -1680,6 +1681,11 @@ def _apply_identifier_valves_to_payload(
     else:
         payload.pop("user", None)
 
+    pipe_meta = owui_metadata.get(_PIPE_METADATA_KEY)
+    is_temporary = is_temporary_chat(owui_metadata.get("chat_id")) or (
+        isinstance(pipe_meta, dict) and pipe_meta.get("temporary_chat") is True
+    )
+
     payload.pop("session_id", None)
     if valves.SEND_CACHE_SESSION_ID:
         sticky_chat_id = owui_metadata.get("chat_id")
@@ -1688,21 +1694,21 @@ def _apply_identifier_valves_to_payload(
             if sticky:
                 payload["session_id"] = sticky
 
-    if valves.SEND_SESSION_ID:
+    if valves.SEND_SESSION_ID and not is_temporary:
         session_id = owui_metadata.get("session_id")
         if isinstance(session_id, str):
             candidate = session_id.strip()
             if candidate:
                 metadata_out["session_id"] = candidate[:_MAX_OPENROUTER_METADATA_VALUE_CHARS]
 
-    if valves.SEND_CHAT_ID:
+    if valves.SEND_CHAT_ID and not is_temporary:
         chat_id = owui_metadata.get("chat_id")
         if isinstance(chat_id, str):
             candidate = chat_id.strip()
             if candidate:
                 metadata_out["chat_id"] = candidate[:_MAX_OPENROUTER_METADATA_VALUE_CHARS]
 
-    if valves.SEND_MESSAGE_ID:
+    if valves.SEND_MESSAGE_ID and not is_temporary:
         message_id = owui_metadata.get("message_id")
         if isinstance(message_id, str):
             candidate = message_id.strip()

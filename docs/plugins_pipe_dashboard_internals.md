@@ -189,6 +189,8 @@ Each `openrouter:pipe_dashboard` event carries a JSON object. Keys are present o
 }
 ```
 
+The `sessions.in_flight` sample counts a request from the moment it enters the pipe until its job's cleanup tail has finished, so a request whose answer has already been delivered still reads as in flight while it is shutting down.
+
 `degraded: true` marks any tick whose Redis worker read failed, whichever fallback it took: the last known worker set, where one exists, for the first two misses, then a collapse to this worker's own figures. The last-known set is not overwritten on a fallback tick, so a short outage does not destroy the good set; the cache write is keyed on the read having succeeded, not on the flag. Because the collapse path shows no cached set, the banner names the situation rather than claiming it is showing last known workers. Storage payloads carry `state` (`connected` / `unavailable` / `degraded`) so the dashboard can distinguish "not initialized on this worker yet" from a genuine failure; the collector wires the shared DB itself on first use, and by-type/by-model "Least/Most recent" columns are access times (the retention sweep touches `created_at` on every read).
 
 On tick 0, all tiers fire simultaneously for instant dashboard population. The JavaScript checks key existence and updates only the sections whose data arrived in that tick. The payload arrives raw — direct custom emits do not use the `{chat_id, message_id, data}` envelope of OWUI's shared `events` channel, so no client-side filtering is needed.

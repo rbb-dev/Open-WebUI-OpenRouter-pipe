@@ -11,7 +11,7 @@ This document describes the pipe’s admission control, concurrency limits, brea
 The pipe applies multiple layers of admission control per process:
 
 - **Request queue:** requests are wrapped into jobs and enqueued into an in-process asyncio queue (`maxsize=1000`). If the queue is full, the request is rejected with a user-facing “Server busy (503)” message.
-- **Global request semaphore:** `MAX_CONCURRENT_REQUESTS` limits in-flight requests per process. Increasing the valve can take effect immediately; decreasing it requires a restart to fully reduce concurrency.
+- **Global request semaphore:** `MAX_CONCURRENT_REQUESTS` limits in-flight requests per process. The semaphore is re-made for the running event loop, so a process whose event loop is replaced (a test runner that calls `asyncio.run` twice, a supervisor that restarts the loop) starts again at the configured value rather than serving a semaphore bound to a dead loop. Increasing the valve can take effect immediately; decreasing it requires a restart to fully reduce concurrency, except across a loop swap, where the semaphore is rebuilt at the configured value in both directions.
 - **Startup warmup gate:** the pipe runs background warmup checks once an API key is configured. If warmup has failed, requests are rejected with “Service unavailable due to startup issues” until a subsequent warmup succeeds.
 
 ---
@@ -20,7 +20,7 @@ The pipe applies multiple layers of admission control per process:
 
 Tool execution is constrained to prevent a single request (or a single user) from consuming all compute:
 
-- **Global tool semaphore:** `MAX_PARALLEL_TOOLS_GLOBAL` caps the total number of tool executions across all requests in the process.
+- **Global tool semaphore:** `MAX_PARALLEL_TOOLS_GLOBAL` caps the total number of tool executions across all requests in the process. Like the request semaphore, it is re-made when the process's event loop changes, so the limit is re-established for the current loop rather than surviving a loop swap.
 - **Per-request tool semaphore:** `MAX_PARALLEL_TOOLS_PER_REQUEST` caps tool parallelism within a single request.
 - **`ask_user` exemption:** Open WebUI's built-in `ask_user` waits on a person, so it takes no slot from either tool semaphore.
 - **Batching and timeouts:** tool loop ceilings and timeouts are controlled by `MAX_FUNCTION_CALL_LOOPS`, `TOOL_BATCH_CAP`, `TOOL_TIMEOUT_SECONDS`, `TOOL_BATCH_TIMEOUT_SECONDS`, and `TOOL_IDLE_TIMEOUT_SECONDS`.
@@ -57,8 +57,8 @@ The pipe uses background tasks/threads to keep request handling responsive:
 - **Session log storage threads (optional):** when session log storage is enabled, the pipe uses background threads to write and clean up encrypted zip archives.
 
 **State ownership:**
-- **Instance-level**: request queue, log queue, worker tasks, and locks are owned by each Pipe instance.
-- **Class-level**: rate-limiting semaphores are shared across all instances in the same process (per-process concurrency control).
+- **Instance-level**: request queue, log queue, worker tasks, and locks are owned by each Pipe instance. A request is counted in the instance's in-flight number from when `pipe()` is entered until its job's cleanup tail has run to completion, not merely until its bytes were delivered, so a superseded generation is closed only once its last request has finished tidying up rather than while that request is still shutting down.
+- **Class-level**: rate-limiting semaphores are shared across all instances in the same process (per-process concurrency control), and are re-made when the process's event loop changes. A job already past the semaphore's `acquire()` holds a permit on the old object and releases it into the orphan when it finishes; the release is harmless, and no live slot is taken from the new semaphore by it.
 
 ---
 

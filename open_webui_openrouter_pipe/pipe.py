@@ -333,6 +333,7 @@ class _PipeJob:
     user_valves: Pipe.UserValves | None = None
     rejected_user_valves: list[str] = field(default_factory=list)
     continued_reply: str | None = None
+    counter_state: dict[str, bool] | None = None
 
     @property
     @timed
@@ -1346,7 +1347,7 @@ class Pipe:
                 "This pipe instance has been superseded by a newer version; please retry."
             )
         self._active_pipes_calls += 1
-        counter_transferred = False
+        state: dict[str, bool] = {"released": False, "owned": False}
         continued_token = CONTINUED_REPLY.set(continued_reply_text(body, __metadata__))
         try:
             result = await self._pipe_impl(
@@ -1359,24 +1360,25 @@ class Pipe:
                 __tools__,
                 __task__,
                 __task_body__,
+                counter_state=state,
             )
             if inspect.isasyncgen(result):
-                counter_transferred = True
-                state = {"released": False}
                 wrapped = self._wrap_stream_with_counter_release(result, state)
-                weakref.finalize(
-                    wrapped,
-                    Pipe._release_stream_counter,
-                    self,
-                    state,
-                )
+
+                def _finalize_if_unowned(
+                    _ref: object = None, p: Pipe = self, st: dict = state
+                ) -> None:
+                    if st.get("owned"):
+                        return
+                    Pipe._release_stream_counter(p, st)
+
+                weakref.finalize(wrapped, _finalize_if_unowned)
                 return wrapped
             return result
         finally:
             CONTINUED_REPLY.reset(continued_token)
-            if not counter_transferred:
-                self._active_pipes_calls = max(0, self._active_pipes_calls - 1)
-                self._maybe_trigger_drain_close()
+            if not state.get("owned"):
+                Pipe._release_stream_counter(self, state)
 
     @staticmethod
     def _release_stream_counter(pipe: Pipe, state: dict) -> None:
@@ -1391,12 +1393,9 @@ class Pipe:
         inner: AsyncGenerator[dict[str, Any] | str, None],
         state: dict,
     ) -> AsyncGenerator[dict[str, Any] | str, None]:
-        try:
-            async with contextlib.aclosing(inner):
-                async for item in inner:
-                    yield item
-        finally:
-            Pipe._release_stream_counter(self, state)
+        async with contextlib.aclosing(inner):
+            async for item in inner:
+                yield item
 
     @timed
     async def _pipe_impl(
@@ -1410,6 +1409,8 @@ class Pipe:
         __tools__: list[dict[str, Any]] | dict[str, Any] | None,
         __task__: Any = None,
         __task_body__: Any = None,
+        *,
+        counter_state: dict[str, bool] | None = None,
     ) -> AsyncGenerator[dict[str, Any] | str, None] | dict[str, Any] | str | None | JSONResponse:
         """Entry point that enqueues work and awaits the isolated job result."""
         safe_event_emitter = None
@@ -1548,6 +1549,7 @@ class Pipe:
                 stream_queue=stream_queue,
                 request_id=_early_request_id,
                 continued_reply=CONTINUED_REPLY.get(),
+                counter_state=counter_state,
             )
 
             timing_mark("before_enqueue_job")
@@ -1806,7 +1808,17 @@ class Pipe:
                     "Skipping await for request worker bound to a different event loop during close()."
                 )
             self._queue_worker_task = None
+        queue = self._request_queue
         self._request_queue = None
+        if queue is not None:
+            while True:
+                try:
+                    abandoned = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                if not abandoned.future.done():
+                    abandoned.future.cancel()
+                queue.task_done()
 
     @timed
     async def _stop_log_worker(self) -> None:
@@ -2079,6 +2091,16 @@ class Pipe:
                 self.logger.debug("Started request queue worker")
 
             target = valves.MAX_CONCURRENT_REQUESTS
+            for attr in ("_global_semaphore", "_tool_global_semaphore"):
+                sem = getattr(cls, attr, None)
+                if sem is None:
+                    continue
+                try:
+                    sem_loop = getattr(sem, "_get_loop", lambda: None)()
+                except RuntimeError:
+                    sem_loop = None
+                if sem_loop is not current_loop:
+                    setattr(cls, attr, None)
             if cls._global_semaphore is None:
                 cls._global_semaphore = asyncio.Semaphore(target)
                 cls._semaphore_limit = target
@@ -2117,10 +2139,22 @@ class Pipe:
         try:
             queue.put_nowait(job)
             self.logger.debug("Enqueued request %s (depth=%s)", job.request_id, queue.qsize())
-            return True
         except asyncio.QueueFull:
             self.logger.warning("Request queue full (max=%s)", queue.maxsize)
             return False
+        state = getattr(job, "counter_state", None)
+        if state is not None:
+            state["owned"] = True
+
+            def _release_if_never_run(
+                _fut: asyncio.Future, p: Pipe = job.pipe, st: dict = state
+            ) -> None:
+                if st.get("tail"):
+                    return
+                Pipe._release_stream_counter(p, st)
+
+            job.future.add_done_callback(_release_if_never_run)
+        return True
 
 
     @staticmethod
@@ -2161,9 +2195,13 @@ class Pipe:
     @timed
     async def _execute_pipe_job(self, job: _PipeJob) -> None:
         """Isolate per-request context, HTTP session, and semaphore slot."""
+        if job.counter_state is not None:
+            job.counter_state["tail"] = True
         semaphore = type(self)._global_semaphore
         if semaphore is None:
             job.future.set_exception(RuntimeError("Semaphore unavailable"))
+            if job.counter_state is not None:
+                Pipe._release_stream_counter(job.pipe, job.counter_state)
             return
 
         session: aiohttp.ClientSession | None = None
@@ -2293,89 +2331,93 @@ class Pipe:
             if not job.future.done():
                 job.future.set_exception(exc)
         finally:
-            if stream_queue is not None:
-                self._event_emitter_handler._try_put_middleware_stream_nowait(stream_queue, None)
-            if tool_context:
-                await self._shutdown_tool_context(tool_context)
+            try:
+                if stream_queue is not None:
+                    self._event_emitter_handler._try_put_middleware_stream_nowait(stream_queue, None)
+                if tool_context:
+                    await self._shutdown_tool_context(tool_context)
 
-            rid = SessionLogger.request_id.get() or ""
-            if rid:
-                with SessionLogger._state_lock:
-                    fallback_events = list(SessionLogger.logs.get(rid, []))
-                if fallback_events:
-                    status = "complete"
-                    reason = ""
-                    if job.future.cancelled():
-                        status = "cancelled"
-                        reason = "cancelled"
-                    else:
-                        with contextlib.suppress(Exception):
-                            exc = job.future.exception()
-                            if exc is not None:
-                                status = "error"
-                                reason = str(exc)
-
-                    from .logging.session_log_manager import resolve_message_id
-                    resolved_user_id = str(job.user_id or job.user.get("id") or job.metadata.get("user_id") or "")
-                    resolved_session_id = str(job.session_id or job.metadata.get("session_id") or "")
-                    resolved_chat_id = str(job.metadata.get("chat_id") or "")
-                    resolved_message_id = resolve_message_id(job.metadata)
-                    try:
-                        await asyncio.shield(
-                            self._session_log_manager.persist_segment_to_db(
-                                job.valves,
-                                user_id=resolved_user_id,
-                                session_id=resolved_session_id,
-                                chat_id=resolved_chat_id,
-                                message_id=resolved_message_id,
-                                request_id=rid,
-                                log_events=fallback_events,
-                                terminal=True,
-                                status=status,
-                                reason=reason,
-                                pipe_identifier=self.id,
-                            )
-                        )
-                    except Exception:
-                        self.logger.debug(
-                            "Failed to persist session log segment (chat_id=%s message_id=%s request_id=%s terminal=%s)",
-                            resolved_chat_id,
-                            resolved_message_id,
-                            rid,
-                            True,
-                            exc_info=True,
-                        )
+                rid = SessionLogger.request_id.get() or ""
+                if rid:
                     with SessionLogger._state_lock:
-                        SessionLogger.logs.pop(rid, None)
-                clear_timing_events(rid)
+                        fallback_events = list(SessionLogger.logs.get(rid, []))
+                    if fallback_events:
+                        status = "complete"
+                        reason = ""
+                        if job.future.cancelled():
+                            status = "cancelled"
+                            reason = "cancelled"
+                        else:
+                            with contextlib.suppress(Exception):
+                                exc = job.future.exception()
+                                if exc is not None:
+                                    status = "error"
+                                    reason = str(exc)
 
-            backstop_rid = job.request_id or SessionLogger.request_id.get() or ""
-            if backstop_rid:
-                if job.future.cancelled():
-                    backstop_status = "cancelled"
-                else:
-                    backstop_status = "ok"
+                        from .logging.session_log_manager import resolve_message_id
+                        resolved_user_id = str(job.user_id or job.user.get("id") or job.metadata.get("user_id") or "")
+                        resolved_session_id = str(job.session_id or job.metadata.get("session_id") or "")
+                        resolved_chat_id = str(job.metadata.get("chat_id") or "")
+                        resolved_message_id = resolve_message_id(job.metadata)
+                        try:
+                            await asyncio.shield(
+                                self._session_log_manager.persist_segment_to_db(
+                                    job.valves,
+                                    user_id=resolved_user_id,
+                                    session_id=resolved_session_id,
+                                    chat_id=resolved_chat_id,
+                                    message_id=resolved_message_id,
+                                    request_id=rid,
+                                    log_events=fallback_events,
+                                    terminal=True,
+                                    status=status,
+                                    reason=reason,
+                                    pipe_identifier=self.id,
+                                )
+                            )
+                        except Exception:
+                            self.logger.debug(
+                                "Failed to persist session log segment (chat_id=%s message_id=%s request_id=%s terminal=%s)",
+                                resolved_chat_id,
+                                resolved_message_id,
+                                rid,
+                                True,
+                                exc_info=True,
+                            )
+                        with SessionLogger._state_lock:
+                            SessionLogger.logs.pop(rid, None)
+                    clear_timing_events(rid)
+
+                backstop_rid = job.request_id or SessionLogger.request_id.get() or ""
+                if backstop_rid:
+                    if job.future.cancelled():
+                        backstop_status = "cancelled"
+                    else:
+                        backstop_status = "ok"
+                        with contextlib.suppress(Exception):
+                            if job.future.exception() is not None:
+                                backstop_status = "failed"
+                    await self._dispatch_plugin_event(
+                        "dispatch_on_generation_complete",
+                        None,
+                        backstop_status,
+                        request_id=backstop_rid,
+                        metadata=job.metadata,
+                        task=job.task,
+                    )
+
+                if tool_token is not None:
+                    with contextlib.suppress(ValueError):
+                        self._TOOL_CONTEXT.reset(tool_token)
+                for var, token in tokens:
                     with contextlib.suppress(Exception):
-                        if job.future.exception() is not None:
-                            backstop_status = "failed"
-                await self._dispatch_plugin_event(
-                    "dispatch_on_generation_complete",
-                    None,
-                    backstop_status,
-                    request_id=backstop_rid,
-                    metadata=job.metadata,
-                    task=job.task,
-                )
-
-            if tool_token is not None:
-                with contextlib.suppress(ValueError):
-                    self._TOOL_CONTEXT.reset(tool_token)
-            for var, token in tokens:
-                with contextlib.suppress(Exception):
-                    var.reset(token)
-            if session:
-                with contextlib.suppress(Exception):
-                    await session.close()
+                        var.reset(token)
+                if session:
+                    with contextlib.suppress(Exception):
+                        await session.close()
+            finally:
+                if job.counter_state is not None:
+                    Pipe._release_stream_counter(job.pipe, job.counter_state)
 
 
     @contextlib.asynccontextmanager
@@ -2644,7 +2686,7 @@ class Pipe:
         else:
             available_models = OpenRouterModelRegistry.list_models()
         catalog_norm_ids = {m["norm_id"] for m in available_models if isinstance(m, dict) and m.get("norm_id")}
-        allowlist_models = self._select_models(valves.MODEL_ID, available_models) or available_models
+        allowlist_models = self._select_models(valves.MODEL_ID, available_models)
         allowlist_models, virtual_variant_bases = self._expand_variants_for_enforcement(
             allowlist_models, valves, available_models,
         )
@@ -3412,31 +3454,55 @@ class Pipe:
         if not requested:
             return available_models
 
-        selected = [model for model in available_models if model["norm_id"] in requested]
-        missing = requested - {model["norm_id"] for model in selected}
+        present = {model["norm_id"] for model in available_models}
+        base_resolved: set[str] = set()
+        base_matches: set[str] = set()
+        for raw_entry in filter_value.split(","):
+            entry = raw_entry.strip()
+            if not entry:
+                continue
+            base_id, sep, preset_part = entry.partition("@")
+            if sep and preset_part.startswith("preset/"):
+                head = base_id.strip()
+            else:
+                head, tag_sep, tag = entry.partition(":")
+                if not tag_sep or not tag.strip():
+                    continue
+                head = head.strip()
+            base_norm = ModelFamily.base_model(sanitize_model_id(head))
+            if base_norm not in present:
+                continue
+            entry_norm = ModelFamily.base_model(sanitize_model_id(entry))
+            if entry_norm in present:
+                continue
+            base_resolved.add(entry_norm)
+            base_matches.add(base_norm)
+
+        allowed = requested | base_matches
+        selected = [model for model in available_models if model["norm_id"] in allowed]
+        missing = (requested - present) - base_resolved
         if missing:
             self.logger.log(
                 warn_level(_warned_pipes_maintenance, f"models_missing:{','.join(sorted(missing))}"),
                 "Requested models not found in OpenRouter catalog: %s",
                 ", ".join(sorted(missing)),
             )
-        return selected or available_models
+        return selected
 
     @timed
     def _apply_model_filters(self, models: list[dict[str, Any]], valves: Pipe.Valves) -> list[dict[str, Any]]:
         """Apply model capability filters (free pricing/tool calling) to a model list."""
-        if not models:
-            return []
-
         free_mode = valves.FREE_MODEL_FILTER
         tool_mode = valves.TOOL_CALLING_FILTER
         zdr_only = valves.ZDR_MODELS_ONLY
         if zdr_only and not OpenRouterModelRegistry.zdr_list_available():
-            # latched: runs from pipes() and the chat path; the condition is stable
             self.logger.log(
                 warn_level(_warned_pipes_maintenance, "zdr_list_unavailable"),
                 "ZDR model filter enabled but ZDR endpoint list is unavailable; skipping ZDR filtering.",
             )
+        if not models:
+            return []
+
         if free_mode == "all" and tool_mode == "all" and not zdr_only:
             return models
 

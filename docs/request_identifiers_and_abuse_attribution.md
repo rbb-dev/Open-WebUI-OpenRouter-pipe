@@ -54,9 +54,9 @@ Each identifier is gated by a valve. When enabled, the pipe sources IDs from Ope
 | Valve | OpenRouter top-level | OpenRouter metadata key | Source in Open WebUI context |
 |---|---|---|---|
 | `SEND_END_USER_ID` | `user` | `user_id` | `__user__["id"]`, or `__user__["email"]` / `__user__["name"]` per `END_USER_ID_SOURCE` (metadata stays on the id) |
-| `SEND_SESSION_ID` | *(none)* | `session_id` | `__metadata__["session_id"]` |
-| `SEND_CHAT_ID` | *(none)* | `chat_id` | `__metadata__["chat_id"]` |
-| `SEND_MESSAGE_ID` | *(none)* | `message_id` | `__metadata__["message_id"]` |
+| `SEND_SESSION_ID` | *(none)* | `session_id` | `__metadata__["session_id"]` (never for a temporary chat) |
+| `SEND_CHAT_ID` | *(none)* | `chat_id` | `__metadata__["chat_id"]` (never for a temporary chat) |
+| `SEND_MESSAGE_ID` | *(none)* | `message_id` | `__metadata__["message_id"]` (never for a temporary chat) |
 
 ### Sanitization and constraints
 
@@ -67,6 +67,8 @@ The pipe enforces OpenRouter’s documented `metadata` constraints:
 * Values must be **≤ 512 chars**.
 
 Additionally, the top-level `user` field is capped at **128 characters**. If a source value is missing or invalid, the corresponding field is omitted even when its valve is enabled.
+
+**Temporary chats.** A chat id that marks a temporary chat — the `temporary:`, `local:` and whitespace-padded forms — never has its chat, session or message id placed in `metadata`, whichever of `SEND_SESSION_ID`, `SEND_CHAT_ID` and `SEND_MESSAGE_ID` are enabled. The verdict is computed once and applies to all three, so the valves cannot drift apart; the check is the boolean form rather than a chat/session match, because a browser reconnect re-sends the temporary chat id with a *new* session id, and a matching pair is exactly the case that must not be trusted to be caught later. Internal Fusion panel-member calls are covered too: `build_inner_metadata` pops the chat id before the inner request is built, so the verdict travels with it under the pipe-metadata key and the guard reads it there. The guarantee covers those three ids; `SEND_END_USER_ID` is a separate valve and still writes `metadata.user_id` for a temporary chat, as does Open WebUI's own forwarded-header path for the raw chat id.
 
 ---
 
@@ -159,9 +161,9 @@ These examples show only the relevant identifier fields; request bodies vary dep
 See [Valves & Configuration Atlas](valves_and_configuration_atlas.md) for the canonical list and defaults. The relevant valves are:
 
 * `SEND_END_USER_ID` (default: false) — top-level `user` (abuse attribution)
-* `SEND_SESSION_ID` (default: false) — `metadata.session_id` only
-* `SEND_CHAT_ID` (default: false) — `metadata.chat_id` only
-* `SEND_MESSAGE_ID` (default: false) — `metadata.message_id` only
+* `SEND_SESSION_ID` (default: false) — `metadata.session_id` only, and never in a temporary chat
+* `SEND_CHAT_ID` (default: false) — `metadata.chat_id` only, and never in a temporary chat
+* `SEND_MESSAGE_ID` (default: false) — `metadata.message_id` only, and never in a temporary chat
 
 ---
 
@@ -169,5 +171,5 @@ See [Valves & Configuration Atlas](valves_and_configuration_atlas.md) for the ca
 
 * `SEND_END_USER_ID` — sends the `user` field, OpenRouter's end-user abuse identifier (shown as "Client User ID" in their activity view). Enable in multi-user deployments.
 * `END_USER_ID_SOURCE` — chooses what that `user` field carries: the OWUI GUID (default), the user's email, or their display name. Email and name make OpenRouter's dashboard human-readable but send PII with every request; empty values fall back to the GUID, and `metadata.user_id` always keeps the stable GUID so analytics keyed on it never fragment.
-* `SEND_SESSION_ID` / `SEND_CHAT_ID` / `SEND_MESSAGE_ID` — add the raw id to `metadata` for incident-response traceability.
+* `SEND_SESSION_ID` / `SEND_CHAT_ID` / `SEND_MESSAGE_ID` — add the raw id to `metadata` for incident-response traceability, for saved and `channel:` chats. A temporary chat's three ids are never sent, whatever these are set to; `channel:` is not a temporary chat and keeps its id.
 * Treat the emitted IDs as **non-secret** but sensitive operational data; they can correlate events.

@@ -357,7 +357,7 @@ Controlled by `SEND_CACHE_SESSION_ID` (default **on**); skipped when `WEBUI_SECR
 The pipe loads OpenRouter’s `/models` catalog and caches it to drive capability-aware behavior (for example: vision inputs, web search eligibility, reasoning toggles, token caps).
 
 Key valves:
-- `MODEL_ID` (default `auto`) controls whether the pipe exposes the full catalog or a comma-separated allowlist.
+- `MODEL_ID` (default `auto`) controls whether the pipe exposes the full catalog or a comma-separated allowlist. A restricting allowlist that resolves to nothing now publishes nothing and refuses every request, instead of failing open to the full catalog. The one exception is a value of only commas or spaces, which is read as blank and imports the whole catalog.
 - `MODEL_CATALOG_REFRESH_SECONDS` controls refresh cadence.
 - `USE_MODEL_MAX_OUTPUT_TOKENS` controls whether the pipe forwards provider-advertised output token caps.
 

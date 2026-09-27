@@ -1369,6 +1369,20 @@ class VideoGenerationAdapter:
     def _ensure_global_semaphore(self, valves: Any) -> asyncio.Semaphore:
         limit = int(valves.MAX_CONCURRENT_VIDEO_GENS)
         cls = type(self._pipe)
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+        for attr in ("_video_global_semaphore",):
+            sem = getattr(cls, attr, None)
+            if sem is None:
+                continue
+            try:
+                sem_loop = getattr(sem, "_get_loop", lambda: None)()
+            except RuntimeError:
+                sem_loop = None
+            if current_loop is not None and sem_loop is not current_loop:
+                setattr(cls, attr, None)
         if cls._video_global_semaphore is None or cls._video_global_limit != limit:
             cls._video_global_semaphore = asyncio.Semaphore(limit)
             cls._video_global_limit = limit

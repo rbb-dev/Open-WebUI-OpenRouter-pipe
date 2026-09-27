@@ -24,6 +24,7 @@ from ..core.fusion_defaults import (
 from ..core.logging_system import SessionLogger
 from ..core.utils import CONTINUED_REPLY, merge_usage_stats
 from ..models.registry import ModelFamily
+from ..storage.owui_files import is_temporary_chat
 from ..structured_task.schema import (
     build_response_format,
     downgrade_strict_for_provider,
@@ -55,11 +56,13 @@ def _member_failure_reason(exc: Exception) -> str:
 
 def build_inner_metadata(metadata: Any) -> dict[str, Any]:
     base = dict(metadata) if isinstance(metadata, dict) else {}
+    outer_chat_id = base.get("chat_id")
     for key in ("chat_id", "message_id", "model"):
         base.pop(key, None)
     raw_pipe_meta = base.get(_PIPE_METADATA_KEY)
     pipe_meta = copy.deepcopy(raw_pipe_meta) if isinstance(raw_pipe_meta, dict) else {}
     pipe_meta["fusion_inner"] = True
+    pipe_meta["temporary_chat"] = is_temporary_chat(outer_chat_id)
     base[_PIPE_METADATA_KEY] = pipe_meta
     return base
 

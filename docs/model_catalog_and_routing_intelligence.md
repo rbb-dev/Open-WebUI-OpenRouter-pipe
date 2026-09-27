@@ -73,7 +73,7 @@ Behavior:
 - The tail of the call is best-effort too: a failure in the model-metadata sync, in the image-generation filter lookup, or in the plugin `on_models` dispatch is logged and the pipe still returns the models it has. A raise at any of those points would make Open WebUI's handler serve an empty model list, so every picker would lose the pipe.
 - The system valve `MODEL_ID` selects which models are exposed:
   - `auto` exposes the full catalog.
-  - A comma-separated list restricts the exposed models.
+  - A comma-separated list restricts the exposed models. A list that resolves to nothing exposes nothing, and the pipe refuses every request rather than serving the whole catalog; one `WARNING` names the IDs it could not resolve. The one exception is a value of only commas or spaces, which is read as blank and imports the whole catalog. An `@preset/slug` entry resolves to the model before the `@`; a bare `:tag` is not an allowlist entry.
 - The pipe returns a minimal `{"id","name"}` list for the model selector.
 - The special `openrouter/auto` model is included in the catalog and can be selected like any other model. Auto Router configuration (allowed model patterns) is managed in the OpenRouter UI (Settings → Plugins) and is not surfaced in Open WebUI.
 - Optional: the pipe can schedule a background “model metadata sync” that writes Open WebUI model metadata:
@@ -89,9 +89,11 @@ Behavior:
 
 At request time, the pipe computes the allowed model set based on `MODEL_ID` and the loaded catalog:
 
-- `VARIANT_MODELS` is a second source of admission: a variant whose base is outside `MODEL_ID` is refused at request time, however it is named, **once `MODEL_ID` resolves to at least one catalog model**; when `MODEL_ID` names nothing in the catalog the whole catalog is admitted instead (B35/H70-1).
+- `VARIANT_MODELS` is a second source of admission: a variant whose base is outside `MODEL_ID` is refused at request time, however it is named.
 - For normal chat/API calls:
   - if the requested model is not in the allowed set, the pipe emits a user-facing error telling the user to choose an allowed model.
+  - The allowed set is computed from the resolved `MODEL_ID` allowlist, so an unresolvable allowlist leaves it empty and every model is refused.
+  - A `VARIANT_MODELS` entry is expanded against the whole catalogue, so a variant whose base is outside the allowlist still enters this set even though the picker does not publish it. This gap is documented rather than closed.
 - For Open WebUI “task” requests (`__task__`):
   - **housekeeping tasks** bypass the model whitelist (so titles/tags/follow-ups and similar flows can still run even when end-user models are locked down).
   - `moa_response_generation` follows the normal chat restriction path and does **not** bypass the whitelist.

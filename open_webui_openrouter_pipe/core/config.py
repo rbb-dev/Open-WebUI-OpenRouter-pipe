@@ -915,7 +915,11 @@ class Valves(BaseModel):
         title="Model allowlist",
         description=(
             "Comma separated OpenRouter model IDs to expose in Open WebUI. "
-            "Set to 'auto' to import every available Responses-capable model."
+            "Set to 'auto' to import every available Responses-capable model. "
+            "A restricting list that matches nothing publishes nothing and refuses every request; "
+            "the one exception is a value of only commas or spaces, which is read as blank and "
+            "imports the whole catalog. "
+            "an '@preset/slug' entry resolves to the model before the '@'."
         ),
     )
     MODEL_CATALOG_REFRESH_SECONDS: int = Field(
@@ -1045,7 +1049,11 @@ class Valves(BaseModel):
             "When True (default), send a stable per-conversation `session_id` = "
             "HMAC-SHA256(WEBUI_SECRET_KEY, chat_id) so OpenRouter keeps each conversation on one "
             "provider and maximizes prompt-cache hits across turns. Opaque; no raw identifiers. "
-            "Skipped if WEBUI_SECRET_KEY is unset."
+            "Skipped if WEBUI_SECRET_KEY is unset. A temporary chat is pinned like any "
+            "other chat: the value is a keyed hash, so no identifier is exposed. The pin is "
+            "computed from the chat id and the Fusion inner-call metadata removes it, so "
+            "internal panel-member calls carry no session_id and are not pinned; the outer "
+            "call is."
         ),
     )
     ENABLE_PLUGIN_SYSTEM: bool = Field(
@@ -1638,15 +1646,15 @@ class Valves(BaseModel):
     )
     SEND_SESSION_ID: bool = Field(
         default=False,
-        description="When True, include the Open WebUI session_id as `metadata.session_id` (metadata only).",
+        description="When True, include the Open WebUI session_id as `metadata.session_id` (metadata only). A temporary chat's session id is never sent: for such a chat the valve is skipped.",
     )
     SEND_CHAT_ID: bool = Field(
         default=False,
-        description="When True, include the Open WebUI chat_id as `metadata.chat_id` (metadata only).",
+        description="When True, include the Open WebUI chat_id as `metadata.chat_id` (metadata only). A temporary chat's chat id is never sent: for such a chat the valve is skipped.",
     )
     SEND_MESSAGE_ID: bool = Field(
         default=False,
-        description="When True, include the Open WebUI message_id as `metadata.message_id` (metadata only).",
+        description="When True, include the Open WebUI message_id as `metadata.message_id` (metadata only). A temporary chat's message id is never sent: for such a chat the valve is skipped.",
     )
     MAX_INPUT_IMAGES_PER_REQUEST: int = Field(
         default=5,
