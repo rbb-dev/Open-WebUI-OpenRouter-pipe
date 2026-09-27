@@ -54,7 +54,7 @@ def _member_failure_reason(exc: Exception) -> str:
     return "the model call failed before completing"
 
 
-def build_inner_metadata(metadata: Any) -> dict[str, Any]:
+def _inner_metadata(metadata: Any) -> dict[str, Any]:
     base = dict(metadata) if isinstance(metadata, dict) else {}
     outer_chat_id = base.get("chat_id")
     for key in ("chat_id", "message_id", "model"):
@@ -65,14 +65,6 @@ def build_inner_metadata(metadata: Any) -> dict[str, Any]:
     pipe_meta["temporary_chat"] = is_temporary_chat(outer_chat_id)
     base[_PIPE_METADATA_KEY] = pipe_meta
     return base
-
-
-def build_inner_valves(valves: Any, *, max_tool_calls: int) -> Any:
-    loops = min(int(max_tool_calls), int(valves.MAX_FUNCTION_CALL_LOOPS))
-    return valves.model_copy(update={
-        "MAX_FUNCTION_CALL_LOOPS": loops,
-        "COSTS_REDIS_DUMP": False,
-    })
 
 
 class FusionMemberResult(NamedTuple):
@@ -175,7 +167,7 @@ async def run_fusion_member(
     if invocation.disable_native_websearch is not None:
         inner_body["disable_native_websearch"] = invocation.disable_native_websearch
     inner_valves = build_inner_valves(invocation.valves, max_tool_calls=max_tool_calls)
-    inner_metadata = build_inner_metadata(invocation.metadata)
+    inner_metadata = _inner_metadata(invocation.metadata)
     pipe_meta = inner_metadata[_PIPE_METADATA_KEY]
     pipe_meta.pop("server_tools", None)
     pipe_meta.pop("stop_server_tools_when", None)
@@ -295,6 +287,14 @@ async def run_fusion_member(
             for worker in ctx.workers:
                 worker.cancel()
             await asyncio.gather(*ctx.workers, return_exceptions=True)
+
+
+def build_inner_valves(valves: Any, *, max_tool_calls: int) -> Any:
+    loops = min(int(max_tool_calls), int(valves.MAX_FUNCTION_CALL_LOOPS))
+    return valves.model_copy(update={
+        "MAX_FUNCTION_CALL_LOOPS": loops,
+        "COSTS_REDIS_DUMP": False,
+    })
 
 
 ANALYSIS_KEYS = frozenset(

@@ -20,6 +20,7 @@ import contextlib
 import functools
 import inspect
 import json
+import math
 import re
 import sysconfig
 import time as _real_time
@@ -1553,14 +1554,39 @@ def _models_keep_calling(tool_name: str, fed_back: list[str], *, think_after_fir
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("think_seconds", [0, 70], ids=["models-answer-at-once", "models-think-past-the-window"])
-@pytest.mark.parametrize("threshold", [2, 3])
+@pytest.mark.parametrize("threshold", [1, 2, 3, 4, 5, 6, 7, 8, 10, 12])
 async def test_a_fusion_turn_stops_calling_a_tool_that_keeps_timing_out_without_touching_the_users_own_switch(
     monkeypatch, threshold, think_seconds
 ):
+    """One Fusion turn, one tool that never returns, and the count of calls it may still make.
+
+    Every panel member is offered the tool each round and calls it again as soon as it hears the first
+    result, so the count is a property of the panel, of `MAX_PARALLEL_TOOLS_PER_REQUEST` and of the
+    breaker's failure threshold -- the number of tool-call rounds the run survives is
+    `ceil(threshold / min(panel, parallelism))`, not a slack constant. Both the panel and the
+    parallelism are therefore pinned and derived here rather than typed: the panel from the plan the
+    run itself resolves, the parallelism next to the threshold, and the assertion below is the exact
+    count where the run spans one round and a derived ceiling where it spans more. Measured at panel 3
+    and parallelism 5 the count is 3, 3, 3, 6, 7, 7, 9, 10, 12, 14 for thresholds 1 to 12, so the
+    shipped default of 5 is a seven-dispatch turn and a bare equality would be red there.
+
+    The members call at once, each first call times out at the 90 s limit, and the run's own breaker --
+    not the user's switch, which stays off throughout -- then refuses the tool for the rest of the
+    answer. That breaker is built with an infinite window, so a count that has been reached can never
+    reopen by expiry. The user's own breaker still allows the tool for a separate reason: a Fusion
+    turn's failures are recorded on the per-run breaker alone, never on the user's, so the user is
+    never charged for them. Measured: the dispatches are sub-millisecond apart, 0.19-0.35 ms on an
+    idle box at `SCALE = 1.0`, which is an order of magnitude and not a bound; the count, not the
+    interval, is what the assertions below pin. The arms differ in whether a member deliberates before
+    its second dispatch, so a window that reopened between rounds could not pass both: at an infinite
+    window the pause changes nothing, and at a finite one the count is what moves.
+    """
     import open_webui_openrouter_pipe.pipe as pipe_mod
     from open_webui_openrouter_pipe import EncryptedStr, Pipe
+    from open_webui_openrouter_pipe.core.fusion_defaults import find_fusion_entry, resolve_fusion_run
     from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
     from open_webui_openrouter_pipe.models.registry import ModelFamily
+    from open_webui_openrouter_pipe.requests import fusion_engine as fusion_engine_module
 
     async def loaded(*_args: Any, **_kwargs: Any) -> None:
         return None
@@ -1569,6 +1595,7 @@ async def test_a_fusion_turn_stops_calling_a_tool_that_keeps_timing_out_without_
         return None
 
     pipe = Pipe()
+    monkeypatch.setattr(pipe, "_maybe_start_startup_checks", lambda: None)
     monkeypatch.setattr(pipe, "_resolve_openrouter_api_key", lambda _valves: ("sk-test-key", None))
     monkeypatch.setattr(pipe._artifact_store, "_ensure_artifact_store", lambda *_a, **_k: None)
     monkeypatch.setattr(pipe_mod.OpenRouterModelRegistry, "ensure_loaded", loaded)
@@ -1586,10 +1613,19 @@ async def test_a_fusion_turn_stops_calling_a_tool_that_keeps_timing_out_without_
         _models_keep_calling("hangs", fed_back, think_after_first_result=think_seconds),
     )
     monkeypatch.setattr(circuit_breaker_module, "time", _VirtualTime(asyncio.get_running_loop()))
-    invoked: list[float] = []
+    per_run_breakers: list[Any] = []
+    _real_breaker = fusion_engine_module.CircuitBreaker
+
+    def _spy(**kwargs):
+        breaker = _real_breaker(**kwargs)
+        per_run_breakers.append(breaker)
+        return breaker
+
+    monkeypatch.setattr(fusion_engine_module, "CircuitBreaker", _spy)
+    invoked: list[int] = []
 
     async def hangs(**_kwargs):
-        invoked.append(asyncio.get_running_loop().time() / SCALE)
+        invoked.append(1)
         await asyncio.sleep(NEVER * SCALE)
 
     tools = {
@@ -1601,7 +1637,8 @@ async def test_a_fusion_turn_stops_calling_a_tool_that_keeps_timing_out_without_
         }
     }
     valves = pipe.valves.model_copy(
-        update={"BREAKER_MAX_FAILURES": threshold, "TOOL_TIMEOUT_SECONDS": 90, "TOOL_BATCH_TIMEOUT_SECONDS": 900}
+        update={"BREAKER_MAX_FAILURES": threshold, "TOOL_TIMEOUT_SECONDS": 90, "TOOL_BATCH_TIMEOUT_SECONDS": 900,
+                "MAX_PARALLEL_TOOLS_PER_REQUEST": 5}
     )
     valves.API_KEY = EncryptedStr("sk-test-key")
     pipe.valves = valves
@@ -1622,13 +1659,28 @@ async def test_a_fusion_turn_stops_calling_a_tool_that_keeps_timing_out_without_
     finally:
         await pipe.close()
 
-    # The three panel members call at once, so at most one extra call per member starts before the count is reached.
-    # Their first calls time out together at 90 s and switch the tool off for the rest of the answer: no call starts
-    # after that, not after a model thinks for longer than the breaker window, and not in the judge or the final answer.
-    assert 0 < len(invoked) <= threshold + 3, len(invoked)
-    assert max(invoked) - min(invoked) < 90, [round(started - min(invoked)) for started in invoked]
+    expected = len(resolve_fusion_run(find_fusion_entry(None)).panel_models)
+    per_round = min(expected, valves.MAX_PARALLEL_TOOLS_PER_REQUEST)
+    if per_round >= expected and threshold <= expected:
+        # One round: every member dispatches exactly once and the run's own breaker closes the tool.
+        assert len(invoked) == expected, ("a second dispatch escaped the first round",
+                                          len(invoked), expected, threshold)
+    else:
+        # The count spans ceil(threshold / per_round) rounds, so bound it rather than name it.
+        ceiling = expected * ((threshold + per_round - 1) // per_round) + per_round - 1
+        assert 0 < len(invoked) <= ceiling, ("over-dispatched", len(invoked), ceiling,
+                                             expected, per_round, threshold)
     assert any("repeated" in output for output in fed_back), fed_back
     assert pipe._circuit_breaker.tool_allows("u1", "mcp", "hangs") is True
+    # New pin: the user's breaker is not merely unconvinced, it was never charged.
+    assert pipe._circuit_breaker._tool_breakers.get("u1", {}) == {}, pipe._circuit_breaker._tool_breakers
+    assert per_run_breakers, "no per-run Fusion breaker was built"
+    inner = per_run_breakers[-1]
+    assert inner.tool_allows("u1", "mcp", "hangs") is False
+    assert inner._window_seconds == math.inf, (
+        "the per-run Fusion breaker must not reopen by window expiry: with a finite "
+        "window the count and the outer breaker stay green, so nothing else in this test pins it"
+    )
 
 
 @pytest.mark.asyncio
@@ -1742,3 +1794,22 @@ def test_every_place_the_idle_limit_is_described_calls_it_one_wait_for_the_round
     assert "in total for one response" in window, f"{surface} no longer calls it one wait for the round"
     for phrase in RETIRED_PER_CALL_PHRASES:
         assert phrase not in window, f"{surface} still promises a per-call wait: {phrase!r}"
+
+
+# --- Stop during a round counts only what the tools did (round 35, tools F1) ----------------------------------------
+
+
+async def _wait_for(predicate, *, seconds: float, what: str) -> None:
+    """Wait until ``predicate`` holds, up to a wall-clock ``seconds`` budget, and say so by name if it never does.
+
+    The budget is a deadline on the real monotonic clock, not a count of sleeps, so it means the same thing
+    however slowly the machine runs the loop. Running the budget out is the helper raising with ``what``
+    naming what never happened; the caller asserts the count it expects, so what reaches the report from a
+    loaded machine is the wait that missed its target rather than a bare ``assert (3, 0) == (3, 3)`` that
+    says a number is wrong without saying which wait gave up.
+    """
+    deadline = _real_time.monotonic() + seconds
+    while not predicate():
+        if _real_time.monotonic() >= deadline:
+            raise AssertionError(what)
+        await asyncio.sleep(0.01)

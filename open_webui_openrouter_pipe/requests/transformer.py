@@ -156,6 +156,35 @@ def _without_tool_result(item: dict[str, Any], names: dict[str, str]) -> list[di
     if isinstance(item_type, str) and item_type.startswith("openrouter:"):
         return _server_round(item, "{}", unretained_tool_result(server_tool_status(item) != "completed"))
     return None
+
+
+def _tool_name_for_round(messages: list[dict[str, Any]], position: int) -> str:
+    target = str(messages[position].get("tool_call_id") or "")
+    if not target:
+        return ""
+    for offset in range(position - 1, -1, -1):
+        message = messages[offset]
+        if not isinstance(message, dict):
+            continue
+        if (message.get("role") or "").lower() == "tool":
+            continue
+        calls = [
+            call for call in (message.get("tool_calls") or [])
+            if isinstance(call, dict) and str(call.get("id") or "") == target
+        ]
+        if not calls:
+            break
+        ordinal = sum(
+            1 for prior in messages[offset + 1: position]
+            if isinstance(prior, dict) and str(prior.get("tool_call_id") or "") == target
+        )
+        if ordinal >= len(calls):
+            break
+        function = calls[ordinal].get("function")
+        return str((function or {}).get("name") or "") if isinstance(function, dict) else ""
+    return ""
+
+
 _REUSE_DOWNLOAD_MEMO_MAX_BYTES = 8 * 1024 * 1024
 _REUSE_WARN_COOLDOWN_S = 30.0
 _reuse_download_memo: OrderedDict[tuple[str, str], tuple[bytes, str]] = OrderedDict()
@@ -675,12 +704,11 @@ async def transform_messages_to_input(
                 except (TypeError, ValueError):
                     tool_content_text = str(tool_content)
 
-            if _withheld(msg_turn_index) and tool_names_by_call_id.get(call_id) != "ask_user":
+            if _withheld(msg_turn_index) and _tool_name_for_round(messages, idx) != "ask_user":
                 tool_content_text = unretained_tool_result(_tool_result_failed(tool_content_text))
 
             tool_item: dict[str, Any] = {
                 "type": "function_call_output",
-                "id": f"fc_output_{generate_item_id()}",
                 "call_id": call_id,
                 "output": tool_content_text,
             }

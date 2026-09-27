@@ -79,6 +79,8 @@ _MAX_OPENROUTER_METADATA_VALUE_CHARS = 512
 
 _PIPE_METADATA_KEY = "openrouter_pipe"
 
+_DEFAULT_RESPONSES_AUDIO_FORMATS = frozenset({"mp3", "wav"})
+
 # OpenRouter Web Tools filter
 _OPENROUTER_WEB_TOOLS_FILTER_MARKER = "openrouter_pipe:web_tools_filter:v1"
 _OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID = "openrouter_web_tools"

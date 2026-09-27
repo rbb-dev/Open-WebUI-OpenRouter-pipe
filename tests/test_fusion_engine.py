@@ -18,7 +18,7 @@ from open_webui_openrouter_pipe.requests.fusion_engine import (
     FusionMemberResult,
     aggregate_sources,
     build_analysis_response_format,
-    build_inner_metadata,
+    _inner_metadata,
     build_inner_valves,
     parse_analysis,
     run_fusion_member,
@@ -50,19 +50,19 @@ class TestBuildInnerMetadata:
             _PIPE_METADATA_KEY: {"server_tools": {"web_search": {}}},
             "other": "keep",
         }
-        inner = build_inner_metadata(outer)
+        inner = _inner_metadata(outer)
         assert inner[_PIPE_METADATA_KEY]["fusion_inner"] is True
         assert "chat_id" not in inner and "message_id" not in inner and "model" not in inner
         assert inner["other"] == "keep"
 
     def test_outer_untouched_deep(self):
         outer: dict[str, Any] = {_PIPE_METADATA_KEY: {"server_tools": {"web_search": {}}}, "chat_id": "c"}
-        inner = build_inner_metadata(outer)
+        inner = _inner_metadata(outer)
         inner[_PIPE_METADATA_KEY]["server_tools"]["web_fetch"] = {}
         assert "web_fetch" not in outer[_PIPE_METADATA_KEY]["server_tools"]
 
     def test_none_metadata(self):
-        assert build_inner_metadata(None)[_PIPE_METADATA_KEY]["fusion_inner"] is True
+        assert _inner_metadata(None)[_PIPE_METADATA_KEY]["fusion_inner"] is True
 
     def test_unpicklable_shared_objects_survive(self):
         import threading
@@ -74,7 +74,7 @@ class TestBuildInnerMetadata:
             "mcp_clients": [lock],
             "files": [{"id": "f1"}],
         }
-        inner = build_inner_metadata(outer)
+        inner = _inner_metadata(outer)
         assert inner[_PIPE_METADATA_KEY]["fusion_inner"] is True
         assert "chat_id" not in inner
         assert inner["tools"] is outer["tools"]
@@ -88,15 +88,15 @@ class TestBuildInnerMetadata:
         fut = asyncio.get_running_loop().create_future()
         holder = SimpleNamespace(session_future=fut)
         outer = {"tools": {"m": {"client": holder}}}
-        inner = build_inner_metadata(outer)
+        inner = _inner_metadata(outer)
         assert inner["tools"]["m"]["client"] is holder
         fut.cancel()
 
     def test_per_member_bases_isolated_without_touching_shared(self):
         shared_tools = {"t": {"spec": {"name": "t"}}}
         outer = {"tools": shared_tools, _PIPE_METADATA_KEY: {"server_tools": {"web_search": {}}}}
-        first = build_inner_metadata(outer)
-        second = build_inner_metadata(outer)
+        first = _inner_metadata(outer)
+        second = _inner_metadata(outer)
         first[_PIPE_METADATA_KEY]["server_tools"]["web_fetch"] = {}
         first["extra"] = 1
         assert "web_fetch" not in second[_PIPE_METADATA_KEY]["server_tools"]
@@ -774,7 +774,7 @@ class TestOwuiSurfaceInheritance:
             "features": {"web_search": False},
             "variables": {"x": "1"},
         }
-        inner = build_inner_metadata(outer)
+        inner = _inner_metadata(outer)
         assert inner["files"] == [{"id": "f1", "type": "file"}]
         assert inner["tool_servers"] == [{"url": "http://srv/openapi.json"}]
         assert inner["tool_ids"] == ["my_toolkit"]

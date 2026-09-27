@@ -24,7 +24,7 @@ from ..api.transforms import (
     _chat_tools_to_responses_tools,
     apply_context_transforms,
 )
-from ..core.config import _PIPE_METADATA_KEY
+from ..core.config import _DEFAULT_RESPONSES_AUDIO_FORMATS, _PIPE_METADATA_KEY
 from ..core.context_budget import build_futility_notice, default_output_reservation
 from ..core.error_formatter import _api_caller_error_response
 from ..core.errors import (
@@ -642,7 +642,9 @@ class RequestOrchestrator:
             allowlist_key = "responses_audio_format_allowlist"
             allowlist_seen = allowlist_key in attachments
             allowlist_csv = attachments.get(allowlist_key, "") if allowlist_seen else ""
-            allowed_for_responses = _csv_set(allowlist_csv) if allowlist_seen else {"mp3", "wav"}
+            allowed_for_responses = (
+                _csv_set(allowlist_csv) if allowlist_seen else set(_DEFAULT_RESPONSES_AUDIO_FORMATS)
+            )
 
             for item in attachments.get("audio", []):
                 file_id = item.get("id")
