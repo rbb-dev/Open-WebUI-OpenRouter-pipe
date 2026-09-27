@@ -13,6 +13,8 @@ import json
 import logging
 from typing import Any
 
+from ..core.logging_system import SessionLogger
+
 
 def _debug_print_request(
     headers: dict[str, str],
@@ -25,7 +27,7 @@ def _debug_print_request(
     from ..core.config import _owui_forwarded_header_names
     from ..core.utils import _redact_payload_blobs
 
-    if not logger.isEnabledFor(logging.DEBUG):
+    if not SessionLogger.debug_enabled(logger):
         return
 
     try:
@@ -51,7 +53,7 @@ def _debug_print_response(payload: Any, *, logger: logging.Logger) -> None:
     """Log sanitized success response payload when DEBUG logging is enabled."""
     from ..core.utils import _redact_payload_blobs
 
-    if not logger.isEnabledFor(logging.DEBUG):
+    if not SessionLogger.debug_enabled(logger):
         return
     try:
         redacted = _redact_payload_blobs(payload) if isinstance(payload, dict) else payload
@@ -69,7 +71,7 @@ async def _debug_print_error_response(resp: Any, *, logger: logging.Logger) -> s
     Returns:
         str: Response body text or error message
     """
-    if not logger.isEnabledFor(logging.DEBUG):
+    if not SessionLogger.debug_enabled(logger):
         try:
             return await resp.text()
         except Exception as exc:

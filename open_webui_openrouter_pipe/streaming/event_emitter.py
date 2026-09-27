@@ -255,7 +255,7 @@ class EventEmitterHandler:
             with SessionLogger._state_lock:
                 logs = list(SessionLogger.logs.get(request_id or "", []))
             if logs:
-                if self.logger.isEnabledFor(logging.DEBUG):
+                if SessionLogger.debug_enabled(self.logger):
                     try:
                         rendered = "\n".join(SessionLogger.format_event_as_text(e) for e in logs if isinstance(e, dict))
                     except Exception:
@@ -741,7 +741,7 @@ class EventEmitterHandler:
                 if not (isinstance(tool_calls, list) and tool_calls):
                     return
                 try:
-                    if self.logger.isEnabledFor(logging.DEBUG):
+                    if SessionLogger.debug_enabled(self.logger):
                         summaries: list[dict[str, Any]] = []
                         for call in tool_calls:
                             if not isinstance(call, dict):

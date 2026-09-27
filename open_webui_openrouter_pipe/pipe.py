@@ -2773,6 +2773,12 @@ class Pipe:
         tokens.append((SessionLogger.user_id, SessionLogger.user_id.set(user_id)))
         tokens.append((SessionLogger.log_level, SessionLogger.log_level.set(log_level)))
         tokens.append(
+            (
+                SessionLogger.archive_wanted,
+                SessionLogger.archive_wanted.set(True),
+            )
+        )
+        tokens.append(
             (SessionLogger.max_lines, SessionLogger.max_lines.set(int(job.valves.SESSION_LOG_MAX_LINES)))
         )
 

@@ -719,9 +719,9 @@ The Live and Usage tabs are backed by two layers: an in-memory `SessionTracker` 
 | `cost`, `task_cost` | float | Running cost; `task_cost` is the folded-in task portion |
 | `worker_pid` | int | The worker that owns the row |
 
-`tools_skipped` is a **live-row key only**. It is deliberately not persisted and not aggregated: `USAGE_ROW_FIELDS` and the ORM model are unchanged, and the by-model and by-user tables keep counting only `tools_ok` and `tools_failed`, so they still under-report skips. That is a deferral, not an oversight. `UsageStore.ensure` creates the table with `checkfirst=True` and never issues an `ALTER TABLE`, so adding the column alone would make every insert on an existing deployment fail with `no column named tools_skipped` and be swallowed at DEBUG level — the usage table would go dark silently, on every host, with nothing in the log above DEBUG. Persisting skips needs a real migration step alongside the column. `test_the_usage_row_column_set_is_stable_across_a_release` is the tripwire: it builds one engine from the current model and a second from the column set an earlier release created, and fails if they stop mapping 1:1, so the day someone adds the column without the migration the suite says so out loud.
+`tools_skipped` is a **live-row key only**. It is deliberately not persisted and not aggregated: `USAGE_ROW_FIELDS` and the ORM model are unchanged, and the by-model and by-user tables keep counting only `tools_ok` and `tools_failed`, so they still under-report skips. That is a deferral, not an oversight, and what is deferred is the **aggregation**, not a DDL migration: `UsageStore.ensure` reconciles against the model with `ALTER TABLE ... ADD COLUMN`, so adding `tools_skipped` to `_usage_model_columns()` *is* the migration, and rows an earlier release wrote read the new column as `NULL`, which the aggregations already treat as `0`. `test_the_usage_row_column_set_is_stable_across_a_release` is the tripwire: it builds one engine from the current model and a second from the column set an earlier release created, and fails if they stop mapping 1:1, so the day someone adds the column the suite says so out loud.
 
-**Usage records.** With `PIPE_DASHBOARD_USAGE_COLLECT` on, each finalized session is mapped by `SessionTracker.db_row(...)` and written to the `dashboard_{suffix}` table. The columns (`USAGE_ROW_FIELDS`, plus a generated `id`):
+**Usage records.** With `PIPE_DASHBOARD_USAGE_COLLECT` on, each finalized session is mapped by `SessionTracker.db_row(...)` and written to the `dashboard_{suffix}` table. The table name is keyed on `(ARTIFACT_ENCRYPTION_KEY, pipe_id)` and is therefore stable across upgrades, so `UsageStore.ensure()` reconciles missing columns with `ALTER TABLE ... ADD COLUMN` before the model is published; rows written by an earlier release read their new columns as `NULL`, which the aggregations already treat as `0` (`usage_queries.py` uses `or 0`). The columns (`USAGE_ROW_FIELDS`, plus a generated `id`):
 
 | Column | Type | Meaning |
 |--------|------|---------|
@@ -756,7 +756,7 @@ On success the result is `{"available": true, "cards", "prev", "buckets", "by_mo
 |----------|-------|
 | `unknown range` | `range` is not one of `USAGE_RANGES` |
 | `range exceeds retention` | The window is longer than `PIPE_DASHBOARD_USAGE_RETENTION_DAYS` |
-| `storage unavailable` | The artifact store or usage table is not ready on this worker |
+| `storage unavailable` | The artifact store or usage table is not ready on this worker, including a usage table an earlier pipe version left behind whose columns could not be reconciled; the pipe log carries a WARNING naming the missing columns |
 | `plugin unavailable` | The pipe-dashboard plugin instance could not be located |
 
 ---

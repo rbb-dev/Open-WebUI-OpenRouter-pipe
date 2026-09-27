@@ -366,6 +366,10 @@ def _session_log_level_debug():
     would be asserting on an empty capture. This is the test-side equivalent of an
     operator setting LOG_LEVEL=DEBUG -- the gate itself is guarded by
     test_the_host_forwarder_honours_the_session_log_level.
+
+    Any future level-sensitive test hits this wall: it has to set
+    `SessionLogger.log_level` in its own fixture and reset it in a `finally`, or
+    the `effective_log_level()` it reads is DEBUG whatever the process floor says.
     """
     import logging as _logging
 

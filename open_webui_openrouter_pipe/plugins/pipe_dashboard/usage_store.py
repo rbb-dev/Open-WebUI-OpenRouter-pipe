@@ -23,7 +23,7 @@ from typing import Any
 
 from ...core.utils import _stable_crockford_id
 from ...storage.owui_files import is_temporary_chat, temporary_chat_prefixes
-from ...storage.persistence import _db_session, generate_item_id
+from ...storage.persistence import ArtifactStore, _db_session, generate_item_id
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,7 @@ _US_PURGE_INTERVAL_S = 900.0
 _US_PURGE_JITTER_S = 60.0
 _US_LOCK_STALE_S = 600.0
 _US_DROP_WARN_EVERY = 50
+_US_RECONCILE_RETRY_S = 300.0
 
 USAGE_ROW_FIELDS = (
     "ts",
@@ -81,6 +82,34 @@ def epoch_from_usage_ts(value: datetime.datetime) -> float:
     return value.timestamp()
 
 
+def _usage_model_columns() -> dict[str, Any]:
+    from sqlalchemy import Column, DateTime, Float, Integer, String
+
+    return {
+        "ts": Column(DateTime, index=True, nullable=False),
+        "started_at": Column(DateTime),
+        "kind": Column(String(8), index=True),
+        "user_id": Column(String(64), index=True),
+        "user_name": Column(String(128)),
+        "chat_id": Column(String(64), index=True),
+        "session_id": Column(String(64)),
+        "model_id": Column(String(128), index=True),
+        "task_name": Column(String(32), nullable=True),
+        "status": Column(String(12)),
+        "duration_ms": Column(Integer),
+        "tokens_in": Column(Integer),
+        "tokens_out": Column(Integer),
+        "tokens_reasoning": Column(Integer),
+        "tokens_cached": Column(Integer),
+        "tools_ok": Column(Integer),
+        "tools_failed": Column(Integer),
+        "retries": Column(Integer),
+        "cost": Column(Float),
+        "cache_savings": Column(Float),
+        "worker_pid": Column(Integer),
+    }
+
+
 class UsageStore:
     """Per-worker usage writer mirroring the session-log manager thread pattern."""
 
@@ -89,6 +118,8 @@ class UsageStore:
         self._model: Any = None
         self._table_name: str | None = None
         self._signature: tuple[Any, ...] | None = None
+        self._reconcile_failed: tuple[Any, ...] | None = None
+        self._reconcile_failed_at = 0.0
         self._queue: queue.Queue[dict[str, Any] | None] = queue.Queue(maxsize=queue_max)
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -122,10 +153,19 @@ class UsageStore:
                 return False
             suffix = store.table_suffix()
             signature = (id(engine), suffix)
-            if self._signature == signature and self._model is not None:
-                return True
+            if self._signature == signature:
+                if self._model is not None:
+                    return True
+                if (
+                    self._reconcile_failed == signature
+                    and time.monotonic() - self._reconcile_failed_at < _US_RECONCILE_RETRY_S
+                ):
+                    return False
+            else:
+                self._reconcile_failed = None
+                self._reconcile_failed_at = 0.0
 
-            from sqlalchemy import Column, DateTime, Float, Integer, String
+            from sqlalchemy import Column, String
             from sqlalchemy.orm import declarative_base
 
             table_name = f"dashboard_{suffix}"
@@ -139,38 +179,102 @@ class UsageStore:
                 "__tablename__": table_name,
                 "__table_args__": table_args,
                 "id": Column(String(26), primary_key=True),
-                "ts": Column(DateTime, index=True, nullable=False),
-                "started_at": Column(DateTime),
-                "kind": Column(String(8), index=True),
-                "user_id": Column(String(64), index=True),
-                "user_name": Column(String(128)),
-                "chat_id": Column(String(64), index=True),
-                "session_id": Column(String(64)),
-                "model_id": Column(String(128), index=True),
-                "task_name": Column(String(32), nullable=True),
-                "status": Column(String(12)),
-                "duration_ms": Column(Integer),
-                "tokens_in": Column(Integer),
-                "tokens_out": Column(Integer),
-                "tokens_reasoning": Column(Integer),
-                "tokens_cached": Column(Integer),
-                "tools_ok": Column(Integer),
-                "tools_failed": Column(Integer),
-                "retries": Column(Integer),
-                "cost": Column(Float),
-                "cache_savings": Column(Float),
-                "worker_pid": Column(Integer),
             }
+            for _name, _column in _usage_model_columns().items():
+                attrs[_name] = _column
             model = type(f"PipeUsage_{suffix[:12]}", (base,), attrs)
             if not store._create_table_with_race_guard(model.__table__, engine, table_name):
+                return False
+            if not self._reconcile_schema(model.__table__, engine, table_name, schema_name, store):
+                self._signature = signature
+                self._reconcile_failed = signature
+                self._reconcile_failed_at = time.monotonic()
                 return False
             self._store = store
             self._model = model
             self._table_name = table_name
             self._signature = signature
+            self._reconcile_failed = None
+            self._reconcile_failed_at = 0.0
             return True
         except Exception:
             logger.debug("usage store ensure failed", exc_info=True)
+            return False
+
+    def _reconcile_schema(
+        self,
+        table: Any,
+        engine: Any,
+        table_name: str,
+        schema_name: str | None,
+        store: Any = None,
+    ) -> bool:
+        from sqlalchemy import inspect as sa_inspect
+        from sqlalchemy import text
+        from sqlalchemy.exc import DuplicateColumnError
+        from sqlalchemy.schema import CreateColumn
+
+        def _present() -> set[str]:
+            if schema_name:
+                return {c["name"] for c in sa_inspect(engine).get_columns(table_name, schema=schema_name)}
+            return {c["name"] for c in sa_inspect(engine).get_columns(table_name)}
+
+        try:
+            present = _present()
+            qualified = ArtifactStore._quote_identifier(table_name)
+            if schema_name:
+                qualified = f"{ArtifactStore._quote_identifier(schema_name)}.{qualified}"
+            added: list[str] = []
+            for col in table.columns:
+                if col.primary_key or col.name in present:
+                    continue
+                was_nullable = col.nullable
+                try:
+                    if not col.nullable and col.server_default is None:
+                        col.nullable = True
+                    ddl = str(CreateColumn(col).compile(dialect=engine.dialect)).strip()
+                finally:
+                    col.nullable = was_nullable
+                try:
+                    with engine.begin() as conn:
+                        conn.execute(text(f"ALTER TABLE {qualified} ADD COLUMN {ddl}"))
+                except Exception as exc:  # noqa: BLE001 - any other DDL failure is a gate failure with a stated reason
+                    message = str(exc).lower()
+                    if (
+                        "duplicate column" in message
+                        or "already exists" in message
+                        or isinstance(exc, DuplicateColumnError)
+                    ):
+                        logger.debug("usage table column already added by another worker: %s", col.name)
+                        continue
+                    logger.warning("usage table column could not be added: %s: %s", col.name, exc)
+                    return False
+                added.append(col.name)
+            if added:
+                logger.info("usage table %s reconciled with columns: %s", table_name, ", ".join(added))
+                if store is not None:
+                    store._create_declared_indexes(table, engine, table_name)
+            missing_pk = [
+                col.name for col in table.columns if col.primary_key and col.name not in _present()
+            ]
+            if missing_pk:
+                logger.warning(
+                    "usage table %s is missing its primary key: %s; every write will fail",
+                    table_name,
+                    ", ".join(missing_pk),
+                )
+                return False
+            missing = {col.name for col in table.columns if not col.primary_key} - _present()
+            if missing:
+                logger.warning(
+                    "usage table %s still lacks columns after reconciliation: %s",
+                    table_name,
+                    ", ".join(sorted(missing)),
+                )
+                return False
+            return True
+        except Exception:
+            logger.debug("usage table reconciliation failed", exc_info=True)
             return False
 
     def record(self, row: dict[str, Any]) -> None:

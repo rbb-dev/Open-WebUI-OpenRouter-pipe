@@ -168,8 +168,8 @@ When `VIDEO_INTENT_LOG_DECISIONS=True`, every turn on which the classifier runs 
 | `language` | classifier-detected language tag (`en`, `it`, …) |
 | `frame_plan_size` | count of entries in the (post-validation) frame plan |
 | `clarification_emitted` | bool |
-| `task_model_latency_ms` | classifier latency |
-| `task_model_fallback_triggered` | bool |
+| `task_model_latency_ms` | the wall-clock milliseconds of the whole Task Model candidate loop, measured across every candidate tried, reported on degrade-open turns too (measured through the failure), and `0` only when no Task Model was contacted. |
+| `task_model_fallback_triggered` | true when the answer came from a candidate other than the first in the list `resolve_task_model_candidates` returned; false when the first candidate answered, when only one candidate was configured, when no Task Model was configured, and on a degrade-open turn (which is what `classifier_failed` reports). |
 | `classifier_failed` | bool — TRUE when the task-model orchestration itself failed (timeout / parse error / auth / quota) and the pipe returned a synthesized fallback result. Operators grep this to find degrade-open turns. |
 | `failure_reason` | string — `"<ExceptionClass>: <message>"` when `classifier_failed=true`, otherwise empty. |
 | `prior_video_frame_extracted` | bool — TRUE iff the pipe actually extracted at least one prior-video frame; FALSE when the classifier asked for one but the request was blocked (e.g. by the modify-fallback gate) or extraction failed |
@@ -184,7 +184,7 @@ When `VIDEO_INTENT_LOG_DECISIONS=True`, every turn on which the classifier runs 
 Every failure path in the classifier returns a fallback result equivalent to "no classifier ran": `intent=text_to_video`, `frame_plan=[]`, `prompt=<latest user text>`. The video call still fires; it just doesn't carry cross-turn context. Failures handled:
 
 - **Task model returns invalid JSON** → one corrective retry per candidate; on second failure, fall through to the next candidate; if all candidates fail, fallback.
-- **Task model timeout** (>`VIDEO_INTENT_TIMEOUT_S`) → fallback.
+- **Task model timeout** (>`VIDEO_INTENT_TIMEOUT_S`) → fallback. The recorded latency on that turn covers every attempt, not just the last.
 - **Frame extraction fails** (corrupt prior video, unsupported codec) → drop that frame_plan entry, append a downgrade note to the disclosure block, continue with other entries; if every entry fails, send text-only. A clip whose tail is damaged but which still decodes is not this case: the end-seek ladder widens its window until one reads, and the frame that comes back is labelled as the nearest decodable one, not as a frame from past the end.
 - **Thumbnail upload fails** → disclosure block omits that thumbnail and says so on a ⚠️ line ("A preview picture for this frame could not be stored."); the `frame_images` entry still ships. A thumbnail that cannot be *made* is recorded the same way, with "…could not be made." Every per-entry outcome carries the plan position as well as the source index, so two entries asked of the same prior video record two separate codes and read as two separate ⚠️ lines rather than one duplicated.
 - **User cancels mid-classification** → cancellation propagates up; `/videos` is never submitted — but the per-chat / per-user-day cap charge was already spent at admission, with no refund.

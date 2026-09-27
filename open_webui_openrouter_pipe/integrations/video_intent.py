@@ -807,6 +807,7 @@ async def resolve_intent(
             user message text). Used by the degrade-open path.
     """
     fallback = fallback_intent_result(fallback_prompt_text)
+    _t0: float | None = None
 
     try:
         messages = body.get("messages") if isinstance(body, dict) else None
@@ -883,12 +884,14 @@ async def resolve_intent(
         if timeout_s <= 0:
             timeout_s = 8.0
         _t0 = time.monotonic()
+        _outcome: dict[str, Any] = {}
         params = await call_with_candidates(
             candidates=candidates,
             build_form_data=_build_form_data,
             invoke=invoke_chat_completion,
             timeout_s=timeout_s,
             logger=logger,
+            outcome=_outcome,
         )
         _latency_ms = int((time.monotonic() - _t0) * 1000)
 
@@ -904,7 +907,7 @@ async def resolve_intent(
         )
         result.prior_videos = prior_videos
         result.task_model_latency_ms = _latency_ms
-        result.task_model_fallback_triggered = False
+        result.task_model_fallback_triggered = int(_outcome.get("index", 0)) > 0
         return result
     except asyncio.CancelledError:
         raise
@@ -914,6 +917,8 @@ async def resolve_intent(
         )
         fallback.classifier_failed = True
         fallback.failure_reason = f"{type(exc).__name__}: {exc}"
+        if _t0 is not None:
+            fallback.task_model_latency_ms = int((time.monotonic() - _t0) * 1000)
         return fallback
 
 

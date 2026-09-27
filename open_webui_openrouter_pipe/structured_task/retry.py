@@ -11,6 +11,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from ..core.logging_system import SessionLogger
 from .client import read_task_model_response_json
 from .logging import safe_log_payload
 
@@ -23,6 +24,7 @@ async def call_with_candidates(
     timeout_s: float,
     logger: logging.Logger,
     log_redact: Callable[[dict[str, Any]], dict[str, Any]] = safe_log_payload,
+    outcome: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Loop candidates calling the task model; return first success.
 
@@ -48,9 +50,9 @@ async def call_with_candidates(
         raise RuntimeError("no_task_model_candidates")
 
     last_error: Exception | None = None
-    for model_id in candidates:
+    for index, model_id in enumerate(candidates):
         form_data = build_form_data(model_id)
-        if logger.isEnabledFor(logging.DEBUG):
+        if SessionLogger.debug_enabled(logger):
             try:
                 logger.debug(
                     "structured_task request payload: %s",
@@ -66,6 +68,9 @@ async def call_with_candidates(
             return params
         try:
             params = await asyncio.wait_for(_attempt(form_data), timeout=timeout_s)
+            if outcome is not None:
+                outcome["index"] = index
+                outcome["model_id"] = model_id
             return params
         except asyncio.CancelledError:
             raise

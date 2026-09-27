@@ -764,13 +764,3 @@ async def run_internal_fusion(
                 task.cancel()
         if member_tasks:
             await asyncio.gather(*member_tasks, return_exceptions=True)
-
-
-FUSION_INNER_APPLIED_DIALS = (
-    "reasoning_preferences",
-    "gemini_thinking",
-    "anthropic_verbosity",
-    "max_output_tokens",
-    "capability_tool_gate",
-    "context_transforms_state",
-)

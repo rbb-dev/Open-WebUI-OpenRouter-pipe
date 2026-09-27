@@ -10,7 +10,18 @@ from typing import Any
 from unittest.mock import Mock
 
 import pytest
-from sqlalchemy import create_engine, inspect as sa_inspect
+from sqlalchemy import (
+    Column,
+    DateTime,
+    Float,
+    Integer,
+    MetaData,
+    String,
+    Table,
+    create_engine,
+    inspect as sa_inspect,
+    text,
+)
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -21,6 +32,11 @@ from open_webui_openrouter_pipe.plugins.pipe_dashboard.usage_store import (
     UsageStore,
 )
 from open_webui_openrouter_pipe.storage.persistence import ArtifactStore
+from open_webui_openrouter_pipe.plugins.pipe_dashboard.usage_queries import query_usage_stats
+from sqlalchemy.engine import Connection
+import sqlalchemy
+import sqlite3
+import logging
 
 
 def _make_store_host() -> Any:
@@ -324,3 +340,20 @@ def test_the_writer_and_the_decoder_agree_on_the_stored_frame(tz, monkeypatch):
     finally:
         monkeypatch.undo()
         time.tzset()
+
+class _FakeClock:
+    """A monotonic clock the test moves by hand, so no test ever really waits.
+
+    `usage_store` reads the clock through the module-level `time`, so
+    monkeypatching `time.monotonic` on this module is what makes the interval
+    observable without a five-minute test.
+    """
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.now = start
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds

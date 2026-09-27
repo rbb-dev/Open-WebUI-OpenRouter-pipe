@@ -217,6 +217,7 @@ class SessionLogger:
     user_id: ContextVar[str | None] = ContextVar("user_id", default=None)
     log_level: ContextVar[int | None] = ContextVar("log_level", default=None)
     max_lines: ContextVar[int | None] = ContextVar("max_lines", default=None)
+    archive_wanted: ContextVar[bool | None] = ContextVar("archive_wanted", default=None)
     process_log_level: int = resolve_level(os.getenv("GLOBAL_LOG_LEVEL"), logging.INFO)
     SESSION_LOG_MAX_LINES: int = 20000
     logs: ClassVar[dict[str, deque[dict[str, Any]]]] = {}
@@ -324,6 +325,18 @@ class SessionLogger:
         """
         level = cls.log_level.get()
         return cls.process_log_level if level is None else int(level)
+
+    @classmethod
+    def archive_wanted_for_this_context(cls) -> bool:
+        return bool(cls.archive_wanted.get())
+
+    @classmethod
+    def debug_enabled(cls, logger: logging.Logger) -> bool:
+        if not logger.isEnabledFor(logging.DEBUG):
+            return False
+        if logging.DEBUG >= cls.effective_log_level():
+            return True
+        return cls.archive_wanted_for_this_context()
 
     @classmethod
     def get_logger(cls, name=__name__):

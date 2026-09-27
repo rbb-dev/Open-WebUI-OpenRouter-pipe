@@ -125,6 +125,19 @@ def _is_anthropic_endpoint(path: str) -> bool:
     return any(path == p or path.startswith(p + "/") for p in _ANTHROPIC_MESSAGES_PATHS)
 
 
+def _cost_segment(cost: Any, *, use_icons: bool, icon_cost: str) -> str | None:
+    if not isinstance(cost, (int, float)) or isinstance(cost, bool) or not cost > 0:
+        return None
+    cost_str = f"{cost:.6f}".rstrip("0").rstrip(".")
+    if set(cost_str) <= {"0", ".", ""}:
+        cost_str = f"{cost:.2e}"
+    if use_icons and icon_cost:
+        if icon_cost == "$":
+            return f"{icon_cost}{cost_str}"
+        return f"{icon_cost} {cost_str}"
+    return f"Cost ${cost_str}"
+
+
 def _api_caller_error_response(
     exc: OpenRouterAPIError, *, stream: bool, path: str
 ) -> StreamingResponse | None:
@@ -483,16 +496,9 @@ class ErrorFormatter:
         tokens_for_tps: int | None = None
         segments: list[str] = []
 
-        cost = usage.get("cost")
-        if isinstance(cost, (int, float)) and cost > 0:
-            cost_str = f"{cost:.6f}".rstrip("0").rstrip(".")
-            if use_icons and icon_cost:
-                if icon_cost == "$":
-                    segments.append(f"{icon_cost}{cost_str}")
-                else:
-                    segments.append(f"{icon_cost} {cost_str}")
-            else:
-                segments.append(f"Cost ${cost_str}")
+        cost_segment = _cost_segment(usage.get("cost"), use_icons=use_icons, icon_cost=icon_cost)
+        if cost_segment is not None:
+            segments.append(cost_segment)
 
         def _to_int(value: Any) -> int | None:
             """Best-effort conversion to ``int`` for usage counters."""

@@ -275,16 +275,6 @@ _warned_chat_provider_keys: set[str] = set()
 _warned_ruled_out_tool_use: set[str] = set()
 
 
-_FUSION_PARITY_DIALS = (
-    "reasoning_preferences",
-    "gemini_thinking",
-    "anthropic_verbosity",
-    "max_output_tokens",
-    "capability_tool_gate",
-    "context_transforms_state",
-)
-
-
 _FUSION_CONTINUE_NOTICE = "Continue is not available for Fusion replies. Regenerate the reply to run Fusion again."
 
 
@@ -1445,7 +1435,7 @@ class RequestOrchestrator:
             )
 
         _advertised_names_for_replayed_calls(responses_body.input, exposed_to_origin)
-        if self.logger.isEnabledFor(logging.DEBUG):
+        if SessionLogger.debug_enabled(self.logger):
             renames = [
                 (exposed, origin)
                 for exposed, origin in (exposed_to_origin or {}).items()

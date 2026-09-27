@@ -13,7 +13,15 @@ from typing import Any
 from unittest.mock import Mock
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import (
+    Column,
+    DateTime,
+    MetaData,
+    String,
+    Table,
+    create_engine,
+)
+from sqlalchemy.engine import Connection
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -414,3 +422,17 @@ async def test_run_usage_query_surfaces_warm_error_via_second_guard(seeded, monk
     result = await uq.run_usage_query(plugin, pipe, {"range": "24h", "tz_offset_min": 0, "include_tasks": True})
     assert result["available"] is False
     assert "RuntimeError" in result["reason"]
+
+
+
+class _FakeClock:
+    """A monotonic clock the test moves by hand, so no test ever really waits."""
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.now = start
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds

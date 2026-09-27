@@ -1668,7 +1668,7 @@ class StreamingHandler:
                         continue
 
                     is_delta_event = bool(etype and etype.endswith(".delta"))
-                    if not is_delta_event and self.logger.isEnabledFor(logging.DEBUG):
+                    if not is_delta_event and SessionLogger.debug_enabled(self.logger):
                         redacted_event = _redact_payload_blobs(event)
                         self.logger.debug(
                             "OpenRouter payload: %s",
@@ -2971,7 +2971,7 @@ class StreamingHandler:
                                     ],
                                     **({"usage": total_usage} if total_usage else {}),
                                 }
-                                if self.logger.isEnabledFor(logging.DEBUG) and tool_calls_payload:
+                                if SessionLogger.debug_enabled(self.logger) and tool_calls_payload:
                                     summaries: list[dict[str, Any]] = []
                                     for call in tool_calls_payload:
                                         if not isinstance(call, dict):
