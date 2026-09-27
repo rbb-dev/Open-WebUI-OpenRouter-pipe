@@ -18,6 +18,8 @@ When enabled, the pipe writes **one encrypted zip file per message turn** (Open 
 - any intermediate OpenRouter traffic
 - any tool calls/results that occur within the turn
 
+One zip is written per message turn, plus one for each housekeeping task Open WebUI dispatches on that turn, named `<message_id>.<task>.zip`. Open WebUI defines nine task types, so a turn that triggers all of them produces up to ten archives. That is deliberate: the operator debugs from these archives, and a title or tags task folded into the answer's file would make its traffic unattributable. A task invocation with no resolvable message id is skipped entirely.
+
 A reply that may hand a call back -- in Open-WebUI mode, or in Pipeline mode for a tool the pipe cannot run -- may be re-invoked for the same `message_id` during its tool loops. In that case, the pipe stages per-invocation log “segments” into the persistence layer and a background assembler merges them into a single archive.
 
 - `meta.json` — a small JSON document with:
@@ -81,6 +83,8 @@ Archives are written by a background assembler thread when:
 - a “terminal” segment is staged for `(chat_id, message_id)` (final assistant answer, error, or cancellation), or
 - no terminal segment arrives for a long time (configurable “stale finalize”) — an **incomplete** archive is written so crash/cancel cases still leave a durable log trail. A later terminal segment for the same turn merges into that same zip and removes the finalized-incomplete line.
 
+The incomplete marker appears **at most once** per archive: a later pass that finds the turn complete retires the marker rather than adding a second, and a pass that finds it already present leaves the count at one. A **refused pass resets the staleness clock**, so a stale turn waits a full window again before the assembler retries it.
+
 Non-blocking behavior:
 
 - Archives are written asynchronously via a bounded internal queue.
@@ -98,12 +102,17 @@ Archives are written under the base directory `SESSION_LOG_DIR` using a director
   <user_id>/
     <chat_id>/
       <message_id>.zip
+      <message_id>.<task>.zip
 ```
+
+The task files sit beside the answer's in the same `<chat_id>/` directory and keep the `message_id` as their prefix, so `ls <chat_id>/` and `grep <message_id>` both still work. The message id is truncated from the right to fit a 64-character column, with the task name's space reserved first — the qualifier is never the part that gets cut.
+
+**Scope:** task archives are written for the housekeeping tasks Open WebUI dispatches with a resolvable `message_id` and a `task` name. **Fusion panel members are not archived** — their metadata deliberately carries no `chat_id` or `message_id` and no `task`, so they resolve to nothing and their segments are dropped.
 
 Path safety:
 
 - For filesystem safety, the `<user_id>`, `<chat_id>`, and `<message_id>` path components are **sanitized** (non-alphanumeric characters are replaced, and components are length-limited).
-- The original (unsanitized) identifiers are preserved in `meta.json` under `ids.*` for correlation.
+- The original (unsanitized) identifiers are preserved in `meta.json` under `ids.*` for correlation. A task archive's `ids.message_id` is the **bare** Open WebUI message id — the one that field can be joined against — with the task qualifier in the **filename** and in a separate `ids.task`, not appended to `ids.message_id`. An answer archive has no qualifier, so it carries no `ids.task` at all.
 
 ---
 
@@ -119,6 +128,7 @@ Archives are written with `pyzipper` using AES encryption (`WZ_AES`).
 Key rotation note:
 
 - Changing `SESSION_LOG_ZIP_PASSWORD` affects only **future** archives. Previously written archives are not re-encrypted and require the prior password to decrypt.
+- An archive sealed under a previous passphrase is left **byte-for-byte alone** and keeps that passphrase until retention expires it. **A message turn that is still receiving segments when you rotate can never be completed**: the existing archive cannot be read, so the pass refuses, and the turn's remaining segments are never merged into it. After three refused passes they are instead written to a separate `<message_id>.<request_id>.zip` that opens with the **new** passphrase, while `<message_id>.zip` still needs the old one; those segments are then removed from the database, and the turn's own archive still does not contain them. That separate file ages like any other archive and is reaped by `Archive retention period`. **Rotate between turns, not during one.** To capture a turn's segments before rotating, copy them out of the database.
 
 ---
 
@@ -129,7 +139,7 @@ When storage is enabled, a background cleanup loop periodically:
 1. Deletes `*.zip` files older than `SESSION_LOG_RETENTION_DAYS` (based on file modification time).
 2. Removes empty directories left behind (including the base directory if it becomes empty).
 
-Cleanup runs every `SESSION_LOG_CLEANUP_INTERVAL_SECONDS`.
+Cleanup runs every `SESSION_LOG_CLEANUP_INTERVAL_SECONDS`. Turning `SESSION_LOG_STORE_ENABLED` off stops the sweep entirely: no archive is deleted and no directory is pruned, and every archive already on disk is left exactly where it is until you re-enable storage and the retention window passes again.
 
 With storage disabled the pipe neither writes nor deletes archives: turning the valve off stops the sweep on the next pass, and archives already on disk are left untouched until it is on again. Anything past `SESSION_LOG_RETENTION_DAYS` at that point is reclaimed on the first pass after it is turned back on.
 

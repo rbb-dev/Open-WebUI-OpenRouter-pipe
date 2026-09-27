@@ -6124,6 +6124,47 @@ def _install_fake_store(pipe: Pipe) -> list[_FakeModel]:
     return rows
 
 
+def _install_real_session_log_store(pipe: Pipe, tmp_path) -> None:
+    """A real sqlite artifact table in the shape persistence.py:606-621 builds.
+
+    `_FakeModel` stores whatever it is handed, so its `created_at` stays tz-aware
+    and compares cleanly against an aware cutoff. The real `Column(DateTime)`
+    reads back naive on every backend, which is the asymmetry the stale valve
+    fix turns on; only a real model reproduces it.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import declarative_base, sessionmaker
+    from open_webui_openrouter_pipe.storage import persistence as persistence_module
+
+    engine = create_engine(f"sqlite:///{tmp_path}/session_log_items.db")
+    base = declarative_base()
+    model = type(
+        "RealSessionLogItem",
+        (base,),
+        {
+            "__tablename__": "real_session_log_items",
+            "__table_args__": {"extend_existing": True},
+            "id": Column(String(26), primary_key=True),
+            "chat_id": Column(String(64), index=True, nullable=False),
+            "message_id": Column(String(64), index=True, nullable=False),
+            "model_id": Column(String(128), nullable=True),
+            "item_type": Column(String(64), nullable=False),
+            "payload": Column(persistence_module.JSON, nullable=False, default=dict),
+            "is_encrypted": Column(Boolean, nullable=False, default=False),
+            "created_at": Column(
+                DateTime,
+                nullable=False,
+                default=lambda: datetime.datetime.now(datetime.UTC),
+            ),
+        },
+    )
+    base.metadata.create_all(engine)
+    store_any = cast(Any, pipe._artifact_store)
+    store_any._item_model = model
+    store_any._session_factory = sessionmaker(bind=engine)
+    store_any._engine = engine
+
+
 def test_resolve_session_log_archive_settings_disabled(pipe_instance):
     pipe = pipe_instance
     pipe.valves.SESSION_LOG_STORE_ENABLED = False
@@ -6268,9 +6309,23 @@ def test_assemble_and_write_session_log_bundle_writes_zip(pipe_instance, monkeyp
     assert remaining == {}
 
 
-def test_run_session_log_assembler_once_handles_terminal_and_stale(pipe_instance):
+def test_run_session_log_assembler_once_handles_terminal_and_stale(pipe_instance, tmp_path):
+    """Terminal turns assemble now; idle stale turns are sealed on the stale valve.
+
+    The fake stores tz-aware `created_at`; the real SQLite column (`Column(DateTime)`,
+    persistence.py:616-619) reads back naive on every backend. Today that symmetry
+    makes the stale row comparable and the test green; the naive-UTC fix breaks the
+    symmetry, so the test must be migrated to a real sqlite model.
+
+    The rows below are inserted through the ORM directly with tz-aware values --
+    SQLite normalises them to naive on the way in, which is what makes this test
+    real. Do not "simplify" them back through `_db_persist_sync`: it hardcodes
+    `created_at=now` and ignores any caller-supplied value, so the stale row would
+    land at `now`, the stale list would be empty either way, and the test would pass
+    vacuously on the broken code.
+    """
     pipe = pipe_instance
-    _install_fake_store(pipe)
+    _install_real_session_log_store(pipe, tmp_path)
 
     pipe.valves.SESSION_LOG_STORE_ENABLED = True
 

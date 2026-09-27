@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -328,6 +329,7 @@ class TestSessionLogArchiveEdgeCases:
     def test_cleanup_deletes_old_archives(self, tmp_path, monkeypatch, pipe_instance) -> None:
         """Archives older than retention window deleted."""
         pipe = pipe_instance
+        pipe.valves.SESSION_LOG_STORE_ENABLED = True
 
         # Set retention to 1 day for testing
         valves = pipe.Valves(SESSION_LOG_RETENTION_DAYS=1)
@@ -1136,11 +1138,27 @@ class TestResolveMessageId:
     def test_task_body_last_message_id(self):
         from open_webui_openrouter_pipe.logging.session_log_manager import resolve_message_id
 
-        metadata = {"task": True, "task_body": {"messages": [{"id": "a"}, {"id": "b"}]}}
-        assert resolve_message_id(metadata) == "b"
+        metadata = {"task": "title_generation", "task_body": {"messages": [{"id": "a"}, {"id": "b"}]}}
+        key = resolve_message_id(metadata)
+        assert set(key.split(".")) == {"b", "title_generation"}
 
     def test_user_message_children_fallback(self):
         from open_webui_openrouter_pipe.logging.session_log_manager import resolve_message_id
 
-        metadata = {"task": True, "user_message": {"childrenIds": ["c-1", "c-2"]}}
-        assert resolve_message_id(metadata) == "c-1"
+        metadata = {"task": "title_generation", "user_message": {"childrenIds": ["c-1", "c-2"]}}
+        key = resolve_message_id(metadata)
+        assert set(key.split(".")) == {"c-1", "title_generation"}
+
+# ===== Assembler failure paths on a real sqlite artifact table (B7-1 / B7-3) =====
+
+import datetime as _dt
+
+from sqlalchemy import Boolean as _SABoolean
+from sqlalchemy import Column as _SAColumn
+from sqlalchemy import DateTime as _SADateTime
+from sqlalchemy import String as _SAString
+from sqlalchemy import create_engine as _sa_create_engine
+from sqlalchemy import orm as _sa_orm
+
+from open_webui_openrouter_pipe.core.utils import _stable_crockford_id
+from open_webui_openrouter_pipe.storage import persistence as _persistence_module

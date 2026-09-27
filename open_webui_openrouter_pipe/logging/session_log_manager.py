@@ -25,48 +25,112 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..core.timing_logger import timed
+from ..core.warn_latch import warn_level
 from ..storage.persistence import _db_session
 
 logger = logging.getLogger(__name__)
 
-_INCOMPLETE_MARKER_MESSAGE = "Session log finalized as incomplete"
+_UNREADABLE_ARCHIVE_CAPTURE_AFTER = 3
+
+_INCOMPLETE_MARKER_PREFIX = "Session log finalized as incomplete"
+_INCOMPLETE_MARKER_FUNC = "_assemble_and_write_bundle"
 
 
 def _is_incomplete_marker(evt: Any) -> bool:
-    return (
-        isinstance(evt, dict)
-        and str(evt.get("message") or "").startswith(_INCOMPLETE_MARKER_MESSAGE)
-        and evt.get("func") == "_assemble_and_write_bundle"
-        and evt.get("lineno") == 0
-        and evt.get("level") == "WARNING"
-    )
+    if not isinstance(evt, dict):
+        return False
+    if evt.get("func") != _INCOMPLETE_MARKER_FUNC:
+        return False
+    if not str(evt.get("message", "")).startswith(_INCOMPLETE_MARKER_PREFIX):
+        return False
+    return evt.get("lineno") == 0 and evt.get("level") == "WARNING"
+
+
+def _incomplete_marker(
+    request_id: str,
+    session_id: str,
+    user_id: str,
+    stale_finalize_seconds: float,
+) -> dict[str, Any]:
+    message = _INCOMPLETE_MARKER_PREFIX
+    if stale_finalize_seconds:
+        message = f"{message} (no terminal segment after {int(stale_finalize_seconds)}s)"
+    return {
+        "created": time.time(),
+        "level": "WARNING",
+        "logger": __name__,
+        "request_id": request_id or "",
+        "session_id": session_id or "",
+        "user_id": user_id or "",
+        "event_type": "pipe",
+        "module": __name__,
+        "func": _INCOMPLETE_MARKER_FUNC,
+        "lineno": 0,
+        "message": message,
+    }
+
+
+def _inherited_message_id(metadata: dict[str, Any]) -> str:
+    mid = metadata.get("message_id")
+    if mid:
+        return str(mid)
+    if not metadata.get("task"):
+        return ""
+    task_body = metadata.get("task_body") or {}
+    if isinstance(task_body, dict):
+        messages = task_body.get("messages")
+        if isinstance(messages, list) and messages:
+            last = messages[-1]
+            if isinstance(last, dict):
+                candidate = last.get("id")
+                if candidate:
+                    return str(candidate)
+    user_message = metadata.get("user_message") or {}
+    if isinstance(user_message, dict):
+        children = user_message.get("childrenIds")
+        if isinstance(children, list) and children:
+            candidate = children[0]
+            if candidate:
+                return str(candidate)
+    return ""
+
+
+_TASK_QUALIFIERS = frozenset(
+    {
+        "title_generation",
+        "follow_up_generation",
+        "tags_generation",
+        "emoji_generation",
+        "query_generation",
+        "image_prompt_generation",
+        "autocomplete_generation",
+        "function_calling",
+        "moa_response_generation",
+    }
+)
+
+
+def _split_archive_key(message_id: str) -> tuple[str, str]:
+    head, dot, tail = message_id.rpartition(".")
+    if dot and tail in _TASK_QUALIFIERS:
+        return head, tail
+    return message_id, ""
 
 
 def resolve_message_id(metadata: Any) -> str:
     if not isinstance(metadata, dict):
         return ""
     try:
-        mid = metadata.get("message_id")
-        if mid:
-            return str(mid)
-        if not metadata.get("task"):
+        resolved = _inherited_message_id(metadata)
+        task = metadata.get("task")
+        if not task:
+            return resolved
+        if not resolved:
             return ""
-        task_body = metadata.get("task_body") or {}
-        if isinstance(task_body, dict):
-            messages = task_body.get("messages")
-            if isinstance(messages, list) and messages:
-                last = messages[-1]
-                if isinstance(last, dict):
-                    candidate = last.get("id")
-                    if candidate:
-                        return str(candidate)
-        user_message = metadata.get("user_message") or {}
-        if isinstance(user_message, dict):
-            children = user_message.get("childrenIds")
-            if isinstance(children, list) and children:
-                candidate = children[0]
-                if candidate:
-                    return str(candidate)
+        qualifier = str(task)
+        if len(qualifier) >= 63:
+            qualifier = qualifier[:63]
+        return f"{resolved[: 64 - len(qualifier) - 1]}.{qualifier}"
     except Exception:
         logger.debug("resolve_message_id failed to parse metadata", exc_info=True)
     return ""
@@ -130,6 +194,11 @@ class SessionLogManager:
         self._retention_days = self.valves.SESSION_LOG_RETENTION_DAYS
         self._dirs: set[str] = set()
         self._warning_emitted = False
+        self._unreadable_archive_warnings: dict[str, float] = {}
+        self._unreadable_archive_attempts: dict[str, int] = {}
+        self._stale_filter_warnings: dict[str, float] = {}
+        self._read_fault_warnings: dict[str, float] = {}
+        self._captured_turns: set[str] = set()
 
     def set_artifact_store(self, artifact_store: ArtifactStore) -> None:
         """Set the artifact store reference."""
@@ -764,7 +833,7 @@ class SessionLogManager:
         stale_finalize_seconds: float,
         limit: int,
     ) -> list[tuple[str, str]]:
-        cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(seconds=float(stale_finalize_seconds))
+        cutoff = datetime.datetime.now(datetime.UTC).replace(tzinfo=None) - datetime.timedelta(seconds=float(stale_finalize_seconds))
         try:
             with _db_session(session_factory) as session:
                 # Candidates (best effort): any message that has at least one segment.
@@ -814,7 +883,17 @@ class SessionLogManager:
                     if len(out) >= int(limit):
                         break
         except Exception as exc:
-            self.logger.debug("Stale message filtering skipped — %s: %s", type(exc).__name__, exc, exc_info=True)
+            self.logger.log(
+                warn_level(
+                    self._stale_filter_warnings,
+                    f"stale_filter:{type(exc).__name__}",
+                    cooldown_s=3600.0,
+                ),
+                "Stale message filtering skipped — %s: %s",
+                type(exc).__name__,
+                exc,
+                exc_info=True,
+            )
             return []
         return out
 
@@ -909,6 +988,145 @@ class SessionLogManager:
     # Bundle Assembly
     # =========================================================================
 
+    def _capture_unassemblable_turn(
+        self,
+        chat_id: str,
+        message_id: str,
+        out_path: Path,
+        base_dir: str,
+        zip_password: bytes,
+        zip_compression: str,
+        zip_compresslevel: int | None,
+        user_id: str,
+        session_id: str,
+        segments: list[dict[str, Any]],
+        ids: list[str] | None = None,
+    ) -> None:
+
+        from ..core.logging_system import _SessionLogArchiveJob
+        from ..core.utils import _stable_crockford_id
+
+        key = f"{chat_id}:{message_id}"
+        if key in self._captured_turns:
+            return
+        attempts = self._unreadable_archive_attempts.get(key, 0) + 1
+        self._unreadable_archive_attempts[key] = attempts
+        if attempts < _UNREADABLE_ARCHIVE_CAPTURE_AFTER:
+            return
+        self._unreadable_archive_attempts[key] = 0
+
+        events: list[dict[str, Any]] = []
+        request_id = ""
+        for seg in segments:
+            if not request_id:
+                rid = seg.get("request_id")
+                if isinstance(rid, str) and rid.strip():
+                    request_id = rid.strip()
+            seg_events = seg.get("events")
+            if isinstance(seg_events, list):
+                events.extend(e for e in seg_events if isinstance(e, dict))
+        if not events or not request_id:
+            return
+
+        fallback_message_id = f"{message_id}.{request_id}"
+        try:
+            self._write_archive(
+                _SessionLogArchiveJob(
+                    base_dir=base_dir,
+                    zip_password=zip_password,
+                    zip_compression=zip_compression,
+                    zip_compresslevel=zip_compresslevel,
+                    user_id=user_id,
+                    session_id=session_id,
+                    chat_id=chat_id,
+                    message_id=fallback_message_id,
+                    request_id=request_id,
+                    created_at=time.time(),
+                    log_format=self.valves.SESSION_LOG_FORMAT,
+                    log_events=events,
+                )
+            )
+        except Exception:
+            self.logger.warning(
+                "Could not capture stranded session log turn chat_id=%s message_id=%s; "
+                "its staged segments stay in the database until artifact retention reaps them.",
+                chat_id,
+                message_id,
+                exc_info=True,
+            )
+            return
+
+        self._captured_turns.add(key)
+        self._release_assembly_lock(
+            _stable_crockford_id(f"{chat_id}:{message_id}:session_log_lock"), list(ids or [])
+        )
+
+        self.logger.log(
+            warn_level(
+                self._unreadable_archive_warnings,
+                f"session_log_turn_captured:{key}",
+                cooldown_s=3600.0,
+            ),
+            "Wrote stranded session log turn to a SEPARATE archive after %d refused attempts: "
+            "the existing archive at %s cannot be read, so this turn can never be merged into it. "
+            "Those staged segments have now been removed from the database "
+            "(chat_id=%s message_id=%s, captured as %s.zip), and the turn's own archive still does not "
+            "contain them. That separate file ages like any other archive and is reaped by the retention window. "
+            "The usual cause is rotating SESSION_LOG_ZIP_PASSWORD while a turn was mid-assembly; "
+            "rotate between turns, not during one.",
+                attempts,
+                str(out_path),
+                chat_id,
+                message_id,
+                fallback_message_id,
+        )
+
+    def _restore_touched_stamps(
+        self,
+        model: Any,
+        session_factory: Any,
+        stamps: dict[str, Any],
+        touched_ids: list[str],
+        chat_id: str = "",
+        message_id: str = "",
+    ) -> None:
+
+        if not touched_ids:
+            return
+        try:
+            with _db_session(session_factory) as session:
+                for item_id in touched_ids:
+                    original = stamps.get(item_id)
+                    if original is None:
+                        continue
+                    session.query(model).filter(model.id == item_id).update(  # type: ignore[attr-defined]
+                        {model.created_at: original},  # type: ignore[attr-defined]
+                        synchronize_session=False,
+                    )
+                session.commit()
+        except Exception:
+            self.logger.log(
+                warn_level(
+                    self._stale_filter_warnings,
+                    f"session_log_stamp_restore_failed:{chat_id}:{message_id}",
+                    cooldown_s=3600.0,
+                ),
+                "Restoring staged-segment staleness stamps failed for chat_id=%s message_id=%s; "
+                "the turn may no longer be surfaced as stale, so its staged segments can be stranded.",
+                chat_id,
+                message_id,
+                exc_info=True,
+            )
+
+    def _release_assembly_lock(
+        self,
+        lock_id: str,
+        ids: list[str] | None = None,
+    ) -> None:
+
+        with contextlib.suppress(Exception):
+            self._artifact_store._delete_artifacts_sync([*(ids or []), lock_id])  # type: ignore[union-attr]
+
     @timed
     def _assemble_and_write_bundle(
         self,
@@ -956,9 +1174,10 @@ class SessionLogManager:
 
         # Fetch all segment ids for this message (including any terminal markers).
         ids: list[str] = []
+        stamps: dict[str, Any] = {}
         with _db_session(session_factory) as session:
             rows = (
-                session.query(model.id)  # type: ignore[attr-defined]
+                session.query(model.id, model.created_at)  # type: ignore[attr-defined]
                 .filter(model.chat_id == chat_id)  # type: ignore[attr-defined]
                 .filter(model.message_id == message_id)  # type: ignore[attr-defined]
                 .filter(model.item_type.in_(["session_log_segment", "session_log_segment_terminal"]))  # type: ignore[attr-defined]
@@ -966,24 +1185,55 @@ class SessionLogManager:
                 .all()
             )
             ids = [row[0] for row in rows if row and isinstance(row[0], str)]
+            stamps = {row[0]: row[1] for row in rows if row and isinstance(row[0], str)}
 
         if not ids:
-            with contextlib.suppress(Exception):
-                self._artifact_store._delete_artifacts_sync([lock_id])
+            self._release_assembly_lock(lock_id)
             return False
 
-        payloads = self._artifact_store._db_fetch_sync(chat_id, message_id, ids)
+        try:
+            payloads = self._artifact_store._db_fetch_sync(chat_id, message_id, ids)
+        except Exception:
+            self.logger.log(
+                warn_level(
+                    self._read_fault_warnings,
+                    f"session_log_fetch_failed:{chat_id}:{message_id}",
+                    cooldown_s=3600.0,
+                ),
+                "Session log segment fetch failed for chat_id=%s message_id=%s; keeping staged segments for retry.",
+                chat_id,
+                message_id,
+                exc_info=True,
+            )
+            self._release_assembly_lock(lock_id)
+            return False
+
         segments: list[dict[str, Any]] = []
+        readable_ids: list[str] = []
         for item_id in ids:
-            payload = payloads.get(item_id)
+            payload = payloads.get(item_id) if isinstance(payloads, dict) else None
             if not isinstance(payload, dict):
                 continue
             if payload.get("type") in {"session_log_segment", "session_log_segment_terminal"}:
                 segments.append(payload)
+                readable_ids.append(item_id)
 
-        if not segments:
-            with contextlib.suppress(Exception):
-                self._artifact_store._delete_artifacts_sync(ids + [lock_id])
+        if len(readable_ids) != len(ids):
+            self.logger.log(
+                warn_level(
+                    self._read_fault_warnings,
+                    f"session_log_partial_fetch:{chat_id}:{message_id}",
+                    cooldown_s=3600.0,
+                ),
+                "Session log fetch returned %d of %d staged segments for chat_id=%s message_id=%s; "
+                "keeping every staged segment for retry.",
+                len(readable_ids),
+                len(ids),
+                chat_id,
+                message_id,
+            )
+            self._restore_touched_stamps(model, session_factory, stamps, list(ids), chat_id, message_id)
+            self._release_assembly_lock(lock_id)
             return False
 
         resolved_user_id = ""
@@ -1028,29 +1278,18 @@ class SessionLogManager:
 
         # Add a final synthetic marker to make incomplete bundles explicit.
         if not terminal:
-            msg = _INCOMPLETE_MARKER_MESSAGE
-            if stale_finalize_seconds:
-                msg = f"{msg} (no terminal segment after {int(stale_finalize_seconds)}s)"
             merged_events.append(
-                {
-                    "created": time.time(),
-                    "level": "WARNING",
-                    "logger": __name__,
-                    "request_id": preferred_request_id or "",
-                    "session_id": resolved_session_id or "",
-                    "user_id": resolved_user_id or "",
-                    "event_type": "pipe",
-                    "module": __name__,
-                    "func": "_assemble_and_write_bundle",
-                    "lineno": 0,
-                    "message": msg,
-                }
+                _incomplete_marker(
+                    preferred_request_id,
+                    resolved_session_id,
+                    resolved_user_id,
+                    stale_finalize_seconds,
+                )
             )
 
         settings = archive_settings or self.resolve_archive_settings(self.valves)
         if settings is None:
-            with contextlib.suppress(Exception):
-                self._artifact_store._delete_artifacts_sync([lock_id])
+            self._release_assembly_lock(lock_id)
             return False
         base_dir, zip_password, zip_compression, zip_compresslevel = settings
 
@@ -1061,15 +1300,16 @@ class SessionLogManager:
             before_stat = out_path.stat()
 
         # Merge with existing archive events if the zip already exists.
+        read_failed = False
         if out_path.exists():
             try:
                 existing_events = self.read_archive_events(out_path, settings)
                 if existing_events:
-                    if terminal:
-                        existing_events = [evt for evt in existing_events if not _is_incomplete_marker(evt)]
-                    merged_events = existing_events + merged_events
-                    merged_events = self.dedupe_events(merged_events)
-                    merged_events.sort(key=_event_ts)
+                    existing_events = [evt for evt in existing_events if not _is_incomplete_marker(evt)]
+                    if existing_events:
+                        merged_events = existing_events + merged_events
+                        merged_events = self.dedupe_events(merged_events)
+                        merged_events.sort(key=_event_ts)
                     if self.logger.isEnabledFor(logging.DEBUG):
                         self.logger.debug(
                             "Merged %d existing archive events with %d DB events (chat_id=%s message_id=%s)",
@@ -1079,13 +1319,39 @@ class SessionLogManager:
                             message_id,
                         )
             except Exception:
-                if self.logger.isEnabledFor(logging.DEBUG):
-                    self.logger.debug(
-                        "Failed to read existing session log archive, proceeding with DB events only (path=%s)",
-                        str(out_path),
-                        exc_info=True,
-                    )
+                read_failed = True
+                self.logger.log(
+                    warn_level(
+                        self._unreadable_archive_warnings,
+                        f"session_log_archive_unreadable:{out_path}",
+                        cooldown_s=3600.0,
+                    ),
+                    "Refusing to assemble over an unreadable session log archive; "
+                    "the existing file and the staged segments are left intact (path=%s chat_id=%s message_id=%s).",
+                    str(out_path),
+                    chat_id,
+                    message_id,
+                    exc_info=True,
+                )
 
+        if read_failed:
+            self._release_assembly_lock(lock_id)
+            self._capture_unassemblable_turn(
+                chat_id,
+                message_id,
+                out_path,
+                base_dir,
+                zip_password,
+                zip_compression,
+                zip_compresslevel,
+                resolved_user_id or "user",
+                resolved_session_id,
+                segments,
+                list(ids),
+            )
+            return False
+
+        meta_message_id, meta_task = _split_archive_key(message_id)
         job = _SessionLogArchiveJob(
             base_dir=base_dir,
             zip_password=zip_password,
@@ -1099,6 +1365,8 @@ class SessionLogManager:
             created_at=time.time(),
             log_format=self.valves.SESSION_LOG_FORMAT,
             log_events=merged_events,
+            meta_message_id=meta_message_id,
+            meta_task=meta_task,
         )
         self._write_archive(job)
 
@@ -1121,12 +1389,11 @@ class SessionLogManager:
 
         if wrote:
             with contextlib.suppress(Exception):
-                self._artifact_store._delete_artifacts_sync(ids + [lock_id])
+                self._artifact_store._delete_artifacts_sync(ids + [lock_id])  # type: ignore[union-attr]
             return True
 
         # If writing failed, keep segments for retry and allow lock reaping.
-        with contextlib.suppress(Exception):
-            self._artifact_store._delete_artifacts_sync([lock_id])
+        self._release_assembly_lock(lock_id)
         return False
 
     # =========================================================================
@@ -1134,9 +1401,12 @@ class SessionLogManager:
     # =========================================================================
 
     @timed
+    def _sweep_enabled(self) -> bool:
+        return bool(self.valves.SESSION_LOG_STORE_ENABLED)
+
     def cleanup_archives(self) -> None:
         """Delete expired session log archives and prune empty directories."""
-        if not self.valves.SESSION_LOG_STORE_ENABLED:
+        if not self._sweep_enabled():
             return
         with self._lock:
             dirs = set(self._dirs)

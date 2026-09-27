@@ -76,7 +76,12 @@ _EXPECTED: dict[str, int] = {
     # bytes, and a storage error while recording it must not replace the failure the
     # user is being shown -- nor take down a cancellation that is already unwinding.
     "integrations/video.py": 7,
-    "logging/session_log_manager.py": 21,
+    # 18th: the diagnostic, reassembled below. Measured from the finished tree, not
+    # derived: B7-3's stamp restore dropped its `suppress` for a `try`/`except` that
+    # reports a failed restore, and the stranded-turn capture now routes its row
+    # delete through `_release_assembly_lock`, which is itself one guarded helper.
+    # The success path keeps its own inline suppression, and the capture adds none.
+    "logging/session_log_manager.py": 18,
     "media/frame_extraction.py": 2,
     "models/catalog_manager.py": 2,
     # 19th: `MultimodalHandler.aclose()` during shutdown, closing the vetted transport's

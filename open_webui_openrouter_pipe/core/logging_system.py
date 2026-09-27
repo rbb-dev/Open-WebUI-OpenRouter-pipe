@@ -54,6 +54,8 @@ class _SessionLogArchiveJob:
     created_at: float
     log_format: str
     log_events: list[dict[str, Any]]
+    meta_message_id: str | None = None
+    meta_task: str | None = None
 
 
 def _safe_message(record: logging.LogRecord) -> str:
@@ -515,7 +517,8 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
             "user_id": str(job.user_id or ""),
             "session_id": str(session_id),
             "chat_id": str(job.chat_id or ""),
-            "message_id": str(job.message_id or ""),
+            "message_id": str(job.meta_message_id or job.message_id or ""),
+            **({"task": str(job.meta_task)} if job.meta_task else {}),
         },
         "request_id": str(job.request_id or ""),
         **({"request_ids": request_ids} if request_ids else {}),

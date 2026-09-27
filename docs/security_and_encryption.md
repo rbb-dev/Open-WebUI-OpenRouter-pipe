@@ -206,7 +206,7 @@ When `SESSION_LOG_STORE_ENABLED=True`, the pipe can persist per-request session 
 Security considerations:
 - Archives are encrypted using `SESSION_LOG_ZIP_PASSWORD` (treat as a secret).
 - Archives are written under `SESSION_LOG_DIR` with a predictable hierarchy (use filesystem permissions accordingly).
-- Retention and cleanup are controlled by `SESSION_LOG_RETENTION_DAYS` and the cleanup interval valve, and run while storage is on.
+- Retention and cleanup are controlled by `SESSION_LOG_RETENTION_DAYS` and the cleanup interval valve, and run while storage is on. Turning `SESSION_LOG_STORE_ENABLED` off stops the sweep, so archives already on disk survive until it is re-enabled and their window passes.
 
 See: [Session Log Storage](session_log_storage.md).
 

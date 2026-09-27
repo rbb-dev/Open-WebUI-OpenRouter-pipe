@@ -1233,15 +1233,18 @@ class Valves(BaseModel):
         description=(
             "When True, save the full log of each request to encrypted zip files on disk. "
             "Archives capture the full OpenRouter request/response (prompts, model output, tool calls, provider errors) plus request identifiers — treat as sensitive conversation data at rest. "
+            "One zip is written per message turn, plus one for each housekeeping task Open WebUI dispatches on that turn, named <message_id>.<task>.zip. Open WebUI defines nine task types, so a turn that triggers all of them produces up to ten archives. "
             "Persistence is skipped when any required IDs are missing (user_id, chat_id, message_id, request_id), and for every temporary chat. "
-            "With it False the retention sweep is skipped too, so archives already on disk are left untouched rather than deleted."
+            "A task invocation that resolves to no message id is skipped the same way, which includes every Fusion panel member — those carry no chat or message id at all, so they are not archived. "
+            "Turning this off also stops the retention sweep, leaving every archive already on disk untouched until it is re-enabled and the retention window passes."
         ),
     )
     SESSION_LOG_DIR: str = Field(
         default="session_logs",
         description=(
             "Base directory for encrypted session log archives. "
-            "Files are stored under <SESSION_LOG_DIR>/<user_id>/<chat_id>/<message_id>.zip."
+            "Files are stored under <SESSION_LOG_DIR>/<user_id>/<chat_id>/<message_id>.zip, "
+            "with a housekeeping task's own archive beside the answer's as <message_id>.<task>.zip."
         ),
     )
     SESSION_LOG_ZIP_PASSWORD: EncryptedStr = Field(
@@ -1309,6 +1312,8 @@ class Valves(BaseModel):
         description=(
             "If a message has staged session-log segments but never signals that it finished "
             "(the worker crashed or was killed), finalize an incomplete zip after this many seconds since the last piece."
+            "The incomplete marker is written at most once per archive: a pass that finds the turn still stale leaves the single marker "
+            "in place rather than adding another, and a pass that finds the turn complete retires it."
         ),
     )
     SESSION_LOG_LOCK_STALE_SECONDS: int = Field(
