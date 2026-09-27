@@ -825,7 +825,8 @@ class Valves(BaseModel):
         description=(
             "When True, retry the request against /chat/completions if /responses fails with an "
             "endpoint/model support error before any streaming output is produced. A failure OpenRouter "
-            "reports inside a reply /responses has already started is shown, never retried."
+            "reports inside a reply is retried first if nothing has streamed yet, and shown only "
+            "once content has been shown."
         ),
     )
     API_KEY: EncryptedStr = Field(
@@ -875,6 +876,31 @@ class Valves(BaseModel):
         ge=5,
         le=300,
         description="Maximum total time in seconds to spend on retry attempts. Retries will stop if this time limit is exceeded. It also caps any single retry wait, including one a server asked for in a Retry-After header.",
+    )
+
+    TRANSIENT_RETRY_MAX_ATTEMPTS: int = Field(
+        default=2,
+        ge=0,
+        le=10,
+        description=(
+            "How many extra tries a chat request to OpenRouter gets after a temporary failure "
+            "(HTTP 429, HTTP 5xx, the same failure reported inside a reply, or a connection that drops "
+            "or times out), on top of the first try. 2 means at most three requests in all. 0 makes a "
+            "temporary failure final: the error is shown at once and nothing is retried. These are the "
+            "chat request valves and are independent of the remote download valves above; one failed "
+            "chat request is counted against the breaker once, however many tries it took."
+        ),
+    )
+    TRANSIENT_RETRY_MAX_WAIT_SECONDS: int = Field(
+        default=30,
+        ge=1,
+        le=300,
+        description=(
+            "The longest single wait, in seconds, between two tries of one chat request to OpenRouter. "
+            "A Retry-After header OpenRouter sends is honoured up to this cap, so a longer Retry-After is "
+            "truncated to it rather than replaced by it. Independent of the remote download valves above, "
+            "and a wait here can be cancelled by stopping the request."
+        ),
     )
 
     REMOTE_FILE_MAX_SIZE_MB: int = Field(
@@ -1497,14 +1523,14 @@ class Valves(BaseModel):
     NETWORK_TIMEOUT_TEMPLATE: str = Field(
         default=DEFAULT_NETWORK_TIMEOUT_TEMPLATE,
         description=(
-            "Markdown template a chat reply shows, after any retries, when its call to OpenRouter times out before any of the answer arrives. Picture-only image models, video models and the panel, judge and final-answer calls inside internal Fusion report failures in their own way. {timeout_seconds} is the limit that ran out: HTTP_CONNECT_TIMEOUT_SECONDS while connecting, HTTP_SOCK_READ_SECONDS while waiting for data, or HTTP_TOTAL_TIMEOUT_SECONDS for the whole request. Once part of the answer has arrived, STREAM_INTERRUPTED_TEMPLATE is used instead. Available variables: {error_id}, {timeout_seconds}, {timestamp}, {session_id}, {user_id}, {support_email}, {support_url}. Supports Handlebars-style conditionals: wrap a section in {{#if variable}}...{{/if}} to show it only when that value is set."
+            "Markdown template a chat reply shows, once the retries are spent, when its call to OpenRouter times out before any of the answer arrives. A timeout before the first byte is a temporary failure: the request is re-sent up to TRANSIENT_RETRY_MAX_ATTEMPTS extra times (three attempts in all by default) and is counted once against the breaker however many attempts it took. Picture-only image models, video models and the panel, judge and final-answer calls inside internal Fusion report failures in their own way. {timeout_seconds} is the limit that ran out: HTTP_CONNECT_TIMEOUT_SECONDS while connecting, HTTP_SOCK_READ_SECONDS while waiting for data, or HTTP_TOTAL_TIMEOUT_SECONDS for the whole request. Once part of the answer has arrived, STREAM_INTERRUPTED_TEMPLATE is used instead and nothing is retried. Available variables: {error_id}, {timeout_seconds}, {timestamp}, {session_id}, {user_id}, {support_email}, {support_url}. Supports Handlebars-style conditionals: wrap a section in {{#if variable}}...{{/if}} to show it only when that value is set."
         )
     )
 
     CONNECTION_ERROR_TEMPLATE: str = Field(
         default=DEFAULT_CONNECTION_ERROR_TEMPLATE,
         description=(
-            "Markdown template a chat reply shows, after any retries, when its connection to OpenRouter fails before any of the answer arrives: the connection cannot be opened or drops, or, on every attempt, OpenRouter closes the stream without sending anything. Picture-only image models, video models and the panel, judge and final-answer calls inside internal Fusion report failures in their own way. A timeout uses NETWORK_TIMEOUT_TEMPLATE instead, and once part of the answer has arrived, STREAM_INTERRUPTED_TEMPLATE is used. Available variables: {error_id}, {error_type}, {timestamp}, {session_id}, {user_id}, {support_email}, {support_url}. Supports Handlebars-style conditionals: wrap a section in {{#if variable}}...{{/if}} to show it only when that value is set."
+            "Markdown template a chat reply shows, once the retries are spent, when its connection to OpenRouter fails before any of the answer arrives: the connection cannot be opened or drops, or, on every attempt, OpenRouter closes the stream without sending anything. A connection that fails before the first byte is a temporary failure: the request is re-sent up to TRANSIENT_RETRY_MAX_ATTEMPTS extra times (three attempts in all by default) and is counted once against the breaker however many attempts it took. Picture-only image models, video models and the panel, judge and final-answer calls inside internal Fusion report failures in their own way. A timeout uses NETWORK_TIMEOUT_TEMPLATE instead, and once part of the answer has arrived, STREAM_INTERRUPTED_TEMPLATE is used and nothing is retried. Available variables: {error_id}, {error_type}, {timestamp}, {session_id}, {user_id}, {support_email}, {support_url}. Supports Handlebars-style conditionals: wrap a section in {{#if variable}}...{{/if}} to show it only when that value is set."
         )
     )
 
@@ -1562,7 +1588,7 @@ class Valves(BaseModel):
         ge=1,
         le=50,
         description=(
-            "Number of failures one user may accumulate before their requests are refused, a failing tool is skipped, or their database reads and writes are skipped; raise it for fewer trips in noisy environments. A request failure is a failed chat call to OpenRouter (an error reply; a connection that cannot be opened, drops or times out; an error reported inside a response; or a stream that stops before its final event), counted again on each automatic retry. A generation on a picture-only image model or a video model that fails after it was sent to OpenRouter is also a request failure, counted once. Request and database failures count within BREAKER_WINDOW_SECONDS. Request failures clear when a request ends without an error (for a picture-only image model or a video model, only once its result is delivered; for an internal Fusion run, only if a panel model answered); a request the user stops clears no request failures. Housekeeping tasks such as title generation neither count nor clear; Open WebUI's merge-responses task counts but never clears. Database failures also clear when a database operation succeeds. The request breaker never refuses a request whose last message is a tool result, or is Open WebUI's own message that comes right after a tool result and hands the model a tool's images; a question or picture the user sends is refused like any other request. Each tool counts its failures in a row: errors it raises, per-call timeouts, running calls cut off by TOOL_BATCH_TIMEOUT_SECONDS, and calls whose tool server cannot be reached or answers with an HTTP error status; an ask_user timeout and a call to an MCP tool whose session has closed do not count. An error the tool reports in a result it returns normally is shown as failed but neither adds to the count nor clears it."
+            "Number of failures one user may accumulate before their requests are refused, a failing tool is skipped, or their database reads and writes are skipped; raise it for fewer trips in noisy environments. A request failure is a failed chat call to OpenRouter (an error reply; a connection that cannot be opened, drops or times out; an error reported inside a response; or a stream that stops before its final event). A request counts once however many attempts it took: a 429, a 5xx, or that failure reported inside a response before anything has been shown is retried first, up to TRANSIENT_RETRY_MAX_ATTEMPTS extra tries, and the request is a single failure whichever attempt gave up on it. A generation on a picture-only image model or a video model that fails after it was sent to OpenRouter is also a request failure, counted once. Request and database failures count within BREAKER_WINDOW_SECONDS. Request failures clear when a request ends without an error (for a picture-only image model or a video model, only once its result is delivered; for an internal Fusion run, only if a panel model answered); a request the user stops clears no request failures. Housekeeping tasks such as title generation neither count nor clear; Open WebUI's merge-responses task counts but never clears. Database failures also clear when a database operation succeeds. The request breaker never refuses a request whose last message is a tool result, or is Open WebUI's own message that comes right after a tool result and hands the model a tool's images; a question or picture the user sends is refused like any other request. Each tool counts its failures in a row: errors it raises, per-call timeouts, running calls cut off by TOOL_BATCH_TIMEOUT_SECONDS, and calls whose tool server cannot be reached or answers with an HTTP error status; an ask_user timeout and a call to an MCP tool whose session has closed do not count. An error the tool reports in a result it returns normally is shown as failed but neither adds to the count nor clears it."
         ),
     )
     BREAKER_WINDOW_SECONDS: int = Field(

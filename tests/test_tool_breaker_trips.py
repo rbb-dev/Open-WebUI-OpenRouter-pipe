@@ -494,6 +494,45 @@ async def test_the_database_breaker_uses_the_window_saved_for_the_pipe(monkeypat
 # --- failed requests trip the request breaker ------------------------------------------------------------------------
 
 _FAILED_UPSTREAM = {"status": 500, "payload": {"error": {"message": "upstream trouble"}}}
+
+# A turn that fails before anything is shown spends every attempt before it gives up, so a scripted reply
+# costs that many POSTs and not one. The scripts below are written in turns and expanded with this.
+_ATTEMPTS_PER_FAILING_TURN = 3
+
+
+def _scripted_turn_at(mock_http, url: str, outcome: dict) -> None:
+    """``_scripted_turn`` for a test that posts to an endpoint of its own rather than the default one."""
+    for _ in range(_ATTEMPTS_PER_FAILING_TURN if outcome is _FAILED_UPSTREAM else 1):
+        mock_http.post(url, **outcome)
+
+
+def _failing(turns: int) -> int:
+    """The POSTs a number of failing turns costs.
+
+    Every count below is written in turns, because that is what each of those tests is about -- a saved count
+    of failures, a request that is or is not refused, a call that does or does not clear them. A failing turn
+    now spends three attempts, so the POST count for the same number of turns is three times as large. Writing
+    it out at the assertion rather than dividing inside the counter keeps each expectation readable and keeps
+    the tests that genuinely count *attempts* -- the ones about the retry itself -- honest about which is
+    which.
+    """
+    return turns * _ATTEMPTS_PER_FAILING_TURN
+
+
+def _scripted_turn(mock_http, outcome: dict) -> None:
+    """Arm one turn's worth of matchers, in the order the pipe will ask for them.
+
+    A turn that answers is one POST; a turn that fails is one per attempt, and a turn that is dropped is one
+    per attempt as well -- the drop is the failure the pipe is retrying. Arming only one matcher for a
+    failing turn is what makes ``aioresponses`` serve a connection error on the second attempt, and that error
+    is itself retryable, so the test would then be measuring a different failure than it set up.
+    """
+    attempts = 1 if outcome is not _FAILED_UPSTREAM else _ATTEMPTS_PER_FAILING_TURN
+    if attempts == 1:
+        mock_http.post("https://openrouter.ai/api/v1/responses", **outcome)
+        return
+    for _ in range(attempts):
+        mock_http.post("https://openrouter.ai/api/v1/responses", **outcome)
 _ANSWERED_UPSTREAM = {
     "status": 200,
     "payload": {
@@ -534,6 +573,11 @@ async def _chat_turn(pipe, *, stream: bool) -> str:
 
 
 def _posts(mock_http) -> int:
+    """Turns posted, not POSTs.
+
+    The honest count, and the one every assertion in this file was written against. Kept as a straight POST
+    count; the tests that compare it against a number say which units they mean.
+    """
     return sum(len(calls) for (method, _url), calls in mock_http.requests.items() if method == "POST")
 
 
@@ -554,7 +598,7 @@ async def test_a_user_whose_requests_keep_failing_upstream_is_refused_at_the_sav
     finally:
         await pipe.close()
 
-    assert posts == threshold, replies
+    assert posts == _failing(threshold), replies
     assert "Temporarily disabled due to repeated errors" in replies[-1], replies
     assert not any("Temporarily disabled" in reply for reply in replies[:-1]), replies
 
@@ -569,8 +613,8 @@ async def test_a_request_that_ends_without_an_error_clears_the_failures_before_i
     try:
         with aioresponses() as mock_http:
             for outcome in outcomes:
-                mock_http.post("https://openrouter.ai/api/v1/responses", **outcome)
-            mock_http.post("https://openrouter.ai/api/v1/responses", **_FAILED_UPSTREAM)
+                _scripted_turn(mock_http, outcome)
+            _scripted_turn(mock_http, _FAILED_UPSTREAM)
             for _ in range(len(outcomes) + 1):
                 _saved_breaker_settings(pipe, threshold)
                 replies.append(await _chat_turn(pipe, stream=False))
@@ -578,7 +622,7 @@ async def test_a_request_that_ends_without_an_error_clears_the_failures_before_i
     finally:
         await pipe.close()
 
-    assert posts == len(outcomes) + 1, replies
+    assert posts == _failing(len(outcomes)) + 1, replies
     assert "Hello." in replies[threshold - 1], replies
     assert not any("Temporarily disabled" in reply for reply in replies), replies
 
@@ -652,7 +696,7 @@ async def test_handing_tool_calls_back_to_open_webui_clears_the_failures_before_
     try:
         with aioresponses() as mock_http:
             for _ in range(threshold - 1):
-                mock_http.post("https://openrouter.ai/api/v1/responses", **_FAILED_UPSTREAM)
+                _scripted_turn(mock_http, _FAILED_UPSTREAM)
             mock_http.post("https://openrouter.ai/api/v1/responses", **_TOOL_CALL_UPSTREAM)
             mock_http.post("https://openrouter.ai/api/v1/responses", **_TOOL_RESULT_ANSWER_UPSTREAM, repeat=True)
             for _ in range(threshold - 1):
@@ -728,7 +772,7 @@ async def test_a_background_task_that_succeeds_does_not_clear_a_users_failed_req
     try:
         with aioresponses() as mock_http:
             for _ in range(threshold - 1):
-                mock_http.post("https://openrouter.ai/api/v1/responses", **_FAILED_UPSTREAM)
+                _scripted_turn(mock_http, _FAILED_UPSTREAM)
             mock_http.post("https://openrouter.ai/api/v1/responses", **_TITLE_UPSTREAM)
             mock_http.post("https://openrouter.ai/api/v1/responses", repeat=True, **_FAILED_UPSTREAM)
             for _ in range(threshold - 1):
@@ -744,7 +788,7 @@ async def test_a_background_task_that_succeeds_does_not_clear_a_users_failed_req
         await pipe.close()
 
     assert "Pipe title" in title, title
-    assert posts == threshold + 1, (title, replies)
+    assert posts == _failing(threshold) + 1, (title, replies)
     assert "Temporarily disabled due to repeated errors" in replies[-1], replies
 
 
@@ -797,7 +841,7 @@ async def test_a_request_that_ends_in_an_error_of_its_own_does_not_clear_earlier
     finally:
         await pipe.close()
 
-    assert posts == threshold, replies
+    assert posts == _failing(threshold), replies
     assert "Temporarily disabled due to repeated errors" in replies[-1], replies
 
 
@@ -874,7 +918,7 @@ async def test_a_request_refused_before_the_model_is_called_does_not_clear_earli
         await pipe.close()
 
     assert _REFUSAL_HEADINGS[refusal] in refused, refused
-    assert posts == threshold, (refused, replies)
+    assert posts == _failing(threshold), (refused, replies)
     assert "Temporarily disabled due to repeated errors" in replies[-1], replies
 
 
@@ -976,7 +1020,7 @@ async def test_a_failed_image_generation_counts_once_toward_the_users_refusal(mo
     assert images.sent == 1, image_reply
     assert "Image generation failed" in image_reply, image_reply
     assert recorded == threshold - 1, (recorded, image_reply)
-    assert posts == threshold - 1, (image_reply, replies)
+    assert posts == _failing(threshold - 1), (image_reply, replies)
     assert "Temporarily disabled due to repeated errors" in replies[-1], replies
 
 
@@ -1006,7 +1050,7 @@ async def test_a_delivered_image_clears_the_users_failures(monkeypatch, threshol
 
     assert "/api/v1/files/file-1/content" in image_reply, image_reply
     assert recorded == 0, (recorded, image_reply)
-    assert posts == 2 * threshold - 1, (image_reply, replies)
+    assert posts == _failing(2 * threshold - 1), (image_reply, replies)
     assert not any("Temporarily disabled" in reply for reply in replies), replies
 
 
@@ -1036,7 +1080,7 @@ async def test_an_image_request_refused_before_it_is_sent_neither_counts_nor_cle
 
     assert images.sent == 0, image_reply
     assert recorded == threshold - 1, (recorded, image_reply)
-    assert posts == threshold, (image_reply, replies)
+    assert posts == _failing(threshold), (image_reply, replies)
     assert "Temporarily disabled due to repeated errors" in replies[-1], replies
 
 
@@ -1126,7 +1170,7 @@ async def test_a_failed_video_generation_counts_once_toward_the_users_refusal(mo
     assert calls.count("submit") == 1, (calls, video_reply)
     assert "Video generation failed" in video_reply, video_reply
     assert recorded == threshold - 1, (recorded, video_reply)
-    assert posts == threshold - 1, (video_reply, replies)
+    assert posts == _failing(threshold - 1), (video_reply, replies)
     assert "Temporarily disabled due to repeated errors" in replies[-1], replies
 
 
@@ -1155,7 +1199,7 @@ async def test_a_delivered_video_clears_the_users_failures(monkeypatch, threshol
 
     assert "/api/v1/files/file-1/content" in video_reply, video_reply
     assert recorded == 0, (recorded, video_reply)
-    assert posts == 2 * threshold - 1, (video_reply, replies)
+    assert posts == _failing(2 * threshold - 1), (video_reply, replies)
     assert not any("Temporarily disabled" in reply for reply in replies), replies
 
 
@@ -1186,7 +1230,7 @@ async def test_a_video_job_still_running_when_its_status_window_closes_neither_c
     assert calls.count("submit") == 1, (calls, video_reply)
     assert "OpenRouter is still working on this video" in video_reply, video_reply
     assert recorded == threshold - 1, (recorded, video_reply)
-    assert posts == threshold, (video_reply, replies)
+    assert posts == _failing(threshold), (video_reply, replies)
     assert "Temporarily disabled due to repeated errors" in replies[-1], replies
 
 
@@ -1223,7 +1267,8 @@ async def test_a_request_under_way_keeps_the_retry_its_own_failure_would_refuse(
     _reach_the_model(monkeypatch, pipe)
     try:
         with aioresponses() as mock_http:
-            mock_http.post("https://openrouter.ai/api/v1/responses", exception=aiohttp.ClientConnectionError("dropped"))
+            for _ in range(_ATTEMPTS_PER_FAILING_TURN - 1):
+                mock_http.post("https://openrouter.ai/api/v1/responses", exception=aiohttp.ClientConnectionError("dropped"))
             mock_http.post("https://openrouter.ai/api/v1/responses", body=_sse_answer(), status=200, repeat=True)
             _saved_breaker_settings(pipe, threshold)
             for _ in range(threshold - 1):
@@ -1233,7 +1278,11 @@ async def test_a_request_under_way_keeps_the_retry_its_own_failure_would_refuse(
     finally:
         await pipe.close()
 
-    assert posts == 2, reply
+    assert posts == _ATTEMPTS_PER_FAILING_TURN, (
+        "this request keeps its own retry, so it is two dropped attempts and the answer: "
+        f"{posts} posts"
+    )
+    assert reply
     assert "Hello." in reply, reply
     assert "Unexpected Error" not in reply, reply
 
@@ -1298,9 +1347,11 @@ async def _one_call(pipe, session, transport: str, key: str) -> None:
 async def test_every_transport_counts_each_dropped_connection_against_the_user(
     pipe_instance_async, transport, drops, drop
 ):
-    """A connection that drops before OpenRouter answers is one failed call, however the request travels.
+    """A connection that drops before OpenRouter answers is retried, however the request travels.
 
-    The attempts that drop are retried and the last one answers, so the count is exactly the number of drops.
+    The drops are attempts inside one request, not one request each, so a run of them that the retry then
+    recovers from counts nothing: what the breaker counts is the request, and this one answered. A drop that
+    outlives the attempts is the case the row next door covers.
     """
     pipe = pipe_instance_async
     key = f"dropped-{transport}"
@@ -1310,12 +1361,15 @@ async def test_every_transport_counts_each_dropped_connection_against_the_user(
         with aioresponses() as mock_http:
             for _ in range(drops):
                 mock_http.post(url, exception=drop)
-            mock_http.post(url, **_ANSWER_BY_TRANSPORT[transport])
+            mock_http.post(url, **_ANSWER_BY_TRANSPORT[transport], repeat=True)
             await _one_call(pipe, session, transport, key)
+            posts = _posts(mock_http)
     finally:
         await session.close()
 
-    assert len(pipe._circuit_breaker._breaker_records[key]) == drops
+    assert len(pipe._circuit_breaker._breaker_records.get(key, [])) == 0, (
+        f"the request recovered after {drops} drop(s) on {posts} post(s), so it is not a failed call"
+    )
 
 
 @pytest.mark.asyncio
@@ -1333,7 +1387,7 @@ async def test_a_user_whose_calls_keep_dropping_is_refused_at_the_saved_count(mo
     try:
         with aioresponses() as mock_http:
             mock_http.post(url, exception=aiohttp.ClientConnectionError("dropped"), repeat=True)
-            for _ in range(2):
+            for _ in range(3):
                 _saved_breaker_settings(pipe, 2)
                 pipe.valves = pipe.valves.model_copy(update={"DEFAULT_LLM_ENDPOINT": endpoint})
                 replies.append(await _chat_turn(pipe, stream=stream))
@@ -1341,8 +1395,12 @@ async def test_a_user_whose_calls_keep_dropping_is_refused_at_the_saved_count(mo
     finally:
         await pipe.close()
 
-    assert posts == 3, replies
+    assert posts == _failing(2), (
+        "the first two turns are served and each spends its attempts; the third is refused before the model is "
+        f"called and posts nothing at all: {posts} posts"
+    )
     assert "Temporarily disabled" not in replies[0], replies
+    assert "Temporarily disabled" not in replies[1], replies
     assert "Temporarily disabled due to repeated errors" in replies[-1], replies
 
 
@@ -1551,7 +1609,10 @@ async def test_a_fusion_turn_where_some_panel_members_answered_clears_the_count(
 
     assert "Every panel member failed" not in replies[1], replies[1][-600:]
     assert "Hello." in replies[1], replies[1][-600:]
-    assert posts == posts_before_the_next_request + 1, replies[2]
+    assert posts == posts_before_the_next_request + _ATTEMPTS_PER_FAILING_TURN, (
+        "the count was cleared by the fusion turn, so this one is served rather than refused, and a served "
+        f"failing turn spends its attempts: {posts} against {posts_before_the_next_request}"
+    )
     assert "Temporarily disabled" not in replies[2], replies[2]
 
 
@@ -1670,7 +1731,7 @@ async def test_a_response_that_ends_incomplete_is_a_finished_call_and_clears_the
     try:
         with aioresponses() as mock_http:
             for _ in range(threshold - 1):
-                mock_http.post(_RESPONSES_URL, **_FAILED_UPSTREAM)
+                _scripted_turn_at(mock_http, _RESPONSES_URL, _FAILED_UPSTREAM)
             mock_http.post(_RESPONSES_URL, status=200, body=_sse_events([*shown_before, incomplete]))
             for _ in range(threshold):
                 _saved_breaker_settings(pipe, threshold)
@@ -1693,15 +1754,21 @@ async def test_a_stream_that_closes_before_sending_anything_is_retried_and_count
     session = pipe._create_http_session(pipe.valves)
     try:
         with aioresponses() as mock_http:
-            mock_http.post(url, status=200, body=empty_body)
+            for _ in range(_ATTEMPTS_PER_FAILING_TURN - 1):
+                mock_http.post(url, status=200, body=empty_body)
             mock_http.post(url, **_ANSWER_BY_TRANSPORT[transport])
             await _one_call(pipe, session, transport, key)
             posts = _posts(mock_http)
     finally:
         await session.close()
 
-    assert posts == 2
-    assert len(pipe._circuit_breaker._breaker_records[key]) == 1
+    assert posts == _ATTEMPTS_PER_FAILING_TURN, (
+        "a stream that closes before sending anything is retried like any other pre-content failure, so the "
+        f"answer is the last of the attempts, not the second: {posts} posts"
+    )
+    assert len(pipe._circuit_breaker._breaker_records[key]) == 0, (
+        "the request recovered on its last attempt, so nothing counts against the user"
+    )
 
 
 _ENDINGS = {

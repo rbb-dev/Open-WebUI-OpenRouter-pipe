@@ -28,6 +28,8 @@ from ...core.config import (
 from ...core.errors import (
     OpenRouterAPIError,
     _build_openrouter_api_error,
+    _ChatRetryWait,
+    _classify_retryable_openrouter_error,
     is_sign_in_failure,
 )
 from ...core.logging_system import SessionLogger
@@ -76,7 +78,7 @@ def _should_retry_stream(emitted_any: bool, exc: BaseException | None) -> bool:
     """
     if emitted_any:
         return False
-    return isinstance(exc, (aiohttp.ClientError, asyncio.TimeoutError))
+    return isinstance(exc, (aiohttp.ClientError, asyncio.TimeoutError)) or _classify_retryable_openrouter_error(exc)[0]
 
 
 _STREAM_END_EVENTS = frozenset({"response.completed", "response.done", "response.incomplete"})
@@ -111,11 +113,42 @@ class _AcceptedResponseLostBody(aiohttp.ClientPayloadError, RuntimeError):
     pass
 
 
-def _should_retry_accepted(retry_state: Any) -> bool:
-    exc = retry_state.outcome.exception() if retry_state.outcome is not None else None
+def _should_retry_nonstreaming(exc: BaseException | None) -> bool:
+    if exc is None:
+        return False
     if isinstance(exc, _AcceptedResponseLostBody):
         return False
-    return isinstance(exc, (aiohttp.ClientError, asyncio.TimeoutError))
+    if isinstance(exc, (aiohttp.ClientError, asyncio.TimeoutError)):
+        return True
+    return _classify_retryable_openrouter_error(exc)[0]
+
+
+def _retry_nonstreaming(retry_state) -> bool:
+    exc = retry_state.outcome.exception() if retry_state.outcome else None
+    return _should_retry_nonstreaming(exc)
+
+
+def _transient_retry_stop(valves: Any) -> Any:
+    extra = getattr(valves, "TRANSIENT_RETRY_MAX_ATTEMPTS", 2)
+    try:
+        extra = int(extra)
+    except (TypeError, ValueError):
+        extra = 2
+    return stop_after_attempt(max(1, 1 + extra))
+
+
+def _transient_retry_policy(valves: Any, *, retry: Any) -> AsyncRetrying:
+    cap = getattr(valves, "TRANSIENT_RETRY_MAX_WAIT_SECONDS", 30)
+    try:
+        cap = float(cap)
+    except (TypeError, ValueError):
+        cap = 30.0
+    return AsyncRetrying(
+        stop=_transient_retry_stop(valves),
+        wait=_ChatRetryWait(wait_exponential(multiplier=0.5, min=0.5, max=4), cap),
+        retry=retry,
+        reraise=True,
+    )
 
 
 async def _decode_json_body(resp: Any, logger: Any, endpoint: str) -> Any:
@@ -240,7 +273,7 @@ class ResponsesAdapter:
         async def _producer() -> None:
             seq = 0
             first_chunk_received = False
-            emitted_any = False
+            queued_any = False
             delivered_any = False
 
             async def _put_seq(data_blob: bytes) -> None:
@@ -252,134 +285,154 @@ class ResponsesAdapter:
                 exc = retry_state.outcome.exception() if retry_state.outcome else None
                 return _should_retry_stream(delivered_any, exc)
 
-            retryer = AsyncRetrying(
-                stop=stop_after_attempt(3),
-                wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
-                retry=_retry_streaming,
-                reraise=True,
-            )
+            def _probe_inband(data_blob: bytes) -> None:
+                try:
+                    parsed = json.loads(data_blob.decode("utf-8"))
+                except (RecursionError, UnicodeDecodeError, ValueError):
+                    return
+                if not isinstance(parsed, dict):
+                    return
+                reported_error = _raise_in_band_error(parsed)
+                if reported_error is not None:
+                    raise reported_error
+
+            def _visible(data_blob: bytes) -> bool:
+                try:
+                    parsed = json.loads(data_blob.decode("utf-8"))
+                except (RecursionError, UnicodeDecodeError, ValueError):
+                    return False
+                if not isinstance(parsed, dict):
+                    return False
+                return _responses_event_is_user_visible(parsed)
+
+            retryer = _transient_retry_policy(effective_valves, retry=_retry_streaming)
             try:
-                async for attempt in retryer:
-                    with attempt:
-                        buf = bytearray()
-                        event_data_parts: list[bytes] = []
-                        stream_complete = False
-                        held: list[bytes] = []
+                async with _count_failed_call(self._pipe, breaker_key):
+                    async for attempt in retryer:
+                        with attempt:
+                            buf = bytearray()
+                            event_data_parts: list[bytes] = []
+                            stream_complete = False
+                            held: list[bytes] = []
 
-                        async def _emit(data_blob: bytes, _held: list[bytes] = held) -> None:
-                            nonlocal delivered_any
-                            for pending in _held:
-                                await _put_seq(pending)
-                            _held.clear()
-                            if _responses_event_is_user_visible(_parse_or_none(data_blob)):
-                                delivered_any = True
-                            await _put_seq(data_blob)
+                            async def _emit(data_blob: bytes, _held: list[bytes] = held) -> None:
+                                nonlocal delivered_any
+                                for pending in _held:
+                                    await _put_seq(pending)
+                                _held.clear()
+                                if _visible(data_blob):
+                                    delivered_any = True
+                                await _put_seq(data_blob)
 
-                        try:
-                            timing_mark("responses_http_request_start")
-                            async with _count_failed_call(self._pipe, breaker_key), session.post(
-                                url, json=request_body, headers=headers,
-                                timeout=self._timeout(effective_valves),
-                            ) as resp:
-                                timing_mark("responses_http_headers_received")
-                                if resp.status >= 400:
-                                    error_body = await _debug_print_error_response(resp, logger=self.logger)
-                                    extra_meta: dict[str, Any] = {}
-                                    _apply_retry_after_metadata(extra_meta, resp.headers)
-                                    rate_scope = (
-                                        resp.headers.get("X-RateLimit-Scope")
-                                        or resp.headers.get("x-ratelimit-scope")
-                                    )
-                                    if rate_scope:
-                                        extra_meta["rate_limit_type"] = rate_scope
-                                    reason_text = resp.reason or "HTTP error"
-                                    raise _build_openrouter_api_error(
-                                        resp.status,
-                                        reason_text,
-                                        error_body,
-                                        requested_model=request_body.get("model"),
-                                        extra_metadata=extra_meta or None,
-                                    )
+                            try:
+                                timing_mark("responses_http_request_start")
+                                async with session.post(
+                                    url, json=request_body, headers=headers,
+                                    timeout=self._timeout(effective_valves),
+                                ) as resp:
+                                    timing_mark("responses_http_headers_received")
+                                    if resp.status >= 400:
+                                        error_body = await _debug_print_error_response(resp, logger=self.logger)
+                                        extra_meta: dict[str, Any] = {}
+                                        _apply_retry_after_metadata(extra_meta, resp.headers)
+                                        rate_scope = (
+                                            resp.headers.get("X-RateLimit-Scope")
+                                            or resp.headers.get("x-ratelimit-scope")
+                                        )
+                                        if rate_scope:
+                                            extra_meta["rate_limit_type"] = rate_scope
+                                        reason_text = resp.reason or "HTTP error"
+                                        raise _build_openrouter_api_error(
+                                            resp.status,
+                                            reason_text,
+                                            error_body,
+                                            requested_model=request_body.get("model"),
+                                            extra_metadata=extra_meta or None,
+                                        )
 
-                                chunk_count = 0
-                                first_event_queued = False
-                                async for chunk in resp.content.iter_chunked(4096):
-                                    chunk_count += 1
-                                    preview = chunk[:40].decode("utf-8", errors="replace").replace("\n", "\\n").replace("\r", "\\r")
-                                    timing_mark(f"chunk_{chunk_count}_len_{len(chunk)}_[{preview}]")
-                                    if not first_chunk_received:
-                                        first_chunk_received = True
-                                        timing_mark("responses_first_chunk")
-                                    view = memoryview(chunk)
-                                    buf.extend(view)
-                                    start_idx = 0
-                                    while True:
-                                        newline_idx = buf.find(b"\n", start_idx)
-                                        if newline_idx == -1:
+                                    chunk_count = 0
+                                    first_event_queued = False
+                                    async for chunk in resp.content.iter_chunked(4096):
+                                        chunk_count += 1
+                                        preview = chunk[:40].decode("utf-8", errors="replace").replace("\n", "\\n").replace("\r", "\\r")
+                                        timing_mark(f"chunk_{chunk_count}_len_{len(chunk)}_[{preview}]")
+                                        if not first_chunk_received:
+                                            first_chunk_received = True
+                                            timing_mark("responses_first_chunk")
+                                        view = memoryview(chunk)
+                                        buf.extend(view)
+                                        start_idx = 0
+                                        while True:
+                                            newline_idx = buf.find(b"\n", start_idx)
+                                            if newline_idx == -1:
+                                                break
+                                            line = buf[start_idx:newline_idx]
+                                            start_idx = newline_idx + 1
+                                            stripped = line.strip()
+                                            if not stripped:
+                                                if event_data_parts:
+                                                    data_blob = b"\n".join(event_data_parts).strip()
+                                                    event_data_parts.clear()
+                                                    if not data_blob:
+                                                        continue
+                                                    if data_blob == b"[DONE]":
+                                                        stream_complete = True
+                                                        timing_mark("responses_stream_done")
+                                                        break
+                                                    if not first_event_queued:
+                                                        first_event_queued = True
+                                                        timing_mark("producer_first_event_queued")
+                                                    queued_any = True
+                                                    if not delivered_any:
+                                                        _probe_inband(data_blob)
+                                                    if _visible(data_blob):
+                                                        await _emit(data_blob)
+                                                    else:
+                                                        held.append(data_blob)
+                                                continue
+                                            if stripped.startswith(b":"):
+                                                continue
+                                            if stripped.startswith(b"data:"):
+                                                event_data_parts.append(bytes(stripped[5:].lstrip()))
+                                                continue
+                                        if start_idx > 0:
+                                            del buf[:start_idx]
+                                        if stream_complete:
                                             break
-                                        line = buf[start_idx:newline_idx]
-                                        start_idx = newline_idx + 1
-                                        stripped = line.strip()
-                                        if not stripped:
-                                            if event_data_parts:
-                                                data_blob = b"\n".join(event_data_parts).strip()
-                                                event_data_parts.clear()
-                                                if not data_blob:
-                                                    continue
-                                                if data_blob == b"[DONE]":
-                                                    stream_complete = True
-                                                    timing_mark("responses_stream_done")
-                                                    break
-                                                if not first_event_queued:
-                                                    first_event_queued = True
-                                                    timing_mark("producer_first_event_queued")
-                                                emitted_any = True
-                                                if _responses_event_is_user_visible(_parse_or_none(data_blob)):
-                                                    await _emit(data_blob)
-                                                else:
-                                                    held.append(data_blob)
-                                            continue
-                                        if stripped.startswith(b":"):
-                                            continue
-                                        if stripped.startswith(b"data:"):
-                                            event_data_parts.append(bytes(stripped[5:].lstrip()))
-                                            continue
-                                    if start_idx > 0:
-                                        del buf[:start_idx]
-                                    if stream_complete:
-                                        break
 
                                 if event_data_parts and not stream_complete:
                                     data_blob = b"\n".join(event_data_parts).strip()
                                     event_data_parts.clear()
                                     if data_blob and data_blob != b"[DONE]":
-                                        emitted_any = True
-                                        if _responses_event_is_user_visible(_parse_or_none(data_blob)):
+                                        queued_any = True
+                                        if not delivered_any:
+                                            _probe_inband(data_blob)
+                                        if _visible(data_blob):
                                             await _emit(data_blob)
                                         else:
                                             held.append(data_blob)
-                                if not emitted_any:
+                                if not queued_any:
                                     raise aiohttp.ClientPayloadError("OpenRouter closed the stream before sending anything")
-                        except Exception as producer_exc:
-                            is_auth_failure = isinstance(
-                                producer_exc, OpenRouterAPIError
-                            ) and is_sign_in_failure(producer_exc)
-                            if is_auth_failure:
-                                self._pipe._note_auth_failure()
-                                self.logger.warning(
-                                    "Producer encountered auth error while streaming from OpenRouter: %s",
-                                    producer_exc,
-                                )
-                            else:
-                                self.logger.exception(
-                                    "Producer encountered error while streaming from OpenRouter"
-                                )
-                            raise
-                        for pending in held:
-                            await _put_seq(pending)
-                        held.clear()
-                        if stream_complete:
-                            break
+                            except Exception as producer_exc:
+                                is_auth_failure = isinstance(
+                                    producer_exc, OpenRouterAPIError
+                                ) and is_sign_in_failure(producer_exc)
+                                if is_auth_failure:
+                                    self._pipe._note_auth_failure()
+                                    self.logger.warning(
+                                        "Producer encountered auth error while streaming from OpenRouter: %s",
+                                        producer_exc,
+                                    )
+                                else:
+                                    self.logger.exception(
+                                        "Producer encountered error while streaming from OpenRouter"
+                                    )
+                                raise
+                            for pending in held:
+                                await _put_seq(pending)
+                            held.clear()
+                            if stream_complete:
+                                break
             finally:
                 for _ in range(workers):
                     await chunk_queue.put(chunk_sentinel)
@@ -609,6 +662,7 @@ class ResponsesAdapter:
         breaker_key: str | None = None,
         user: Any = None,
         owui_chat_id: str | None = None,
+        transient_retry: bool = True,
     ) -> dict[str, Any]:
         """Send a blocking request to the Responses API and return the JSON payload."""
         effective_valves = valves or self._pipe.valves
@@ -637,47 +691,45 @@ class ResponsesAdapter:
         _debug_print_request(headers, request_params, logger=self.logger)
         url = base_url.rstrip("/") + "/responses"
 
-        retryer = AsyncRetrying(
-            stop=stop_after_attempt(3),
-            wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
-            retry=_should_retry_accepted,
-            reraise=True,
-        )
+        retryer = _transient_retry_policy(effective_valves, retry=_retry_nonstreaming)
+        if not transient_retry:
+            retryer.stop = stop_after_attempt(1)
 
-        async for attempt in retryer:
-            with attempt:
-                async with _count_failed_call(self._pipe, breaker_key), session.post(
-                    url, json=request_params, headers=headers,
-                    timeout=self._timeout(effective_valves),
-                ) as resp:
-                    if resp.status >= 400:
-                        error_body = await _debug_print_error_response(resp, logger=self.logger)
-                        extra_meta: dict[str, Any] = {}
-                        _apply_retry_after_metadata(extra_meta, resp.headers)
-                        rate_scope = (
-                            resp.headers.get("X-RateLimit-Scope")
-                            or resp.headers.get("x-ratelimit-scope")
+        async with _count_failed_call(self._pipe, breaker_key):
+            async for attempt in retryer:
+                with attempt:
+                    async with session.post(
+                        url, json=request_params, headers=headers,
+                        timeout=self._timeout(effective_valves),
+                    ) as resp:
+                        if resp.status >= 400:
+                            error_body = await _debug_print_error_response(resp, logger=self.logger)
+                            extra_meta: dict[str, Any] = {}
+                            _apply_retry_after_metadata(extra_meta, resp.headers)
+                            rate_scope = (
+                                resp.headers.get("X-RateLimit-Scope")
+                                or resp.headers.get("x-ratelimit-scope")
+                            )
+                            if rate_scope:
+                                extra_meta["rate_limit_type"] = rate_scope
+                            reason_text = resp.reason or "HTTP error"
+                            raise _build_openrouter_api_error(
+                                resp.status,
+                                reason_text,
+                                error_body,
+                                requested_model=request_params.get("model"),
+                                extra_metadata=extra_meta or None,
+                            )
+                        payload = await _decode_json_body(resp, self.logger, "/responses")
+                        if not isinstance(payload, dict):
+                            raise RuntimeError("Invalid JSON response from /responses")  # noqa: TRY004 - a remote body of the wrong shape is a runtime fault, and a ClientError subclass would be re-POSTed
+                        _debug_print_response(payload, logger=self.logger)
+                        reported_error = self._pipe._ensure_error_formatter()._extract_streaming_error_event(
+                            payload, request_params.get("model")
                         )
-                        if rate_scope:
-                            extra_meta["rate_limit_type"] = rate_scope
-                        reason_text = resp.reason or "HTTP error"
-                        raise _build_openrouter_api_error(
-                            resp.status,
-                            reason_text,
-                            error_body,
-                            requested_model=request_params.get("model"),
-                            extra_metadata=extra_meta or None,
-                        )
-                    payload = await _decode_json_body(resp, self.logger, "/responses")
-                    if not isinstance(payload, dict):
-                        raise RuntimeError("Invalid JSON response from /responses")  # noqa: TRY004 - a remote body of the wrong shape is a runtime fault, and a ClientError subclass would be re-POSTed
-                    _debug_print_response(payload, logger=self.logger)
-                    reported_error = self._pipe._ensure_error_formatter()._extract_streaming_error_event(
-                        payload, request_params.get("model")
-                    )
-                    if reported_error is not None:
-                        raise reported_error
-                    return payload
+                        if reported_error is not None:
+                            raise reported_error
+                        return payload
         self.logger.error("Responses API call completed without yielding a response body; returning empty payload.")
         return {}
 

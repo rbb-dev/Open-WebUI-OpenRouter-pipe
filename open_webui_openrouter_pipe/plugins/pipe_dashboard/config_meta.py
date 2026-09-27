@@ -130,7 +130,7 @@ CONFIG_META: dict[str, dict[str, str]] = {
     "AUTO_FALLBACK_CHAT_COMPLETIONS": {
         "title": "Automatic endpoint fallback",
         "group": "Connection & Routing/Endpoints",
-        "detail": "When enabled, a request the `/responses` endpoint rejects as unsupported is automatically retried once against `/chat/completions`.\n\nThe retry fires only when the failure looks like a model or endpoint that cannot serve `/responses`, and only before any visible output has streamed. A failure OpenRouter reports inside a reply `/responses` has already started is shown, never retried. The default `true` keeps chats working when a model routed to `/responses` - whether by `Default API endpoint` or a force pattern - cannot actually serve it. Disable it to make such failures surface as errors instead of silently switching endpoints."
+        "detail": "When enabled, a request the `/responses` endpoint rejects as unsupported is automatically retried once against `/chat/completions`.\n\nThe retry fires only when the failure looks like a model or endpoint that cannot serve `/responses`, and only before any visible output has streamed. A failure OpenRouter reports inside a reply is retried first if nothing has streamed yet, and shown only once content has been shown. The default `true` keeps chats working when a model routed to `/responses` - whether by `Default API endpoint` or a force pattern - cannot actually serve it. Disable it to make such failures surface as errors instead of silently switching endpoints."
     },
     "AUTO_INSTALL_DIRECT_UPLOADS_FILTER": {
         "title": "Install Direct Uploads filter",
@@ -175,7 +175,7 @@ CONFIG_META: dict[str, dict[str, str]] = {
     "BREAKER_MAX_FAILURES": {
         "title": "Failures before tripping",
         "group": "Reliability/Circuit Breaker",
-        "detail": "How many failures before refusing a user's requests, skipping a consecutively failing tool or bypassing the database for them.\n\nFailed chat calls count, each retry again, including errors inside responses, broken-off streams and failed connections, as does each picture-only image or video generation failing once sent; title and tag tasks never count. This refusal shows a retry-later notice, never for requests ending in a tool result or in Open WebUI's own message handing a tool's images to the model; a question or picture the user sends is refused like any other request. A tool fails when it raises an error, runs past `Tool call timeout`, is cut off by `Tool batch timeout` while running, or its tool server cannot be reached or answers with an HTTP error. An `ask_user` timeout or a closed MCP session never counts, and an error the tool reports in a result it returns normally shows as failed but neither adds to the count nor clears it. The bypass skips saving and reading reasoning and tool results; session logs go straight to the archive. `Failure counting window` covers clearing. Higher limits tolerate brief outages."
+        "detail": "How many failures before refusing a user's requests, skipping a consecutively failing tool or bypassing the database for them.\n\nFailed chat calls count once each, however many attempts they took, including errors inside responses, broken-off streams and failed connections, as does each picture-only image or video generation failing once sent; title and tag tasks never count. This refusal shows a retry-later notice, never for requests ending in a tool result or in Open WebUI's own message handing a tool's images to the model; a question or picture the user sends is refused like any other request. A tool fails when it raises an error, runs past `Tool call timeout`, is cut off by `Tool batch timeout` while running, or its tool server cannot be reached or answers with an HTTP error. An `ask_user` timeout or a closed MCP session never counts, and an error the tool reports in a result it returns normally shows as failed but neither adds to the count nor clears it. The bypass skips saving and reading reasoning and tool results; session logs go straight to the archive. `Failure counting window` covers clearing. Higher limits tolerate brief outages."
     },
     "BREAKER_WINDOW_SECONDS": {
         "title": "Failure counting window",
@@ -561,6 +561,16 @@ CONFIG_META: dict[str, dict[str, str]] = {
         "title": "Download retry time budget",
         "group": "Files & Media/Remote Downloads",
         "detail": "How long, in wall-clock seconds, the pipe keeps retrying one failed download - a picture, or a video a model generated - before giving up.\n\nBefore each retry it checks elapsed time, and once this budget is spent the download is abandoned - so a slow or repeatedly failing host can't stall a chat turn. Whichever trips first, this budget or the `Maximum download retries` count, ends the loop, and it also caps any single backoff wait to this length. It applies per process to every remote download.\n\n**Tip:** Only retries are time-checked, never the first attempt, so it has no effect when `Maximum download retries` is `0`."
+    },
+    "TRANSIENT_RETRY_MAX_ATTEMPTS": {
+        "title": "Chat request retries",
+        "group": "Reliability/Chat Retries",
+        "detail": "How many extra tries a chat request to OpenRouter gets after a temporary failure, on top of the first try.\n\nTemporary means a `429`, a `5xx`, a connection that drops or times out, or the same thing reported inside a reply before anything has streamed - including a reply on the `/responses` endpoint that fails right after it starts. The default `2` allows at most three requests in all. `0` makes a temporary failure final: the error card is shown at once and nothing is retried. These are the **chat request** valves and are independent of the download ones above; however many tries a request takes, it counts once against `Failures before tripping`."
+    },
+    "TRANSIENT_RETRY_MAX_WAIT_SECONDS": {
+        "title": "Longest wait between tries",
+        "group": "Reliability/Chat Retries",
+        "detail": "The longest single wait, in seconds, between two tries of one chat request to OpenRouter.\n\nA `Retry-After` header OpenRouter sends is honoured, up to this cap: a longer one is truncated to it rather than replaced by it, so a provider asking for a minute does not make the user wait a minute. Waits grow with each try up to this ceiling. Independent of the download valves above, and waiting here can be cut short by stopping the request, which then leaves no failure counted against the breaker."
     },
     "REMOTE_FILE_MAX_SIZE_MB": {
         "title": "Maximum remote file size",

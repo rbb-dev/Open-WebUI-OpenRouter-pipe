@@ -36,6 +36,12 @@ from typing import Any
 
 import aiohttp
 import pytest
+
+# A `Retry-After` a retried request now waits out is charged to the jumping clock, so a header of thirty
+# seconds costs no wall-clock here and no CI run blows its timeout.
+from tests._jumping_clock import event_loop_policy  # noqa: F401
+
+pytestmark = pytest.mark.usefixtures("event_loop_policy")
 import tenacity
 from aioresponses import aioresponses, CallbackResult
 
@@ -337,6 +343,7 @@ async def test_responses_streaming_error_429_rate_limit_with_headers(pipe_instan
                 "Retry-After": "30",
                 "X-RateLimit-Scope": "user",
             },
+            repeat=True,
         )
 
         with pytest.raises(OpenRouterAPIError) as exc_info:
@@ -907,6 +914,7 @@ async def test_responses_nonstreaming_error_429_with_headers(pipe_instance_async
                 "Retry-After": "60",
                 "x-ratelimit-scope": "organization",
             },
+        repeat=True,
         )
 
         with pytest.raises(OpenRouterAPIError) as exc_info:
@@ -1332,12 +1340,15 @@ async def test_a_failed_stream_records_exactly_one_breaker_failure(
 
 @pytest.mark.asyncio
 async def test_each_retried_attempt_records_its_own_breaker_failure(pipe_instance_async):
-    """Per-ATTEMPT, not per-call: three transport failures are three failures.
+    """Per-REQUEST, not per-attempt: three transport failures are one failure.
 
-    The sibling above pins one-per-request; on its own, the cheapest way to satisfy it
-    is a flag that is never reset, which would silently stop counting every attempt
-    after the first. A pre-output `ClientError` is the one thing `_should_retry_stream`
-    retries, so this is the case that tells the two apart.
+    This used to pin the opposite, and the rule it pinned has been reversed: the count is what sheds a user,
+    and a user whose provider blips once should not be three strikes closer to being refused over it. What
+    still has to hold is that the failure is counted *at all* -- a wrapper placed inside the retry loop
+    instead of around it records nothing, and the cheapest way to satisfy "at most one" is to record none.
+
+    The sibling above pins one failure arriving as an error reply; between them the two say the same about
+    a request that fails once, whether it failed on the wire or in the body.
     """
     import aiohttp
 
@@ -1369,10 +1380,10 @@ async def test_each_retried_attempt_records_its_own_breaker_failure(pipe_instanc
         await session.close()
 
     recorded = len(breaker._breaker_records[key])
-    assert recorded == 3, (
-        f"three retried attempts recorded {recorded} breaker failures. Fewer than one "
-        "per attempt means the per-attempt reset is missing and a user who fails every "
-        "retry is counted once; more means one attempt is being counted twice."
+    assert recorded == 1, (
+        f"three retried attempts recorded {recorded} breaker failures. More than one means the count is "
+        "still per attempt, and a user who fails every retry is shed three times faster than the operator "
+        "asked for; none means the recorder has been moved somewhere it never fires."
     )
 
 

@@ -75,6 +75,30 @@ class _RetryWait:
         return base_delay
 
 
+class _ChatRetryWait(_RetryWait):
+    def __init__(self, base_wait, cap):
+        super().__init__(base_wait)
+        self._cap = cap
+
+    def __call__(self, retry_state):
+        base_delay = self._base_wait(retry_state) if self._base_wait else 0
+        exc = None
+        if retry_state.outcome is not None:
+            try:
+                exc = retry_state.outcome.exception()
+            except (concurrent.futures.CancelledError, TypeError):
+                exc = None
+        if isinstance(exc, _RetryableHTTPStatusError):
+            retry_after = exc.retry_after
+            if isinstance(retry_after, (int, float)) and retry_after > 0:
+                return max(base_delay, retry_after)
+        if isinstance(exc, OpenRouterAPIError):
+            retry_after = _resolve_retry_after_seconds(getattr(exc, "metadata", None))
+            if retry_after is not None and retry_after > 0:
+                return max(base_delay, min(float(retry_after), self._cap))
+        return base_delay
+
+
 class StatusMessages:
     """Centralized status messages for multimodal processing."""
 
@@ -212,6 +236,17 @@ def _classify_retryable_http_error(
     status_code = response.status_code
     if status_code >= 500 or status_code in {408, 425, 429}:
         return True, _retry_after_seconds(response.headers.get("retry-after"))
+    return False, None
+
+
+def _classify_retryable_openrouter_error(exc: BaseException | None) -> tuple[bool, float | None]:
+    status = getattr(exc, "status", None)
+    if not isinstance(status, int) or isinstance(status, bool):
+        return False, None
+    if status >= 500 or status == 429:
+        if is_sign_in_failure(exc):
+            return False, None
+        return True, _resolve_retry_after_seconds(getattr(exc, "metadata", None))
     return False, None
 
 

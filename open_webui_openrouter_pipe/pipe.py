@@ -3103,11 +3103,13 @@ class Pipe:
         breaker_key: str | None = None,
         user: Any = None,
         owui_chat_id: str | None = None,
+        transient_retry: bool = True,
     ) -> dict[str, Any]:
         return await self._ensure_chat_completions_adapter().send_openai_chat_completions_nonstreaming_request(
             session, responses_request_body, api_key, base_url, valves=valves, breaker_key=breaker_key,
             user=user,
             owui_chat_id=owui_chat_id,
+            transient_retry=transient_retry,
         )
 
     async def send_openrouter_nonstreaming_request_as_events(
@@ -3122,6 +3124,7 @@ class Pipe:
         breaker_key: str | None = None,
         user: Any = None,
         owui_chat_id: str | None = None,
+        transient_retry: bool = True,
     ) -> AsyncGenerator[dict[str, Any], None]:
         async for event in self._ensure_nonstreaming_adapter().send_openrouter_nonstreaming_request_as_events(
             session,
@@ -3133,6 +3136,7 @@ class Pipe:
             breaker_key=breaker_key,
             user=user,
             owui_chat_id=owui_chat_id,
+            transient_retry=transient_retry,
         ):
             yield event
 
@@ -3575,11 +3579,13 @@ class Pipe:
         breaker_key: str | None = None,
         user: Any = None,
         owui_chat_id: str | None = None,
+        transient_retry: bool = True,
     ) -> dict[str, Any]:
         return await self._ensure_responses_adapter().send_openai_responses_nonstreaming_request(
             session, request_body, api_key, base_url, valves=valves, breaker_key=breaker_key,
             user=user,
             owui_chat_id=owui_chat_id,
+            transient_retry=transient_retry,
         )
 
 

@@ -13,9 +13,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import aiohttp
 from tenacity import (
-    AsyncRetrying,
     stop_after_attempt,
-    wait_exponential,
 )
 
 from ...core.config import (
@@ -59,8 +57,9 @@ from .responses_adapter import (
     _decode_json_body,
     _record_failed_call,
     _responses_event_is_user_visible,
-    _should_retry_accepted,
+    _retry_nonstreaming,
     _should_retry_stream,
+    _transient_retry_policy,
 )
 
 if TYPE_CHECKING:
@@ -271,18 +270,14 @@ class ChatCompletionsAdapter:
             return matched
 
         emitted_any = False
+        received_any = False
         delivered_any = False
 
         def _retry_streaming(retry_state) -> bool:
             exc = retry_state.outcome.exception() if retry_state.outcome else None
             return _should_retry_stream(delivered_any, exc)
 
-        retryer = AsyncRetrying(
-            stop=stop_after_attempt(3),
-            wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
-            retry=_retry_streaming,
-            reraise=True,
-        )
+        retryer = _transient_retry_policy(effective_valves, retry=_retry_streaming)
 
         @timed
         def _record_reasoning_detail(detail: dict[str, Any]) -> None:
@@ -348,8 +343,28 @@ class ChatCompletionsAdapter:
                     out.append(clean)
             return out
 
+        def _chat_chunk_is_user_visible(chunk_obj: Any) -> bool:
+            if not isinstance(chunk_obj, dict):
+                return False
+            choices = chunk_obj.get("choices")
+            if not isinstance(choices, list) or not choices:
+                return False
+            choice0 = choices[0] if isinstance(choices[0], dict) else {}
+            delta = choice0.get("delta") if isinstance(choice0, dict) else None
+            if not isinstance(delta, dict):
+                return False
+            for key in ("content", "refusal", "reasoning", "reasoning_content"):
+                value = delta.get(key)
+                if isinstance(value, str) and value.strip():
+                    return True
+            for key in ("tool_calls", "reasoning_details"):
+                value = delta.get(key)
+                if isinstance(value, list) and value:
+                    return True
+            return False
+
         def _consume_blob(data_blob: bytes):
-            nonlocal emitted_any, latest_usage, reasoning_item_id, reasoning_text_seen, \
+            nonlocal emitted_any, received_any, latest_usage, reasoning_item_id, reasoning_text_seen, \
                 reasoning_summary_text, latest_message_annotations, image_item_id, \
                 image_output_item, images_emitted, refusal_text_seen, tool_calls_completed, \
                 truncating_reason, delivered_any
@@ -368,12 +383,13 @@ class ChatCompletionsAdapter:
                     exc_info=True,
                 )
                 return
-            emitted_any = True
             reported_error = self._pipe._ensure_error_formatter()._extract_streaming_error_event(
                 chunk_obj, chat_payload.get("model")
             )
             if reported_error is not None:
                 raise reported_error
+            received_any = True
+            emitted_any = emitted_any or _chat_chunk_is_user_visible(chunk_obj)
 
             if isinstance(chunk_obj, dict) and isinstance(chunk_obj.get("usage"), dict):
                 latest_usage = dict(chunk_obj["usage"])
@@ -615,109 +631,110 @@ class ChatCompletionsAdapter:
                     truncating_reason = "max_output_tokens"
 
         first_chunk_received = False
-        async for attempt in retryer:
-            with attempt:
-                if attempt.retry_state.attempt_number > 1:
-                    tool_calls_by_index.clear()
-                    tool_call_added.clear()
-                    assistant_text_parts.clear()
-                    refusal_text_parts.clear()
-                    refusal_text_seen = False
-                    reasoning_text_parts.clear()
-                    reasoning_summary_text = None
-                    reasoning_details_by_key.clear()
-                    reasoning_details_order.clear()
-                    seen_citation_urls.clear()
-                    latest_message_annotations = []
-                    images_emitted = False
-                    emitted_any = False
-                    delivered_any = False
-                    cut_off = False
-                    tool_calls_completed = False
+        async with _count_failed_call(self._pipe, breaker_key):
+            async for attempt in retryer:
+                with attempt:
+                    if attempt.retry_state.attempt_number > 1:
+                        tool_calls_by_index.clear()
+                        tool_call_added.clear()
+                        assistant_text_parts.clear()
+                        refusal_text_parts.clear()
+                        refusal_text_seen = False
+                        reasoning_text_parts.clear()
+                        reasoning_summary_text = None
+                        reasoning_details_by_key.clear()
+                        reasoning_details_order.clear()
+                        seen_citation_urls.clear()
+                        latest_message_annotations = []
+                        images_emitted = False
+                        emitted_any = False
+                        received_any = False
+                        cut_off = False
+                        tool_calls_completed = False
 
-                await self._inline_internal_chat_files(chat_payload, effective_valves, user=user)
+                    await self._inline_internal_chat_files(chat_payload, effective_valves, user=user)
 
-                timing_mark("chat_http_request_start")
-                async with _count_failed_call(self._pipe, breaker_key), session.post(
-                    url, json=chat_payload, headers=headers,
-                    timeout=self._timeout(effective_valves),
-                ) as resp:
-                    timing_mark("chat_http_headers_received")
-                    if resp.status >= 400:
-                        error_body = await _debug_print_error_response(resp, logger=self.logger)
-                        extra_meta: dict[str, Any] = {}
-                        _apply_retry_after_metadata(extra_meta, resp.headers)
-                        rate_scope = (
-                            resp.headers.get("X-RateLimit-Scope")
-                            or resp.headers.get("x-ratelimit-scope")
-                        )
-                        if rate_scope:
-                            extra_meta["rate_limit_type"] = rate_scope
-                        reason_text = resp.reason or "HTTP error"
-                        raise _build_openrouter_api_error(
-                            resp.status,
-                            reason_text,
-                            error_body,
-                            requested_model=chat_payload.get("model"),
-                            extra_metadata=extra_meta or None,
-                        )
+                    timing_mark("chat_http_request_start")
+                    async with session.post(
+                        url, json=chat_payload, headers=headers,
+                        timeout=self._timeout(effective_valves),
+                    ) as resp:
+                        timing_mark("chat_http_headers_received")
+                        if resp.status >= 400:
+                            error_body = await _debug_print_error_response(resp, logger=self.logger)
+                            extra_meta: dict[str, Any] = {}
+                            _apply_retry_after_metadata(extra_meta, resp.headers)
+                            rate_scope = (
+                                resp.headers.get("X-RateLimit-Scope")
+                                or resp.headers.get("x-ratelimit-scope")
+                            )
+                            if rate_scope:
+                                extra_meta["rate_limit_type"] = rate_scope
+                            reason_text = resp.reason or "HTTP error"
+                            raise _build_openrouter_api_error(
+                                resp.status,
+                                reason_text,
+                                error_body,
+                                requested_model=chat_payload.get("model"),
+                                extra_metadata=extra_meta or None,
+                            )
 
-                    buf = bytearray()
-                    event_data_parts: list[bytes] = []
-                    done = False
+                        buf = bytearray()
+                        event_data_parts: list[bytes] = []
+                        done = False
 
-                    async for chunk in resp.content.iter_any():
-                        if not chunk:
-                            continue
-                        if not first_chunk_received:
-                            first_chunk_received = True
-                            timing_mark("chat_first_chunk")
-                        buf.extend(chunk)
-                        start_idx = 0
-                        while True:
-                            newline_idx = buf.find(b"\n", start_idx)
-                            if newline_idx == -1:
-                                break
-                            line = buf[start_idx:newline_idx]
-                            start_idx = newline_idx + 1
-                            stripped = line.strip()
-
-                            if not stripped:
-                                if not event_data_parts:
-                                    continue
-                                data_blob = b"\n".join(event_data_parts).strip()
-                                event_data_parts.clear()
-                                if not data_blob:
-                                    continue
-                                if data_blob == b"[DONE]":
-                                    done = True
-                                    timing_mark("chat_stream_done")
+                        async for chunk in resp.content.iter_any():
+                            if not chunk:
+                                continue
+                            if not first_chunk_received:
+                                first_chunk_received = True
+                                timing_mark("chat_first_chunk")
+                            buf.extend(chunk)
+                            start_idx = 0
+                            while True:
+                                newline_idx = buf.find(b"\n", start_idx)
+                                if newline_idx == -1:
                                     break
+                                line = buf[start_idx:newline_idx]
+                                start_idx = newline_idx + 1
+                                stripped = line.strip()
+
+                                if not stripped:
+                                    if not event_data_parts:
+                                        continue
+                                    data_blob = b"\n".join(event_data_parts).strip()
+                                    event_data_parts.clear()
+                                    if not data_blob:
+                                        continue
+                                    if data_blob == b"[DONE]":
+                                        done = True
+                                        timing_mark("chat_stream_done")
+                                        break
+                                    for ev in _consume_blob(data_blob):
+                                        yield ev
+
+                                if stripped.startswith(b":"):
+                                    continue
+                                if stripped.startswith(b"data:"):
+                                    event_data_parts.append(bytes(stripped[5:].lstrip()))
+                                    continue
+
+                            if start_idx > 0:
+                                del buf[:start_idx]
+                            if done:
+                                break
+                        if event_data_parts and not done:
+                            data_blob = b"\n".join(event_data_parts).strip()
+                            event_data_parts.clear()
+                            if data_blob and data_blob != b"[DONE]":
                                 for ev in _consume_blob(data_blob):
                                     yield ev
-
-                            if stripped.startswith(b":"):
-                                continue
-                            if stripped.startswith(b"data:"):
-                                event_data_parts.append(bytes(stripped[5:].lstrip()))
-                                continue
-
-                        if start_idx > 0:
-                            del buf[:start_idx]
-                        if done:
-                            break
-                    if event_data_parts and not done:
-                        data_blob = b"\n".join(event_data_parts).strip()
-                        event_data_parts.clear()
-                        if data_blob and data_blob != b"[DONE]":
-                            for ev in _consume_blob(data_blob):
-                                yield ev
-                    if not emitted_any:
-                        raise aiohttp.ClientPayloadError("OpenRouter closed the stream before sending anything")
-                    if not done and not tool_calls_completed:
-                        _record_failed_call(self._pipe, breaker_key)
-                        cut_off = True
-                    break
+                        if not received_any:
+                            raise aiohttp.ClientPayloadError("OpenRouter closed the stream before sending anything")
+                        if not done and not tool_calls_completed:
+                            _record_failed_call(self._pipe, breaker_key)
+                            cut_off = True
+                        break
 
         if cut_off:
             return
@@ -825,6 +842,7 @@ class ChatCompletionsAdapter:
         breaker_key: str | None = None,
         user: Any = None,
         owui_chat_id: str | None = None,
+        transient_retry: bool = True,
     ) -> dict[str, Any]:
         """Send /chat/completions with stream=false and return the JSON payload."""
         effective_valves = valves or self._pipe.valves
@@ -857,52 +875,50 @@ class ChatCompletionsAdapter:
         _debug_print_request(headers, chat_payload, logger=self.logger)
         url = base_url.rstrip("/") + "/chat/completions"
 
-        retryer = AsyncRetrying(
-            stop=stop_after_attempt(3),
-            wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
-            retry=_should_retry_accepted,
-            reraise=True,
-        )
+        retryer = _transient_retry_policy(effective_valves, retry=_retry_nonstreaming)
+        if not transient_retry:
+            retryer.stop = stop_after_attempt(1)
 
-        async for attempt in retryer:
-            with attempt:
-                await self._inline_internal_chat_files(chat_payload, effective_valves, user=user)
+        async with _count_failed_call(self._pipe, breaker_key):
+            async for attempt in retryer:
+                with attempt:
+                    await self._inline_internal_chat_files(chat_payload, effective_valves, user=user)
 
-                timing_mark("chat_nonstream_http_request_start")
-                async with _count_failed_call(self._pipe, breaker_key), session.post(
-                    url, json=chat_payload, headers=headers,
-                    timeout=self._timeout(effective_valves),
-                ) as resp:
-                    timing_mark("chat_nonstream_http_response")
-                    if resp.status >= 400:
-                        error_body = await _debug_print_error_response(resp, logger=self.logger)
-                        extra_meta: dict[str, Any] = {}
-                        _apply_retry_after_metadata(extra_meta, resp.headers)
-                        rate_scope = (
-                            resp.headers.get("X-RateLimit-Scope")
-                            or resp.headers.get("x-ratelimit-scope")
-                        )
-                        if rate_scope:
-                            extra_meta["rate_limit_type"] = rate_scope
-                        reason_text = resp.reason or "HTTP error"
-                        raise _build_openrouter_api_error(
-                            resp.status,
-                            reason_text,
-                            error_body,
-                            requested_model=chat_payload.get("model"),
-                            extra_metadata=extra_meta or None,
-                        )
-                    data = await _decode_json_body(resp, self.logger, "/chat/completions")
-                    if isinstance(data, dict):
+                    timing_mark("chat_nonstream_http_request_start")
+                    async with session.post(
+                        url, json=chat_payload, headers=headers,
+                        timeout=self._timeout(effective_valves),
+                    ) as resp:
+                        timing_mark("chat_nonstream_http_response")
+                        if resp.status >= 400:
+                            error_body = await _debug_print_error_response(resp, logger=self.logger)
+                            extra_meta: dict[str, Any] = {}
+                            _apply_retry_after_metadata(extra_meta, resp.headers)
+                            rate_scope = (
+                                resp.headers.get("X-RateLimit-Scope")
+                                or resp.headers.get("x-ratelimit-scope")
+                            )
+                            if rate_scope:
+                                extra_meta["rate_limit_type"] = rate_scope
+                            reason_text = resp.reason or "HTTP error"
+                            raise _build_openrouter_api_error(
+                                resp.status,
+                                reason_text,
+                                error_body,
+                                requested_model=chat_payload.get("model"),
+                                extra_metadata=extra_meta or None,
+                            )
+                        data = await _decode_json_body(resp, self.logger, "/chat/completions")
+                        if isinstance(data, dict):
+                            _debug_print_response(data, logger=self.logger)
+                            reported_error = self._pipe._ensure_error_formatter()._extract_streaming_error_event(
+                                data, chat_payload.get("model")
+                            )
+                            if reported_error is not None:
+                                raise reported_error
+                            return data
                         _debug_print_response(data, logger=self.logger)
-                        reported_error = self._pipe._ensure_error_formatter()._extract_streaming_error_event(
-                            data, chat_payload.get("model")
-                        )
-                        if reported_error is not None:
-                            raise reported_error
-                        return data
-                    _debug_print_response(data, logger=self.logger)
-                    return {}
+                        return {}
 
         return {}
 

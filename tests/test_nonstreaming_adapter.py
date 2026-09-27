@@ -1514,6 +1514,7 @@ async def test_nonstreaming_no_fallback_for_non_responses_error(pipe_instance_as
             "https://openrouter.ai/api/v1/responses",
             payload=responses_error,
             status=429,
+            repeat=True,
         )
 
         with pytest.raises(OpenRouterAPIError) as exc_info:

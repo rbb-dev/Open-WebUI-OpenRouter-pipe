@@ -19,6 +19,12 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
+# A `Retry-After` a retried request now waits out is charged to the jumping clock, so a header of thirty
+# seconds costs no wall-clock here and no CI run blows its timeout.
+from tests._jumping_clock import event_loop_policy  # noqa: F401
+
+pytestmark = pytest.mark.usefixtures("event_loop_policy")
 from aioresponses import aioresponses
 
 from open_webui_openrouter_pipe import Pipe
@@ -412,6 +418,7 @@ async def test_chat_completions_streaming_error_with_retry_after(pipe_instance_a
             payload={"error": {"message": "Rate limited"}},
             status=429,
             headers={"Retry-After": "60", "X-RateLimit-Scope": "user"},
+        repeat=True,
         )
 
         with pytest.raises(Exception) as exc_info:
@@ -448,6 +455,7 @@ async def test_chat_completions_streaming_error_http_date_retry_after(pipe_insta
             payload={"error": {"message": "Rate limited"}},
             status=429,
             headers={"Retry-After": "Wed, 21 Oct 2099 07:28:00 GMT"},
+        repeat=True,
         )
 
         with pytest.raises(OpenRouterAPIError) as exc_info:
@@ -482,6 +490,7 @@ async def test_chat_completions_streaming_error_500(pipe_instance_async):
             "https://openrouter.ai/api/v1/chat/completions",
             payload={"error": {"message": "Server error"}},
             status=500,
+            repeat=True,
         )
 
         with pytest.raises(OpenRouterAPIError) as exc_info:
@@ -903,6 +912,7 @@ async def test_chat_completions_nonstreaming_error_with_retry_after(pipe_instanc
             payload={"error": {"message": "Rate limited"}},
             status=429,
             headers={"Retry-After": "30"},
+        repeat=True,
         )
 
         with pytest.raises(Exception) as exc_info:
@@ -934,6 +944,7 @@ async def test_chat_completions_nonstreaming_error_500(pipe_instance_async):
             "https://openrouter.ai/api/v1/chat/completions",
             payload={"error": {"message": "Server error"}},
             status=500,
+            repeat=True,
         )
 
         with pytest.raises(OpenRouterAPIError) as exc_info:
@@ -1559,6 +1570,7 @@ async def test_chat_completions_streaming_rate_limit_scope(pipe_instance_async):
                 "Retry-After": "120",
                 "X-RateLimit-Scope": "organization",
             },
+        repeat=True,
         )
 
         with pytest.raises(Exception) as exc_info:
@@ -2135,6 +2147,7 @@ async def test_chat_completions_nonstreaming_with_rate_limit_scope(pipe_instance
                 "Retry-After": "60",
                 "X-RateLimit-Scope": "model",
             },
+        repeat=True,
         )
 
         with pytest.raises(Exception) as exc_info:

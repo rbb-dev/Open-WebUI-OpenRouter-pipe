@@ -114,7 +114,7 @@ controls, and final answer look identical on both.
 | Panel tools | The full Open WebUI tool surface, run inside the pipe in either outer mode: knowledge bases, tool servers, and pipe server tools. Under `ask` approval a member is offered none of Open WebUI's tools |
 | Per-model dials | OpenRouter's own settings | Every pipe dial per member: ZDR/provider routing, reasoning effort, max output tokens, identity headers |
 | Cost attribution | One OpenRouter charge | Every inner call is cost-attributed to the user like a normal chat; the run's footer shows the aggregated total |
-| Failure behaviour | A dropped stream loses the whole run | One failed member degrades that card; the judge works from the survivors; the run completes |
+| Failure behaviour | A dropped stream loses the whole run | One failed member degrades that card — a member that exhausts its own chat retries is a failed member, like any other failure — and the judge works from the survivors; the run completes only when no member answered at all |
 | Tool budget (`max_tool_calls`) | Caps web search/fetch steps | Hard per-model cap on individual tool invocations, plus a bound on tool rounds |
 
 Behaviour shared by both engines:

@@ -723,3 +723,38 @@ def pytest_collection_modifyitems(session, config, items):
         "  If the work IS finished and you mean to do the final check, the gate knows how to\n"
         "  ask for it. Run a smaller selection if you only need a few tests under the bundle.\n"
     )
+
+
+class _TimeTravelLoop(asyncio.SelectorEventLoop):
+    """An event loop that advances to the next timer rather than waiting for it.
+
+    `_scheduled` is the loop's own heap of pending wake-ups. When nothing is runnable, the earliest of
+    those is the only thing that can happen next, so moving the clock there changes what the loop does
+    next by exactly nothing -- except that it costs no real time. Tests that wait out a limit expressed in
+    minutes reach it for free, and a retry that honours a `Retry-After` of 30s costs no wall-clock either.
+    """
+
+    # CPython internals typeshed does not declare. Naming them states what this clock rests on;
+    # `test_the_event_loop_internals_the_jumping_clock_rests_on_still_exist` in tests/test_tool_timeouts.py
+    # fails if one goes away.
+    _ready: Any
+    _scheduled: Any
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._skew = 0.0
+
+    def time(self) -> float:
+        return super().time() + self._skew
+
+    def _run_once(self) -> None:
+        if not self._ready and self._scheduled:
+            gap = self._scheduled[0]._when - self.time()
+            if gap > 0:
+                self._skew += gap
+        super()._run_once()  # pyright: ignore[reportAttributeAccessIssue]
+
+
+class _TimeTravelPolicy(asyncio.DefaultEventLoopPolicy):
+    def new_event_loop(self):
+        return _TimeTravelLoop()

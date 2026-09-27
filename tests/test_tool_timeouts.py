@@ -30,6 +30,7 @@ from typing import Any
 
 import pytest
 from aiohttp.helpers import TimerContext
+from tests._jumping_clock import event_loop_policy  # noqa: F401
 
 import open_webui_openrouter_pipe.core.circuit_breaker as circuit_breaker_module
 import open_webui_openrouter_pipe.tools.tool_executor as tool_executor_module
@@ -85,25 +86,6 @@ def test_the_event_loop_internals_the_jumping_clock_rests_on_still_exist():
         assert callable(asyncio.SelectorEventLoop._run_once)  # pyright: ignore[reportAttributeAccessIssue]
     finally:
         loop.close()
-
-
-class _TimeTravelPolicy(asyncio.DefaultEventLoopPolicy):
-    def new_event_loop(self):
-        return _TimeTravelLoop()
-
-
-@pytest.fixture
-def event_loop_policy(request):
-    """The jumping clock, except where a test asks for a real one.
-
-    Two tests deadlock on it: they arrange for a plugin to still be working when the batch deadline
-    passes, and with every wake-up collapsed to the same instant the loop reaches a state where no
-    timer is left to break the wait. They keep a real loop and shrink their own numbers instead --
-    what they check is the order of three limits against each other, not the size of any of them.
-    """
-    if request.node.get_closest_marker("real_clock"):
-        return asyncio.DefaultEventLoopPolicy()
-    return _TimeTravelPolicy()
 
 
 @contextlib.contextmanager
