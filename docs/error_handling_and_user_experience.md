@@ -20,6 +20,33 @@ There are two main error rendering paths, and a third that does not render at al
 2. **Generic templated errors** (timeouts/connectivity/internal failures handled by `_emit_templated_error`).
 3. **API callers with no chat**, where there is nowhere to write a card: a provider rejection is returned as an HTTP error instead. Gated on a truthy `chat_id` **and** `message_id` — Open WebUI's own idiom for "is there a chat to write this into" (`main.py:1703`, `utils/middleware.py:3286`) — with `stream: false`, and never on an Anthropic Messages path (`main.py:2054-2063` re-wraps the response for the Anthropic converter, which has no error branch). The gate is a negative test on the request path, not a check for `/api/chat/completions`, so it also fires on Open WebUI's task routes. See [API callers with no chat](#c-api-callers-with-no-chat-http-error-instead-of-a-card).
 
+### Where a card lands: saved chat or channel
+
+A card is delivered differently depending on whether the chat id is a `channel:` id. The
+chat id is carried to the error arms on a context variable the pipe sets in two places
+(before the job is enqueued, and inside the job itself), so the choice of path is a
+property of the conversation, not of the frame:
+
+- **Saved chat.** The card travels as a `chat:message` snapshot and the turn's closing
+  `chat:completion` carries no content. The stored message is the answer plus the card, in
+  that order.
+- **Channel.** The channel's emitter is a different function from the socket emitter, and it
+  honours a different set of types. It has no `chat:message` branch at all, so on a channel
+  the card is written by a `chat:message:error` frame — which Open WebUI prefixes with
+  `Error: ` — and the closing `chat:completion` carries the same text as its `content`, so
+  the prefixed write is replaced by the clean text and the stored message reads as the
+  answer followed by the card. The channel leg **replaces** the message rather than
+  appending to it, so the closing frame's content must be the whole message or the card is
+  lost.
+
+The five pre-job refusals (a tripped circuit breaker, warmup, a missing stream queue, a
+full queue's 503, and a pre-enqueue failure) never build a stream queue and so never
+install the middleware emitter: they emit straight to the channel emitter and take the
+same channel path as any other card. A template author does not need to write anything
+differently for a channel — the pipe routes the card — but a template that ends its card
+early, or that relies on the
+`Error: ` prefix being visible, will read differently in a channel than in a saved chat.
+
 ---
 
 ## Error IDs and enriched context

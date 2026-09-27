@@ -11,6 +11,7 @@ import pytest
 
 from aioresponses import aioresponses
 
+import open_webui_openrouter_pipe.pipe as pipe_module
 from open_webui_openrouter_pipe import Pipe, _PipeJob
 from open_webui_openrouter_pipe.core.config import EncryptedStr
 
@@ -20,7 +21,15 @@ class TestRequestQueueLimits:
 
     @pytest.mark.asyncio
     async def test_request_queue_full_rejects_enqueue(self, pipe_instance_async) -> None:
-        """When the internal request queue is full, _enqueue_job returns False."""
+        """When the internal request queue is full, _enqueue_job returns False.
+
+        The queue is filled against a STALLED worker. The earlier version of this test
+        filled it with a synchronous ``put_nowait`` loop and asserted ``queue.full()``;
+        that only held because the loop never yielded. The moment it did, a live worker
+        would have drained the whole fill instantly, and the assertion would have measured
+        how fast the scheduler ran rather than what the queue does. A queue bound to a
+        worker that cannot consume is the only state in which "full" means full.
+        """
         pipe = pipe_instance_async
 
         # Ensure queue is initialized
@@ -31,13 +40,43 @@ class TestRequestQueueLimits:
 
         max_size = queue.maxsize or 500
 
-        # Fill the queue
+        # Stall the worker: a queue no one ever gets from stays full.
+        original_get = queue.get
+
+        async def _stalled_get(*_args, **_kwargs):
+            await asyncio.Event().wait()
+
+        queue.get = _stalled_get  # type: ignore[method-assign]
+
+        # Fill the queue, yielding between puts so a running worker would have drained it.
         loop = asyncio.get_running_loop()
-        for i in range(max_size):
+        try:
+            for i in range(max_size):
+                job = _PipeJob(
+                    pipe=pipe,
+                    body={"model": "test", "messages": []},
+                    user={"id": f"user_{i}"},
+                    request=None,
+                    event_emitter=None,
+                    event_call=None,
+                    metadata={},
+                    tools=None,
+                    task=None,
+                    task_body=None,
+                    valves=pipe.valves,
+                    future=loop.create_future(),
+                )
+                queue.put_nowait(job)
+                await asyncio.sleep(0)
+
+            # Verify queue is full
+            assert queue.full()
+
+            # Next job should be rejected
             job = _PipeJob(
                 pipe=pipe,
                 body={"model": "test", "messages": []},
-                user={"id": f"user_{i}"},
+                user={"id": "new_user"},
                 request=None,
                 event_emitter=None,
                 event_call=None,
@@ -45,40 +84,21 @@ class TestRequestQueueLimits:
                 tools=None,
                 task=None,
                 task_body=None,
-                future=loop.create_future(),
                 valves=pipe.valves,
+                future=loop.create_future(),
             )
-            queue.put_nowait(job)
 
-        # Verify queue is full
-        assert queue.full()
-
-        # Next job should be rejected
-        job = _PipeJob(
-            pipe=pipe,
-            body={"model": "test", "messages": []},
-            user={"id": "new_user"},
-            request=None,
-            event_emitter=None,
-            event_call=None,
-            metadata={},
-            tools=None,
-            task=None,
-            task_body=None,
-            future=loop.create_future(),
-            valves=pipe.valves,
-        )
-
-        # Queue should reject the job
-        result = pipe._enqueue_job(job)
-        assert result is False
-
-        # Cleanup - drain the queue
-        while not queue.empty():
-            try:
-                queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
+            # Queue should reject the job
+            result = pipe._enqueue_job(job)
+            assert result is False
+        finally:
+            queue.get = original_get  # type: ignore[method-assign]
+            # Cleanup - drain the queue
+            while not queue.empty():
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
 
     @pytest.mark.asyncio
     async def test_global_semaphore_limits_parallel_requests(self, pipe_instance_async) -> None:

@@ -3275,15 +3275,15 @@ class StreamingHandler:
             error_occurred = True
             session_log_reason = str(e)
             cancel_thinking()
-            assistant_message = join_answer_and_card(
-                assistant_message,
-                await self._pipe._ensure_error_formatter()._emit_error(
-                    event_emitter,
-                    e.user_message,
-                    show_error_message=True,
-                    done=True,
-                ),
+            reported = await self._pipe._ensure_error_formatter()._emit_error(
+                event_emitter,
+                e.user_message,
+                show_error_message=True,
+                done=True,
+                partial_answer=assistant_message,
             )
+            if reported:
+                assistant_message = reported
             self.logger.warning("Required internal file unavailable in streaming loop: %s", e.user_message)
         except Exception as e:  # pragma: no cover - network errors
             error_occurred = True

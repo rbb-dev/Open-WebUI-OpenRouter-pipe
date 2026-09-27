@@ -60,7 +60,7 @@ Breakers also recover on their own: the request and persistence breakers once th
 
 The pipe uses background tasks/threads to keep request handling responsive:
 
-- **Request worker loop:** dequeues jobs from the request queue and spawns per-request tasks.
+- **Request worker loop:** dequeues jobs from the request queue and spawns per-request tasks. The loop also gates those spawns: it takes a `MAX_CONCURRENT_REQUESTS` permit immediately before creating a task and the job keeps that slot for its whole life, so a queued request waits for a permit instead of being spawned and running anyway.
 - **Async log worker:** drains a bounded async log queue (`maxsize=1000`) used by `SessionLogger` so log emission does not block request execution.
 - **Redis tasks (optional):** when Redis caching is enabled and available, the pipe starts a Redis client and associated listener/flush tasks.
 - **Artifact cleanup worker:** periodically deletes persisted artifacts older than `ARTIFACT_CLEANUP_DAYS` (as measured from `created_at`, which is refreshed on DB reads) on an interval controlled by `ARTIFACT_CLEANUP_INTERVAL_HOURS`.
@@ -74,7 +74,7 @@ The pipe uses background tasks/threads to keep request handling responsive:
 
 ## Operational tuning (practical guidance)
 
-- If you see “Server busy (503)” frequently, lower upstream load or increase capacity; then tune `MAX_CONCURRENT_REQUESTS` and tool parallelism valves based on CPU/RAM headroom.
+- If you see “Server busy (503)” frequently, that is a real diagnostic and the first time it has been one. It means the pipe refused a request outright, which is a capacity problem and not a stall: the requests ahead of it are holding every concurrency permit and the bounded request queue behind them is full. Lower upstream load, raise `MAX_CONCURRENT_REQUESTS` toward the CPU/RAM headroom, or raise `_QUEUE_MAXSIZE` if the requests are merely queued rather than slow. The dashboard’s `requests` / `requests_max` fields give the queue depth that caused the refusal.
 - For rate limits and upstream instability, use breakers plus conservative retry windows; avoid “infinite retries”.
 - For multi-worker deployments, consider enabling Redis caching (when appropriate) to improve artifact replay performance and reduce DB contention.
 

@@ -3937,12 +3937,12 @@ async def test_pipe_breaker_blocks_request(monkeypatch, pipe_instance_async) -> 
     monkeypatch.setattr(pipe, "_ensure_concurrency_controls", _noop)
     monkeypatch.setattr(pipe._circuit_breaker, "allows", lambda _user_id: False)
 
-    emitted: list[str] = []
+    emitted: list[dict[str, Any]] = []
 
-    async def _emit_notification(_emitter, content, **_kwargs):
-        emitted.append(content)
+    async def _emit_error(_emitter, error_obj, **_kwargs):
+        emitted.append({"error": error_obj})
 
-    monkeypatch.setattr(pipe._event_emitter_handler, "_emit_notification", _emit_notification)
+    monkeypatch.setattr(pipe._ensure_error_formatter(), "_emit_error", _emit_error)
 
     result = await pipe.pipe(
         {"stream": False},

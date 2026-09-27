@@ -44,7 +44,7 @@ Defaults and valve names are verified against the source code and are intended t
 | --- | --- | --- | --- |
 | `REMOTE_DOWNLOAD_MAX_RETRIES` | `int` | `3` | Maximum number of retry attempts for downloading a picture from a link or a video a model generated. Set to 0 to disable retries. |
 | `REMOTE_DOWNLOAD_INITIAL_RETRY_DELAY_SECONDS` | `int` | `5` | Initial delay in seconds before the first retry attempt. Subsequent retries use exponential backoff (delay * 2^attempt). |
-| `REMOTE_DOWNLOAD_MAX_RETRY_TIME_SECONDS` | `int` | `45` | Maximum total time in seconds to spend on retry attempts. Retries stop if this time limit is exceeded. |
+| `REMOTE_DOWNLOAD_MAX_RETRY_TIME_SECONDS` | `int` | `45` | Maximum total time in seconds to spend on retry attempts. Retries stop if this time limit is exceeded. It also caps any single retry wait, including one a server asked for in a `Retry-After` header. |
 | `REMOTE_FILE_MAX_SIZE_MB` | `int` | `50` | Maximum size in MB for downloading a picture from a link: one in the conversation, or one a model returns for a picture it generated. A picture over this limit is not downloaded. A file link a person attaches is passed on to the provider without being downloaded, so this limit does not apply to it. When Open WebUI RAG is enabled, downloads are also held to the cap the Open WebUI admin last saved under **Admin → Settings → Documents → Max Upload Size**, read from Open WebUI’s own store, so a change there takes effect without a restart. Normally the smaller of the two applies; the one exception is this valve left at its default of 50, where a larger admin cap wins instead, clipped to the pipe’s own 500 MB ceiling. Clearing that box lifts Open WebUI’s cap, not this one: left at its 50 MB default the valve still refuses anything over 50 MB. The admin’s cap is inert until an admin saves the box — the stored row exists on every current Open WebUI deployment, but it holds the environment seed until that save, so testing this without saving first shows no change. A `RAG_FILE_MAX_SIZE` environment value set after Open WebUI’s first boot has no effect at all now, because the stored admin value wins. |
 | `BASE64_MAX_SIZE_MB` | `int` | `50` | Maximum size in MB for base64-encoded files, images and audio before decoding. Larger payloads are rejected. |
 | `IMAGE_UPLOAD_CHUNK_BYTES` | `int` | `1048576 (1 MiB)` | Max bytes buffered when loading Open WebUI-hosted images before forwarding them to a provider. Lower values reduce peak memory usage. |
@@ -128,7 +128,7 @@ Behavior note (no valve):
 
 | Valve | Type | Default (verified) | Purpose / notes |
 | --- | --- | --- | --- |
-| `MAX_CONCURRENT_REQUESTS` | `int` | `200` | Maximum number of in-flight OpenRouter requests allowed per process. |
+| `MAX_CONCURRENT_REQUESTS` | `int` | `200` | Maximum number of in-flight OpenRouter requests allowed per process. The wait list behind this limit is bounded: the pipe queues further requests and sheds load with a "Server busy (503)" card once that queue is full. |
 | `SSE_WORKERS_PER_REQUEST` | `int` | `4` | Number of stream processing workers spawned per request (fan-out for parsing/emitting). |
 | `STREAMING_CHUNK_QUEUE_MAXSIZE` | `int` | `0` | Maximum number of raw SSE chunks buffered before applying backpressure. `0` means unbounded. |
 | `STREAMING_CHUNK_QUEUE_WARN_SIZE` | `int` | `1000` | Warning threshold for the buffered raw-chunk queue; logs a rate-limited per request backend warning when the backlog is high (monitoring only). |

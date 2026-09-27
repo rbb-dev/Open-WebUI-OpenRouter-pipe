@@ -18,8 +18,9 @@ import stays guarded today. That deployment is a live path, not a hypothetical o
 that need a test, and the upstream half is unreachable on this Open WebUI without
 injecting the module.
 
-Two resolvers now read one shared publisher, and all three are cached, so every cache
-the module owns has to be cleared between tests: a module injected by one test would
+Two resolvers now read one shared publisher, and every resolver is cached -- including
+`_channel_chat_prefix`, which reads the same publisher for the channel prefix -- so every
+cache the module owns has to be cleared between tests: a module injected by one test would
 otherwise still be the answer the next one sees. The reset seam is conftest's autouse
 `_reset_package_caches`, which clears every package cache at both ends of every test;
 `_CACHED_RESOLVERS` below records this module's whole set for
@@ -45,6 +46,7 @@ from open_webui_openrouter_pipe.storage.owui_files import (
 from tests.test_a_temporary_chats_cost_snapshot_names_no_chat import USAGE, _FakeRedis, _through_the_pipe
 
 _CACHED_RESOLVERS = (
+    "_channel_chat_prefix",
     "_published_chat_id_values",
     "_unlinkable_chat_prefixes",
     "temporary_chat_prefixes",

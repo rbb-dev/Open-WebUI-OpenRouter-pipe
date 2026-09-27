@@ -27,7 +27,9 @@ PACKAGE = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 # neighbours -- `open_webui` may be absent -- so the count is the honest one.
 # 80 -> 81: the video sweep's own `Functions` lookup (`filters/filter_manager.py`), beside the image sweep's.
 # 81 -> 82: the durable provider-routing row probe in pipe.py reaches the Functions table lazily.
-_EXPECTED_OWUI_IMPORTS = (25, 82)
+# 82 -> 83: `is_channel_chat`'s prefix resolver reaches the Functions table lazily, so the
+# channel predicate follows whatever prefix the host publishes instead of repeating one.
+_EXPECTED_OWUI_IMPORTS = (25, 83)
 
 @pytest.mark.skipif(
     bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),

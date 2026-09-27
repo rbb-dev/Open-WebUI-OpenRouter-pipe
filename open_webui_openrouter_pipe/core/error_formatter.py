@@ -23,6 +23,8 @@ if TYPE_CHECKING:
     from ..pipe import Pipe
     from ..streaming.event_emitter import EventEmitter, EventEmitterHandler
 
+from ..storage.owui_files import is_channel_chat
+from .config import OWUI_CHAT_ID
 from .errors import _resolve_error_model_context, is_sign_in_failure
 from .utils import _pretty_json, _resolve_retry_after_seconds, join_answer_and_card
 
@@ -174,6 +176,7 @@ class ErrorFormatter:
         show_error_message: bool = True,
         show_error_log_citation: bool = False,
         done: bool = False,
+        partial_answer: str = "",
     ) -> str:
         if not self._event_emitter_handler:
             return ""
@@ -183,6 +186,7 @@ class ErrorFormatter:
             show_error_message=show_error_message,
             show_error_log_citation=show_error_log_citation,
             done=done,
+            partial_answer=partial_answer,
         )
 
     async def _emit_templated_error(
@@ -419,9 +423,15 @@ class ErrorFormatter:
                 }
             )
             await event_emitter({"type": "chat:message", "data": {"content": shown}})
+            on_channel = is_channel_chat(OWUI_CHAT_ID.get())
+            if on_channel:
+                await event_emitter({
+                    "type": "chat:message:error",
+                    "data": {"error": {"content": shown}, "done": True},
+                })
             await self._pipe._event_emitter_handler._emit_completion(
                 event_emitter,
-                content="",
+                content=shown if on_channel else "",
                 usage=usage or None,
                 done=True,
             )

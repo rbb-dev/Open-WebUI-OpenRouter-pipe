@@ -217,7 +217,8 @@ async def _linked_ok(result: Any, chat_id: str, message_id: str, file_id: str) -
     return any(getattr(item, "file_id", None) == file_id for item in linked or [])
 
 
-_UNLINKABLE_CHAT_PREFIXES = ("temporary:", "local:", "channel:")
+_CHANNEL_CHAT_PREFIX = "channel:"
+_UNLINKABLE_CHAT_PREFIXES = ("temporary:", "local:", _CHANNEL_CHAT_PREFIX)
 
 
 @lru_cache(maxsize=1)
@@ -300,18 +301,46 @@ def is_linkable_chat(chat_id: Any) -> bool:
 def temporary_chat_prefixes() -> tuple[str, ...]:
     published = _published_chat_id_values()
     if published is None:
-        return tuple(p for p in _UNLINKABLE_CHAT_PREFIXES if p != "channel:")
+        return tuple(p for p in _UNLINKABLE_CHAT_PREFIXES if p != _CHANNEL_CHAT_PREFIX)
     _non_saved, temporary, channel = published
-    channel = channel.strip() if isinstance(channel, str) and channel.strip() else "channel:"
+    channel = channel.strip() if isinstance(channel, str) and channel.strip() else _CHANNEL_CHAT_PREFIX
     usable = (
         (p for p in temporary if isinstance(p, str) and p.strip())
         if not isinstance(temporary, str) and isinstance(temporary, Iterable)
         else ()
     )
     local = tuple(
-        p for p in _UNLINKABLE_CHAT_PREFIXES if p not in ("channel:", channel)
+        p for p in _UNLINKABLE_CHAT_PREFIXES if p not in (_CHANNEL_CHAT_PREFIX, channel)
     )
     return local + tuple(p for p in usable if p not in local)
+
+
+@lru_cache(maxsize=1)
+def _channel_chat_prefix() -> str:
+    try:
+        from open_webui.utils.chat_id import (  # pyright: ignore[reportMissingImports]
+            CHANNEL_CHAT_ID_PREFIX,
+        )
+
+        published = CHANNEL_CHAT_ID_PREFIX
+    except (ImportError, AttributeError):
+        return _CHANNEL_CHAT_PREFIX
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "open_webui.utils.chat_id failed to import for a reason other than absence; "
+            "the features that depend on it are now disabled",
+            exc_info=True,
+        )
+        return _CHANNEL_CHAT_PREFIX
+    if not isinstance(published, str) or not published.strip():
+        return _CHANNEL_CHAT_PREFIX
+    return published
+
+
+def is_channel_chat(chat_id: Any) -> bool:
+    if not isinstance(chat_id, str):
+        return False
+    return chat_id.strip().startswith(_channel_chat_prefix())
 
 
 def is_temporary_chat(chat_id: Any) -> bool:

@@ -3227,7 +3227,6 @@ class TestRetryHelpers:
         assert retryable is False
         assert retry_after is None
 
-
 class TestStorageContext:
     """Tests for storage context resolution."""
 

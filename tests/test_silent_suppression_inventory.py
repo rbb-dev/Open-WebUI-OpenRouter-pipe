@@ -97,7 +97,10 @@ _EXPECTED: dict[str, int] = {
     # letting it out would abort the shutdown that follows.
     # One more: the `shutdown()` inside `__del__`, which runs at interpreter teardown where an
     # exception escaping has no caller to see it; the close is scheduled outside the suppression.
-    "pipe.py": 25,
+    # Two more: the `OWUI_CHAT_ID.reset(token)` calls in the `finally` blocks that undo the
+    # channel-chat-id token; resetting a ContextVar is bookkeeping for the next request, and letting
+    # one out would replace the turn's real outcome with an error raised while unwinding it.
+    "pipe.py": 27,
     "storage/persistence.py": 3,
     # 1st: the caller-supplied fallback in `_emit_templated_error_event`. It is reached only because the
     # admin's own template already failed to render, and the generic card below it is the answer if the

@@ -122,6 +122,7 @@ from .core.config import (
     _OPENROUTER_REFERER,
     _OPENROUTER_TITLE,
     _PIPE_RUNTIME_ID,
+    OWUI_CHAT_ID,
     OWUI_REQUEST,
     EncryptedStr,
     UserValves,
@@ -360,6 +361,10 @@ _warned_pipes_maintenance: set[str] = set()
 _WEB_TOOLS_REPAIR_COOLDOWN_S = 300.0
 _warned_user_valves: set[str] = set()
 _warned_timing_file: set[str] = set()
+
+
+def _admission_bound(max_concurrent_requests: int, queue_maxsize: int) -> int:
+    return max_concurrent_requests + queue_maxsize + 2
 
 
 # Data Classes
@@ -1547,6 +1552,7 @@ class Pipe:
     ) -> AsyncGenerator[dict[str, Any] | str, None] | dict[str, Any] | str | None | JSONResponse:
         """Entry point that enqueues work and awaits the isolated job result."""
         safe_event_emitter = None
+        owui_chat_id_token = OWUI_CHAT_ID.set(str((__metadata__ or {}).get("chat_id") or ""))
 
         try:
             from .core.timing_logger import set_timing_context, timing_mark
@@ -1608,7 +1614,12 @@ class Pipe:
             if not breaker.allows(user_id) and not _brings_tool_results(body):
                 message = "Temporarily disabled due to repeated errors. Please retry later."
                 if safe_event_emitter:
-                    await self._event_emitter_handler._emit_notification(safe_event_emitter, message, level="warning")
+                    await self._ensure_error_formatter()._emit_error(
+                        safe_event_emitter,
+                        message,
+                        show_error_message=True,
+                        done=True,
+                    )
                 SessionLogger.cleanup()
                 return self._degraded_result(__task__, message)
 
@@ -1687,7 +1698,11 @@ class Pipe:
 
             timing_mark("before_enqueue_job")
             if not self._enqueue_job(job):
-                self.logger.warning("Request queue full; rejecting request_id=%s", job.request_id)
+                self.logger.warning(
+                    "Request queue full (admission bound=%s); rejecting request_id=%s",
+                    _admission_bound(type(self)._semaphore_limit or int(valves.MAX_CONCURRENT_REQUESTS), int(self._QUEUE_MAXSIZE)),
+                    job.request_id,
+                )
                 if safe_event_emitter:
                     await self._ensure_error_formatter()._emit_error(
                         safe_event_emitter,
@@ -1714,6 +1729,9 @@ class Pipe:
             except Exception:
                 self.logger.debug("SessionLogger.cleanup failed during pre-enqueue recovery", exc_info=True)
             return self._degraded_result(__task__, "Request setup failed. Please retry.")
+        finally:
+            with contextlib.suppress(Exception):
+                OWUI_CHAT_ID.reset(owui_chat_id_token)
 
         if wants_stream and stream_queue is not None:
             @timed
@@ -1740,6 +1758,7 @@ class Pipe:
 
             return _stream()
 
+        await_future_token = OWUI_CHAT_ID.set(str((__metadata__ or {}).get("chat_id") or ""))
         try:
             result = await future
             return result
@@ -1758,6 +1777,9 @@ class Pipe:
                     done=True,
                 )
             return "Request failed. Please retry."
+        finally:
+            with contextlib.suppress(Exception):
+                OWUI_CHAT_ID.reset(await_future_token)
 
     @timed
     async def _stop_redis(self) -> None:
@@ -2301,6 +2323,23 @@ class Pipe:
 
 
     @staticmethod
+    def _admission_failed(
+        job: _PipeJob,
+        queue: asyncio.Queue,
+        *,
+        semaphore: asyncio.Semaphore | None = None,
+        cancel_future: bool = False,
+    ) -> bool:
+        if semaphore is not None:
+            semaphore.release()
+        queue.task_done()
+        if cancel_future:
+            job.future.cancel()
+        elif not job.future.cancelled():
+            job.future.set_result("Server busy (503)")
+        return True
+
+    @staticmethod
     @timed
     async def _request_worker_loop(queue: asyncio.Queue) -> None:
         """Background worker that dequeues jobs and spawns per-request tasks."""
@@ -2312,7 +2351,21 @@ class Pipe:
                 if job.future.cancelled():
                     queue.task_done()
                     continue
-                task = asyncio.create_task(job.pipe._execute_pipe_job(job))
+                semaphore = type(job.pipe)._global_semaphore
+                if semaphore is None:
+                    job.future.set_exception(RuntimeError("Semaphore unavailable"))
+                    queue.task_done()
+                    continue
+                try:
+                    await semaphore.acquire()
+                except asyncio.CancelledError:
+                    Pipe._admission_failed(job, queue, cancel_future=True)
+                    raise
+                if job.future.cancelled():
+                    semaphore.release()
+                    queue.task_done()
+                    continue
+                task = asyncio.create_task(job.pipe._execute_pipe_job(job, semaphore_held=True))
 
                 active = type(job.pipe)._active_jobs
                 active.add(task)
@@ -2336,7 +2389,7 @@ class Pipe:
 
 
     @timed
-    async def _execute_pipe_job(self, job: _PipeJob) -> None:
+    async def _execute_pipe_job(self, job: _PipeJob, semaphore_held: bool = False) -> None:
         """Isolate per-request context, HTTP session, and semaphore slot."""
         if job.counter_state is not None:
             job.counter_state["tail"] = True
@@ -2382,7 +2435,7 @@ class Pipe:
                 except Exception:
                     self.logger.debug("Plugin on_emitter_wrap dispatch failed", exc_info=True)
 
-            async with self._acquire_semaphore(semaphore, job.request_id):
+            async with self._acquire_semaphore(semaphore, job.request_id, held=semaphore_held):
                 session = await self._shared_request_session(job.valves)
                 tokens = self._apply_logging_context(job)
                 tokens.append(
@@ -2390,6 +2443,7 @@ class Pipe:
                 )
                 tokens.append((CONTINUED_REPLY, CONTINUED_REPLY.set(job.continued_reply)))
                 tokens.append((OWUI_REQUEST, OWUI_REQUEST.set(job.request)))
+                tokens.append((OWUI_CHAT_ID, OWUI_CHAT_ID.set(str(job.metadata.get("chat_id") or ""))))
                 tool_queue: asyncio.Queue[list[_QueuedToolCall] | None] = asyncio.Queue(maxsize=50)
                 per_request_tool_sem = asyncio.Semaphore(job.valves.MAX_PARALLEL_TOOLS_PER_REQUEST)
                 per_tool_timeout = job.valves.TOOL_TIMEOUT_SECONDS
@@ -2571,10 +2625,13 @@ class Pipe:
         self,
         semaphore: asyncio.Semaphore,
         request_id: str,
+        *,
+        held: bool = False,
     ):
         """Async context manager that logs semaphore acquisition/release."""
         self.logger.debug("Waiting for semaphore (request=%s)", request_id)
-        await semaphore.acquire()
+        if not held:
+            await semaphore.acquire()
         self.logger.debug("Semaphore acquired (request=%s)", request_id)
         try:
             yield

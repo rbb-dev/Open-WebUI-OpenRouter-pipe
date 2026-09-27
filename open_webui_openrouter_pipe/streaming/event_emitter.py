@@ -15,6 +15,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal
 
+from ..core.config import OWUI_CHAT_ID
 from ..core.errors import _inline_span
 from ..core.logging_system import SessionLogger
 from ..core.utils import (
@@ -22,6 +23,7 @@ from ..core.utils import (
     citation_access_stamp,
     join_answer_and_card,
 )
+from ..storage.owui_files import is_channel_chat
 
 _PIPE_GENERATED_TEMPLATE_KEYS = frozenset({
     "error_type",
@@ -210,6 +212,7 @@ class EventEmitterHandler:
         show_error_message: bool = True,
         show_error_log_citation: bool = False,
         done: bool = False,
+        partial_answer: str = "",
     ) -> str:
         """Log an error and optionally surface it to the UI.
 
@@ -219,7 +222,7 @@ class EventEmitterHandler:
         """
         error_message = str(error_obj)
         self.logger.error("Error: %s", error_message)
-        shown = join_answer_and_card("", error_message) if show_error_message else ""
+        shown = join_answer_and_card(partial_answer, error_message) if show_error_message else ""
 
         if show_error_message and event_emitter:
             try:
@@ -231,15 +234,19 @@ class EventEmitterHandler:
                             "done": True,
                         },
                     })
-                await event_emitter(
-                    {
-                        "type": "chat:completion",
-                        "data": {
-                            "error": {"message": error_message},
-                            "done": done,
-                        },
-                    }
-                )
+                on_channel = is_channel_chat(OWUI_CHAT_ID.get())
+                completion: dict[str, Any] = {
+                    "error": {"message": error_message},
+                    "done": done,
+                }
+                if on_channel:
+                    await event_emitter({"type": "chat:message", "data": {"content": shown}})
+                    await event_emitter({
+                        "type": "chat:message:error",
+                        "data": {"error": {"content": shown}, "done": True},
+                    })
+                    completion["content"] = shown
+                await event_emitter({"type": "chat:completion", "data": completion})
             except Exception:
                 self.logger.exception("Failed to emit error event")
 
@@ -339,9 +346,16 @@ class EventEmitterHandler:
                 "type": "chat:message",
                 "data": {"content": shown}
             })
+            completion: dict[str, Any] = {"done": True}
+            if is_channel_chat(OWUI_CHAT_ID.get()):
+                await event_emitter({
+                    "type": "chat:message:error",
+                    "data": {"error": {"content": shown}, "done": True},
+                })
+                completion["content"] = shown
             await event_emitter({
                 "type": "chat:completion",
-                "data": {"done": True}
+                "data": completion
             })
         except Exception:
             self.logger.exception("[%s] Failed to emit error message", error_id)

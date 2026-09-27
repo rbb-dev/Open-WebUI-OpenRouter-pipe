@@ -760,7 +760,14 @@ class MultimodalHandler:
             async for attempt_info in AsyncRetrying(
                 retry=retry_if_exception_type((_RetryableHTTPStatusError, httpx.NetworkError, httpx.TimeoutException)),
                 stop=stop_after_attempt(max_retries + 1),
-                wait=_RetryWait(wait_exponential(multiplier=initial_delay, min=initial_delay, max=max_retry_time)),
+                wait=_RetryWait(
+                    wait_exponential(
+                        multiplier=initial_delay,
+                        min=min(initial_delay, max_retry_time),
+                        max=max_retry_time,
+                    ),
+                    max_delay=max_retry_time,
+                ),
                 reraise=True
             ):
                 with attempt_info:
@@ -908,7 +915,14 @@ class MultimodalHandler:
                     (_RetryableHTTPStatusError, httpx.NetworkError, httpx.TimeoutException)
                 ),
                 stop=stop_after_attempt(max_retries + 1),
-                wait=_RetryWait(wait_exponential(multiplier=initial_delay, min=initial_delay, max=max_retry_time)),
+                wait=_RetryWait(
+                    wait_exponential(
+                        multiplier=initial_delay,
+                        min=min(initial_delay, max_retry_time),
+                        max=max_retry_time,
+                    ),
+                    max_delay=max_retry_time,
+                ),
                 reraise=True,
             ):
                 with attempt_info:

@@ -53,9 +53,10 @@ class _RetryableHTTPStatusError(Exception):
 class _RetryWait:
     """Custom Tenacity wait strategy honoring Retry-After headers."""
 
-    def __init__(self, base_wait):
+    def __init__(self, base_wait, *, max_delay: float | None = None):
         """Store the wrapped Tenacity wait callable used as a baseline."""
         self._base_wait = base_wait
+        self._max_delay = max_delay
 
     def __call__(self, retry_state):
         """Return the greater of base delay or Retry-After header guidance."""
@@ -69,7 +70,8 @@ class _RetryWait:
         if isinstance(exc, _RetryableHTTPStatusError):
             retry_after = exc.retry_after
             if isinstance(retry_after, (int, float)) and retry_after > 0:
-                return max(base_delay, retry_after)
+                wait = max(base_delay, retry_after)
+                return min(wait, self._max_delay) if self._max_delay is not None else wait
         return base_delay
 
 
@@ -332,7 +334,6 @@ def _build_openrouter_api_error(
         flagged_input=details.get("flagged_input"),
         model_slug=details.get("model_slug"),
         requested_model=requested_model,
-        metadata_json=details.get("metadata_json"),
         provider_raw=details.get("provider_raw"),
         provider_raw_json=details.get("provider_raw_json"),
     )

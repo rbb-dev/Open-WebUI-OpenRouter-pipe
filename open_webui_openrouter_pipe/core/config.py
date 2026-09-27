@@ -874,7 +874,7 @@ class Valves(BaseModel):
         default=45,
         ge=5,
         le=300,
-        description="Maximum total time in seconds to spend on retry attempts. Retries will stop if this time limit is exceeded.",
+        description="Maximum total time in seconds to spend on retry attempts. Retries will stop if this time limit is exceeded. It also caps any single retry wait, including one a server asked for in a Retry-After header.",
     )
 
     REMOTE_FILE_MAX_SIZE_MB: int = Field(
@@ -1345,7 +1345,7 @@ class Valves(BaseModel):
         default=200,
         ge=1,
         le=2000,
-        description="Maximum number of in-flight OpenRouter requests allowed per process.",
+        description="Maximum number of in-flight OpenRouter requests allowed per process. The wait list behind this limit is bounded: the pipe queues further requests and sheds load with a \"Server busy (503)\" card once that queue is full.",
     )
     SSE_WORKERS_PER_REQUEST: int = Field(
         default=4,
@@ -1423,7 +1423,7 @@ class Valves(BaseModel):
     OPENROUTER_ERROR_TEMPLATE: str = Field(
         default=DEFAULT_OPENROUTER_ERROR_TEMPLATE,
         description=(
-            "Markdown template used when OpenRouter rejects a request with a status that has no template of its own (400, 403, 404, 422, and so on), and when a failure reported inside a started reply resolves to such a status, from the kind OpenRouter named or, when that kind is unknown, from the code it sent. Clear this box and save to restore this built-in text. Placeholders such as {heading}, {detail}, {sanitized_detail}, {provider}, {model_identifier}, {requested_model}, {api_model_id}, {normalized_model_id}, {openrouter_code}, {upstream_type}, {reason}, {request_id}, {request_id_reference}, {openrouter_message}, {upstream_message}, {moderation_reasons}, {flagged_excerpt}, {raw_body}, {context_limit_tokens}, {max_output_tokens}, {include_model_limits}, {metadata_json}, {provider_raw_json}, {error_id}, {timestamp}, {session_id}, {user_id}, {native_finish_reason}, {error_chunk_id}, {error_chunk_created}, {is_streaming_error}, {streaming_provider}, {streaming_model}, {retry_after_seconds}, {rate_limit_type}, {required_cost}, and {account_balance} are replaced when values are available. Lines whose **own** placeholder resolves to a missing or empty value are omitted automatically; a value that itself contains a placeholder in braces is shown verbatim, never re-read as a placeholder. A boolean placeholder renders `True`/`False`, and its line is dropped when the value is false; the `{{#if}}` form of the same value is equivalent. The pipe does the span and fence work on these values itself: a value placed inside a backtick span, on a `### ` heading, or on a bare `**…**` / `- ` line arrives as one logical line with its backticks removed, and a value placed in a fenced block arrives inside a fence long enough to contain it, so a custom template does not have to. The pipe's own numbers and labels (`status_code`, `retry_after_seconds`, `context_limit_tokens`, `max_output_tokens`, `diagnostics`) are already single-line, and a boolean placeholder renders `True`/`False`. Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to show them only when that value is set."
+            "Markdown template used when OpenRouter rejects a request with a status that has no template of its own (400, 403, 404, 422, and so on), and when a failure reported inside a started reply resolves to such a status, from the kind OpenRouter named or, when that kind is unknown, from the code it sent. Clear this box and save to restore this built-in text. Placeholders such as {heading}, {detail}, {sanitized_detail}, {provider}, {model_identifier}, {requested_model}, {api_model_id}, {normalized_model_id}, {openrouter_code}, {upstream_type}, {reason}, {request_id}, {request_id_reference}, {openrouter_message}, {upstream_message}, {moderation_reasons}, {flagged_excerpt}, {raw_body}, {context_limit_tokens}, {max_output_tokens}, {include_model_limits}, {metadata_json}, {provider_raw_json}, {error_id}, {timestamp}, {session_id}, {user_id}, {native_finish_reason}, {error_chunk_id}, {error_chunk_created}, {is_streaming_error}, {streaming_provider}, {streaming_model}, {retry_after_seconds}, {rate_limit_type}, {required_cost}, and {account_balance} are replaced when values are available. Lines whose **own** placeholder resolves to a missing or empty value are omitted automatically; a value that itself contains a placeholder in braces is shown verbatim, never re-read as a placeholder. A boolean placeholder renders `True`/`False`, and its line is dropped when the value is false; the `{{#if}}` form of the same value is equivalent. The pipe does the span and fence work on these values itself: a value placed inside a backtick span, on a `### ` heading, or on a bare `**…**` / `- ` line arrives as one logical line with its backticks removed, and a value placed in a fenced block arrives inside a fence long enough to contain it, so a custom template does not have to. The pipe's own numbers and labels (`status_code`, `retry_after_seconds`, `context_limit_tokens`, `max_output_tokens`, `diagnostics`) are already single-line, and a boolean placeholder renders `True`/`False`. Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to show them only when that value is set. {metadata_json} is the complete provider metadata, including any field the pipe itself adds, so a template that assumed it held only what the provider sent would read it wrongly."
         ),
     )
     ENDPOINT_OVERRIDE_CONFLICT_TEMPLATE: str = Field(
@@ -2441,6 +2441,7 @@ def _select_openrouter_http_referer(valves: Any | None) -> str:
 
 
 OWUI_REQUEST: ContextVar[Any] = ContextVar("owui_request", default=None)
+OWUI_CHAT_ID: ContextVar[str] = ContextVar("owui_chat_id", default="")
 
 
 def _apply_owui_forward_user_headers(headers: dict, user: Any, chat_id: Any = None) -> dict:
