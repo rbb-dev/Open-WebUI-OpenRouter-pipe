@@ -26,9 +26,16 @@ from open_webui_openrouter_pipe import (
     _serialize_marker,
     generate_item_id,
 )
+from open_webui_openrouter_pipe.core.utils import (
+    OPEN_WEBUI_TOOL_IMAGES_TEXT,
+    REASONING_ANCHOR_KEYS,
+    opens_a_turn,
+)
 from open_webui_openrouter_pipe.requests.transformer import (
-    transform_messages_to_input,
+    _reinterleave_reasoning_by_anchor,
     _reinterleave_region,
+    _tool_images_message,
+    transform_messages_to_input,
 )
 
 

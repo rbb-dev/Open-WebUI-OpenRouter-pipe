@@ -232,6 +232,10 @@ the model had after the round is replayed after it.
 On `/chat/completions` a replayed reasoning item rides on the assistant message that carries the tool calls, as
 `reasoning_details`, matching Open WebUI's `convert_output_to_messages(raw=True)`.
 
+The anchors are internal ordering metadata, and they are stripped from every item the pipe sends — including a
+turn-opener, not only reasoning — so none of the five keys in `REASONING_ANCHOR_KEYS` is ever part of a
+request.
+
 ### 6.2 An answer continued across more than one request
 
 "Continue response" adds a second generation to the same assistant message, and Open WebUI's own tool loop can

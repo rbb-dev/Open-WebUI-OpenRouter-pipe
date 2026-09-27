@@ -314,7 +314,7 @@ def _reinterleave_reasoning_by_anchor(
         if opens_a_turn(items, index):
             out.extend(_reinterleave_region(_one_copy_per_round(region)))
             region = []
-            out.append(it)
+            out.append(_strip_reasoning_anchor_keys(it))
         else:
             region.append(it)
     out.extend(_reinterleave_region(_one_copy_per_round(region)))
