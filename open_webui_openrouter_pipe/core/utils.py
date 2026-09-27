@@ -90,6 +90,8 @@ PIPE_ONLY_TOOL_ROUND_KEY = "_anchor_pipe_only_tool_round"
 UNRETAINED_TOOL_RESULT = "[tool result not retained]"
 UNRETAINED_FAILED_TOOL_RESULT = "[tool call failed; result not retained]"
 TOOL_FAILURE_LINE = "Error: the tool call did not complete."
+
+IMAGE_NO_IMAGES_REASON = "OpenRouter image generation returned no images."
 SERVER_TOOL_CALL_PREFIX = "srv-"
 REASONING_ANCHOR_KEYS = (
     REASONING_ANCHOR_SEQ_KEY,
@@ -192,6 +194,45 @@ def recorded_tool_text(text: str, status: Any) -> str:
     return f"{TOOL_FAILURE_LINE}\n{text}" if text else TOOL_FAILURE_LINE
 
 
+_IMAGE_ITEM_TYPE = "openrouter:image_generation"
+_IMAGE_ITEM_BLOB_KEYS = ("result", "imageUrl", "imageB64")
+_IMAGE_ENTRY_URL_KEYS = ("url", "image_url", "imageUrl", "content_url")
+_IMAGE_ENTRY_B64_KEYS = ("b64_json", "b64", "base64", "data", "image_base64", "imageB64")
+
+
+def _image_entry_carries_an_image(entry: Any, _depth: int = 0) -> bool:
+    if _depth > 6:
+        return False
+    if isinstance(entry, str):
+        return bool(entry.strip())
+    if isinstance(entry, (list, tuple)):
+        return any(_image_entry_carries_an_image(item, _depth + 1) for item in entry)
+    if isinstance(entry, dict):
+        for key in _IMAGE_ENTRY_URL_KEYS:
+            value = entry.get(key)
+            if isinstance(value, str) and value.strip():
+                return True
+            if isinstance(value, (dict, list, tuple)) and _image_entry_carries_an_image(value, _depth + 1):
+                return True
+        if any(isinstance(entry.get(key), str) and entry[key].strip() for key in _IMAGE_ENTRY_B64_KEYS):
+            return True
+        nested = entry.get("result")
+        if nested is not None and _image_entry_carries_an_image(nested, _depth + 1):
+            return True
+    return False
+
+
+def _image_item_is_empty(item: dict[str, Any]) -> bool:
+    for key in _IMAGE_ITEM_BLOB_KEYS:
+        value = item.get(key)
+        if isinstance(value, (list, tuple)):
+            if any(_image_entry_carries_an_image(entry) for entry in value):
+                return False
+        elif _image_entry_carries_an_image(value):
+            return False
+    return True
+
+
 def server_tool_status(item: dict[str, Any]) -> str:
     reported = item.get("status")
     if isinstance(reported, str) and reported:
@@ -211,6 +252,8 @@ def server_tool_status(item: dict[str, Any]) -> str:
             return "incomplete"
         if not 200 <= code < 300:
             return "incomplete"
+    if item.get("type") == _IMAGE_ITEM_TYPE and _image_item_is_empty(item):
+        return "incomplete"
     return "completed"
 
 

@@ -114,7 +114,7 @@ These are configured on the companion filter functions themselves (Open WebUI Ad
 | Valve | Type | Default | Purpose |
 | --- | --- | --- | --- |
 | `priority` | `int` | `0` | Priority level for the filter operations. |
-| `IMAGE_GENERATION_MODEL` | `str` | `openai/gpt-5-image-mini` | Which OpenRouter model draws the picture. Its own published contract is what the user valves below are built from, so changing it changes them on the next catalog refresh. Its description names the model in force and, when no settings are offered, says which of the four reasons applies. |
+| `IMAGE_GENERATION_MODEL` | `str` | `openai/gpt-5-image-mini` | Which OpenRouter model draws the picture. The pipe's default is `openai/gpt-5-image-mini`; OpenRouter documents `openai/gpt-5-image` as its own, so the two differ. The default was chosen because it costs less per image than OpenRouter's documented default, and a value an admin stores in this valve takes its place. Its own published contract is what the user valves below are built from, so changing it changes them on the next catalog refresh. Its description names the model in force and, when no settings are offered, says which of the four reasons applies. |
 | `IMAGE_GENERATION_MODERATION` | `Literal["auto","low"]` | `auto` | How strictly the company running the model screens what it will draw. |
 
 ---
@@ -166,8 +166,8 @@ box, not one of these settings.
 
 The last two are alternatives, never both at once: a model that publishes size tiers gets
 the **Resolution** dropdown, and one that does not gets **Output size** instead, where a
-tier name or exact pixels can be typed. Across the forty image models recorded in this
-repository, sixteen draw **Resolution** and twenty-four draw **Output size**.
+tier name or exact pixels can be typed. Across the fifty-one image models recorded in this
+repository, nineteen draw **Resolution** and thirty-two draw **Output size**.
 
 Where a control falls back to `str` — because the model publishes no values for it — its
 own description names what OpenRouter's image API accepts there, so an admin or user still
@@ -176,6 +176,14 @@ own range when it publishes one, and by OpenRouter's own 0-to-100 range otherwis
 is not a value list: `0` to `100` refuses only what OpenRouter itself refuses, and says
 nothing about which number this model honours, so it can come from the API-wide schema
 where a set of named choices cannot.
+
+`IMAGE_SIZE` is the one control that is checked further along, and only on the
+server-tool path: the `size` the pipe sends is measured against the selected model's
+published `resolution` list, and a tier that model does not publish is withheld from
+the request and named in a toast. On a model that publishes no `resolution` list there
+is nothing to measure against, so the typed value goes out as typed, exactly as on the
+direct path. The other five controls are not gated — whatever they hold reaches the
+service as typed.
 
 A model the pipe's image model list does not carry, or whose settings could not be read
 this time, still gets all six — with `IMAGE_SIZE` as the sixth, and every one of them
@@ -195,7 +203,7 @@ User chat message
 [Filter inlet] -- reads user valves, writes server_tools dict to __metadata__["openrouter_pipe"]["server_tools"]
     |
     v
-[Pipe orchestrator] -- reads __metadata__["openrouter_pipe"]["server_tools"], injects into API request tools array
+[Pipe orchestrator: measure the image tool's size against the selected model] -- reads __metadata__["openrouter_pipe"]["server_tools"], injects into API request tools array
     |
     v
 [OpenRouter API] -- model calls tools as needed, OpenRouter executes them server-side
@@ -216,12 +224,44 @@ Each filter's `inlet` method:
 
 The Image Generation filter merges into any existing `server_tools` dict (so both filters can run on the same request without overwriting each other).
 
+### When the image tool returns no image
+
+The image tool can report that it ran and hand back nothing to show. On the server-tool
+path that used to pass silently: the turn carried a tool result saying `completed`, a
+status line reading *Generating image…* stayed up, and no picture appeared. The person now
+gets a warning naming the condition, and the status line resolves as the item is handled —
+but only when this loop opened that line, so an image item never closes a status window
+belonging to another tool.
+
+An image may arrive in `result`, in `imageUrl` or in `imageB64`; all three are read, since
+OpenRouter's own success item carries `imageUrl` and no `result` key at all. A nested
+`result` is read too, because the renderer descends into one. The check is on the item the
+service sent, not on whether a picture rendered — an image that arrived but could not be
+written to storage is a storage problem, and keeps its own wording rather than being
+reported as an empty result.
+
+The empty branch records no tool result at all: it warns, resolves the window it opened,
+and moves on, so the turn carries no result claiming a picture. `server_tool_status` reads
+the same item as `incomplete`, which is what the recorded text would say if a result were
+written.
+
+This covers the **server-tool** path. The direct `image_config` path already failed loudly,
+and it has two conditions worth telling apart rather than the server-tool path's one. A
+response carrying no images at all raises *"OpenRouter image generation returned no
+images."* — the same string the server-tool path now uses. A response that carried images
+and had all of them rejected raises *"OpenRouter image generation returned no usable
+images"*, with the rejected names appended; the server-tool path does not model that
+second case, because it has no equivalent of a rejected candidate to count.
+
+Both paths reach the emitter, including a non-streamed reply: the non-streamed loop
+delegates to the streaming one, and the same warning and the same clear are sent.
+
 ### Pipe side (orchestrator)
 
 The pipe's request orchestrator:
 
 1. Reads `__metadata__["openrouter_pipe"]["server_tools"]`.
-2. For each tool in the dict, builds a tool spec (`{"type": "<tool_name>", ...params}`) and appends it to the `tools` array in the outgoing API request body, leaving out every tool whose `ENABLE_*` gate is off, whether a filter writes it or the request lists it.
+2. For each tool in the dict, builds a tool spec (`{"type": "<tool_name>", ...params}`) and appends it to the `tools` array in the outgoing API request body, leaving out every tool whose `ENABLE_*` gate is off, whether a filter writes it or the request lists it. For the image tool, the `size` it puts in that spec is measured against the selected model's published contract, and a tier the model does not publish is withheld and named in a toast.
 3. The tools array is sent alongside any Open WebUI registry tools or Direct Tool Server tools.
 4. When the metadata asks for a web tool whose gate is off, it schedules a background repair of the Web Tools filters (at most once every five minutes per worker). The request never waits for it.
 

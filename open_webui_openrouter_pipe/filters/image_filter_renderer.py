@@ -1165,7 +1165,14 @@ def gen_tier_clause(state: str, named: str) -> str:
 
 def image_gen_model_note(spec: ImageModelFilterSpec, *, catalog_match: bool) -> str:
     named = spec.model_id or "no model"
-    opening = "Which OpenRouter model draws the picture."
+    opening = (
+        "Which OpenRouter model draws the picture. In force: "
+        f"{named}. When this valve is left unset the pipe draws with "
+        f"{_OPENROUTER_IMAGE_GEN_FILTER_DEFAULT_MODEL}; that is this pipe's default and "
+        "not the one OpenRouter documents, which is openai/gpt-5-image. The default was "
+        "chosen because it costs less per image than OpenRouter's own default, and a "
+        "value an admin has stored in this valve takes its place."
+    )
     if not catalog_match:
         return (
             f"{opening} {named} is not in the image model list this pipe has loaded, so "

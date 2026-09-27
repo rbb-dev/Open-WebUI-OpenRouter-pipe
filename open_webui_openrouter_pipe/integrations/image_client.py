@@ -17,7 +17,7 @@ from ..core.config import (
 )
 from ..core.costs import chat_usage_to_responses_usage
 from ..core.errors import _build_openrouter_api_error
-from ..core.utils import clamp_text, summarise_names
+from ..core.utils import IMAGE_NO_IMAGES_REASON, clamp_text, summarise_names
 from ..requests.debug import (
     _debug_print_error_response,
     _debug_print_request,
@@ -226,9 +226,7 @@ class OpenRouterImageClient:
 
         entries = data.get("data")
         if not isinstance(entries, list) or not entries:
-            raise ImageGenerationError(
-                "OpenRouter image generation returned no images.", usage=billed
-            )
+            raise ImageGenerationError(IMAGE_NO_IMAGES_REASON, usage=billed)
 
         images: list[GeneratedImage] = []
         rejected: list[str] = []

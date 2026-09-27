@@ -1550,7 +1550,10 @@ pipe(body, ...)
               ├─ response carries message.images
               ├─ chat_completions_adapter parses message.images
               ├─ streaming_core materialises the entry → persists → file URL
-              └─ streaming_core renders "![alt](file_url)"
+              ├─ streaming_core renders "![alt](file_url)"
+              └─ an entry carrying no image is reported, not rendered
+                 (the server tool obeys the same tier rule, and an item
+                  with no image in result / imageUrl / imageB64 warns)
   └─ OWUI renders inline image
 ```
 

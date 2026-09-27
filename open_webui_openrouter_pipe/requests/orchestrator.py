@@ -146,8 +146,21 @@ def _switched_off_web_tools_asked_for(metadata: Any, valves: Any) -> bool:
 
 def _build_server_tool_entries(
     server_tools: dict[str, Any],
+    *,
+    records: list[dict[str, Any]] | None = None,
+    model_resolver: Any = None,
 ) -> tuple[list[dict[str, Any]], list[tuple[str, Any]]]:
-    from ..integrations.image import size_consistency_notes
+    from ..integrations.image import (
+        ImageGenerationAdapter,
+        _Note,
+        size_consistency_notes,
+    )
+
+    def _declared_for(params):
+        if model_resolver is not None:
+            resolved = model_resolver(params.get("model"))
+            return ImageGenerationAdapter._union_declared(resolved) if resolved else None
+        return ImageGenerationAdapter._union_declared(records) if records else None
 
     entries: list[dict[str, Any]] = []
     superseded: list[tuple[str, Any]] = []
@@ -162,9 +175,28 @@ def _build_server_tool_entries(
                 cleaned_params = {k: v for k, v in tool_params.items() if v is not None and v != ""}
                 if tool_type == _IMAGE_GENERATION_TOOL_TYPE:
                     drawn_by = cleaned_params.get("model")
+                    if (
+                        model_resolver is not None
+                        and not (isinstance(drawn_by, str) and drawn_by.strip())
+                        and "size" in cleaned_params
+                    ):
+                        _wanted = repr(cleaned_params["size"])
+                        _shown = _wanted if len(_wanted) <= 60 else _wanted[:57] + "..."
+                        superseded.append(
+                            (
+                                tool_key,
+                                _Note(
+                                    "unreadable-model",
+                                    "size",
+                                    f"Output size (size)={_shown} was not sent (the "
+                                    "model could not be read)",
+                                ),
+                            )
+                        )
+                        cleaned_params.pop("size")
                     superseded.extend(
                         (str(drawn_by) if isinstance(drawn_by, str) and drawn_by else tool_key, note)
-                        for note in size_consistency_notes(cleaned_params)
+                        for note in size_consistency_notes(cleaned_params, _declared_for(cleaned_params))
                     )
                 if cleaned_params:
                     entry["parameters"] = cleaned_params
@@ -283,6 +315,8 @@ def _apply_server_tools_metadata(
     *,
     valves: Any,
     logger: logging.Logger | None = None,
+    records: list[dict[str, Any]] | None = None,
+    model_resolver: Any = None,
 ) -> list[tuple[str, Any]]:
     switched_off = {t for t, switch in _SERVER_TOOL_SWITCHES.items() if not getattr(valves, switch)}
     if switched_off:
@@ -306,7 +340,9 @@ def _apply_server_tools_metadata(
                 key: value
                 for key, value in server_tools.items()
                 if not isinstance(key, str) or _server_tool_type(key) not in switched_off
-            }
+            },
+            records=records,
+            model_resolver=model_resolver,
         )
         tools_list.extend(entries)
         if tools_list:
@@ -1254,8 +1290,42 @@ class RequestOrchestrator:
         if _switched_off_web_tools_asked_for(__metadata__, valves):
             self._pipe._schedule_web_tools_filter_repair()
 
+        server_tools = (
+            (__metadata__.get(_PIPE_METADATA_KEY) or {}).get("server_tools")
+            if isinstance(__metadata__, dict)
+            else None
+        )
+        _image_entry = server_tools.get("image_generation") if isinstance(server_tools, dict) else None
+        _image_model = (
+            _image_entry.get("model")
+            if isinstance(_image_entry, dict)
+            else (
+                _image_entry[0].get("model")
+                if isinstance(_image_entry, list) and _image_entry and isinstance(_image_entry[0], dict)
+                else ""
+            )
+        )
+        _image_requested = requested_provider_block(responses_body, __metadata__)
+
+        def _image_model_records(model):
+            from ..integrations.image import ImageGenerationAdapter
+
+            wanted = model if isinstance(model, str) and model.strip() else _image_model
+            if not isinstance(wanted, str) or not wanted.strip():
+                return None
+            found = OpenRouterModelRegistry.image_endpoint(wanted)
+            if not found:
+                return None
+            return ImageGenerationAdapter._reachable_records(found, _image_requested) or found
+
+        records = _image_model_records(_image_model)
         superseded = _apply_server_tools_metadata(
-            responses_body, __metadata__, valves=valves, logger=self.logger
+            responses_body,
+            __metadata__,
+            valves=valves,
+            logger=self.logger,
+            records=records,
+            model_resolver=_image_model_records,
         )
         if superseded:
             grouped: dict[str, list[Any]] = {}

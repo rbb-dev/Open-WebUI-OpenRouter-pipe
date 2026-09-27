@@ -235,16 +235,16 @@ no provider options object, so those three are left off its panel:
 `IMAGE_PROVIDER_OPTIONS_JSON` is the image sibling of
 `VIDEO_PROVIDER_OPTIONS_JSON` and writes the same place the provider routing
 filter writes, merging into it rather than replacing it — so a user typing one
-option does not discard an operator's routing choice. Six of the forty recorded
-models publish an empty passthrough list, so it is the only way to address a
-provider on those. `IMAGE_SIZE` is rendered on every model because **no**
+option does not discard an operator's routing choice. Nine of the fifty-one
+recorded models publish an empty passthrough list, so it is the only way to
+address a provider on those. `IMAGE_SIZE` is rendered on every model because **no**
 endpoint record publishes a `size` descriptor. OpenRouter documents the two forms
 it takes, and the pipe treats them differently: exact pixels go out as typed,
 because no contract describes pixel sizes, while a tier sets the same thing as
 `resolution`. What a tier is measured against then depends on the model.
-Sixteen of the forty recorded models publish a `resolution` list; on those, a
+Nineteen of the fifty-one recorded models publish a `resolution` list; on those, a
 tier the model does not publish is withheld rather than sent, and named in a
-toast. The other twenty-four publish no such list, so a tier is measured only
+toast. The other thirty-two publish no such list, so a tier is measured only
 against OpenRouter's own four names and then goes out for the company running
 the model to interpret. Anything that is neither one of those four names nor
 pixels is withheld and named on every model. Open WebUI does not keep a toast
@@ -270,7 +270,7 @@ Where a model is served by several providers whose published choices differ, the
 values only some of them accept are still offered, marked on the control; picking
 one pins the request to the providers that accept it, so it is sent and honoured.
 Where OpenRouter names none of those providers for routing, the value is still
-sent and a warning goes out beforehand. Measured across all forty recorded
+sent and a warning goes out beforehand. Measured across all fifty-one recorded
 models this affects one value: `4K` for `resolution` on
 `google/gemini-3-pro-image`, whose two providers are both named for routing.
 

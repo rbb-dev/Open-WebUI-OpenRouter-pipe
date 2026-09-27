@@ -79,6 +79,7 @@ from ..core.url_scheme import is_http_or_https_url
 # Imports from core.utils
 from ..core.utils import (
     CONTINUED_REPLY,
+    IMAGE_NO_IMAGES_REASON,
     OWUI_UNRESOLVABLE_CALL_STATUSES,
     PIPE_ONLY_TOOL_ROUND_KEY,
     REASONING_ANCHOR_SEQ_KEY,
@@ -86,6 +87,7 @@ from ..core.utils import (
     REASONING_FOLLOWING_SERVER_ITEM_KEY,
     REASONING_PRECEDING_ORDINAL_KEY,
     REASONING_TEXT_ORDINAL_KEY,
+    _image_item_is_empty,
     _redact_payload_blobs,
     _safe_json_loads,
     _serialize_marker,
@@ -664,6 +666,7 @@ class StreamingHandler:
         surrogate_carry: dict[str, str] = {"assistant": "", "reasoning": ""}
         storage_context_cache: tuple[Request | None, Any | None] | None = None
         processed_image_item_ids: set[str] = set()
+        opened_image_windows: set[str] = set()
         generated_image_count = 0
         thinking_mode = valves.THINKING_OUTPUT_MODE
         thinking_box_enabled = thinking_mode in {"open_webui", "both"}
@@ -2114,6 +2117,7 @@ class StreamingHandler:
                             await self._pipe._event_emitter_handler._emit_status(
                                 event_emitter, tool_label, done=False
                             )
+                            opened_image_windows.add(str(item.get("id") or ""))
 
                     if etype == "response.output_item.done":
                         item_raw = event.get("item")
@@ -2345,7 +2349,24 @@ class StreamingHandler:
                             title = "Let me skim those files…"
                         elif item_type in ("image_generation_call", "openrouter:image_generation"):
                             title = "Let me create that image…"
-                            if server_tool_status(item) == "incomplete":
+                            image_handled = False
+                            if (
+                                item_type == "openrouter:image_generation"
+                                and _image_item_is_empty(item)
+                                and server_tool_status(item) == "incomplete"
+                                and not item.get("error")
+                            ):
+                                self.logger.warning(
+                                    "Image generation returned no image for item '%s'",
+                                    item.get("id") or "<unknown>",
+                                )
+                                await self._pipe._event_emitter_handler._emit_notification(
+                                    event_emitter,
+                                    f"Image generation failed: {IMAGE_NO_IMAGES_REASON}",
+                                    level="warning",
+                                )
+                                image_handled = True
+                            elif server_tool_status(item) == "incomplete":
                                 error_msg = item.get("error") or "Image generation failed"
                                 self.logger.warning("Image generation error: %s", error_msg)
                                 await self._pipe._event_emitter_handler._emit_notification(
@@ -2353,7 +2374,8 @@ class StreamingHandler:
                                     f"Image generation failed: {error_msg}",
                                     level="warning",
                                 )
-                            else:
+                                image_handled = True
+                            if not image_handled:
                                 item_id = item.get("id")
                                 if item_id and item_id in processed_image_item_ids:
                                     self.logger.debug("Skipping duplicate image item '%s'", item_id)
@@ -2377,6 +2399,10 @@ class StreamingHandler:
                                             done=False,
                                         )
                                         image_markdowns = []
+                            if image_handled and str(item.get("id") or "") in opened_image_windows:
+                                await self._pipe._event_emitter_handler._emit_status(
+                                    event_emitter, "", done=True
+                                )
                         elif item_type == "openrouter:datetime":
                             title = None
                             dt_val = item.get("datetime", "")
@@ -2535,6 +2561,13 @@ class StreamingHandler:
                                 await _open_message()
                                 await event_emitter({"type": "chat:message:delta", "data": {"content": image_delta}})
                                 retry_barrier_crossed = True
+                            if (
+                                item_type in ("image_generation_call", "openrouter:image_generation")
+                                and str(item.get("id") or "") in opened_image_windows
+                            ):
+                                await self._pipe._event_emitter_handler._emit_status(
+                                    event_emitter, "", done=True
+                                )
 
                         continue
 
