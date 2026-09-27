@@ -38,6 +38,7 @@ from open_webui_openrouter_pipe.core.url_scheme import (
     HTTP_SCHEMES,
     is_cleartext_http_url,
     is_http_or_https_url,
+    is_inline_data_url,
     split_base64_data_url,
     url_scheme,
 )
@@ -221,7 +222,12 @@ async def test_cleartext_http_images_are_gated_however_the_scheme_is_typed(
     every image. Neither constant survives the pair.
     """
     pipe = _vision_pipe(pipe_instance_async, allow=allow, hosts=hosts)
-    downloaded = AsyncMock(return_value=None)
+    # The allowlisted row is kept only if the download SUCCEEDS; a download the pipe could
+    # not make is now refused in its own right, so stubbing it to None would leave this
+    # asserting the fetch refusal rather than the cleartext gate.
+    downloaded = AsyncMock(
+        return_value={"data": b"\x89PNG", "mime_type": "image/png"}
+    )
     monkeypatch.setattr(pipe._multimodal_handler, "_download_remote_url", downloaded)
 
     url = f"{scheme}://{INSECURE_HOST}/a.png"
@@ -257,8 +263,10 @@ async def test_a_foreign_url_carrying_the_owui_file_path_is_still_a_foreign_url(
     pipe = _vision_pipe(pipe_instance_async, allow=allow, hosts=hosts)
     inline = AsyncMock(return_value=None)
     monkeypatch.setattr(pipe._file_gateway, "inline_owui_file_id", inline)
+    # As above: the allowlisted row is kept only because the download succeeded.
     monkeypatch.setattr(
-        pipe._multimodal_handler, "_download_remote_url", AsyncMock(return_value=None)
+        pipe._multimodal_handler, "_download_remote_url",
+        AsyncMock(return_value={"data": b"\x89PNG", "mime_type": "image/png"}),
     )
     url = f"{scheme}://{INSECURE_HOST}/api/v1/files/abc/content"
 

@@ -51,6 +51,10 @@ def is_http_or_https_url(url: Any) -> bool:
     return url_scheme(url) in HTTP_SCHEMES
 
 
+def is_inline_data_url(url: Any) -> bool:
+    return url_scheme(url) == "data"
+
+
 def split_base64_data_url(value: Any) -> tuple[str, str] | None:
     if url_scheme(value) != "data" or not isinstance(value, str):
         return None

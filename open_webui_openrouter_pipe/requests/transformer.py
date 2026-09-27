@@ -30,6 +30,7 @@ from ..core.errors import RequiredInternalFileError, StatusMessages
 from ..core.url_scheme import (
     is_cleartext_http_url,
     is_http_or_https_url,
+    is_inline_data_url,
     split_base64_data_url,
     url_scheme,
     url_site,
@@ -705,6 +706,9 @@ async def transform_messages_to_input(
             def _image_subject(source: str) -> str:
                 return url_site(source) if is_http_or_https_url(source) else _inline_media_type(source)
 
+            def _refuse(reason: str, cause: str, *, subject: str) -> ImageRefusal:
+                return ImageRefusal(reason, cause, subject=subject)
+
             async def _to_input_image(
                 block: dict,
                 *,
@@ -753,7 +757,7 @@ async def transform_messages_to_input(
                                 subject=url_site(url),
                             )
 
-                    if url_scheme(url) == "data":
+                    if is_inline_data_url(url):
                         url = f"data:{url.partition(':')[2]}"
                         try:
                             split = split_base64_data_url(url)
@@ -786,70 +790,74 @@ async def transform_messages_to_input(
                             )
 
                     elif is_http_or_https_url(url) and not is_internal_file_url(url):
-                        try:
-                            memo_key = (chat_id, url) if chat_id else None
+                        memo_key = (chat_id, url) if chat_id else None
+                        remembered = (
+                            request_memo.get(memo_key)
+                            if mode == "reuse" and memo_key is not None
+                            else None
+                        )
+                        if remembered is None and mode == "reuse" and not temporary_chat:
                             remembered = (
-                                request_memo.get(memo_key)
-                                if mode == "reuse" and memo_key is not None
+                                _reuse_download_memo.get(memo_key)
+                                if memo_key is not None
                                 else None
                             )
-                            if remembered is None and mode == "reuse" and not temporary_chat:
-                                remembered = (
-                                    _reuse_download_memo.get(memo_key)
-                                    if memo_key is not None
-                                    else None
-                                )
+                        try:
                             downloaded = (
                                 {"data": remembered[0], "mime_type": remembered[1]}
                                 if remembered is not None
                                 else await pipe._multimodal_handler._download_remote_url(url)
                             )
-                            if downloaded:
-                                oversized = len(downloaded["data"]) > max_inline_bytes
-                                if oversized:
-                                    return ImageRefusal(
-                                        f"{len(downloaded['data'])} bytes, over the "
-                                        f"{max_inline_bytes}-byte limit, so it was not sent",
-                                        "oversized_remote",
-                                        subject=url_site(url),
-                                    )
-                                if mode == "reuse" and memo_key is not None:
-                                    request_memo[memo_key] = (
-                                        downloaded["data"],
-                                        downloaded.get("mime_type") or "",
-                                    )
-                                if (
-                                    mode == "reuse"
-                                    and not temporary_chat
-                                    and remembered is None
-                                    and memo_key is not None
-                                    and len(downloaded["data"])
-                                    <= _REUSE_DOWNLOAD_MEMO_MAX_BYTES
-                                ):
-                                    held = sum(
-                                        len(data) for data, _ in _reuse_download_memo.values()
-                                    )
-                                    while (
-                                        _reuse_download_memo
-                                        and held + len(downloaded["data"])
-                                        > _REUSE_DOWNLOAD_MEMO_MAX_BYTES
-                                    ):
-                                        _, evicted = _reuse_download_memo.popitem(last=False)
-                                        held -= len(evicted[0])
-                                    _reuse_download_memo[memo_key] = (
-                                        downloaded["data"],
-                                        downloaded.get("mime_type") or "",
-                                    )
-                                url = (
-                                    f"data:{downloaded.get('mime_type') or ''};base64,"
-                                    + base64.b64encode(downloaded["data"]).decode("ascii")
-                                )
-                        except Exception as exc:
+                        except Exception:
                             pipe.logger.exception("Failed to download remote image %s", url_site(url))
-                            await pipe._ensure_error_formatter()._emit_error(
-                                event_emitter,
-                                f"Failed to download image: {exc}",
-                                show_error_message=False
+                            downloaded = None
+                        if downloaded and not downloaded.get("data"):
+                            downloaded = None
+                        if not downloaded and not await pipe._multimodal_handler._is_safe_url(url):
+                            return _refuse(
+                                "could not be fetched, so it was not sent",
+                                "remote_unfetched",
+                                subject=url_site(url),
+                            )
+                        if downloaded:
+                            oversized = len(downloaded["data"]) > max_inline_bytes
+                            if oversized:
+                                return _refuse(
+                                    f"{len(downloaded['data'])} bytes, over the "
+                                    f"{max_inline_bytes}-byte limit, so it was not sent",
+                                    "oversized_remote",
+                                    subject=url_site(url),
+                                )
+                            if mode == "reuse" and memo_key is not None:
+                                request_memo[memo_key] = (
+                                    downloaded["data"],
+                                    downloaded.get("mime_type") or "",
+                                )
+                            if (
+                                mode == "reuse"
+                                and not temporary_chat
+                                and remembered is None
+                                and memo_key is not None
+                                and len(downloaded["data"])
+                                <= _REUSE_DOWNLOAD_MEMO_MAX_BYTES
+                            ):
+                                held = sum(
+                                    len(data) for data, _ in _reuse_download_memo.values()
+                                )
+                                while (
+                                    _reuse_download_memo
+                                    and held + len(downloaded["data"])
+                                    > _REUSE_DOWNLOAD_MEMO_MAX_BYTES
+                                ):
+                                    _, evicted = _reuse_download_memo.popitem(last=False)
+                                    held -= len(evicted[0])
+                                _reuse_download_memo[memo_key] = (
+                                    downloaded["data"],
+                                    downloaded.get("mime_type") or "",
+                                )
+                            url = (
+                                f"data:{downloaded.get('mime_type') or ''};base64,"
+                                + base64.b64encode(downloaded["data"]).decode("ascii")
                             )
                     owui_file_id = extract_internal_file_id(url) if is_internal_file_url(url) else None
 
@@ -880,6 +888,12 @@ async def transform_messages_to_input(
                         split = split_base64_data_url(url)
                         head, body = split if split is not None else ("", "")
                         if not body:
+                            if is_http_or_https_url(url):
+                                return _refuse(
+                                    "could not be fetched, so it was not sent",
+                                    "remote_unfetched",
+                                    subject=_image_subject(url),
+                                )
                             return ImageRefusal(
                                 "could not be fetched, so its type could not be established",
                                 "reuse_unfetched",
@@ -1532,9 +1546,10 @@ async def transform_messages_to_input(
                                 result.cause,
                                 cooldown_s=_REUSE_WARN_COOLDOWN_S,
                             ),
-                            "Skipping an attached image (%s): %s",
+                            "Skipping an attached image (%s): %s [cause=%s]",
                             result.subject or "no source",
                             result.reason,
+                            result.cause,
                         )
                         if result.severity == "error":
                             await pipe._event_emitter_handler._emit_error_event(
@@ -1599,8 +1614,9 @@ async def transform_messages_to_input(
                                     transformed.cause,
                                     cooldown_s=_REUSE_WARN_COOLDOWN_S,
                                 ),
-                                "Not reusing an earlier image: %s",
+                                "Not reusing an earlier image: %s [cause=%s]",
                                 transformed.reason,
+                                transformed.cause,
                             )
                             refused_images.append(transformed.reason)
                         elif transformed is not None:

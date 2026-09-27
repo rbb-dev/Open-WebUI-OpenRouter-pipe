@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import io
 import ipaddress
 import logging
@@ -100,6 +101,16 @@ _REMOTE_DOWNLOAD_READ_SECONDS = 60.0
 
 def _seeded_connect_budget(seeded: int) -> int:
     return min(int(seeded), _REMOTE_DOWNLOAD_CONNECT_CAP_SECONDS)
+
+
+def _decode_strict_base64(payload: str) -> bytes | None:
+    cleaned = "".join(payload.split())
+    if not cleaned:
+        return None
+    try:
+        return base64.b64decode(cleaned, validate=True)
+    except (binascii.Error, ValueError):
+        return None
 
 
 async def _capped_body(resp: Any, cap: int) -> bytes | None:
@@ -1722,7 +1733,6 @@ class MultimodalHandler:
             Returns None if parsing fails or format is invalid
 
         Format Requirements:
-            - Must start with 'data:'
             - Must contain ';base64,' separator
             - Base64 data must be valid
             - Size must not exceed BASE64_MAX_SIZE_MB valve (default: 50MB)
@@ -1770,7 +1780,9 @@ class MultimodalHandler:
             if not self._file_gateway.validate_base64_size(b64_data):
                 return None
 
-            file_data = base64.b64decode(b64_data)
+            file_data = _decode_strict_base64(b64_data)
+            if file_data is None:
+                return None
 
             return {
                 "data": file_data,

@@ -7058,7 +7058,14 @@ class TestStreamingCoreAdditionalCoverage:
 
     @pytest.mark.asyncio
     async def test_materialize_image_data_url_with_storage(self, monkeypatch, pipe_instance_async, sample_image_base64):
-        """Test image materialization from data: URL with storage (lines 295-301)."""
+        """Test image materialization from data: URL with storage (lines 295-301).
+
+        Note that this test STUBS `_parse_data_url` to return a fixed `{"data": b"test"}` and
+        asserts only `result is not None`, so it covers the plumbing around the storage write
+        and not the parser. The parser is what decides whether the write happens at all; see
+        `test_the_generated_image_path_refuses_an_undecodable_payload` below, which drives the
+        same loop with the real parser and a payload that is not base64.
+        """
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
 

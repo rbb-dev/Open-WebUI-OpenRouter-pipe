@@ -23,6 +23,7 @@ import pytest
 import pytest_asyncio
 
 from open_webui_openrouter_pipe import Pipe
+from open_webui_openrouter_pipe.core.url_scheme import url_scheme
 from open_webui_openrouter_pipe.requests.transformer import transform_messages_to_input
 from open_webui_openrouter_pipe.storage.multimodal import (
     _extract_openrouter_og_image,
@@ -2129,7 +2130,9 @@ class TestParseDataUrl:
         assert result["b64"] == b64
 
     def test_returns_none_for_invalid_base64(self, pipe_instance):
-        """Should return None for invalid base64 data."""
+        """Should return None for invalid base64 data. `!!!invalid!!!` is 13 characters and
+        is refused by the padding check; the length and alphabet checks are separate, and
+        `INVALID!!!BASE64` below is the row that shows it."""
         result = pipe_instance._multimodal_handler._parse_data_url("data:image/png;base64,!!!invalid!!!")
         assert result is None
 
@@ -2788,11 +2791,13 @@ class TestDataURLParsing:
         assert pipe_instance._multimodal_handler._parse_data_url(None) is None
 
     def test_parse_invalid_base64_returns_none(self, pipe_instance):
-        """Should return None for invalid base64 data."""
+        """Should return None for invalid base64 data. This row is 16 characters, a
+        multiple of four, so it is not a padding case: it is refused by the length check
+        (13 data characters is one more than a multiple of four) and the alphabet check is
+        what refuses it once the length rule is satisfied. The two are independent."""
         data_url = "data:image/png;base64,INVALID!!!BASE64"
         result = pipe_instance._multimodal_handler._parse_data_url(data_url)
         assert result is None
-
 
 class TestImageTransformations:
     """Tests focused on user image block transformations."""
