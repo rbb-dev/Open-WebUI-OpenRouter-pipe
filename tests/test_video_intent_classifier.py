@@ -201,24 +201,26 @@ class TestCollectAttachments:
         assert result[0]["kind"] == "image"
         assert result[0]["mime_type"] == "image/png"
 
-    def test_video_attachments(self):
-        meta = {"video_attachments": [{"id": "v1", "content_type": "video/mp4"}]}
-        result = collect_attachments_from_video_meta(meta)
-        assert len(result) == 1
-        assert result[0]["kind"] == "video"
-
     def test_empty_meta(self):
         assert collect_attachments_from_video_meta({}) == []
         assert collect_attachments_from_video_meta(None) == []  # type: ignore[arg-type]
 
     def test_index_is_zero_based_flat(self):
+        """The flat index space the classifier is shown and the retargeting resolves
+        against, across the two lists the filter can actually produce, with a second and
+        differently-familied reference so the index and the kind are asserted over the
+        same ordered list."""
         meta = {
             "frame_images": [{"id": "f1", "content_type": "image/png"}],
-            "video_attachments": [{"id": "v1", "content_type": "video/mp4"}],
+            "input_references": [
+                {"id": "v1", "content_type": "video/mp4"},
+                {"id": "a1", "content_type": "audio/mpeg"},
+            ],
         }
         result = collect_attachments_from_video_meta(meta)
-        assert result[0]["index"] == 0
-        assert result[1]["index"] == 1
+        assert [entry["index"] for entry in result] == [0, 1, 2], result
+        assert [entry["id"] for entry in result] == ["f1", "v1", "a1"], result
+        assert [entry["kind"] for entry in result] == ["image", "video", "other"], result
 
 
 # -----------------------------------------------------------------------------

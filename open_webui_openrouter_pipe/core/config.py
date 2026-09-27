@@ -1109,7 +1109,9 @@ class Valves(BaseModel):
         description=(
             "Reasoning effort requested for Open WebUI background tasks (titles, tags, etc.) when they target this pipe's models. "
             "Low is the default balance between speed and quality; set to 'minimal' to prioritize fastest runs, "
-            "or use medium/high for progressively deeper background reasoning at higher cost."
+            "or use medium/high for progressively deeper background reasoning at higher cost. "
+            "Use 'none' to switch reasoning off for those tasks, where the model allows it; a model that always "
+            "reasons gets the lightest level its catalog entry lists other than 'none' instead."
         ),
     )
 
@@ -2081,7 +2083,7 @@ class Valves(BaseModel):
         description=(
             "When True, skip the classifier on the very first turn of a fresh "
             "chat that has no attachments. There is nothing for the classifier "
-            "to reference in that case (no prior video, no attached image), so "
+            "to reference in that case (no prior video, no attached media), so "
             "the call is wasted task-model spend. Turn off only if you want "
             "the classifier to ask a clarifying question on opening prompts "
             "like 'make it red' that have no context."

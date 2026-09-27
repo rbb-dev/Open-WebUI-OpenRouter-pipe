@@ -46,6 +46,7 @@ from ..core.utils import (
     _parse_model_fallback_csv,
     _sticky_session_key,
     is_picture_output,
+    opens_a_turn,
     recorded_tool_text,
     server_tool_arguments,
     server_tool_call_id,
@@ -769,10 +770,10 @@ def _responses_input_to_chat_messages(
         return [{"role": "user", "content": text}] if text else []
     if not isinstance(input_value, list):
         return []
-    input_value = [item for item in input_value if not (isinstance(item, dict) and item.get("type") == "reasoning")]
 
     messages: list[dict[str, Any]] = []
     tool_pictures: list[str] = []
+    pending_reasoning_details: list[Any] = []
 
     def _hand_over_tool_pictures() -> None:
         if tool_pictures:
@@ -782,18 +783,80 @@ def _responses_input_to_chat_messages(
             ]})
             tool_pictures.clear()
 
+    def _flush_pending_reasoning() -> None:
+        if not pending_reasoning_details:
+            return
+        messages.append({
+            "role": "assistant",
+            "content": "",
+            "reasoning_details": list(pending_reasoning_details),
+        })
+        pending_reasoning_details.clear()
+
+    def _attach_reasoning_details(msg: dict[str, Any]) -> None:
+        if not pending_reasoning_details:
+            return
+        if msg.get("role") != "assistant":
+            return
+        existing = msg.get("reasoning_details")
+        merged = (
+            [*(existing if isinstance(existing, list) else []), *pending_reasoning_details]
+            if existing
+            else list(pending_reasoning_details)
+        )
+        msg["reasoning_details"] = merged
+        pending_reasoning_details.clear()
+
     def _to_text_block(text: str, *, cache_control: Any = None) -> dict[str, Any]:
         block: dict[str, Any] = {"type": "text", "text": text}
         if isinstance(cache_control, dict) and cache_control:
             block["cache_control"] = dict(cache_control)
         return block
 
-    for item in input_value:
+    for index, item in enumerate(input_value):
         if not isinstance(item, dict):
             continue
         itype = item.get("type")
         if itype != "function_call_output":
             _hand_over_tool_pictures()
+
+        if opens_a_turn(input_value, index):
+            _flush_pending_reasoning()
+
+        if itype == "reasoning":
+            details = item.get("reasoning_details")
+            if isinstance(details, list):
+                pending_reasoning_details.extend(
+                    detail for detail in details
+                    if isinstance(detail, dict) and (
+                        detail.get("format") != "anthropic-claude-v1" or detail.get("signature")
+                    )
+                )
+            else:
+                encrypted = item.get("encrypted_content")
+                if isinstance(encrypted, str) and encrypted:
+                    entry: dict[str, Any] = {"type": "reasoning.encrypted", "data": encrypted}
+                    if isinstance(item.get("signature"), str):
+                        entry["signature"] = item["signature"]
+                    if isinstance(item.get("format"), str):
+                        entry["format"] = item["format"]
+                    pending_reasoning_details.append(entry)
+                elif isinstance(item.get("signature"), str) and item["signature"]:
+                    parts = item.get("summary") or item.get("content") or []
+                    if not isinstance(parts, list):
+                        parts = [parts]
+                    text = "".join(
+                        str(part.get("text") or "") if isinstance(part, dict) else str(part)
+                        for part in parts
+                    )
+                    if text:
+                        pending_reasoning_details.append({
+                            "type": "reasoning.text",
+                            "text": text,
+                            "signature": item["signature"],
+                            "format": item.get("format"),
+                        })
+            continue
 
         if itype == "message":
             role = (item.get("role") or "").strip().lower()
@@ -825,6 +888,7 @@ def _responses_input_to_chat_messages(
                         msg["annotations"] = msg_annotations
                     if msg_reasoning_details:
                         msg["reasoning_details"] = msg_reasoning_details
+                    _attach_reasoning_details(msg)
                     messages.append(msg)
                     continue
 
@@ -899,6 +963,7 @@ def _responses_input_to_chat_messages(
                         msg["annotations"] = msg_annotations
                     if msg_reasoning_details:
                         msg["reasoning_details"] = msg_reasoning_details
+                    _attach_reasoning_details(msg)
                     messages.append(msg)
                 else:
                     msg = {"role": role, "content": blocks_out}
@@ -906,6 +971,7 @@ def _responses_input_to_chat_messages(
                         msg["annotations"] = msg_annotations
                     if msg_reasoning_details:
                         msg["reasoning_details"] = msg_reasoning_details
+                    _attach_reasoning_details(msg)
                     messages.append(msg)
                 continue
 
@@ -915,6 +981,7 @@ def _responses_input_to_chat_messages(
 
             if isinstance(raw_content, str):
                 msg["content"] = strip_hidden_marker_lines(raw_content)
+                _attach_reasoning_details(msg)
                 messages.append(msg)
                 continue
 
@@ -1007,28 +1074,29 @@ def _responses_input_to_chat_messages(
                     blocks_out.append(dict(block))
 
             msg["content"] = blocks_out if blocks_out else ""
+            _attach_reasoning_details(msg)
             messages.append(msg)
             continue
 
         if isinstance(itype, str) and itype.startswith("openrouter:"):
             call_id = server_tool_call_id(item.get("id"))
             arguments = server_tool_arguments(item)
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [
-                        {
-                            "id": call_id,
-                            "type": "function",
-                            "function": {
-                                "name": itype.split(":", 1)[1] or itype,
-                                "arguments": json.dumps(arguments, ensure_ascii=False),
-                            },
-                        }
-                    ],
-                }
-            )
+            tool_call_msg: dict[str, Any] = {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": itype.split(":", 1)[1] or itype,
+                            "arguments": json.dumps(arguments, ensure_ascii=False),
+                        },
+                    }
+                ],
+            }
+            _attach_reasoning_details(tool_call_msg)
+            messages.append(tool_call_msg)
             messages.append(
                 {
                     "role": "tool",
@@ -1058,23 +1126,24 @@ def _responses_input_to_chat_messages(
                 continue
             if not isinstance(args, str):
                 args = json.dumps(args, ensure_ascii=False) if args is not None else "{}"
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [
-                        {
-                            "id": call_id.strip(),
-                            "type": "function",
-                            "function": {"name": name.strip(), "arguments": args},
-                        }
-                    ],
-                }
-            )
+            call_msg: dict[str, Any] = {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": call_id.strip(),
+                        "type": "function",
+                        "function": {"name": name.strip(), "arguments": args},
+                    }
+                ],
+            }
+            _attach_reasoning_details(call_msg)
+            messages.append(call_msg)
             continue
 
 
     _hand_over_tool_pictures()
+    _flush_pending_reasoning()
     return messages
 
 
@@ -1396,6 +1465,16 @@ def _apply_disable_native_websearch_to_payload(
     removed = False
     if payload.pop("web_search_options", None) is not None:
         removed = True
+
+    tools = payload.get("tools")
+    if isinstance(tools, list) and tools:
+        kept = [t for t in tools if not (isinstance(t, dict) and t.get("type") == "openrouter:web_search")]
+        if len(kept) != len(tools):
+            removed = True
+            if kept:
+                payload["tools"] = kept
+            else:
+                payload.pop("tools", None)
 
     plugins = payload.get("plugins")
     if isinstance(plugins, list) and plugins:

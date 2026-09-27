@@ -320,21 +320,26 @@ def collect_prior_videos_from_messages(
     return results
 
 
+_ATTACHMENT_SOURCES = (("frame_images", "image"), ("input_references", None))
+
+
+def _attachment_family(mime_type: str) -> str:
+    if mime_type.startswith("video/"):
+        return "video"
+    if mime_type.startswith("image/"):
+        return "image"
+    return "other"
+
+
 def collect_attachments_from_video_meta(
     video_meta: dict[str, Any],
 ) -> list[dict[str, Any]]:
     """Collect attachments from filter-injected video_meta as a flat list.
-
-    Only image/video attachments are reported (other kinds excluded). Order is
-    preserved per source list. Index is 0-based across the flat output.
     """
     if not isinstance(video_meta, dict):
         return []
     flat: list[dict[str, Any]] = []
-    for kind_key, kind in (
-        ("frame_images", "image"),
-        ("video_attachments", "video"),
-    ):
+    for kind_key, kind in _ATTACHMENT_SOURCES:
         items = video_meta.get(kind_key)
         if not isinstance(items, list):
             continue
@@ -342,9 +347,10 @@ def collect_attachments_from_video_meta(
             if not isinstance(item, dict):
                 continue
             mime_type = str(item.get("content_type") or item.get("mime_type") or "").lower()
+            resolved = kind if kind is not None else _attachment_family(mime_type)
             flat.append({
                 "index": len(flat),
-                "kind": kind,
+                "kind": resolved,
                 "mime_type": mime_type,
                 "id": item.get("id"),
                 "name": item.get("name"),

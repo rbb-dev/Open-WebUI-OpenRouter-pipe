@@ -133,34 +133,6 @@ def _faithful_turn2_history(r1_ulid: str, r2_ulid: str):
 
 
 # --------------------------------------------------------------------------- #
-# chat_completions drops reasoning entirely, so it cannot carry this bug.
-# --------------------------------------------------------------------------- #
-def test_chat_completions_conversion_drops_reasoning_items():
-    """The Responses->ChatCompletions conversion drops standalone `reasoning`
-    items, so the chat endpoint cannot carry the interleaved thinking blocks that
-    trigger this 400 (observed only on /responses). Scope: the fix is Responses-only."""
-    payload = {
-        "model": "anthropic/claude-opus-4.8",
-        "input": [
-            {"type": "reasoning", "content": [{"type": "reasoning_text", "text": "PLAN_TOKEN"}],
-             "signature": "SIG1"},
-            {"type": "message", "role": "assistant",
-             "content": [{"type": "output_text", "text": "hi"}]},
-            {"type": "function_call", "call_id": "c1", "name": "f", "arguments": "{}"},
-            {"type": "function_call_output", "call_id": "c1", "output": "ok"},
-            {"type": "reasoning", "content": [{"type": "reasoning_text", "text": "REFLECT_TOKEN"}],
-             "signature": "SIG2"},
-        ],
-    }
-    messages = _responses_payload_to_chat_completions_payload(payload)["messages"]
-    blob = json.dumps(messages)
-    assert "PLAN_TOKEN" not in blob and "REFLECT_TOKEN" not in blob
-    assert all(m.get("role") != "reasoning" for m in messages)
-    assert any(m.get("role") == "assistant" and m.get("tool_calls") for m in messages)
-    assert any(m.get("role") == "tool" for m in messages)
-
-
-# --------------------------------------------------------------------------- #
 # Anchored reasoning yields the valid, interleaved wire order.
 # --------------------------------------------------------------------------- #
 def test_anchored_reasoning_exact_wire_shape():

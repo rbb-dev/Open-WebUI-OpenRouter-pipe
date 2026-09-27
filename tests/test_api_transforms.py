@@ -1995,7 +1995,6 @@ class TestApplyDisableNativeWebsearchToPayload:
         _apply_disable_native_websearch_to_payload(payload)
         assert "web_search_options" not in payload
 
-
 # ============================================================================
 # _filter_replayable_input_items Tests
 # ============================================================================

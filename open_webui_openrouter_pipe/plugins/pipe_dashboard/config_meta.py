@@ -960,7 +960,7 @@ CONFIG_META: dict[str, dict[str, str]] = {
     "VIDEO_INTENT_SKIP_WHEN_EMPTY_CHAT": {
         "title": "Skip intent on empty chats",
         "group": "Files & Media/Video Intent",
-        "detail": "Skips the classifier on a chat's very first turn when nothing has been uploaded for it to reference.\n\nAn opening prompt with no prior video and no attached image gives the classifier nothing to interpret, so the call would be wasted Task Model spend. Turn it off only to allow clarifying questions on context-free openers like `make it red`. On by default."
+        "detail": "Skips the classifier on a chat's very first turn when nothing has been uploaded for it to reference.\n\nAn opening prompt with no prior video and no attached media gives the classifier nothing to interpret, so the call would be wasted Task Model spend. Turn it off only to allow clarifying questions on context-free openers like `make it red`. On by default."
     },
     "VIDEO_INTENT_TASK_MODEL_FALLBACK": {
         "title": "Intent classifier fallback",

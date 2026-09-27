@@ -80,6 +80,7 @@ from .video_help import render_video_help
 from .video_intent import (
     FramePlanEntry,
     VideoIntentResult,
+    collect_attachments_from_video_meta,
     emit_telemetry_log,
     render_clarification_message,
     render_intent_disclosure_block,
@@ -588,6 +589,9 @@ class VideoGenerationAdapter:
                     overshoot_pref: Literal["first", "last"] = (
                         "first" if overshoot_pref_raw == "first" else "last"
                     )
+                    self._apply_uploaded_attachment_retargeting(
+                        intent_result, video_meta_pre,
+                    )
                     thumbs = await self._materialise_frame_plan(
                         intent=intent_result,
                         video_meta=video_meta_pre,
@@ -596,9 +600,6 @@ class VideoGenerationAdapter:
                         chat_id=chat_id if isinstance(chat_id, str) else "",
                         message_id=message_id if isinstance(message_id, str) else "",
                         overshoot_fallback_index=overshoot_pref,
-                    )
-                    self._apply_uploaded_attachment_retargeting(
-                        intent_result, video_meta_pre,
                     )
                     if isinstance(metadata, dict):
                         pipe_meta = metadata.setdefault(_PIPE_METADATA_KEY, {})
@@ -2263,12 +2264,7 @@ class VideoGenerationAdapter:
         if getattr(valves, "VIDEO_INTENT_SKIP_WHEN_EMPTY_CHAT", True):
             messages = body.get("messages") if isinstance(body, dict) else None
             if isinstance(messages, list) and len(messages) <= 1:
-                has_attachments = bool(
-                    isinstance(video_meta, dict) and (
-                        video_meta.get("frame_images")
-                        or video_meta.get("video_attachments")
-                    )
-                )
+                has_attachments = bool(collect_attachments_from_video_meta(video_meta))
                 if not has_attachments:
                     return False
         cap_chat = int(getattr(valves, "VIDEO_INTENT_MAX_CALLS_PER_CHAT", 0) or 0)
@@ -2342,16 +2338,20 @@ class VideoGenerationAdapter:
         frame_images = video_meta.get("frame_images")
         if not isinstance(frame_images, list):
             return
+        references = video_meta.get("input_references")
+        reference_count = len(references) if isinstance(references, list) else 0
         retargeted = 0
         moved: list[int] = []
         for entry in intent.frame_plan:
             if entry.source != "uploaded_attachment":
                 continue
             idx = entry.source_index
-            if not isinstance(idx, int) or idx < 0 or idx >= len(frame_images):
+            if not isinstance(idx, int) or idx < 0 or idx >= len(frame_images) + reference_count:
                 intent.downgrades.append(
                     f"retarget_skipped_invalid_index_{idx}"
                 )
+                continue
+            if idx >= len(frame_images):
                 continue
             target = frame_images[idx]
             if not isinstance(target, dict):

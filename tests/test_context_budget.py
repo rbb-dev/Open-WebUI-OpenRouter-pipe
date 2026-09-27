@@ -1994,6 +1994,8 @@ _EMITTED_PAYLOAD_KEYS: dict[str, tuple[str, ...]] = {
     "image_url": ("image_url",),
     "input_audio": ("input_audio",),
     "input_file": ("file_data", "file_id", "file_url"),
+    "reasoning.encrypted": ("data",),
+    "reasoning.text": ("text",),
     "video_url": ("video_url",),
 }
 
@@ -2030,6 +2032,8 @@ _NON_PAYLOAD_BLOCK_KEYS: dict[str, set[str]] = {
     "input_text": {"type", "text"},
     "json_schema": {"type", "name", "schema", "strict", "description", "json_schema"},
     "message": {"type", "role", "content", "id", "status", "phase"},
+    "reasoning.encrypted": {"type", "format", "signature"},
+    "reasoning.text": {"type", "format", "signature"},
     "object": {"type", "properties", "required", "additionalProperties"},
     "output_text": {"type", "text", "annotations"},
     "text": {"type", "text", "format", "cache_control"},

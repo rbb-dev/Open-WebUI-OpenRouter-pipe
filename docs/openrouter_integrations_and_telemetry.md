@@ -223,8 +223,11 @@ Open WebUI can attach per-model custom parameters (model settings → `custom_pa
   - Removes `tools` entries with `{"type": "openrouter:web_search"}`.
   - Removes legacy `plugins` entries with `{"id": "web"}`.
   - Removes `web_search_options` when present (OpenRouter `/chat/completions`).
+  - Holds on the internal-Fusion panel, judge and final member calls too.
 
 This is useful when OpenRouter Web Tools is enabled by default (via the model’s Default Filters / `AUTO_DEFAULT_WEB_TOOLS_FILTER`) but you want to block provider-native web search on selected models.
+
+Internal-Fusion reach: each member call is built from scratch as `{model, stream, messages}`, so a flag on the outer request would otherwise never reach the member’s own applier. The resolved value is therefore carried on the internal invocation and copied into the member body under the primary spelling, resolved from the outer body under the primary name first and the alias second, mirroring the precedence the outer applier applies. The carried field defaults to `None`, not `False`: `None` means the outer request never mentioned the flag, and that is why the member-body guard tests `is not None` rather than truthiness — a `False` default would put `disable_native_websearch=False` on every member body of requests that never asked about it. The value is copied, never written back into `pipe_meta`, so one member’s tools are not shared by reference across the fan-out.
 
 Note: Open WebUI’s built-in **Web Search** is separate (OWUI-native) and is not controlled by this parameter.
 See: [Web Search (Open WebUI) vs OpenRouter Web Tools](web_search_owui_vs_openrouter_search.md).

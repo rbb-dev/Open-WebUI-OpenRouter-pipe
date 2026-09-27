@@ -228,6 +228,9 @@ results above" message, which follows a round's results and carries that round's
 for this purpose: it stays inside its round's turn on both the generating and the replaying side, and a thought
 the model had after the round is replayed after it.
 
+On `/chat/completions` a replayed reasoning item rides on the assistant message that carries the tool calls, as
+`reasoning_details`, matching Open WebUI's `convert_output_to_messages(raw=True)`.
+
 ### 6.2 An answer continued across more than one request
 
 "Continue response" adds a second generation to the same assistant message, and Open WebUI's own tool loop can

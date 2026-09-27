@@ -136,6 +136,7 @@ class FusionInnerInvocation:
     catalog_norm_ids: set = field(default_factory=set)
     features: dict = field(default_factory=dict)
     user_id: str = ""
+    disable_native_websearch: Any = None
     # Carried from the outer request so every inner call sees the SAME snapshot of the
     # user's valves. Without them each member re-read the row, so a valve saved mid-run
     # could leave one panel member routing with ZDR and another without it, in one turn.
@@ -168,6 +169,8 @@ async def run_fusion_member(
         inner_body["temperature"] = temperature
     if response_format is not None:
         inner_body["response_format"] = response_format
+    if invocation.disable_native_websearch is not None:
+        inner_body["disable_native_websearch"] = invocation.disable_native_websearch
     inner_valves = build_inner_valves(invocation.valves, max_tool_calls=max_tool_calls)
     inner_metadata = build_inner_metadata(invocation.metadata)
     pipe_meta = inner_metadata[_PIPE_METADATA_KEY]

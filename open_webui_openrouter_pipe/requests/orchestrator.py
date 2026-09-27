@@ -1408,6 +1408,11 @@ class RequestOrchestrator:
                 catalog_norm_ids=set(catalog_norm_ids or set()),
                 features=dict(features or {}),
                 user_id=user_id,
+                disable_native_websearch=(
+                    getattr(responses_body, "disable_native_websearch", None)
+                    if getattr(responses_body, "disable_native_websearch", None) is not None
+                    else getattr(responses_body, "disable_native_web_search", None)
+                ),
             )
             engine_source = run_internal_fusion(
                 self._pipe,

@@ -31,6 +31,7 @@ _MIN_MEASURED_CHARS_PER_TOKEN = 0.25
 _AUDIO_BYTES_PER_TOKEN = 500
 _VIDEO_BYTES_PER_TOKEN = 380
 _DOCUMENT_BYTES_PER_TOKEN = 500
+_REASONING_ENCRYPTED_BYTES_PER_TOKEN = 1
 _PAYLOAD_HEAD_CHARS = 512
 _TEXTUAL_MEDIA_TYPES = frozenset(
     {
@@ -167,6 +168,18 @@ def _document_tokens(
     return n // _DOCUMENT_BYTES_PER_TOKEN
 
 
+def _reasoning_text_tokens(
+    n: int, _media_type: str, _h: Any = None, _f: str = ""
+) -> int:
+    return n // _CHARS_PER_TOKEN_HEURISTIC
+
+
+def _reasoning_encrypted_tokens(
+    n: int, _media_type: str, _h: Any = None, _f: str = ""
+) -> int:
+    return n // _REASONING_ENCRYPTED_BYTES_PER_TOKEN
+
+
 _OPAQUE_BLOCK_PAYLOADS: dict[str, tuple[tuple[str, ...], Callable[..., int]]] = {
     "input_image": (("image_url",), lambda _n, _t, _h=None, _f="": _PICTURE_TOKENS),
     "image_url": (("image_url",), lambda _n, _t, _h=None, _f="": _PICTURE_TOKENS),
@@ -175,6 +188,8 @@ _OPAQUE_BLOCK_PAYLOADS: dict[str, tuple[tuple[str, ...], Callable[..., int]]] = 
         lambda n, _t, _h=None, _f="": n // _AUDIO_BYTES_PER_TOKEN,
     ),
     "input_file": (("file_id", "file_data", "file_url"), _document_tokens),
+    "reasoning.encrypted": (("data",), _reasoning_encrypted_tokens),
+    "reasoning.text": (("text",), _reasoning_text_tokens),
     "video_url": (
         ("video_url",),
         lambda n, _t, _h=None, _f="": n // _VIDEO_BYTES_PER_TOKEN,
