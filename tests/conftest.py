@@ -13,6 +13,7 @@ import asyncio
 import base64
 import sys
 from pathlib import Path
+from types import ModuleType
 from unittest.mock import Mock
 
 import pytest
@@ -180,6 +181,68 @@ def _warn_latches() -> dict[str, set | dict | list]:
             if attr.startswith(_WARN_LATCH_PREFIX) and isinstance(value, (set, dict, list)):
                 seen.setdefault(f"{name}.{attr}", value)
     return seen
+
+
+_CACHE_OWNER_PREFIX = "open_webui_openrouter_pipe"
+
+
+def _package_modules() -> list:
+    """Every package module object currently in sys.modules, once each.
+
+    Deduped by OBJECT, not by name, for the reason `_warn_latches` records: a flat
+    bundle aliases 107 dotted names onto 2 module objects, so scanning per name walked
+    the same namespace 107 times for an identical set. Nothing is imported by name
+    here -- conftest's module scope sits at line 128, where the package is only partly
+    imported, and a name import would not resolve in a bundle anyway.
+    """
+    out, scanned = [], set()
+    for name, module in list(sys.modules.items()):
+        if name != _CACHE_OWNER_PREFIX and not name.startswith(_CACHE_OWNER_PREFIX + "."):
+            continue
+        if not isinstance(module, ModuleType):
+            continue
+        if id(module) in scanned:
+            continue
+        scanned.add(id(module))
+        out.append(module)
+    return out
+
+
+def _package_cached_functions() -> list:
+    """Every cache the package owns, as the wrapped functions the sweep will clear.
+
+    The predicate lives HERE and nowhere else, because the census in
+    test_unlinkable_chat_prefixes_isolation.py asserts against this same list. Written
+    twice, the census would test a copy: narrowing the sweep to a name list would leave
+    the copy intact and the census green over a cache nothing resets.
+
+    Ownership is by `__globals__` IDENTITY rather than by name. A wrapped function
+    defined inside one of the package's own module namespaces belongs to the package
+    however it is spelled; the other spelling, a `__module__` prefix test, is inert in
+    the flat bundle, where every function in the body carries the host module's name,
+    and clears zero caches in two of the five CI modes. The identity form holds in all
+    five. It is also what leaves `urllib.parse.urlsplit` alone: that IS an lru_cache,
+    bound into two package namespaces, but it is interpreter state that every library
+    in the process shares.
+    """
+    modules = _package_modules()
+    found = []
+    for module in modules:
+        for value in list(vars(module).values()):
+            clear = getattr(value, "cache_clear", None)
+            if not (callable(clear) and callable(getattr(value, "cache_info", None))):
+                continue
+            wrapped = getattr(value, "__wrapped__", None)
+            namespace = getattr(wrapped, "__globals__", None)
+            if namespace is None or not any(namespace is vars(m) for m in modules):
+                continue
+            found.append((value, wrapped, module))
+    return found
+
+
+def _clear_package_caches() -> None:
+    for value, _wrapped, _owner in _package_cached_functions():
+        value.cache_clear()
 
 
 def _package_logger():
@@ -381,6 +444,39 @@ def _reset_auth_failure_state():
     """
     CircuitBreaker._AUTH_FAILURE_UNTIL.clear()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_package_caches():
+    """Clear every `lru_cache` the package owns, at BOTH ends of every test.
+
+    A process-wide cache is one worker's answer, not this test's. `_unlinkable_chat_prefixes`
+    is keyed on nothing and lives for the life of the process, so a test that published a
+    longer prefix list decided `is_temporary_chat` for every test that ran after it in the
+    same worker -- and `temporary_chat_prefixes()` drops only `channel:`, so a real
+    conversation became a temporary chat, its uploads were handled as though the chat did
+    not exist, and `core/costs.py` wrote its snapshot naming neither the chat nor the
+    message. One test module reset that cache for its own tests and nothing else.
+
+    Cleared by OWNERSHIP rather than by name, so the strict-schema memo is covered too and
+    `urllib.parse.urlsplit` is not: see `_package_cached_functions`.
+
+    BOTH ends. The teardown end is what stops an arming from poisoning the next test, and
+    the setup end is what discards anything a finalizer ordering put back afterwards.
+    Measured, single-end variants pass every test in that file -- with the whole fixture
+    removed they do too -- so the second end is the established precedent rather than a
+    shape a test distinguishes. Kept separate from `_reset_warn_latches` rather than
+    folded into it: the two guard unrelated invariants, and folding them would couple a
+    cache clear to a latch clear for ~2 ms a test.
+
+    Every published failure count for the arms that test this fixture is SERIAL. CI
+    (`.github/workflows/verify.yml`) runs `pytest tests -q` with no `-n`; a `-n 4` run
+    is a weaker witness, not a green one, because arms 1-3 arm in one test and read in
+    a later one.
+    """
+    _clear_package_caches()
+    yield
+    _clear_package_caches()
 
 
 @pytest.fixture(autouse=True)

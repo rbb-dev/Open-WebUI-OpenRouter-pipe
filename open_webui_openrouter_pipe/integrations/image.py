@@ -1256,7 +1256,7 @@ class ImageGenerationAdapter:
 
         snippets: list[str] = []
         unsaved = 0
-        for index, image in enumerate(result.images):
+        for image in result.images:
             file_id = await self._persist(
                 image,
                 request=request,
@@ -1267,7 +1267,7 @@ class ImageGenerationAdapter:
             if not file_id:
                 unsaved += 1
                 continue
-            label = "Generated image" if len(result.images) == 1 else f"Generated image {index + 1}"
+            label = "Generated image" if len(result.images) == 1 else f"Generated image {len(snippets) + 1}"
             snippets.append(f"![{label}](/api/v1/files/{file_id}/content)")
         if result.rejected:
             self._logger.warning(

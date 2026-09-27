@@ -572,8 +572,11 @@ async def test_a_preset_endpoint_conflict_never_hands_a_card_to_a_task(
     """A preset on a /responses-forced model aborts the turn before any model is chosen.
 
     Both arms of the discriminator are driven: a chat turn must get the card back, and a
-    task call must get its JSON fallback instead, because Open WebUI parses a task's
-    return value as data and would otherwise title the chat with Markdown.
+    task call must get the refusal card too, because Open WebUI parses a task's return
+    value as data — the destructive `{"title": "Chat"}` stub titled every chat "Chat"
+    and `{"tags": ["General"]}` deleted the user's tag rows, and neither is told to the
+    person. The card does not parse, so Open WebUI's own fallthrough leaves the chat
+    named after the user's first message.
     """
     pipe = _orchestrator_pipe()
     pipe.valves.FORCE_RESPONSES_MODELS = "forced/model"
@@ -617,9 +620,10 @@ async def test_a_preset_endpoint_conflict_never_hands_a_card_to_a_task(
         if wants_card:
             assert result == shown
         else:
-            assert result != shown
+            assert result == shown
             assert isinstance(result, str)
-            assert json.loads(result) in ({"title": "Chat"}, {"tags": ["General"]})
+            assert result not in ('{"title": "Chat"}', '{"tags": ["General"]}', '{"follow_ups": []}')
+            assert not result.strip().startswith('{"')
     finally:
         await pipe.close()
 

@@ -828,7 +828,7 @@ class RequestOrchestrator:
                     log_level=logging.WARNING,
                 )
                 if use_task_model_adapter:
-                    return self._pipe._build_task_fallback_content(task_name)
+                    return self._pipe._task_refusal_result(__task__, shown)
                 return shown
             endpoint_override = "chat_completions"
             if self.logger.isEnabledFor(logging.DEBUG):
@@ -945,9 +945,7 @@ class RequestOrchestrator:
         if enforce_zdr:
             is_zdr_capable = OpenRouterModelRegistry.is_zdr_capable(normalized_model_id)
             if is_zdr_capable is False:
-                if use_task_model_adapter:
-                    return self._pipe._build_task_fallback_content(task_name)
-                return await self._pipe._ensure_error_formatter()._emit_templated_error(
+                shown = await self._pipe._ensure_error_formatter()._emit_templated_error(
                     __event_emitter__,
                     template=valves.MODEL_RESTRICTED_TEMPLATE,
                     variables={
@@ -968,10 +966,11 @@ class RequestOrchestrator:
                     ),
                     log_level=logging.WARNING,
                 )
-            if is_zdr_capable is None:
                 if use_task_model_adapter:
-                    return self._pipe._build_task_fallback_content(task_name)
-                return await self._pipe._ensure_error_formatter()._emit_templated_error(
+                    return self._pipe._task_refusal_result(__task__, shown)
+                return shown
+            if is_zdr_capable is None:
+                shown = await self._pipe._ensure_error_formatter()._emit_templated_error(
                     __event_emitter__,
                     template=valves.MODEL_RESTRICTED_TEMPLATE,
                     variables={
@@ -992,6 +991,9 @@ class RequestOrchestrator:
                     ),
                     log_level=logging.ERROR,
                 )
+                if use_task_model_adapter:
+                    return self._pipe._task_refusal_result(__task__, shown)
+                return shown
 
             existing_provider = responses_body.provider or {}
             if isinstance(existing_provider, dict):

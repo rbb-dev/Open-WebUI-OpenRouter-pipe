@@ -15,9 +15,12 @@ Open WebUI, or a broken import -- rather than a compatibility requirement, and t
 import stays guarded today. Both halves of that need a test, and the upstream half is
 unreachable on this Open WebUI without injecting the module.
 
-Two resolvers now read one shared publisher, and all three are cached, so the autouse
-fixture below has to clear every cache the module owns: a module injected by one test
-would otherwise still be the answer the next one sees.
+Two resolvers now read one shared publisher, and all three are cached, so every cache
+the module owns has to be cleared between tests: a module injected by one test would
+otherwise still be the answer the next one sees. The reset seam is conftest's autouse
+`_reset_package_caches`, which clears every package cache at both ends of every test;
+`_CACHED_RESOLVERS` below records this module's whole set for
+`test_every_cached_resolver_in_the_module_is_cleared_between_tests`.
 """
 
 from __future__ import annotations
@@ -43,20 +46,6 @@ _CACHED_RESOLVERS = (
     "_unlinkable_chat_prefixes",
     "temporary_chat_prefixes",
 )
-
-
-def _clear_resolver_caches() -> None:
-    for name in _CACHED_RESOLVERS:
-        clear = getattr(getattr(owui_files, name, None), "cache_clear", None)
-        if callable(clear):
-            clear()
-
-
-@pytest.fixture(autouse=True)
-def _unresolved():
-    _clear_resolver_caches()
-    yield
-    _clear_resolver_caches()
 
 
 def _publish(monkeypatch, non_saved, temporary, channel):

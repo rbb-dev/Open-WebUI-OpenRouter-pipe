@@ -27,8 +27,11 @@ Coverage areas:
 # pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 from __future__ import annotations
 
+import ast
 import base64
 import json
+import logging
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -37,6 +40,7 @@ from aioresponses import aioresponses, CallbackResult
 
 from open_webui_openrouter_pipe import Pipe, EncryptedStr
 from open_webui_openrouter_pipe.storage.owui_files import InlinedFile
+from open_webui.constants import TASKS
 
 
 # -----------------------------------------------------------------------------
@@ -5914,3 +5918,26 @@ async def test_a_stale_sibling_valve_does_not_drop_the_zdr_preference(stored, ex
         )
     finally:
         await pipe.close()
+
+
+# -----------------------------------------------------------------------------
+# Tests: a refused task must not ship a writable JSON stub (B73-extra-1)
+# -----------------------------------------------------------------------------
+
+
+class _NoSession:
+    """Stand-in for the aiohttp session; nothing under test ever calls it."""
+
+
+def _shown_card(events: list[dict[str, Any]]) -> str:
+    """The markdown Open WebUI put on screen, taken from the wire and not from a literal."""
+    cards = [
+        event["data"]["content"]
+        for event in events
+        if isinstance(event, dict)
+        and event.get("type") == "chat:message"
+        and isinstance(event.get("data"), dict)
+        and isinstance(event["data"].get("content"), str)
+    ]
+    assert cards, f"nothing was shown to the user; events were {events}"
+    return cards[-1]

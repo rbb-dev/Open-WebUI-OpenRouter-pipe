@@ -19,6 +19,7 @@ import sys
 import types
 import uuid
 from collections.abc import Awaitable, Callable
+from enum import Enum
 from functools import partial, update_wrapper
 from types import SimpleNamespace
 from typing import Any, cast, get_args, get_type_hints
@@ -819,6 +820,27 @@ def _install_open_webui_stubs() -> None:
     config_mod.RAG_FILE_MAX_SIZE = _ConfigValue(None)
     config_mod.BYPASS_EMBEDDING_AND_RETRIEVAL = _ConfigValue(False)
     open_webui.config = config_mod
+
+    constants_mod = cast(Any, _ensure_module("open_webui.constants"))
+
+    class _Tasks(str, Enum):
+        def __str__(self) -> str:
+            return super().__str__()
+
+        TITLE_GENERATION = "title_generation"
+        FOLLOW_UP_GENERATION = "follow_up_generation"
+        TAGS_GENERATION = "tags_generation"
+        EMOJI_GENERATION = "emoji_generation"
+        QUERY_GENERATION = "query_generation"
+        IMAGE_PROMPT_GENERATION = "image_prompt_generation"
+        AUTOCOMPLETE_GENERATION = "autocomplete_generation"
+        FUNCTION_CALLING = "function_calling"
+        MOA_RESPONSE_GENERATION = "moa_response_generation"
+
+    # Mirror of backend/open_webui/constants.py:135-148, without its DEFAULT member (a
+    # callable, not a task kind). Re-check it when the host moves.
+    constants_mod.TASKS = _Tasks
+    open_webui.constants = constants_mod
 
 
 def _install_pydantic_core_stub() -> None:

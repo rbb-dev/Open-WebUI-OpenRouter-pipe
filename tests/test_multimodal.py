@@ -9,6 +9,7 @@ HTTPS-only defaults apply to SSRF-related URL handling; HTTP is allowlisted only
 from __future__ import annotations
 
 import base64
+import inspect
 import logging
 import socket
 import sys
@@ -26,6 +27,7 @@ from open_webui_openrouter_pipe import Pipe
 from open_webui_openrouter_pipe.core.url_scheme import url_scheme
 from open_webui_openrouter_pipe.requests.transformer import transform_messages_to_input
 from open_webui_openrouter_pipe.storage.multimodal import (
+    MultimodalHandler,
     _extract_openrouter_og_image,
     _guess_image_mime_type,
 )

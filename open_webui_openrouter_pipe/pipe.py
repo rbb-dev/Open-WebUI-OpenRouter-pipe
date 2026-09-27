@@ -4112,6 +4112,13 @@ class Pipe:
                 return fallback
         return join_answer_and_card("", content)
 
+    def _task_refusal_result(self, task: Any, content: str) -> str:
+        if TaskModelAdapter._uses_task_model_adapter(task):
+            if TaskModelAdapter._task_name(task) in _PERSISTED_TASK_KINDS:
+                return join_answer_and_card("", content)
+            return ""
+        return join_answer_and_card("", content)
+
     @timed
     def _merge_valves(self, global_valves, user_valves) -> Pipe.Valves:
         """Merge user-level valves into the global defaults.

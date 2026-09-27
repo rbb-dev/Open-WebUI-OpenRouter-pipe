@@ -81,16 +81,23 @@ For housekeeping tasks the pipe closes all four of those channels for the whole
 job, from the moment the task is recognised through to the reply. A task that
 fails still returns the parseable JSON stub Open WebUI expects — a title, a tag
 list, an empty follow-up list — and the answer on screen is left exactly as the
-model wrote it. The admission paths are the exception, and deliberately so: a task
+model wrote it. The refusal paths are the exception, and deliberately so: a task
 the pipe refuses before it enqueues the job — an open circuit breaker, a failed
 warmup, a missing or full request queue, a setup exception — gets the refusal
-sentence rather than a stub, for every kind. A stub is a write, not a no-op:
-Open WebUI parses the reply and persists it, naming the chat from the returned
-`title`, **replacing** the stored tag list, and storing the follow-ups, so a stub
-handed back during an outage would overwrite the user's own title and tags with no
-retry. A sentence does not parse, so the stored title, tags and follow-ups are left
-untouched. Toast notifications are the one channel still open, because Open
-WebUI shows those beside the conversation rather than inside a message.
+sentence rather than a stub, for every kind. The same holds for the three refusals
+that happen in-request, after the job is queued: ZDR enforcement on a model with no
+ZDR endpoint, the same refusal when the endpoint list cannot be read at all, and an
+endpoint-override conflict from a preset on a model forced to `/responses`. A task
+on any of those three gets the refusal card only if Open WebUI persists that kind's
+return value; every other kind gets the empty string, because Open WebUI hands that
+return value to a consumer that displays it — a search query, an emoji, a prompt
+suggestion — and the sentence would be shown as one. A stub is a write, not
+a no-op: Open WebUI parses the reply and persists it, naming the chat from the
+returned `title`, **replacing** the stored tag list, and storing the follow-ups, so
+a stub handed back during an outage would overwrite the user's own title and tags
+with no retry. A sentence does not parse, so the stored title, tags and follow-ups
+are left untouched. Toast notifications are the one channel still open, because
+Open WebUI shows those beside the conversation rather than inside a message.
 
 MOA merged-response synthesis is a visible answer rather than housekeeping, so
 none of this applies to it.

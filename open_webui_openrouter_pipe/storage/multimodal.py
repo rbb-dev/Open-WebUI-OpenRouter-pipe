@@ -750,6 +750,9 @@ class MultimodalHandler:
             timeout_seconds = 60
         connect_budget = _seeded_connect_budget(timeout_seconds)
 
+        effective_limit_mb = await self._get_effective_remote_file_limit_mb()
+        max_size_bytes = effective_limit_mb * 1024 * 1024
+
         attempt = 0
         start_time = time.perf_counter()
 
@@ -801,9 +804,6 @@ class MultimodalHandler:
                         mime_type = response.headers.get("content-type", "").split(";")[0].lower().strip()
                         if mime_type == "image/jpg":
                             mime_type = "image/jpeg"
-
-                        effective_limit_mb = await self._get_effective_remote_file_limit_mb()
-                        max_size_bytes = effective_limit_mb * 1024 * 1024
 
                         content_length = response.headers.get("content-length")
                         if content_length:

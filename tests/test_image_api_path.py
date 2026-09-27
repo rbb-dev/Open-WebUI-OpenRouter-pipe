@@ -2510,7 +2510,7 @@ async def test_the_refresh_valve_governs_the_endpoint_cache_window(refresh_secon
     )
 
 
-@pytest.mark.parametrize("failing_index", [1, 2])
+@pytest.mark.parametrize("failing_index", [1, 2, 3])
 @pytest.mark.asyncio
 async def test_a_partly_persisted_multi_image_reply_keeps_the_survivors_and_says_so(failing_index):
     adapter = _adapter(_KeyPipe("sk-x"))
@@ -2540,7 +2540,7 @@ async def test_a_partly_persisted_multi_image_reply_keeps_the_survivors_and_says
 
     links = [line for line in result.content.split("\n\n") if line.startswith("![")]
     assert len(links) == 2, f"two of three persisted; content was {result.content!r}"
-    assert "Generated image 1" in result.content or "Generated image 2" in result.content
+    assert [l.split("](")[0][2:] for l in links] == ["Generated image 1", "Generated image 2"]
     assert "1 generated image(s) could not be saved" in result.content
 
 
