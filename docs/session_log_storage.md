@@ -65,7 +65,7 @@ Each line in `logs.jsonl` is a single JSON object with the following keys:
 The pipe **skips persistence** when any of the following are true:
 
 - `SESSION_LOG_STORE_ENABLED` is disabled.
-- Any required IDs are missing/empty for the request: `user_id`, `session_id`, `chat_id`, `message_id`.
+- Any required IDs are missing/empty for the request: `user_id`, `chat_id`, `message_id`, `request_id`.
 - The `pyzipper` package is unavailable at runtime.
 - `SESSION_LOG_DIR` is empty.
 - `SESSION_LOG_ZIP_PASSWORD` is empty/unconfigured.
@@ -79,12 +79,13 @@ If persistence is skipped, the request still completes normally; the archive is 
 Archives are written by a background assembler thread when:
 
 - a “terminal” segment is staged for `(chat_id, message_id)` (final assistant answer, error, or cancellation), or
-- no terminal segment arrives for a long time (configurable “stale finalize”) — an **incomplete** archive is written so crash/cancel cases still leave a durable log trail.
+- no terminal segment arrives for a long time (configurable “stale finalize”) — an **incomplete** archive is written so crash/cancel cases still leave a durable log trail. A later terminal segment for the same turn merges into that same zip and removes the finalized-incomplete line.
 
 Non-blocking behavior:
 
 - Archives are written asynchronously via a bounded internal queue.
 - If the archive queue is full, the pipe logs a warning and drops the archive for that request (it does not block the response).
+- When the archive cannot be staged in the database, the pipe writes it through that same bounded queue instead of writing it inline, so the request never waits for compression. The path is therefore lossy in the same way: during a long database outage a busy queue fills, and the session logs for later requests in that period are dropped with the warning above rather than queued indefinitely.
 
 ---
 

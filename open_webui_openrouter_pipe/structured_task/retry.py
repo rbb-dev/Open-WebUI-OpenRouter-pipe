@@ -58,11 +58,14 @@ async def call_with_candidates(
                 )
             except Exception:
                 logger.debug("structured_task payload could not be logged", exc_info=True)
-        try:
-            response = await asyncio.wait_for(invoke(form_data), timeout=timeout_s)
+        async def _attempt(fd: dict[str, Any]) -> Any:
+            response = await invoke(fd)
             params = await read_task_model_response_json(response)
             if not isinstance(params, dict):
                 raise RuntimeError("task_model_invalid_schema")  # noqa: TRY004 - a remote schema mismatch is a runtime fault, not a local type error
+            return params
+        try:
+            params = await asyncio.wait_for(_attempt(form_data), timeout=timeout_s)
             return params
         except asyncio.CancelledError:
             raise

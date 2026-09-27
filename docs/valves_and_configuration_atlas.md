@@ -542,7 +542,7 @@ Notes:
 
 | Valve | Type | Default (verified) | Purpose / notes |
 | --- | --- | --- | --- |
-| `SESSION_LOG_STORE_ENABLED` | `bool` | `False` | When True, persist SessionLogger output to encrypted zip files on disk, assembled per message turn (`chat_id`, `message_id`). Persistence is skipped when required IDs are missing (`user_id`, `session_id`, `chat_id`, `message_id`), and for every temporary chat. |
+| `SESSION_LOG_STORE_ENABLED` | `bool` | `False` | When True, persist SessionLogger output to encrypted zip files on disk, assembled per message turn (`chat_id`, `message_id`). Persistence is skipped when required IDs are missing (`user_id`, `chat_id`, `message_id`, `request_id`), and for every temporary chat. |
 | `SESSION_LOG_DIR` | `str` | `session_logs` | Base directory for encrypted session log archives. |
 | `SESSION_LOG_ZIP_PASSWORD` | `EncryptedStr` | `(empty)` | Password used to encrypt session log zip files (pyzipper AES). |
 | `SESSION_LOG_RETENTION_DAYS` | `int` | `90` | Retention window (days) for stored session log archives while storage is enabled. |

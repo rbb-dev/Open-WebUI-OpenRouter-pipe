@@ -353,7 +353,6 @@ class TestStreamingResponseBranch:
         result = await read_task_model_response_json(response)
         assert result["intent"] == "text_to_video"
 
-
 # -----------------------------------------------------------------------------
 # _materialise_frame_plan integration tests
 # -----------------------------------------------------------------------------

@@ -8372,7 +8372,7 @@ class TestPersistSessionLogDbFallback:
 
     @pytest.mark.asyncio
     async def test_persist_session_log_fallback_to_direct_write(self, tmp_path):
-        """Test that _persist_session_log_segment_to_db falls back to direct write when DB returns empty."""
+        """The fallback queues the archive on the writer thread instead of writing it inline."""
         pipe = Pipe()
 
         try:
@@ -8399,8 +8399,15 @@ class TestPersistSessionLogDbFallback:
                     status="success",
                 )
 
-                # Should have called write_session_log_archive as fallback
-                mock_write.assert_called_once()
+                mock_write.assert_not_called()
+
+                manager = pipe._session_log_manager
+                assert manager._queue is not None
+                job = manager._queue.get_nowait()
+                assert job.user_id == "user1"
+                assert job.chat_id == "chat1"
+                assert job.message_id == "msg1.req1"
+                assert job.log_events
         finally:
             await pipe.close()
 
@@ -9043,13 +9050,16 @@ class TestSessionLogWorkerStop:
             # Give threads time to start
             time.sleep(0.1)
 
+            # Capture the event before the stop: a clean stop clears it again.
+            event = pipe._session_log_manager._stop_event
+            assert event is not None
+
             # Stop workers
             pipe._session_log_manager.stop_workers()
 
             # Workers should be stopped
             # Note: Threads may still be alive briefly, but stop event is set
-            if pipe._session_log_manager._stop_event:
-                assert pipe._session_log_manager._stop_event.is_set()
+            assert event.is_set()
         finally:
             pipe.shutdown()
 

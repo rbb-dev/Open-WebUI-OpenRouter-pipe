@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import time
+from typing import Any
 
 import pytest
 
@@ -1099,6 +1101,15 @@ def test_assembler_thread_exits_cleanly_when_pipe_ref_nulled(pipe_instance) -> N
         manager._pipe = pipe_instance
         if manager._stop_event:
             manager._stop_event.set()
+
+
+def _poll(predicate, timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return predicate()
 
 
 class TestResolveMessageId:

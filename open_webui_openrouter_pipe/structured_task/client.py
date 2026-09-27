@@ -74,10 +74,12 @@ async def read_model_response_content(response: Any) -> str:
         async for chunk in response.body_iterator:
             if not chunk:
                 continue
-            try:
-                chunk_str = chunk.decode("utf-8")
-            except UnicodeDecodeError:
-                chunk_str = chunk.decode("utf-8", errors="ignore")
+            if isinstance(chunk, str):
+                chunk_str = chunk
+            elif isinstance(chunk, (bytes, bytearray, memoryview)):
+                chunk_str = bytes(chunk).decode("utf-8", errors="replace")
+            else:
+                chunk_str = str(chunk)
             buffer += chunk_str
             while "\n" in buffer:
                 raw_line, buffer = buffer.split("\n", 1)
