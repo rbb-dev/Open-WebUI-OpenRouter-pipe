@@ -17,7 +17,7 @@ from collections import defaultdict, deque
 from typing import ClassVar
 
 
-def live_tool_failures(failures: deque[float], now: float, window_seconds: float) -> int:
+def counted_tool_failures(failures: deque[float], now: float, window_seconds: float) -> int:
     if failures and now - failures[-1] > window_seconds:
         return 0
     return len(failures)
@@ -162,7 +162,7 @@ class CircuitBreaker:
         window = tools.get((tool_type, tool_name)) if tools else None
         if tools is None or window is None:
             return True
-        live = live_tool_failures(window, time.time(), self._window_seconds)
+        live = counted_tool_failures(window, time.time(), self._window_seconds)
         if not live:
             tools.pop((tool_type, tool_name), None)
             if not tools:

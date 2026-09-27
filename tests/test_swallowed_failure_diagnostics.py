@@ -377,6 +377,10 @@ _NOT_A_WARN_LATCH = {
         "already made"
     ),
     ("usage_store.py", "self._dropped % _US_DROP_WARN_EVERY == 1"): "every-Nth sampling",
+    ("image_client.py", "state['data']"): (
+        "the post-completed drop is reported once per generation, and a generation reaches "
+        "this at most once, so a repeat latch would suppress a failure of a LATER request"
+    ),
     ("persistence.py", "self._maybe_heal_index_conflict(engine, table, exc)"): (
         "retry branch: drops orphaned indexes and reports whether it healed"
     ),

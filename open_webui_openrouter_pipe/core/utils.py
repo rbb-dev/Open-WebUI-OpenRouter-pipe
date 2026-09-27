@@ -99,6 +99,12 @@ UNRETAINED_FAILED_TOOL_RESULT = "[tool call failed; result not retained]"
 TOOL_FAILURE_LINE = "Error: the tool call did not complete."
 
 IMAGE_NO_IMAGES_REASON = "OpenRouter image generation returned no images."
+
+
+def image_failure_billing_suffix(billed: dict[str, Any]) -> str:
+    return "OpenRouter billed it before it stopped." if billed else "Nothing was billed."
+
+
 SERVER_TOOL_CALL_PREFIX = "srv-"
 REASONING_ANCHOR_KEYS = (
     REASONING_ANCHOR_SEQ_KEY,

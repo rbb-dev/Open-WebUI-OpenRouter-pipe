@@ -18,7 +18,9 @@ This test module targets the missing lines in circuit_breaker.py:
 
 from __future__ import annotations
 
+import math
 import time
+from collections import deque
 from unittest.mock import patch
 
 import pytest
@@ -278,7 +280,6 @@ class TestCircuitBreakerToolBreaker:
         breaker.record_tool_failure(user_id, "tool_a")
         assert breaker.tool_allows(user_id, "tool_a") is False
         assert breaker.tool_allows(user_id, "tool_b") is True
-
 
 class TestCircuitBreakerAuthFailure:
     """Tests for class-level auth failure tracking."""

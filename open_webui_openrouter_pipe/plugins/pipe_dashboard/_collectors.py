@@ -13,7 +13,7 @@ import logging
 import time
 from typing import Any
 
-from ...core.circuit_breaker import live_tool_failures
+from ...core.circuit_breaker import counted_tool_failures
 from ...core.warn_latch import warn_level
 
 logger = logging.getLogger(__name__)
@@ -200,11 +200,11 @@ def collect_rate_limits(pipe: Any) -> dict[str, Any]:
     tool_with_failures = 0
     for user_tools in tool_breakers.values():
         for dq in user_tools.values():
-            recent = live_tool_failures(dq, now, window)
+            tool_count = counted_tool_failures(dq, now, window)
             tool_tracked += 1
-            if recent > 0:
+            if tool_count > 0:
                 tool_with_failures += 1
-            if recent >= threshold:
+            if tool_count >= threshold:
                 tool_tripped += 1
 
     # Auth failures (class-level)

@@ -22,6 +22,7 @@ from ..core.utils import (
     IMAGE_NO_IMAGES_REASON,
     clamp_text,
     http_timeout,
+    image_failure_billing_suffix,
     summarise_names,
     utf8_stream_decoder,
 )
@@ -48,6 +49,12 @@ from .image_types import (
 _IMAGE_SSE_CONTENT_TYPE = "text/event-stream"
 _IMAGE_SSE_PREFIX = "data:"
 _IMAGE_SSE_DONE = "[DONE]"
+
+
+class _ProgressCallbackFailed(BaseException):
+    def __init__(self, cause: BaseException) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
 
 
 def _image_stream_partial(event: dict[str, Any], state: dict[str, Any]) -> str:
@@ -90,8 +97,12 @@ def _image_stream_error(event: dict[str, Any], state: dict[str, Any]) -> str:
         sentence = f"OpenRouter reported a problem after delivering the image: {reason}."
         state["warning"] = sentence
         return sentence
+    billed = chat_usage_to_responses_usage(state.get("usage"))
     raise ImageGenerationError(
-        f"OpenRouter stopped generating the image: {reason}. Nothing was billed."
+        "OpenRouter stopped generating the image: "
+        f"{reason}. "
+        + image_failure_billing_suffix(billed),
+        usage=billed or None,
     )
 
 
@@ -201,20 +212,49 @@ class OpenRouterImageClient:
             return
         message = handler(event, state)
         if message and on_progress is not None:
-            await on_progress(message)
+            try:
+                await on_progress(message)
+            except Exception as exc:
+                raise _ProgressCallbackFailed(exc) from exc
 
     async def _read_stream_as_buffered_response(
         self, resp: Any, on_progress: Any, state: dict[str, Any]
     ) -> dict[str, Any]:
         buffer = ""
         _utf8 = utf8_stream_decoder()
-        async for chunk in resp.content.iter_any():
-            buffer += _utf8.decode(chunk)
-            while "\n" in buffer:
-                line, buffer = buffer.split("\n", 1)
-                await self._consume_stream_line(line, state, on_progress)
-        buffer += _utf8.decode(b"", True)
-        await self._consume_stream_line(buffer, state, on_progress)
+        try:
+            async for chunk in resp.content.iter_any():
+                buffer += _utf8.decode(chunk)
+                while "\n" in buffer:
+                    line, buffer = buffer.split("\n", 1)
+                    await self._consume_stream_line(line, state, on_progress)
+            buffer += _utf8.decode(b"", True)
+            await self._consume_stream_line(buffer, state, on_progress)
+        except _ProgressCallbackFailed as failed:
+            raise failed.cause from failed.cause
+        except ImageGenerationError:
+            raise
+        except Exception as exc:
+            billed = chat_usage_to_responses_usage(state.get("usage"))
+            if state["data"]:
+                self._logger.warning(
+                    "OpenRouter's image stream for this request stopped after the finished "
+                    "image arrived: %s", clamp_text(str(exc) or type(exc).__name__, 160)
+                )
+                if not state["warning"]:
+                    state["warning"] = (
+                        "The image stream failed after the finished image had "
+                        f"already arrived: {clamp_text(str(exc), 160)}."
+                    )
+            elif not billed:
+                raise
+            else:
+                raise ImageGenerationError(
+                    "OpenRouter's connection dropped before the image stream finished: "
+                    f"{clamp_text(str(exc) or type(exc).__name__, 160)}. "
+                    + image_failure_billing_suffix(billed),
+                    usage=billed,
+                ) from exc
         if not state["data"]:
             raise ImageGenerationError(
                 "OpenRouter's image stream ended before the finished image arrived. "
