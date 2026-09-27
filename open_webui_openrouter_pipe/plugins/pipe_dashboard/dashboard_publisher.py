@@ -18,6 +18,7 @@ Without Redis a single worker emits directly from its local collectors.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import hashlib
 import hmac
 import inspect
@@ -453,6 +454,7 @@ async def _build_emit_payload(
         await _write_own_slice(client, worker_key, pipe)
         worker_payloads = await _read_redis_workers(client, namespace)
         degraded = False
+        read_ok = False
         if worker_payloads is None:
             misses = agg_state.get("misses", 0) + 1
             agg_state["misses"] = misses
@@ -462,7 +464,9 @@ async def _build_emit_payload(
                 degraded = True
             else:
                 worker_payloads = []
+                degraded = True
         else:
+            read_ok = True
             agg_state["misses"] = 0
         local_pids = {p.get("pid", 0) for p in worker_payloads}
         if pid not in local_pids:
@@ -470,7 +474,7 @@ async def _build_emit_payload(
                 worker_payloads.append(expand_worker_payload(_collect_worker_payload(pipe)))
             except Exception:
                 logger.debug("Local worker payload collect error", exc_info=True)
-        if not degraded:
+        if read_ok:
             agg_state["workers"] = list(worker_payloads)
         if worker_payloads:
             payload.update(aggregate_worker_payloads(worker_payloads))
@@ -516,7 +520,34 @@ async def _build_emit_payload(
         slow_state["slow_sent_at"] = now
         if not slow_state.get("cache") or now - slow_state.get("at", 0.0) >= _PD_SLOW_MIN_INTERVAL:
             try:
-                slow_state["cache"] = collect_slow_stats(pipe)
+                store = getattr(pipe, "_artifact_store", None)
+                executor = getattr(store, "_db_executor", None) if store is not None else None
+                if (
+                    store is not None
+                    and not isinstance(executor, concurrent.futures.Executor)
+                    and getattr(store, "_session_factory", None) is None
+                ):
+                    build = getattr(store, "_ensure_artifact_store", None)
+                    if callable(build):
+                        try:
+                            with concurrent.futures.ThreadPoolExecutor(
+                                max_workers=1, thread_name_prefix="responses-prewarm"
+                            ) as pool:
+                                await asyncio.get_running_loop().run_in_executor(
+                                    pool,
+                                    build,
+                                    getattr(pipe, "valves", None),
+                                    getattr(pipe, "id", "") or "",
+                                )
+                        except Exception:
+                            logger.debug("Slow stats prewarm error", exc_info=True)
+                    executor = getattr(store, "_db_executor", None)
+                if isinstance(executor, concurrent.futures.Executor):
+                    slow_state["cache"] = await asyncio.get_running_loop().run_in_executor(
+                        executor, collect_slow_stats, pipe
+                    )
+                else:
+                    slow_state["cache"] = collect_slow_stats(pipe)
                 slow_state["at"] = now
             except Exception:
                 logger.debug("Slow stats collect error", exc_info=True)

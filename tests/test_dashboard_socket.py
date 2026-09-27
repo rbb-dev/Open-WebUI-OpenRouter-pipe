@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
 import logging
 import sys
@@ -639,8 +640,13 @@ class TestBuildEmitPayload:
 
         agg_state = {"workers": list(cached), "misses": 2}
         payload = await _build_emit_payload(pipe, client, "ns", "wk", 2, {}, agg_state)
-        assert "degraded" not in payload
+        # The collapse is a fallback too, so it is a partial result and the banner must
+        # say so. The panel is NOT showing last known workers on this tick.
+        assert payload["degraded"] is True
         assert payload["worker_count"] == 1
+        # Two, not three: the cached set is the two-entry `cached` above and the fix
+        # skips the cache write on a fallback tick, so the good set survives the outage.
+        assert len(agg_state["workers"]) == 2
 
     @pytest.mark.asyncio
     async def test_medium_tick_redis_ping_sets_health(self):

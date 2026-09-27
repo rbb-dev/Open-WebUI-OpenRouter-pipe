@@ -272,7 +272,7 @@ def _build_dashboard_shell(dash_id: str) -> str:
       </div>
     </div>
     <div id="{sid}-notice" class="live-expired" style="display:none;"></div>
-    <div id="{sid}-degraded" class="live-expired" style="display:none;">Aggregation degraded — showing last known workers.</div>
+    <div id="{sid}-degraded" class="live-expired" style="display:none;">Aggregation degraded — cluster figures may be incomplete or out of date.</div>
     <div id="{sid}-error" class="live-error" style="display:none;"></div>
 
     <!-- Tab bar -->

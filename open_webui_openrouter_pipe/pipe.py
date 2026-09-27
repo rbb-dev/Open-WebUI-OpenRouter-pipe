@@ -1299,11 +1299,22 @@ class Pipe:
                     exc_info=True,
                 )
 
-        self._ensure_catalog_manager().maybe_schedule_model_metadata_sync(
-            selected_models,
-            pipe_identifier=self.id,
-            image_gen_filter_model=image_gen_filter_model,
-        )
+        try:
+            self._ensure_catalog_manager().maybe_schedule_model_metadata_sync(
+                selected_models,
+                pipe_identifier=self.id,
+                image_gen_filter_model=image_gen_filter_model,
+            )
+        except Exception as exc:
+            level = warn_level(
+                _warned_pipes_maintenance, f"metadata_sync:{type(exc).__name__}"
+            )
+            self.logger.log(
+                level,
+                "Model metadata sync scheduling failed: %s",
+                exc,
+                exc_info=True,
+            )
 
         if self.valves.ENABLE_PLUGIN_SYSTEM:
             try:
@@ -2160,12 +2171,13 @@ class Pipe:
         tool_context: _ToolExecutionContext | None = None
         tool_token: contextvars.Token[_ToolExecutionContext | None] | None = None
         stream_queue = job.stream_queue
-        stream_emitter = (
-            self._event_emitter_handler._make_middleware_stream_emitter(job, stream_queue)
-            if stream_queue is not None
-            else None
-        )
+        reached_openrouter = False
         try:
+            stream_emitter = (
+                self._event_emitter_handler._make_middleware_stream_emitter(job, stream_queue)
+                if stream_queue is not None
+                else None
+            )
             if (
                 self.valves.ENABLE_PLUGIN_SYSTEM
                 and stream_emitter is not None
@@ -2247,6 +2259,7 @@ class Pipe:
                     rejected_user_valves=job.rejected_user_valves,
                     outcome_sink=outcome,
                     )
+                reached_openrouter = bool(outcome.get("reached_openrouter"))
                 record = outcome.get("output")
                 if isinstance(result, str) and isinstance(record, list) and record and not job.task:
                     result = self._build_chat_completion_payload(
@@ -2270,7 +2283,8 @@ class Pipe:
             raise
         except Exception as exc:
             self.logger.exception("Request job failed (request_id=%s)", job.request_id)
-            self._circuit_breaker.record_failure(job.user_id)
+            if reached_openrouter:
+                self._circuit_breaker.record_failure(job.user_id)
             if stream_queue is not None and not job.future.cancelled():
                 self._event_emitter_handler._try_put_middleware_stream_nowait(
                     stream_queue,
@@ -2472,7 +2486,20 @@ class Pipe:
         model_block = __metadata__.get("model")
         openwebui_model_id = model_block.get("id", "") if isinstance(model_block, dict) else ""
         pipe_identifier = self.id
-        self._artifact_store._ensure_artifact_store(valves, pipe_identifier)
+        task_name = TaskModelAdapter._task_name(__task__)
+        use_task_model_adapter = TaskModelAdapter._uses_task_model_adapter(__task__)
+        try:
+            self._artifact_store._ensure_artifact_store(valves, pipe_identifier)
+        except Exception as e:
+            self.logger.exception("Unexpected error in _handle_pipe_call request processing")
+            shown = await self._ensure_error_formatter()._emit_templated_error(
+                _task_visible_channel_emitter(__event_emitter__, __task__),
+                template=valves.INTERNAL_ERROR_TEMPLATE,
+                variables={"error_type": type(e).__name__},
+                log_message=f"Unexpected error: {e}")
+            if use_task_model_adapter:
+                return self._build_task_fallback_content(task_name)
+            return shown
 
         plugin_result = None
         if self.valves.ENABLE_PLUGIN_SYSTEM:
@@ -2501,8 +2528,6 @@ class Pipe:
                     )
             return plugin_result
 
-        task_name = TaskModelAdapter._task_name(__task__)
-        use_task_model_adapter = TaskModelAdapter._uses_task_model_adapter(__task__)
         __event_emitter__ = _task_visible_channel_emitter(__event_emitter__, __task__)
         if use_task_model_adapter and self._auth_failure_active():
             fallback = self._build_task_fallback_content(task_name)
@@ -2638,6 +2663,9 @@ class Pipe:
                 )
             except Exception:
                 self.logger.debug("Plugin on_request_transform dispatch failed", exc_info=True)
+
+        if outcome_sink is not None:
+            outcome_sink["reached_openrouter"] = True
 
         try:
             result = await self._process_transformed_request(

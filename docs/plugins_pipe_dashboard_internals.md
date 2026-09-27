@@ -149,7 +149,7 @@ Data collection is split into tiers to balance freshness against collection cost
 | **Identity** | Tick 0 + every ~16s | Version, pipe ID, worker count | Negligible |
 | **Fast** | Every 2s | Concurrency, queues, rate limits, sessions, uptime, PID | Cheap (in-memory reads) |
 | **Medium** | Every ~16s | Models catalog status, system health | Moderate (subsystem inspection) |
-| **Slow** | Every ~60s (30s recompute floor) | Storage stats, configuration, plugins | Expensive (DB queries) |
+| **Slow** | Every ~60s (30s recompute floor) | Storage stats, configuration, plugins | Expensive (DB queries), run on the artifact store's DB thread pool rather than the request loop |
 
 A new viewer joining the room resets the tick counter, so the next emit carries the **full** tier set for an instant first paint — within ~2s when a worker is already streaming, or within one idle poll interval (~5s) on a cold start (no dashboards were open). The slow tier is additionally guarded by a wall-clock floor: rapid re-subscribes reuse the cached slow payload instead of re-running the storage queries.
 
@@ -189,7 +189,7 @@ Each `openrouter:pipe_dashboard` event carries a JSON object. Keys are present o
 }
 ```
 
-`degraded: true` appears when a transient Redis read error made the emitter reuse the last known worker set instead of collapsing to a single-worker view. Storage payloads carry `state` (`connected` / `unavailable` / `degraded`) so the dashboard can distinguish "not initialized on this worker yet" from a genuine failure; the collector wires the shared DB itself on first use, and by-type/by-model "Least/Most recent" columns are access times (the retention sweep touches `created_at` on every read).
+`degraded: true` marks any tick whose Redis worker read failed, whichever fallback it took: the last known worker set, where one exists, for the first two misses, then a collapse to this worker's own figures. The last-known set is not overwritten on a fallback tick, so a short outage does not destroy the good set; the cache write is keyed on the read having succeeded, not on the flag. Because the collapse path shows no cached set, the banner names the situation rather than claiming it is showing last known workers. Storage payloads carry `state` (`connected` / `unavailable` / `degraded`) so the dashboard can distinguish "not initialized on this worker yet" from a genuine failure; the collector wires the shared DB itself on first use, and by-type/by-model "Least/Most recent" columns are access times (the retention sweep touches `created_at` on every read).
 
 On tick 0, all tiers fire simultaneously for instant dashboard population. The JavaScript checks key existence and updates only the sections whose data arrived in that tick. The payload arrives raw — direct custom emits do not use the `{chat_id, message_id, data}` envelope of OWUI's shared `events` channel, so no client-side filtering is needed.
 
@@ -619,7 +619,7 @@ resolve_model_name("openai/gpt-4o", name_map)  # "GPT-4o" (or the raw ID if unkn
 
 ## Running DB Queries from Commands
 
-Commands that need database access (e.g., storage stats) must use `run_in_threadpool` to avoid blocking the async event loop. Access the artifact store's SQLAlchemy session factory through `ctx.pipe._artifact_store`:
+Commands that need database access (e.g., storage stats) must use `run_in_threadpool` to avoid blocking the async event loop. The same rule governs the publisher's slow tier: `collect_slow_stats` is submitted to the artifact store's own DB thread pool, which also serves the chat request path, so the dashboard's full-table scan of the artifact payload column can make in-flight artifact persist/fetch/delete queue behind it and can show up in the "Write pool backlog" figure. Access the artifact store's SQLAlchemy session factory through `ctx.pipe._artifact_store`:
 
 ```python
 from fastapi.concurrency import run_in_threadpool

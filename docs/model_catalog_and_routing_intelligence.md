@@ -69,6 +69,7 @@ Open WebUI requests the available models from the function by calling `Pipe.pipe
 
 Behavior:
 - The pipe loads/refreshes the OpenRouter catalog (best-effort; may serve cached models on failure).
+- The tail of the call is best-effort too: a failure in the model-metadata sync, in the image-generation filter lookup, or in the plugin `on_models` dispatch is logged and the pipe still returns the models it has. A raise at any of those points would make Open WebUI's handler serve an empty model list, so every picker would lose the pipe.
 - The system valve `MODEL_ID` selects which models are exposed:
   - `auto` exposes the full catalog.
   - A comma-separated list restricts the exposed models.

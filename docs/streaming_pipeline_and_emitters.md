@@ -70,6 +70,8 @@ This bridge is controlled by:
 
 Rationale: a stalled or slow client should not allow unbounded memory growth, and teardown should not hang while attempting to enqueue the final sentinel.
 
+Invariant: a job that reaches the worker's `try` puts the `None` terminator on its queue, so the generator always ends. This includes the emitter-construction path — a fault raised while building the middleware stream emitter is handled by the job's own guard, which puts the error chunk and then the terminator. Two exits sit above that `try` (`Semaphore unavailable`, and `CancelledError` before it) and put no terminator; the generator's own `future.done() and stream_queue.empty()` check at `pipe.py:1541` is what ends those, so such a job yields a silently empty stream rather than an error. A job that raised anywhere else before reaching that guard would leave the generator parked on `await queue.get()` forever, and the person's chat would hang with no reply and no error.
+
 ---
 
 ## 4. What Open WebUI receives (emitters and event types)

@@ -339,6 +339,14 @@ async def test_a_failing_filter_install_is_reported_once_across_repeated_pipes_c
     catalog_mgr = pipe._ensure_catalog_manager()
     cast(Any, catalog_mgr).get_cached_provider_map = lambda: {"openrouter/test": ["a"]}
 
+    # The metadata sync is its own guarded site in pipes(): a raise there used to empty
+    # the returned model list, so Open WebUI served sub_pipes = [] and the pipe vanished
+    # from every picker. It gets a driver here for the same reason as the others.
+    def _explode_sync(*_args, **_kwargs):
+        raise RuntimeError("metadata sync table is read-only")
+
+    cast(Any, catalog_mgr).maybe_schedule_model_metadata_sync = _explode_sync
+
     async def _explode_async(*_args, **_kwargs):
         raise RuntimeError("catalog table is read-only")
 
@@ -456,7 +464,7 @@ async def test_a_failing_filter_install_is_reported_once_across_repeated_pipes_c
         "video", "direct_uploads", "provider_routing", "stale_prune", "on_models",
         "zdr_list_unavailable", "models_missing", "variant_base_missing",
         "enforcement_base_not_allowed", "enforcement_base_unnormalized",
-        "chat_catalog_refresh",
+        "chat_catalog_refresh", "metadata_sync",
     }
     from tests.warn_latch_census import UNRESOLVABLE_MESSAGE
 
