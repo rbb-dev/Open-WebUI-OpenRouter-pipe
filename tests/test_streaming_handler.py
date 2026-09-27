@@ -13285,7 +13285,7 @@ async def test_an_abandoned_turn_leaves_no_unaddressed_artifact_rows(
                 "type": "reasoning",
                 "id": f"rs-{index}",
                 "status": "completed",
-                "content": [{"type": "reasoning_text", "text": f"THOUGHT-{index}"}],
+                "content": [{"type": "reasoning_text", "text": ""}],
                 "encrypted_content": f"enc-{index}",
             },
         })

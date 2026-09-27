@@ -187,13 +187,15 @@ def _invocation(orchestrator, pipe, valves, *, messages=None, enforced=None, cat
     )
 
 
-def _capture_stream(captured, events=None, fail_first_with=None):
+def _capture_stream(captured, events=None, fail_first_with=None, pre_events=None):
     state = {"calls": 0}
 
     async def fake_stream(self, session, request_body, **kwargs):
         state["calls"] += 1
         captured.append(dict(request_body))
         if fail_first_with is not None and state["calls"] == 1:
+            for pre in pre_events or []:
+                yield pre
             raise fail_first_with
         for event in events or [
             {"type": "response.created", "response": {"model": request_body.get("model")}},
@@ -213,12 +215,13 @@ class TestRunFusionMemberReentry:
     async def _run(self, orchestrator_and_pipe, monkeypatch, *,
                    model="openai/gpt-5", registry=None, bypass=True, enforced=None,
                    catalog=None, fail_first_with=None, supports_fc=False,
-                   valves=None, server_tools_config=None):
+                   valves=None, server_tools_config=None, pre_events=None):
         orchestrator, pipe = orchestrator_and_pipe
         _prepare_pipe(pipe)
         captured: list[dict] = []
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request",
-                            _capture_stream(captured, fail_first_with=fail_first_with))
+                            _capture_stream(captured, fail_first_with=fail_first_with,
+                                            pre_events=pre_events))
         if supports_fc:
             from open_webui_openrouter_pipe.models.registry import ModelFamily
             monkeypatch.setattr(ModelFamily, "supports",

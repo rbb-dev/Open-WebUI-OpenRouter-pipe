@@ -303,6 +303,19 @@ def media_builtin_tool_defaults(capability_defaults: dict[str, Any]) -> dict[str
     return {"files": False}
 
 
+def _merged_capabilities(
+    base_caps: dict[str, Any] | None,
+    capabilities: dict[str, Any] | None,
+    capability_defaults: dict[str, Any] | None,
+) -> dict[str, Any]:
+    merged: dict[str, Any] = dict(base_caps) if isinstance(base_caps, dict) else {}
+    for key, value in (capabilities or {}).items():
+        merged[key] = value
+    for key, value in (capability_defaults or {}).items():
+        merged.setdefault(key, value)
+    return merged
+
+
 def needs_frontend_catalog(valves: Any, provider_routing_enabled: bool) -> bool:
     """Whether any enabled feature reads something only the frontend catalog carries.
 
@@ -334,6 +347,7 @@ def syncs_owui_models(valves: Any, provider_routing_enabled: bool) -> bool:
         or valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER
         or valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER
         or valves.AUTO_INSTALL_IMAGE_GEN_FILTER
+        or valves.AUTO_ATTACH_IMAGE_GEN_FILTER
         or valves.AUTO_INSTALL_VIDEO_FILTERS
         or valves.AUTO_ATTACH_VIDEO_FILTERS
         or valves.AUTO_INSTALL_IMAGE_FILTERS
@@ -600,6 +614,7 @@ class ModelCatalogManager:
             valves.MODEL_ID,
             valves.UPDATE_MODEL_IMAGES,
             valves.UPDATE_MODEL_CAPABILITIES,
+            valves.DISABLE_BUILTIN_TOOLS_ON_MEDIA_MODELS,
             valves.UPDATE_MODEL_DESCRIPTIONS,
             valves.AUTO_ATTACH_WEB_TOOLS_FILTER,
             valves.AUTO_INSTALL_WEB_TOOLS_FILTER,
@@ -1239,7 +1254,9 @@ class ModelCatalogManager:
                     web_tools_filter_function_id = None
 
             image_gen_filter_function_id: str | None = None
-            if valves.AUTO_INSTALL_IMAGE_GEN_FILTER and valves.ENABLE_IMAGE_GENERATION:
+            if (
+                valves.AUTO_INSTALL_IMAGE_GEN_FILTER or valves.AUTO_ATTACH_IMAGE_GEN_FILTER
+            ) and valves.ENABLE_IMAGE_GENERATION:
                 try:
                     image_gen_filter_function_id = await self._pipe._ensure_filter_manager().ensure_openrouter_image_gen_filter_function_id()
                 except Exception as exc:
@@ -2088,11 +2105,7 @@ class ModelCatalogManager:
 
             if update_capabilities and (capabilities is not None or capability_defaults):
                 existing_caps = meta_dict.get("capabilities")
-                merged_caps: dict[str, Any] = dict(existing_caps) if isinstance(existing_caps, dict) else {}
-                for key, value in (capabilities or {}).items():
-                    merged_caps[key] = value
-                for key, value in (capability_defaults or {}).items():
-                    merged_caps.setdefault(key, value)
+                merged_caps = _merged_capabilities(existing_caps, capabilities, capability_defaults)
                 if merged_caps != existing_caps:
                     meta_dict["capabilities"] = merged_caps
                     meta_updated = True
@@ -2246,8 +2259,13 @@ class ModelCatalogManager:
 
         else:
             meta_dict = {}
-            if update_capabilities and capabilities is not None:
-                meta_dict["capabilities"] = capabilities
+            if update_capabilities and (capabilities is not None or capability_defaults):
+                merged_caps = _merged_capabilities(None, capabilities, capability_defaults)
+                if merged_caps:
+                    meta_dict["capabilities"] = merged_caps
+                builtin_tool_defaults = media_builtin_tool_defaults(merged_caps)
+                if builtin_tool_defaults:
+                    meta_dict["builtinTools"] = {**builtin_tool_defaults}
             if update_images and profile_image_url:
                 meta_dict["profile_image_url"] = profile_image_url
             if update_descriptions and description:

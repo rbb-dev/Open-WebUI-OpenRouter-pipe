@@ -23,6 +23,7 @@ from .registry import ModelFamily
 # Valve effort value that triggers verbosity: "max" for Claude models.
 _XHIGH_EFFORT = "xhigh"
 _MAX_VERBOSITY = "max"
+_EFFORT_REASONING_OFF = frozenset({"none", ""})
 
 
 class ReasoningConfigManager:
@@ -77,7 +78,7 @@ class ReasoningConfigManager:
             self._set_include_reasoning(responses_body, None)
         elif supports_legacy_only:
             responses_body.reasoning = None
-            desired = target_effort not in {"none", ""}
+            desired = target_effort not in _EFFORT_REASONING_OFF
             self._set_include_reasoning(responses_body, desired)
 
 
@@ -103,7 +104,7 @@ class ReasoningConfigManager:
             self._set_include_reasoning(responses_body, None)
         elif supports_legacy_only:
             responses_body.reasoning = None
-            desired = target_effort not in {"none", "minimal"}
+            desired = target_effort not in _EFFORT_REASONING_OFF
             self._set_include_reasoning(responses_body, desired)
 
 

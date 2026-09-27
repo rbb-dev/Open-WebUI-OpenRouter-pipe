@@ -4892,7 +4892,7 @@ def test_apply_task_reasoning_preferences_include_only():
         body = ResponsesBody(model="test.model", input=[])
         pipe._ensure_reasoning_config_manager()._apply_task_reasoning_preferences(body, "minimal")
         assert body.reasoning is None
-        assert body.include_reasoning is False
+        assert body.include_reasoning is True
         pipe._ensure_reasoning_config_manager()._apply_task_reasoning_preferences(body, "none")
         assert body.include_reasoning is False
         pipe._ensure_reasoning_config_manager()._apply_task_reasoning_preferences(body, "low")

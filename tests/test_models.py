@@ -15,6 +15,7 @@ These tests target coverage of model catalog operations including:
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import sys
 import types
@@ -521,16 +522,22 @@ def test_maybe_schedule_model_metadata_sync_reschedules_on_fusion_valve_change(
     Regression: the four Fusion valves were absent from the sync key, so toggling
     AUTO_ATTACH/AUTO_DEFAULT_FUSION_FILTER silently did nothing until some other
     tracked valve changed.
+
+    The key is the manager's own, stored by the first call, rather than a term-by-term copy
+    of the tuple. The copy was 33 terms against a real 42, so the `sync_key ==
+    self._model_metadata_sync_key` early return could never fire and this test passed for
+    the wrong reason -- it stayed green with all four Fusion valves deleted from the key,
+    the exact regression its own docstring names.
     """
     pipe = pipe_instance
     pipe._ensure_catalog_manager()
     pipe.valves.UPDATE_MODEL_CAPABILITIES = True
     pipe.valves.AUTO_ATTACH_FUSION_FILTER = True
 
-    created = {"called": False}
+    created = []
 
     def _fake_create_task(coro, *args, **kwargs):
-        created["called"] = True
+        created.append(coro)
         coro.close()
         task = Mock()
         task.done.return_value = True
@@ -541,52 +548,27 @@ def test_maybe_schedule_model_metadata_sync_reschedules_on_fusion_valve_change(
         _fake_create_task,
     )
 
-    from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
-    last_fetch = getattr(OpenRouterModelRegistry, "_last_fetch", 0.0)
-    last_video_fetch = OpenRouterModelRegistry.last_video_fetch()
-    last_image_fetch = OpenRouterModelRegistry.last_image_fetch()
-
-    pipe._catalog_manager._model_metadata_sync_key = (
-        "test_pipe",
-        float(last_fetch or 0.0),
-        float(last_video_fetch or 0.0),
-        float(last_image_fetch or 0.0),
-        pipe.valves.MODEL_ID,
-        pipe.valves.UPDATE_MODEL_IMAGES,
-        pipe.valves.UPDATE_MODEL_CAPABILITIES,
-        pipe.valves.UPDATE_MODEL_DESCRIPTIONS,
-        pipe.valves.AUTO_ATTACH_WEB_TOOLS_FILTER,
-        pipe.valves.AUTO_INSTALL_WEB_TOOLS_FILTER,
-        pipe.valves.AUTO_DEFAULT_WEB_TOOLS_FILTER,
-        pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER,
-        pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER,
-        pipe.valves.AUTO_INSTALL_IMAGE_GEN_FILTER,
-        pipe.valves.AUTO_ATTACH_IMAGE_GEN_FILTER,
-        pipe.valves.AUTO_INSTALL_VIDEO_FILTERS,
-        pipe.valves.AUTO_ATTACH_VIDEO_FILTERS,
-        pipe.valves.AUTO_DEFAULT_VIDEO_FILTERS,
-        pipe.valves.ENABLE_VIDEO_GENERATION,
-        pipe.valves.ENABLE_OPENROUTER_IMAGE_GENERATION,
-        pipe.valves.AUTO_INSTALL_IMAGE_FILTERS,
-        pipe.valves.AUTO_ATTACH_IMAGE_FILTERS,
-        pipe.valves.AUTO_DEFAULT_IMAGE_FILTERS,
-        pipe.valves.ENABLE_OPENROUTER_FUSION,
-        pipe.valves.AUTO_INSTALL_FUSION_FILTER,
-        not pipe.valves.AUTO_ATTACH_FUSION_FILTER,
-        pipe.valves.AUTO_DEFAULT_FUSION_FILTER,
-        pipe.valves.ENABLE_WEB_SEARCH,
-        pipe.valves.ENABLE_WEB_FETCH,
-        pipe.valves.ENABLE_DATETIME,
-        pipe.valves.ENABLE_IMAGE_GENERATION,
-        pipe.valves.ADMIN_PROVIDER_ROUTING_MODELS,
-        pipe.valves.USER_PROVIDER_ROUTING_MODELS,
+    models = [{"id": "test"}]
+    pipe._catalog_manager.maybe_schedule_model_metadata_sync(
+        models, pipe_identifier="test_pipe"
     )
+    assert len(created) == 1, "the first call must schedule the sync and store the real key"
 
     pipe._catalog_manager.maybe_schedule_model_metadata_sync(
-        [{"id": "test"}],
-        pipe_identifier="test_pipe",
+        models, pipe_identifier="test_pipe"
     )
-    assert created["called"] is True
+    assert len(created) == 1, (
+        "the stored key is the real one, so an unchanged second call must not reschedule; "
+        "otherwise the assertion below proves nothing"
+    )
+
+    pipe.valves.AUTO_ATTACH_FUSION_FILTER = False
+    pipe._catalog_manager.maybe_schedule_model_metadata_sync(
+        models, pipe_identifier="test_pipe"
+    )
+    assert len(created) == 2, (
+        "AUTO_ATTACH_FUSION_FILTER is in the sync key, so flipping it must invalidate it"
+    )
 
 
 def test_maybe_schedule_model_metadata_sync_running_task_no_reschedule(pipe_instance) -> None:
@@ -613,23 +595,37 @@ def test_maybe_schedule_model_metadata_sync_running_task_no_reschedule(pipe_inst
 
 @pytest.mark.asyncio
 async def test_sync_model_metadata_returns_early_no_valves(pipe_instance_async) -> None:
-    """Returns early when no relevant valves enabled."""
+    """Returns early when no relevant valves enabled.
+
+    The off-list is derived from `Valves.model_fields` rather than hand-copied: this test
+    carried its own transcription, and it had already drifted four ways -- four valves that
+    default `True` and are in `syncs_owui_models` were missing, so the predicate was
+    already true and this never returned early. It asserted nothing, and would have
+    passed with the gate at the top of the body deleted outright. The assertion is the
+    part that makes the test prove what its name says: the early return is only observed
+    by what it prevents.
+    """
+    from open_webui_openrouter_pipe.core.config import Valves
+
     pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
-    pipe.valves.UPDATE_MODEL_CAPABILITIES = False
-    pipe.valves.UPDATE_MODEL_IMAGES = False
-    pipe.valves.UPDATE_MODEL_DESCRIPTIONS = False
-    pipe.valves.AUTO_ATTACH_WEB_TOOLS_FILTER = False
-    pipe.valves.AUTO_INSTALL_WEB_TOOLS_FILTER = False
-    pipe.valves.AUTO_DEFAULT_WEB_TOOLS_FILTER = False
-    pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER = False
-    pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = False
-    pipe.valves.AUTO_INSTALL_IMAGE_GEN_FILTER = False
-    pipe.valves.AUTO_INSTALL_FUSION_FILTER = False
-    pipe.valves.AUTO_ATTACH_FUSION_FILTER = False
+    for field_name, field in Valves.model_fields.items():
+        if field.annotation is bool:
+            setattr(pipe.valves, field_name, False)
+    pipe.valves.ADMIN_PROVIDER_ROUTING_MODELS = ""
+    pipe.valves.USER_PROVIDER_ROUTING_MODELS = ""
 
-    # Should return early without error
-    await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui([{"id": "test"}], pipe_identifier="test_pipe")
+    looked_up = AsyncMock(return_value=None)
+    with patch("open_webui.models.models.Models.get_model_by_id", new=looked_up):
+        await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
+            [{"id": "test"}], pipe_identifier="test_pipe"
+        )
+
+    assert looked_up.await_count == 0, (
+        "with every valve off the sync must return at its first gate, before it looks a "
+        f"model up: get_model_by_id was awaited {looked_up.await_count} time(s), so this "
+        "body ran a full pass"
+    )
 
 
 @pytest.mark.asyncio
@@ -4098,24 +4094,18 @@ class TestDescriptionsFetchGate:
         pass
 
     def _configure(self, pipe, *, descriptions: bool) -> list:
-        for valve_name in (
-            "UPDATE_MODEL_IMAGES",
-            "UPDATE_MODEL_CAPABILITIES",
-            "UPDATE_MODEL_DESCRIPTIONS",
-            "AUTO_ATTACH_WEB_TOOLS_FILTER",
-            "AUTO_INSTALL_WEB_TOOLS_FILTER",
-            "AUTO_DEFAULT_WEB_TOOLS_FILTER",
-            "AUTO_ATTACH_DIRECT_UPLOADS_FILTER",
-            "AUTO_INSTALL_DIRECT_UPLOADS_FILTER",
-            "AUTO_INSTALL_IMAGE_GEN_FILTER",
-            "AUTO_INSTALL_VIDEO_FILTERS",
-            "AUTO_ATTACH_VIDEO_FILTERS",
-            "AUTO_INSTALL_IMAGE_FILTERS",
-            "AUTO_ATTACH_IMAGE_FILTERS",
-            "AUTO_INSTALL_FUSION_FILTER",
-            "AUTO_ATTACH_FUSION_FILTER",
-        ):
-            setattr(pipe.valves, valve_name, False)
+        # Every bool field off, rather than a hand-copied list: this fixture used to carry
+        # its own transcription of the sync valves and had already drifted, so "everything
+        # off" stopped meaning that and the sync proceeded into the frontend fetch the
+        # arm asserts it never reaches. Derived from `Valves.model_fields` rather than from
+        # `syncs_owui_models`, because that predicate does not contain
+        # `ENABLE_VIDEO_GENERATION` while `needs_frontend_catalog` does -- an off-list from
+        # either one alone would still leave this reachable.
+        from open_webui_openrouter_pipe.core.config import Valves
+
+        for field_name, field in Valves.model_fields.items():
+            if field.annotation is bool:
+                setattr(pipe.valves, field_name, False)
         pipe.valves.UPDATE_MODEL_DESCRIPTIONS = descriptions
         pipe.valves.ADMIN_PROVIDER_ROUTING_MODELS = ""
         pipe.valves.USER_PROVIDER_ROUTING_MODELS = ""
@@ -4632,36 +4622,6 @@ def test_the_sync_s_gate_is_a_strict_subset_of_the_scheduler_s():
     routing = SimpleNamespace(**off)
     assert syncs_owui_models(routing, True) and schedules_owui_model_sync(routing, True), (
         "provider routing must reach both gates"
-    )
-
-
-def test_the_scheduler_carries_exactly_one_term_the_sync_does_not():
-    """Named, so promoting or dropping that term is a reviewed edit."""
-    from types import SimpleNamespace
-
-    from open_webui_openrouter_pipe.core.config import Valves
-    from open_webui_openrouter_pipe.models.catalog_manager import (
-        schedules_owui_model_sync,
-        syncs_owui_models,
-    )
-
-    names = [
-        name
-        for name, field in Valves.model_fields.items()
-        if field.annotation is bool and (name.startswith(("UPDATE_MODEL_", "AUTO_")))
-    ]
-    off = dict.fromkeys(names, False)
-    extra = sorted(
-        name
-        for name in names
-        if schedules_owui_model_sync(SimpleNamespace(**{**off, name: True}), False)
-        and not syncs_owui_models(SimpleNamespace(**{**off, name: True}), False)
-    )
-
-    assert extra == ["AUTO_ATTACH_IMAGE_GEN_FILTER"], (
-        f"the scheduler and the sync now differ by {extra}. Adding a term to only one of "
-        "them is the drift these predicates were composed to make impossible; if the "
-        "difference is intended, it belongs in schedules_owui_model_sync and here"
     )
 
 

@@ -411,6 +411,14 @@ async def test_a_second_attempt_still_puts_the_card_on_screen(
     Both attempts run the real loop and the real emitter; the only stub is the database
     write the artifact store performs, one seam below. Two partials and two cards, and the
     status selects the template, so no constant satisfies both rows.
+
+    The first attempt's thought only BUFFERS -- ``response.reasoning_summary_text.done``
+    is held in the reasoning buffer and publishes nothing of its own -- which is why the
+    attempt is still handed back. Its ``finally`` then flushes that deferred thought TO THE
+    EMITTER as a ``response.output_item.added`` reasoning item; the recorder below proves one
+    such item arrived, carrying the thought. What never reaches Open WebUI's *content*
+    accumulator is the answer text, so ``handed_back == ""`` holds because the content buffer
+    is untouched, not because the attempt published nothing at all.
     """
     pipe = pipe_instance_async
     pipe.valves.INSUFFICIENT_CREDITS_TEMPLATE = card
@@ -418,7 +426,12 @@ async def test_a_second_attempt_still_puts_the_card_on_screen(
     _persisting(pipe, monkeypatch)
 
     queue: asyncio.Queue[Any] = asyncio.Queue()
-    emitter = _stream_emitter(pipe, queue)
+    real_emitter = _stream_emitter(pipe, queue)
+    raw: list[dict[str, Any]] = []
+
+    async def recording_emitter(event: dict[str, Any]) -> None:
+        raw.append(event)
+        await real_emitter(event)
 
     def _rejection() -> OpenRouterAPIError:
         return OpenRouterAPIError(
@@ -430,19 +443,30 @@ async def test_a_second_attempt_still_puts_the_card_on_screen(
     async def first() -> Any:
         yield {"type": "response.created", "response": {"model": MODEL}}
         yield {
-            "type": "response.output_item.done",
+            "type": "response.reasoning_summary_text.done",
             "output_index": 0,
-            "item": {
-                "type": "reasoning",
-                "id": "rs-first",
-                "summary": [{"type": "summary_text", "text": "weighing the options"}],
-                "status": "completed",
-            },
+            "item_id": "rs-first",
+            "text": "weighing the options",
         }
         raise _rejection()
 
     with pytest.raises(OpenRouterAPIError):
-        await _drive_shared(pipe, emitter, first())
+        await _drive_shared(pipe, recording_emitter, first())
+
+    flushed = [
+        event.get("item")
+        for event in raw
+        if event.get("type") == "response.output_item.added"
+        and isinstance(event.get("item"), dict)
+        and event["item"].get("type") == "reasoning"
+    ]
+    assert len(flushed) == 1, (
+        "the thought attempt 1 buffered is deferred, not dropped, and its flush publishes it to "
+        f"the emitter as one reasoning item once the attempt is handed back. got {raw!r}"
+    )
+    assert "weighing the options" in str(flushed[0]), (
+        f"the flushed item is not the thought attempt 1 buffered. got {flushed[0]!r}"
+    )
 
     handed_back = _accumulated(queue)
 
@@ -452,7 +476,7 @@ async def test_a_second_attempt_still_puts_the_card_on_screen(
         yield {"type": "response.output_text.delta", "output_index": 0, "delta": partial}
         raise _rejection()
 
-    returned = await _drive_shared(pipe, emitter, second())
+    returned = await _drive_shared(pipe, recording_emitter, second())
     on_screen = handed_back + _accumulated(queue)
 
     _assert_both_in_order(on_screen, partial, marker)

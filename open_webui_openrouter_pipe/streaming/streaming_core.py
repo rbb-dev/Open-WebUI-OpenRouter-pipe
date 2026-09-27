@@ -499,6 +499,7 @@ class StreamingHandler:
         event_source: AsyncGenerator[dict[str, Any], None] | None = None,
         outcome_sink: dict[str, Any] | None = None,
         retry_handoff: dict[str, Any] | None = None,
+        emitter_supplied: bool | None = None,
     ):
         """
         Stream assistant responses incrementally, handling function calls, status updates, and tool usage.
@@ -507,7 +508,8 @@ class StreamingHandler:
         if session is None:
             raise RuntimeError("HTTP session is required for streaming")
 
-        emitter_supplied = event_emitter is not None
+        if emitter_supplied is None:
+            emitter_supplied = event_emitter is not None
         continuation_newline_pending = bool(body._continues_after_marker)
         continues_after_text = not continuation_newline_pending and bool((CONTINUED_REPLY.get() or "").strip())
         if event_emitter is None:
@@ -1028,6 +1030,9 @@ class StreamingHandler:
             return position
 
         async def _place_item(item: dict[str, Any]) -> int:
+            nonlocal retry_barrier_crossed
+            if emitter_supplied:
+                retry_barrier_crossed = True
             pending = assistant_message[recorded_message_chars:]
             if item.get("type") == "function_call" and not strip_hidden_marker_lines(pending).strip():
                 recorded = [*(await _capture_seeded_output() or []), *emitted_output_items]
@@ -3787,6 +3792,7 @@ class StreamingHandler:
         """
         metadata = {} if metadata is None else metadata
 
+        emitter_supplied = event_emitter is not None
         wrapped_emitter = _wrap_event_emitter(
             event_emitter,
             suppress_chat_messages=True,
@@ -3812,6 +3818,7 @@ class StreamingHandler:
             event_source=event_source,
             outcome_sink=outcome_sink,
             retry_handoff=retry_handoff,
+            emitter_supplied=emitter_supplied,
         )
 
 
