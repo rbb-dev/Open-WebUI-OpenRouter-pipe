@@ -87,6 +87,7 @@ from .video_intent import (
     render_intent_disclosure_block,
     resolve_intent,
     resolve_intent_user_setting,
+    resolve_reference_items,
     should_emit_confirmation_footer,
 )
 from .video_types import (
@@ -107,6 +108,14 @@ _OPTIONS_HOP_DEPTH = 3
 _MAX_VIDEO_OUTPUTS = 16
 
 _REFERENCE_KINDS_NEEDING_A_LINK = frozenset({"audio_url", "video_url"})
+
+
+def _reference_write_key(video_meta: dict[str, Any]) -> str:
+    for key in ("input_references", "video_attachments"):
+        items = video_meta.get(key)
+        if isinstance(items, list) and items:
+            return key
+    return "input_references"
 
 
 def _declared_input_kinds(video_model: Any) -> Callable[[str], bool]:
@@ -1885,8 +1894,8 @@ class VideoGenerationAdapter:
         event_emitter: Any = None,
         vetted: dict[str, bool] | None = None,
     ) -> list[dict[str, Any]]:
-        raw = video_meta.get("input_references")
-        if not isinstance(raw, list) or not raw:
+        raw = resolve_reference_items(video_meta)
+        if not raw:
             return []
         image_max = int(valves.VIDEO_FRAME_IMAGE_MAX_BYTES)
         asset_max = int(getattr(valves, "REMOTE_VIDEO_MAX_SIZE_MB", 500)) * 1024 * 1024
@@ -2425,8 +2434,7 @@ class VideoGenerationAdapter:
         frame_images = video_meta.get("frame_images")
         if not isinstance(frame_images, list):
             return
-        references = video_meta.get("input_references")
-        reference_list = references if isinstance(references, list) else []
+        reference_list = resolve_reference_items(video_meta)
         ordered_attachments: list[dict[str, Any]] = [
             item for item in (
                 [f for f in frame_images if isinstance(f, dict)]
@@ -2480,7 +2488,7 @@ class VideoGenerationAdapter:
                 target["frame_type"] = entry.target
                 retargeted += 1
         if moved or demoted:
-            references = video_meta.setdefault("input_references", [])
+            references = video_meta.setdefault(_reference_write_key(video_meta), [])
             if not isinstance(references, list):
                 references = []
                 video_meta["input_references"] = references
@@ -2629,7 +2637,7 @@ class VideoGenerationAdapter:
                             "content_type": "image/png",
                         })
                 elif entry.target == "input_reference":
-                    ir_list = video_meta.setdefault("input_references", [])
+                    ir_list = video_meta.setdefault(_reference_write_key(video_meta), [])
                     if isinstance(ir_list, list):
                         ir_list.append({
                             "id": frame_file_id,

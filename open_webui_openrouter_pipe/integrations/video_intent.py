@@ -319,7 +319,13 @@ def collect_prior_videos_from_messages(
     return results
 
 
-_ATTACHMENT_SOURCES = (("frame_images", "image"), ("input_references", None))
+_ATTACHMENT_SOURCES = (
+    ("frame_images", "image"),
+    ("input_references", None),
+    ("video_attachments", None),
+)
+
+_REFERENCE_FALLBACK_KEY = "video_attachments"
 
 
 def _attachment_family(mime_type: str) -> str:
@@ -330,6 +336,24 @@ def _attachment_family(mime_type: str) -> str:
     return "other"
 
 
+def resolve_reference_items(video_meta: dict[str, Any]) -> list[Any]:
+    if not isinstance(video_meta, dict):
+        return []
+    for key in ("input_references", _REFERENCE_FALLBACK_KEY):
+        items = video_meta.get(key)
+        if isinstance(items, list) and items:
+            return items
+    return []
+
+
+def _reference_source_keys(video_meta: dict[str, Any]) -> list[str]:
+    for key in ("input_references", _REFERENCE_FALLBACK_KEY):
+        items = video_meta.get(key)
+        if isinstance(items, list) and items:
+            return [key]
+    return []
+
+
 def collect_attachments_from_video_meta(
     video_meta: dict[str, Any],
 ) -> list[dict[str, Any]]:
@@ -337,8 +361,11 @@ def collect_attachments_from_video_meta(
     """
     if not isinstance(video_meta, dict):
         return []
+    reference_keys = set(_reference_source_keys(video_meta))
     flat: list[dict[str, Any]] = []
     for kind_key, kind in _ATTACHMENT_SOURCES:
+        if kind is None and kind_key not in reference_keys:
+            continue
         items = video_meta.get(kind_key)
         if not isinstance(items, list):
             continue

@@ -39,6 +39,7 @@ from ..core.config import (
     _PIPE_METADATA_KEY,
     _PROVIDER_SLUG_PATTERN,
 )
+from ..core.fusion_defaults import _REQUIRED_TOOL_CHOICE, has_active_fusion_entry
 from ..core.image_detail import image_detail_or_auto
 from ..core.timing_logger import timed
 from ..core.utils import (
@@ -1277,6 +1278,11 @@ def _responses_payload_to_chat_completions_payload(
     tool_choice = _responses_tool_choice_to_chat_tool_choice(responses_payload.get("tool_choice"))
     if tool_choice is not None:
         chat_payload["tool_choice"] = tool_choice
+
+    if chat_payload.get("tool_choice") == _REQUIRED_TOOL_CHOICE \
+            and not chat_payload.get("tools") \
+            and not has_active_fusion_entry(chat_payload.get("plugins")):
+        chat_payload.pop("tool_choice", None)
 
     chat_payload["messages"] = _responses_input_to_chat_messages(responses_payload.get("input"))
 

@@ -96,6 +96,12 @@ Both the filter and the pipe leave a caller-supplied `tool_choice` / `function_c
 skip forcing when the Fusion plugin is explicitly `enabled:false` (requiring a tool with no active
 Fusion would just force some other tool).
 
+There is one case with no escape hatch at all: a **non-fusion** model with *Always run Fusion* on
+and **no other tool in the request**. Nothing injects the Fusion tool on a model that is not the
+alias, so `required` would be a requirement the model cannot meet. The pipe drops the forced
+requirement for that turn rather than sending it. The Fusion plugin entry is still added, so the
+model can still call Fusion voluntarily — the request simply does not insist that it does.
+
 ## Engine backends
 
 The `FUSION_BACKEND` pipe valve chooses which engine actually runs a deliberation when
@@ -248,7 +254,7 @@ chat that uses the filter.
 
 | Valve | Default | Effect |
 |-------|---------|--------|
-| `ALLOW_ON_NON_FUSION_MODELS` | `False` | **Off (default):** the filter acts only on `openrouter/fusion`. If you attach it to **any other model**, its inlet returns immediately and injects nothing — no Fusion plugin, no `tool_choice` forcing — so a user's *Preset / Panel / Judge / **Always run Fusion*** settings have **no effect** on that model. **On:** the filter adds the Fusion panel (and forcing, if the user enabled *Always run Fusion*) to **any** model it is attached to. This valve is the **only** way to use Fusion on a model other than `openrouter/fusion`: manually attach the filter to that model, then turn this on. (The model must also support tool calling, since forcing sets `tool_choice="required"`.) |
+| `ALLOW_ON_NON_FUSION_MODELS` | `False` | **Off (default):** the filter acts only on `openrouter/fusion`. If you attach it to **any other model**, its inlet returns immediately and injects nothing — no Fusion plugin, no `tool_choice` forcing — so a user's *Preset / Panel / Judge / **Always run Fusion*** settings have **no effect** on that model. **On:** the filter adds the Fusion panel (and forcing, if the user enabled *Always run Fusion*) to **any** model it is attached to. This valve is the **only** way to use Fusion on a model other than `openrouter/fusion`: manually attach the filter to that model, then turn this on. (The model must also support tool calling, since forcing sets `tool_choice="required"` — though the forcing is dropped for a single turn that offers no tool at all.) |
 | `priority` | `0` | Filter execution order. OWUI runs a chat's attached filters sorted by `(priority, id)`, lowest first. |
 
 > **Gotcha:** attaching the filter to another model and enabling *Always run Fusion* does **nothing**

@@ -295,6 +295,9 @@ class FusionRunPlan(NamedTuple):
     judge_from_preset: bool = True
 
 
+_REQUIRED_TOOL_CHOICE = "required"
+
+
 def find_fusion_entry(plugins: Any) -> dict[str, Any] | None:
     if not isinstance(plugins, list):
         return None
@@ -302,6 +305,10 @@ def find_fusion_entry(plugins: Any) -> dict[str, Any] | None:
         if isinstance(entry, dict) and entry.get("id") == "fusion":
             return entry
     return None
+
+
+def has_active_fusion_entry(plugins: Any) -> bool:
+    return find_fusion_entry(plugins) is not None
 
 
 def resolve_fusion_run(entry: dict[str, Any] | None) -> FusionRunPlan:

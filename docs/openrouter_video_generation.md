@@ -1412,6 +1412,13 @@ or any image at all on a model with no frame support — is sent to the
 model as a **reference**: material for it to draw on rather than a fixed
 start or end point. Nothing you attach is silently discarded any more.
 
+The intent classifier sees the same list. Before this was fixed, a
+reference was invisible to it while remaining visible to the video model:
+the classifier was told the user had attached nothing, so a turn whose
+only attachment was a clip was downgraded to `text_to_video` and paid for
+a render that carried the clip along unreferenced. A clip-only turn now
+keeps the intent the user's own attachment implies.
+
 Frames set to `none` is the one case that sends nothing: you asked for
 no picture, so the images are not sent and are not referenced. They are
 left in the request, so they stay in the conversation and are still there

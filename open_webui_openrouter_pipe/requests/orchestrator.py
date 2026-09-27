@@ -33,7 +33,12 @@ from ..core.errors import (
     _parse_supported_effort_values,
     is_sign_in_failure,
 )
-from ..core.fusion_defaults import find_fusion_entry, resolve_fusion_run
+from ..core.fusion_defaults import (
+    _REQUIRED_TOOL_CHOICE,
+    find_fusion_entry,
+    has_active_fusion_entry,
+    resolve_fusion_run,
+)
 from ..core.logging_system import SessionLogger
 from ..core.timing_logger import timed
 from ..core.utils import (
@@ -375,6 +380,14 @@ def _ruled_out_tool_entries_stripped(
     if len(kept) == len(items):
         return None
     return kept
+
+
+def _required_with_no_callable_tool(responses_body: ResponsesBody) -> bool:
+    if responses_body.tools or responses_body.tool_choice != _REQUIRED_TOOL_CHOICE:
+        return False
+    if not is_fusion_model(responses_body.model):
+        return True
+    return not has_active_fusion_entry(responses_body.plugins)
 
 
 def _apply_server_tools_metadata(
@@ -1488,11 +1501,13 @@ class RequestOrchestrator:
                     "WebUI and this pipe added were not sent.",
                     responses_body.model,
                 )
-            if not responses_body.tools:
+            if not responses_body.tools and not has_active_fusion_entry(responses_body.plugins):
                 responses_body.tool_choice = None
                 responses_body.parallel_tool_calls = None
                 responses_body.stop_server_tools_when = None
 
+        if _required_with_no_callable_tool(responses_body):
+            responses_body.tool_choice = None
 
         setattr(responses_body, "api_model", OpenRouterModelRegistry.api_model_id(selected_model_id) or normalized_model_id)  # noqa: B010 - dynamic attribute not declared on ResponsesBody
 

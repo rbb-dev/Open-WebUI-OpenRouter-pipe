@@ -176,7 +176,8 @@ class Filter:
                 "whether the prompt needs the multi-model panel, so some replies answer "
                 "directly with no panel run. On: force the panel every message. Only "
                 "reliable when Fusion is the only tool in the request; other tool "
-                "integrations let the model satisfy the forcing with a different tool."
+                "integrations let the model satisfy the forcing with a different tool. The pipe "
+                "drops the requirement for a turn that has no tool at all."
             ),
         )
 
