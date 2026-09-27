@@ -45,6 +45,12 @@ from open_webui_openrouter_pipe.streaming.streaming_core import (
 # Helper Functions
 
 
+def _tool_error_text_of(exc: BaseException) -> str:
+    from open_webui_openrouter_pipe.tools.tool_executor import ToolExecutor
+
+    return ToolExecutor._tool_error_text(exc)
+
+
 def _make_fake_stream(events: list[dict[str, Any]]):
     """Create a fake streaming request generator from events."""
     async def fake_stream(self, session, request_body, **_kwargs):
@@ -4395,7 +4401,7 @@ class TestAdaptiveToolBudgeting:
             for item in second_input
             if isinstance(item, dict)
             and item.get("type") == "function_call_output"
-            and "failed before completion" in str(item.get("output", ""))
+            and item.get("output") == _tool_error_text_of(RuntimeError("simulated tool failure"))
         ]
         assert error_outputs, "Expected model-visible tool failure output"
         assert not persisted_rows
@@ -4406,7 +4412,7 @@ class TestAdaptiveToolBudgeting:
         assert fc_items[0]["item"]["status"] == "completed", "a call card reads as Open WebUI's own: arguments final"
         assert fco_items, "Expected a function_call_output card with error text"
         fco_text = fco_items[0]["item"]["output"][0]["text"]
-        assert "failed before completion" in fco_text
+        assert _tool_error_text_of(RuntimeError("simulated tool failure")) in fco_text
         assert fco_items[0]["item"]["status"] == "incomplete", (
             "a failed tool call is carded, and persisted, as a successful one"
         )

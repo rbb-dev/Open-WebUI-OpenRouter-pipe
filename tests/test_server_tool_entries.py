@@ -3,7 +3,7 @@ OpenRouter tools[] wire-format conversion."""
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 
 import aiohttp
@@ -113,7 +113,7 @@ def test_apply_server_tools_metadata_injects_tools_and_stop_guard():
             "stop_server_tools_when": [{"type": "max_cost", "max_cost_in_dollars": 0.5}],
         }
     }
-    _apply_server_tools_metadata(body, meta)
+    _apply_server_tools_metadata(body, meta, valves=Pipe.Valves())
     types = [t["type"] for t in (body.tools or [])]
     assert "openrouter:web_search" in types
     assert "openrouter:advisor" in types
@@ -123,50 +123,41 @@ def test_apply_server_tools_metadata_injects_tools_and_stop_guard():
 def test_apply_server_tools_metadata_preserves_existing_tools():
     """Server tools are appended after any pre-existing (function) tools, not replacing them."""
     body = ResponsesBody(model="x", input=[], tools=[{"type": "function", "name": "f"}])
-    _apply_server_tools_metadata(body, {"openrouter_pipe": {"server_tools": {"datetime": {}}}})
+    _apply_server_tools_metadata(body, {"openrouter_pipe": {"server_tools": {"datetime": {}}}}, valves=Pipe.Valves())
     types = [t.get("type") for t in (body.tools or [])]
     assert types == ["function", "openrouter:datetime"]
 
 
 def test_apply_server_tools_metadata_noop_when_empty():
     body = ResponsesBody(model="x", input=[])
-    _apply_server_tools_metadata(body, {})
+    _apply_server_tools_metadata(body, {}, valves=Pipe.Valves())
     assert not body.tools
     assert getattr(body, "stop_server_tools_when", None) is None
 
 
 def test_apply_server_tools_metadata_no_stop_guard_when_absent():
     body = ResponsesBody(model="x", input=[])
-    _apply_server_tools_metadata(body, {"openrouter_pipe": {"server_tools": {"datetime": {}}}})
+    _apply_server_tools_metadata(body, {"openrouter_pipe": {"server_tools": {"datetime": {}}}}, valves=Pipe.Valves())
     assert getattr(body, "stop_server_tools_when", None) is None
 
 
-@pytest.mark.parametrize(
-    ("size", "ratio", "shape"),
-    [("1024x1024", "16:9", "1:1"), ("1920x1080", "1:1", "16:9")],
-)
-@pytest.mark.asyncio
-async def test_a_size_superseding_a_ratio_on_the_image_tool_is_told_to_the_user(
-    monkeypatch, size, ratio, shape
-):
-    """The ratio the pipe removes from the image tool reaches the chat, not just the wire.
+SIZE_RATIO_PAIRS = [("1024x1024", "16:9", "1:1"), ("1920x1080", "1:1", "16:9")]
 
-    Both controls are drawn together on 24 of the 40 recorded contracts, so choosing
-    exact pixels and a shape that disagrees with them is an ordinary thing to do. The
-    pixels win and the shape is withheld; a user who is not told sees a picture in the
-    wrong shape with nothing to explain it.
 
-    The assertion is on the notification the emitter received, because that is the only
-    place the user reads. Two rows whose pixels imply DIFFERENT shapes, so a fixed
-    string cannot satisfy both -- the second row keeps the ratio the first row drops.
-    """
+async def _image_size_notice(monkeypatch, size, ratio, *, image_generation_on=True):
+    """One request whose metadata asks for the image tool; returns the notifications and the tools it sent."""
     pipe = Pipe()
     try:
         orchestrator = RequestOrchestrator(pipe, logging.getLogger("test_supersede"))
         events: list[dict[str, Any]] = []
+        sent: list[dict[str, Any]] = []
 
         async def emitter(event):
             events.append(event)
+
+        async def loop(body, _valves, _emitter, _metadata, *args, **kwargs):
+            sent.append(body)
+            return "drawn"
 
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
@@ -177,11 +168,13 @@ async def test_a_size_superseding_a_ratio_on_the_image_tool_is_told_to_the_user(
         pipe._streaming_handler._select_llm_endpoint_with_forced = Mock(
             return_value=("chat_completions", False)
         )
-        pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="drawn")
+        setattr(pipe._streaming_handler, "_run_streaming_loop", loop)
 
         valves = Mock()
         for name, value in _CHAT_VALVES.items():
             setattr(valves, name, value)
+        if not image_generation_on:
+            valves.ENABLE_IMAGE_GENERATION = False
 
         await orchestrator.process_request(
             body={"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "hi"}]},
@@ -220,6 +213,30 @@ async def test_a_size_superseding_a_ratio_on_the_image_tool_is_told_to_the_user(
         for event in events
         if event.get("type") == "notification"
     ]
+    return told, [t.get("type") for t in (cast(Any, sent[0]).tools or []) if isinstance(t, dict)] if sent else []
+
+
+@pytest.mark.parametrize(
+    ("size", "ratio", "shape"),
+    SIZE_RATIO_PAIRS,
+)
+@pytest.mark.asyncio
+async def test_a_size_superseding_a_ratio_on_the_image_tool_is_told_to_the_user(
+    monkeypatch, size, ratio, shape
+):
+    """The ratio the pipe removes from the image tool reaches the chat, not just the wire.
+
+    Both controls are drawn together on 24 of the 40 recorded contracts, so choosing
+    exact pixels and a shape that disagrees with them is an ordinary thing to do. The
+    pixels win and the shape is withheld; a user who is not told sees a picture in the
+    wrong shape with nothing to explain it.
+
+    The assertion is on the notification the emitter received, because that is the only
+    place the user reads. Two rows whose pixels imply DIFFERENT shapes, so a fixed
+    string cannot satisfy both -- the second row keeps the ratio the first row drops.
+    """
+    told, _sent = await _image_size_notice(monkeypatch, size, ratio)
+
     assert any(ratio in note and "was not sent" in note for note in told), (
         f"aspect_ratio={ratio!r} was removed because size={size!r} is {shape}, and the "
         f"user was never told; the notifications were {told!r}"

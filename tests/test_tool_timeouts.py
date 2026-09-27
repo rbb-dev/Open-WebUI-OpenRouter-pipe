@@ -561,41 +561,6 @@ async def test_ask_user_alone_in_its_turn_runs(pipe_instance_async, monkeypatch)
     assert outputs["c1"]["status"] == "completed"
 
 
-@pytest.mark.asyncio
-async def test_without_open_webuis_checker_ask_user_sharing_its_turn_is_still_refused(
-    pipe_instance_async, monkeypatch
-):
-    # The import of Open WebUI's checker is guarded, so an install that cannot supply it leaves the pipe to decide
-    # on its own. It must reach the same two answers the checker gives.
-    monkeypatch.setattr(tool_executor_module, "_owui_get_ask_user_tool_calls", None)
-    trace: list[str] = []
-    registry = {
-        "ask_user": _builtin_ask_user(_answers_after(1, trace)),
-        "lookup": _entry(_lookup(trace), tool_type="function", name="lookup"),
-    }
-
-    outputs, _ = await _run(
-        pipe_instance_async, monkeypatch, registry, [_call("c1", "ask_user", _ask(90_000)), _call("c2", "lookup")]
-    )
-
-    assert trace == ["looked up"]
-    assert outputs["c1"]["status"] != "completed"
-    assert "ask_user" in _text(outputs["c1"])
-    assert outputs["c2"]["status"] == "completed"
-
-
-@pytest.mark.asyncio
-async def test_without_open_webuis_checker_an_ask_user_on_its_own_still_runs(pipe_instance_async, monkeypatch):
-    monkeypatch.setattr(tool_executor_module, "_owui_get_ask_user_tool_calls", None)
-    trace: list[str] = []
-    registry = {"ask_user": _builtin_ask_user(_answers_after(1, trace))}
-
-    outputs, _ = await _run(pipe_instance_async, monkeypatch, registry, [_call("c1", "ask_user", _ask(90_000))])
-
-    assert trace == ["asked", "answered"]
-    assert outputs["c1"]["status"] == "completed"
-
-
 # --- what a failed tool tells the model -------------------------------------------------------------------------------
 
 

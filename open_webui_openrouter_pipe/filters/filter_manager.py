@@ -14,6 +14,7 @@ FilterManager handles:
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import itertools
 import json
@@ -46,6 +47,7 @@ from ..core.timing_logger import timed
 from ..core.utils import OWUI_FUNCTION_ID_ILLEGAL_RE as _MODEL_FILTER_ID_RE
 from ..core.warn_latch import warn_level
 from ..integrations.provider_options import CHAT_PROVIDER_KEYS, TRANSPORT_PROVIDER_KEYS
+from ..models.catalog_manager import WEB_TOOL_SWITCHES, every_web_tool_is_off
 
 _ROUTING_CONTROL_KEYS: dict[str, str] = {
     "ORDER": "order",
@@ -77,6 +79,30 @@ _PROVIDER_NAME_ALLOWLIST_RE = re.compile(r"[^A-Za-z0-9 \-_.]")
 _PROVIDER_NAME_COLLAPSE_RE = re.compile(r"[ _]{2,}")
 
 _warned_stale_filter_rows: set[str] = set()
+
+
+def _is_web_tools_filter(content: Any) -> bool:
+    return isinstance(content, str) and _OPENROUTER_WEB_TOOLS_FILTER_MARKER in content and "class Filter" in content
+
+
+def _offered_web_tools(content: str) -> frozenset[str] | None:
+    try:
+        tree = ast.parse(content)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return None
+    toggles = {toggle for _, toggle, _ in WEB_TOOL_SWITCHES}
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == "Filter":
+            for inner in node.body:
+                if isinstance(inner, ast.ClassDef) and inner.name == "UserValves":
+                    return frozenset(
+                        stmt.target.id
+                        for stmt in inner.body
+                        if isinstance(stmt, ast.AnnAssign)
+                        and isinstance(stmt.target, ast.Name)
+                        and stmt.target.id in toggles
+                    )
+    return None
 
 
 def _merged_meta(row: Any, desired_meta: dict[str, Any]) -> dict[str, Any]:
@@ -324,6 +350,7 @@ class FilterManager:
         log_label: str,
         matches_candidate: Callable[[str], bool],
         primary_marker: str | None = None,
+        prefer_id: str | None = None,
     ) -> str | None:
         """Generic filter install/update lifecycle shared by all filter types.
 
@@ -366,7 +393,14 @@ class FilterManager:
                 marked = [f for f in candidates if primary_marker in (getattr(f, "content", "") or "")]
                 if marked:
                     candidates = marked
-            chosen = max(candidates, key=lambda f: int(getattr(f, "updated_at", 0) or 0))
+            chosen = max(
+                candidates,
+                key=lambda f: (
+                    bool(getattr(f, "is_active", False)),
+                    prefer_id is not None and getattr(f, "id", None) == prefer_id,
+                    int(getattr(f, "updated_at", 0) or 0),
+                ),
+            )
             if len(candidates) > 1:
                 self.logger.warning(
                     "Multiple %s candidates found (%d); using '%s'.",
@@ -915,11 +949,6 @@ class FilterManager:
     ) -> str | None:
         """Ensure the OpenRouter Web Tools filter exists (and is up to date), returning its OWUI function id."""
 
-        def _matches(content: str) -> bool:
-            if not isinstance(content, str) or not content:
-                return False
-            return _OPENROUTER_WEB_TOOLS_FILTER_MARKER in content and "class Filter" in content
-
         return await self._ensure_filter_installed(
             desired_source=self.render_openrouter_web_tools_filter_source(
                 enable_web_search=enable_web_search,
@@ -946,9 +975,81 @@ class FilterManager:
             preferred_id=_OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID,
             auto_install_valve="AUTO_INSTALL_WEB_TOOLS_FILTER",
             log_label="OpenRouter Web Tools filter",
-            matches_candidate=_matches,
+            matches_candidate=_is_web_tools_filter,
             primary_marker=_OPENROUTER_WEB_TOOLS_FILTER_MARKER,
+            prefer_id=_OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID,
         )
+
+    async def repair_web_tools_filters(self) -> None:
+        switched_off = {toggle for switch, toggle, _ in WEB_TOOL_SWITCHES if not getattr(self.valves, switch)}
+        if not switched_off:
+            return
+        try:
+            from open_webui.models.functions import Functions  # type: ignore
+        except ImportError:
+            return
+        except Exception:
+            self.logger.warning(
+                "open_webui.models.functions failed to import for a reason other than absence; "
+                "the Web Tools filters cannot be repaired",
+                exc_info=True,
+            )
+            return
+
+        try:
+            found = await Functions.get_functions_by_type("filter", active_only=True)
+        except Exception:
+            self.logger.warning("Could not list the installed Web Tools filters", exc_info=True)
+            return
+        rows = [row for row in found if _is_web_tools_filter(getattr(row, "content", ""))]
+
+        if every_web_tool_is_off(self.valves):
+            for row in rows:
+                if getattr(row, "is_active", False):
+                    try:
+                        await Functions.update_function_by_id(row.id, {"is_active": False})
+                        self.logger.info("Disabled OpenRouter Web Tools filter %r (all tools disabled)", row.id)
+                    except Exception:
+                        self.logger.debug("Disabling Web Tools filter %s failed", row.id, exc_info=True)
+            return
+
+        for row in rows:
+            offered = _offered_web_tools(getattr(row, "content", ""))
+            row_id = getattr(row, "id", "")
+            if offered is None:
+                self.logger.log(
+                    warn_level(_warned_stale_filter_rows, f"web_tools_unreadable:{row_id}:{','.join(sorted(switched_off))}"),
+                    "OpenRouter Web Tools filter %r still offers %s, which this pipe has switched off, but its "
+                    "code could not be read, so it is left exactly as it is: update it or remove it.%s",
+                    row_id,
+                    ", ".join(sorted(switched_off)),
+                    (
+                        " Chats using it get no web search at all until you do."
+                        if "WEB_SEARCH" in switched_off
+                        else ""
+                    ),
+                )
+                continue
+            dropped = offered & switched_off
+            if not dropped:
+                continue
+            source = self.render_openrouter_web_tools_filter_source(
+                **{kwarg: (toggle in offered and toggle not in dropped) for _, toggle, kwarg in WEB_TOOL_SWITCHES}
+            ).strip() + "\n"
+            try:
+                await Functions.update_function_by_id(row_id, {"content": source})
+            except Exception:
+                self.logger.debug("Rewriting Web Tools filter %s failed", row_id, exc_info=True)
+                continue
+            self.logger.warning(
+                "OpenRouter Web Tools filter %r still offered %s, which this pipe has switched off. Its code was "
+                "replaced with the pipe's current version for the tools it still offers (%s); its name, settings "
+                "and on/off state are kept, and any hand edit in its code is gone. Switching the tool back on does "
+                "not add it back.",
+                row_id,
+                ", ".join(sorted(dropped)),
+                ", ".join(sorted(offered - dropped)) or "none",
+            )
 
     # OPENROUTER FUSION FILTER
 

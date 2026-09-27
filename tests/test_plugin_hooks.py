@@ -451,7 +451,7 @@ async def test_a_failing_filter_install_is_reported_once_across_repeated_pipes_c
     # observed one, so the check passes and proves nothing. Discovery is still used --
     # below -- to catch a site ADDED without a driver, which a literal cannot see.
     expected_sites = {
-        "catalog_refresh", "catalog_cached", "web_tools", "fusion", "image_gen",
+        "catalog_refresh", "catalog_cached", "web_tools", "web_tools_repair", "fusion", "image_gen",
         "image_gen_model",
         "video", "direct_uploads", "provider_routing", "stale_prune", "on_models",
         "zdr_list_unavailable", "models_missing", "variant_base_missing",

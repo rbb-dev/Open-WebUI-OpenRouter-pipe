@@ -31,7 +31,7 @@ When OpenRouter Web Search is enabled for a request, the Web Tools filter sets `
 - paying twice,
 - ambiguous citation sources.
 
-If OpenRouter Web Search is **disabled** (user turns off the `WEB_SEARCH` toggle in the filter), OWUI Web Search is left untouched and works normally.
+If OpenRouter Web Search is **disabled** (user turns off the `WEB_SEARCH` toggle in the filter), OWUI Web Search is left untouched and works normally. When an *admin* switches OpenRouter web search off on the pipe, the pipe rewrites every Web Tools filter without it, so the suppression above stops and OWUI Web Search comes back.
 
 ---
 
@@ -41,7 +41,7 @@ Open WebUI does not provide a "pipe can inject new toggles" frontend extension p
 
 The pipe implements OpenRouter Web Search as part of the **OpenRouter Web Tools** toggleable filter:
 
-- The pipe can **auto-install / auto-update** this filter when `AUTO_INSTALL_WEB_TOOLS_FILTER` is enabled.
+- The pipe can **auto-install / auto-update** this filter when `AUTO_INSTALL_WEB_TOOLS_FILTER` is enabled. A switch-off reaches every copy of the filter whether it is on or off.
 - The pipe can **auto-attach** it to pipe models when `AUTO_ATTACH_WEB_TOOLS_FILTER` is enabled.
 - The pipe can **enable it by default** on models when `AUTO_DEFAULT_WEB_TOOLS_FILTER` is enabled.
 
@@ -116,6 +116,15 @@ Result: Users see **OpenRouter Web Tools** on all pipe models but must enable it
 
 - This is by design. The Web Tools filter suppresses OWUI Web Search when OpenRouter Web Search is active, to prevent double-searching.
 - To use OWUI Web Search instead, disable the `WEB_SEARCH` user valve in the filter's settings, or disable the Web Tools toggle entirely for that chat.
+
+### "Open WebUI's search stopped after OpenRouter web search was switched off"
+
+- Expected, and it clears itself. The Web Tools filter suppresses Open WebUI's search, so a filter that still offers
+  web search keeps it off even after the switch.
+- The pipe rewrites every Web Tools filter without the switched-off tool at the next model-list refresh, or in the
+  background after the first message that still asks for it. A message sent before the rewrite lands gets neither
+  search; later ones get Open WebUI's.
+- If a log warning says a filter's code could not be read, the pipe left that filter alone: update it or remove it.
 
 ### "I see the old OpenRouter Search filter"
 

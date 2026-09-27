@@ -241,7 +241,7 @@ def server_tool_result_text(item: dict[str, Any]) -> str:
         return str(result_data)
 
 
-def continued_turn_counts(items: Any) -> tuple[int, int, bool]:
+def current_turn_items(items: Any) -> list[dict[str, Any]]:
     turn: list[dict[str, Any]] = []
     if isinstance(items, list):
         for index, item in enumerate(items):
@@ -251,6 +251,11 @@ def continued_turn_counts(items: Any) -> tuple[int, int, bool]:
                 turn = []
             else:
                 turn.append(item)
+    return turn
+
+
+def continued_turn_counts(items: Any) -> tuple[int, int, bool]:
+    turn = current_turn_items(items)
     calls = sum(
         1 for item in turn if item.get("type") == "function_call" and not is_server_tool_call_id(item.get("call_id"))
     )

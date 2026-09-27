@@ -1700,31 +1700,31 @@ class Valves(BaseModel):
     )
     ENABLE_WEB_SEARCH: bool = Field(
         default=True,
-        description="Enable the OpenRouter Web Search server tool. When disabled, web search toggles are hidden from users.",
+        description="Enable the OpenRouter Web Search server tool. When disabled, web search toggles are hidden from users, and the pipe stops sending the tool at once, even while an out-of-date filter or the request itself still asks for it; every Web Tools filter that still offers it is rewritten without it at the next model-list refresh, or after the first message that still asks for it.",
     )
     ENABLE_WEB_FETCH: bool = Field(
         default=True,
-        description="Enable the OpenRouter Web Fetch server tool. When disabled, web fetch toggles are hidden from users.",
+        description="Enable the OpenRouter Web Fetch server tool. When disabled, web fetch toggles are hidden from users, and the pipe stops sending the tool at once, even while an out-of-date filter or the request itself still asks for it; every Web Tools filter that still offers it is rewritten without it at the next model-list refresh, or after the first message that still asks for it.",
     )
     ENABLE_DATETIME: bool = Field(
         default=True,
-        description="Enable the OpenRouter Datetime server tool (free, no additional cost). When disabled, datetime toggles are hidden from users.",
+        description="Enable the OpenRouter Datetime server tool (free, no additional cost). When disabled, datetime toggles are hidden from users, and the pipe stops sending the tool at once, even while an out-of-date filter or the request itself still asks for it; every Web Tools filter that still offers it is rewritten without it at the next model-list refresh, or after the first message that still asks for it.",
     )
     ENABLE_ADVISOR: bool = Field(
         default=True,
-        description="Enable the OpenRouter Advisor server tool (consult a higher-intelligence model mid-generation). When disabled, advisor toggles are hidden from users.",
+        description="Enable the OpenRouter Advisor server tool (consult a higher-intelligence model mid-generation). When disabled, advisor toggles are hidden from users, and the pipe stops sending the tool at once, even while an out-of-date filter or the request itself still asks for it; every Web Tools filter that still offers it is rewritten without it at the next model-list refresh, or after the first message that still asks for it.",
     )
     ENABLE_SUBAGENT: bool = Field(
         default=True,
-        description="Enable the OpenRouter Subagent server tool (delegate tasks to a worker model an admin chooses). When disabled, subagent toggles are hidden from users.",
+        description="Enable the OpenRouter Subagent server tool (delegate tasks to a worker model an admin chooses). When disabled, subagent toggles are hidden from users, and the pipe stops sending the tool at once, even while an out-of-date filter or the request itself still asks for it; every Web Tools filter that still offers it is rewritten without it at the next model-list refresh, or after the first message that still asks for it.",
     )
     ENABLE_SEARCH_MODELS: bool = Field(
         default=True,
-        description="Enable the OpenRouter model-search server tool (let the model search the OpenRouter catalog). When disabled, model-search toggles are hidden from users.",
+        description="Enable the OpenRouter model-search server tool (let the model search the OpenRouter catalog). When disabled, model-search toggles are hidden from users, and the pipe stops sending the tool at once, even while an out-of-date filter or the request itself still asks for it; every Web Tools filter that still offers it is rewritten without it at the next model-list refresh, or after the first message that still asks for it.",
     )
     ENABLE_IMAGE_GENERATION: bool = Field(
         default=True,
-        description="Enable the OpenRouter Image Generation server tool. When disabled, image generation toggles are hidden from users.",
+        description="Enable the OpenRouter Image Generation server tool. When disabled, image generation toggles are hidden from users, and the pipe stops sending the tool at once, even while an out-of-date filter or the request itself still asks for it.",
     )
     ENABLE_VIDEO_GENERATION: bool = Field(
         default=True,
@@ -1736,7 +1736,9 @@ class Valves(BaseModel):
 
     AUTO_INSTALL_WEB_TOOLS_FILTER: bool = Field(
         default=True,
-        description="Automatically install/update the OpenRouter Web Tools filter function in Open WebUI.",
+        description=(
+            "Automatically install/update the OpenRouter Web Tools filter function in Open WebUI. When off, the pipe neither installs nor updates it, except that a web tool switched off on the pipe is taken out of every Web Tools filter: that filter's code is replaced with the pipe's current version for the tools it still offers (hand edits in it are lost), and a warning is logged. Switching the tool back on does not add it back."
+        ),
     )
     AUTO_ATTACH_WEB_TOOLS_FILTER: bool = Field(
         default=True,

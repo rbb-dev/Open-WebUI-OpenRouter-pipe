@@ -59,17 +59,17 @@ These valves on the pipe control which server tools are available and how the co
 
 ### Tool gate valves
 
-Each tool has an enable gate. When a gate is disabled, the corresponding tool's user valves are excluded from the generated filter source entirely (users cannot see or enable the tool).
+Each tool has an enable gate. When a gate is disabled, the corresponding tool's user valves are excluded from the generated filter source entirely (users cannot see or enable the tool). The gate is also re-checked on every request: while it is off, the pipe never sends that tool, whether a filter writes it, the request itself lists it, or an internal-Fusion member re-runs a filter inlet. Every Web Tools filter still offering a switched-off tool is rewritten without it (see below).
 
 | Valve | Type | Default | Purpose |
 | --- | --- | --- | --- |
-| `ENABLE_WEB_SEARCH` | `bool` | `True` | Enable the OpenRouter Web Search server tool. When disabled, web search toggles are hidden from users. |
-| `ENABLE_WEB_FETCH` | `bool` | `True` | Enable the OpenRouter Web Fetch server tool. When disabled, web fetch toggles are hidden from users. |
-| `ENABLE_DATETIME` | `bool` | `True` | Enable the OpenRouter Datetime server tool (free, no additional cost). When disabled, datetime toggles are hidden from users. |
-| `ENABLE_ADVISOR` | `bool` | `True` | Enable the OpenRouter Advisor server tool (consult a higher-intelligence model mid-generation). When disabled, advisor toggles are hidden from users. |
-| `ENABLE_SUBAGENT` | `bool` | `True` | Enable the OpenRouter Subagent server tool (delegate tasks to a worker model an admin chooses). When disabled, subagent toggles are hidden from users. |
-| `ENABLE_SEARCH_MODELS` | `bool` | `True` | Enable the OpenRouter model-search server tool (let the model search the OpenRouter catalog). When disabled, model-search toggles are hidden from users. |
-| `ENABLE_IMAGE_GENERATION` | `bool` | `True` | Enable the OpenRouter Image Generation server tool. When disabled, image generation toggles are hidden from users. |
+| `ENABLE_WEB_SEARCH` | `bool` | `True` | Enable the OpenRouter Web Search server tool. When disabled, web search toggles are hidden from users, and the pipe stops sending the tool at once, even while an out-of-date filter or the request itself still asks for it; every Web Tools filter that still offers it is rewritten without it at the next model-list refresh, or after the first message that still asks for it.  |
+| `ENABLE_WEB_FETCH` | `bool` | `True` | Enable the OpenRouter Web Fetch server tool. When disabled, web fetch toggles are hidden from users, and the pipe stops sending the tool at once, even while an out-of-date filter or the request itself still asks for it; every Web Tools filter that still offers it is rewritten without it at the next model-list refresh, or after the first message that still asks for it.  |
+| `ENABLE_DATETIME` | `bool` | `True` | Enable the OpenRouter Datetime server tool (free, no additional cost). When disabled, datetime toggles are hidden from users, and the pipe stops sending the tool at once, even while an out-of-date filter or the request itself still asks for it; every Web Tools filter that still offers it is rewritten without it at the next model-list refresh, or after the first message that still asks for it.  |
+| `ENABLE_ADVISOR` | `bool` | `True` | Enable the OpenRouter Advisor server tool (consult a higher-intelligence model mid-generation). When disabled, advisor toggles are hidden from users, and the pipe stops sending the tool at once, even while an out-of-date filter or the request itself still asks for it; every Web Tools filter that still offers it is rewritten without it at the next model-list refresh, or after the first message that still asks for it.  |
+| `ENABLE_SUBAGENT` | `bool` | `True` | Enable the OpenRouter Subagent server tool (delegate tasks to a worker model an admin chooses). When disabled, subagent toggles are hidden from users, and the pipe stops sending the tool at once, even while an out-of-date filter or the request itself still asks for it; every Web Tools filter that still offers it is rewritten without it at the next model-list refresh, or after the first message that still asks for it.  |
+| `ENABLE_SEARCH_MODELS` | `bool` | `True` | Enable the OpenRouter model-search server tool (let the model search the OpenRouter catalog). When disabled, model-search toggles are hidden from users, and the pipe stops sending the tool at once, even while an out-of-date filter or the request itself still asks for it; every Web Tools filter that still offers it is rewritten without it at the next model-list refresh, or after the first message that still asks for it.  |
+| `ENABLE_IMAGE_GENERATION` | `bool` | `True` | Enable the OpenRouter Image Generation server tool. When disabled, image generation toggles are hidden from users, and the pipe stops sending the tool at once, even while an out-of-date filter or the request itself still asks for it. |
 
 ### Filter lifecycle valves
 
@@ -77,7 +77,7 @@ These control auto-installation, auto-attachment, and default-on behavior for th
 
 | Valve | Type | Default | Purpose |
 | --- | --- | --- | --- |
-| `AUTO_INSTALL_WEB_TOOLS_FILTER` | `bool` | `True` | Automatically install/update the OpenRouter Web Tools filter function in Open WebUI. |
+| `AUTO_INSTALL_WEB_TOOLS_FILTER` | `bool` | `True` | Automatically install/update the OpenRouter Web Tools filter function in Open WebUI. When off, the pipe neither installs nor updates it, except that a web tool switched off on the pipe is taken out of every Web Tools filter: that filter's code is replaced with the pipe's current version for the tools it still offers (hand edits in it are lost), and a warning is logged. Switching the tool back on does not add it back. |
 | `AUTO_ATTACH_WEB_TOOLS_FILTER` | `bool` | `True` | Automatically attach the OpenRouter Web Tools filter to all pipe models (so the toggle appears in the Integrations menu). |
 | `AUTO_DEFAULT_WEB_TOOLS_FILTER` | `bool` | `False` | When enabled, marks the OpenRouter Web Tools filter as a Default Filter on models (pre-enabled per chat; users can still turn it off). |
 | `AUTO_INSTALL_IMAGE_GEN_FILTER` | `bool` | `True` | Automatically install/update the OpenRouter Image Generation filter function in Open WebUI. |
@@ -212,7 +212,7 @@ Each filter's `inlet` method:
 2. Reads admin valves for engine/limit configuration.
 3. Builds a `server_tools` dict mapping tool names to their parameters.
 4. Writes the dict into `__metadata__["openrouter_pipe"]["server_tools"]`.
-5. (Web Tools filter only) When web search is enabled, suppresses Open WebUI's native web search by setting `body["features"]["web_search"] = False` to prevent double-searching.
+5. (Web Tools filter only) When web search is enabled, suppresses Open WebUI's native web search by setting `body["features"]["web_search"] = False` to prevent double-searching. When an admin switches web search off, the pipe rewrites the filter without it, so this suppression stops.
 
 The Image Generation filter merges into any existing `server_tools` dict (so both filters can run on the same request without overwriting each other).
 
@@ -221,8 +221,9 @@ The Image Generation filter merges into any existing `server_tools` dict (so bot
 The pipe's request orchestrator:
 
 1. Reads `__metadata__["openrouter_pipe"]["server_tools"]`.
-2. For each tool in the dict, builds a tool spec (`{"type": "<tool_name>", ...params}`) and appends it to the `tools` array in the outgoing API request body.
+2. For each tool in the dict, builds a tool spec (`{"type": "<tool_name>", ...params}`) and appends it to the `tools` array in the outgoing API request body, leaving out every tool whose `ENABLE_*` gate is off, whether a filter writes it or the request lists it.
 3. The tools array is sent alongside any Open WebUI registry tools or Direct Tool Server tools.
+4. When the metadata asks for a web tool whose gate is off, it schedules a background repair of the Web Tools filters (at most once every five minutes per worker). The request never waits for it.
 
 ---
 
@@ -257,9 +258,29 @@ See: [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry
 
 All `ENABLE_*` gates are `True` and all `AUTO_INSTALL_*` and `AUTO_ATTACH_*` valves are `True`, while `AUTO_DEFAULT_WEB_TOOLS_FILTER` is `False`. The OpenRouter Web Tools toggle appears on every tool-capable model but starts off; users enable it per chat, and within it Web Search and Datetime are on by default while Web Fetch, Advisor, Subagent, and Model Search are opt-in.
 
+### When a web tool is switched off
+
+Switching one of the six web tools off changes more than the request: a Web Tools filter written before the switch
+still offers the tool, and its inlet still suppresses Open WebUI's own search, so the switch would appear to do
+nothing. The pipe repairs the rows:
+
+- **Which filters are affected:** every active Web Tools filter, whatever its id, whether auto-install is on or off.
+- **What "offers" means:** the per-chat switches the filter's `UserValves` declares, read from its code without running it.
+- **What is written:** the code is replaced with the pipe's current version offering the tools it still offers. Its
+  name, settings and on/off state are kept; a filter never gains a tool it did not offer, so switching a tool back on
+  does not add it back. Hand edits in the code are lost and a warning names the row and the tools removed.
+- **A filter the pipe cannot read** (its code does not parse, or has no `Filter.UserValves`) is left exactly as it is
+  and named in a warning; repeats for the same row and set of switched-off tools log below WARNING.
+- **With every web tool off,** every Web Tools filter is switched off.
+- **When it happens:** at the next model-list refresh, or in the background after a message that still asks for a
+  switched-off web tool. That message has already gone out without Open WebUI's search; the repair is for the chats
+  after it.
+- **With several copies:** the pipe maintains and attaches `openrouter_web_tools` whenever a row with that id exists, and
+  otherwise the copy the pipe most recently rewrote.
+
 ### Disable image generation
 
-Set `ENABLE_IMAGE_GENERATION=False`. The Image Generation filter will not be generated or installed. Alternatively, set `AUTO_INSTALL_IMAGE_GEN_FILTER=False` to keep the gate open but skip auto-installation.
+Set `ENABLE_IMAGE_GENERATION=False`. The Image Generation filter will not be generated or installed, the tool stops being sent at once, and the filter is switched off at the next model-list refresh. Alternatively, set `AUTO_INSTALL_IMAGE_GEN_FILTER=False` to keep the gate open but skip auto-installation.
 
 ### Web search opt-in (lower cost)
 

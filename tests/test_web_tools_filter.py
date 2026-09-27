@@ -377,3 +377,38 @@ def _configure(pipe, **switches: bool) -> None:
     pipe.valves.AUTO_INSTALL_WEB_TOOLS_FILTER = True
     for name, value in switches.items():
         setattr(pipe.valves, name, value)
+
+
+# ---------------------------------------------------------------------------
+# A switched-off web tool is taken out of every Web Tools filter row (D1)
+# ---------------------------------------------------------------------------
+
+_WEB_TOOL_KEYS = ("web_search", "web_fetch", "datetime", "advisor", "subagent", "chat_search_models")
+_KWARG_FOR_KEY = {
+    "web_search": "enable_web_search",
+    "web_fetch": "enable_web_fetch",
+    "datetime": "enable_datetime",
+    "advisor": "enable_advisor",
+    "subagent": "enable_subagent",
+    "chat_search_models": "enable_search_models",
+}
+
+
+def _render(enabled: tuple[str, ...] = _WEB_TOOL_KEYS) -> str:
+    """The pipe's own render, with exactly the web tools in `enabled` switched on."""
+    return FilterManager.render_openrouter_web_tools_filter_source(
+        **{kwarg: (key in enabled) for key, kwarg in _KWARG_FOR_KEY.items()}
+    ).strip() + "\n"
+
+
+def _store(functions, row_id, source, *, name="My web tools", is_active=True, is_global=True, updated_at=1):
+    functions.clock = max(functions.clock, updated_at)
+    functions.rows[row_id] = SimpleNamespace(
+        id=row_id, type="filter", name=name, content=source, meta={"title": "My web tools"},
+        is_active=is_active, is_global=is_global, updated_at=updated_at,
+    )
+    return functions.rows[row_id]
+
+
+def _warnings(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]

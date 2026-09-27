@@ -92,6 +92,7 @@ from ..core.utils import (
     _serialize_phase_marker,
     citation_access_stamp,
     continued_turn_counts,
+    current_turn_items,
     is_picture_output,
     join_answer_and_card,
     merge_usage_stats,
@@ -552,12 +553,9 @@ class StreamingHandler:
         owui_tool_passthrough = valves.TOOL_EXECUTION_MODE == "Open-WebUI"
         persist_tools_enabled = valves.PERSIST_TOOL_RESULTS
         handed_back = False
-        is_continuation = False
-        if owui_tool_passthrough and isinstance(body.input, list):
-            is_continuation = any(
-                isinstance(item, dict) and item.get("type") == "function_call_output"
-                for item in body.input
-            )
+        is_continuation = owui_tool_passthrough and any(
+            item.get("type") == "function_call_output" for item in current_turn_items(body.input)
+        )
         open_webui_keeps_stored_output = bool(metadata.get("assistant_message_id"))
         earlier_turn_calls, earlier_turn_texts, continues_after_reasoning = (
             body._continued_turn if body._continued_turn is not None else continued_turn_counts(body.input)
@@ -2486,8 +2484,6 @@ class StreamingHandler:
                                 item_type=item_type, result_text=result_text, arguments=server_arguments, raw_item=item,
                             )
                             await self._pipe._event_emitter_handler._emit_status(event_emitter, "", done=True)
-                        elif item_type == "local_shell_call":
-                            title = "Let me run that command…"
                         elif item_type == "reasoning":
                             title = None
                             key = _reasoning_stream_key(event, etype)
@@ -3087,7 +3083,7 @@ class StreamingHandler:
                                         {
                                             "type": "function_call_output",
                                             "call_id": call_id,
-                                            "output": f"Tool execution failed before completion: {exc}",
+                                            "output": self._pipe._ensure_tool_executor()._tool_error_text(exc),
                                             "status": "incomplete",
                                         }
                                     )

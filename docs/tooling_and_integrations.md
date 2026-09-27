@@ -85,7 +85,7 @@ Tool *schemas* are assembled by `build_tools(...)` and attached to the outgoing 
    - Direct tools are only advertised when `__event_call__` is available; without an active Socket.IO session there is no safe execution path, so the pipe skips them.
 
 3. **Extra tools** (`extra_tools`)
-   - A caller-provided list of already OpenAI-format tool specs is appended as-is (non-dict entries are ignored).
+   - A caller-provided list of already OpenAI-format tool specs is offered as they arrive: in Pipeline mode an extra tool is offered only when a tool of that name can run it; a spec whose name several resolved Open WebUI tools share is left out, as on the request route (non-dict entries are ignored).
 
 ### Deduplication
 
@@ -109,6 +109,7 @@ Notes:
 
 - If a tool name is missing or not present in the tool registry, the pipe returns a structured `function_call_output` indicating the failure.
 - A tool receives only the arguments its schema declares, as in Open WebUI's own tool loop: anything else the model sends is dropped before the tool runs, so it can never replace what Open WebUI bound into the tool (such as the user a built-in tool acts for) or point a browser-run call at another operation or server.
+- Before each call the pipe hands the tool the chat's messages and files as the current request carries them (`__messages__`, `__files__`), as Open WebUI's own loop does; a Fusion panel model's tools see the person's chat.
 - The pipe does not “stream” tool outputs mid-request. Tools are executed between Responses calls.
 - `MAX_FUNCTION_CALL_LOOPS` only applies when `TOOL_EXECUTION_MODE=”Pipeline”`. In Open-WebUI mode, loop control is managed by Open WebUI.
 

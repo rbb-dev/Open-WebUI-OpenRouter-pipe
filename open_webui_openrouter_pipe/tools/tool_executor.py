@@ -133,8 +133,21 @@ except Exception:
     )
     _owui_get_ask_user_tool_calls = None  # type: ignore[assignment]
 
+try:
+    from open_webui.utils.tools import (  # pyright: ignore[reportMissingImports]
+        get_updated_tool_function as _owui_get_updated_tool_function,
+    )
+except ImportError:
+    _owui_get_updated_tool_function = None  # type: ignore[assignment]
+except Exception:
+    logging.getLogger(__name__).warning(
+        "open_webui.utils.tools failed to import for a reason other than absence; "
+        "the features that depend on it are now disabled",
+        exc_info=True,
+    )
+    _owui_get_updated_tool_function = None  # type: ignore[assignment]
+
 _ASK_USER_GRACE_SECONDS = 15.0
-_ASK_USER_NOT_ALONE = "Error: ask_user must be the only tool call, so it did not run. Call ask_user on its own."
 
 @dataclass(slots=True)
 class _QueuedToolCall:
@@ -171,6 +184,7 @@ class _ToolExecutionContext:
     on_complete: Callable[[dict, dict], Awaitable[None]] | None = None
     carded_calls: set[str] = field(default_factory=set)
     terminal_files_inline: bool = False
+    messages: list[dict[str, Any]] = field(default_factory=list)
 
 
 class ToolExecutor:
@@ -218,6 +232,17 @@ class ToolExecutor:
             {"error": str(exc) or type(exc).__name__}, indent=2, ensure_ascii=False
         )
 
+    @staticmethod
+    async def _with_current_chat(fn: Any, tool_cfg: dict[str, Any], context: _ToolExecutionContext) -> Any:
+        if _owui_get_updated_tool_function is None or tool_cfg.get("direct"):
+            return fn
+        return await _owui_get_updated_tool_function(
+            function=fn,
+            extra_params={
+                "__messages__": context.messages,
+                "__files__": (context.metadata or {}).get("files", []),
+            },
+        )
     def _ask_user_window(self, tool_cfg: Any, args: dict[str, Any]) -> float | None:
         if _owui_normalize_ask_user_request is None or not self._is_builtin_ask_user(tool_cfg):
             return None
@@ -232,10 +257,8 @@ class ToolExecutor:
         for call in calls:
             name = call.get("name")
             is_ask_user.append(self._is_builtin_ask_user(tools.get(name.strip() if isinstance(name, str) else "")))
-        if not any(is_ask_user):
+        if not any(is_ask_user) or _owui_get_ask_user_tool_calls is None:
             return None
-        if _owui_get_ask_user_tool_calls is None:
-            return _ASK_USER_NOT_ALONE if len(calls) != 1 else None
         _, refusal = _owui_get_ask_user_tool_calls(
             [{"function": {"name": "ask_user" if flag else ""}} for flag in is_ask_user]
         )

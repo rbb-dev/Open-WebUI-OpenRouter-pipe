@@ -293,6 +293,13 @@ def _build_collision_safe_tool_specs_and_registry(
                 return e
         return None
 
+    def _registry_tools_named(name: str) -> int:
+        return sum(
+            1
+            for _, entry in owui_entries
+            if isinstance(entry.get("spec"), dict) and entry["spec"].get("name") == name
+        )
+
     candidates: list[dict[str, Any]] = []
     resolved_request_names: set[str] = set()
 
@@ -306,11 +313,7 @@ def _build_collision_safe_tool_specs_and_registry(
         if not spec:
             continue
         origin_name = spec["name"]
-        same_name_entries = sum(
-            1
-            for _, entry in owui_entries
-            if isinstance(entry.get("spec"), dict) and entry["spec"].get("name") == origin_name
-        )
+        same_name_entries = _registry_tools_named(origin_name)
         if same_name_entries > 1:
             log.debug("Skipping request tool %s: %d registry tools share the name.", origin_name, same_name_entries)
             continue
@@ -385,6 +388,10 @@ def _build_collision_safe_tool_specs_and_registry(
         if not spec:
             continue
         origin_name = spec["name"]
+        same_name_entries = _registry_tools_named(origin_name)
+        if same_name_entries > 1:
+            log.debug("Skipping extra tool %s: %d registry tools share the name.", origin_name, same_name_entries)
+            continue
         tool_cfg = _pick_executor(origin_name)
         if (not owui_tool_passthrough) and (not tool_cfg or tool_cfg.get("callable") is None):
             log.debug("Skipping unexecutable extra tool %s (no callable).", origin_name)

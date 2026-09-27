@@ -114,6 +114,35 @@ _SERVER_TOOL_TYPE_OVERRIDES = {
 
 _IMAGE_GENERATION_TOOL_TYPE = "openrouter:image_generation"
 
+_SERVER_TOOL_SWITCHES = {
+    "openrouter:web_search": "ENABLE_WEB_SEARCH",
+    "openrouter:web_fetch": "ENABLE_WEB_FETCH",
+    "openrouter:datetime": "ENABLE_DATETIME",
+    "openrouter:advisor": "ENABLE_ADVISOR",
+    "openrouter:subagent": "ENABLE_SUBAGENT",
+    "openrouter:experimental__search_models": "ENABLE_SEARCH_MODELS",
+    _IMAGE_GENERATION_TOOL_TYPE: "ENABLE_IMAGE_GENERATION",
+}
+
+
+def _server_tool_type(tool_key: str) -> str:
+    return _SERVER_TOOL_TYPE_OVERRIDES.get(tool_key, f"openrouter:{tool_key}")
+
+
+def _switched_off_web_tools_asked_for(metadata: Any, valves: Any) -> bool:
+    pipe_meta = metadata.get(_PIPE_METADATA_KEY) if isinstance(metadata, dict) else None
+    server_tools = pipe_meta.get("server_tools") if isinstance(pipe_meta, dict) else None
+    if not isinstance(server_tools, dict):
+        return False
+    for key in server_tools:
+        if not isinstance(key, str):
+            continue
+        tool_type = _server_tool_type(key)
+        switch = _SERVER_TOOL_SWITCHES.get(tool_type)
+        if switch and tool_type != _IMAGE_GENERATION_TOOL_TYPE and not getattr(valves, switch):
+            return True
+    return False
+
 
 def _build_server_tool_entries(
     server_tools: dict[str, Any],
@@ -125,7 +154,7 @@ def _build_server_tool_entries(
     for tool_key, tool_value in server_tools.items():
         if not isinstance(tool_key, str) or not tool_key.strip():
             continue
-        tool_type = _SERVER_TOOL_TYPE_OVERRIDES.get(tool_key, f"openrouter:{tool_key}")
+        tool_type = _server_tool_type(tool_key)
         param_dicts = tool_value if isinstance(tool_value, list) else [tool_value]
         for tool_params in param_dicts:
             entry: dict[str, Any] = {"type": tool_type}
@@ -252,8 +281,19 @@ def _apply_server_tools_metadata(
     responses_body: ResponsesBody,
     metadata: Any,
     *,
+    valves: Any,
     logger: logging.Logger | None = None,
 ) -> list[tuple[str, Any]]:
+    switched_off = {t for t, switch in _SERVER_TOOL_SWITCHES.items() if not getattr(valves, switch)}
+    if switched_off:
+        existing = list(responses_body.tools or [])
+        kept = [
+            entry
+            for entry in existing
+            if not (isinstance(entry, dict) and entry.get("type") in switched_off)
+        ]
+        if len(kept) != len(existing):
+            responses_body.tools = kept or None
     pipe_meta = (metadata or {}).get(_PIPE_METADATA_KEY, {})
     if not isinstance(pipe_meta, dict):
         return []
@@ -261,7 +301,13 @@ def _apply_server_tools_metadata(
     server_tools = pipe_meta.get("server_tools", {})
     if isinstance(server_tools, dict) and server_tools:
         tools_list = list(responses_body.tools or [])
-        entries, superseded = _build_server_tool_entries(server_tools)
+        entries, superseded = _build_server_tool_entries(
+            {
+                key: value
+                for key, value in server_tools.items()
+                if not isinstance(key, str) or _server_tool_type(key) not in switched_off
+            }
+        )
         tools_list.extend(entries)
         if tools_list:
             responses_body.tools = tools_list
@@ -1186,8 +1232,11 @@ class RequestOrchestrator:
                     plugins.append({"id": "file-parser", "pdf": {"engine": engine}})
                     responses_body.plugins = plugins
 
+        if _switched_off_web_tools_asked_for(__metadata__, valves):
+            self._pipe._schedule_web_tools_filter_repair()
+
         superseded = _apply_server_tools_metadata(
-            responses_body, __metadata__, logger=self.logger
+            responses_body, __metadata__, valves=valves, logger=self.logger
         )
         if superseded:
             grouped: dict[str, list[Any]] = {}

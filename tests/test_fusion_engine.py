@@ -758,7 +758,6 @@ class TestInstalledWebToolsConfig:
         cfg = await pipe._ensure_filter_manager().collect_installed_web_tools_config("u1")
         assert cfg is None
 
-
 class TestOwuiSurfaceInheritance:
     def test_metadata_channels_survive_into_inner_calls(self):
         outer = {

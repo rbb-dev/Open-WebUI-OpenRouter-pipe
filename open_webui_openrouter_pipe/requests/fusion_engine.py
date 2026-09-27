@@ -214,6 +214,7 @@ async def run_fusion_member(
             fusion_inner=True,
             tool_breaker=invocation.tool_breaker,
             tool_call_budget=max_tool_calls,
+            messages=outer_ctx.messages,
         )
         executor = pipe._ensure_tool_executor()
         for _ in range(invocation.valves.MAX_PARALLEL_TOOLS_PER_REQUEST):

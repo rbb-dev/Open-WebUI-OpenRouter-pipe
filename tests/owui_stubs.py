@@ -14,11 +14,14 @@ os.environ.setdefault("ENABLE_DB_MIGRATIONS", "false")
 os.environ.setdefault("DATA_DIR", "/tmp/owui-test-data")
 os.environ.setdefault("WEBUI_AUTH", "false")
 
+import inspect
 import sys
 import types
 import uuid
+from collections.abc import Awaitable, Callable
+from functools import partial, update_wrapper
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, cast, get_args, get_type_hints
 
 import pydantic
 
@@ -665,6 +668,85 @@ def _install_open_webui_stubs() -> None:
     chat_id_mod.is_saved_chat_id = _is_saved_chat_id
     chat_id_mod.is_temporary_chat_id = _is_temporary_chat_id
     utils_pkg.ask_user = ask_user_mod
+
+    # Open WebUI 0.11.4 `utils/tools.py`, copied verbatim: the pipe re-binds a tool's `__messages__` and `__files__`
+    # through Open WebUI's own re-binder, so a stand-in would test a re-bind Open WebUI does not do.
+    tools_mod = cast(Any, _ensure_module("open_webui.utils.tools"))
+
+    async def _get_async_tool_function_and_apply_extra_params(
+        function: Callable, extra_params: dict, function_introspection=None
+    ) -> Callable[..., Awaitable]:
+        if function_introspection is None:
+            sig = inspect.signature(function)
+            try:
+                type_hints = get_type_hints(function)
+            except Exception:
+                type_hints = {}
+        else:
+            sig, type_hints = function_introspection
+
+        def coerce_kwargs(kwargs):
+            for name, value in kwargs.items():
+                if name not in sig.parameters or value is None:
+                    continue
+
+                annotation = type_hints.get(name, sig.parameters[name].annotation)
+                args = set(get_args(annotation))
+                if isinstance(value, str) and (annotation is int or args == {int, type(None)}):
+                    kwargs[name] = int(value)
+                elif (
+                    isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                    and (annotation is str or args == {str, type(None)})
+                ):
+                    kwargs[name] = str(value)
+            return kwargs
+
+        extra_params = {k: v for k, v in extra_params.items() if k in sig.parameters}
+        partial_func = partial(function, **extra_params)
+
+        parameters = []
+        for name, parameter in sig.parameters.items():
+            if name in extra_params:
+                continue
+            parameters.append(parameter)
+
+        new_sig = inspect.Signature(parameters=parameters, return_annotation=sig.return_annotation)
+
+        if inspect.iscoroutinefunction(function):
+
+            async def new_function(*args, **kwargs):
+                return await partial_func(*args, **coerce_kwargs(kwargs))
+
+        else:
+
+            async def new_function(*args, **kwargs):
+                return partial_func(*args, **coerce_kwargs(kwargs))
+
+        update_wrapper(new_function, function)
+        new_function.__signature__ = new_sig  # type: ignore[attr-defined]
+
+        new_function.__function__ = function  # type: ignore
+        new_function.__extra_params__ = extra_params  # type: ignore
+
+        return new_function
+
+    async def _get_updated_tool_function(function: Callable, extra_params: dict):
+        # Get the original function and merge updated params
+        __function__ = getattr(function, '__function__', None)
+        __extra_params__ = getattr(function, '__extra_params__', None)
+
+        if __function__ is not None and __extra_params__ is not None:
+            return await _get_async_tool_function_and_apply_extra_params(
+                __function__,
+                {**__extra_params__, **extra_params},
+            )
+
+        return function
+
+    tools_mod.get_async_tool_function_and_apply_extra_params = _get_async_tool_function_and_apply_extra_params
+    tools_mod.get_updated_tool_function = _get_updated_tool_function
+    utils_pkg.tools = tools_mod
 
     access_control_pkg = cast(Any, _ensure_module("open_webui.utils.access_control"))
     access_control_pkg.__path__ = []

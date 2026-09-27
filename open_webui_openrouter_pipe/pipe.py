@@ -299,6 +299,8 @@ def _get_lifecycle_registry():
 
 _warned_plugin_dispatch: set[str] = set()
 _warned_pipes_maintenance: set[str] = set()
+
+_WEB_TOOLS_REPAIR_COOLDOWN_S = 300.0
 _warned_user_valves: set[str] = set()
 _warned_timing_file: set[str] = set()
 
@@ -470,6 +472,8 @@ class Pipe:
             valves_owner=self,
         )
         self._catalog_manager: ModelCatalogManager | None = None
+        self._web_tools_repair_task: asyncio.Task | None = None
+        self._web_tools_repair_started: float | None = None
         self._error_formatter: ErrorFormatter | None = None
         self._reasoning_config_manager: ReasoningConfigManager | None = None
         self._nonstreaming_adapter: NonStreamingAdapter | None = None
@@ -1052,6 +1056,39 @@ class Pipe:
 
     # ENTRY POINTS
 
+    def _schedule_web_tools_filter_repair(self) -> None:
+        running = self._web_tools_repair_task
+        if running is not None and not running.done():
+            return
+        now = time.monotonic()
+        started = self._web_tools_repair_started
+        if started is not None and now - started < _WEB_TOOLS_REPAIR_COOLDOWN_S:
+            return
+        self._web_tools_repair_started = now
+        self._web_tools_repair_task = asyncio.get_running_loop().create_task(
+            self._keep_web_tools_filters_in_step(), name="openrouter-web-tools-repair"
+        )
+
+    async def _keep_web_tools_filters_in_step(self) -> None:
+        if self.valves.AUTO_INSTALL_WEB_TOOLS_FILTER and not every_web_tool_is_off(self.valves):
+            try:
+                await self._ensure_filter_manager().ensure_openrouter_web_tools_filter_function_id(
+                    enable_web_search=self.valves.ENABLE_WEB_SEARCH,
+                    enable_web_fetch=self.valves.ENABLE_WEB_FETCH,
+                    enable_datetime=self.valves.ENABLE_DATETIME,
+                    enable_advisor=self.valves.ENABLE_ADVISOR,
+                    enable_subagent=self.valves.ENABLE_SUBAGENT,
+                    enable_search_models=self.valves.ENABLE_SEARCH_MODELS,
+                )
+            except Exception as exc:
+                level = warn_level(_warned_pipes_maintenance, f"web_tools:{type(exc).__name__}")
+                self.logger.log(level, "AUTO_INSTALL_WEB_TOOLS_FILTER failed: %s", exc, exc_info=True)
+        try:
+            await self._ensure_filter_manager().repair_web_tools_filters()
+        except Exception as exc:
+            level = warn_level(_warned_pipes_maintenance, f"web_tools_repair:{type(exc).__name__}")
+            self.logger.log(level, "Repairing the OpenRouter Web Tools filters failed: %s", exc, exc_info=True)
+
     @timed
     async def pipes(self):
         """Return the list of models exposed to Open WebUI."""
@@ -1119,29 +1156,7 @@ class Pipe:
         except Exception:
             self.logger.debug("Old OpenRouter Search filter cleanup failed", exc_info=True)
 
-        all_web_tools_disabled = every_web_tool_is_off(self.valves)
-        if self.valves.AUTO_INSTALL_WEB_TOOLS_FILTER and not all_web_tools_disabled:
-            try:
-                await self._ensure_filter_manager().ensure_openrouter_web_tools_filter_function_id(
-                    enable_web_search=self.valves.ENABLE_WEB_SEARCH,
-                    enable_web_fetch=self.valves.ENABLE_WEB_FETCH,
-                    enable_datetime=self.valves.ENABLE_DATETIME,
-                    enable_advisor=self.valves.ENABLE_ADVISOR,
-                    enable_subagent=self.valves.ENABLE_SUBAGENT,
-                    enable_search_models=self.valves.ENABLE_SEARCH_MODELS,
-                )
-            except Exception as exc:
-                level = warn_level(_warned_pipes_maintenance, f"web_tools:{type(exc).__name__}")
-                self.logger.log(level, "AUTO_INSTALL_WEB_TOOLS_FILTER failed: %s", exc, exc_info=True)
-        elif all_web_tools_disabled:
-            try:
-                from open_webui.models.functions import Functions as _Funcs
-                wt = await _Funcs.get_function_by_id("openrouter_web_tools")
-                if wt and getattr(wt, "is_active", False):
-                    await _Funcs.update_function_by_id("openrouter_web_tools", {"is_active": False})
-                    self.logger.info("Disabled OpenRouter Web Tools filter (all tools disabled)")
-            except Exception:
-                self.logger.debug("Disabling OpenRouter Web Tools filter failed", exc_info=True)
+        await self._keep_web_tools_filters_in_step()
         if self.valves.ENABLE_OPENROUTER_FUSION and self.valves.AUTO_INSTALL_FUSION_FILTER:
             try:
                 await self._ensure_filter_manager().ensure_openrouter_fusion_filter_function_id()
@@ -1860,6 +1875,12 @@ class Pipe:
         if catalog is not None:
             with contextlib.suppress(Exception):
                 catalog._model_metadata_sync_task = None
+        repair = getattr(self, "_web_tools_repair_task", None)
+        if repair is not None and not repair.done():
+            repair.cancel()
+            extra_tasks.append(repair)
+        with contextlib.suppress(Exception):
+            self._web_tools_repair_task = None
 
         if extra_tasks:
             with contextlib.suppress(Exception):
@@ -2171,6 +2192,7 @@ class Pipe:
                     metadata=job.metadata,
                     request_id=job.request_id,
                     terminal_files_inline=await self._terminal_files_shown_inline(job.user),
+                    messages=job.body.get("messages") or [],
                 )
                 worker_count = job.valves.MAX_PARALLEL_TOOLS_PER_REQUEST
                 tool_executor = self._ensure_tool_executor()
@@ -3173,7 +3195,10 @@ class Pipe:
         try:
             timing_mark(f"tool_run:{tool_name}:executing")
             async with deadline:
-                result = await self._call_tool_callable(fn_to_call, call_args)
+                result = await self._call_tool_callable(
+                    await self._ensure_tool_executor()._with_current_chat(fn_to_call, item.tool_cfg, context),
+                    call_args,
+                )
             unreachable = _reports_transport_failure(result)
             text, files, embeds, pictures = await _process_and_emit(result)
             if unreachable or _tool_result_failed(text):

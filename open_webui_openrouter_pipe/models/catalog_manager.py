@@ -350,15 +350,18 @@ def schedules_owui_model_sync(valves: Any, provider_routing_enabled: bool) -> bo
     )
 
 
+WEB_TOOL_SWITCHES = (
+    ("ENABLE_WEB_SEARCH", "WEB_SEARCH", "enable_web_search"),
+    ("ENABLE_WEB_FETCH", "WEB_FETCH", "enable_web_fetch"),
+    ("ENABLE_DATETIME", "DATETIME", "enable_datetime"),
+    ("ENABLE_ADVISOR", "ADVISOR", "enable_advisor"),
+    ("ENABLE_SUBAGENT", "SUBAGENT", "enable_subagent"),
+    ("ENABLE_SEARCH_MODELS", "SEARCH_MODELS", "enable_search_models"),
+)
+
+
 def every_web_tool_is_off(valves: Any) -> bool:
-    return not (
-        valves.ENABLE_WEB_SEARCH
-        or valves.ENABLE_WEB_FETCH
-        or valves.ENABLE_DATETIME
-        or valves.ENABLE_ADVISOR
-        or valves.ENABLE_SUBAGENT
-        or valves.ENABLE_SEARCH_MODELS
-    )
+    return not any(getattr(valves, switch) for switch, _, _ in WEB_TOOL_SWITCHES)
 
 
 class ModelCatalogManager:
