@@ -1204,7 +1204,9 @@ class Valves(BaseModel):
         description=(
             "When True, converts Open WebUI registry tools to strict JSON Schema for OpenAI tools, "
             "enforcing explicit types, required fields, and disallowing additionalProperties. Only the "
-            "registry tools this pipe runs are made strict; a schema that will be handed back is forwarded untouched."
+            "registry tools this pipe runs are made strict; a schema that will be handed back is forwarded untouched. "
+            "Tools are also sent with `strict: true` on `/chat/completions`, nested under each `function`; "
+            "a provider that does not support strict tool calling there will reject the request."
         ),
     )
     MAX_FUNCTION_CALL_LOOPS: int = Field(

@@ -70,6 +70,32 @@ _CHAT_CHUNK_PARSE_WARN_COOLDOWN_S = 30.0
 _warned_chat_chunk_parse: dict[str, float] = {}
 
 
+def _build_output_items(
+    *,
+    assistant_text: str,
+    annotations: list[dict[str, Any]] | None,
+    reasoning_details: list[dict[str, Any]] | None,
+    image_output_item: dict[str, Any] | None,
+    tool_calls: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    if assistant_text or annotations or reasoning_details:
+        message_item: dict[str, Any] = {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": assistant_text}],
+        }
+        if annotations:
+            message_item["annotations"] = annotations
+        if reasoning_details:
+            message_item["reasoning_details"] = reasoning_details
+        output.append(message_item)
+    if image_output_item is not None:
+        output.append(image_output_item)
+    output.extend(tool_calls)
+    return output
+
+
 class ChatCompletionsAdapter:
     """Adapter for OpenRouter /chat/completions API endpoint."""
 
@@ -743,26 +769,14 @@ class ChatCompletionsAdapter:
             if refusal_text:
                 yield {"type": "response.output_text.delta", "delta": refusal_text}
                 assistant_text = refusal_text
-        message_item: dict[str, Any] = {
-            "type": "message",
-            "role": "assistant",
-            "content": [{"type": "output_text", "text": assistant_text}],
-        }
-        if latest_message_annotations:
-            message_item["annotations"] = latest_message_annotations
-        final_reasoning_details = _final_reasoning_details()
-        if final_reasoning_details:
-            message_item["reasoning_details"] = final_reasoning_details
-        output: list[dict[str, Any]] = [message_item]
-        if image_output_item is not None:
-            output.append(image_output_item)
+        tool_call_items: list[dict[str, Any]] = []
         for index in sorted(tool_calls_by_index.keys()):
             current = tool_calls_by_index[index]
-            call_id = _ensure_tool_call_id(index, current)
             name = current.get("name")
             if not isinstance(name, str) or not name:
                 continue
-            output.append(
+            call_id = _ensure_tool_call_id(index, current)
+            tool_call_items.append(
                 {
                     "type": "function_call",
                     "id": call_id,
@@ -771,6 +785,13 @@ class ChatCompletionsAdapter:
                     "arguments": current.get("arguments") or "{}",
                 }
             )
+        output: list[dict[str, Any]] = _build_output_items(
+            assistant_text=assistant_text,
+            annotations=latest_message_annotations,
+            reasoning_details=_final_reasoning_details(),
+            image_output_item=image_output_item,
+            tool_calls=tool_call_items,
+        )
 
         if truncating_reason is not None:
             yield {

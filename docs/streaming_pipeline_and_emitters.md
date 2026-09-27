@@ -116,7 +116,18 @@ Notes:
 
 Every finished chat reply hands Open WebUI an `output` array, which it saves against the assistant message: a
 streamed reply publishes it in its closing `response.completed` event, and a non-streamed one returns it with its
-text. It holds the reasoning items, the tool cards that were shown, and the messages. Its messages carry the ids of
+text. It holds the reasoning items, the tool cards that were shown, and the messages.
+
+A chat turn that is nothing but tool calls stores `[function_call]` and no message item at all, on both the
+streaming and the non-streaming leg. A message item carrying no text, no annotations and no reasoning details
+would be a phantom the model never wrote, and Open WebUI's own turns do not contain one. A message item that
+*does* carry something is kept even when its text is empty, because that is where the turn's reasoning and its
+citations live: a turn whose only content is OpenRouter's structured `reasoning_details` keeps its message item
+for exactly that reason. A turn that carries only plain `reasoning` or `reasoning_content` - the shape DeepSeek-,
+Qwen- and Kimi-style OpenRouter models emit rather than the structured form - keeps no message item, and that
+reasoning is still published and stored, as its own reasoning item rather than as message text.
+
+Its messages carry the ids of
 the items their text streamed into, so Open WebUI's browser replaces the items it already shows rather than
 adding a second copy. Everything later turns replay comes from there, so who writes it matters.
 

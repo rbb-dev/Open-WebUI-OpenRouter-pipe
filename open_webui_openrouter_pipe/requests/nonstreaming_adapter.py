@@ -22,7 +22,6 @@ if TYPE_CHECKING:
     from ..pipe import Pipe
 
 
-
 def _chat_completions_adapter() -> type[ChatCompletionsAdapter]:
     """Imported lazily: a module-level edge here closes an import cycle.
 
@@ -32,6 +31,12 @@ def _chat_completions_adapter() -> type[ChatCompletionsAdapter]:
     from ..api.gateway.chat_completions_adapter import ChatCompletionsAdapter
 
     return ChatCompletionsAdapter
+
+
+def _build_chat_output_items(**kwargs: Any) -> list[dict[str, Any]]:
+    from ..api.gateway.chat_completions_adapter import _build_output_items as build
+
+    return build(**kwargs)
 
 
 class NonStreamingAdapter:
@@ -303,20 +308,20 @@ class NonStreamingAdapter:
             if assistant_text:
                 yield {"type": "response.output_text.delta", "delta": assistant_text}
 
-            output_message: dict[str, Any] = {
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": assistant_text}],
-            }
+            output_annotations: list[dict[str, Any]] | None = None
             if isinstance(annotations, list) and annotations:
-                output_message["annotations"] = [dict(a) for a in annotations if isinstance(a, dict)]
+                output_annotations = [dict(a) for a in annotations if isinstance(a, dict)]
+            output_reasoning_details: list[dict[str, Any]] | None = None
             if isinstance(reasoning_details, list) and reasoning_details:
-                output_message["reasoning_details"] = [dict(a) for a in reasoning_details if isinstance(a, dict)]
+                output_reasoning_details = [dict(r) for r in reasoning_details if isinstance(r, dict)]
 
-            output: list[dict[str, Any]] = [output_message]
-            if image_output_item is not None:
-                output.append(image_output_item)
-            output.extend(output_calls)
+            output: list[dict[str, Any]] = _build_chat_output_items(
+                assistant_text=assistant_text,
+                annotations=output_annotations,
+                reasoning_details=output_reasoning_details,
+                image_output_item=image_output_item,
+                tool_calls=output_calls,
+            )
 
             response_payload: dict[str, Any] = {
                 "output": output,

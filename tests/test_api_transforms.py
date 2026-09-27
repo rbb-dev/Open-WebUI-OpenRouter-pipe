@@ -720,7 +720,6 @@ class TestResponsesToolsToChatTools:
         result = _responses_tools_to_chat_tools(tools)
         assert "cache_control" not in result[0]
 
-
 class TestChatToolsToResponsesTools:
     """Tests for _chat_tools_to_responses_tools()."""
 

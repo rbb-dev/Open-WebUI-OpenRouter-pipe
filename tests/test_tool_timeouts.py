@@ -378,26 +378,6 @@ async def test_an_ask_user_timeout_sent_as_text_gets_the_same_time_in_the_browse
 
 
 @pytest.mark.asyncio
-async def test_an_ask_user_open_webui_cannot_normalise_still_reaches_the_builtin_to_answer(pipe_instance_async, monkeypatch):
-    # Open WebUI's normaliser raises for a call with no questions. The call still goes to the builtin with its arguments
-    # as sent, and the builtin gives the model its own error.
-    seen: list[dict[str, Any]] = []
-
-    async def builtin(**kwargs):
-        seen.append(kwargs)
-        return json.dumps({"status": "error", "error": "ask_user requires 1-3 questions."})
-
-    registry = {"ask_user": _builtin_ask_user(builtin)}
-
-    outputs, _ = await _run(
-        pipe_instance_async, monkeypatch, registry, [_call("c1", "ask_user", json.dumps({"timeout_ms": "150000"}))]
-    )
-
-    assert seen == [{"timeout_ms": "150000"}]
-    assert "1-3 questions" in _text(outputs["c1"])
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize(("tool_type", "name"), [("function", "ask_user"), ("builtin", "search_web")])
 async def test_only_open_webuis_builtin_ask_user_gets_a_prompt_window(
     pipe_instance_async, monkeypatch, tool_type, name

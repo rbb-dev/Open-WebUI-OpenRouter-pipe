@@ -4825,3 +4825,38 @@ def _terminal(pipe, sse_bytes: bytes, **kwargs):
             await session.close()
 
     return _drive()
+
+
+class _FakeResponse:
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+        self.headers = {"Content-Type": "text/event-stream"}
+        self.status = 200
+
+    async def json(self) -> Any:
+        return {}
+
+    class _Content:
+        def __init__(self, body: bytes) -> None:
+            self._body = body
+
+        async def iter_any(self):
+            yield self._body
+
+    @property
+    def content(self):
+        return _FakeResponse._Content(self._body)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc: Any) -> bool:
+        return False
+
+
+class _FakeSession:
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def post(self, *_args: Any, **_kwargs: Any) -> _FakeResponse:
+        return _FakeResponse(self._body)

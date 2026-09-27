@@ -438,40 +438,40 @@ class ToolExecutor:
                 with contextlib.suppress(Exception):
                     await _on_complete(call, result)
 
+        async def _refuse(index: int, call: dict, text: str) -> None:
+            await _append_and_notify(index, call, self._build_tool_output(call, text, status="failed"))
+
         for index, call in enumerate(calls):
             raw_name = call.get("name")
             tool_name = raw_name.strip() if isinstance(raw_name, str) else ""
             try:
                 args = parse_tool_arguments(call.get("arguments"))
             except ValueError:
-                await _append_and_notify(index, call, self._build_tool_output(
-                    call,
-                    f"Error: Tool call arguments for `{tool_name}` must be a JSON object. Please try again.",
-                    status="failed",
-                ))
+                await _refuse(
+                    index, call, f"Error: Tool call arguments for `{tool_name}` must be a JSON object. Please try again."
+                )
                 continue
             if args is None:
-                await _append_and_notify(index, call, self._build_tool_output(
+                await _refuse(
+                    index,
                     call,
                     "Error: Tool call arguments could not be parsed. The model generated malformed or "
                     f"incomplete JSON for `{tool_name}`. Please try again.",
-                    status="failed",
-                ))
+                )
                 continue
             tool_cfg = tools.get(tool_name)
             if not tool_cfg:
-                await _append_and_notify(index, call, self._build_tool_output(
-                    call, f'Error: Tool "{tool_name}" not found.', status="failed",
-                ))
+                await _refuse(index, call, f'Error: Tool "{tool_name}" not found.')
+                continue
+            if ask_user_refusal and self._is_builtin_ask_user(tool_cfg):
+                await _refuse(index, call, ask_user_refusal)
                 continue
             if _owui_normalize_ask_user_request is not None and self._is_builtin_ask_user(tool_cfg):
-                with contextlib.suppress(ValueError):
+                try:
                     args = _owui_normalize_ask_user_request(args)
-            if ask_user_refusal and self._is_builtin_ask_user(tool_cfg):
-                await _append_and_notify(index, call, self._build_tool_output(
-                    call, ask_user_refusal, status="failed",
-                ))
-                continue
+                except ValueError as exc:
+                    await _refuse(index, call, f"Invalid arguments: {exc}")
+                    continue
             tool_type = (tool_cfg.get("type") or "function").lower()
             breaker = self._tool_breaker(context)
             if breaker is not None and not breaker.tool_allows(

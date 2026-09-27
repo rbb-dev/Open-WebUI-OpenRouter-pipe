@@ -559,10 +559,11 @@ def _responses_tools_to_chat_tools(tools: Any) -> list[dict[str, Any]]:
         function: dict[str, Any] = {
             "name": name,
         }
-        if isinstance(tool.get("description"), str):
-            function["description"] = tool["description"]
-        if isinstance(tool.get("parameters"), dict):
-            function["parameters"] = tool["parameters"]
+        for key, want in (("description", str), ("parameters", dict)):
+            if isinstance(tool.get(key), want):
+                function[key] = tool[key]
+        if "strict" in tool:
+            function["strict"] = tool["strict"]
         entry: dict[str, Any] = {"type": "function", "function": function}
         if isinstance(tool.get("cache_control"), dict):
             entry["cache_control"] = tool["cache_control"]
