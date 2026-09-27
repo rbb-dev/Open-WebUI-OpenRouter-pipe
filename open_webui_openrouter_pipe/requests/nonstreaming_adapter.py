@@ -71,11 +71,15 @@ class NonStreamingAdapter:
         user: Any = None,
         owui_chat_id: str | None = None,
         transient_retry: bool = True,
+        task_request: bool = False,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Send a non-streaming request and yield Responses-style events."""
         effective_valves = valves or self._pipe.valves
         model_id = (responses_request_body or {}).get("model") or ""
         endpoint = endpoint_override or self._pipe._streaming_handler._select_llm_endpoint(str(model_id), valves=effective_valves)
+        forced_selected_endpoint, endpoint_forced = self._pipe._streaming_handler._select_llm_endpoint_with_forced(
+            str(model_id), valves=effective_valves
+        )
 
         @timed
         def _extract_chat_message_text(message: Any) -> str:
@@ -346,7 +350,14 @@ class NonStreamingAdapter:
             async for event in _run_responses():
                 yield event
         except Exception as exc:
-            if effective_valves.AUTO_FALLBACK_CHAT_COMPLETIONS and self._pipe._streaming_handler._looks_like_responses_unsupported(exc):
+            if (
+                effective_valves.AUTO_FALLBACK_CHAT_COMPLETIONS
+                and (
+                    task_request
+                    or not (endpoint_forced and forced_selected_endpoint == "responses")
+                )
+                and self._pipe._streaming_handler._looks_like_responses_unsupported(exc)
+            ):
                 self.logger.info(
                     "Falling back to /chat/completions for model=%s after /responses error (status=%s openrouter_code=%s): %s",
                     model_id,

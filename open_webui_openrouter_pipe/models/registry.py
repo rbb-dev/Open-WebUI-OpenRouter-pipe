@@ -231,6 +231,31 @@ def _catalog_timeout(valves: Any) -> aiohttp.ClientTimeout:
     return http_timeout(valves if valves is not None else _DEFAULT_VALVES)
 
 
+def _chat_merge_base(specs: dict[str, Any]) -> dict[str, Any]:
+    return {
+        norm: spec
+        for norm, spec in specs.items()
+        if isinstance(spec, dict)
+        and not (
+            "video_model" in spec
+            and spec.get("context_length") is None
+            and spec.get("max_completion_tokens") is None
+        )
+    }
+
+
+def _prior_spec(specs: dict[str, Any], norm_id: str) -> dict[str, Any]:
+    prior = specs.get(norm_id)
+    return prior if isinstance(prior, dict) else {}
+
+
+def _chat_features_for_video(prior_features: set[str]) -> set[str]:
+    merged = set(prior_features)
+    merged.discard("image_output")
+    merged.discard("image_gen_tool")
+    return merged
+
+
 class OpenRouterModelRegistry:
     """Fetches and caches the OpenRouter model catalog."""
 
@@ -664,6 +689,7 @@ class OpenRouterModelRegistry:
 
         new_specs = dict(cls._specs)
         new_id_map = dict(cls._id_map)
+        chat_specs = _chat_merge_base(cls._specs)
 
         old_video_norms = {
             norm_id
@@ -697,6 +723,13 @@ class OpenRouterModelRegistry:
             if not norm_id:
                 continue
 
+            prior = _prior_spec(chat_specs, norm_id)
+            prior_features = _chat_features_for_video(
+                set(prior.get("features") or set()),
+            )
+            prior_architecture = prior.get("architecture")
+            prior_architecture = prior_architecture if isinstance(prior_architecture, dict) else {}
+
             supported_frames = item.get("supported_frame_images")
             accepts_frame_images = isinstance(supported_frames, list) and bool(supported_frames)
             allowed_params = item.get("allowed_passthrough_parameters")
@@ -709,6 +742,39 @@ class OpenRouterModelRegistry:
             features = {"video_generation", "video_output"}
             if accepts_frame_images:
                 features.update({"vision", "file_input"})
+            features |= prior_features
+
+            capabilities = dict(prior.get("capabilities") or {})
+            for capability, value in {
+                "vision": True,
+                "file_upload": True,
+                "web_search": False,
+                "image_generation": True,
+                "video_generation": True,
+                "code_interpreter": False,
+                "citations": False,
+                "status_updates": True,
+                "usage": True,
+            }.items():
+                capabilities.setdefault(capability, value)
+
+            item_architecture = item.get("architecture")
+            item_architecture = item_architecture if isinstance(item_architecture, dict) else {}
+            if prior_architecture:
+                architecture = dict(prior_architecture)
+                for key, value in item_architecture.items():
+                    architecture.setdefault(key, value)
+                chat_out = prior_architecture.get("output_modalities")
+                video_out = item_architecture.get("output_modalities")
+                if isinstance(chat_out, list) and isinstance(video_out, list):
+                    architecture["output_modalities"] = list(chat_out) + [
+                        m for m in video_out if m not in chat_out
+                    ]
+            else:
+                architecture = dict(item_architecture)
+
+            full_model = dict(item)
+            full_model.update(dict(prior.get("full_model") or {}))
 
             new_id_map[cls._exact_norm(sanitized)] = original_id
             models_by_norm[cls._exact_norm(sanitized)] = {
@@ -719,25 +785,15 @@ class OpenRouterModelRegistry:
             }
             new_specs[norm_id] = {
                 "features": features,
-                "capabilities": {
-                    "vision": True,
-                    "file_upload": True,
-                    "web_search": False,
-                    "image_generation": True,
-                    "video_generation": True,
-                    "code_interpreter": False,
-                    "citations": False,
-                    "status_updates": True,
-                    "usage": True,
-                },
-                "max_completion_tokens": None,
+                "capabilities": capabilities,
+                "max_completion_tokens": prior.get("max_completion_tokens"),
                 "supported_parameters": frozenset(allowed_set),
-                "full_model": dict(item),
+                "full_model": full_model,
                 "video_model": dict(item),
-                "context_length": None,
-                "description": item.get("description"),
-                "architecture": item.get("architecture") if isinstance(item.get("architecture"), dict) else {},
-                **_base_spec_fields(pricing),
+                "context_length": prior.get("context_length"),
+                "description": prior.get("description") or item.get("description"),
+                "architecture": architecture,
+                **_base_spec_fields(prior.get("pricing") or pricing, spec={"video_model": item}),
             }
             if cls._zdr_model_ids is not None:
                 new_specs[norm_id]["zdr_capable"] = norm_id in cls._zdr_model_ids
@@ -1330,16 +1386,23 @@ def sum_pricing_values(node: Any) -> tuple[Decimal, int]:
     return Decimal(0), 0
 
 
-def spec_derived_flags(pricing: Any) -> dict[str, bool]:
+def spec_derived_flags(pricing: Any, *, spec: Any = None) -> dict[str, bool]:
+    if isinstance(spec, dict) and isinstance(spec.get("video_model"), dict):
+        return {"free": False}
     total, numeric_count = sum_pricing_values(pricing)
     return {"free": numeric_count > 0 and total == Decimal(0)}
 
 
-def _base_spec_fields(pricing: Any) -> dict[str, Any]:
+def _base_spec_fields(pricing: Any, *, spec: Any = None) -> dict[str, Any]:
     return {
         "pricing": pricing,
-        **spec_derived_flags(pricing),
+        **spec_derived_flags(pricing, spec=spec),
     }
+
+
+def _is_free_spec(spec: Any) -> bool:
+    pricing = spec.get("pricing") or {} if isinstance(spec, dict) else {}
+    return spec_derived_flags(pricing, spec=spec)["free"]
 
 
 def is_free_model(model_norm_id: str) -> bool:
@@ -1355,10 +1418,7 @@ def is_free_model(model_norm_id: str) -> bool:
     derived = spec.get("free")
     if isinstance(derived, bool):
         return derived
-    total, numeric_count = sum_pricing_values(spec.get("pricing") or {})
-    if numeric_count <= 0:
-        return False
-    return total == Decimal(0)
+    return _is_free_spec(spec)
 
 
 def supports_tool_calling(model_norm_id: str) -> bool:

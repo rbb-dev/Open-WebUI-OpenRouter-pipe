@@ -2284,7 +2284,12 @@ Key files:
   `try_link_file_to_chat`, which put the downloaded clip into OWUI storage
   and attach it to the chat.
 - [`models/registry.py`](../open_webui_openrouter_pipe/models/registry.py)
-  — `register_video_models()` merges video models into the chat catalog.
+  — `register_video_models()` merges video models into the chat catalog. A model
+  in both catalogs keeps its chat context length, feature set, pricing, display
+  name and capability flags alongside the video controls — but its tool-calling
+  parameters are the video row's own, so `TOOL_CALLING_FILTER` does not apply to
+  it and such a model is invisible to a tool-calling filter. A model only in the
+  video catalog registers with the video row's own values.
 - [`models/catalog_manager.py`](../open_webui_openrouter_pipe/models/catalog_manager.py)
   — metadata sync that attaches and defaults filters.
 - [`core/config.py`](../open_webui_openrouter_pipe/core/config.py)

@@ -1055,7 +1055,10 @@ async def transform_messages_to_input(
                         subject=_image_subject(_source if isinstance(_source, str) else ""),
                     )
 
-            async def _to_input_file(block: dict) -> dict | ImageRefusal:
+            def _no_source_refusal(filename: Any = "") -> ImageRefusal:
+                return ImageRefusal("has no readable source", "no_source", subject=str(filename or "")[:64])
+
+            async def _to_input_file(block: dict) -> dict | ImageRefusal | None:
                 """Convert Open WebUI file blocks into Responses API format.
 
                 Responses API File Input Fields (per OpenAPI spec):
@@ -1166,6 +1169,9 @@ async def transform_messages_to_input(
                     if "file_url" in oversized:
                         file_url = None
 
+                    if not (file_id or file_data or file_url):
+                        return _no_source_refusal(filename)
+
                     if file_id:
                         result["file_id"] = file_id
                     if file_data:
@@ -1184,7 +1190,7 @@ async def transform_messages_to_input(
                         f"File processing error: {exc}",
                         show_error_message=False
                     )
-                    return {"type": "input_file"}
+                    return _no_source_refusal("")
 
             async def _to_input_audio(block: dict) -> dict | None:
                 """Convert Open WebUI audio blocks into Responses API format.
@@ -1430,10 +1436,6 @@ async def transform_messages_to_input(
 
             async def _to_input_video(block: dict) -> dict:
                 """Convert Open WebUI video blocks into Chat Completions video format.
-
-                Note: The Responses API doesn't have explicit `input_video` type.
-                Videos use the Chat Completions `video_url` format, which OpenRouter
-                handles internally.
 
                 Video Support by Provider (per OpenRouter docs):
                     - Gemini AI Studio: YouTube links only

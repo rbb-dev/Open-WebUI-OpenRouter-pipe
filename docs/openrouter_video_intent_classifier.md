@@ -125,8 +125,8 @@ All admin-scoped on the global `Valves` model. User-tunable per-chat versions of
 | `VIDEO_INTENT_FRAME_EXTRACTION_INDEX` | `first` / `last` | `last` | Default frame to extract from a prior video when the requested frame is unavailable. |
 | `VIDEO_INTENT_TIMEOUT_S` | `int` | `8` | Hard timeout (seconds) on the classifier call. On breach, the pipe falls back to sending only the latest user message — the paid video request still proceeds. |
 | `VIDEO_INTENT_CONFIRM_MODE` | `always` / `on_reference` / `low_confidence` / `never` | `on_reference` | When to surface the confirmation footer. `on_reference` confirms only when a prior video's frame is reused or more than one frame is combined; a lone attached image does not trigger it. |
-| `VIDEO_INTENT_MAX_CALLS_PER_CHAT` | `int` | `0` (unlimited) | Cost guard. `0` = unlimited. Admin sets a positive integer to enforce a per-chat ceiling. |
-| `VIDEO_INTENT_MAX_CALLS_PER_USER_DAY` | `int` | `0` (unlimited) | Cost guard. `0` = unlimited. Admin sets a positive integer to enforce a per-user-per-day ceiling. Tallying is O(1) per classifier call however many distinct users have already called today: yesterday's keys are dropped once per day, not once per call. |
+| `VIDEO_INTENT_MAX_CALLS_PER_CHAT` | `int` | `0` (unlimited) | Cost guard. `0` = unlimited. Admin sets a positive integer to enforce a per-chat ceiling. A call is charged when it is admitted, before the classifier runs, so concurrent turns in one chat share the ceiling. |
+| `VIDEO_INTENT_MAX_CALLS_PER_USER_DAY` | `int` | `0` (unlimited) | Cost guard. `0` = unlimited. Admin sets a positive integer to enforce a per-user-per-day ceiling. A call is charged when it is admitted, before the classifier runs, so concurrent turns in one chat share the ceiling. Tallying is O(1) per classifier call however many distinct users have already called today: yesterday's keys are dropped once per day, not once per call. |
 | `VIDEO_INTENT_LOG_DECISIONS` | `bool` | `False` | Log the per-turn classification summary (intent, confidence, language, frame counts, latency, fallback/failure flags, hashed chat id) at INFO instead of DEBUG; always written, level-only. Excludes the verbatim prompt and the model's free-text reason. |
 
 ## User-tunable settings (per-model filter UserValves)
@@ -187,7 +187,7 @@ Every failure path in the classifier returns a fallback result equivalent to "no
 - **Task model timeout** (>`VIDEO_INTENT_TIMEOUT_S`) → fallback.
 - **Frame extraction fails** (corrupt prior video, unsupported codec) → drop that frame_plan entry, append a downgrade note to the disclosure block, continue with other entries; if every entry fails, send text-only. A clip whose tail is damaged but which still decodes is not this case: the end-seek ladder widens its window until one reads, and the frame that comes back is labelled as the nearest decodable one, not as a frame from past the end.
 - **Thumbnail upload fails** → disclosure block omits that thumbnail and says so on a ⚠️ line ("A preview picture for this frame could not be stored."); the `frame_images` entry still ships. A thumbnail that cannot be *made* is recorded the same way, with "…could not be made." Every per-entry outcome carries the plan position as well as the source index, so two entries asked of the same prior video record two separate codes and read as two separate ⚠️ lines rather than one duplicated.
-- **User cancels mid-classification** → cancellation propagates up; `/videos` is never submitted.
+- **User cancels mid-classification** → cancellation propagates up; `/videos` is never submitted — but the per-chat / per-user-day cap charge was already spent at admission, with no refund.
 - **Model can't honor `input_reference` for modify intent** → the validator drops the reference frame and downgrades the intent to `text_to_video`; the paid call proceeds as text-to-video with no confirmation prompt. See "When a model can't visually modify a previous video" above.
 
 The **first** classifier infrastructure failure per chat surfaces a notification toast: *"Intent inference unavailable; using simple text-to-video."* Subsequent failures within the same chat are silent (logged at DEBUG). The rule covers both failure branches — a classifier that reported failure, and a classifier call that raised — and holds whether or not the emit itself succeeded.
@@ -196,7 +196,7 @@ The "already notified" record is a bounded window of the most recent **300** fai
 
 **Diagnostic log lines** for the toast emission path (search these when the toast doesn't appear as expected):
 
-- `video_intent classifier_failed=True; reason=<...>; breaker tripped` — WARNING, fires every time a classifier infrastructure failure is detected.
+- `video_intent classifier_failed=True; reason=<...>; breaker tripped` — WARNING, fires every time a classifier infrastructure failure is detected. The breaker it names is the failing user's own, open for 60 s.
 - `first-failure toast emitted (chat_key=<...>)` — INFO, confirms the toast was sent to the OWUI event emitter.
 - `first-failure toast suppressed (chat already notified)` — DEBUG, expected on the 2nd+ failure in the same chat.
 - `first-failure toast suppressed: event_emitter is None` — DEBUG, fires when OWUI didn't pass an emitter (rare; indicates an upstream integration issue). It fires **once per request** for the life of an emitter-less chat, not once per chat, because no notice is consumed on this path. Nobody was there, so the chat's one notice is **not** consumed: the next request that does have an emitter still warns.
@@ -207,6 +207,8 @@ The "already notified" record is a bounded window of the most recent **300** fai
 
 - **Site-wide kill switch**: set admin `VIDEO_INTENT_ENABLED=False`. The classifier is bypassed for every user on every path; the pipe restores its pre-classifier behaviour with no code redeploy. This switch is admin-only: it is read live on every request, so a stale installed filter row cannot re-enable it.
 - **Per-user opt-out**: with the admin switch on, a user can disable the classifier just for their own chats via the filter UserValve (`VIDEO_INTENT_ENABLED` on the per-model video filter). Useful when an individual user prefers raw control. This applies to the three non-master settings and to the per-chat opt-out only; the master switch itself is never user-settable.
+
+A classifier failure also opens that user's own breaker for 60 s, suppressing classification for them alone — the classifier re-enters Open WebUI as the requesting user, so a failure is that user's model access or quota rather than a site-wide fault. It is not the site-wide kill switch above, and it never silences another user. Its in-process state holds one entry per user who has ever failed, reclaimed when that user comes back after the window has passed.
 
 ## Notes for operators
 

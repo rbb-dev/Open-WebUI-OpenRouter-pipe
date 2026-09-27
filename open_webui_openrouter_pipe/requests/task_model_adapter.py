@@ -151,6 +151,7 @@ class TaskModelAdapter:
                     user=user_obj,
                     owui_chat_id=str((owui_metadata or {}).get("chat_id") or "") or None,
                     transient_retry=False,
+                    task_request=True,
                 ):
                     if event.get("type") == "openrouter_pipe.chat_fallback":
                         last_endpoint = "chat_completions"

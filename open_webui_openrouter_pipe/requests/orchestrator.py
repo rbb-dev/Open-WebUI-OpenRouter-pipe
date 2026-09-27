@@ -292,6 +292,25 @@ def _fusion_backend_openrouter(valves: Any) -> bool:
     return getattr(valves, "FUSION_BACKEND", "openrouter") != "internal"
 
 
+def _rewrite_video_blocks_for_responses(input_items: Any) -> None:
+    if not isinstance(input_items, list):
+        return
+    for item in input_items:
+        if not isinstance(item, dict):
+            continue
+        blocks = item.get("content")
+        if not isinstance(blocks, list):
+            continue
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") in {"video_url", "input_video"}:
+                block["type"] = "input_video"
+                video = block.get("video_url")
+                if isinstance(video, dict):
+                    block["video_url"] = video.get("url", "")
+
+
 def _fusion_internal_divert(
     model_id: str,
     plugins: Any,
@@ -1196,23 +1215,27 @@ class RequestOrchestrator:
                 responses_body.provider = {"zdr": True}
 
         is_direct = bool(getattr(getattr(__request__, "state", None), "direct", False))
+        fusion_enabled = bool(valves.ENABLE_OPENROUTER_FUSION) and _fusion_backend_openrouter(valves)
         fusion_model = is_fusion_model(responses_body.model)
-        if (
-            bool(valves.ENABLE_OPENROUTER_FUSION)
-            and _fusion_backend_openrouter(valves)
-            and fusion_model
-            and endpoint_override == "chat_completions"
-        ):
+        selected_endpoint = endpoint_override
+        if selected_endpoint is None:
+            selected_endpoint = self._pipe._streaming_handler._select_llm_endpoint(
+                responses_body.model, valves=valves
+            )
+        if fusion_model and fusion_enabled and selected_endpoint == "chat_completions":
             self.logger.warning(
                 "OpenRouter Fusion requires the /responses endpoint; overriding "
                 "endpoint_override=chat_completions to responses for model=%s",
                 responses_body.model,
             )
             endpoint_override = "responses"
+            selected_endpoint = "responses"
+        if selected_endpoint == "responses":
+            _rewrite_video_blocks_for_responses(responses_body.input)
         injected_plugins = _fusion_plugin_injection(
             responses_body.model,
             responses_body.plugins,
-            fusion_enabled=bool(valves.ENABLE_OPENROUTER_FUSION) and _fusion_backend_openrouter(valves),
+            fusion_enabled=fusion_enabled,
             is_task_request=use_task_model_adapter,
         )
         if injected_plugins is not None:
@@ -1225,7 +1248,7 @@ class RequestOrchestrator:
             responses_body.model,
             responses_body.plugins,
             responses_body.tool_choice,
-            fusion_enabled=bool(valves.ENABLE_OPENROUTER_FUSION) and _fusion_backend_openrouter(valves),
+            fusion_enabled=fusion_enabled,
             is_task_request=use_task_model_adapter,
         ):
             responses_body.tool_choice = "required"

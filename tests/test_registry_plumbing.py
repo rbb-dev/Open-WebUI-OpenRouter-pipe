@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import time
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -341,3 +342,6 @@ def test_classify_gemini_thinking_family_accepts_tilde_aliases():
     assert _classify_gemini_thinking_family("google.gemini-2.55") is None
     assert _classify_gemini_thinking_family("~google.gemini-pro-latest") is None
     assert _classify_gemini_thinking_family("google.gemini-2.5:free") is None
+
+
+_DOCS = Path(__file__).resolve().parents[1] / "docs"

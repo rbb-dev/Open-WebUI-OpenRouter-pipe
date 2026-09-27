@@ -832,7 +832,9 @@ class Valves(BaseModel):
         default="",
         description=(
             "Comma-separated glob patterns of model ids that must use /responses "
-            "(overrides FORCE_CHAT_COMPLETIONS_MODELS when both match)."
+            "(overrides FORCE_CHAT_COMPLETIONS_MODELS when both match). A model pinned "
+            "here is not retried on /chat/completions when /responses fails; the error "
+            "surfaces instead."
         ),
     )
     AUTO_FALLBACK_CHAT_COMPLETIONS: bool = Field(
@@ -841,7 +843,9 @@ class Valves(BaseModel):
             "When True, retry the request against /chat/completions if /responses fails with an "
             "endpoint/model support error before any streaming output is produced. A failure OpenRouter "
             "reports inside a reply is retried first if nothing has streamed yet, and shown only "
-            "once content has been shown."
+            "once content has been shown. The retry is skipped for a model pinned by "
+            "FORCE_RESPONSES_MODELS to /responses, and its error surfaces; a model that merely "
+            "sits on the responses default is still retried."
         ),
     )
     API_KEY: EncryptedStr = Field(
@@ -2331,7 +2335,8 @@ class Valves(BaseModel):
         ge=0,
         description=(
             "Cost guard: maximum task-model calls per chat session. 0 (default) = unlimited. "
-            "Admin sets a positive integer to enforce a per-chat ceiling."
+            "Admin sets a positive integer to enforce a per-chat ceiling. A call is charged "
+            "when it is admitted, so concurrent turns in one chat share the ceiling."
         ),
     )
     VIDEO_INTENT_MAX_CALLS_PER_USER_DAY: int = Field(
@@ -2339,7 +2344,8 @@ class Valves(BaseModel):
         ge=0,
         description=(
             "Cost guard: maximum task-model calls per user per day. 0 (default) = unlimited. "
-            "Admin sets a positive integer to enforce a per-user-per-day ceiling."
+            "Admin sets a positive integer to enforce a per-user-per-day ceiling. A call is "
+            "charged when it is admitted, so concurrent turns by one user share the ceiling."
         ),
     )
     VIDEO_INTENT_LOG_DECISIONS: bool = Field(

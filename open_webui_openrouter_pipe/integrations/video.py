@@ -479,7 +479,7 @@ class VideoGenerationAdapter:
         self._intent_call_counts_per_chat: dict[str, int] = {}
         self._intent_call_counts_per_user_day: dict[tuple[str, str], int] = {}
         self._intent_pruned_day: str = ""
-        self._intent_breaker_until_ts: float = 0.0
+        self._intent_breaker_until_ts: dict[str, float] = {}
         self._intent_failure_notified_chats: OrderedDict[str, None] = OrderedDict()
 
     async def generate(
@@ -642,7 +642,7 @@ class VideoGenerationAdapter:
                         valves=valves,
                     )
                     if intent_result.classifier_failed:
-                        self._intent_record_failure()
+                        self._intent_record_failure(user_id if isinstance(user_id, str) else "")
                         self.logger.warning(
                             "video_intent classifier_failed=True; reason=%s; "
                             "breaker tripped",
@@ -757,7 +757,7 @@ class VideoGenerationAdapter:
                     self.logger.warning(
                         "video_intent classifier failed (degrade-open): %s", exc, exc_info=True
                     )
-                    self._intent_record_failure()
+                    self._intent_record_failure(user_id if isinstance(user_id, str) else "")
                     chat_key = chat_id if isinstance(chat_id, str) else ""
                     if chat_key and not self._intent_was_failure_notified(chat_key):
                         if event_emitter is None:
@@ -2495,28 +2495,23 @@ class VideoGenerationAdapter:
                 if not has_attachments:
                     return False
         cap_chat, cap_day = _intent_counters_enabled(valves)
-        if (
-            cap_chat > 0 and chat_id
-            and self._intent_call_counts_per_chat.get(chat_id, 0) >= cap_chat
-        ):
+        if self._intent_breaker_open(user_id):
             return False
-        if cap_day > 0 and user_id:
+        charge_chat = cap_chat > 0 and bool(chat_id)
+        if charge_chat and self._intent_call_counts_per_chat.get(chat_id, 0) >= cap_chat:
+            return False
+        charge_day = cap_day > 0 and bool(user_id)
+        day = ""
+        if charge_day:
             from datetime import datetime
             day = datetime.now(tz=UTC).strftime("%Y-%m-%d")
             if self._intent_call_counts_per_user_day.get((user_id, day), 0) >= cap_day:
                 return False
-        return not time.time() < self._intent_breaker_until_ts
-
-    def _intent_record_call(self, chat_id: str, user_id: str, *, valves: Any) -> None:
-        """Increment the per-chat / per-user-day counters after a classifier call."""
-        cap_chat, cap_day = _intent_counters_enabled(valves)
-        if chat_id and cap_chat > 0:
+        if charge_chat:
             self._intent_call_counts_per_chat[chat_id] = (
                 self._intent_call_counts_per_chat.get(chat_id, 0) + 1
             )
-        if user_id and cap_day > 0:
-            from datetime import datetime
-            day = datetime.now(tz=UTC).strftime("%Y-%m-%d")
+        if charge_day:
             if self._intent_pruned_day != day:
                 self._intent_call_counts_per_user_day = {
                     key: count for key, count in self._intent_call_counts_per_user_day.items()
@@ -2526,10 +2521,26 @@ class VideoGenerationAdapter:
             self._intent_call_counts_per_user_day[(user_id, day)] = (
                 self._intent_call_counts_per_user_day.get((user_id, day), 0) + 1
             )
+        return True
 
-    def _intent_record_failure(self) -> None:
+    def _intent_record_call(self, chat_id: str, user_id: str, *, valves: Any) -> None:
+        return
+
+    def _intent_breaker_open(self, user_id: str) -> bool:
+        key = user_id or ""
+        until = self._intent_breaker_until_ts.get(key, 0.0)
+        if time.time() < until:
+            return True
+        self._intent_breaker_until_ts.pop(key, None)
+        return False
+
+    def _intent_record_failure(self, user_id: str = "") -> None:
         """Open the in-process circuit breaker for 60 seconds after auth/quota errors."""
-        self._intent_breaker_until_ts = time.time() + 60.0
+        now = time.time()
+        key = user_id or ""
+        self._intent_breaker_until_ts[key] = max(
+            self._intent_breaker_until_ts.get(key, 0.0), now + 60.0,
+        )
 
     def _intent_was_failure_notified(self, chat_key: str) -> bool:
         return chat_key in self._intent_failure_notified_chats

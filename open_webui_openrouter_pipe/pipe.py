@@ -3226,6 +3226,7 @@ class Pipe:
         user: Any = None,
         owui_chat_id: str | None = None,
         transient_retry: bool = True,
+        task_request: bool = False,
     ) -> AsyncGenerator[dict[str, Any], None]:
         async for event in self._ensure_nonstreaming_adapter().send_openrouter_nonstreaming_request_as_events(
             session,
@@ -3238,6 +3239,7 @@ class Pipe:
             user=user,
             owui_chat_id=owui_chat_id,
             transient_retry=transient_retry,
+            task_request=task_request,
         ):
             yield event
 

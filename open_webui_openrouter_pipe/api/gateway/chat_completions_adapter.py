@@ -59,6 +59,7 @@ from .responses_adapter import (
     _responses_event_is_user_visible,
     _retry_nonstreaming,
     _should_retry_stream,
+    _split_sse_lines,
     _transient_retry_policy,
 )
 
@@ -683,21 +684,30 @@ class ChatCompletionsAdapter:
                         event_data_parts: list[bytes] = []
                         done = False
 
-                        async for chunk in resp.content.iter_any():
+                        async def _chunks():
+                            async for raw in resp.content.iter_any():
+                                yield raw
+                            if done:  # noqa: B023 - shares the loop's state by design
+                                return
+                            tail = bytes(buf)  # noqa: B023
+                            del buf[:]  # noqa: B023
+                            if not tail and not event_data_parts:  # noqa: B023
+                                return
+                            pending = list(event_data_parts)  # noqa: B023
+                            event_data_parts.clear()  # noqa: B023
+                            for part in pending:
+                                yield b"data: " + part + b"\n\n"
+                            if tail:
+                                yield tail + b"\n\n"
+
+                        async for chunk in _chunks():
                             if not chunk:
                                 continue
                             if not first_chunk_received:
                                 first_chunk_received = True
                                 timing_mark("chat_first_chunk")
                             buf.extend(chunk)
-                            start_idx = 0
-                            while True:
-                                newline_idx = buf.find(b"\n", start_idx)
-                                if newline_idx == -1:
-                                    break
-                                line = buf[start_idx:newline_idx]
-                                start_idx = newline_idx + 1
-                                stripped = line.strip()
+                            for stripped in _split_sse_lines(buf):
 
                                 if not stripped:
                                     if not event_data_parts:
@@ -719,8 +729,6 @@ class ChatCompletionsAdapter:
                                     event_data_parts.append(bytes(stripped[5:].lstrip()))
                                     continue
 
-                            if start_idx > 0:
-                                del buf[:start_idx]
                             if done:
                                 break
                         if event_data_parts and not done:
@@ -951,6 +959,9 @@ class ChatCompletionsAdapter:
         passthrough_deltas = delta_char_limit <= 0 and idle_flush_ms <= 0
         model_id = (responses_request_body or {}).get("model") or ""
         endpoint = endpoint_override or self._pipe._streaming_handler._select_llm_endpoint(str(model_id), valves=effective_valves)
+        forced_selected_endpoint, endpoint_forced = self._pipe._streaming_handler._select_llm_endpoint_with_forced(
+            str(model_id), valves=effective_valves
+        )
 
         responses_emitted_user_visible = False
         responses_buffer: list[dict[str, Any]] = []
@@ -1015,7 +1026,11 @@ class ChatCompletionsAdapter:
             async for event in _run_responses():
                 yield event
         except Exception as exc:
-            if effective_valves.AUTO_FALLBACK_CHAT_COMPLETIONS and self._pipe._streaming_handler._looks_like_responses_unsupported(exc):
+            if (
+                effective_valves.AUTO_FALLBACK_CHAT_COMPLETIONS
+                and not (endpoint_forced and forced_selected_endpoint == "responses")
+                and self._pipe._streaming_handler._looks_like_responses_unsupported(exc)
+            ):
                 if responses_emitted_user_visible:
                     self.logger.info(
                         "Not falling back to /chat/completions for model=%s: /responses already emitted user-visible output before error: %s",

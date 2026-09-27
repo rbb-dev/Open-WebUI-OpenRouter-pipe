@@ -1015,6 +1015,13 @@ def _responses_input_to_chat_messages(
                             elif isinstance(video_url, str) and video_url.strip():
                                 blocks_out.append({"type": "video_url", "video_url": {"url": video_url.strip()}})
                             continue
+                        if btype == "input_video":
+                            video = block.get("video_url")
+                            if isinstance(video, str) and video.strip():
+                                blocks_out.append({"type": "video_url", "video_url": {"url": video.strip()}})
+                            elif isinstance(video, dict) and video.get("url"):
+                                blocks_out.append({"type": "video_url", "video_url": dict(video)})
+                            continue
                         if btype == "input_file":
                             filename = block.get("filename")
                             file_data = block.get("file_data")

@@ -3635,11 +3635,12 @@ class TestFileProcessingException:
 
     @pytest.mark.asyncio
     async def test_file_block_exception_returns_minimal_block(self, pipe_instance):
-        """Exception in file processing never ships the payload-less block (lines 753-760).
+        """A file whose processing raises is refused with a status, not sent as a stub.
 
         `_to_input_file` used to hand back `{"type": "input_file"}` with no payload, and
         that block was the whole turn: the provider was asked to read a file that was
-        never sent. The turn now carries text saying the file did not go out.
+        never sent. The turn now carries no `input_file` part at all, and the person is
+        told the file was skipped.
         """
         async def mock_emit_error(*args, **kwargs):
             pass
@@ -3657,13 +3658,21 @@ class TestFileProcessingException:
             ]}
         ]
 
+        statuses: list[str] = []
+
+        async def capture_status(emitter, msg, done=False):
+            statuses.append(msg)
+
+        pipe_instance._event_emitter_handler._emit_status = capture_status
+
         result = await transform_messages_to_input(pipe_instance, messages)
 
         blocks = result[0]["content"]
         assert blocks, "the turn shipped nothing at all"
-        assert _forwarded_block(result, "input_file") is None, blocks
-        assert blocks[0]["type"] == "input_text"
-        assert blocks[0]["text"] == "[The user sent an empty message.]", blocks
+        assert not [part for part in blocks if part.get("type") == "input_file"], (
+            f"the stub was still forwarded after the failure: {blocks!r}"
+        )
+        assert statuses == ["Files: skipped 1 (has no readable source)."], statuses
 
 
 class TestAudioProcessingEdgeCasesExtended:

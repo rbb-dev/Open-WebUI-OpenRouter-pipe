@@ -259,12 +259,16 @@ class TestShortCircuit:
             if not _ask():
                 break
             allowed += 1
-            adapter._intent_record_call("chat1", "", valves=valves)
 
         assert allowed == cap, (
             f"a cap of {cap} allowed {allowed} classifier call(s) before it closed"
         )
         assert adapter._intent_call_counts_per_chat["chat1"] == cap
+
+        adapter._intent_record_call("chat1", "", valves=valves)
+        assert adapter._intent_call_counts_per_chat["chat1"] == cap, (
+            "the call site charged the call the gate had already reserved"
+        )
 
     @pytest.mark.parametrize("cap", [1, 3])
     def test_the_per_user_day_budget_is_filled_by_the_calls_that_were_made(self, cap):
@@ -281,21 +285,29 @@ class TestShortCircuit:
             ):
                 break
             allowed += 1
-            adapter._intent_record_call("", "user-1", valves=valves)
 
         assert allowed == cap, (
             f"a daily cap of {cap} allowed {allowed} classifier call(s) before it closed"
         )
         assert sum(adapter._intent_call_counts_per_user_day.values()) == cap
 
+        adapter._intent_record_call("", "user-1", valves=valves)
+        assert sum(adapter._intent_call_counts_per_user_day.values()) == cap, (
+            "the call site charged the call the gate had already reserved"
+        )
+
     def test_one_chats_calls_are_not_charged_to_another(self):
         """The counters are per chat and per user; sharing one would close both together."""
         adapter = self._make_adapter()
         valves = _make_valves(VIDEO_INTENT_MAX_CALLS_PER_CHAT=2)
-        adapter._intent_record_call("chat-a", "user-1", valves=valves)
-        adapter._intent_record_call("chat-a", "user-1", valves=valves)
+        for chat_id in ("chat-a", "chat-a", "chat-b"):
+            adapter._intent_classifier_should_run(
+                valves=valves,
+                persisted_content="", prompt="make a video",
+                body={"messages": [{}, {}]}, video_meta={}, chat_id=chat_id,
+            )
 
-        assert adapter._intent_call_counts_per_chat == {"chat-a": 2}
+        assert adapter._intent_call_counts_per_chat == {"chat-a": 2, "chat-b": 1}
         assert adapter._intent_classifier_should_run(
             valves=valves,
             persisted_content="", prompt="make a video",
@@ -304,11 +316,16 @@ class TestShortCircuit:
 
     def test_breaker_open_returns_false(self):
         adapter = self._make_adapter()
-        adapter._intent_breaker_until_ts = time.time() + 60
+        adapter._intent_record_failure("u1")
         assert not adapter._intent_classifier_should_run(
             valves=_make_valves(),
             persisted_content="", prompt="hi",
-            body={"messages": [{}, {}]}, video_meta={},
+            body={"messages": [{}, {}]}, video_meta={}, user_id="u1",
+        )
+        assert adapter._intent_classifier_should_run(
+            valves=_make_valves(),
+            persisted_content="", prompt="hi",
+            body={"messages": [{}, {}]}, video_meta={}, user_id="bob",
         )
 
     @pytest.mark.parametrize("chat_id", [None, "chat1"])

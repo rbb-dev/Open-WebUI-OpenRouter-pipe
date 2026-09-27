@@ -180,6 +180,20 @@ def _record_failed_call(pipe: Pipe, breaker_key: str | None) -> None:
         pipe._circuit_breaker.record_failure(breaker_key)
 
 
+def _split_sse_lines(buf: bytearray) -> list[bytes]:
+    lines: list[bytes] = []
+    start_idx = 0
+    while True:
+        newline_idx = buf.find(b"\n", start_idx)
+        if newline_idx == -1:
+            break
+        lines.append(bytes(buf[start_idx:newline_idx]).strip())
+        start_idx = newline_idx + 1
+    if start_idx > 0:
+        del buf[:start_idx]
+    return lines
+
+
 @contextlib.asynccontextmanager
 async def _count_failed_call(pipe: Pipe, breaker_key: str | None) -> AsyncGenerator[None, None]:
     try:
@@ -370,14 +384,7 @@ class ResponsesAdapter:
                                             timing_mark("responses_first_chunk")
                                         view = memoryview(chunk)
                                         buf.extend(view)
-                                        start_idx = 0
-                                        while True:
-                                            newline_idx = buf.find(b"\n", start_idx)
-                                            if newline_idx == -1:
-                                                break
-                                            line = buf[start_idx:newline_idx]
-                                            start_idx = newline_idx + 1
-                                            stripped = line.strip()
+                                        for stripped in _split_sse_lines(buf):
                                             if not stripped:
                                                 if event_data_parts:
                                                     data_blob = b"\n".join(event_data_parts).strip()
@@ -404,50 +411,40 @@ class ResponsesAdapter:
                                             if stripped.startswith(b"data:"):
                                                 event_data_parts.append(bytes(stripped[5:].lstrip()))
                                                 continue
-                                        if start_idx > 0:
-                                            del buf[:start_idx]
                                         if stream_complete:
                                             break
 
-                                if buf and not stream_complete:
-                                    residual = bytes(buf).strip()
-                                    if residual.startswith(b"data:") or (residual and not residual.startswith(b":")):
-                                        if event_data_parts:
-                                            pending_blob = b"\n".join(event_data_parts).strip()
-                                            event_data_parts.clear()
-                                            if pending_blob and pending_blob != b"[DONE]":
-                                                queued_any = True
-                                                if not delivered_any:
-                                                    _probe_inband(pending_blob)
-                                                if _visible(pending_blob):
-                                                    await _emit(pending_blob)
-                                                else:
-                                                    held.append(pending_blob)
-                                        residual_blob = (
-                                            residual[5:].lstrip()
-                                            if residual.startswith(b"data:")
-                                            else residual
-                                        )
-                                        if residual_blob and residual_blob != b"[DONE]":
-                                            queued_any = True
-                                            if not delivered_any:
-                                                _probe_inband(residual_blob)
-                                            if _visible(residual_blob):
-                                                await _emit(residual_blob)
-                                            else:
-                                                held.append(residual_blob)
+                                if not stream_complete and buf:
+                                    tail_line = bytes(buf).strip()
+                                    del buf[:]
+                                    if tail_line.startswith(b"data:"):
+                                        event_data_parts.append(bytes(tail_line[5:].lstrip()))
 
                                 if event_data_parts and not stream_complete:
-                                    data_blob = b"\n".join(event_data_parts).strip()
+                                    data_blob = event_data_parts[0].strip()
+                                    trailing = [p.strip() for p in event_data_parts[1:]]
                                     event_data_parts.clear()
-                                    if data_blob and data_blob != b"[DONE]":
-                                        queued_any = True
-                                        if not delivered_any:
-                                            _probe_inband(data_blob)
-                                        if _visible(data_blob):
-                                            await _emit(data_blob)
-                                        else:
-                                            held.append(data_blob)
+                                    if data_blob == b"[DONE]":
+                                        stream_complete = True
+                                        timing_mark("responses_stream_done")
+                                    else:
+                                        for blob in (data_blob, *trailing):
+                                            if not blob or blob == b"[DONE]":
+                                                continue
+                                            try:
+                                                json.loads(blob.decode("utf-8"))
+                                            except (RecursionError, UnicodeDecodeError, ValueError):
+                                                continue
+                                            queued_any = True
+                                            if not first_event_queued:
+                                                first_event_queued = True
+                                                timing_mark("producer_first_event_queued")
+                                            if not delivered_any:
+                                                _probe_inband(blob)
+                                            if _visible(blob):
+                                                await _emit(blob)
+                                            else:
+                                                held.append(blob)
                                 if not queued_any:
                                     raise aiohttp.ClientPayloadError("OpenRouter closed the stream before sending anything")
                             except Exception as producer_exc:

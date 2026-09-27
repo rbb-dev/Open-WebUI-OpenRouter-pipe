@@ -399,9 +399,9 @@ class TestClassifierFailureToastDiagnostics:
         adapter = _adapter()
         import time
         before = time.time()
-        adapter._intent_record_failure()
+        adapter._intent_record_failure("u1")
         # Breaker is open 60s in the future.
-        assert adapter._intent_breaker_until_ts > before + 50
+        assert adapter._intent_breaker_until_ts["u1"] > before + 50
 
     def test_failure_reason_propagates_through_telemetry_field(self, caplog):
         caplog.set_level(logging.INFO, logger="t")
