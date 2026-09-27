@@ -46,6 +46,7 @@ from open_webui_openrouter_pipe.storage.owui_files import (
 )
 
 MP4 = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 32
+_FLOORED_MODEL = "bytedance/seedance-2.0"
 OWNER = SimpleNamespace(id="bob", role="user")
 
 
@@ -109,7 +110,10 @@ class _Relay:
         self.timeline.append("published")
         return CallbackResult(status=200, body=self.answer)
 
-    async def encode(self, refs, valves, *, user=OWNER, withheld=None, emitter=object()):
+    async def encode(
+        self, refs, valves, *, user=OWNER, withheld=None, emitter=object(),
+        model_id="runway/aleph-2",
+    ):
         async def _get_file(file_id, _logger):
             return self.records.get(file_id)
 
@@ -121,12 +125,12 @@ class _Relay:
                 for endpoint in _ENDPOINTS.values():
                     mocked.post(endpoint.url, callback=self._wire, repeat=True)
                 return await self.adapter._encode_input_references(
-                    {"input_references": refs, "model_id": "runway/aleph-2"},
+                    {"input_references": refs, "model_id": model_id},
                     valves,
                     withheld=withheld if withheld is not None else [],
                     user_obj=user,
                     video_model={
-                        "id": "runway/aleph-2",
+                        "id": model_id,
                         "input_modalities": ["video", "image", "audio"],
                     },
                     relayed=set(),
@@ -519,24 +523,50 @@ async def test_one_cause_warns_once_however_many_files_it_drops(count, caplog):
 @pytest.mark.parametrize(("width", "height"), [(64, 64), (100, 100)])
 @pytest.mark.asyncio
 async def test_a_reason_carrying_the_users_own_numbers_does_not_widen_the_latch(
-    width, height, caplog
+    monkeypatch, width, height, caplog
 ):
-    """The picture-size reason embeds the size the user sent. Keyed on the sentence, every
-    distinct size armed its own permanent latch entry; keyed on the cause, one does."""
+    """The clip-size reason embeds the dimensions the user sent. Keyed on the sentence,
+    every distinct size armed its own permanent latch entry; keyed on the cause, one
+    does.
+
+    Two clips whose dimensions straddle nothing but differ, so both trip the same floor
+    and the two reasons are genuinely different strings -- which is the whole hazard: the
+    sentence carries numbers the user chose, so it cannot be the latch key.
+    """
+    from open_webui_openrouter_pipe.integrations import video as video_module
     from open_webui_openrouter_pipe.integrations.video import _warned_dropped_video_param
+    from open_webui_openrouter_pipe.media.frame_extraction import VideoMetadata
 
     _warned_dropped_video_param.clear()
-    blobs = {"f1": _png(width, height), "f2": _png(width * 2, height * 2)}
+    blobs = {"f1": MP4, "f2": MP4}
     records = {
-        "f1": _record("f1", "image/png", filename="a.png"),
-        "f2": _record("f2", "image/png", filename="b.png"),
+        "f1": _record("f1", "video/mp4", filename="a.mp4"),
+        "f2": _record("f2", "video/mp4", filename="b.mp4"),
     }
     relay = _Relay(blobs, records)
+
+    class _Sized:
+        """`probe_video` sees the file it was handed, so the two clips answer differently."""
+
+        def __init__(self):
+            self.n = 0
+
+        async def __call__(self, _path):
+            w, h = (width, height) if self.n == 0 else (width * 2, height * 2)
+            self.n += 1
+            return VideoMetadata(
+                duration_seconds=2.0, width=w, height=h, fps=24.0, has_audio=False
+            )
+
+    monkeypatch.setattr(video_module, "probe_video", _Sized())
     withheld: list[tuple[str, str]] = []
 
     with caplog.at_level(logging.DEBUG, logger=relay.adapter.logger.name):
         await relay.encode(
-            [{"id": "f1"}, {"id": "f2"}], _relaying_valves(), withheld=withheld
+            [{"id": "f1"}, {"id": "f2"}],
+            _relaying_valves(),
+            withheld=withheld,
+            model_id=_FLOORED_MODEL,
         )
 
     assert len(withheld) == 2, withheld

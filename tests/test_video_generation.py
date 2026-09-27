@@ -4194,7 +4194,17 @@ async def test_a_plain_video_request_emits_no_empty_provider_block():
     assert "provider" not in payload
 
 
-@pytest.mark.parametrize("documented", ["model", "prompt", "frame_images", "input_references"])
+@pytest.mark.parametrize(
+    "documented",
+    [
+        "model",
+        "prompt",
+        "frame_images",
+        "input_references",
+        "creativity",
+        "upscale_factor",
+    ],
+)
 @pytest.mark.asyncio
 async def test_every_documented_top_level_name_is_kept_out_of_provider_options(documented):
     adapter = VideoGenerationAdapter(
@@ -6168,66 +6178,6 @@ async def test_a_file_whose_type_only_the_upload_declared_is_still_sent(monkeypa
     assert withheld == [], f"the picture was dropped: {withheld}"
     assert [entry["type"] for entry in encoded] == ["image_url"]
     assert encoded[0]["image_url"]["url"].startswith("data:image/png;base64,")
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(("width", "height"), [(64, 64), (6400, 300)])
-async def test_a_reference_picture_outside_openrouters_sizes_is_named_with_its_own(
-    monkeypatch, width, height
-):
-    """256..5760 px on each side is OpenRouter's published rule for reference images.
-
-    Two sizes, one under and one over, so a check that only tests one end passes on the
-    other. The sentence has to carry the picture's own size or the user cannot tell which
-    attachment to replace.
-    """
-    import logging
-    from unittest.mock import AsyncMock, MagicMock
-
-    from open_webui_openrouter_pipe.integrations import video as video_module
-    from open_webui_openrouter_pipe.integrations.video import (
-        _REFERENCE_IMAGE_MAX_SIDE,
-        _REFERENCE_IMAGE_MIN_SIDE,
-        VideoGenerationAdapter,
-    )
-
-    adapter = VideoGenerationAdapter.__new__(VideoGenerationAdapter)
-    adapter.logger = logging.getLogger("openrouter.video.reference_size")
-    adapter._pipe = MagicMock()
-    adapter._pipe._event_emitter_handler._emit_notification = AsyncMock(
-        return_value=True
-    )
-    adapter._pipe._file_gateway.read_file_record_base64 = AsyncMock(
-        return_value=base64.b64encode(_reference_png(width, height)).decode()
-    )
-
-    async def _get_file(file_id, _logger):
-        return SimpleNamespace(id=file_id, filename="frame.png")
-
-    monkeypatch.setattr(video_module, "get_file_by_id", _get_file)
-    monkeypatch.setattr(video_module, "infer_file_mime_type", lambda _f: "image/png")
-
-    valves = SimpleNamespace(
-        VIDEO_FRAME_IMAGE_MAX_BYTES=8 * 1024 * 1024,
-        REMOTE_VIDEO_MAX_SIZE_MB=8,
-        VIDEO_FRAME_TOTAL_MAX_BYTES=8 * 1024 * 1024,
-        IMAGE_UPLOAD_CHUNK_BYTES=1024,
-        VIDEO_FRAME_IMAGE_MIME_ALLOWLIST="image/png,image/jpeg",
-        SEND_MEDIA_VIA_FILE_HOST=False,
-    )
-    withheld: list[tuple[str, str]] = []
-    encoded = await adapter._encode_input_references(
-        {"input_references": [{"id": "ref-1"}]}, valves, withheld=withheld, companions=True,
-    event_emitter=_a_listening_chat,
-)
-
-    assert encoded == [], "OpenRouter refuses this size, so sending it buys a rejection"
-    assert withheld, "the picture was dropped with nothing said about it"
-    note = withheld[0][1]
-    assert f"{width}x{height}" in note, f"the user is not told the size they sent: {note}"
-    assert str(_REFERENCE_IMAGE_MIN_SIDE) in note and str(_REFERENCE_IMAGE_MAX_SIDE) in note, (
-        f"the user is not told what would be accepted: {note}"
-    )
 
 
 @pytest.mark.asyncio

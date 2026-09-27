@@ -111,7 +111,7 @@ def test_a_required_field_is_never_listed_as_a_gap(kind):
 
 
 def test_the_video_adapter_reads_the_partition_rather_than_a_copy_of_it():
-    """The adapter carried its own list of the same twelve names with nothing comparing
+    """The adapter carried its own list of the same eighteen names with nothing comparing
     them, so one could gain a field the other never heard about."""
     from open_webui_openrouter_pipe.integrations.video import (
         _DOCUMENTED_TOP_LEVEL_VIDEO_FIELDS,
@@ -457,7 +457,7 @@ def test_the_catalog_partition_covers_every_key_the_catalogue_publishes():
     """A second arm, because the two recordings go stale on different cadences.
 
     The request-format arm above compares against a schema recorded by hand. That recording
-    was made 2026-08-19 behind the catalogue, and in that window a model arrived publishing
+    was made 2026-08-09 behind the catalogue, and in that window a model arrived publishing
     two typed control domains -- `upscale_factor` and `creativity` -- that reached no control,
     no warning and no list, while the gate built to notice exactly that passed. It could not
     see them: they are catalogue keys, and it only reads request-body keys.

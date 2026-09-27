@@ -42,6 +42,7 @@ The catalog is loaded via `OpenRouterModelRegistry.ensure_loaded(...)`:
 
 Caching:
 - `MODEL_CATALOG_REFRESH_SECONDS` controls how long the cache is considered fresh (default `3600` seconds).
+- A refresh is single-flight: concurrent callers on a stale cache queue behind the one already fetching, and the waiters re-check the clock rather than each starting their own — including when the fetch in flight fails or comes back empty, so a burst of callers cannot multiply into a burst of requests. The cost of collapsing a burst that failed is that the same pass stamps both the model clock and the contract clock, so the next retry after an OpenRouter outage is suppressed for `MODEL_CATALOG_REFRESH_SECONDS`; that is deliberate, and it is what makes the image catalogue loader behave like the video one.
 - On refresh failures, the registry records an exponential backoff window. If cached models exist, the pipe can continue serving them; if no cache exists yet, the error is surfaced to the caller.
 
 ### 1.3 Derived spec fields (what the pipe computes)

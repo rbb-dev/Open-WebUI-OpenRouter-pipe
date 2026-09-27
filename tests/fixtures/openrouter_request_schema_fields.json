@@ -85,7 +85,7 @@
       }
     }
   },
-  "recorded": "2026-08-09",
+  "recorded": "2026-09-27",
   "source": {
     "image": "images/generate-an-image.md",
     "video": "video-generation/submit-a-video-generation-request.md"
@@ -94,20 +94,25 @@
     "properties": [
       "aspect_ratio",
       "callback_url",
+      "creativity",
       "duration",
       "frame_images",
       "generate_audio",
       "input_references",
       "model",
+      "previous_job_id",
       "prompt",
       "provider",
       "resolution",
       "seed",
-      "size"
+      "session_id",
+      "size",
+      "trace",
+      "upscale_factor",
+      "user"
     ],
     "required": [
-      "model",
-      "prompt"
+      "model"
     ],
     "schema": "VideoGenerationRequest",
     "provider_properties": [

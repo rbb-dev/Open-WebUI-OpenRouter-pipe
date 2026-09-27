@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import pathlib
 import sys
 import types
 from types import SimpleNamespace
@@ -4761,3 +4762,12 @@ class TestTagScannerIsDisabledOnEveryModelRow:
         value = _params_without_tag_scanning(ModelParams, None).model_dump()["reasoning_tags"]
         assert value is False
         assert (value is not False) is False
+
+
+# -----------------------------------------------------------------------------
+# Single-flight: the video catalogue refresh
+# -----------------------------------------------------------------------------
+
+_VIDEO_CATALOG_FIXTURE = (
+    pathlib.Path(__file__).parent / "fixtures" / "video_models_catalog.json"
+)

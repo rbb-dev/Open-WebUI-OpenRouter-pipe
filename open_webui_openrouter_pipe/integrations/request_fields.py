@@ -37,6 +37,7 @@ VIDEO_FIELD_ROUTES: dict[str, str] = {
         "also accepts, are reachable only the same way."
     ),
     "aspect_ratio": "per-model control, drawn from the shapes the catalogue lists",
+    "creativity": "per-model control, drawn from the modes the catalogue lists",
     "duration": "per-model control, drawn from the lengths the catalogue lists",
     "frame_images": "the images attached to the turn, narrowed by the frames control",
     "generate_audio": "per-model control, drawn when the catalogue declares the toggle",
@@ -49,6 +50,7 @@ VIDEO_FIELD_ROUTES: dict[str, str] = {
     "resolution": "per-model control, drawn from the tiers the catalogue lists",
     "seed": "per-model control, drawn when the catalogue declares one",
     "size": "per-model control, drawn from the sizes the catalogue lists",
+    "upscale_factor": "per-model control, bounded by the range the catalogue publishes",
 }
 
 VIDEO_FIELD_GAPS: dict[str, str] = {
@@ -58,6 +60,28 @@ VIDEO_FIELD_GAPS: dict[str, str] = {
         "proves such a call genuine is set on an OpenRouter workspace rather than sent "
         "with a request, so nothing here could tell a real callback from a forged one. "
         "The pipe polls for the result instead, which needs neither."
+    ),
+    "previous_job_id": (
+        "OpenRouter's continuation field, which only a model declaring continuation "
+        "support accepts. The pipe's own continuation is a resume: it re-polls the job "
+        "the marker in an earlier message names, and never submits a new request keyed to "
+        "an id the provider has already finished with."
+    ),
+    "session_id": (
+        "a key OpenRouter's published format says is never sent to the provider. The "
+        "pipe's session identity travels as a request header where Open WebUI is "
+        "configured to forward one, and never in the body, so putting it there would "
+        "either be refused or would be a second, disagreeing spelling."
+    ),
+    "trace": (
+        "a reference to a broadcast tracing configuration, filled in by whatever "
+        "collects a trace rather than by a chat turn. A message has no tracing setup to "
+        "describe, and a default here would either trace every chat or be ignored."
+    ),
+    "user": (
+        "a field the published format says is never sent to the provider. Nothing this "
+        "pipe sends needs the account it is sent under, because the account is already "
+        "established by the key the request carries."
     ),
 }
 

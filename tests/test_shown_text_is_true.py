@@ -5088,15 +5088,15 @@ def _worked_example(document: str, anchor: str, filled: dict[str, str]) -> list[
 
 
 @pytest.mark.parametrize(
-    ("job_id", "model_id", "file_id", "elapsed", "cost"),
+    ("job_id", "model_id", "file_id", "second_file_id", "elapsed", "cost"),
     [
-        ("job-abc", "vendor/model-1", "file-xyz", 12.5, 0.42),
-        ("job-42", "other/model-9", "file-77", 3.0, 0.0),
+        ("job-abc", "vendor/model-1", "file-xyz", "file-xyz-2", 12.5, 0.42),
+        ("job-42", "other/model-9", "file-77", "file-77-2", 3.0, 0.0),
     ],
     ids=["one-job", "another-job-billed-nothing"],
 )
 def test_the_video_page_prints_the_message_the_pipe_actually_builds(
-    job_id, model_id, file_id, elapsed, cost
+    job_id, model_id, file_id, second_file_id, elapsed, cost
 ):
     """The page printed a closing line of elapsed time and money that is built nowhere.
 
@@ -5110,6 +5110,11 @@ def test_the_video_page_prints_the_message_the_pipe_actually_builds(
     into it rather than placeholders matches at most one of them; and they carry a
     different elapsed time and a different charge, one of them nothing, so a block naming
     either figure cannot match both.
+
+    Both file ids of a row differ from the other row's, because `_worked_example`
+    replaces each placeholder across the whole block: one token used twice would fill
+    both clips with the same id, and the two rows would then differ in only one of the
+    two.
     """
     from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
 
@@ -5117,7 +5122,7 @@ def test_the_video_page_prints_the_message_the_pipe_actually_builds(
     built = adapter._build_success_content(
         job_id=job_id,
         model_id=model_id,
-        file_ids=[file_id],
+        file_ids=[file_id, second_file_id],
         elapsed=elapsed,
         usage={"cost": cost, "total_tokens": 0},
     )
@@ -5125,7 +5130,12 @@ def test_the_video_page_prints_the_message_the_pipe_actually_builds(
     shown = _worked_example(
         "openrouter_video_generation.md",
         "the assistant message contains",
-        {"<job_id>": job_id, "<model_id>": model_id, "<owui_file_id>": file_id},
+        {
+            "<job_id>": job_id,
+            "<model_id>": model_id,
+            "<owui_file_id_1>": file_id,
+            "<owui_file_id_2>": second_file_id,
+        },
     )
 
     assert shown == built.splitlines(), (

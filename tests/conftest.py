@@ -408,6 +408,10 @@ def _reset_model_registry():
     reg._last_error = None
     reg._last_error_time = 0.0
     ModelFamily.set_dynamic_specs(None)
+    from open_webui_openrouter_pipe.integrations import image_catalog, video_catalog
+
+    video_catalog._VIDEO_CATALOG_LOCK = asyncio.Lock()
+    image_catalog._image_catalog_lock = asyncio.Lock()
     yield
 
 

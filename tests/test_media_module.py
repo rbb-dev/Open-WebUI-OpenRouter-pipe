@@ -322,7 +322,7 @@ class TestExtractFrame:
 
 
 # -----------------------------------------------------------------------------
-# image_pixel_size -- the gate that keeps a reference image inside 256..5760 px
+# image_pixel_size -- the reader every pixel-based rule in the pipe asks
 # -----------------------------------------------------------------------------
 
 
@@ -345,7 +345,7 @@ def _encoded(width: int, height: int, fmt: str, **options) -> bytes:
 def test_the_dimensions_are_read_from_what_an_encoder_actually_writes(
     width, height, fmt, options
 ):
-    """OpenRouter rejects a reference image outside 256..5760 px on either side.
+    """The size of a picture is read off the bytes the encoder actually wrote.
 
     Reading that from a hand-built header proves the test author can write a header.
     These bytes come from a real encoder, and the two sizes are distinct in both axes

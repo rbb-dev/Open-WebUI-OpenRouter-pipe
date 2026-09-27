@@ -1492,7 +1492,15 @@ pipes()
   │        cancelled mid-sweep neither loses the video models nor
   │        suppresses the next attempt
   └─ ensure_image_catalog_loaded()   <- called on every build; the master
-        valve is checked INSIDE it, not at this call site
+        valve is checked INSIDE it, not at this call site, and the refresh
+        is single-flight: concurrent callers on a cold cache queue on one
+        lock and one caller fetches, the rest re-check the clocks behind it
+        and take the catalogue that fetch produced. A refresh that fails or
+        returns nothing is still one refresh, and it stamps both the model
+        clock and the contract clock, so the retry after an OpenRouter
+        outage waits out MODEL_CATALOG_REFRESH_SECONDS. That is the price
+        of collapsing a burst of waiters onto one failed pass, and it is
+        what makes this loader behave like the video one.
           ├─ if ENABLE_OPENROUTER_IMAGE_GENERATION is off: drop any models
           │  registered while it was on, then return -- ahead of the TTL
           │  check, which is why the picker empties on this build rather

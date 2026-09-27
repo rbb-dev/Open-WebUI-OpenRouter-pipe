@@ -41,7 +41,6 @@ from ..requests.fusion_engine import asks_for_help, latest_user_text
 from ..storage.multimodal import (
     ADDRESS_CHECK_BUDGET_SECONDS,
     ADDRESS_CHECK_SECONDS,
-    image_pixel_size,
 )
 from ..storage.owui_files import (
     PUBLISHING_NEEDS_OWNERSHIP,
@@ -198,9 +197,6 @@ _validate_input_pixel_floors(_INPUT_PIXEL_FLOORS)
 _AUDIO_NEEDS_A_COMPANION = (
     "OpenRouter only takes a sound reference alongside a picture or a clip, so it was left out"
 )
-
-_REFERENCE_IMAGE_MIN_SIDE = 256
-_REFERENCE_IMAGE_MAX_SIDE = 5760
 
 _REFERENCE_NEEDS_A_LINK = (
     "OpenRouter takes sound and video references as https links, not as uploaded files, "
@@ -1913,11 +1909,6 @@ class VideoGenerationAdapter:
                 )
                 _skip(file_id, "not-base64", "it contains invalid base64 data")
                 continue
-            if family == "image":
-                note = self._reference_image_size_note(b64)
-                if note:
-                    _skip(file_id, "image-size", note)
-                    continue
             if via_file_host:
                 self._refuse_over_the_relay_cap(decoded_len, relay_bytes, relay_max)
                 if family == "video":
@@ -2232,22 +2223,6 @@ class VideoGenerationAdapter:
                         break
         raise VideoGenerationError(
             f"The attached {family} could not be sent: {'; '.join(failures)}."
-        )
-
-    @staticmethod
-    def _reference_image_size_note(b64: str) -> str:
-        try:
-            sides = image_pixel_size(base64.b64decode(b64, validate=False))
-        except (binascii.Error, ValueError):
-            return ""
-        if sides is None:
-            return ""
-        width, height = sides
-        if all(_REFERENCE_IMAGE_MIN_SIDE <= side <= _REFERENCE_IMAGE_MAX_SIDE for side in sides):
-            return ""
-        return (
-            f"it is {width}x{height} and OpenRouter takes reference images between "
-            f"{_REFERENCE_IMAGE_MIN_SIDE} and {_REFERENCE_IMAGE_MAX_SIDE} pixels on each side"
         )
 
     def _extract_video_metadata(self, metadata: dict[str, Any]) -> dict[str, Any]:
@@ -2786,7 +2761,7 @@ class VideoGenerationAdapter:
         produced: int = 0,
     ) -> str:
         clips = "".join(
-            f"<video>\n/api/v1/files/{file_id}/content\n</video>\n" for file_id in file_ids
+            f"<video>\n/api/v1/files/{file_id}/content\n</video>\n\n" for file_id in file_ids
         )
         shortfall = ""
         missing = max(produced - len(file_ids), 0)

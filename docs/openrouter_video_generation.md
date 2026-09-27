@@ -1221,8 +1221,9 @@ overrides them. Specifically:
 ### Routing (where each valve lands in the OpenRouter request body)
 
 - **Top-level** request fields (`duration`, `aspect_ratio`,
-  `resolution`, `size`, `seed`, `generate_audio`, `frame_images`,
-  `input_references`): set directly in the `/videos` POST body.
+  `resolution`, `size`, `seed`, `generate_audio`, `creativity`,
+  `upscale_factor`, `frame_images`, `input_references`): set directly in
+  the `/videos` POST body.
   `negative_prompt` is not one of them — it travels as a provider
   setting, as the table above shows.
 - **Provider passthrough** fields (everything else —
@@ -1371,7 +1372,8 @@ same three limits are applied again to anything sent only as a reference
 (below), and there a file that breaks one is left out with a warning
 notice in the chat naming it and the reason, while the video still
 renders. References count against their own combined budget, separate
-from the frames'.
+from the frames'. A **picture** is never held back for its dimensions,
+because OpenRouter publishes no size range for one.
 
 Per-model frame support:
 
@@ -1414,11 +1416,16 @@ would be discarded without a word. Each reference is checked against the
 frame limits above; a clip or sound file, which travels by way of a public
 file host, is bounded by `MEDIA_FILE_HOST_MAX_SIZE_MB` instead.
 `REMOTE_VIDEO_MAX_SIZE_MB` bounds only the finished video coming back, not
-anything you attach. A reference that fails on kind, format, pixel size,
-count or the combined budget is left out with a warning notice naming it
-and why, and the render still goes ahead; one that is simply too large
-stops the request instead, so that nothing is generated and billed from a
-prompt the attachment was meant to anchor.
+anything you attach. A reference that fails on kind, format, count or the
+combined budget is left out with a warning notice naming it and why, and
+the render still goes ahead; a clip that fails on pixel size
+is left out the same way, and one that is simply too large stops the
+request instead, so that nothing is generated and billed from a prompt the
+attachment was meant to anchor. A **picture** is not measured before it is
+sent: it is encoded at whatever size it was attached at and counts against
+the combined budget like any other reference, so on a turn carrying several
+references one large picture can push a later one out with a notice naming
+it.
 
 Because a reference is enough to generate from, a turn with attachments
 and **no typed words** is now submitted rather than refused.
@@ -1757,8 +1764,13 @@ When generation succeeds, the assistant message contains:
 [openrouter:v1:videomodel:<model_id>]: #
 
 <video>
-/api/v1/files/<owui_file_id>/content
+/api/v1/files/<owui_file_id_1>/content
 </video>
+
+<video>
+/api/v1/files/<owui_file_id_2>/content
+</video>
+
 ```
 
 A model that returns more than one clip for a single job gets one
@@ -1775,8 +1787,7 @@ appear in the rendered chat.
 
 The `<video>` tag with the URL on its own line is the only format that
 marked.js tokenises as a single CommonMark "type 7 HTML block". Without
-the blank lines and the URL on a separate line, marked either fragments
-the block into 3 inline tokens (rendering as text) or merges adjacent
+the blank lines and the URL on a separate line, marked merges adjacent
 `<video>` blocks into one HTML token (HTMLToken's non-greedy regex then
 matches only the first, hiding the rest).
 
@@ -2007,10 +2018,14 @@ ensure you're running the latest bundle.
 
 ### Two `<video>` players for one generation
 
-Same root cause as above (duplicate emit). Fix is in the current bundle.
-Symptom in older bundles: chat assistant message contains the entire
-content block twice, with the second copy's marker `[openrouter:v1:videojob:...]`
-visibly leaked because there's no newline before it.
+Same root cause as above (duplicate emit), and distinct from a job that
+legitimately returned two clips: a genuine multi-clip generation has one
+marker pair and one player per clip, while the duplicate-emit bug
+repeats the whole content block, markers included. Fix is in the current
+bundle. Symptom in older bundles: chat assistant message contains the
+entire content block twice, with the second copy's marker
+`[openrouter:v1:videojob:...]` visibly leaked because there's no newline
+before it.
 
 ---
 
@@ -2116,7 +2131,10 @@ Key files:
   stamped once an attempt completes — a failed or empty fetch, or a
   successful registration — but not while the modality sweep is still
   running, so a fetch cancelled mid-sweep neither loses the video models
-  nor suppresses the next attempt.
+  nor suppresses the next attempt. The fetch is single-flight: concurrent
+  callers on a cold cache queue on one lock, one caller fetches and the
+  rest re-check the clock behind it, so a refresh that fails is still
+  one refresh.
 - [`integrations/media_relay.py`](../open_webui_openrouter_pipe/integrations/media_relay.py)
   — puts an attached clip or sound file behind a public link so it can be
   sent as a reference: which hosts are known, which origins each may

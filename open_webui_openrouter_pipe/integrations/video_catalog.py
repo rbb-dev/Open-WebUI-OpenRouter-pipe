@@ -31,16 +31,21 @@ async def ensure_video_catalog_loaded(
     cache_seconds: int,
 ) -> None:
     """Fetch video models and register them into the shared model registry."""
-    if not getattr(valves, "ENABLE_VIDEO_GENERATION", False):
-        if OpenRouterModelRegistry.last_video_fetch() > 0:
-            OpenRouterModelRegistry.register_video_models([])
-            OpenRouterModelRegistry.reset_video_fetch_timestamp()
-            logger.info("Video catalog cleared: ENABLE_VIDEO_GENERATION is False.")
-        else:
-            logger.debug("Video catalog skipped: ENABLE_VIDEO_GENERATION is False.")
-        return
+    if getattr(valves, "ENABLE_VIDEO_GENERATION", False):
+        last_attempt = OpenRouterModelRegistry.last_video_attempt()
+        if last_attempt and (time.time() - last_attempt) < cache_seconds:
+            return
 
     async with _VIDEO_CATALOG_LOCK:
+        if not getattr(valves, "ENABLE_VIDEO_GENERATION", False):
+            if OpenRouterModelRegistry.last_video_fetch() > 0:
+                OpenRouterModelRegistry.register_video_models([])
+                OpenRouterModelRegistry.reset_video_fetch_timestamp()
+                logger.info("Video catalog cleared: ENABLE_VIDEO_GENERATION is False.")
+            else:
+                logger.debug("Video catalog skipped: ENABLE_VIDEO_GENERATION is False.")
+            return
+
         last_attempt = OpenRouterModelRegistry.last_video_attempt()
         if last_attempt and (time.time() - last_attempt) < cache_seconds:
             return
