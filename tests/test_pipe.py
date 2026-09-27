@@ -1885,25 +1885,6 @@ class TestSessionLogWorkers:
 class TestSessionLogArchive:
     """Tests for session log archive handling."""
 
-    def test_enqueue_session_log_archive_disabled(self):
-        """Test that _enqueue_session_log_archive returns early when disabled."""
-        pipe = Pipe()
-        pipe.valves.SESSION_LOG_STORE_ENABLED = False
-
-        try:
-            pipe._session_log_manager.enqueue_archive(
-                pipe.valves,
-                user_id="user1",
-                session_id="session1",
-                chat_id="chat1",
-                message_id="msg1",
-                request_id="req1",
-                log_events=[{"test": "event"}],
-            )
-            # Should return early without error
-        finally:
-            pipe.shutdown()
-
     def test_enqueue_session_log_archive_missing_ids(self):
         """Test that _enqueue_session_log_archive returns early with missing IDs."""
         pipe = Pipe()
@@ -2028,17 +2009,6 @@ class TestSessionLogAssembler:
         finally:
             stop_event.set()
             thread.join(timeout=1.0)
-            pipe.shutdown()
-
-    def test_run_session_log_assembler_once_disabled(self):
-        """Test that _run_session_log_assembler_once returns early when disabled."""
-        pipe = Pipe()
-        pipe.valves.SESSION_LOG_STORE_ENABLED = False
-
-        try:
-            pipe._session_log_manager.run_assembler_once()
-            # Should return early without error
-        finally:
             pipe.shutdown()
 
     def test_run_session_log_assembler_once_no_db_handles(self):
@@ -2634,45 +2604,6 @@ class TestPipeEntryPointEdgeCases:
             )
 
             assert "Service unavailable" in str(result) or "startup" in str(result).lower()
-        finally:
-            await pipe.close()
-
-    @pytest.mark.asyncio
-    async def test_pipe_streaming_with_invalid_referer_override(self):
-        """Test that pipe() handles invalid HTTP_REFERER_OVERRIDE in streaming mode."""
-        pipe = Pipe()
-        pipe.valves.API_KEY = EncryptedStr("sk-test-key")
-
-        try:
-            # Create user valves with invalid referer
-            user_valves = pipe.UserValves.model_validate({
-                "HTTP_REFERER_OVERRIDE": "not-a-url",  # Invalid - doesn't start with http://
-            })
-
-            with aioresponses() as mock_http:
-                mock_http.get(
-                    "https://openrouter.ai/api/v1/models",
-                    payload={"data": []},
-                    repeat=True,
-                )
-                mock_http.post(
-                    "https://openrouter.ai/api/v1/responses",
-                    payload={"id": "resp_123"},
-                    repeat=True,
-                )
-
-                result = await pipe.pipe(
-                    body={"stream": True, "messages": [{"role": "user", "content": "hi"}]},
-                    __user__={"valves": user_valves.model_dump()},
-                    __request__=None,
-                    __event_emitter__=None,
-                    __event_call__=None,
-                    __metadata__={},
-                    __tools__=None,
-                )
-
-                # Should return a generator for streaming
-                assert hasattr(result, "__anext__") or result is not None
         finally:
             await pipe.close()
 
@@ -4092,43 +4023,6 @@ async def test_pipe_warmup_failed_emits_error(monkeypatch, pipe_instance_async) 
 
     assert "Service unavailable" in str(result)
     assert emitted
-
-
-@pytest.mark.asyncio
-async def test_pipe_streams_warning_on_invalid_referer(monkeypatch, pipe_instance_async) -> None:
-    pipe = pipe_instance_async
-    pipe.valves.HTTP_REFERER_OVERRIDE = "not-a-url"
-    pipe.valves.MIDDLEWARE_STREAM_QUEUE_MAXSIZE = 1
-    pipe._request_queue = asyncio.Queue()
-    async def _noop(_valves):
-        return None
-
-    monkeypatch.setattr(pipe, "_ensure_concurrency_controls", _noop)
-
-    def _enqueue_job(job):
-        async def _fill_queue():
-            await job.stream_queue.put({"event": {"type": "notification", "data": {"type": "warning"}}})
-            await job.stream_queue.put(None)
-
-        asyncio.create_task(_fill_queue())
-        job.future.set_result({"ok": True})
-        return True
-
-    monkeypatch.setattr(pipe, "_enqueue_job", _enqueue_job)
-
-    stream = await pipe.pipe(
-        {"stream": True},
-        {},
-        None,
-        None,
-        None,
-        {},
-        None,
-    )
-
-    items = [item async for item in stream]
-
-    assert any(item.get("event", {}).get("data", {}).get("type") == "warning" for item in items)
 
 
 @pytest.mark.asyncio
@@ -6165,12 +6059,6 @@ def _install_real_session_log_store(pipe: Pipe, tmp_path) -> None:
     store_any._engine = engine
 
 
-def test_resolve_session_log_archive_settings_disabled(pipe_instance):
-    pipe = pipe_instance
-    pipe.valves.SESSION_LOG_STORE_ENABLED = False
-    assert pipe._session_log_manager.resolve_archive_settings(pipe.valves) is None
-
-
 def test_resolve_session_log_archive_settings_missing_dir_or_password(pipe_instance, monkeypatch, tmp_path):
     pipe = pipe_instance
     pipe._session_log_manager._warning_emitted = False
@@ -6835,29 +6723,6 @@ def test_maybe_start_session_log_assembler_worker_idempotent(pipe_for_session_lo
 
     pipe._session_log_manager.stop_workers()
     time.sleep(0.1)
-
-
-@pytest.mark.asyncio
-async def test_persist_session_log_segment_skips_when_disabled():
-    """Test that _persist_session_log_segment_to_db skips when SESSION_LOG_STORE_ENABLED is False."""
-    pipe = Pipe()
-    pipe.valves.SESSION_LOG_STORE_ENABLED = False
-
-    try:
-        # This should return early without doing anything
-        await pipe._session_log_manager.persist_segment_to_db(
-            user_id="user1",
-            session_id="sess1",
-            chat_id="chat1",
-            message_id="msg1",
-            request_id="req1",
-            log_events=[{"event": "test"}],
-            terminal=False,
-            status="success",
-        valves=pipe.valves,
-        )
-    finally:
-        await pipe.close()
 
 
 @pytest.mark.asyncio

@@ -24,15 +24,18 @@ _MAX_FRAME_PIXELS = 25_000_000
 _FFMPEG_TIMEOUT_S = 30.0
 _PROBE_TIMEOUT_S = 10.0
 _END_SEEK_WINDOWS = ("-1", "-5", "-30")
+_RETRYABLE_FFMPEG_EXITS = frozenset({69})
 
 
 class FrameExtractionError(Exception):
     """Raised when a frame cannot be extracted from a video file.
     """
 
-    def __init__(self, message: str, *, no_frame: bool = False) -> None:
+    def __init__(self, message: str, *, no_frame: bool = False,
+                 returncode: int | None = None) -> None:
         super().__init__(message)
         self.no_frame = no_frame
+        self.returncode = returncode
 
 
 @dataclass
@@ -155,7 +158,7 @@ def _extract_frame_imageio_sync(
 
 async def _extract_frame_ffmpeg(
     path: Path, *, timestamp_seconds: float, logger: logging.Logger,
-    from_end: bool = False
+    from_end: bool = False, saw_damage: list[bool] | None = None
 ) -> tuple[bytes, int, int]:
     """Fallback frame extraction via ffmpeg subprocess.
 
@@ -187,6 +190,7 @@ async def _extract_frame_ffmpeg(
         seek_arg_sets = [["-ss", str(max(0.0, timestamp_seconds))]]
         vf = "scale='min(1920,iw)':-2"
     last_no_frame: FrameExtractionError | None = None
+    walked_past_damage = False
     for seek_args in seek_arg_sets:
         cmd = [
             ffmpeg_bin,
@@ -221,6 +225,7 @@ async def _extract_frame_ffmpeg(
             if proc.returncode != 0:
                 raise FrameExtractionError(
                     f"ffmpeg returned {proc.returncode}: {stderr.decode('utf-8', errors='replace')[:200]}",
+                    returncode=proc.returncode,
                 )
             if not stdout:
                 raise FrameExtractionError("ffmpeg produced empty output", no_frame=True)
@@ -232,6 +237,8 @@ async def _extract_frame_ffmpeg(
             img.load()
             if img.mode not in ("RGB", "RGBA"):
                 stdout = _normalise_png_mode(img)
+            if saw_damage is not None:
+                saw_damage.append(walked_past_damage)
             return stdout, img.width, img.height
         except asyncio.CancelledError:
             if proc is not None:
@@ -240,11 +247,15 @@ async def _extract_frame_ffmpeg(
                     await proc.wait()
             raise
         except FrameExtractionError as exc:
-            if not exc.no_frame:
+            if not exc.no_frame and exc.returncode not in _RETRYABLE_FFMPEG_EXITS:
                 raise
+            if exc.returncode in _RETRYABLE_FFMPEG_EXITS:
+                walked_past_damage = True
             last_no_frame = exc
         except Exception as exc:
             raise FrameExtractionError(f"ffmpeg extract failed: {exc}") from exc
+    if saw_damage is not None:
+        saw_damage.append(walked_past_damage)
     if last_no_frame is not None:
         raise last_no_frame
     raise FrameExtractionError("ffmpeg extract failed: no seek attempted")
@@ -334,26 +345,51 @@ async def extract_frame(
         except FrameExtractionError as exc:
             logger.debug("imageio first_frame failed; falling through to ffmpeg: %s", exc)
 
+    direct_saw_damage: list[bool] = []
     try:
         png_bytes, w, h = await _extract_frame_ffmpeg(
             path, timestamp_seconds=actual_ts, logger=logger, from_end=use_end_seek,
+            saw_damage=direct_saw_damage,
         )
+        if not downgrade_note and direct_saw_damage and direct_saw_damage[0]:
+            downgrade_note = "frame_damaged_used_last_decodable_frame"
     except FrameExtractionError as exc:
-        if use_end_seek or target == "first_frame" or not exc.no_frame or (
+        if use_end_seek or target == "first_frame" or (
+            not exc.no_frame and exc.returncode not in _RETRYABLE_FFMPEG_EXITS
+        ) or (
             target == "at_timestamp" and not fallback_to_last_on_overshoot
         ):
             raise
         logger.debug(
             "ffmpeg seek to %.3fs produced no frame; falling back to last frame", actual_ts,
         )
-        png_bytes, w, h = await _extract_frame_ffmpeg(
-            path, timestamp_seconds=0.0, logger=logger, from_end=True,
-        )
+        ladder_saw_damage: list[bool] = []
+        try:
+            png_bytes, w, h = await _extract_frame_ffmpeg(
+                path, timestamp_seconds=0.0, logger=logger, from_end=True,
+                saw_damage=ladder_saw_damage,
+            )
+        except FrameExtractionError:
+            png_bytes, w, h = await asyncio.to_thread(
+                _extract_frame_imageio_sync, path, frame_index=0,
+            )
+            actual_ts = 0.0
+            if not downgrade_note:
+                downgrade_note = "frame_damaged_used_first_frame"
+            return ExtractedFrame(
+                image_bytes=png_bytes, width=w, height=h,
+                actual_timestamp_seconds=actual_ts,
+                requested_timestamp_seconds=requested_ts,
+                downgrade_note=downgrade_note,
+            )
         use_end_seek = True
         if meta is not None and meta.duration_seconds > 0:
             # Report the true last-frame timestamp, not the overshot request.
             actual_ts = max(0.0, meta.duration_seconds - max(1.0 / meta.fps, 0.04))
-        if not downgrade_note and target == "at_timestamp":
+        walked_past_damage = bool(ladder_saw_damage and ladder_saw_damage[0])
+        if walked_past_damage and not downgrade_note:
+            downgrade_note = "frame_damaged_used_last_decodable_frame"
+        elif not downgrade_note and target == "at_timestamp":
             # Coded key (not prose) so _user_facing_downgrade_message can map it.
             downgrade_note = "frame_past_eof_used_last_frame"
     return ExtractedFrame(

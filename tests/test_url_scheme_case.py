@@ -500,10 +500,10 @@ async def test_the_referer_warning_agrees_with_the_referer_selection(
     """
     pipe = pipe_instance_async
     pipe.valves.HTTP_REFERER_OVERRIDE = override
-    notifications: list[str] = []
+    notifications: list[tuple[str, str]] = []
 
     async def _spy(_emitter, message, *args, **kwargs):
-        notifications.append(message)
+        notifications.append((kwargs.get("level", "info"), str(message)))
 
     monkeypatch.setattr(pipe._event_emitter_handler, "_emit_notification", _spy)
 
@@ -521,7 +521,8 @@ async def test_the_referer_warning_agrees_with_the_referer_selection(
             __tools__=None,
         )
 
-    complaints = [n for n in notifications if "HTTP_REFERER_OVERRIDE" in n]
+    complaints = [n for n in notifications
+                  if n[0] == "warning" and "HTTP_REFERER_OVERRIDE" in n[1]]
     assert bool(complaints) is warns, (
-        f"HTTP_REFERER_OVERRIDE={override!r} produced {complaints!r}"
+        f"HTTP_REFERER_OVERRIDE={override!r} produced {notifications!r}"
     )

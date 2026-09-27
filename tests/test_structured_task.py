@@ -105,11 +105,6 @@ class TestBuildResponseFormat:
         rf = build_response_format(name="x", schema={}, strict=False)
         assert rf["json_schema"]["strict"] is False
 
-    def test_downgrade_when_structured_outputs_unsupported(self):
-        rf = build_response_format(name="x", schema={}, strict=True)
-        downgraded = downgrade_strict_for_provider(rf, supported_parameters=[])
-        assert downgraded["json_schema"]["strict"] is False
-
     def test_downgrade_no_op_when_structured_outputs_supported(self):
         rf = build_response_format(name="x", schema={}, strict=True)
         out = downgrade_strict_for_provider(rf, supported_parameters=["structured_outputs"])

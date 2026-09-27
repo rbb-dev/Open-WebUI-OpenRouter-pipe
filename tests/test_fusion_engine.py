@@ -12,10 +12,12 @@ from open_webui_openrouter_pipe.core.config import _PIPE_METADATA_KEY, Valves
 from open_webui_openrouter_pipe.core.errors import OpenRouterAPIError
 from open_webui_openrouter_pipe.core.fusion_defaults import FusionRunPlan
 from open_webui_openrouter_pipe.requests.fusion_engine import (
+    ANALYSIS_SCHEMA,
     FusionCollector,
     FusionInnerInvocation,
     FusionMemberResult,
     aggregate_sources,
+    build_analysis_response_format,
     build_inner_metadata,
     build_inner_valves,
     parse_analysis,

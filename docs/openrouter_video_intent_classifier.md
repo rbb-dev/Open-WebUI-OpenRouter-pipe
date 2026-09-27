@@ -103,7 +103,7 @@ The pipe validates the requested timestamp against how long the previous video's
 
 > ⚠️ The requested time was past the end of the previous video; used its last frame instead.
 
-A seek that misses the last decodable frame is retried against the end of the file with a wider window (1s, then 5s, then 30s) before giving up, so a tail of up to 30s still yields a frame at up to three times the normal extraction time.
+A seek that misses the last decodable frame is retried against the end of the file with a wider window (1s, then 5s, then 30s), and a damaged tail is retried against wider windows before the frame is given up on, so a tail of up to 30s still yields a frame at up to three times the normal extraction time. A window that hits damage inside an otherwise readable file widens before the frame is given up on; an input ffmpeg cannot open at all fails on the first window, because no wider window will read it either.
 
 ## Configuration valves (admin)
 
@@ -179,7 +179,7 @@ Every failure path in the classifier returns a fallback result equivalent to "no
 
 - **Task model returns invalid JSON** → one corrective retry per candidate; on second failure, fall through to the next candidate; if all candidates fail, fallback.
 - **Task model timeout** (>`VIDEO_INTENT_TIMEOUT_S`) → fallback.
-- **Frame extraction fails** (corrupt prior video, unsupported codec) → drop that frame_plan entry, append a downgrade note to the disclosure block, continue with other entries; if every entry fails, send text-only.
+- **Frame extraction fails** (corrupt prior video, unsupported codec) → drop that frame_plan entry, append a downgrade note to the disclosure block, continue with other entries; if every entry fails, send text-only. A clip whose tail is damaged but which still decodes is not this case: the end-seek ladder widens its window until one reads, and the frame that comes back is labelled as the nearest decodable one, not as a frame from past the end.
 - **Thumbnail upload fails** → disclosure block omits that thumbnail; the `frame_images` entry still ships.
 - **User cancels mid-classification** → cancellation propagates up; `/videos` is never submitted.
 - **Model can't honor `input_reference` for modify intent** → the validator drops the reference frame and downgrades the intent to `text_to_video`; the paid call proceeds as text-to-video with no confirmation prompt. See "When a model can't visually modify a previous video" above.
@@ -202,6 +202,6 @@ The **first** classifier infrastructure failure per chat surfaces a notification
 ## Notes for operators
 
 - Frame extraction uses PIL+imageio first, with ffmpeg subprocess as fallback. The `imageio-ffmpeg` package ships its own ffmpeg binary, so there is no system dependency to install.
-- Thumbnails are 256×256 JPEG, generated at intent-resolution time (after the classifier returns, before submission). Storage cost: roughly 10–20 KB per thumbnail.
+- Thumbnails are 256×256 JPEG, generated at intent-resolution time (after the classifier returns, before submission). The 256×256 is the canvas, not the picture: the content is letterboxed onto a white canvas with its aspect ratio preserved and centred, and the bars outside it are white. Storage cost: roughly 10–20 KB per thumbnail.
 - Filter-injected `frame_images` (user explicitly attached an image) take precedence over classifier output. Plan entries that reference an uploaded attachment the filter claimed as a frame are kept and applied, so phrases like "use this as the last frame" still work. A plan entry that names an attachment the filter claimed as a **style reference** — a clip, an audio file, or an image past the first — is also kept, but it changes nothing: that reference already goes to the model as a reference, not as a frame, so there is no frame to re-target. Plan entries that reference prior videos are dropped when an explicit attachment is present.
 - Attachments are collected into one flat list for the classifier: `frame_images` first, then `input_references`, order preserved within each source list, and the index is 0-based across the flat output. Each entry carries a `kind` of `image`, `video` or `other`; a `frame_images` entry is always `image`, and an `input_references` entry is classified by its `content_type` family (`video/*` → `video`, `image/*` → `image`, anything else → `other`). The family is resolved into a per-entry name, never back into the source-list loop variable, so a reference cannot inherit the previous reference's family.

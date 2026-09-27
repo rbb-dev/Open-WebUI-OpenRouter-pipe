@@ -506,7 +506,8 @@ class TestOvershootFallback:
                 duration_seconds=4.0, width=1, height=1, fps=24.0, has_audio=False,
             )
 
-        async def fake_ffmpeg(path, *, timestamp_seconds, logger, from_end=False):
+        async def fake_ffmpeg(path, *, timestamp_seconds, logger, from_end=False,
+                              saw_damage=None):
             captured["ts"] = timestamp_seconds
             return (b"\x89PNG\r\n\x1a\n", 1, 1)
 
@@ -538,7 +539,8 @@ class TestOvershootFallback:
                 duration_seconds=4.0, width=1, height=1, fps=24.0, has_audio=False,
             )
 
-        async def fake_ffmpeg(path, *, timestamp_seconds, logger, from_end=False):
+        async def fake_ffmpeg(path, *, timestamp_seconds, logger, from_end=False,
+                              saw_damage=None):
             captured["ts"] = timestamp_seconds
             return (b"\x89PNG\r\n\x1a\n", 1, 1)
 
