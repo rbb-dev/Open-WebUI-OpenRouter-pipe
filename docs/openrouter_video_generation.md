@@ -1369,7 +1369,9 @@ the start and/or end of the generated clip. To use this:
 Constraints (admin-tunable):
 
 - **`VIDEO_FRAME_IMAGE_MAX_BYTES`** (default 12 MB): per-image decoded
-  size cap. Oversized images fail before submission.
+  size cap. Oversized images fail before submission, and the error names the
+  offending frame and the cap that fired, so a failure is actionable without
+  the operator having to know which storage-layer limit applied.
 - **`VIDEO_FRAME_TOTAL_MAX_BYTES`** (default 50 MB): combined cap across
   all frames in one request.
 - **`VIDEO_FRAME_IMAGE_MIME_ALLOWLIST`** (default
@@ -1829,7 +1831,14 @@ The two `[label]: #` lines are CommonMark **reference-link definitions**.
 They render as nothing — they are invisible markers used internally for
 [resume](#resume-recovery-and-disconnect-resilience). The marked.js
 parser treats them as label-only references with no body, so they don't
-appear in the rendered chat.
+appear in the rendered chat. They are also stripped from what the provider
+is sent: every `[openrouter:v1:…]: #` line is a hidden marker line, so a
+video turn's **job id and model** never reach the next request as
+assistant text. The disclosure block's **visible** text — the blockquote,
+the prompt and the thumbnail reference — is ordinary text and is still
+sent, as before. The strip is a *line* filter, so a marker-shaped line a
+user typed on a line of its own is removed in any of the three families,
+while the same text inline is preserved.
 
 The `<video>` tag with the URL on its own line is the only format that
 marked.js tokenises as a single CommonMark "type 7 HTML block". Without
@@ -1977,6 +1986,14 @@ hits send twice on the same message slot), the active-task registry
 deduplicates: one is the **owner** (does the work), the other is a
 **waiter** (awaits the owner's bg task and emits the result on its own
 chat connection). This holds even across browser tabs.
+
+A request that arrives with no usable `chat_id`/`message_id` metadata —
+the plain API route — is keyed on `(f"api:{request_id}", "")` instead,
+so it starts the job rather than being refused, and two such calls never
+share one job. The key is per **request**, not per conversation: a client
+that retries the same logical request gets a new `request_id` and
+therefore a second job. The `chat_id` itself stays empty throughout, so
+the finished video is never attached to a chat that does not exist.
 
 Single-worker only: `_video_active_tasks` is process-local. Multi-worker
 deployments would lose the dedupe guarantee — that's why this is a
@@ -2179,8 +2196,10 @@ pipe()
           └─ no retirement step: the video path never had fixed variants
 ```
 
-Key invariant: **exactly one `_emit_completion` per `(chat_id,
-message_id)`**. The bg task does the work and returns the result;
+Key invariant: **exactly one `_emit_completion` per dedupe key** — the
+`(chat_id, message_id)` pair for a chat turn, and the
+`(f"api:{request_id}", "")` pair for a request that carries neither.
+The bg task does the work and returns the result;
 the outer (or waiter for de-duped re-entries) is the sole emitter. This
 prevents the duplicate-content / leaked-marker bug class.
 

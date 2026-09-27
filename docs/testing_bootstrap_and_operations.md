@@ -124,7 +124,7 @@ The suite is organized by subsystem. Common entry points:
 Operator tools you can use immediately:
 
 - **Backend logs**: use `LOG_LEVEL` to control verbosity and correlate with `session_id`/`user_id` (see [Request identifiers and abuse attribution](request_identifiers_and_abuse_attribution.md)).
-- **Encrypted session logs**: enable `SESSION_LOG_STORE_ENABLED` for a durable per-request log bundle during incident response (see [Encrypted session log storage (optional)](session_log_storage.md)).
+- **Encrypted session logs**: enable `SESSION_LOG_STORE_ENABLED` for a durable per-request log bundle during incident response (see [Encrypted session log storage (optional)](session_log_storage.md)). API calls, which carry no chat or message id, are covered too while `SESSION_LOG_ARCHIVE_API_CALLS` is on, and land under `<user>/api/api-<request_id>.zip`.
 - **User-visible error templates**: tune the UI-facing templates for provider errors and timeouts (see [Error Handling & User Experience](error_handling_and_user_experience.md)).
 
 ---

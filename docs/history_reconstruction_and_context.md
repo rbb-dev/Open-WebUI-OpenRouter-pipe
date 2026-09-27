@@ -105,6 +105,29 @@ Marker detection and splitting is performed by helper functions (for example `co
 [<20-char-ulid>]: #
 ```
 
+Three families of line count as hidden marker lines, all of them valid CommonMark reference definitions and so
+invisible in the browser:
+
+```text
+[<20-char-ulid>]: #                 the artifact reference — a replay marker
+[P:<phase>]: #                       the phase label
+[openrouter:v1:<kind>:<body>]: #     the kind-marker transport line — NOT a replay marker
+```
+
+Only the first is a **replay marker**: it is what a marker segment resolves, and what the loader is asked for. The
+kind family carries the pipe's own transport state (video intent and relay disclosure blocks) and is *not* replayed
+and *not* an artifact reference. A kind line is recognised as a hidden line, dropped from the text segments, and
+never reaches the provider as assistant text; a message whose only markers are kind markers takes the marker branch
+here and produces no `missing_artifact_markers` warning.
+
+Tool **results** are stripped of hidden marker lines before the model sees them; tool **arguments** deliberately are
+not, because a JSON argument value is not a line of the message and a caller may legitimately pass text that looks
+like a marker — stripping it would corrupt the payload it means to send.
+
+The strip is a **line** filter, so it removes a line by its whole content rather than by the marker inside it. A
+marker-shaped line a user typed **on a line of its own** — in any of the three families above — is removed too, while
+the same text inline is preserved. Only whole lines are affected; a marker that is part of a sentence is left alone.
+
 For each marker segment:
 - the pipe looks up the referenced persisted artifact payload (via `artifact_loader` when available),
 - normalizes it to the schema expected by upstream (`normalize_persisted_item`),
@@ -154,7 +177,10 @@ call and its output as a pair, behind a hidden marker placed in the answer where
 with results kept, a server tool whose own item OpenRouter takes back unchanged -- the advisor, the subagent, model
 search -- is stored as that item instead, while every other server tool, including one the pipe does not know, keeps
 the pair; image generation, whose picture is already part of the answer, is not stored; a
-request that belongs to no chat message, such as a direct API call, stores no copy at all; and a temporary chat
+and a request that belongs to no chat message -- a call that carries no `chat_id`, the plain API route --
+keeps its copy in memory for the length of that request only, keyed on the request id, and never writes it to the
+database; the request ends and it is gone, and no marker line is added to the caller's response, so such a call's
+records last for the request, not the conversation. A temporary chat
 keeps nothing, so with tool cards off its rounds reach no later request. (In Open-WebUI tool mode the rounds of a
 temporary chat's reply are held in memory until that reply ends, so Open WebUI's calls back after each round of tool
 calls still hand them to the model; see [Persistence](persistence_encryption_and_storage.md).) The calls are written when
@@ -270,7 +296,7 @@ is not available for Fusion replies and that regenerating runs Fusion again.
 ## 7. Failure modes (what happens when artifacts are missing)
 
 - If the artifact loader fails (DB errors, network issues), the pipe logs a warning and continues without replaying artifacts for that assistant message.
-- If an individual marker cannot be resolved to a payload (for example after key rotation or cleanup), the pipe logs a warning and skips that artifact. In a temporary chat a later turn's markers resolve to nothing by design, since the pipe keeps none of its rows, and are logged only at debug level.
+- If an individual marker cannot be resolved to a payload (for example after key rotation or cleanup), the pipe logs a warning and skips that artifact. In a temporary chat a later turn's markers resolve to nothing by design, since the pipe keeps none of its rows, and are logged only at debug level. A call that carries no `chat_id` never gets markers at all, so there is nothing for it to resolve.
 
 Operational implications:
 - Conversations may still render in the UI, but upstream requests may lack some historical tool/reasoning context.

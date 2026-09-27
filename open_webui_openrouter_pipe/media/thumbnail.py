@@ -44,7 +44,12 @@ def make_thumbnail(
     if target_size <= 0 or target_size > 4096:
         raise ValueError(f"target_size must be in 1..4096, got {target_size}")
 
-    src = Image.open(io.BytesIO(image_bytes))
+    try:
+        src = Image.open(io.BytesIO(image_bytes))
+    except Image.DecompressionBombError as exc:
+        raise ValueError(
+            f"image is too large: exceeds {_MAX_INPUT_PIXELS} pixel cap"
+        ) from exc
     if src.width * src.height > _MAX_INPUT_PIXELS:
         src.close()
         raise ValueError(

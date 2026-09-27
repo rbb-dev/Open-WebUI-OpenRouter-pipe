@@ -14,6 +14,8 @@ This document covers **local filesystem storage only**. For the companion featur
 
 When enabled, the pipe writes **one encrypted zip file per message turn** (Open WebUI `message_id`) containing logs from:
 
+A call that arrives with no usable `chat_id`/`message_id` — the plain API route — is the one exception to the "per message turn" shape: it is keyed on its request id and written as `api/api-<request_id>.zip`, one file per request, while `SESSION_LOG_ARCHIVE_API_CALLS` is on.
+
 - the initial user send → model response
 - any intermediate OpenRouter traffic
 - any tool calls/results that occur within the turn
@@ -24,7 +26,7 @@ A reply that may hand a call back -- in Open-WebUI mode, or in Pipeline mode for
 
 - `meta.json` — a small JSON document with:
   - `created_at` (UTC ISO timestamp)
-  - `ids` (`user_id`, `session_id`, `chat_id`, `message_id`)
+  - `ids` (`user_id`, `session_id`, `chat_id`, `message_id`) — `api` / `api-<request_id>` for an API call
   - `request_id` (a representative internal per-request key used for in-memory buffering)
   - `request_ids` (optional; sorted unique list of per-request identifiers found in the bundled events)
   - `log_format` (`jsonl`, `text`, or `both`)
@@ -68,7 +70,8 @@ Each line in `logs.jsonl` is a single JSON object with the following keys:
 The pipe **skips persistence** when any of the following are true:
 
 - `SESSION_LOG_STORE_ENABLED` is disabled.
-- Any required IDs are missing/empty for the request: `user_id`, `chat_id`, `message_id`, `request_id`.
+- Any required IDs are missing/empty for the request: `user_id` or `request_id`.
+- The request carries no usable `chat_id` or `message_id` and `SESSION_LOG_ARCHIVE_API_CALLS` is off. With it on (the default) such a call is archived as `api/api-<request_id>.zip` instead of being skipped.
 - The `pyzipper` package is unavailable at runtime.
 - `SESSION_LOG_DIR` is empty.
 - `SESSION_LOG_ZIP_PASSWORD` is empty/unconfigured.
@@ -81,7 +84,7 @@ If persistence is skipped, the request still completes normally; the archive is 
 
 Archives are written by a background assembler thread when:
 
-- a “terminal” segment is staged for `(chat_id, message_id)` (final assistant answer, error, or cancellation), or
+- a “terminal” segment is staged for the message key (final assistant answer, error, or cancellation). The key is `(chat_id, message_id)` for a chat turn and the request surrogate `("api", "api-<request_id>")` for an API call, or
 - no terminal segment arrives for a long time (configurable “stale finalize”) — an **incomplete** archive is written so crash/cancel cases still leave a durable log trail. Each pass takes the oldest stranded bundles first and builds each archive from whatever segments exist at that moment, so a turn whose newest segment predates the delay is sealed **even if the turn is still running**; a segment it stages after that seal is left stranded until the next assembly, which may never come. The delay is what bounds that exposure, and it is why the default is long. The seal itself is conditional: if the log directory or passphrase no longer resolves, or the sealed write fails, the segments are kept for a retry and are removed only by the `ARTIFACT_CLEANUP_DAYS` sweep, which is not gated on the session-log valve. A later terminal segment for the same turn merges into that same zip and removes the finalized-incomplete line.
 
 The incomplete marker appears **at most once** per archive: a later pass that finds the turn complete retires the marker rather than adding a second, and a pass that finds it already present leaves the count at one. A **refused pass resets the staleness clock**, so a stale turn waits a full window again before the assembler retries it.
@@ -104,6 +107,15 @@ Archives are written under the base directory `SESSION_LOG_DIR` using a director
     <chat_id>/
       <message_id>.zip
       <message_id>.<task>.zip
+```
+
+An API call has no `chat_id` and no `message_id`, so letting the empty strings through would collide: sanitisation turns `""` into a fixed literal per slot and every API call from every user would land on one shared file. The pipe therefore substitutes the request-scoped surrogate pair `api` / `api-<request_id>` before staging, which is the same key the assembler gates on, so a surrogate archive is packed and written like any other:
+
+```
+<SESSION_LOG_DIR>/
+  <user_id>/
+    api/
+      api-<request_id>.zip
 ```
 
 The task files sit beside the answer's in the same `<chat_id>/` directory and keep the `message_id` as their prefix, so `ls <chat_id>/` and `grep <message_id>` both still work. The message id is truncated from the right to fit a 64-character column, with the task name's space reserved first — the qualifier is never the part that gets cut.
@@ -159,6 +171,7 @@ See [Valves & Configuration Atlas](valves_and_configuration_atlas.md) for the ca
 | Valve | Type | Default (verified) | Purpose |
 |---|---:|---:|---|
 | `SESSION_LOG_STORE_ENABLED` | bool | `false` | Enables writing encrypted session log archives to disk. |
+| `SESSION_LOG_ARCHIVE_API_CALLS` | bool | `true` | Archives a request with no usable `chat_id`/`message_id` under `api/api-<request_id>.zip`. A staging gate only — a segment staged while it was on is still written after it is switched off. |
 | `SESSION_LOG_DIR` | str | `session_logs` | Base directory for archives. |
 | `SESSION_LOG_ZIP_PASSWORD` | encrypted str | *(empty)* | Password used to encrypt archives (required to store). |
 | `SESSION_LOG_RETENTION_DAYS` | int | `90` | Retention window for stored archives. |

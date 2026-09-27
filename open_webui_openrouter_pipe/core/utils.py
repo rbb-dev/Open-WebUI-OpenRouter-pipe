@@ -715,7 +715,11 @@ def contains_marker(text: str) -> bool:
 
 def is_hidden_marker_line(line: str) -> bool:
     stripped = line.strip()
-    return _extract_phase_marker_value(stripped) is not None or bool(_extract_marker_ulid(stripped))
+    return (
+        _extract_phase_marker_value(stripped) is not None
+        or bool(_extract_marker_ulid(stripped))
+        or _extract_kind_marker(stripped) is not None
+    )
 
 
 def ends_on_hidden_marker_line(text: Any) -> bool:
@@ -744,12 +748,13 @@ def split_text_by_markers(text: str) -> list[dict]:
     for span in _iter_marker_spans(text):
         if span["start"] > last:
             segments.append({"type": "text", "text": text[last:span["start"]]})
-        segments.append(
-            {
-                "type": "marker",
-                "marker": span["marker"],
-            }
-        )
+        if span["marker"]:
+            segments.append(
+                {
+                    "type": "marker",
+                    "marker": span["marker"],
+                }
+            )
         last = span["end"]
     if last < len(text):
         segments.append({"type": "text", "text": text[last:]})
@@ -1161,6 +1166,19 @@ def _iter_marker_spans(text: str) -> list[dict[str, Any]]:
                     "marker": marker_ulid,
                 }
             )
+        else:
+            kind_marker = _extract_kind_marker(stripped)
+            if kind_marker is not None:
+                offset = segment.find(stripped)
+                start = cursor + (max(offset, 0))
+                spans.append(
+                    {
+                        "start": start,
+                        "end": start + len(stripped),
+                        "marker": None,
+                        "kind": kind_marker[0],
+                    }
+                )
         cursor += len(segment)
 
     spans.sort(key=lambda span: span["start"])

@@ -980,6 +980,15 @@ _DOWNGRADE_USER_MESSAGES: dict[str, str] = {
     "frame_past_eof_used_last_frame": (
         "The requested time was past the end of the previous video; used its last frame instead."
     ),
+    "frame_past_eof_used_first_frame": (
+        "The requested time was past the end of the previous video; used its first frame instead."
+    ),
+    "frame_seek_failed_used_first_frame": (
+        "The requested moment could not be read from the previous video; used its first frame instead."
+    ),
+    "frame_seek_failed_used_last_frame": (
+        "The requested moment could not be read from the previous video; used its last frame instead."
+    ),
     "frame_damaged_used_last_decodable_frame": (
         "The previous video is damaged past the requested time; used its nearest "
         "decodable frame instead."

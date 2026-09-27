@@ -393,6 +393,7 @@ class ArtifactStore:
         self._user_id_context = user_id_context_var
 
         self._reply_memory = ReplyMemory()
+        self._api_reply_memory = ReplyMemory()
         self._initialize_encryption_state()
         self._initialize_circuit_breakers()
         self._initialize_redis_state()
@@ -1036,6 +1037,9 @@ class ArtifactStore:
             row["payload"] = stored_payload
             row["is_encrypted"] = is_encrypted
 
+    def _reply_memory_for(self, chat_id: Any) -> ReplyMemory:
+        return self._api_reply_memory if not chat_id else self._reply_memory
+
     def _make_db_row(
         self,
         chat_id: str | None,
@@ -1044,16 +1048,16 @@ class ArtifactStore:
         payload: dict[str, Any],
     ) -> dict[str, Any] | None:
         """Construct a persistence-ready row dict or return ``None`` when invalid."""
-        if not chat_id:
-            return None
-        if is_temporary_chat(chat_id):
-            if not self._reply_memory.is_open(chat_id, message_id):
+        if not self._reply_memory_for(chat_id).is_open(chat_id, message_id):
+            if not chat_id:
                 return None
-        elif not self._item_model:
-            return None
-        if not message_id:
-            self.logger.warning("Skipping artifact persistence for chat_id=%s: missing message_id.", chat_id)
-            return None
+            if is_temporary_chat(chat_id):
+                return None
+            if not self._item_model:
+                return None
+            if not message_id:
+                self.logger.warning("Skipping artifact persistence for chat_id=%s: missing message_id.", chat_id)
+                return None
         if not isinstance(payload, dict):
             return None
         item_type = payload.get("type", "unknown")
@@ -1254,6 +1258,11 @@ class ArtifactStore:
         """Persist artifacts, optionally via Redis write-behind."""
         if not rows:
             return []
+        held_memory = self._reply_memory_for(rows[0].get("chat_id"))
+        if held_memory.is_open(rows[0].get("chat_id"), rows[0].get("message_id")):
+            held = await asyncio.to_thread(held_memory.hold, rows)
+            held_memory.rearm()
+            return held
         if is_temporary_chat(rows[0].get("chat_id")):
             held = await asyncio.to_thread(self._reply_memory.hold, rows)
             self._reply_memory.rearm()

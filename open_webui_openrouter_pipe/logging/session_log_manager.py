@@ -201,6 +201,7 @@ class SessionLogManager:
         self._stale_filter_warnings: dict[str, float] = {}
         self._read_fault_warnings: dict[str, float] = {}
         self._captured_turns: set[str] = set()
+        self._skip_info_emitted: set[str] = set()
 
     def set_artifact_store(self, artifact_store: ArtifactStore) -> None:
         """Set the artifact store reference."""
@@ -517,11 +518,29 @@ class SessionLogManager:
 
         if not valves.SESSION_LOG_STORE_ENABLED:
             return
-        if not (user_id and session_id and chat_id and message_id):
+        if not (user_id and request_id):
+            if "ids" not in self._skip_info_emitted:
+                self._skip_info_emitted.add("ids")
+                self.logger.info(
+                    "Session log archive skipped (missing user_id or request_id): user_id=%s request_id=%s",
+                    bool(user_id),
+                    bool(request_id),
+                )
             return
         if is_temporary_chat(chat_id):
             self.logger.debug("Session log archive skipped (temporary chat): request_id=%s", request_id)
             return
+        if not (chat_id and message_id):
+            if not getattr(valves, "SESSION_LOG_ARCHIVE_API_CALLS", True):
+                if "valve" not in self._skip_info_emitted:
+                    self._skip_info_emitted.add("valve")
+                    self.logger.info(
+                        "Session log archive skipped (no chat/message id and SESSION_LOG_ARCHIVE_API_CALLS is off): request_id=%s",
+                        request_id,
+                    )
+                return
+            chat_id = "api"
+            message_id = f"api-{request_id}"
         if not log_events:
             return
         if pyzipper is None:
@@ -626,19 +645,31 @@ class SessionLogManager:
                     request_id,
                 )
             return
-        if not (user_id and chat_id and message_id and request_id):
-            if self.logger.isEnabledFor(logging.DEBUG):
-                self.logger.debug(
-                    "Session log segment skipped (missing ids): user_id=%s chat_id=%s message_id=%s request_id=%s",
+        if not (user_id and request_id):
+            if "ids" not in self._skip_info_emitted:
+                self._skip_info_emitted.add("ids")
+                self.logger.info(
+                    "Session log segment skipped (missing user_id or request_id): user_id=%s request_id=%s",
                     bool(user_id),
-                    bool(chat_id),
-                    bool(message_id),
                     bool(request_id),
                 )
             return
         if is_temporary_chat(chat_id):
             self.logger.debug("Session log segment skipped (temporary chat): request_id=%s", request_id)
             return
+        surrogate_in_play = False
+        if not (chat_id and message_id):
+            if not getattr(valves, "SESSION_LOG_ARCHIVE_API_CALLS", True):
+                if "valve" not in self._skip_info_emitted:
+                    self._skip_info_emitted.add("valve")
+                    self.logger.info(
+                        "Session log segment skipped (no chat/message id and SESSION_LOG_ARCHIVE_API_CALLS is off): request_id=%s",
+                        request_id,
+                    )
+                return
+            chat_id = "api"
+            message_id = f"api-{request_id}"
+            surrogate_in_play = True
         if not log_events:
             if self.logger.isEnabledFor(logging.DEBUG):
                 self.logger.debug(
@@ -706,7 +737,7 @@ class SessionLogManager:
                     request_id,
                 )
                 base_dir, zip_password, zip_compression, zip_compresslevel = archive_settings
-                fallback_message_id = f"{message_id}.{request_id}"
+                fallback_message_id = message_id if surrogate_in_play else f"{message_id}.{request_id}"
                 self._enqueue_archive_job(
                     _SessionLogArchiveJob(
                         base_dir=base_dir,

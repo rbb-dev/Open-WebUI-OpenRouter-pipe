@@ -447,6 +447,20 @@ def _reset_auth_failure_state():
 
 
 @pytest.fixture(autouse=True)
+def _reset_video_global_semaphore():
+    """Drop the process-wide video semaphore, which is class state shared by every pipe.
+
+    A permit taken on one test's event loop is returned only when that loop runs the
+    generation's `async with` exit. A later test on a new loop that reuses the same
+    semaphore can wait for a permit that never comes back
+    (`tests/test_video_generation.py` then `tests/test_api_call_video.py` hung that way).
+    """
+    Pipe._video_global_semaphore = None
+    Pipe._video_global_limit = 0
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _reset_package_caches():
     """Clear every `lru_cache` the package owns, at BOTH ends of every test.
 

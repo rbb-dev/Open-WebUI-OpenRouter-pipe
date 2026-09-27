@@ -7,6 +7,7 @@ import contextlib
 import functools
 import logging
 import re
+import secrets
 import shutil
 import tempfile
 import time
@@ -450,17 +451,17 @@ class VideoGenerationAdapter:
 
         chat_id = _clean_str(metadata.get("chat_id"))
         message_id = _clean_str(metadata.get("message_id"))
-        if not chat_id or not message_id:
-            content = self._build_failure_content(
-                job_id="",
-                model_id=api_model_id,
-                reason="Video generation requires stable chat_id and message_id metadata.",
-            )
-            await self._emit_status(event_emitter, "Video generation could not start.", done=True)
-            await self._emit_completion(event_emitter, content)
-            return content
+        if not (chat_id and message_id):
+            from ..core.logging_system import SessionLogger
 
-        key = (chat_id, message_id)
+            request_id = SessionLogger.request_id.get() or secrets.token_hex(8)
+            key = (f"api:{request_id}", "")
+            self.logger.warning(
+                "Video generation keyed to a request-scoped id: no chat_id/message_id metadata (request_id=%s).",
+                request_id,
+            )
+        else:
+            key = (chat_id, message_id)
         user_id = _clean_str(user.get("id")) or _clean_str(metadata.get("user_id")) or "anonymous"
         existing = await self._get_active_task(key)
         if existing is not None:
@@ -1859,7 +1860,19 @@ class VideoGenerationAdapter:
                     file_obj, chunk_size, max_bytes, user=user_obj,
                 )
             except RequiredInternalFileError as exc:
+                if exc.kind == "size":
+                    raise VideoGenerationError(
+                        f"Frame image '{file_id}' is larger than the "
+                        f"{megabytes(max_bytes)} this deployment sends per frame."
+                    ) from exc
                 raise VideoGenerationError(exc.user_message) from exc
+            except ValueError as exc:
+                if "File exceeds BASE64_MAX_SIZE_MB limit" not in str(exc):
+                    raise
+                raise VideoGenerationError(
+                    f"Frame image '{file_id}' is larger than the "
+                    f"{megabytes(max_bytes)} this deployment sends per frame."
+                ) from exc
             if not b64:
                 raise VideoGenerationError(f"Frame image '{file_id}' could not be encoded.")
             try:

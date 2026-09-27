@@ -26,6 +26,8 @@ A temporary chat keeps none of its content in the pipe's storage. Open WebUI kee
 - Pictures and audio an MCP tool returns are saved as files by Open WebUI's own tool handling, as it does in any chat.
 - A streamed reply that may hand a call back -- in Open-WebUI mode, or in Pipeline mode for a tool the pipe cannot run -- holds its rounds and thinking in memory for that reply only, dropped when the pipe answers its last call back, or after 15 minutes unused. A reply that cannot hand one back holds nothing and writes nothing. The rounds and thinking of the reply being written are held in the pipe's memory, never on disk or in the database, until that reply ends, so those calls hand the model the same turn a saved chat's would. A reply left idle for 15 minutes is dropped. Once the held rounds pass 64 MiB in one Open WebUI worker, the longest-idle replies are dropped first, and for a single reply larger than that, the pipe drops everything held for it so far. For a dropped reply, the model continues without the thinking and rounds held for it.
 
+A call that carries no `chat_id` -- the plain API route, where Open WebUI supplies none -- is a separate case, not the temporary chat's twin. Its reasoning and tool rounds are held in the pipe's memory for the length of that one request, keyed on the request id, and are never written to the database; the request ends and they are dropped, so they never reach a later turn and no cleanup has anything to remove. The same 15-minute idle and 64 MiB limits apply, in a pool of their own, so a call cannot evict a chat user's in-flight held reply and vice versa, and the total memory ceiling is twice one pool. No marker line is added to the caller's response, so a program's bytes in and bytes out are unchanged. `API_CALL_ARTIFACT_MEMORY` turns the hold off, in which case the call simply stores nothing -- as it did before. A caller sending `parent_id: null` is given a real chat id by Open WebUI, so that shape is not one of these calls.
+
 Rows an earlier release stored for a temporary chat are deleted at the next cleanup, whatever their age. Usage rows it wrote for a temporary chat are kept, with the chat and session ids cleared at the next usage purge, which runs only while usage collection is on; cost snapshots it wrote are not rewritten and expire on their own.
 
 **Note:** Not every artifact type is replayed verbatim. The pipe filters certain tool artifact types to avoid wasting context window and to reduce provider-side errors.
@@ -44,7 +46,13 @@ Marker format:
 [01J2VVZBDQTP1ZQJ8DSN]: #
 ```
 
-On subsequent turns, the pipe scans prior assistant messages for marker lines, fetches the referenced artifacts (from Redis cache if available, otherwise the database), and replays them into the next request in a structured form.
+Two other families of line are also hidden markers, and both are stripped from what the provider is sent:
+`[P:<phase>]: #` (the phase label) and `[openrouter:v1:<kind>:<body>]: #` (the pipe's own transport lines, used by
+the video intent and media relay disclosures). Only the ULID form above is an **artifact reference** — the one this
+section is about, and the only one that is looked up and replayed. The kind form is a **transport line**: it carries
+state within a single message and is never resolved against the artifact store.
+
+On subsequent turns, the pipe scans prior assistant messages for marker lines, fetches the referenced artifacts (from Redis cache if available, otherwise the database), and replays them into the next request in a structured form. Markers are emitted for chat turns only: a call that carries no `chat_id` adds none to its response, so a program calling the API sees exactly the bytes the model produced.
 
 ---
 

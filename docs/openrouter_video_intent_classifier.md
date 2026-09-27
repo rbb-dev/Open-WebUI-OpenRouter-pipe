@@ -103,11 +103,13 @@ The classifier supports `prior_video_at_timestamp` with `timestamp_seconds`. Exa
 - *"from the 5-second mark"*
 - *"at 0:30"*
 
-The pipe validates the requested timestamp against how long the previous video's **picture** runs, which is the video stream's own length where the host can measure it and the container's length otherwise — a clip muxed with a longer audio bed is as long as the audio, not as long as the frames. A length the probe could not measure at all is not treated as an overshoot. When the requested time is past the end, the pipe downgrades to the frame `Reused frame position` selected and surfaces a note in the disclosure block:
+The pipe validates the requested timestamp against how long the previous video's **picture** runs, which is the video stream's own length where the host can measure it and the container's length otherwise — a clip muxed with a longer audio bed is as long as the audio, not as long as the frames. A length the probe could not measure at all leaves the pipe unable to call a request an overshoot, so the seek is made as asked and a frame is substituted only if the seek itself comes back empty; the disclosure block then says the moment could not be read rather than that it was past the end. When the requested time is measured as past the end, the pipe downgrades to the frame `Reused frame position` selected and surfaces a note in the disclosure block:
 
 > ⚠️ The requested time was past the end of the previous video; used its last frame instead.
 
 A seek that misses the last decodable frame is retried against the end of the file with a wider window (1s, then 5s, then 30s), and a damaged tail is retried against wider windows before the frame is given up on, so a tail of up to 30s still yields a frame at up to three times the normal extraction time. A window that hits damage inside an otherwise readable file widens before the frame is given up on; an input ffmpeg cannot open at all fails on the first window, because no wider window will read it either.
+
+Before a `first_frame` extraction decodes anything, the pipe reads the source's declared frame size from the container header and refuses to decode a source over the 25-megapixel pixel budget; the frame is then re-acquired through ffmpeg at the 1920-wide ceiling. That header read costs roughly one extra container open on every `first_frame` extraction, and it is the difference between allocating a few kilobytes and allocating the whole decoded frame (180 MB on a 10000×3000 source) for a source the budget already refuses.
 
 ## Configuration valves (admin)
 

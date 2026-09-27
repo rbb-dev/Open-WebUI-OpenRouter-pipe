@@ -458,7 +458,9 @@ async def materialize_owui_file_to_temp(
 
     declared = declared_file_size(file_obj)
     if declared is not None and max_bytes > 0 and declared > max_bytes:
-        raise RequiredInternalFileError("A referenced file exceeds the configured size limit.")
+        raise RequiredInternalFileError(
+            "A referenced file exceeds the configured size limit.", kind="size"
+        )
     if declared is None and owui_storage_provider_kind() != "local" and not allow_unknown_size:
         raise RequiredInternalFileError(
             "A referenced file has an unknown size and cannot be safely fetched from cloud storage."
@@ -486,7 +488,9 @@ async def materialize_owui_file_to_temp(
     temp_path = copy_to_private_temp(contained, suffix=suffix or contained.suffix)
     try:
         if max_bytes > 0 and temp_path.stat().st_size > max_bytes:
-            raise RequiredInternalFileError("A referenced file exceeds the configured size limit.")
+            raise RequiredInternalFileError(
+                "A referenced file exceeds the configured size limit.", kind="size"
+            )
     except RequiredInternalFileError:
         temp_path.unlink(missing_ok=True)
         raise

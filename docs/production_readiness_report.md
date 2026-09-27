@@ -223,6 +223,7 @@ When enabled (`SESSION_LOG_STORE_ENABLED=true`) and configured (zip password set
 Operator guidance:
 
 - Treat session log archives as sensitive; restrict filesystem access and define retention policies.
+- Decide whether `SESSION_LOG_ARCHIVE_API_CALLS` should be on. It is on by default, and a call that arrives with no usable `chat_id`/`message_id` is archived as `api/api-<request_id>.zip` — so API traffic is captured on the same terms as chat traffic. Turning it off stops the staging path only; segments already staged are still written.
 - Verify that zip passwords are managed and rotated intentionally.
 
 Related docs: [Encrypted session log storage (optional)](session_log_storage.md).

@@ -449,7 +449,6 @@ class TestAnswerAndWireIntegrity:
         assert lead == "Checking. "
         assert tail == "It is 22 degrees."
 
-
 class TestFailedToolCardsStillReachHistory:
     """A tool that failed must still be replayable, not silently dropped."""
 

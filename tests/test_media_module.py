@@ -24,6 +24,8 @@ from open_webui_openrouter_pipe.media import (
     normalise_mime,
     probe_video,
 )
+import imageio.v3 as iio
+from typing import cast
 
 
 # -----------------------------------------------------------------------------
@@ -452,7 +454,7 @@ class TestExtractFrame:
         )
         assert calls == [False, True], "must retry exactly once with from_end=True"
         assert len(frame.image_bytes) > 0
-        assert frame.downgrade_note == "frame_past_eof_used_last_frame"
+        assert frame.downgrade_note == "frame_seek_failed_used_last_frame"
         expected_last = max(0.0, meta.duration_seconds - max(1.0 / meta.fps, 0.04))
         assert frame.actual_timestamp_seconds == pytest.approx(expected_last, abs=0.05)
         assert frame.requested_timestamp_seconds == pytest.approx(ts, abs=1e-6)
@@ -605,3 +607,9 @@ def test_a_jpeg_the_scanner_has_to_walk_is_measured_or_declined_never_guessed(
     from open_webui_openrouter_pipe.storage.multimodal import image_pixel_size
 
     assert image_pixel_size(raw) == expected, name
+
+
+def _declared(path: Path) -> tuple[object, ...] | None:
+    """The size the container's header claims, read straight from imageio."""
+    size = iio.immeta(str(path), exclude_applied=False).get("size")
+    return tuple(size) if isinstance(size, (list, tuple)) else None

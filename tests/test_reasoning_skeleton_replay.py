@@ -117,6 +117,30 @@ async def _stage_a(pipe, monkeypatch, valves, rounds, *, stream=True, emitter=No
             yield {"type": "response.completed", "response": {"output": output, "usage": {}}}
             return
 
+        if kind in ("delta-calls", "summary-calls"):
+            # Reasoning the provider streams as text and never closes with its own
+            # `output_item.done` -- the common shape, and the one the pipe can only
+            # publish at the end of the round. No text before the call, so the call is
+            # what the box has to precede. The block still reaches the completed response,
+            # so the round is a replayable one.
+            reasoning_id = f"rs-{index}"
+            yield {"type": "response.output_item.added", "output_index": 0,
+                   "item": {"type": "reasoning", "id": reasoning_id, "status": "in_progress"}}
+            yield {"type": "response.reasoning_text.delta", "item_id": reasoning_id,
+                   "delta": f"THOUGHT-{index} "}
+            if kind == "summary-calls":
+                yield {"type": "response.reasoning_summary_text.done", "item_id": reasoning_id,
+                       "text": f"**THOUGHT-{index}**"}
+            output.append({"type": "reasoning", "id": reasoning_id, "status": "completed",
+                           "content": [{"type": "reasoning_text", "text": f"THOUGHT-{index}"}], "summary": []})
+            for call_id in value:
+                call = {"type": "function_call", "call_id": call_id, "name": tool_name,
+                        "arguments": json.dumps({"q": ARGUMENT_CANARY}), "status": "completed"}
+                yield {"type": "response.output_item.done", "item": call}
+                output.append(call)
+            yield {"type": "response.completed", "response": {"output": output, "usage": {}}}
+            return
+
 
         consulting = kind in ("advise-then-calls", "search-think-then-calls")
         silent = kind in ("silent-calls", "silent-search-then-calls", "think-silent-search-then-calls")

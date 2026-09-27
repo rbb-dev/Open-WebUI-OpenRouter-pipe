@@ -1113,7 +1113,16 @@ class Valves(BaseModel):
             "other chat: the value is a keyed hash, so no identifier is exposed. The pin is "
             "computed from the chat id and the Fusion inner-call metadata removes it, so "
             "internal panel-member calls carry no session_id and are not pinned; the outer "
-            "call is."
+            "call is.\n\n"
+            "A call that carries no chat id falls back to a hash of the caller's own "
+            "`session_id` under an `api-session:` prefix, so the raw value never leaves the "
+            "pipe. The API caller is the only party that knows what \"the same conversation\" "
+            "means for its own traffic, so the pin is applied only when that caller actually "
+            "sends a `session_id`. A call that sends `parent_id: null` is pinned to a "
+            "conversation id Open WebUI mints fresh for each turn, so its cache never warms; "
+            "the pipe does not override a real `chat_id`. The `session_id` fallback applies "
+            "only to a body that carries no `chat_id` at all - send `session_id` and omit "
+            "`chat_id` to get one."
         ),
     )
     ENABLE_PLUGIN_SYSTEM: bool = Field(
@@ -1169,7 +1178,7 @@ class Valves(BaseModel):
     PERSIST_REASONING_TOKENS: Literal["disabled", "next_reply", "conversation"] = Field(
         default="conversation",
         title="Reasoning retention",
-        description="Reasoning retention: 'disabled' keeps nothing, 'next_reply' keeps thoughts only until the following assistant reply finishes, and 'conversation' keeps them for the full chat history. A temporary chat stores no reasoning; in Open-WebUI tool mode the thinking of a streamed reply is held in memory for that reply only, and dropped when the pipe answers its last call back or after 15 minutes unused.",
+        description="Reasoning retention: 'disabled' keeps nothing, 'next_reply' keeps thoughts only until the following assistant reply finishes, and 'conversation' keeps them for the full chat history. Reasoning is kept when the provider sends it as a replayable output item; reasoning that arrives only as streamed deltas is shown in the thinking box but not replayed on later turns. A temporary chat stores no reasoning; in Open-WebUI tool mode the thinking of a streamed reply is held in memory for that reply only, and dropped when the pipe answers its last call back or after 15 minutes unused. A call that carries no chat_id has its reasoning and tool records held in memory for the length of that request only and never written to the database (see API_CALL_ARTIFACT_MEMORY), so an API call's records last for the request, not the conversation.",
     )
     TASK_MODEL_REASONING_EFFORT: Literal["none", "minimal", "low", "medium", "high", "xhigh"] = Field(
         default="low",
@@ -1205,7 +1214,23 @@ class Valves(BaseModel):
     PERSIST_TOOL_RESULTS: bool = Field(
         default=False,
         title="Keep tool results",
-        description="Give the model the full arguments and results of tool calls from earlier turns. When disabled, the model sees each tool call from an earlier turn as its name and a short note on whether it succeeded (an ask_user question and the person's answer always go back), and relies on its own earlier answers or runs the tool again. The setting applies in both tool execution modes and decides what the model is handed, not whether results are stored: a shown tool card keeps the full result in the message, and the pipe's own copy of each tool round keeps the full call and result, pictures included, encrypted only while ARTIFACT_ENCRYPTION_KEY is set and ENCRYPT_ALL is on. A temporary chat stores none of its tool rounds or thinking; in Open-WebUI tool mode the rounds and thinking of a streamed reply are held in memory for that reply only, and dropped when the pipe answers its last call back or after 15 minutes unused.",
+        description="Give the model the full arguments and results of tool calls from earlier turns. When disabled, the model sees each tool call from an earlier turn as its name and a short note on whether it succeeded (an ask_user question and the person's answer always go back), and relies on its own earlier answers or runs the tool again. The setting applies in both tool execution modes and decides what the model is handed, not whether results are stored: a shown tool card keeps the full result in the message, and the pipe's own copy of each tool round keeps the full call and result, pictures included, encrypted only while ARTIFACT_ENCRYPTION_KEY is set and ENCRYPT_ALL is on. A temporary chat stores none of its tool rounds or thinking; in Open-WebUI tool mode the rounds and thinking of a streamed reply are held in memory for that reply only, and dropped when the pipe answers its last call back or after 15 minutes unused. A call that carries no chat_id has its tool records held in memory for the length of that request only and never written to the database (see API_CALL_ARTIFACT_MEMORY), so an API call's records last for the request, not the conversation.",
+    )
+    API_CALL_ARTIFACT_MEMORY: bool = Field(
+        default=True,
+        title="Keep API-call artifacts in memory",
+        description=(
+            "When True (default), the reasoning and tool records of a call that carries no `chat_id` are held in "
+            "memory for the length of that request only, keyed on the request id, and are never written to the "
+            "database. Off by default it does nothing for existing callers, because such a call writes nothing "
+            "either way; the difference is that on, the records exist for the request and are dropped when it ends. "
+            "The same idle and size limits apply as for a temporary chat's held reply (REPLY_MEMORY_IDLE_SECONDS, "
+            "REPLY_MEMORY_MAX_BYTES), and they are a separate pool, so the total memory ceiling is twice one pool. "
+            "A temporary chat never opens this bucket, a Fusion inner call never does either, and a call that sends "
+            "`parent_id: null` is given a real chat id by Open WebUI, so that shape is not covered here. "
+            "No marker line is ever added to the caller's response, so a program's bytes in and bytes out are "
+            "unchanged."
+        ),
     )
     ARTIFACT_ENCRYPTION_KEY: EncryptedStr = Field(
         default_factory=_default_artifact_encryption_key,
@@ -1259,9 +1284,25 @@ class Valves(BaseModel):
             "When True, save the full log of each request to encrypted zip files on disk. "
             "Archives capture the full OpenRouter request/response (prompts, model output, tool calls, provider errors) plus request identifiers — treat as sensitive conversation data at rest. "
             "One zip is written per message turn, plus one for each housekeeping task Open WebUI dispatches on that turn, named <message_id>.<task>.zip. Open WebUI defines nine task types, so a turn that triggers all of them produces up to ten archives. "
-            "Persistence is skipped when any required IDs are missing (user_id, chat_id, message_id, request_id), and for every temporary chat. "
+            "Persistence needs a user_id and a request_id; with it on, a call that carries no usable chat_id or message_id is archived under "
+            "`api/api-<request_id>.zip` (see SESSION_LOG_ARCHIVE_API_CALLS), and every temporary chat is still dropped. "
             "A task invocation that resolves to no message id is skipped the same way, which includes every Fusion panel member — those carry no chat or message id at all, so they are not archived. "
             "Turning this off also stops the retention sweep, leaving every archive already on disk untouched until it is re-enabled and the retention window passes."
+        ),
+    )
+    SESSION_LOG_ARCHIVE_API_CALLS: bool = Field(
+        default=True,
+        description=(
+            "When True (default), a call that arrives with no usable chat id or message id - the plain API route, "
+            "where Open WebUI supplies neither - is archived like any other turn, under "
+            "`<SESSION_LOG_DIR>/<user_id>/api/api-<request_id>.zip`. The key is the request id, which is unique per "
+            "request, so two API calls never share one archive file. Requires SESSION_LOG_STORE_ENABLED. "
+            "This is a staging gate: it decides whether the call's segment is written to the database at all. A "
+            "segment already staged while this was on is still packed and written by the assembler, so a handful of "
+            "archives can appear after you switch it off. A `parent_id: null` body is given a real chat id but no "
+            "message id, so it takes this path too and is keyed on the request id, not on that chat. "
+            "The archive is never valve-gated after staging: a row already written is finished, exactly as a terminal "
+            "segment that lands after a turn has ended."
         ),
     )
     SESSION_LOG_DIR: str = Field(

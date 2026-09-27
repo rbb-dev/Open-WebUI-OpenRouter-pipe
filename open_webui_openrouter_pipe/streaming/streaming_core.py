@@ -505,6 +505,19 @@ class StreamingHandler:
             _release_armed = holds_the_reply
             if holds_the_reply:
                 self._pipe._artifact_store._reply_memory.open(chat_id, message_id)
+            api_hold_key = ""
+            if (
+                not chat_id
+                and not is_temporary_chat(chat_id)
+                and not fusion_inner_call
+                and valves.API_CALL_ARTIFACT_MEMORY
+            ):
+                api_hold_key = SessionLogger.request_id.get() or ""
+            if api_hold_key:
+                self._pipe._artifact_store._api_reply_memory.open("", api_hold_key)
+                holds_the_reply = True
+            persist_chat_id = chat_id
+            persist_message_id = message_id if message_id else (api_hold_key or None)
             model_started = asyncio.Event()
             responding_status_sent = False
             provider_status_seen = False
@@ -1067,7 +1080,7 @@ class StreamingHandler:
                         payload[PIPE_ONLY_TOOL_ROUND_KEY] = True
                     normalized = normalize_persisted_item(payload)
                     row = (
-                        self._pipe._artifact_store._make_db_row(chat_id, message_id, openwebui_model, normalized)
+                        self._pipe._artifact_store._make_db_row(persist_chat_id, persist_message_id, openwebui_model, normalized)
                         if normalized
                         else None
                     )
@@ -1091,12 +1104,12 @@ class StreamingHandler:
                 call_id: str, name: str, status: str, *, item_type: str, result_text: str, arguments: str = "{}",
                 raw_item: dict[str, Any] | None = None,
             ) -> None:
-                if not message_id:
+                if not message_id and not api_hold_key:
                     return
                 if persist_tools_enabled and item_type in _RAW_REPLAYED_SERVER_TOOLS:
                     normalized = normalize_persisted_item(raw_item) if raw_item else None
                     row = (
-                        self._pipe._artifact_store._make_db_row(chat_id, message_id, openwebui_model, normalized)
+                        self._pipe._artifact_store._make_db_row(persist_chat_id, persist_message_id, openwebui_model, normalized)
                         if normalized
                         else None
                     )
@@ -1111,7 +1124,7 @@ class StreamingHandler:
                         call_id,
                     )
                 ulids = await _persist_rows(rows, "server_tool") if rows else []
-                if ulids:
+                if ulids and not api_hold_key:
                     await _append_assistant_hidden_markers([_serialize_marker(ulid) for ulid in ulids])
 
             def _normalize_surrogate_chunk(text: str, bucket: str) -> str:
@@ -1274,6 +1287,11 @@ class StreamingHandler:
                     }
                 )
 
+            async def _close_and_emit_reasoning_items() -> None:
+                _close_open_reasoning_windows()
+                for reasoning_key in list(reasoning_display):
+                    await _emit_reasoning_item(reasoning_key)
+
             async def _flush_trailing_reasoning() -> None:
                 if event_emitter is None or not thinking_box_enabled:
                     return
@@ -1310,6 +1328,8 @@ class StreamingHandler:
                     return
                 ulids = pending_ulids[:]
                 pending_ulids.clear()
+                if api_hold_key:
+                    return
                 await _append_assistant_hidden_markers([_serialize_marker(ulid) for ulid in ulids])
 
             thinking_tasks: list[asyncio.Task] = []
@@ -2025,7 +2045,7 @@ class StreamingHandler:
                                     await _emit_annotation_citations(content_part.get("annotations"))
                             await _emit_annotation_citations(item.get("annotations"))
                             phase_marker = _phase_marker_for_output_item(item)
-                            if phase_marker:
+                            if phase_marker and not api_hold_key:
                                 await _append_assistant_hidden_markers([phase_marker])
                                 reasoning_anchor_state["text_chunks"] += 1
                                 reasoning_anchor_state["chars_at_last_chunk"] = len(
@@ -2080,7 +2100,7 @@ class StreamingHandler:
                                         )
                                     )
                                 row = self._pipe._artifact_store._make_db_row(
-                                    chat_id, message_id, openwebui_model, normalized_item
+                                    persist_chat_id, persist_message_id, openwebui_model, normalized_item
                                 )
                                 if row:
                                     pending_items.append(row)
@@ -2462,7 +2482,7 @@ class StreamingHandler:
 
                     if etype in ("response.completed", "response.done", "response.incomplete"):
                         if reasoning_display:
-                            _close_open_reasoning_windows()
+                            await _close_and_emit_reasoning_items()
                         if fusion_armed and fusion_batcher is not None:
                             for _straggler in fusion_batcher.flush_all():
                                 await _emit_fusion_event(_straggler)
@@ -2996,11 +3016,11 @@ class StreamingHandler:
                                         status=str(result.get("status") or "completed"),
                                         pictures=pictures,
                                     )
-                                    if message_id and cid in committed_call_rows and cid not in committed_output_rows:
+                                    if persist_message_id and cid in committed_call_rows and cid not in committed_output_rows:
                                         committed_output_rows.add(cid)
                                         rows = _round_output_row(result, cid)
                                         ulids = await _persist_rows(rows, "tool_result") if rows else []
-                                        if ulids:
+                                        if ulids and not api_hold_key:
                                             await _append_assistant_hidden_markers(
                                                 [_serialize_marker(ulid) for ulid in ulids]
                                             )
@@ -3011,7 +3031,7 @@ class StreamingHandler:
                                 )
 
                             call_rows_at_start: list[dict[str, Any]] = []
-                            for call in call_items if message_id else []:
+                            for call in call_items if persist_message_id else []:
                                 cid = _extract_call_id(call)
                                 if cid and cid not in committed_call_rows:
                                     committed_call_rows.add(cid)
@@ -3162,7 +3182,7 @@ class StreamingHandler:
 
                         call_rows: list[dict[str, Any]] = []
                         output_rows: list[dict[str, Any]] = []
-                        for output in all_function_outputs if message_id else []:
+                        for output in all_function_outputs if persist_message_id else []:
                             cid = _extract_call_id(output)
                             call = call_by_id.get(cid) if cid else None
                             if not call:
@@ -3331,8 +3351,6 @@ class StreamingHandler:
             surrogate_carry["reasoning"] = ""
 
             terminal = bool(was_cancelled or error_occurred or not handed_back)
-            if holds_the_reply and terminal and not handed_back_for_retry:
-                self._pipe._artifact_store._reply_memory.release(chat_id, message_id)
 
             generation_status = "cancelled" if was_cancelled else ("failed" if error_occurred else "ok")
             if not handed_back_for_retry:
@@ -3544,6 +3562,11 @@ class StreamingHandler:
             else:
                 await _flush_pending("finalize")
                 await _mark_committed_rows()
+
+            if holds_the_reply and terminal and not handed_back_for_retry:
+                self._pipe._artifact_store._reply_memory.release(chat_id, message_id)
+            if api_hold_key:
+                self._pipe._artifact_store._api_reply_memory.release("", api_hold_key)
 
             terminal_output: list[dict[str, Any]] = []
             if (

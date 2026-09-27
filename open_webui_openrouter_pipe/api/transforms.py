@@ -1654,8 +1654,6 @@ def _apply_identifier_valves_to_payload(
     - When `SEND_END_USER_ID` is enabled, emit top-level `user` (GUID, email, or
       display name per `END_USER_ID_SOURCE`, falling back to the GUID) and keep
       `metadata.user_id` on the stable GUID.
-    - Top-level `session_id` is the prompt-cache session pin: an opaque HMAC of chat_id
-      (gated by `SEND_CACHE_SESSION_ID`); any client-supplied `session_id` is dropped.
     - `SEND_SESSION_ID`, `SEND_CHAT_ID`, `SEND_MESSAGE_ID` emit `metadata.<id>` only.
     """
     if not isinstance(payload, dict):
@@ -1698,9 +1696,20 @@ def _apply_identifier_valves_to_payload(
 
     payload.pop("session_id", None)
     if valves.SEND_CACHE_SESSION_ID:
+        pin_source: str | None = None
         sticky_chat_id = owui_metadata.get("chat_id")
         if isinstance(sticky_chat_id, str) and sticky_chat_id.strip():
-            sticky = _sticky_session_key(sticky_chat_id.strip())
+            pin_source = sticky_chat_id.strip()
+        else:
+            inner_meta = owui_metadata.get(_PIPE_METADATA_KEY)
+            if isinstance(inner_meta, dict) and inner_meta.get("fusion_inner"):
+                pin_source = None
+            else:
+                caller_session_id = owui_metadata.get("session_id")
+                if isinstance(caller_session_id, str) and caller_session_id.strip():
+                    pin_source = "api-session:" + caller_session_id.strip()
+        if pin_source:
+            sticky = _sticky_session_key(pin_source)
             if sticky:
                 payload["session_id"] = sticky
 

@@ -220,6 +220,7 @@ When `SESSION_LOG_STORE_ENABLED=True`, the pipe can persist per-request session 
 Security considerations:
 - Archives are encrypted using `SESSION_LOG_ZIP_PASSWORD` (treat as a secret).
 - Archives are written under `SESSION_LOG_DIR` with a predictable hierarchy (use filesystem permissions accordingly).
+- A request that carries no usable `chat_id`/`message_id` — the plain API route — is archived under `api/api-<request_id>.zip` while `SESSION_LOG_ARCHIVE_API_CALLS` is on, so machine traffic is captured on the same terms as chat traffic. The key is the request id, so one file per request and never shared between two calls.
 - Retention and cleanup are controlled by `SESSION_LOG_RETENTION_DAYS` and the cleanup interval valve, and run while storage is on. Turning `SESSION_LOG_STORE_ENABLED` off stops the sweep, so archives already on disk survive until it is re-enabled and their window passes.
 
 See: [Session Log Storage](session_log_storage.md).
