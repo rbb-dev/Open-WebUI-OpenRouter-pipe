@@ -1166,7 +1166,7 @@ default applies; the second gets no control.
 | `VIDEO_ASPECT_RATIO` | `Literal["", …]` | `""` | top-level `aspect_ratio` | `supported_aspect_ratios` non-empty | 27 (all except FLUX Video Edit, FLUX Video Upscale) |
 | `VIDEO_RESOLUTION` | `Literal["", …]` | `""` | top-level `resolution` | `supported_resolutions` non-empty | 26 (all except FLUX Video Edit, FLUX Video Upscale, Aleph 2.0) |
 | `VIDEO_SIZE` | `Literal["", …]` | `""` | top-level `size` | `supported_sizes` non-empty | 19 of 29 |
-| `VIDEO_FRAME_MODE` | `Literal["auto", "none", "first_only"(, "first_last")]` | `"auto"` | controls `frame_images[]` shaping | `supported_frame_images` non-empty | 24 of 29 |
+| `VIDEO_FRAME_MODE` | `Literal["auto", "none", "first_only"(, "first_last")]` | `"auto"` | controls `frame_images[]` shaping, and under `"none"` whether the picture is sent at all or only left in the request | `supported_frame_images` non-empty | 24 of 29 |
 | `VIDEO_NEGATIVE_PROMPT` | `str` | `""` | passthrough `negative_prompt` (or `negativePrompt` on Veo) | `"negative_prompt"` or `"negativePrompt"` in `allowed_passthrough_parameters` | 8 of 29 |
 | `VIDEO_GENERATE_AUDIO` | `Literal["model_default", "on", "off"]` | `"model_default"` | top-level `generate_audio` (boolean) | `generate_audio` present and not published as `false` | 22 of 29 |
 | `VIDEO_SEED` | `int` (`ge=0`) | `0` | top-level `seed` | `seed` present and not published as `false` | 19 of 29 |
@@ -1265,8 +1265,8 @@ rules:
   - `auto`: if you attach images, the first becomes `first_frame` (and if
     the model supports `last_frame` AND you attached more, the last
     becomes `last_frame`).
-  - `none`: no attached image anchors the clip. They are still sent, as
-    references the model may draw on — see
+  - `none`: no attached image anchors the clip, and none is sent to the
+    model as a reference either. The picture stays in the request; see
     [Attachments that are not frames](#attachments-that-are-not-frames).
   - `first_only`: even if multiple images are attached, only the first is
     used as `first_frame`.
@@ -1396,10 +1396,14 @@ instead, as described next.
 
 Anything you attach that the Frames control does not claim — extra
 images, a second image on a first-frame-only model, a clip, a sound file,
-or any image at all when Frames is set to `none` or the model has no
-frame support — is sent to the model as a **reference**: material for it
-to draw on rather than a fixed start or end point. Nothing you attach is
-silently discarded any more.
+or any image at all on a model with no frame support — is sent to the
+model as a **reference**: material for it to draw on rather than a fixed
+start or end point. Nothing you attach is silently discarded any more.
+
+Frames set to `none` is the one case that sends nothing: you asked for
+no picture, so the images are not sent and are not referenced. They are
+left in the request, so they stay in the conversation and are still there
+if you change the knob and send again.
 
 A left-over image goes as an image reference. Clips and sound files go
 as video and audio references, on the models that declare they read
@@ -1429,6 +1433,14 @@ model and takes them out of the request. Where an admin has
 and image models, and from then on the attachments stay in the chat as
 well as being sent. Files that are not images, clips or sound — a PDF,
 say — are left alone either way.
+
+A picture attached with Frames set to `none` stays in the request under
+either setting, because it is the one attachment with no model-side
+role. Where File context is still on for a video model — the admin has
+`UPDATE_MODEL_CAPABILITIES` off, or has re-ticked File context on one
+model — that retained picture costs one `generate_queries` round-trip
+instead of being dropped. On the default install, where the pipe writes
+`file_context: False` for media models, the two settings coincide.
 
 ---
 

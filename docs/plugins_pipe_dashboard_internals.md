@@ -723,11 +723,11 @@ The Live and Usage tabs are backed by two layers: an in-memory `SessionTracker` 
 
 | Range | Span | Bucket |
 |-------|------|--------|
-| `1h` | 1 hour | 5 min |
-| `6h` | 6 hours | 15 min |
-| `24h` | 24 hours | 1 hour |
-| `7d` | 7 days | 6 hours |
-| `30d` | 30 days | 1 day |
+| `1h` | 1 hour | 1 min |
+| `6h` | 6 hours | 2 min |
+| `24h` | 24 hours | 5 min |
+| `7d` | 7 days | 1 hour |
+| `30d` | 30 days | 4 hours |
 
 On success the result is `{"available": true, "cards", "prev", "buckets", "by_model", "by_user", "totals", "meta"}`. When it cannot answer it returns `{"available": false, "reason": ...}` with one of:
 

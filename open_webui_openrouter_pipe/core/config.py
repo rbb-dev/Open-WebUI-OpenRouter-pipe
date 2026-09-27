@@ -1750,7 +1750,7 @@ class Valves(BaseModel):
     )
     AUTO_ATTACH_WEB_TOOLS_FILTER: bool = Field(
         default=True,
-        description="Automatically attach the OpenRouter Web Tools filter to all pipe models (so the toggle appears in the Integrations menu).",
+        description="Automatically attach the OpenRouter Web Tools filter to all pipe models (so the toggle appears in the Integrations menu). Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. This relies on the ownership record the pipe writes when it attaches, so a model already carrying the panel has nothing recorded until the pipe next attaches it; run one sync with the valve on, after the panel is detached, and only then does turning this off detach it.",
     )
     AUTO_DEFAULT_WEB_TOOLS_FILTER: bool = Field(
         default=False,
@@ -1763,7 +1763,7 @@ class Valves(BaseModel):
     )
     AUTO_ATTACH_IMAGE_GEN_FILTER: bool = Field(
         default=True,
-        description="Automatically attach the OpenRouter Image Generation filter to all pipe models.",
+        description="Automatically attach the OpenRouter Image Generation filter to all pipe models. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone.",
     )
     ENABLE_OPENROUTER_IMAGE_GENERATION: bool = Field(
         default=True,
@@ -1796,7 +1796,8 @@ class Valves(BaseModel):
         description=(
             "Attach each image model's own settings panel to it, so the settings appear "
             "in the chat controls when that model is selected. Turn this off to install "
-            "the panels but leave attaching them to you."
+            "the panels but leave attaching them to you; turning it off also detaches the "
+            "panels the pipe attached, while a panel an admin attached by hand is left alone."
         ),
     )
     AUTO_DEFAULT_IMAGE_FILTERS: bool = Field(
@@ -1820,7 +1821,7 @@ class Valves(BaseModel):
     )
     AUTO_ATTACH_VIDEO_FILTERS: bool = Field(
         default=True,
-        description="Automatically attach the OpenRouter Video Generation filter to OpenRouter video-generation models.",
+        description="Automatically attach the OpenRouter Video Generation filter to OpenRouter video-generation models. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone.",
     )
     AUTO_DEFAULT_VIDEO_FILTERS: bool = Field(
         default=True,
@@ -1836,7 +1837,7 @@ class Valves(BaseModel):
     )
     AUTO_ATTACH_FUSION_FILTER: bool = Field(
         default=True,
-        description="Automatically attach the OpenRouter Fusion filter to the openrouter/fusion model only (so its panel/judge options appear in the Integrations menu). Never attaches to other models.",
+        description="Automatically attach the OpenRouter Fusion filter to the openrouter/fusion model only (so its panel/judge options appear in the Integrations menu). Never attaches to other models. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone.",
     )
     AUTO_DEFAULT_FUSION_FILTER: bool = Field(
         default=True,
@@ -2155,7 +2156,7 @@ class Valves(BaseModel):
         default=True,
         description=(
             "When enabled, automatically attaches the OpenRouter Direct Uploads toggleable filter to models that support "
-            "at least one of OpenRouter direct file/audio/video inputs (so the switch appears in the Integrations menu only where it can work)."
+            "at least one of OpenRouter direct file/audio/video inputs (so the switch appears in the Integrations menu only where it can work). Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone."
         ),
     )
     AUTO_INSTALL_DIRECT_UPLOADS_FILTER: bool = Field(

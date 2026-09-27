@@ -106,8 +106,9 @@ def _apply_list_filter_ids(
     filter_supported: bool,
     auto_attach: bool,
     prune_key: str,
+    hands_off: bool = False,
 ) -> bool:
-    if not auto_attach:
+    if hands_off:
         return False
     filter_function_ids = filter_function_ids or []
     normalized = _normalize_id_list(meta_dict, "filterIds")
@@ -120,24 +121,70 @@ def _apply_list_filter_ids(
     current_set = set(filter_function_ids)
     had = set(normalized)
     wanted = set(had)
-    if filter_supported:
+    attaching = filter_supported and auto_attach
+    if attaching:
         wanted |= current_set
-    else:
-        wanted -= current_set
     for prev_fid in previous_ids:
-        if prev_fid not in current_set:
+        if not attaching or prev_fid not in current_set:
             wanted.discard(prev_fid)
     if wanted == had:
         return False
-    if filter_supported:
+    if attaching:
         for fid in filter_function_ids:
             if fid not in normalized:
                 normalized.append(fid)
     normalized = [fid for fid in normalized if fid in wanted]
     meta_dict["filterIds"] = _dedupe_preserve_order(normalized)
-    pipe_meta = _ensure_pipe_meta(meta_dict)
-    pipe_meta[prune_key] = list(filter_function_ids)
-    meta_dict[_PIPE_METADATA_KEY] = pipe_meta
+    if attaching or not filter_supported:
+        pipe_meta = _ensure_pipe_meta(meta_dict)
+        pipe_meta[prune_key] = list(filter_function_ids)
+        meta_dict[_PIPE_METADATA_KEY] = pipe_meta
+    return True
+
+
+_LEGACY_RECORD_KEYS = {"web_tools_attached_id": "web_tools_filter_id"}
+
+
+def _apply_single_id_filter_ids(
+    meta_dict: dict,
+    *,
+    filter_function_id: str | None,
+    supported: bool,
+    auto_attach: bool,
+    record_key: str,
+    hands_off: bool = False,
+) -> bool:
+    if hands_off or not filter_function_id:
+        return False
+    normalized = _normalize_id_list(meta_dict, "filterIds")
+    pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
+    owned_id = None
+    if isinstance(pipe_meta, dict):
+        prev = pipe_meta.get(record_key)
+        if isinstance(prev, str) and prev:
+            owned_id = prev
+        else:
+            legacy_key = _LEGACY_RECORD_KEYS.get(record_key)
+            legacy = pipe_meta.get(legacy_key) if legacy_key else None
+            if isinstance(legacy, str) and legacy:
+                owned_id = legacy
+    had = set(normalized)
+    wanted = set(had)
+    if owned_id:
+        wanted.discard(owned_id)
+    attaching = supported and auto_attach
+    if attaching:
+        wanted.add(filter_function_id)
+    if wanted == had:
+        return False
+    if attaching and filter_function_id not in normalized:
+        normalized.append(filter_function_id)
+    normalized = [fid for fid in normalized if fid in wanted]
+    meta_dict["filterIds"] = _dedupe_preserve_order(normalized)
+    if attaching:
+        pipe_meta = _ensure_pipe_meta(meta_dict)
+        pipe_meta[record_key] = filter_function_id
+        meta_dict[_PIPE_METADATA_KEY] = pipe_meta
     return True
 
 
@@ -153,6 +200,8 @@ def _detached_by_this_pass(
     previous: list[str] = []
     if isinstance(pipe_meta, dict):
         recorded = pipe_meta.get(prune_key)
+        if isinstance(recorded, str):
+            previous = [p for p in (recorded,) if p]
         if isinstance(recorded, list):
             previous = [p for p in recorded if isinstance(p, str) and p]
     return set(previous) - set(filter_function_ids or [])
@@ -165,17 +214,13 @@ def _apply_list_default_filter_ids(
     filter_supported: bool,
     auto_default: bool,
     detached: set[str] | None = None,
+    hands_off: bool = False,
 ) -> bool:
-    if not auto_default:
+    if hands_off:
         return False
     filter_ids = _normalize_id_list(meta_dict, "filterIds")
     default_ids = _normalize_id_list(meta_dict, "defaultFilterIds")
     changed = False
-    if filter_supported:
-        for fid in filter_function_ids or []:
-            if fid in filter_ids and fid not in default_ids:
-                default_ids.append(fid)
-                changed = True
 
     # A filter this routine detached must not stay on by default, or a superseded one
     # goes on applying itself to every request. `detached` is computed by the caller
@@ -187,6 +232,13 @@ def _apply_list_default_filter_ids(
     if len(kept) != len(default_ids):
         default_ids = kept
         changed = True
+
+    if auto_default and filter_supported:
+        for fid in filter_function_ids or []:
+            if fid in filter_ids and fid not in default_ids:
+                default_ids.append(fid)
+                changed = True
+
     if not changed:
         return False
     meta_dict["defaultFilterIds"] = _dedupe_preserve_order(default_ids)
@@ -199,38 +251,20 @@ def _apply_video_gen_filter_ids(
     video_gen_filter_function_id: str | None,
     video_gen_filter_supported: bool,
     auto_attach_video_gen_filter: bool,
+    hands_off: bool = False,
 ) -> bool:
     """Apply video-gen filter auto-attach to `meta_dict["filterIds"]`.
 
     Single-id form, the same shape image now uses: one filter per model.
     """
-    if not video_gen_filter_function_id or not auto_attach_video_gen_filter:
-        return False
-    normalized = _normalize_id_list(meta_dict, "filterIds")
-    pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
-    previous_id = None
-    if isinstance(pipe_meta, dict):
-        prev = pipe_meta.get("video_gen_filter_id")
-        if isinstance(prev, str) and prev and prev != video_gen_filter_function_id:
-            previous_id = prev
-    had = set(normalized)
-    wanted = set(had)
-    if video_gen_filter_supported:
-        wanted.add(video_gen_filter_function_id)
-    else:
-        wanted.discard(video_gen_filter_function_id)
-    if previous_id:
-        wanted.discard(previous_id)
-    if wanted == had:
-        return False
-    if video_gen_filter_supported and video_gen_filter_function_id not in normalized:
-        normalized.append(video_gen_filter_function_id)
-    normalized = [fid for fid in normalized if fid in wanted]
-    meta_dict["filterIds"] = _dedupe_preserve_order(normalized)
-    pipe_meta = _ensure_pipe_meta(meta_dict)
-    pipe_meta["video_gen_filter_id"] = video_gen_filter_function_id
-    meta_dict[_PIPE_METADATA_KEY] = pipe_meta
-    return True
+    return _apply_single_id_filter_ids(
+        meta_dict,
+        filter_function_id=video_gen_filter_function_id,
+        supported=video_gen_filter_supported,
+        auto_attach=auto_attach_video_gen_filter,
+        record_key="video_gen_filter_id",
+        hands_off=hands_off,
+    )
 
 
 def _apply_video_default_filter_ids(
@@ -239,21 +273,29 @@ def _apply_video_default_filter_ids(
     video_gen_filter_function_id: str | None,
     video_gen_filter_supported: bool,
     auto_default_video_gen_filter: bool,
+    detached: set[str] | None = None,
+    hands_off: bool = False,
 ) -> bool:
     """Apply video-gen filter default-on flag to `meta_dict["defaultFilterIds"]`."""
-    if (
-        not auto_default_video_gen_filter
-        or not video_gen_filter_function_id
-        or not video_gen_filter_supported
-    ):
-        return False
-    filter_ids = _normalize_id_list(meta_dict, "filterIds")
-    if video_gen_filter_function_id not in filter_ids:
+    if hands_off:
         return False
     default_ids = _normalize_id_list(meta_dict, "defaultFilterIds")
-    if video_gen_filter_function_id in default_ids:
+    changed = False
+
+    kept = [fid for fid in default_ids if fid not in (detached or set())]
+    if len(kept) != len(default_ids):
+        default_ids = kept
+        changed = True
+
+    filter_ids = _normalize_id_list(meta_dict, "filterIds")
+    if (auto_default_video_gen_filter and video_gen_filter_function_id
+            and video_gen_filter_supported and video_gen_filter_function_id not in default_ids
+            and video_gen_filter_function_id in filter_ids):
+        default_ids.append(video_gen_filter_function_id)
+        changed = True
+
+    if not changed:
         return False
-    default_ids.append(video_gen_filter_function_id)
     meta_dict["defaultFilterIds"] = _dedupe_preserve_order(default_ids)
     return True
 
@@ -263,6 +305,7 @@ def _apply_provider_routing_default_filter_ids(
     *,
     provider_routing_filter_id: str | None,
     auto_default_provider_routing_filter: bool,
+    detached: set[str] | None = None,
 ) -> bool:
     """Apply provider routing filter default-on flag to `meta_dict["defaultFilterIds"]`."""
     if not auto_default_provider_routing_filter or not provider_routing_filter_id:
@@ -271,8 +314,18 @@ def _apply_provider_routing_default_filter_ids(
     if provider_routing_filter_id not in filter_ids:
         return False
     default_ids = _normalize_id_list(meta_dict, "defaultFilterIds")
+    changed = False
+
+    kept = [fid for fid in default_ids if fid not in (detached or set())]
+    if len(kept) != len(default_ids):
+        default_ids = kept
+        changed = True
+
     if provider_routing_filter_id in default_ids:
-        return False
+        if not changed:
+            return False
+        meta_dict["defaultFilterIds"] = _dedupe_preserve_order(default_ids)
+        return True
     default_ids.append(provider_routing_filter_id)
     meta_dict["defaultFilterIds"] = _dedupe_preserve_order(default_ids)
     return True
@@ -1851,16 +1904,21 @@ class ModelCatalogManager:
             update_capabilities = False
         if disable_image_updates:
             update_images = False
+        hands_off: set[str] = set()
         if disable_web_tools_auto_attach:
             auto_attach_filter = False
+            hands_off.add("web_tools_attached_id")
         if disable_web_tools_default_on:
             auto_default_filter = False
         if disable_direct_uploads_auto_attach:
             auto_attach_direct_uploads_filter = False
+            hands_off.add("direct_uploads_filter_id")
         if disable_video_gen_auto_attach:
             auto_attach_video_gen_filter = False
+            hands_off.add("video_gen_filter_id")
         if disable_image_filter_auto_attach:
             auto_attach_image_filter = False
+            hands_off.add("image_filter_ids")
         if disable_description_updates:
             update_descriptions = False
 
@@ -1921,85 +1979,33 @@ class ModelCatalogManager:
             return True
 
         def _apply_filter_ids(meta_dict: dict) -> bool:
-            if not filter_function_id:
-                return False
-            normalized = _normalize_id_list(meta_dict, "filterIds")
-            pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
-            previous_id = None
-            if isinstance(pipe_meta, dict):
-                prev = pipe_meta.get("web_tools_filter_id")
-                if isinstance(prev, str) and prev and prev != filter_function_id:
-                    previous_id = prev
-            had = set(normalized)
-            wanted = set(had)
-            if auto_attach_filter and filter_supported:
-                wanted.add(filter_function_id)
-            else:
-                wanted.discard(filter_function_id)
-            if previous_id:
-                wanted.discard(previous_id)
-            if wanted == had:
-                return False
-            if auto_attach_filter and filter_supported and filter_function_id not in normalized:
-                normalized.append(filter_function_id)
-            normalized = [fid for fid in normalized if fid in wanted]
-            meta_dict["filterIds"] = _dedupe_preserve_order(normalized)
-            return True
+            return _apply_single_id_filter_ids(
+                meta_dict,
+                filter_function_id=filter_function_id,
+                supported=filter_supported,
+                auto_attach=auto_attach_filter,
+                record_key="web_tools_attached_id",
+                hands_off="web_tools_attached_id" in hands_off,
+            )
 
         def _apply_direct_uploads_filter_ids(meta_dict: dict) -> bool:
-            if not auto_attach_direct_uploads_filter or not direct_uploads_filter_function_id:
-                return False
-            normalized = _normalize_id_list(meta_dict, "filterIds")
-            pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
-            previous_id = None
-            if isinstance(pipe_meta, dict):
-                prev = pipe_meta.get("direct_uploads_filter_id")
-                if isinstance(prev, str) and prev and prev != direct_uploads_filter_function_id:
-                    previous_id = prev
-            had = set(normalized)
-            wanted = set(had)
-            if direct_uploads_filter_supported:
-                wanted.add(direct_uploads_filter_function_id)
-            else:
-                wanted.discard(direct_uploads_filter_function_id)
-            if previous_id:
-                wanted.discard(previous_id)
-            if wanted == had:
-                return False
-            if direct_uploads_filter_supported and direct_uploads_filter_function_id not in normalized:
-                normalized.append(direct_uploads_filter_function_id)
-            normalized = [fid for fid in normalized if fid in wanted]
-            meta_dict["filterIds"] = _dedupe_preserve_order(normalized)
-            pipe_meta = _ensure_pipe_meta(meta_dict)
-            pipe_meta["direct_uploads_filter_id"] = direct_uploads_filter_function_id
-            meta_dict[_PIPE_METADATA_KEY] = pipe_meta
-            return True
+            return _apply_single_id_filter_ids(
+                meta_dict,
+                filter_function_id=direct_uploads_filter_function_id,
+                supported=direct_uploads_filter_supported,
+                auto_attach=auto_attach_direct_uploads_filter,
+                record_key="direct_uploads_filter_id",
+                hands_off="direct_uploads_filter_id" in hands_off,
+            )
 
         def _apply_image_gen_filter_ids(meta_dict: dict) -> bool:
-            if not image_gen_filter_function_id or not auto_attach_image_gen_filter:
-                return False
-            normalized = _normalize_id_list(meta_dict, "filterIds")
-            pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
-            previous_id = None
-            if isinstance(pipe_meta, dict):
-                prev = pipe_meta.get("image_gen_filter_id")
-                if isinstance(prev, str) and prev and prev != image_gen_filter_function_id:
-                    previous_id = prev
-            had = set(normalized)
-            wanted = set(had)
-            wanted.add(image_gen_filter_function_id)
-            if previous_id:
-                wanted.discard(previous_id)
-            if wanted == had:
-                return False
-            if image_gen_filter_function_id not in normalized:
-                normalized.append(image_gen_filter_function_id)
-            normalized = [fid for fid in normalized if fid in wanted]
-            meta_dict["filterIds"] = _dedupe_preserve_order(normalized)
-            pipe_meta = _ensure_pipe_meta(meta_dict)
-            pipe_meta["image_gen_filter_id"] = image_gen_filter_function_id
-            meta_dict[_PIPE_METADATA_KEY] = pipe_meta
-            return True
+            return _apply_single_id_filter_ids(
+                meta_dict,
+                filter_function_id=image_gen_filter_function_id,
+                supported=True,
+                auto_attach=auto_attach_image_gen_filter,
+                record_key="image_gen_filter_id",
+            )
 
 
         def _apply_default_filter_ids(meta_dict: dict) -> bool:
@@ -2151,11 +2157,21 @@ class ModelCatalogManager:
             if _apply_image_gen_filter_ids(meta_dict):
                 meta_updated = True
 
+            video_hands_off = "video_gen_filter_id" in hands_off
+            video_ids_now = [video_gen_filter_function_id] if (
+                video_gen_filter_supported and auto_attach_video_gen_filter and video_gen_filter_function_id
+            ) else []
+            video_detached = _detached_by_this_pass(
+                meta_dict, prune_key="video_gen_filter_id", filter_function_ids=video_ids_now
+            )
+            if not video_gen_filter_function_id and video_gen_filter_supported:
+                video_detached = set()
             if _apply_video_gen_filter_ids(
                 meta_dict,
                 video_gen_filter_function_id=video_gen_filter_function_id,
                 video_gen_filter_supported=video_gen_filter_supported,
                 auto_attach_video_gen_filter=auto_attach_video_gen_filter,
+                hands_off=video_hands_off,
             ):
                 meta_updated = True
 
@@ -2164,13 +2180,19 @@ class ModelCatalogManager:
                 video_gen_filter_function_id=video_gen_filter_function_id,
                 video_gen_filter_supported=video_gen_filter_supported,
                 auto_default_video_gen_filter=auto_default_video_gen_filter,
+                detached=video_detached,
+                hands_off=video_hands_off,
             ):
                 meta_updated = True
 
+            image_hands_off = "image_filter_ids" in hands_off
+            image_ids_now = image_filter_function_ids if (
+                image_filter_supported and auto_attach_image_filter
+            ) else []
             image_detached = _detached_by_this_pass(
                 meta_dict,
                 prune_key="image_filter_ids",
-                filter_function_ids=image_filter_function_ids,
+                filter_function_ids=image_ids_now,
             )
             if _apply_list_filter_ids(
                 meta_dict,
@@ -2178,6 +2200,7 @@ class ModelCatalogManager:
                 filter_supported=image_filter_supported,
                 auto_attach=auto_attach_image_filter,
                 prune_key="image_filter_ids",
+                hands_off=image_hands_off,
             ):
                 meta_updated = True
 
@@ -2187,13 +2210,18 @@ class ModelCatalogManager:
                 filter_function_ids=image_filter_function_ids,
                 filter_supported=image_filter_supported,
                 auto_default=auto_default_image_filter,
+                hands_off=image_hands_off,
             ):
                 meta_updated = True
 
+            fusion_hands_off = "fusion_filter_ids" in hands_off
+            fusion_ids_now = fusion_filter_function_ids if (
+                fusion_filter_supported and auto_attach_fusion_filter
+            ) else []
             fusion_detached = _detached_by_this_pass(
                 meta_dict,
                 prune_key="fusion_filter_ids",
-                filter_function_ids=fusion_filter_function_ids,
+                filter_function_ids=fusion_ids_now,
             )
             if _apply_list_filter_ids(
                 meta_dict,
@@ -2201,6 +2229,7 @@ class ModelCatalogManager:
                 filter_supported=fusion_filter_supported,
                 auto_attach=auto_attach_fusion_filter,
                 prune_key="fusion_filter_ids",
+                hands_off=fusion_hands_off,
             ):
                 meta_updated = True
 
@@ -2210,9 +2239,16 @@ class ModelCatalogManager:
                 filter_function_ids=fusion_filter_function_ids,
                 filter_supported=fusion_filter_supported,
                 auto_default=auto_default_fusion_filter,
+                hands_off=fusion_hands_off,
             ):
                 meta_updated = True
 
+            pr_ids_now = [provider_routing_filter_id] if provider_routing_filter_id else []
+            pr_detached = _detached_by_this_pass(
+                meta_dict,
+                prune_key="provider_routing_filter_id",
+                filter_function_ids=pr_ids_now,
+            )
             if _apply_provider_routing_filter_ids(meta_dict):
                 meta_updated = True
                 self.logger.debug(
@@ -2222,6 +2258,7 @@ class ModelCatalogManager:
                 )
             if _apply_provider_routing_default_filter_ids(
                 meta_dict,
+                detached=pr_detached,
                 provider_routing_filter_id=provider_routing_filter_id,
                 auto_default_provider_routing_filter=auto_default_provider_routing_filter,
             ):

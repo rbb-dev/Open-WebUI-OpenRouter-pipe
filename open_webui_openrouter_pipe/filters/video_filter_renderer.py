@@ -1527,6 +1527,16 @@ def _render_frame_block(spec: VideoFilterSpec) -> str:
                     }
                 )'''
 
+    image_classifier_block = (
+        '''                if content_type.startswith("image/") and frame_mode == "none":
+                    retained.append(item)
+                elif content_type.startswith("image/"):
+                    image_items.append(item)'''
+        if has_frames
+        else '''                if content_type.startswith("image/"):
+                    image_items.append(item)'''
+    )
+
     referable_images = (
         '(image_items if frame_mode != "none" else [])' if has_frames else "image_items"
     )
@@ -1568,8 +1578,7 @@ def _render_frame_block(spec: VideoFilterSpec) -> str:
                 if not file_id:
                     retained.append(item)
                     continue
-                if content_type.startswith("image/"):
-                    image_items.append(item)
+{image_classifier_block}
                 elif content_type.startswith("video/"):
                     video_items.append(item)
                 elif content_type.startswith("audio/"):

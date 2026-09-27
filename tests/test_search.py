@@ -108,6 +108,7 @@ async def test_auto_attach_removes_filter_from_unsupported_models_but_preserves_
             "openrouter_pipe": {
                 "web_tools_default_seeded": True,
                 "web_tools_filter_id": "openrouter_web_tools",
+                "web_tools_attached_id": "openrouter_web_tools",
             },
         },
     )

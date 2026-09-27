@@ -703,6 +703,7 @@ def _run_inlet_via_metadata(
     frame_mode: str = "auto",
     video_model: dict[str, Any] | None = None,
     module_suffix: str = "",
+    model: dict[str, Any] | None = None,
 ) -> tuple[dict, dict]:
     source = render_video_filter_source(
         model_id=model_id, video_model=video_model or VIDEO_BY_ID[model_id]
@@ -714,7 +715,7 @@ def _run_inlet_via_metadata(
     user_valves = module.Filter.UserValves(**valves_kwargs)
     body: dict[str, Any] = {"files": None}
     metadata: dict[str, Any] = {"user_message": {"files": files}}
-    module.Filter().inlet(body, __metadata__=metadata, __user__={"valves": user_valves})
+    module.Filter().inlet(body, __metadata__=metadata, __user__={"valves": user_valves}, __model__=model)
     return body, metadata
 
 

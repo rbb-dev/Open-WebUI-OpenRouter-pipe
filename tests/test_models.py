@@ -1186,7 +1186,8 @@ async def test_update_existing_model_filter_id_migration(pipe_instance_async) ->
         model_id,
         meta={
             "filterIds": ["old_openrouter_web_tools"],
-            "openrouter_pipe": {"web_tools_filter_id": "old_openrouter_web_tools"},
+            "openrouter_pipe": {"web_tools_filter_id": "old_openrouter_web_tools",
+                                "web_tools_attached_id": "old_openrouter_web_tools"},
         },
     )
     update_mock = AsyncMock()
@@ -1224,7 +1225,8 @@ async def test_update_existing_model_filter_removal_when_unsupported(pipe_instan
 
     existing = _make_existing_model(
         model_id,
-        meta={"filterIds": ["openrouter_web_tools", "other_filter"]},
+        meta={"filterIds": ["openrouter_web_tools", "other_filter"],
+              "openrouter_pipe": {"web_tools_attached_id": "openrouter_web_tools"}},
     )
     update_mock = AsyncMock()
 

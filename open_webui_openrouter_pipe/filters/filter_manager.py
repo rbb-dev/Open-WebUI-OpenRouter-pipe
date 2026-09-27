@@ -1798,7 +1798,7 @@ class Filter:
 
             size_bytes = self._to_int(item.get("size"))
             if size_bytes is None or size_bytes < 0:
-                raise DirectUploadError("Direct uploads: uploaded file missing a valid size.")
+                size_bytes = -1
 
             kind = "files"
             if content_type.startswith("audio/"):
@@ -1818,6 +1818,8 @@ class Filter:
                     # Fail-open: leave unsupported types on the normal OWUI path (RAG/Knowledge).
                     retained.append(item)
                     continue
+                if size_bytes < 0:
+                    raise DirectUploadError("Direct uploads: uploaded file missing a valid size.")
                 if size_bytes > file_limit:
                     raise DirectUploadError(
                         f"Direct file '{name or file_id}' is too large ({size_bytes} bytes; max {self.valves.DIRECT_FILE_MAX_UPLOAD_SIZE_MB} MB)."
@@ -1854,6 +1856,8 @@ class Filter:
                 if not audio_format or (audio_formats_allowed and audio_format not in audio_formats_allowed):
                     retained.append(item)
                     continue
+                if size_bytes < 0:
+                    raise DirectUploadError("Direct uploads: uploaded file missing a valid size.")
                 if size_bytes > audio_limit:
                     raise DirectUploadError(
                         f"Direct audio '{name or file_id}' is too large ({size_bytes} bytes; max {self.valves.DIRECT_AUDIO_MAX_UPLOAD_SIZE_MB} MB)."
@@ -1885,6 +1889,8 @@ class Filter:
                 if not self._mime_allowed(content_type, self.valves.DIRECT_VIDEO_MIME_ALLOWLIST):
                     retained.append(item)
                     continue
+                if size_bytes < 0:
+                    raise DirectUploadError("Direct uploads: uploaded file missing a valid size.")
                 if size_bytes > video_limit:
                     raise DirectUploadError(
                         f"Direct video '{name or file_id}' is too large ({size_bytes} bytes; max {self.valves.DIRECT_VIDEO_MAX_UPLOAD_SIZE_MB} MB)."
