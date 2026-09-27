@@ -8,7 +8,7 @@ import json
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
 
@@ -44,6 +44,9 @@ def _make_store_host() -> Any:
     host._create_table_with_race_guard = (
         lambda table, eng, name: guard(host, table, eng, name)
     )
+    # The guard delegates to these two, so a stub host must carry them bound to itself.
+    host._create_table_best_effort = MethodType(ArtifactStore._create_table_best_effort, host)
+    host._create_declared_indexes = MethodType(ArtifactStore._create_declared_indexes, host)
     return host
 
 

@@ -1303,14 +1303,18 @@ class Valves(BaseModel):
         default=25,
         ge=1,
         le=500,
-        description="Maximum number of message bundles to assemble per archiving pass.",
+        description="Maximum number of message bundles to assemble per archiving pass; counted in turns, not rows.",
     )
     SESSION_LOG_STALE_FINALIZE_SECONDS: int = Field(
         default=6 * 7200,
         ge=60,
         description=(
             "If a message has staged session-log segments but never signals that it finished "
-            "(the worker crashed or was killed), finalize an incomplete zip after this many seconds since the last piece."
+            "(the worker crashed or was killed), finalize an incomplete zip after this many seconds since the last piece. "
+            "This is a cutoff on the last segment, not on the turn: a turn still running when it passes is sealed as "
+            "incomplete too, and a segment it stages afterwards is left stranded until the next assembly. That "
+            "exposure is why the default is long. Each pass takes the oldest stranded bundles first and seals a "
+            "bundle only if the sealed write succeeds, keeping the segments for a retry otherwise."
             "The incomplete marker is written at most once per archive: a pass that finds the turn still stale leaves the single marker "
             "in place rather than adding another, and a pass that finds the turn complete retires it."
         ),

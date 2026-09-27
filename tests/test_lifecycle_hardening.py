@@ -5,7 +5,7 @@ of every dispatch surface."""
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
 
@@ -20,11 +20,19 @@ from open_webui_openrouter_pipe.storage.persistence import ArtifactStore
 
 
 def _guard_host(heal: bool = False) -> Any:
-    return SimpleNamespace(
+    """A stand-in for the store, carrying the methods the race guard calls.
+
+    The methods are bound to this namespace so `self` resolves to it, exactly as it does
+    on a real store.
+    """
+    host = SimpleNamespace(
         logger=Mock(),
         _is_table_exists_error=ArtifactStore._is_table_exists_error,
         _maybe_heal_index_conflict=lambda *a, **k: heal,
     )
+    host._create_table_best_effort = MethodType(ArtifactStore._create_table_best_effort, host)
+    host._create_declared_indexes = MethodType(ArtifactStore._create_declared_indexes, host)
+    return host
 
 
 def test_table_exists_error_detection():
@@ -33,16 +41,29 @@ def test_table_exists_error_detection():
     assert not ArtifactStore._is_table_exists_error(Exception("permission denied for schema public"))
 
 
+def _guard_table(**kwargs):
+    """A Mock table with the real `indexes` collection the guard now iterates.
+
+    `for idx in table.indexes` over a bare Mock raises TypeError, which is not what these
+    tests are about; the declared indexes are covered by the artifact-store tests.
+    """
+    table = Mock()
+    table.indexes = ()
+    for key, value in kwargs.items():
+        setattr(table, key, value)
+    return table
+
+
 def test_race_guard_concurrent_create_is_success():
     host = _guard_host()
-    table = Mock()
+    table = _guard_table()
     table.create.side_effect = Exception('relation "stats_x" already exists')
     assert ArtifactStore._create_table_with_race_guard(host, table, Mock(), "stats_x") is True
 
 
 def test_race_guard_real_failure_disables():
     host = _guard_host()
-    table = Mock()
+    table = _guard_table()
     table.create.side_effect = Exception("permission denied")
     assert ArtifactStore._create_table_with_race_guard(host, table, Mock(), "t") is False
     host.logger.warning.assert_called()
@@ -50,7 +71,7 @@ def test_race_guard_real_failure_disables():
 
 def test_race_guard_clean_create_succeeds():
     host = _guard_host()
-    table = Mock()
+    table = _guard_table()
     assert ArtifactStore._create_table_with_race_guard(host, table, Mock(), "t") is True
     table.create.assert_called_once()
 
@@ -62,7 +83,7 @@ def test_race_guard_heals_index_conflict_before_exists_shortcircuit():
     heal_calls = []
     host = _guard_host()
     host._maybe_heal_index_conflict = lambda *a, **k: heal_calls.append(1) or True
-    table = Mock()
+    table = _guard_table()
     table.create.side_effect = [Exception('index "ix_response_items_chat_id" already exists'), None]
     assert ArtifactStore._create_table_with_race_guard(host, table, Mock(), "t") is True
     assert heal_calls == [1]
@@ -71,7 +92,7 @@ def test_race_guard_heals_index_conflict_before_exists_shortcircuit():
 
 def test_race_guard_heal_then_concurrent_create_is_success():
     host = _guard_host(heal=True)
-    table = Mock()
+    table = _guard_table()
     table.create.side_effect = [
         Exception('index "ix_t_chat_id" already exists'),
         Exception('relation "t" already exists'),

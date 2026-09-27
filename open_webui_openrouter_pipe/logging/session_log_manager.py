@@ -24,6 +24,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from sqlalchemy import case, func
+
 from ..core.timing_logger import timed
 from ..core.warn_latch import warn_level
 from ..storage.persistence import _db_session
@@ -193,7 +195,7 @@ class SessionLogManager:
         self._cleanup_interval_seconds = self.valves.SESSION_LOG_CLEANUP_INTERVAL_SECONDS
         self._retention_days = self.valves.SESSION_LOG_RETENTION_DAYS
         self._dirs: set[str] = set()
-        self._warning_emitted = False
+        self._warned: set[str] = set()
         self._unreadable_archive_warnings: dict[str, float] = {}
         self._unreadable_archive_attempts: dict[str, int] = {}
         self._stale_filter_warnings: dict[str, float] = {}
@@ -256,8 +258,24 @@ class SessionLogManager:
 
     @warning_emitted.setter
     def warning_emitted(self, value: bool) -> None:
-        """Set the warning emitted flag."""
-        self._warning_emitted = value
+        if not value:
+            self._warned.clear()
+
+    def _warn_once(self, cause: str, message: str) -> None:
+        with self._lock:
+            self.logger.log(warn_level(self._warned, cause), message)
+
+    @property
+    def _warning_emitted(self) -> bool:
+        return bool(self._warned)
+
+    @_warning_emitted.setter
+    def _warning_emitted(self, value: bool) -> None:
+        if not value:
+            if getattr(self, "_warned", None) is None:
+                self._warned = set()
+            else:
+                self._warned.clear()
 
     # =========================================================================
     # Worker Thread Management
@@ -441,30 +459,27 @@ class SessionLogManager:
         if not valves.SESSION_LOG_STORE_ENABLED:
             return None
         if pyzipper is None:
-            if not self._warning_emitted:
-                self.logger.warning(
-                    "Session log storage is enabled but the 'pyzipper' package is not available; skipping persistence."
-                )
-                self._warning_emitted = True
+            self._warn_once(
+                "pyzipper",
+                "Session log storage is enabled but the 'pyzipper' package is not available; skipping persistence.",
+            )
             return None
 
         base_dir = valves.SESSION_LOG_DIR
         if not base_dir:
-            if not self._warning_emitted:
-                self.logger.warning(
-                    "Session log storage is enabled but SESSION_LOG_DIR is empty; skipping persistence."
-                )
-                self._warning_emitted = True
+            self._warn_once(
+                "dir",
+                "Session log storage is enabled but SESSION_LOG_DIR is empty; skipping persistence.",
+            )
             return None
 
         decrypted = EncryptedStr.decrypt(valves.SESSION_LOG_ZIP_PASSWORD)
         password = (decrypted or "").strip()
         if not password:
-            if not self._warning_emitted:
-                self.logger.warning(
-                    "Session log storage is enabled but SESSION_LOG_ZIP_PASSWORD is not configured; skipping persistence."
-                )
-                self._warning_emitted = True
+            self._warn_once(
+                "password",
+                "Session log storage is enabled but SESSION_LOG_ZIP_PASSWORD is not configured; skipping persistence.",
+            )
             return None
 
         zip_compression = valves.SESSION_LOG_ZIP_COMPRESSION
@@ -510,24 +525,27 @@ class SessionLogManager:
         if not log_events:
             return
         if pyzipper is None:
-            if not self._warning_emitted:
-                self.logger.warning("Session log storage is enabled but the 'pyzipper' package is not available; skipping persistence.")
-                self._warning_emitted = True
+            self._warn_once(
+                "pyzipper",
+                "Session log storage is enabled but the 'pyzipper' package is not available; skipping persistence.",
+            )
             return
 
         base_dir = valves.SESSION_LOG_DIR
         if not base_dir:
-            if not self._warning_emitted:
-                self.logger.warning("Session log storage is enabled but SESSION_LOG_DIR is empty; skipping persistence.")
-                self._warning_emitted = True
+            self._warn_once(
+                "dir",
+                "Session log storage is enabled but SESSION_LOG_DIR is empty; skipping persistence.",
+            )
             return
 
         decrypted = EncryptedStr.decrypt(valves.SESSION_LOG_ZIP_PASSWORD)
         password = (decrypted or "").strip()
         if not password:
-            if not self._warning_emitted:
-                self.logger.warning("Session log storage is enabled but SESSION_LOG_ZIP_PASSWORD is not configured; skipping persistence.")
-                self._warning_emitted = True
+            self._warn_once(
+                "password",
+                "Session log storage is enabled but SESSION_LOG_ZIP_PASSWORD is not configured; skipping persistence.",
+            )
             return
 
         zip_compression = valves.SESSION_LOG_ZIP_COMPRESSION
@@ -805,21 +823,16 @@ class SessionLogManager:
                 rows = (
                     session.query(model.chat_id, model.message_id)  # type: ignore[attr-defined]
                     .filter(model.item_type == "session_log_segment_terminal")  # type: ignore[attr-defined]
-                    .order_by(model.created_at.asc())  # type: ignore[attr-defined]
+                    .group_by(model.chat_id, model.message_id)  # type: ignore[attr-defined]
+                    .order_by(func.min(model.created_at).asc())  # type: ignore[attr-defined]
                     .limit(int(limit))
                     .all()
                 )
-                seen: set[tuple[str, str]] = set()
-                out: list[tuple[str, str]] = []
-                for chat_id, message_id in rows:
-                    if not (isinstance(chat_id, str) and isinstance(message_id, str)):
-                        continue
-                    key = (chat_id, message_id)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    out.append(key)
-                return out
+                return [
+                    (chat_id, message_id)
+                    for chat_id, message_id in rows
+                    if isinstance(chat_id, str) and isinstance(message_id, str)
+                ]
         except Exception as exc:
             self.logger.debug("Terminal message listing skipped — %s: %s", type(exc).__name__, exc, exc_info=True)
             return []
@@ -837,65 +850,28 @@ class SessionLogManager:
         try:
             with _db_session(session_factory) as session:
                 # Candidates (best effort): any message that has at least one segment.
-                candidates = (
+                terminal_count = func.sum(
+                    case((model.item_type == "session_log_segment_terminal", 1), else_=0)  # type: ignore[attr-defined]
+                )
+                rows = (
                     session.query(model.chat_id, model.message_id)  # type: ignore[attr-defined]
-                    .filter(model.item_type == "session_log_segment")  # type: ignore[attr-defined]
-                    .distinct()
-                    .limit(int(limit) * 5)
+                    .filter(model.item_type.in_(["session_log_segment", "session_log_segment_terminal"]))  # type: ignore[attr-defined]
+                    .group_by(model.chat_id, model.message_id)  # type: ignore[attr-defined]
+                    .having(func.max(model.created_at) < cutoff)  # type: ignore[attr-defined]
+                    .having(terminal_count == 0)  # type: ignore[attr-defined]
+                    .order_by(func.max(model.created_at).asc())  # type: ignore[attr-defined]
+                    .limit(int(limit))
                     .all()
                 )
+                out = [
+                    (chat_id, message_id)
+                    for chat_id, message_id in rows
+                    if isinstance(chat_id, str) and isinstance(message_id, str)
+                ]
+                return out
         except Exception as exc:
             self.logger.debug("Stale message listing skipped — %s: %s", type(exc).__name__, exc, exc_info=True)
             return []
-
-        out: list[tuple[str, str]] = []
-        if not candidates:
-            return out
-
-        # Filter: no terminal segment, and last activity < cutoff.
-        try:
-            with _db_session(session_factory) as session:
-                for chat_id, message_id in candidates:
-                    if not (isinstance(chat_id, str) and isinstance(message_id, str)):
-                        continue
-                    exists_terminal = (
-                        session.query(model.id)  # type: ignore[attr-defined]
-                        .filter(model.chat_id == chat_id)  # type: ignore[attr-defined]
-                        .filter(model.message_id == message_id)  # type: ignore[attr-defined]
-                        .filter(model.item_type == "session_log_segment_terminal")  # type: ignore[attr-defined]
-                        .first()
-                    )
-                    if exists_terminal is not None:
-                        continue
-                    last_row = (
-                        session.query(model.created_at)  # type: ignore[attr-defined]
-                        .filter(model.chat_id == chat_id)  # type: ignore[attr-defined]
-                        .filter(model.message_id == message_id)  # type: ignore[attr-defined]
-                        .filter(model.item_type.in_(["session_log_segment", "session_log_segment_terminal"]))  # type: ignore[attr-defined]
-                        .order_by(model.created_at.desc())  # type: ignore[attr-defined]
-                        .limit(1)
-                        .first()
-                    )
-                    last_created = last_row[0] if last_row else None
-                    if last_created is None or last_created >= cutoff:
-                        continue
-                    out.append((chat_id, message_id))
-                    if len(out) >= int(limit):
-                        break
-        except Exception as exc:
-            self.logger.log(
-                warn_level(
-                    self._stale_filter_warnings,
-                    f"stale_filter:{type(exc).__name__}",
-                    cooldown_s=3600.0,
-                ),
-                "Stale message filtering skipped — %s: %s",
-                type(exc).__name__,
-                exc,
-                exc_info=True,
-            )
-            return []
-        return out
 
     # =========================================================================
     # Archive Event Helpers

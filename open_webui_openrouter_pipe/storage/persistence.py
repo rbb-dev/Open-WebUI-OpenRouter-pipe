@@ -33,9 +33,9 @@ from typing import TYPE_CHECKING, Any
 
 # External dependencies
 from cryptography.fernet import Fernet, InvalidToken
-from sqlalchemy import JSON, Boolean, Column, DateTime, Engine, String, text
+from sqlalchemy import JSON, Boolean, Column, DateTime, Engine, Index, String, text
 from sqlalchemy import inspect as sa_inspect
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IdentifierError, SQLAlchemyError
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 from tenacity import (
     AsyncRetrying,
@@ -125,6 +125,11 @@ def _sanitize_table_fragment(value: str) -> str:
     if len(fragment) > 62:
         fragment = fragment[:62].rstrip("_") or "pipe"
     return fragment
+
+
+def _assembler_index_name(table_name: str) -> str:
+    tail = table_name.rsplit("_", 1)[-1][:8]
+    return f"ix_{tail}_item_type_created"
 
 
 @contextlib.contextmanager
@@ -604,7 +609,14 @@ class ArtifactStore:
 
         attrs: dict[str, Any] = {
             "__tablename__": table_name,
-            "__table_args__": table_args,
+            "__table_args__": (
+                Index(
+                    _assembler_index_name(table_name),
+                    "item_type",
+                    "created_at",
+                ),
+                table_args,
+            ),
             "id": Column(String(ULID_LENGTH), primary_key=True),
             "chat_id": Column(String(64), index=True, nullable=False),
             "message_id": Column(String(64), index=True, nullable=False),
@@ -708,6 +720,15 @@ class ArtifactStore:
         checkfirst=True races between its existence probe and the CREATE, so a
         losing worker sees "already exists" — the goal state, not a failure.
         """
+        created = False
+        try:
+            created = self._create_table_best_effort(table, engine, table_name)
+        finally:
+            if created:
+                self._create_declared_indexes(table, engine, table_name)
+        return created
+
+    def _create_table_best_effort(self, table: Any, engine: Any, table_name: str) -> bool:
         try:
             table.create(bind=engine, checkfirst=True)
             return True
@@ -732,6 +753,25 @@ class ArtifactStore:
             self.logger.warning("Artifact persistence disabled (table init failed): %s", exc, exc_info=True)
             return False
 
+    def _create_declared_indexes(self, table: Any, engine: Any, table_name: str) -> None:
+        for index in sorted(getattr(table, "indexes", None) or (), key=lambda idx: str(idx.name)):
+            try:
+                index.create(bind=engine, checkfirst=True)
+            except Exception as exc:  # noqa: BLE001 - dialect errors vary; the assembler works without the index
+                log = (
+                    self.logger.warning
+                    if index.name == _assembler_index_name(table_name)
+                    else self.logger.debug
+                )
+                log(
+                    "Index %s on %s not created: %s: %s",
+                    index.name,
+                    table_name,
+                    type(exc).__name__,
+                    exc,
+                    exc_info=True,
+                )
+
     @timed
     def _maybe_heal_index_conflict(
         self,
@@ -747,6 +787,8 @@ class ArtifactStore:
         message = str(root_exc) or str(exc) or ""
         lowered = message.lower()
         if "ix_" not in lowered:
+            return False
+        if isinstance(root_exc, IdentifierError):
             return False
 
         raw_index_objects = [

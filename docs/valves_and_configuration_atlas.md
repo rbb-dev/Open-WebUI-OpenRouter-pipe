@@ -560,8 +560,8 @@ Notes:
 | `SESSION_LOG_FORMAT` | `Literal[\"jsonl\", \"text\", \"both\"]` | `jsonl` | Archive log file format. `logs.jsonl` is always written; `jsonl` writes only it, while `text` and `both` additionally write `logs.txt` (so `text` and `both` yield the same file set). `logs.txt` writes one record per physical line, except for a record's exception block. |
 | `SESSION_LOG_ASSEMBLER_INTERVAL_SECONDS` | `int` | `30` | How often each process scans the DB for completed/stale turns to assemble into zip archives. |
 | `SESSION_LOG_ASSEMBLER_JITTER_SECONDS` | `int` | `10` | Per-process jitter added to the assembler loop to avoid multi-worker lockstep. |
-| `SESSION_LOG_ASSEMBLER_BATCH_SIZE` | `int` | `25` | Max turns processed per assembler tick. |
-| `SESSION_LOG_STALE_FINALIZE_SECONDS` | `int` | `43200` | If no terminal segment arrives for a turn, assemble an incomplete archive after this timeout. |
+| `SESSION_LOG_ASSEMBLER_BATCH_SIZE` | `int` | `25` | Max turns processed per assembler tick — a cap on turns, not rows, so a heavily split turn still takes one slot. |
+| `SESSION_LOG_STALE_FINALIZE_SECONDS` | `int` | `43200` | If no terminal segment arrives for a turn, assemble an incomplete archive after this timeout. A cutoff on the last segment, not on the turn: a turn **still running** when it passes is sealed as incomplete too, and a segment it stages afterwards is left stranded until the next assembly. That exposure is why the default is long. Each pass takes the oldest stranded bundles first and seals a bundle only if the sealed write succeeds, keeping the segments for a retry otherwise. |
 | `SESSION_LOG_LOCK_STALE_SECONDS` | `int` | `1800` | DB lock row stale timeout (multi-worker safety). |
 | `ENABLE_TIMING_LOG` | `bool` | `False` | When True, capture function entrance/exit timing data. Writes to `TIMING_LOG_FILE` directly (not session archives). See [Session Log Storage](session_log_storage.md#timing-instrumentation). |
 | `TIMING_LOG_FILE` | `str` | `logs/timing.jsonl` | File path for timing log output when `ENABLE_TIMING_LOG` is True. Parent directories are created automatically. |

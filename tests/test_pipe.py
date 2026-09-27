@@ -25,7 +25,7 @@ from unittest.mock import MagicMock, Mock, patch, AsyncMock
 import pytest
 from aioresponses import aioresponses
 
-from sqlalchemy import Table, Column, String, Boolean, DateTime, MetaData
+from sqlalchemy import Table, Column, String, Boolean, DateTime, Index, MetaData, case, func
 
 from open_webui_openrouter_pipe import (
     EncryptedStr,
@@ -38,7 +38,11 @@ from open_webui_openrouter_pipe import (
 from open_webui_openrouter_pipe.filters import FilterManager
 from open_webui_openrouter_pipe.requests.task_model_adapter import TaskModelAdapter
 from open_webui_openrouter_pipe.api.gateway.chat_completions_adapter import ChatCompletionsAdapter
-from open_webui_openrouter_pipe.storage.persistence import ArtifactStore
+from open_webui_openrouter_pipe.storage.persistence import (
+    ArtifactStore,
+    _assembler_index_name,
+    _sanitize_table_fragment,
+)
 from open_webui_openrouter_pipe.core.errors import OpenRouterAPIError
 from open_webui_openrouter_pipe.requests.transformer import transform_messages_to_input
 from open_webui_openrouter_pipe.integrations.anthropic import _is_anthropic_model_id
@@ -5840,6 +5844,18 @@ from open_webui_openrouter_pipe.storage.persistence import generate_item_id
 class _Field:
     def __init__(self, name: str) -> None:
         self.name = name
+        self.column: Any = None
+
+    def __clause_element__(self):
+        """Let the production code hand this field straight to ``sqlalchemy.func``.
+
+        The stale and terminal passes order by ``func.min(model.created_at).asc()``.
+        Without this, SQLAlchemy treats the field as an anonymous literal and renders
+        ``min(:min_1)``, so the fake's introspecting ``order_by`` reads a label that
+        names no column and the ordering silently disappears -- which is exactly the
+        no-op the harness change exists to remove.
+        """
+        return self.column if self.column is not None else self.name
 
     def __eq__(self, other):  # type: ignore[override]
         return ("eq", self.name, other)
@@ -5903,22 +5919,63 @@ class _FakeModel:
         for key, value in kwargs.items():
             setattr(self, key, value)
 
+for _attr in list(vars(_FakeModel).values()):
+    if isinstance(_attr, _Field) and _attr.name in _fake_table.c:
+        _attr.column = _fake_table.c[_attr.name]
+
 
 class _FakeQuery:
     def __init__(self, rows: list[_FakeModel], select_fields: list[_Field] | None = None) -> None:
         self._rows = rows
         self._filters: list[tuple[str, str, Any]] = []
         self._order: tuple[str, str] | None = None
+        self._order_agg: str | None = None
         self._limit: int | None = None
         self._select_fields = select_fields
+        self._group_by: list[str] = []
 
     def filter(self, condition):
         self._filters.append(condition)
         return self
 
+    def group_by(self, *columns):
+        """Collapse rows to one per group **before** the limit, as SQL does.
+
+        The reduce runs first and the sort then runs over the grouped representatives,
+        sorted by that group's aggregate for the ordered column -- which is the order
+        `func.min(created_at).asc()` means. Doing the sort first instead is a different
+        answer for a group whose first row is newer than its minimum, so the sequence is
+        pinned here rather than left for the next reader to re-derive.
+        """
+        for column in columns:
+            if isinstance(column, _Field):
+                self._group_by.append(column.name)
+            else:
+                name, _agg = _grouped_aggregate_spec(column)
+                if name is not None and name not in self._group_by:
+                    self._group_by.append(name)
+        return self
+
+    def having(self, *conditions):
+        """Accepted and ignored.
+
+        The stale pass calls `.having(...)`, so without this the fake raises
+        `AttributeError` -- which the production `except Exception` around the query
+        swallows into an empty list, so the test goes green through a second route. The
+        semantics of the clauses are pinned by the real-engine tests only; the fake is
+        not used to assert them.
+        """
+        return self
+
     def order_by(self, order):
         if isinstance(order, tuple):
             self._order = (order[0], order[1])
+            self._order_agg = None
+        else:
+            spec = _unary_order_spec(order)
+            if spec is not None:
+                self._order = (spec[0], spec[1])
+                self._order_agg = spec[2]
         return self
 
     def limit(self, limit: int):
@@ -5936,18 +5993,52 @@ class _FakeQuery:
         if op == "in":
             return current in value
         if op == "lt":
-            return current < value
+            return _as_naive_utc(current) < _as_naive_utc(value)
         return False
 
     def _apply(self) -> list[_FakeModel]:
         results = [row for row in self._rows if all(self._match(row, cond) for cond in self._filters)]
+        if self._group_by:
+            results = self._reduce_groups(results)
         if self._order:
             direction, name = self._order
             reverse = direction == "desc"
-            results.sort(key=lambda row: cast(Any, getattr(row, name, None)), reverse=reverse)
+            agg = self._order_agg
+            if agg == "min":
+                results.sort(key=lambda row: _group_min(row, name), reverse=reverse)
+            elif agg == "max":
+                results.sort(key=lambda row: _group_max(row, name), reverse=reverse)
+            else:
+                results.sort(key=lambda row: cast(Any, _as_naive_utc(getattr(row, name, None))), reverse=reverse)
         if self._limit is not None:
             results = results[: self._limit]
         return results
+
+    def _reduce_groups(self, results: list[_FakeModel]) -> list[_FakeModel]:
+        """One representative row per group, chosen as the group's aggregate row.
+
+        The representative is the row holding the group's `min` (or `max`) for the
+        ordered column, so `_apply`'s sort and the projected values agree with what
+        `GROUP BY ... ORDER BY min(col)` returns on a real engine.
+        """
+        if not self._group_by:
+            return results
+        groups: dict[tuple[Any, ...], list[_FakeModel]] = {}
+        for row in results:
+            key = tuple(getattr(row, name, None) for name in self._group_by)
+            groups.setdefault(key, []).append(row)
+        out: list[_FakeModel] = []
+        for members in groups.values():
+            ordered_name = self._order[1] if self._order else None
+            agg = self._order_agg if ordered_name else None
+            if agg == "min" and ordered_name:
+                out.append(min(members, key=lambda row: _as_naive_utc(getattr(row, ordered_name, None))))
+            elif agg == "max" and ordered_name:
+                out.append(max(members, key=lambda row: _as_naive_utc(getattr(row, ordered_name, None))))
+            else:
+                out.append(members[0])
+            setattr(out[-1], "__fake_group__", members)
+        return out
 
     def all(self):
         rows = self._apply()
@@ -6198,19 +6289,21 @@ def test_assemble_and_write_session_log_bundle_writes_zip(pipe_instance, monkeyp
 
 
 def test_run_session_log_assembler_once_handles_terminal_and_stale(pipe_instance, tmp_path):
-    """Terminal turns assemble now; idle stale turns are sealed on the stale valve.
+    """Exercises the fake harness's `group_by`/`order_by`/`having` plumbing, nothing more.
 
-    The fake stores tz-aware `created_at`; the real SQLite column (`Column(DateTime)`,
-    persistence.py:616-619) reads back naive on every backend. Today that symmetry
-    makes the stale row comparable and the test green; the naive-UTC fix breaks the
-    symmetry, so the test must be migrated to a real sqlite model.
+    The fake's `having` is deliberately a no-op -- a fake that agreed with a wrong
+    implementation would be worse than one that asserts nothing -- so this arm cannot
+    fail for a `HAVING` reason. The `HAVING` *semantics* are pinned only by
+    `test_stale_excludes_bundle_with_terminal` and
+    `test_stale_excludes_bundle_with_recent_newest_segment`, on a real engine. What this
+    does cover is that a tick reaches both listings, assembles each bundle, and deletes
+    what it consumed.
 
-    The rows below are inserted through the ORM directly with tz-aware values --
-    SQLite normalises them to naive on the way in, which is what makes this test
-    real. Do not "simplify" them back through `_db_persist_sync`: it hardcodes
-    `created_at=now` and ignores any caller-supplied value, so the stale row would
-    land at `now`, the stale list would be empty either way, and the test would pass
-    vacuously on the broken code.
+    The rows below are inserted through the ORM directly at explicit ages -- SQLite
+    normalises them to naive on the way in, which is what makes this test real. Do not
+    "simplify" them back through `_db_persist_sync`: it hardcodes `created_at=now` and
+    ignores any caller-supplied value, so the stale row would land at `now`, the stale
+    list would be empty either way, and the test would pass vacuously on the broken code.
     """
     pipe = pipe_instance
     _install_real_session_log_store(pipe, tmp_path)
@@ -6227,6 +6320,10 @@ def test_run_session_log_assembler_once_handles_terminal_and_stale(pipe_instance
         terminal_id = generate_item_id()
         stale_id = generate_item_id()
         lock_id = generate_item_id()
+        # Seeded naive, the way the real artifact column stores it. The fake used to hold
+        # the aware value verbatim, which is why the stale pass's aware-vs-naive compare
+        # never raised here and the defect stayed invisible to every existing test.
+        now_naive = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
         session.add_all([
             model(
                 id=terminal_id,
@@ -6236,7 +6333,7 @@ def test_run_session_log_assembler_once_handles_terminal_and_stale(pipe_instance
                 item_type="session_log_segment_terminal",
                 payload={"type": "session_log_segment_terminal", "events": []},
                 is_encrypted=False,
-                created_at=datetime.datetime.now(datetime.UTC),
+                created_at=now_naive,
             ),
             model(
                 id=stale_id,
@@ -6246,7 +6343,7 @@ def test_run_session_log_assembler_once_handles_terminal_and_stale(pipe_instance
                 item_type="session_log_segment",
                 payload={"type": "session_log_segment", "events": []},
                 is_encrypted=False,
-                created_at=datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=2),
+                created_at=now_naive - datetime.timedelta(days=2),
             ),
             model(
                 id=lock_id,
@@ -6256,7 +6353,7 @@ def test_run_session_log_assembler_once_handles_terminal_and_stale(pipe_instance
                 item_type="session_log_lock",
                 payload={"type": "session_log_lock"},
                 is_encrypted=False,
-                created_at=datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=2),
+                created_at=now_naive - datetime.timedelta(days=2),
             ),
         ])
         session.commit()
@@ -8194,25 +8291,40 @@ class TestAcquireToolGlobal:
 class TestSessionLogArchiveSettings:
     """Tests for session log archive settings resolution."""
 
-    def test_resolve_settings_pyzipper_not_available(self, caplog):
-        """Test that settings returns None when pyzipper is not available."""
+    def test_resolve_settings_pyzipper_not_available(self, tmp_path, monkeypatch):
+        """The pyzipper branch is the only reason for ``None``.
+
+        Two things had to be corrected for the branch to be reachable at all. The code
+        reads ``session_log_manager.pyzipper``, not ``pipe.pyzipper``, so patching
+        ``pipe_mod.pyzipper`` never disabled anything -- and with the dir and passphrase
+        left at their defaults the run returned ``None`` for the *password* reason, not
+        the pyzipper one, so the test passed without ever entering the branch it names.
+        """
         pipe = Pipe()
+        recorder = _WarningRecorder()
+        pipe.logger.addHandler(recorder)
+        pipe.logger.setLevel(logging.DEBUG)
+        pipe._session_log_manager.logger = pipe.logger
 
         try:
             pipe.valves.SESSION_LOG_STORE_ENABLED = True
+            pipe.valves.SESSION_LOG_DIR = str(tmp_path)
+            pipe.valves.SESSION_LOG_ZIP_PASSWORD = EncryptedStr("pass")
             pipe._session_log_manager._warning_emitted = False
 
-            import open_webui_openrouter_pipe.pipe as pipe_mod
-            original_pyzipper = pipe_mod.pyzipper
-            pipe_mod.pyzipper = None
+            import open_webui_openrouter_pipe.logging.session_log_manager as slm_mod
 
-            try:
-                with caplog.at_level(logging.WARNING):
-                    result = pipe._session_log_manager.resolve_archive_settings(pipe.valves)
+            monkeypatch.setattr(slm_mod, "pyzipper", None)
 
-                assert result is None
-            finally:
-                pipe_mod.pyzipper = original_pyzipper
+            result = pipe._session_log_manager.resolve_archive_settings(pipe.valves)
+
+            assert result is None
+            # Asserted on the branch's own message rather than on _warning_emitted: the
+            # compat property is a summary of a per-cause set, and pinning the message is
+            # what says the *pyzipper* branch fired.
+            warnings = recorder.messages(logging.WARNING)
+            assert len(warnings) == 1, f"expected the pyzipper warning, got {warnings}"
+            assert "pyzipper" in warnings[0]
         finally:
             pipe.shutdown()
 
@@ -10280,3 +10392,104 @@ def test_fallback_tool_text_passthrough_and_none():
     assert _fallback_tool_text("plain") == "plain"
     assert _fallback_tool_text(None) == ""
     assert _fallback_tool_text(123) == "123"
+
+
+def _as_naive_utc(value: Any) -> Any:
+    """Normalise a datetime the way a real engine's bind processor does.
+
+    The fake compares in Python where the real query is compared by the database, and a
+    real comparison never raises on mixed awareness: the driver normalises the bind
+    before the DB sees it. The fake has to do the same, or every query whose cutoff is
+    tz-aware fails on a row the column stores naive -- which is exactly how the stale
+    pass stayed dead while the fake reported it green.
+    """
+    if isinstance(value, datetime.datetime) and value.tzinfo is not None:
+        return value.astimezone(datetime.UTC).replace(tzinfo=None)
+    return value
+
+
+def _grouped_aggregate_spec(expression: Any) -> tuple[str | None, str | None]:
+    """Read `(column_name, "min"|"max")` out of a `func.min(...)`/`func.max(...)`.
+
+    SQLAlchemy exposes the function name on the element (`min`/`max`) but the inner
+    column only as an anonymous label, so the rendered form is what carries the column
+    name: `min(response_items.created_at)`.
+    """
+    text = str(expression)
+    aggregate: str | None = None
+    if "max(" in text:
+        aggregate = "max"
+    elif "min(" in text:
+        aggregate = "min"
+    if aggregate is None:
+        return (None, None)
+    inner = text[text.index("(") + 1 : text.rindex(")")]
+    inner = inner.strip()
+    if inner.startswith(":"):
+        return (None, aggregate)
+    name = inner.split(".")[-1].strip()
+    return (name or None, aggregate)
+
+
+def _unary_order_spec(order: Any) -> tuple[str, str, str | None] | None:
+    """Read `(direction, column)` out of a SQLAlchemy ordering expression.
+
+    The production code orders grouped rows with ``func.min(model.created_at).asc()``,
+    which is a `UnaryExpression` over a function call -- not a tuple. The fake used to
+    record a tuple or nothing, so it applied *no ordering at all* to that expression and
+    any oldest-first assertion against it was really asserting insertion order. The
+    expression is introspected here instead; there is no `func` shim to add, because
+    `func` is a module global in the module under test and a `_FakeModel.func` attribute
+    would be a name in a namespace nothing consults.
+    """
+    name, aggregate = _grouped_aggregate_spec(order)
+    if name is None:
+        return None
+    text = str(order).rstrip().upper()
+    direction = "desc" if text.endswith("DESC") else "asc"
+    return (direction, name, aggregate)  # type: ignore[return-value]
+
+
+def _group_members(row: _FakeModel) -> list[_FakeModel]:
+    return list(getattr(row, "__fake_group__", None) or [row])
+
+
+def _group_min(row: _FakeModel, name: str) -> Any:
+    return min(_as_naive_utc(getattr(r, name, None)) for r in _group_members(row))
+
+
+def _group_max(row: _FakeModel, name: str) -> Any:
+    return max(_as_naive_utc(getattr(r, name, None)) for r in _group_members(row))
+
+
+class _WarningRecorder(logging.Handler):
+    """Collects the records a manager's own logger emits.
+
+    caplog cannot see them: the manager takes its logger from the caller and
+    `core/logging_system.py` sets `propagate = False` on it, so a record emitted here
+    never reaches the root handlers caplog installs. A run that captures zero warnings
+    is a harness failure, not a pass, so every test below also asserts the recorder saw
+    something it expected.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.DEBUG)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+    def messages(self, level: int) -> list[str]:
+        return [r.getMessage() for r in self.records if r.levelno == level]
+
+
+def _enqueue(manager, valve_obj, chat_id="c", message_id="m"):
+    manager.enqueue_archive(
+        valve_obj,
+        user_id="u",
+        session_id="s",
+        chat_id=chat_id,
+        message_id=message_id,
+        request_id="r",
+        log_events=[{"created": 1.0, "message": "hi"}],
+    )
