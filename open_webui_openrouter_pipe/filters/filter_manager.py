@@ -80,9 +80,49 @@ _PROVIDER_NAME_COLLAPSE_RE = re.compile(r"[ _]{2,}")
 
 _warned_stale_filter_rows: set[str] = set()
 
+_PIPE_OFF_META_KEY = "openrouter_pipe:switched_off_by_pipe"
+
+
+def _stored_meta(row: Any) -> dict[str, Any]:
+    stored = getattr(row, "meta", None)
+    dump = getattr(stored, "model_dump", None)
+    if callable(dump):
+        stored = dump()
+    return stored if isinstance(stored, dict) else {}
+
+
+def _switched_off_by_pipe(row: Any) -> bool:
+    return bool(_stored_meta(row).get(_PIPE_OFF_META_KEY))
+
+
+def _merged_meta(
+    row: Any,
+    desired_meta: dict[str, Any],
+    *,
+    off_by_pipe: bool | None = None,
+) -> dict[str, Any]:
+    merged = {**_stored_meta(row), **desired_meta}
+    if off_by_pipe is True:
+        merged[_PIPE_OFF_META_KEY] = True
+    elif off_by_pipe is False:
+        merged.pop(_PIPE_OFF_META_KEY, None)
+    return merged
+
+
+def _switch_on(row: Any) -> bool:
+    return bool(getattr(row, "is_active", False)) or _switched_off_by_pipe(row)
+
+
+def switched_off_meta(row: Any) -> dict[str, Any]:
+    return _merged_meta(row, {}, off_by_pipe=True)
+
 
 def _is_web_tools_filter(content: Any) -> bool:
-    return isinstance(content, str) and _OPENROUTER_WEB_TOOLS_FILTER_MARKER in content and "class Filter" in content
+    return (
+        isinstance(content, str)
+        and _OPENROUTER_WEB_TOOLS_FILTER_MARKER in content
+        and "class Filter" in content
+    )
 
 
 def _offered_web_tools(content: str) -> frozenset[str] | None:
@@ -103,14 +143,6 @@ def _offered_web_tools(content: str) -> frozenset[str] | None:
                         and stmt.target.id in toggles
                     )
     return None
-
-
-def _merged_meta(row: Any, desired_meta: dict[str, Any]) -> dict[str, Any]:
-    stored = getattr(row, "meta", None)
-    dump = getattr(stored, "model_dump", None)
-    if callable(dump):
-        stored = dump()
-    return {**stored, **desired_meta} if isinstance(stored, dict) else dict(desired_meta)
 
 _REPLACE_IMPORTS_REFUSAL = (
     "Open WebUI rewrites this source when it loads it and stores the result, so the pipe "
@@ -447,7 +479,7 @@ class FilterManager:
             created = await Functions.insert_new_function("", "filter", form)
             if not created:
                 return None
-            await Functions.update_function_by_id(candidate_id, {"is_active": True, "is_global": False, "name": desired_name, "meta": desired_meta})
+            await Functions.update_function_by_id(candidate_id, {"is_active": True, "is_global": False, "name": desired_name, "meta": FunctionMeta(**_merged_meta(created, desired_meta))})
             self.logger.info("Installed %s: %s", log_label, candidate_id)
             return candidate_id
 
@@ -457,6 +489,15 @@ class FilterManager:
 
         existing_content = (getattr(chosen, "content", "") or "").strip() + "\n"
         if getattr(self.valves, auto_install_valve, False):
+            switch_on = _switch_on(chosen)
+            if not switch_on:
+                self.logger.log(
+                    warn_level(_warned_stale_filter_rows, f"admin_off:{function_id}"),
+                    "%s %r is switched off in Open WebUI; the pipe keeps its code up to date "
+                    "and leaves it off. Switch it on in Workspace > Functions to get it back.",
+                    log_label,
+                    function_id,
+                )
             if existing_content != desired_source:
                 self.logger.info("Updating %s: %s", log_label, function_id)
                 await Functions.update_function_by_id(
@@ -464,9 +505,9 @@ class FilterManager:
                     {
                         "content": desired_source,
                         "name": desired_name,
-                        "meta": _merged_meta(chosen, desired_meta),
+                        "meta": _merged_meta(chosen, desired_meta, off_by_pipe=False),
                         "type": "filter",
-                        "is_active": True,
+                        "is_active": switch_on,
                         "is_global": False,
                     },
                 )
@@ -475,9 +516,9 @@ class FilterManager:
                     function_id,
                     {
                         "name": desired_name,
-                        "meta": _merged_meta(chosen, desired_meta),
+                        "meta": _merged_meta(chosen, desired_meta, off_by_pipe=False),
                         "type": "filter",
-                        "is_active": True,
+                        "is_active": switch_on,
                         "is_global": False,
                     },
                 )
@@ -1007,7 +1048,10 @@ class FilterManager:
             for row in rows:
                 if getattr(row, "is_active", False):
                     try:
-                        await Functions.update_function_by_id(row.id, {"is_active": False})
+                        await Functions.update_function_by_id(
+                            str(getattr(row, "id", "") or ""),
+                            {"is_active": False, "meta": switched_off_meta(row)},
+                        )
                         self.logger.info("Disabled OpenRouter Web Tools filter %r (all tools disabled)", row.id)
                     except Exception:
                         self.logger.debug("Disabling Web Tools filter %s failed", row.id, exc_info=True)
@@ -2698,21 +2742,36 @@ class Filter:
                 # Update existing filter
                 existing_id = getattr(existing, "id", "")
                 existing_content = (getattr(existing, "content", "") or "").strip() + "\n"
+                switch_on = _switch_on(existing)
+                if not switch_on:
+                    self.logger.log(
+                        warn_level(_warned_stale_filter_rows, f"admin_off:{existing_id}"),
+                        "Provider routing filter %r is switched off in Open WebUI; the pipe "
+                        "keeps its code up to date and leaves it off. Switch it on in "
+                        "Workspace > Functions to get it back.",
+                        existing_id,
+                    )
                 if existing_content != desired_source:
                     await Functions.update_function_by_id(
                         existing_id,
                         {
                             "content": desired_source,
                             "name": desired_name,
-                            "meta": _merged_meta(existing, desired_meta),
-                            "is_active": True,
+                            "meta": _merged_meta(existing, desired_meta, off_by_pipe=False),
+                            "is_active": switch_on,
                         },
                     )
                     updated += 1
                     self.logger.info("Updated provider routing filter: %s", existing_id)
                 else:
                     # Just ensure it's active
-                    await Functions.update_function_by_id(existing_id, {"is_active": True})
+                    await Functions.update_function_by_id(
+                        existing_id,
+                        {
+                            "is_active": switch_on,
+                            "meta": _merged_meta(existing, {}, off_by_pipe=False),
+                        },
+                    )
                 # Track for attachment
                 if existing_id:
                     slug_to_filter_id[slug] = existing_id
@@ -2740,7 +2799,10 @@ class Filter:
                     )
                     created_func = await Functions.insert_new_function("", "filter", form)
                     if created_func:
-                        await Functions.update_function_by_id(candidate_id, {"is_active": True, "is_global": False})
+                        await Functions.update_function_by_id(
+                            candidate_id,
+                            {"is_active": True, "is_global": False, "meta": FunctionMeta(**_merged_meta(created_func, desired_meta))},
+                        )
                         created += 1
                         self.logger.info("Created provider routing filter: %s", candidate_id)
                         # Track for attachment
@@ -2750,7 +2812,9 @@ class Filter:
         for orphan in orphan_filters:
             orphan_id = getattr(orphan, "id", "")
             if orphan_id:
-                await Functions.update_function_by_id(orphan_id, {"is_active": False})
+                await Functions.update_function_by_id(
+                    orphan_id, {"is_active": False, "meta": switched_off_meta(orphan)}
+                )
                 disabled += 1
                 self.logger.warning("Disabled duplicate provider routing filter: %s", orphan_id)
 
@@ -2758,7 +2822,9 @@ class Filter:
             if slug in undeliverable or slug not in all_models:
                 existing_id = getattr(existing, "id", "")
                 if existing_id:
-                    await Functions.update_function_by_id(existing_id, {"is_active": False})
+                    await Functions.update_function_by_id(
+                        existing_id, {"is_active": False, "meta": switched_off_meta(existing)}
+                    )
                     disabled += 1
                     self.logger.info("Disabled provider routing filter: %s", existing_id)
 

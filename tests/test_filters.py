@@ -17,6 +17,9 @@ from pydantic import BaseModel
 
 from open_webui_openrouter_pipe import Pipe
 from open_webui_openrouter_pipe.filters import FilterManager
+from open_webui_openrouter_pipe.filters.filter_manager import (
+    _PIPE_OFF_META_KEY,
+)
 from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
 
 

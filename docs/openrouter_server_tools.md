@@ -59,7 +59,7 @@ These valves on the pipe control which server tools are available and how the co
 
 ### Tool gate valves
 
-Each tool has an enable gate. When a gate is disabled, the corresponding tool's user valves are excluded from the generated filter source entirely (users cannot see or enable the tool). The gate is also re-checked on every request: while it is off, the pipe never sends that tool, whether a filter writes it, the request itself lists it, or an internal-Fusion member re-runs a filter inlet. Every Web Tools filter still offering a switched-off tool is rewritten without it (see below).
+Each tool has an enable gate. When a gate is disabled, the corresponding tool's user valves are excluded from the generated filter source entirely (users cannot see or enable the tool). The gate is also re-checked on every request: while it is off, the pipe never sends that tool, whether a filter writes it, the request itself lists it, or an internal-Fusion member re-runs a filter inlet. Every Web Tools filter still offering a switched-off tool is rewritten without it, whatever its id (see below).
 
 | Valve | Type | Default | Purpose |
 | --- | --- | --- | --- |
@@ -77,7 +77,7 @@ These control auto-installation, auto-attachment, and default-on behavior for th
 
 | Valve | Type | Default | Purpose |
 | --- | --- | --- | --- |
-| `AUTO_INSTALL_WEB_TOOLS_FILTER` | `bool` | `True` | Automatically install/update the OpenRouter Web Tools filter function in Open WebUI. When off, the pipe neither installs nor updates it, except that a web tool switched off on the pipe is taken out of every Web Tools filter: that filter's code is replaced with the pipe's current version for the tools it still offers (hand edits in it are lost), and a warning is logged. Switching the tool back on does not add it back. |
+| `AUTO_INSTALL_WEB_TOOLS_FILTER` | `bool` | `True` | Automatically install/update the OpenRouter Web Tools filter function in Open WebUI. When off, the pipe neither installs nor updates it, except that a web tool switched off on the pipe is taken out of every Web Tools filter: that filter's code is replaced with the pipe's current version for the tools it still offers (hand edits in it are lost), and a warning is logged. Switching the tool back on does not add it back. | With every web tool off, every Web Tools filter is switched off, and one you switch off yourself there stays off until you switch it on again.
 | `AUTO_ATTACH_WEB_TOOLS_FILTER` | `bool` | `True` | Automatically attach the OpenRouter Web Tools per-chat switch to every pipe model that is not an image-output, a video-generation or a Fusion model (so the toggle appears in the Integrations menu). |
 | `AUTO_DEFAULT_WEB_TOOLS_FILTER` | `bool` | `False` | When enabled, marks the OpenRouter Web Tools filter as a Default Filter on models (pre-enabled per chat; users can still turn it off). |
 | `AUTO_INSTALL_IMAGE_GEN_FILTER` | `bool` | `True` | Automatically install/update the OpenRouter Image Generation filter function in Open WebUI. |
@@ -220,7 +220,7 @@ Each filter's `inlet` method:
 2. Reads admin valves for engine/limit configuration.
 3. Builds a `server_tools` dict mapping tool names to their parameters.
 4. Writes the dict into `__metadata__["openrouter_pipe"]["server_tools"]`.
-5. (Web Tools filter only) When web search is enabled, suppresses Open WebUI's native web search by setting `body["features"]["web_search"] = False` to prevent double-searching. When an admin switches web search off, the pipe rewrites the filter without it, so this suppression stops.
+5. (Web Tools filter only) When web search is enabled, suppresses Open WebUI's native web search by setting `body["features"]["web_search"] = False` to prevent double-searching, so the suppression follows the live switches rather than the ones captured when the chat started.
 
 The Image Generation filter merges into any existing `server_tools` dict (so both filters can run on the same request without overwriting each other).
 
@@ -256,6 +256,18 @@ second case, because it has no equivalent of a rejected candidate to count.
 Both paths reach the emitter, including a non-streamed reply: the non-streamed loop
 delegates to the streaming one, and the same warning and the same clear are sent.
 
+### When a web tool is switched off
+
+Switching a web tool off affects **every** Web Tools filter, whatever its id, and whether auto-install is on or off:
+
+- While at least one web tool is still on, every Web Tools filter still offering a switched-off tool is rewritten without it, so its Integrations toggle disappears at the next model-list refresh, or after the first message that still asks for it. Until then that chat gets neither search nor fetch.
+- With **every** web tool off, every Web Tools filter is switched off. Nothing is added back. A filter you switch off yourself in Open WebUI's Functions list stays off: the pipe keeps its code up to date but never switches it back on. One this version switched off itself comes back on its own when you enable the feature again.
+- Where several copies exist, the pipe maintains and attaches the one with the id `openrouter_web_tools`, or the most recently updated copy if none has that id. Turning a web tool back on revives **the copy the pipe maintains** and leaves the others switched off until an admin switches them on in the Functions list.
+- If the row you need was one **you** switched off, the pipe will not bring it back; switch it on there.
+- **Upgrading:** a filter that was already off before this version stays off. The pipe only re-arms a filter it switched off itself, and it records that in the filter's own meta, so a row that was already off when you upgraded carries no such record. Switch it on in Workspace > Functions if you want it.
+
+The same rule holds for every other filter the pipe installs (Fusion, image generation, the per-model panels, Direct Uploads, provider routing).
+
 ### Pipe side (orchestrator)
 
 The pipe's request orchestrator:
@@ -263,7 +275,7 @@ The pipe's request orchestrator:
 1. Reads `__metadata__["openrouter_pipe"]["server_tools"]`.
 2. For each tool in the dict, builds a tool spec (`{"type": "<tool_name>", ...params}`) and appends it to the `tools` array in the outgoing API request body, leaving out every tool whose `ENABLE_*` gate is off, whether a filter writes it or the request lists it. For the image tool, the `size` it puts in that spec is measured against the selected model's published contract, and a tier the model does not publish is withheld and named in a toast.
 3. The tools array is sent alongside any Open WebUI registry tools or Direct Tool Server tools.
-4. When the metadata asks for a web tool whose gate is off, it schedules a background repair of the Web Tools filters (at most once every five minutes per worker). The request never waits for it.
+4. If the chat asked for a web tool whose gate is now off, it schedules a background repair of the Web Tools filters, so the filter stops offering a switched-off tool without waiting for the next model-list refresh. The repair runs at most once every five minutes, and a repair that failed does not consume that window, so a transient error is retried on the next request rather than waiting one out.
 
 ---
 
@@ -317,6 +329,17 @@ nothing. The pipe repairs the rows:
   after it.
 - **With several copies:** the pipe maintains and attaches `openrouter_web_tools` whenever a row with that id exists, and
   otherwise the copy the pipe most recently rewrote.
+- **Turning a web tool back on** revives **the copy the pipe maintains** and leaves the others switched off until an
+  admin switches them on in the Functions list.
+- **A filter you switched off yourself stays off:** the pipe keeps its code up to date but never switches it back on.
+  Switch it on in Open WebUI's Functions list if you want it. One this version switched off itself comes back on its own
+  when you enable the feature again.
+- **Upgrading:** a filter that was already off before this version stays off. The pipe only re-arms a filter it switched
+  off itself, and it records that in the filter's own meta, so a row that was already off when you upgraded carries no
+  such record. Switch it on in Workspace > Functions if you want it.
+
+The same rule holds for every other filter the pipe installs (Fusion, image generation, the per-model panels, Direct
+Uploads, provider routing).
 
 ### Disable image generation
 

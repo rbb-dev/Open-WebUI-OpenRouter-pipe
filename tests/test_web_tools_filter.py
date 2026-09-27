@@ -10,6 +10,8 @@ test guarantees the two never drift.
 """
 from __future__ import annotations
 
+import ast
+import asyncio
 import logging
 import re
 import sys
@@ -17,9 +19,11 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
+import aiohttp
 import pytest
 from aioresponses import aioresponses
 
+from open_webui_openrouter_pipe.core.config import _OPENROUTER_WEB_TOOLS_FILTER_MARKER
 from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
 
 _STANDALONE_PATH = Path(__file__).resolve().parents[1] / "filters" / "openrouter_web_tools.py"
@@ -421,3 +425,58 @@ The last row is the one that carries the sentence: a model publishing neither `t
 this attach. The image and video rows are tool-capable, so neither can tell a tool gate
 from a media gate.
 """
+
+
+# `pipes()` runs the filter switch-offs ahead of the model list, so one all-off
+# pass writes the literal-id rows (`_PIPE_LITERAL_ID_WRITES`) from that sweep as
+# well as the installer's candidates. Those two writers are kept apart: the
+# literal-id one is keyed by id and predates this batch, and the rule under test
+# is about the content-classified sweep, which cannot see a row that carries no
+# marker whatever id it holds.
+_PIPE_LITERAL_ID_WRITES = frozenset({"openrouter_web_tools"})
+
+
+def _valve_descriptions() -> dict[str, str]:
+    """Every ``Field(description=...)`` in config.py, read without importing the module.
+
+    Importing ``config`` pulls the whole package in; the texts are module data and
+    ``ast`` is enough. The evaluator understands the one concatenation form these
+    descriptions use, so a shared sentence constant is read rather than skipped.
+    """
+    import ast
+
+    tree = ast.parse(
+        (
+            Path(__file__).resolve().parents[1]
+            / "open_webui_openrouter_pipe"
+            / "core"
+            / "config.py"
+        ).read_text()
+    )
+    constants = {
+        node.targets[0].id: node.value.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and isinstance(node.targets[0], ast.Name)
+        and isinstance(node.value, ast.Constant)
+    }
+
+    def evaluate(node):
+        if isinstance(node, ast.Constant):
+            return node.value
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            return evaluate(node.left) + evaluate(node.right)
+        if isinstance(node, ast.Name) and node.id in constants:
+            return constants[node.id]
+        raise ValueError(ast.dump(node)[:80])
+
+    out: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AnnAssign) and isinstance(node.value, ast.Call):
+            for kw in node.value.keywords:
+                if kw.arg == "description":
+                    try:
+                        out[node.target.id] = evaluate(kw.value)
+                    except ValueError:
+                        pass
+    return out

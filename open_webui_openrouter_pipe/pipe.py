@@ -428,6 +428,8 @@ class Pipe:
         self._closed = False
         self._shutdown_lock: asyncio.Lock | None = None
 
+        self._web_tools_repair_task: asyncio.Task | None = None
+        self._web_tools_repair_started: float | None = None
         self._request_queue: asyncio.Queue[_PipeJob] | None = None
         self._queue_worker_task: asyncio.Task | None = None
         self._queue_worker_lock: asyncio.Lock | None = None
@@ -477,8 +479,6 @@ class Pipe:
             valves_owner=self,
         )
         self._catalog_manager: ModelCatalogManager | None = None
-        self._web_tools_repair_task: asyncio.Task | None = None
-        self._web_tools_repair_started: float | None = None
         self._error_formatter: ErrorFormatter | None = None
         self._reasoning_config_manager: ReasoningConfigManager | None = None
         self._nonstreaming_adapter: NonStreamingAdapter | None = None
@@ -1069,13 +1069,17 @@ class Pipe:
         return self._plugin_registry
 
     async def _deactivate_switched_off_filters(self) -> None:
+        from .filters.filter_manager import switched_off_meta
+
         all_web_tools_disabled = every_web_tool_is_off(self.valves)
         if all_web_tools_disabled:
             try:
                 from open_webui.models.functions import Functions as _Funcs
                 wt = await _Funcs.get_function_by_id("openrouter_web_tools")
                 if wt and getattr(wt, "is_active", False):
-                    await _Funcs.update_function_by_id("openrouter_web_tools", {"is_active": False})
+                    await _Funcs.update_function_by_id(
+                        "openrouter_web_tools", {"is_active": False, "meta": switched_off_meta(wt)}
+                    )
                     self.logger.info("Disabled OpenRouter Web Tools filter (all tools disabled)")
             except Exception:
                 self.logger.debug("Disabling OpenRouter Web Tools filter failed", exc_info=True)
@@ -1084,7 +1088,9 @@ class Pipe:
                 from open_webui.models.functions import Functions as _Funcs
                 ff = await _Funcs.get_function_by_id("openrouter_fusion")
                 if ff and getattr(ff, "is_active", False):
-                    await _Funcs.update_function_by_id("openrouter_fusion", {"is_active": False})
+                    await _Funcs.update_function_by_id(
+                        "openrouter_fusion", {"is_active": False, "meta": switched_off_meta(ff)}
+                    )
                     self.logger.info("Disabled OpenRouter Fusion filter (ENABLE_OPENROUTER_FUSION=False)")
             except Exception:
                 self.logger.debug("Disabling OpenRouter Fusion filter failed", exc_info=True)
@@ -1093,7 +1099,9 @@ class Pipe:
                 from open_webui.models.functions import Functions as _Funcs
                 ig = await _Funcs.get_function_by_id("openrouter_image_gen")
                 if ig and getattr(ig, "is_active", False):
-                    await _Funcs.update_function_by_id("openrouter_image_gen", {"is_active": False})
+                    await _Funcs.update_function_by_id(
+                        "openrouter_image_gen", {"is_active": False, "meta": switched_off_meta(ig)}
+                    )
                     self.logger.info("Disabled OpenRouter Image Generation filter (ENABLE_IMAGE_GENERATION=False)")
             except Exception:
                 self.logger.debug("Disabling OpenRouter Image Generation filter failed", exc_info=True)
@@ -1127,12 +1135,17 @@ class Pipe:
         started = self._web_tools_repair_started
         if started is not None and now - started < _WEB_TOOLS_REPAIR_COOLDOWN_S:
             return
-        self._web_tools_repair_started = now
         self._web_tools_repair_task = asyncio.get_running_loop().create_task(
-            self._keep_web_tools_filters_in_step(), name="openrouter-web-tools-repair"
+            self._guarded_web_tools_repair(), name="openrouter-web-tools-repair"
         )
 
-    async def _keep_web_tools_filters_in_step(self) -> None:
+    async def _guarded_web_tools_repair(self) -> bool:
+        if await self._keep_web_tools_filters_in_step():
+            self._web_tools_repair_started = time.monotonic()
+        return True
+
+    async def _keep_web_tools_filters_in_step(self) -> bool:
+        ok = True
         if self.valves.AUTO_INSTALL_WEB_TOOLS_FILTER and not every_web_tool_is_off(self.valves):
             try:
                 await self._ensure_filter_manager().ensure_openrouter_web_tools_filter_function_id(
@@ -1144,13 +1157,21 @@ class Pipe:
                     enable_search_models=self.valves.ENABLE_SEARCH_MODELS,
                 )
             except Exception as exc:
+                ok = False
                 level = warn_level(_warned_pipes_maintenance, f"web_tools:{type(exc).__name__}")
                 self.logger.log(level, "AUTO_INSTALL_WEB_TOOLS_FILTER failed: %s", exc, exc_info=True)
         try:
             await self._ensure_filter_manager().repair_web_tools_filters()
         except Exception as exc:
+            ok = False
             level = warn_level(_warned_pipes_maintenance, f"web_tools_repair:{type(exc).__name__}")
-            self.logger.log(level, "Repairing the OpenRouter Web Tools filters failed: %s", exc, exc_info=True)
+            self.logger.log(
+                level,
+                "Repairing the OpenRouter Web Tools filters failed: %s",
+                exc,
+                exc_info=True,
+            )
+        return ok
 
     @timed
     async def pipes(self):
@@ -1924,6 +1945,10 @@ class Pipe:
         if catalog is not None:
             with contextlib.suppress(Exception):
                 catalog._model_metadata_sync_task = None
+        repair = getattr(self, "_web_tools_repair_task", None)
+        if repair is not None and not repair.done():
+            repair.cancel()
+            extra_tasks.append(repair)
         repair = getattr(self, "_web_tools_repair_task", None)
         if repair is not None and not repair.done():
             repair.cancel()

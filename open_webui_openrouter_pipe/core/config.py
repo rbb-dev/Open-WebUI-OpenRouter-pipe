@@ -738,6 +738,21 @@ def _is_template_valve(name: Any) -> bool:
     return isinstance(name, str) and name.endswith("_TEMPLATE")
 
 
+_ADMIN_OFF_STAYS_OFF = (
+    " A filter you switch off yourself in Open WebUI's Functions list stays off: the "
+    "pipe keeps its code up to date but never switches it back on."
+)
+_PIPE_OFF_COMES_BACK = (
+    " One this version switched off itself comes back on its own when you enable the "
+    "feature again."
+)
+_ROUTING_ADMIN_OFF_STAYS_OFF = (
+    " A filter you switch off yourself in Open WebUI's Functions list stays off: the "
+    "pipe keeps its code up to date but never switches it back on, or when the model "
+    "is listed again."
+)
+
+
 class Valves(BaseModel):
     """Global valve configuration shared across sessions."""
 
@@ -1756,6 +1771,8 @@ class Valves(BaseModel):
         default=True,
         description=(
             "Automatically install/update the OpenRouter Web Tools filter function in Open WebUI. When off, the pipe neither installs nor updates it, except that a web tool switched off on the pipe is taken out of every Web Tools filter: that filter's code is replaced with the pipe's current version for the tools it still offers (hand edits in it are lost), and a warning is logged. Switching the tool back on does not add it back."
+            + " With every web tool off, every Web Tools filter is switched off, and one you "
+            "switch off yourself there stays off until you switch it on again."
         ),
     )
     AUTO_ATTACH_WEB_TOOLS_FILTER: bool = Field(
@@ -1769,7 +1786,12 @@ class Valves(BaseModel):
 
     AUTO_INSTALL_IMAGE_GEN_FILTER: bool = Field(
         default=True,
-        description="Automatically install/update the OpenRouter Image Generation filter function in Open WebUI.",
+        description=(
+            "Automatically install/update the OpenRouter Image Generation filter function "
+            "in Open WebUI."
+            + _PIPE_OFF_COMES_BACK
+            + _ADMIN_OFF_STAYS_OFF
+        ),
     )
     AUTO_ATTACH_IMAGE_GEN_FILTER: bool = Field(
         default=True,
@@ -1799,6 +1821,7 @@ class Valves(BaseModel):
             "settings list cannot be read on a refresh, it keeps the settings from the "
             "last successful read; a model never read gets no panel at all rather than a "
             "guessed set."
+            + _ADMIN_OFF_STAYS_OFF
         ),
     )
     AUTO_ATTACH_IMAGE_FILTERS: bool = Field(
@@ -1827,6 +1850,8 @@ class Valves(BaseModel):
             "installed for it. With this valve off the pipe logs an installed row whose "
             "stored source is out of date but will not rewrite it, so fixes to that filter "
             "stay undelivered until this is on."
+            + _PIPE_OFF_COMES_BACK
+            + _ADMIN_OFF_STAYS_OFF
         ),
     )
     AUTO_ATTACH_VIDEO_FILTERS: bool = Field(
@@ -1843,7 +1868,11 @@ class Valves(BaseModel):
     )
     AUTO_INSTALL_FUSION_FILTER: bool = Field(
         default=True,
-        description="Automatically install/update the OpenRouter Fusion filter function in Open WebUI.",
+        description=(
+            "Automatically install/update the OpenRouter Fusion filter function in Open WebUI."
+            + _PIPE_OFF_COMES_BACK
+            + _ADMIN_OFF_STAYS_OFF
+        ),
     )
     AUTO_ATTACH_FUSION_FILTER: bool = Field(
         default=True,
@@ -2174,6 +2203,7 @@ class Valves(BaseModel):
         description=(
             "When enabled, automatically installs/updates the companion OpenRouter Direct Uploads filter function in Open WebUI. "
             "This is required for AUTO_ATTACH_DIRECT_UPLOADS_FILTER when the filter hasn't been installed manually."
+            + _ADMIN_OFF_STAYS_OFF
         ),
     )
 
@@ -2185,6 +2215,7 @@ class Valves(BaseModel):
             "to generate admin-only provider routing filters. These filters enforce provider preferences (order, "
             "only, ignore, sort, quantizations, etc.) that users cannot override or disable. "
             "Leave empty to disable admin provider routing filters."
+            + _ROUTING_ADMIN_OFF_STAYS_OFF
         ),
     )
     USER_PROVIDER_ROUTING_MODELS: str = Field(
@@ -2194,6 +2225,7 @@ class Valves(BaseModel):
             "to generate user-configurable provider routing filters. Users can toggle these filters per-chat "
             "and configure their own provider preferences in their per-user settings. "
             "Leave empty to disable user provider routing filters."
+            + _ROUTING_ADMIN_OFF_STAYS_OFF
         ),
     )
     AUTO_DEFAULT_PROVIDER_ROUTING_FILTERS: bool = Field(

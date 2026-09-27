@@ -31,7 +31,7 @@ When OpenRouter Web Search is enabled for a request, the Web Tools filter sets `
 - paying twice,
 - ambiguous citation sources.
 
-If OpenRouter Web Search is **disabled** (user turns off the `WEB_SEARCH` toggle in the filter), OWUI Web Search is left untouched and works normally. When an *admin* switches OpenRouter web search off on the pipe, the pipe rewrites every Web Tools filter without it, so the suppression above stops and OWUI Web Search comes back.
+If OpenRouter Web Search is **disabled** (the user turns off the `WEB_SEARCH` toggle in the filter, or an admin switches `ENABLE_WEB_SEARCH` off on the pipe), the filter no longer sets that flag, so OWUI Web Search is left untouched and works normally. The pipe rewrites every Web Tools filter, whichever copy holds it, so the suppression stops everywhere and not only in the row you happened to look at.
 
 ---
 
@@ -118,13 +118,17 @@ Result: Users see **OpenRouter Web Tools** on every pipe model that is not an im
 - To use OWUI Web Search instead, disable the `WEB_SEARCH` user valve in the filter's settings, or disable the Web Tools toggle entirely for that chat.
 
 ### "Open WebUI's search stopped after OpenRouter web search was switched off"
-
 - Expected, and it clears itself. The Web Tools filter suppresses Open WebUI's search, so a filter that still offers
   web search keeps it off even after the switch.
 - The pipe rewrites every Web Tools filter without the switched-off tool at the next model-list refresh, or in the
   background after the first message that still asks for it. A message sent before the rewrite lands gets neither
   search; later ones get Open WebUI's.
 - If a log warning says a filter's code could not be read, the pipe left that filter alone: update it or remove it.
+- If you refreshed and the toggle is still there, the row you are looking at is often the **wrong row**. With several
+  Web Tools copies installed, the pipe maintains one and leaves the others alone; the pipe's log line names the row it
+  actually wrote. Look for that one.
+- If the row you need is one **you** switched off, the pipe will not bring it back: it keeps that row's code current but
+  never switches it on. Switch it on in Open WebUI's Functions list.
 
 ### "I see the old OpenRouter Search filter"
 

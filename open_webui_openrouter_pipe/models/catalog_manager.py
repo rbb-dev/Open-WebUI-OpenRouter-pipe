@@ -1287,18 +1287,19 @@ class ModelCatalogManager:
                     }
 
             semaphore = asyncio.Semaphore(10)
+            web_valves = self._pipe.valves
             web_tools_filter_function_id: str | None = None
             if (
-                valves.AUTO_ATTACH_WEB_TOOLS_FILTER or valves.AUTO_INSTALL_WEB_TOOLS_FILTER
-            ) and not every_web_tool_is_off(valves):
+                web_valves.AUTO_ATTACH_WEB_TOOLS_FILTER or web_valves.AUTO_INSTALL_WEB_TOOLS_FILTER
+            ) and not every_web_tool_is_off(web_valves):
                 try:
                     web_tools_filter_function_id = await self._pipe._ensure_filter_manager().ensure_openrouter_web_tools_filter_function_id(
-                        enable_web_search=valves.ENABLE_WEB_SEARCH,
-                        enable_web_fetch=valves.ENABLE_WEB_FETCH,
-                        enable_datetime=valves.ENABLE_DATETIME,
-                        enable_advisor=valves.ENABLE_ADVISOR,
-                        enable_subagent=valves.ENABLE_SUBAGENT,
-                        enable_search_models=valves.ENABLE_SEARCH_MODELS,
+                        enable_web_search=web_valves.ENABLE_WEB_SEARCH,
+                        enable_web_fetch=web_valves.ENABLE_WEB_FETCH,
+                        enable_datetime=web_valves.ENABLE_DATETIME,
+                        enable_advisor=web_valves.ENABLE_ADVISOR,
+                        enable_subagent=web_valves.ENABLE_SUBAGENT,
+                        enable_search_models=web_valves.ENABLE_SEARCH_MODELS,
                     )
                 except Exception as exc:
                     self.logger.warning(

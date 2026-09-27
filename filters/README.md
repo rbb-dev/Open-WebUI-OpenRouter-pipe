@@ -8,7 +8,7 @@ This folder contains reference Open WebUI filter functions used alongside the Op
 - The pipe embeds a canonical copy of this filter and can **auto-install/auto-update** it into Open WebUI’s Functions DB when `AUTO_INSTALL_WEB_TOOLS_FILTER` is enabled.
 - The filter is included here for review and manual installation, but **the live behavior is driven by the embedded copy inside the pipe** when auto-install is enabled.
 
-If you edit `openrouter_web_tools.py` in this repo, it will not automatically update your running Open WebUI unless you paste/install it manually (or you update the embedded filter source in the pipe).
+If you edit `openrouter_web_tools.py` in this repo, it will not automatically update your running Open WebUI unless you paste/install it manually (or you update the embedded filter source in the pipe). A copy you switch off yourself in Open WebUI's Functions list stays off: the pipe keeps its code up to date but never switches it back on. One this version switched off itself comes back on its own when you enable the feature again. A filter that was already off before this version stays off: switch it on in Workspace > Functions if you want it.
 
 ## OpenRouter Image Generation
 
