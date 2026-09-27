@@ -126,6 +126,32 @@ def _reference_kind_refused(family: str) -> str:
     spoken = {"video": "a clip", "audio": "a sound file", "image": "a picture"}.get(family, family)
     return f"this model does not take {spoken} as a reference"
 
+
+def _attachment_position(entry: dict[str, Any]) -> int:
+    declared = entry.get("attachment_index")
+    if isinstance(declared, int) and not isinstance(declared, bool):
+        return declared
+    return 0
+
+
+def _shortfall_note(missing: int, attempted: int, fetched: int) -> str:
+    if attempted - fetched > 0:
+        cause = "could not be fetched"
+    elif fetched - attempted + missing > 0:
+        cause = "could not be saved to storage"
+    else:
+        cause = "could not be shown"
+    return (
+        f"\n{missing} of the {attempted} clips this job delivered {cause} "
+        "and are not shown above.\n"
+    )
+
+
+def _promotable_as_frame(entry: dict[str, Any], valves: Any = None) -> bool:
+    raw = getattr(valves, "VIDEO_FRAME_IMAGE_MIME_ALLOWLIST", None) if valves is not None else None
+    allowed = _csv_set("image/jpeg,image/png,image/webp") if raw is None else _csv_set(raw)
+    return _clean_str(entry.get("content_type")).split(";", 1)[0].lower() in allowed
+
 @dataclass(frozen=True, slots=True)
 class _AcceptedReference:
     file_id: str
@@ -599,7 +625,7 @@ class VideoGenerationAdapter:
                         "first" if overshoot_pref_raw == "first" else "last"
                     )
                     self._apply_uploaded_attachment_retargeting(
-                        intent_result, video_meta_pre,
+                        intent_result, video_meta_pre, valves,
                     )
                     thumbs = await self._materialise_frame_plan(
                         intent=intent_result,
@@ -1076,8 +1102,8 @@ class VideoGenerationAdapter:
             elapsed = max(0.0, time.monotonic() - started_at)
             if not downloads:
                 raise VideoGenerationError(
-                    f"None of the {outputs} clips this job produced could be delivered from "
-                    f"OpenRouter. The job was billed for all {reported}."
+                    f"None of the {outputs} clips this job delivered could not be fetched from "
+                    "OpenRouter."
                     if reported > 1 else
                     "Generated video could not be downloaded from OpenRouter."
                 )
@@ -1120,7 +1146,8 @@ class VideoGenerationAdapter:
                 file_ids=file_ids,
                 elapsed=elapsed,
                 usage=usage,
-                produced=reported,
+                attempted=outputs,
+                fetched=len(downloads),
             )
             if disclosure_block:
                 content = disclosure_block + "\n" + content
@@ -1780,7 +1807,6 @@ class VideoGenerationAdapter:
         max_bytes = int(valves.VIDEO_FRAME_IMAGE_MAX_BYTES)
         total_max = int(valves.VIDEO_FRAME_TOTAL_MAX_BYTES)
         chunk_size = int(getattr(valves, "IMAGE_UPLOAD_CHUNK_BYTES", 1024 * 1024))
-        allowed_mimes = _csv_set(valves.VIDEO_FRAME_IMAGE_MIME_ALLOWLIST)
         encoded: list[dict[str, Any]] = []
         total_bytes = 0
         seen_frame_types: set[str] = set()
@@ -1803,7 +1829,7 @@ class VideoGenerationAdapter:
                 raise VideoGenerationError(f"Frame image '{file_id}' could not be loaded from Open WebUI storage.")
             mime = infer_file_mime_type(file_obj)
             mime = _clean_str(mime).split(";", 1)[0].lower()
-            if mime not in allowed_mimes:
+            if not _promotable_as_frame({"content_type": mime}, valves):
                 raise VideoGenerationError(f"Frame image MIME '{mime or 'unknown'}' is not allowed.")
             try:
                 b64 = await self._pipe._file_gateway.read_file_record_base64(
@@ -2364,6 +2390,7 @@ class VideoGenerationAdapter:
         self,
         intent: VideoIntentResult,
         video_meta: dict[str, Any],
+        valves: Any = None,
     ) -> None:
         if not intent.frame_plan:
             return
@@ -2371,45 +2398,81 @@ class VideoGenerationAdapter:
         if not isinstance(frame_images, list):
             return
         references = video_meta.get("input_references")
-        reference_count = len(references) if isinstance(references, list) else 0
+        reference_list = references if isinstance(references, list) else []
+        ordered_attachments: list[dict[str, Any]] = [
+            item for item in (
+                [f for f in frame_images if isinstance(f, dict)]
+                + [r for r in reference_list if isinstance(r, dict)]
+            )
+        ]
+        ordered_attachments.sort(key=lambda entry: _attachment_position(entry))
         retargeted = 0
-        moved: list[int] = []
+        moved: list[dict[str, Any]] = []
+        demoted: list[dict[str, Any]] = []
         for entry in intent.frame_plan:
             if entry.source != "uploaded_attachment":
                 continue
             idx = entry.source_index
-            if not isinstance(idx, int) or idx < 0 or idx >= len(frame_images) + reference_count:
+            if not isinstance(idx, int) or idx < 0 or idx >= len(ordered_attachments):
                 intent.downgrades.append(
                     f"retarget_skipped_invalid_index_{idx}"
                 )
                 continue
-            if idx >= len(frame_images):
-                continue
-            target = frame_images[idx]
+            target = ordered_attachments[idx]
             if not isinstance(target, dict):
                 continue
             if entry.target == "input_reference":
-                moved.append(idx)
+                if target in frame_images:
+                    moved.append(target)
                 continue
+            if target not in frame_images:
+                if not _promotable_as_frame(target, valves):
+                    intent.downgrades.append(f"retarget_skipped_non_image_frame_{idx}")
+                    continue
+                displaced = next(
+                    (
+                        other
+                        for other in frame_images
+                        if isinstance(other, dict)
+                        and other.get("frame_type") == entry.target
+                        and other is not target
+                    ),
+                    None,
+                )
+                if displaced is not None:
+                    frame_images[frame_images.index(displaced)] = target
+                    demoted.append(displaced)
+                else:
+                    frame_images.append(target)
+                claimed = video_meta.get("input_references")
+                if isinstance(claimed, list) and target in claimed:
+                    claimed.remove(target)
             existing_frame_type = target.get("frame_type")
             if existing_frame_type != entry.target:
                 target["frame_type"] = entry.target
                 retargeted += 1
-        if moved:
+        if moved or demoted:
             references = video_meta.setdefault("input_references", [])
             if not isinstance(references, list):
                 references = []
                 video_meta["input_references"] = references
-            ordered = list(dict.fromkeys(moved))
-            picked = {idx: frame_images[idx] for idx in ordered}
-            for idx in sorted(picked, reverse=True):
-                frame_images.pop(idx)
-            for idx in ordered:
-                item = picked[idx]
+            ordered: list[dict[str, Any]] = []
+            for item in list(demoted) + list(moved):
+                if not any(item is seen for seen in ordered):
+                    ordered.append(item)
+            for item in ordered:
+                while item in frame_images:
+                    frame_images.remove(item)
+            picked: list[dict[str, Any]] = list(ordered)
+            for item in picked:
+                if not isinstance(item, dict):
+                    continue
                 references.append({
                     "id": item.get("id"),
                     "name": item.get("name"),
                     "content_type": item.get("content_type"),
+                    "size": item.get("size"),
+                    "attachment_index": item.get("attachment_index"),
                 })
                 retargeted += 1
         if retargeted:
@@ -2417,7 +2480,7 @@ class VideoGenerationAdapter:
             self.logger.debug(
                 "_apply_uploaded_attachment_retargeting: applied %d classifier "
                 "frame instruction(s), %d moved to input_references",
-                retargeted, len(dict.fromkeys(moved)),
+                retargeted, len({id(x) for x in moved}),
             )
 
     async def _materialise_frame_plan(
@@ -2790,19 +2853,16 @@ class VideoGenerationAdapter:
         file_ids: list[str],
         elapsed: float,
         usage: dict[str, Any],
-        produced: int = 0,
+        attempted: int = 0,
+        fetched: int = 0,
     ) -> str:
         clips = "".join(
             f"<video>\n/api/v1/files/{file_id}/content\n</video>\n\n" for file_id in file_ids
         )
         shortfall = ""
-        missing = max(produced - len(file_ids), 0)
+        missing = max(attempted - len(file_ids), 0)
         if missing > 0:
-            shortfall = (
-                f"\n{missing} of the {produced} clips this job produced could not be "
-                "delivered and are not shown above. The job was billed for all "
-                f"{produced}.\n"
-            )
+            shortfall = _shortfall_note(missing, attempted, fetched)
         return (
             f"{_serialize_kind_marker(self.JOB_MARKER_KIND, job_id)}\n"
             f"{_serialize_kind_marker(self.MODEL_MARKER_KIND, model_id)}\n\n"

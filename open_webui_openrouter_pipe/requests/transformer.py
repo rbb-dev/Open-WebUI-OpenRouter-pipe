@@ -27,6 +27,7 @@ from ..core.config import (
 
 # Import status messages
 from ..core.errors import RequiredInternalFileError, StatusMessages
+from ..core.image_detail import image_detail_or_auto
 from ..core.url_scheme import (
     is_cleartext_http_url,
     is_http_or_https_url,
@@ -929,10 +930,8 @@ async def transform_messages_to_input(
                             url = f"data:{resolved};base64,{body}"
 
                     result: dict[str, Any] = {"type": "input_image", "image_url": url}
-                    if isinstance(detail, str) and detail in {"auto", "low", "high"}:
-                        result["detail"] = detail
-                    elif url:
-                        result["detail"] = "auto"
+                    if url:
+                        result["detail"] = image_detail_or_auto(detail)
 
                     return result
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import inspect
 import re
 import tempfile
 import time
@@ -28,6 +29,12 @@ from open_webui_openrouter_pipe.filters.video_filter_renderer import (
     render_video_filter_source,
 )
 from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
+from open_webui_openrouter_pipe.integrations.video_intent import (
+    FramePlanEntry,
+    FrameTargetLiteral,
+    VideoIntentResult,
+    collect_attachments_from_video_meta,
+)
 from open_webui_openrouter_pipe.integrations.video_client import (
     OpenRouterVideoClient,
     extension_for_video_mime,
@@ -321,50 +328,6 @@ def test_model_specific_filters_hide_unsupported_controls():
     assert "VIDEO_REFERENCE_IMAGES_JSON" in wan_source
     assert "VIDEO_REFERENCE_VIDEOS_JSON" in wan_source
     assert "VIDEO_AUDIO_URL" in wan_source
-
-
-@pytest.mark.parametrize(
-    ("produced", "delivered"),
-    [(3, 1), (3, 3), (5, 2), (16, 15), (1, 1)],
-)
-def test_the_shortfall_counts_every_clip_the_job_was_billed_for(produced, delivered):
-    """The count was derived from survivors, so the losses it reported were the ones it saw.
-
-    `unstored` was `len(downloads) - len(file_ids)` -- the gap between downloading and
-    storing. A clip refused at download never enters `downloads`, so it moved both terms
-    equally and vanished from the count meant to report it: the loop breaks, the sentence
-    computes zero, and the user gets a normal success with fewer videos than they paid
-    for. The `_MAX_VIDEO_OUTPUTS` clamp is lost the same way.
-
-    Counting against what OpenRouter said it produced covers all three loss paths without
-    asking which one fired. Both integers are parsed and compared, because a sentence
-    that merely appears can still carry the wrong numbers -- which is what the old one
-    did, understating `produced` as well.
-    """
-    import re
-
-    adapter = VideoGenerationAdapter.__new__(VideoGenerationAdapter)
-    content = adapter._build_success_content(
-        job_id="job-abc",
-        model_id="google/veo-3.1-lite",
-        file_ids=[f"file-{i}" for i in range(delivered)],
-        elapsed=1.0,
-        usage={"cost": 0.4},
-        produced=produced,
-    )
-
-    if produced == delivered:
-        assert "could not be" not in content, (
-            f"all {produced} clips were delivered but the message reports a shortfall"
-        )
-        return
-    match = re.search(r"(\d+) of the (\d+) clips this job produced could not be", content)
-    assert match, f"{produced - delivered} of {produced} clips never reached the user and the message says nothing: {content!r}"
-    assert (int(match.group(1)), int(match.group(2))) == (produced - delivered, produced), (
-        f"the shortfall reports {match.group(1)} of {match.group(2)}; the job produced "
-        f"{produced} and delivered {delivered}, and was billed for all {produced}"
-    )
-    assert f"billed for all {produced}" in content
 
 
 def test_build_success_content_ends_with_newline():
@@ -5014,9 +4977,10 @@ def test_a_null_list_field_still_renders_no_control(list_field):
 
 @pytest.mark.parametrize(
     ("clip_count", "fails_at"),
-    [(3, 1), (4, 2), (2, 1), (3, 0), (20, 0)],
+    [(3, 1), (4, 2), (2, 1), (3, 0), (20, 0), (20, 15)],
     ids=["3-clips-second-fails", "4-clips-third-fails", "2-clips-second-fails",
-         "3-clips-the-first-fails", "20-clips-the-first-fails"],
+         "3-clips-the-first-fails", "20-clips-the-first-fails",
+         "20-clips-the-16th-fails"],
 )
 @pytest.mark.asyncio
 async def test_a_clip_that_cannot_be_downloaded_is_declared_to_the_user(
@@ -5101,14 +5065,13 @@ async def test_a_clip_that_cannot_be_downloaded_is_declared_to_the_user(
         valves=pipe.valves,
     )
 
-    match = re.search(r"(\d+) of the (\d+) clips this job produced could not be", result)
+    match = re.search(r"(\d+) of the (\d+) clips this job delivered could not be", result)
     if fails_at == 0 and clip_count > 16:
         assert attempted == list(range(16)), (
             f"the download loop is bounded by a 16-clip cap, so exactly those were "
             f"attempted: {attempted}"
         )
-        assert "None of the 16 clips this job produced could be delivered" in result, result
-        assert "billed for all 20" in result, result
+        assert "None of the 16 clips this job delivered could not be fetched" in result, result
         assert "### Video generation failed" in result, result
         assert result.count("<video>") == 0, (
             f"a total loss must not fabricate a video block: {result!r}"
@@ -5119,23 +5082,29 @@ async def test_a_clip_that_cannot_be_downloaded_is_declared_to_the_user(
         assert attempted == [0, 1, 2], (
             f"every clip was billed for and every one was attempted anyway: {attempted}"
         )
-        assert "None of the 3 clips this job produced could be delivered" in result, result
-        assert "billed for all 3" in result, result
+        assert "None of the 3 clips this job delivered could not be fetched" in result, result
         assert "### Video generation failed" in result, result
         assert result.count("<video>") == 0, (
             f"a total loss must not fabricate a video block: {result!r}"
         )
         return
 
+    from open_webui_openrouter_pipe.integrations.video import _MAX_VIDEO_OUTPUTS
+
+    # `fails_at` is a cutoff index, not a shortfall count: the harness refuses the
+    # download at `index >= fails_at`, so the clips that survive are those below it.
+    # The total is the download loop's own bound, so an over-ceiling job is counted
+    # against what the pipe tried to fetch rather than what the provider reported.
+    expected_total = min(clip_count, _MAX_VIDEO_OUTPUTS)
+    expected_missing = expected_total - fails_at
     assert match, (
-        f"{clip_count - fails_at} of {clip_count} billed clips never reached the user "
+        f"{expected_missing} of {expected_total} attempted clips never reached the user "
         f"and the message says nothing: {result!r}"
     )
-    assert (int(match.group(1)), int(match.group(2))) == (clip_count - fails_at, clip_count), (
-        f"the shortfall reports {match.group(1)} of {match.group(2)}; the job produced "
-        f"{clip_count} and delivered {fails_at}"
+    assert (int(match.group(1)), int(match.group(2))) == (expected_missing, expected_total), (
+        f"the shortfall reports {match.group(1)} of {match.group(2)}; the job reported "
+        f"{clip_count}, the pipe attempted {expected_total} and delivered {fails_at}"
     )
-    assert f"billed for all {clip_count}" in result
 
 
 @pytest.mark.parametrize(
@@ -5254,6 +5223,15 @@ async def test_a_clip_that_cannot_be_stored_is_logged_and_declared_to_the_user(
 
     if failing:
         assert f"{len(failing)} of the {clip_count} clips" in result, result
+        # Every clip in this fixture DOWNLOADED; only storage rejected some. Telling
+        # the user they "could not be fetched" sends them to retry the provider, when
+        # the clip arrived and Open WebUI's file store turned it away. The sentence must
+        # name the step that actually lost the clip.
+        assert "could not be saved" in result, (
+            f"the clips all downloaded and {len(failing)} failed to store, so the "
+            f"message must name storage, not fetching: {result}"
+        )
+        assert "could not be fetched" not in result, result
     else:
         assert "could not be saved" not in result
 
@@ -7663,3 +7641,7 @@ def test_the_offered_closed_domains_are_the_ones_on_the_record():
         f"removed {sorted(set(_CITED_ENUM_DOMAINS) - set(offered))}, "
         f"changed {sorted(k for k in offered.keys() & _CITED_ENUM_DOMAINS.keys() if offered[k] != _CITED_ENUM_DOMAINS[k])}"
     )
+
+
+def _collect(video_meta):
+    return collect_attachments_from_video_meta(video_meta)

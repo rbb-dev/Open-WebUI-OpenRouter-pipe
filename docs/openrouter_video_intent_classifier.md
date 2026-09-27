@@ -60,6 +60,10 @@ The classifier returns one of five **intents**:
 
 For every non-trivial intent, the classifier produces a `frame_plan` array (max 4 entries). Each entry says: *here's the source* (uploaded attachment / prior video first frame / prior video last frame / prior video at timestamp T), *here's the target* (first_frame / last_frame / input_reference), and *here's the index*. The pipe extracts the actual frame, uploads it as an OWUI image, and injects it into the request.
 
+The `index` of an uploaded attachment is its position in the user's attachment list — the order they appear in the chat, counting pictures, clips and audio alike. Every attached picture is listed, whether or not the Frames dropdown claimed it as a keyframe: a turn with three pictures and `first_last` selected still reports indices 0, 1 and 2, not 0 and 2. An `index` that names a picture the dropdown did not claim is promoted into the frame slot the entry asks for.
+
+The `attachments` array in the classifier's payload is that list: one entry per attachment the turn carries, each with `index` (its position, 0-based and gap-free), `kind` (`image` / `video` / `other`), `mime_type`, `id`, `name` and `size`, ordered by `index`. A picture the Frames dropdown claimed as a keyframe and a picture it demoted to a reference both appear once, each at the position the user attached it, and neither is listed twice because it occupies both channels. What the pipe does not send is the bytes and not the role the picture plays downstream — the classifier is told *what* the user attached, and it is the classifier's `frame_plan` that says what to do with it. Under `frame_mode="none"` the array is empty by design: the dropdown sends the pictures nowhere, so there is nothing for the classifier to refer to.
+
 ## Intent Disclosure Block
 
 When `frame_plan` is non-empty, the assistant message includes an **Intent Disclosure Block** rendered before the video appears:

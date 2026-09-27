@@ -581,7 +581,7 @@ _FRAME_MODE_MEANINGS: dict[str, str] = {
     "auto": "auto follows the model",
     "none": "none ignores them",
     "first_only": "first_only opens the shot with one",
-    "first_last": "first_last pins the opening and the closing still",
+    "first_last": "first_last pins the opening and the closing still, and sends the rest as references",
 }
 """What each choice means, keyed by the choice itself.
 
@@ -883,12 +883,13 @@ class Filter:
         caps = meta.get("capabilities") if isinstance(meta, dict) else None
         return isinstance(caps, dict) and caps.get("file_context") is False
 
-    def _build_attachment(self, item: dict[str, Any]) -> dict[str, Any]:
+    def _build_attachment(self, item: dict[str, Any], attachment_index: int = 0) -> dict[str, Any]:
         return {{
             "id": self._file_id(item),
             "name": item.get("name") or "",
             "size": self._to_int(item.get("size")) or 0,
             "content_type": self._content_type(item),
+            "attachment_index": attachment_index,
         }}
 
     @staticmethod
@@ -1509,6 +1510,7 @@ def _render_frame_block(spec: VideoFilterSpec) -> str:
                         "size": self._to_int(item.get("size")) or 0,
                         "content_type": self._content_type(item),
                         "frame_type": frame_type,
+                        "attachment_index": _attmap.get(self._file_id(item), 0),
                     }}
                 )'''
         else:
@@ -1522,6 +1524,7 @@ def _render_frame_block(spec: VideoFilterSpec) -> str:
                         "size": self._to_int(item.get("size")) or 0,
                         "content_type": self._content_type(item),
                         "frame_type": "first_frame",
+                        "attachment_index": _attmap.get(self._file_id(item), 0),
                     }
                 )'''
 
@@ -1542,7 +1545,7 @@ def _render_frame_block(spec: VideoFilterSpec) -> str:
                 if self._file_id(item) in claimed_ids:
                     continue
                 claimed_ids.add(self._file_id(item))
-                input_references.append(self._build_attachment(item))'''
+                input_references.append(self._build_attachment(item, _attmap.get(self._file_id(item), 0)))'''
 
     select_blocks = "\n".join(
         block
@@ -1564,10 +1567,14 @@ def _render_frame_block(spec: VideoFilterSpec) -> str:
         input_references: list[dict[str, Any]] = []
         claimed_ids: set[str] = set()
 {frame_mode_line}        if isinstance(files, list) and files:
+            _attmap: dict[str, int] = {{}}
+            for _i, _it in enumerate(files):
+                if isinstance(_it, dict) and self._file_id(_it):
+                    _attmap[self._file_id(_it)] = _i
             image_items: list[dict[str, Any]] = []
             video_items: list[dict[str, Any]] = []
             audio_items: list[dict[str, Any]] = []
-            for item in files:
+            for _i, item in enumerate(files):
                 if not isinstance(item, dict):
                     retained.append(item)
                     continue

@@ -1357,8 +1357,28 @@ class TestResponsesInputToChatMessages:
         content = result[0]["content"]
         assert content[0]["image_url"]["url"] == "http://example.com/img.png"
 
-    def test_input_image_with_detail(self):
-        """Test input_image block with detail setting."""
+    @pytest.mark.parametrize(
+        ("given", "expected"),
+        [
+            ("auto", "auto"),
+            ("low", "low"),
+            ("high", "high"),
+            ("original", "original"),
+            ("bogus", "bogus"),
+            ("", "auto"),
+            (None, "auto"),
+            (7, "auto"),
+        ],
+    )
+    def test_input_image_with_detail(self, given, expected):
+        """Whatever detail arrives is what goes out, unless absent/empty/not a string.
+
+        The three-value allowlist this replaced substituted ``auto`` for ``original``
+        and dropped anything else, so a caller asking for a detail the pipe had never
+        heard of silently got a different one. Open WebUI's own rule is
+        ``detail = url_data.get('detail') or 'auto'`` (``routers/openai.py:1360``):
+        any non-empty string passes through, everything else becomes ``auto``.
+        """
         input_value = [
             {
                 "type": "message",
@@ -1367,14 +1387,14 @@ class TestResponsesInputToChatMessages:
                     {
                         "type": "input_image",
                         "image_url": "http://example.com/img.png",
-                        "detail": "high",
+                        "detail": given,
                     },
                 ],
             }
         ]
         result = _responses_input_to_chat_messages(input_value)
         content = result[0]["content"]
-        assert content[0]["image_url"]["detail"] == "high"
+        assert content[0]["image_url"]["detail"] == expected
 
     def test_input_audio_block(self):
         """Test input_audio block conversion."""

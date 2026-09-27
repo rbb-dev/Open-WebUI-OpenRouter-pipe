@@ -347,14 +347,18 @@ def collect_attachments_from_video_meta(
                 continue
             mime_type = str(item.get("content_type") or item.get("mime_type") or "").lower()
             resolved = kind if kind is not None else _attachment_family(mime_type)
+            declared = item.get("attachment_index")
             flat.append({
-                "index": len(flat),
+                "index": declared if isinstance(declared, int) and not isinstance(declared, bool) else len(flat),
                 "kind": resolved,
                 "mime_type": mime_type,
                 "id": item.get("id"),
                 "name": item.get("name"),
                 "size": item.get("size"),
             })
+    flat.sort(key=lambda entry: entry["index"])
+    for position, entry in enumerate(flat):
+        entry["index"] = position
     return flat
 
 

@@ -2692,8 +2692,14 @@ class TestImageProcessing:
     """Tests for detailed image processing paths."""
 
     @pytest.mark.asyncio
-    async def test_image_url_with_detail_auto(self, pipe_instance):
-        """Image URL with detail=auto is preserved."""
+    @pytest.mark.parametrize("detail", ["auto", "high", "original"])
+    async def test_image_url_with_detail_auto(self, pipe_instance, detail):
+        """Image URL with detail=auto is preserved.
+
+        ``original`` is the row the closed allowlist could not serve: it substituted
+        ``auto``, so a caller asking for full resolution got half of it. Open WebUI
+        passes any non-empty string through (``routers/openai.py:1360``).
+        """
         with patch("open_webui_openrouter_pipe.requests.transformer.ModelFamily") as mock_family:
             mock_family.supports.return_value = True
 
@@ -2704,7 +2710,7 @@ class TestImageProcessing:
 
             messages = [
                 {"role": "user", "content": [
-                    {"type": "image_url", "image_url": {"url": "/api/v1/files/img/content", "detail": "auto"}}
+                    {"type": "image_url", "image_url": {"url": "/api/v1/files/img/content", "detail": detail}}
                 ]}
             ]
 
@@ -2712,7 +2718,7 @@ class TestImageProcessing:
 
             image_block = next((b for b in result[0]["content"] if b.get("type") == "input_image"), None)
             assert image_block is not None
-            assert image_block.get("detail") == "auto"
+            assert image_block.get("detail") == detail
 
     @pytest.mark.asyncio
     async def test_image_url_with_detail_high(self, pipe_instance):

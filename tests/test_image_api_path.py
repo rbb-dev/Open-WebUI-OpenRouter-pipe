@@ -4094,3 +4094,11 @@ async def test_a_public_image_passthrough_address_is_checked_and_still_sent(addr
     assert address in json.dumps(payloads[0]), (
         f"a checked public link was dropped from the request: {payloads[0]!r}"
     )
+
+
+def _labels(content: str) -> list[str]:
+    return [
+        line.split("](")[0][2:]
+        for line in content.split("\n\n")
+        if line.startswith("![")
+    ]

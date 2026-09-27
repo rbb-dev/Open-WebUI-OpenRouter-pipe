@@ -210,10 +210,15 @@ class TestCollectAttachments:
         assert collect_attachments_from_video_meta(None) == []  # type: ignore[arg-type]
 
     def test_index_is_zero_based_flat(self):
-        """The flat index space the classifier is shown and the retargeting resolves
-        against, across the two lists the filter can actually produce, with a second and
-        differently-familied reference so the index and the kind are asserted over the
-        same ordered list."""
+        """The fallback, asserted on purpose: an entry with no ``attachment_index``.
+
+        Every attachment the real filter writes now carries the position the user
+        attached it at, so this shape is a hand-built ``video_meta`` (an older
+        deployment, a test, a deployment whose filter has not been reloaded). The
+        numbering then falls back to the order the entries were read in, which is
+        what the index space has always been: flat, zero-based, and the same
+        space the retargeting resolves ``source_index`` against.
+        """
         meta = {
             "frame_images": [{"id": "f1", "content_type": "image/png"}],
             "input_references": [
@@ -225,7 +230,6 @@ class TestCollectAttachments:
         assert [entry["index"] for entry in result] == [0, 1, 2], result
         assert [entry["id"] for entry in result] == ["f1", "v1", "a1"], result
         assert [entry["kind"] for entry in result] == ["image", "video", "other"], result
-
 
 # -----------------------------------------------------------------------------
 # count_prior_clarifications

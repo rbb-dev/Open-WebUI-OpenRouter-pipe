@@ -371,7 +371,7 @@ Each video model gets its OWN filter function in Open WebUI. The `UserValves` re
 | `VIDEO_ASPECT_RATIO` | `Literal["", …]` | `""` | top-level `aspect_ratio` | `supported_aspect_ratios` non-empty |
 | `VIDEO_RESOLUTION` | `Literal["", …]` | `""` | top-level `resolution` | `supported_resolutions` non-empty |
 | `VIDEO_SIZE` | `Literal["", …]` | `""` | top-level `size` (`WIDTHxHEIGHT`) | `supported_sizes` non-empty |
-| `VIDEO_FRAME_MODE` | `Literal["auto", "none", "first_only"(, "first_last")]` | `"auto"` | shapes `frame_images[]` from chat-attached images; `"none"` also leaves the picture in the request instead of sending it | `supported_frame_images` non-empty |
+| `VIDEO_FRAME_MODE` | `Literal["auto", "none", "first_only"(, "first_last")]` | `"auto"` | decides which chat-attached images become `frame_images[]` keyframes and which are sent as references instead (with `first_last` and three or more images, the middle ones are sent as references, never dropped, and are sent after the keyframes regardless of how many there are); `"none"` also leaves the picture in the request instead of sending it | `supported_frame_images` non-empty |
 | `VIDEO_NEGATIVE_PROMPT` | `str` | `""` | top-level `negative_prompt` (or `negativePrompt` on Veo) | `"negative_prompt"` or `"negativePrompt"` in `allowed_passthrough_parameters` |
 | `VIDEO_GENERATE_AUDIO` | `Literal["model_default", "on", "off"]` | `"model_default"` | top-level `generate_audio` (boolean) | catalog top-level `generate_audio` present and not `false` |
 | `VIDEO_SEED` | `int` (`ge=0`) | `0` | top-level `seed` | catalog top-level `seed` present and not `false` |

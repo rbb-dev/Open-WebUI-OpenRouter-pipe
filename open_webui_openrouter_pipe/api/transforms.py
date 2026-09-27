@@ -39,6 +39,7 @@ from ..core.config import (
     _PIPE_METADATA_KEY,
     _PROVIDER_SLUG_PATTERN,
 )
+from ..core.image_detail import image_detail_or_auto
 from ..core.timing_logger import timed
 from ..core.utils import (
     OPEN_WEBUI_TOOL_IMAGES_TEXT,
@@ -914,9 +915,7 @@ def _responses_input_to_chat_messages(
                             url = block.get("image_url")
                             if isinstance(url, str) and url.strip():
                                 image_url_obj: dict[str, Any] = {"url": url.strip()}
-                                detail = block.get("detail")
-                                if isinstance(detail, str) and detail in {"auto", "low", "high"}:
-                                    image_url_obj["detail"] = detail
+                                image_url_obj["detail"] = image_detail_or_auto(block.get("detail"))
                                 blocks_out.append({"type": "image_url", "image_url": image_url_obj})
                             continue
                         if btype == "image_url":
@@ -1012,8 +1011,7 @@ def _responses_input_to_chat_messages(
                         url = transformed.pop("image_url", "")
                         image_url_obj: dict[str, Any] = {"url": url.strip() if isinstance(url, str) else ""}
                         detail = transformed.pop("detail", None)
-                        if isinstance(detail, str) and detail in {"auto", "low", "high"}:
-                            image_url_obj["detail"] = detail
+                        image_url_obj["detail"] = image_detail_or_auto(detail)
                         transformed["image_url"] = image_url_obj
                         if image_url_obj["url"]:
                             blocks_out.append(transformed)

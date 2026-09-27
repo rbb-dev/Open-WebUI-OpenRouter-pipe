@@ -1166,7 +1166,7 @@ default applies; the second gets no control.
 | `VIDEO_ASPECT_RATIO` | `Literal["", …]` | `""` | top-level `aspect_ratio` | `supported_aspect_ratios` non-empty | 27 (all except FLUX Video Edit, FLUX Video Upscale) |
 | `VIDEO_RESOLUTION` | `Literal["", …]` | `""` | top-level `resolution` | `supported_resolutions` non-empty | 26 (all except FLUX Video Edit, FLUX Video Upscale, Aleph 2.0) |
 | `VIDEO_SIZE` | `Literal["", …]` | `""` | top-level `size` | `supported_sizes` non-empty | 19 of 29 |
-| `VIDEO_FRAME_MODE` | `Literal["auto", "none", "first_only"(, "first_last")]` | `"auto"` | controls `frame_images[]` shaping, and under `"none"` whether the picture is sent at all or only left in the request | `supported_frame_images` non-empty | 24 of 29 |
+| `VIDEO_FRAME_MODE` | `Literal["auto", "none", "first_only"(, "first_last")]` | `"auto"` | controls which chat-attached images become `frame_images[]` keyframes and which are sent as references instead (the keyframes go first and the references after them, in the order you attached them, however many there are); under `"none"` nothing is sent as a reference either and the picture is left in the request | `supported_frame_images` non-empty | 24 of 29 |
 | `VIDEO_NEGATIVE_PROMPT` | `str` | `""` | passthrough `negative_prompt` (or `negativePrompt` on Veo) | `"negative_prompt"` or `"negativePrompt"` in `allowed_passthrough_parameters` | 8 of 29 |
 | `VIDEO_GENERATE_AUDIO` | `Literal["model_default", "on", "off"]` | `"model_default"` | top-level `generate_audio` (boolean) | `generate_audio` present and not published as `false` | 22 of 29 |
 | `VIDEO_SEED` | `int` (`ge=0`) | `0` | top-level `seed` | `seed` present and not published as `false` | 19 of 29 |
@@ -1271,7 +1271,13 @@ rules:
     [Attachments that are not frames](#attachments-that-are-not-frames).
   - `first_only`: even if multiple images are attached, only the first is
     used as `first_frame`.
-  - `first_last`: explicitly attach two images as start and end keyframes.
+  - `first_last`: attach exactly two images to get start and end keyframes.
+    With three or more, the first and last are the keyframes and every
+    image in between is still sent — as a reference the model can use,
+    not dropped. Nothing you attach is discarded. The middle images keep
+    the order you attached them in and follow the two keyframes in the
+    request, so the first keyframe is never pushed back by however many
+    middle images there are.
 - Setting `Size` to exact pixel dimensions settles any argument with the
   other two shape knobs: a `Resolution` tier that disagrees with those
   pixels, or an `Aspect ratio` that is not the shape of those pixels, is
@@ -1786,6 +1792,32 @@ stored as its own file. If some clips download and others do not, the
 ones that arrived are still delivered rather than the whole job being
 thrown away.
 
+A job where some clips did not arrive says so, below the ones that
+did, naming the step that lost them — a clip OpenRouter never served
+could not be fetched, and a clip Open WebUI's storage refused could
+not be saved to storage:
+
+```markdown
+[openrouter:v1:videojob:<job_id>]: #
+[openrouter:v1:videomodel:<model_id>]: #
+
+<video>
+/api/v1/files/<owui_file_id_1>/content
+</video>
+
+1 of the 3 clips this job delivered could not be fetched and are not
+shown above.
+```
+
+Both numbers in that sentence are counted from the clips the pipe
+actually tried to fetch, so a job that reported twenty clips but is
+fetched at most sixteen at a time is counted against the sixteen, not
+against the twenty. It never names a clip the pipe did not attempt as
+undelivered, and it says nothing about what the job cost: the charge, when
+the provider reported one, is on the final status line as long as usage
+details are on: that is your own Show usage details setting once you have
+set it.
+
 The two `[label]: #` lines are CommonMark **reference-link definitions**.
 They render as nothing — they are invisible markers used internally for
 [resume](#resume-recovery-and-disconnect-resilience). The marked.js
@@ -1927,8 +1959,7 @@ Two valves cap simultaneous generations:
 
 - **`MAX_CONCURRENT_VIDEO_GENS`** (default 2): global cap per pipe
   process. Implemented as a class-level lazy `asyncio.Semaphore`. When
-  exhausted, new requests wait in the semaphore queue (chat shows
-  "Waiting for video slot...").
+  exhausted, new requests wait silently in the semaphore queue.
 - **`MAX_CONCURRENT_VIDEO_GENS_PER_USER`** (default 2): per-user cap.
   Implemented as a counter + per-user lock. Exceeding the cap returns
   an immediate visible error in chat — the user must wait for one of

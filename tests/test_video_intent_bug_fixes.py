@@ -191,7 +191,13 @@ class TestInputReferenceTargetIsMovedNotStamped:
 
         assert [f["id"] for f in video_meta["frame_images"]] == [kept_id]
         assert video_meta["input_references"] == [
-            {"id": moved_id, "name": moved_name, "content_type": "image/png"}
+            {
+                "id": moved_id,
+                "name": moved_name,
+                "content_type": "image/png",
+                "size": None,
+                "attachment_index": None,
+            }
         ]
         assert all(
             "frame_type" not in ref for ref in video_meta["input_references"]
@@ -273,7 +279,9 @@ class TestInputReferenceTargetIsMovedNotStamped:
         adapter._apply_uploaded_attachment_retargeting(intent, video_meta)
         assert video_meta["input_references"][0] is existing
         assert [r["id"] for r in video_meta["input_references"]] == ["prior", "img-0"]
-        assert set(video_meta["input_references"][1]) == {"id", "name", "content_type"}
+        assert set(video_meta["input_references"][1]) == {
+            "id", "name", "content_type", "size", "attachment_index",
+        }
 
     @pytest.mark.parametrize(
         "supported", [["first_frame"], ["first_frame", "last_frame"]]

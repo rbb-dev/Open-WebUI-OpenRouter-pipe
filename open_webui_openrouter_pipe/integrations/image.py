@@ -70,6 +70,10 @@ def _labelled(name: Any) -> str:
     return f"{title} ({name})" if title and title != name else str(name)
 
 
+def _label_for_generated_image(shown: int, total: int) -> str:
+    return "Generated image" if total == 1 else f"Generated image {shown}"
+
+
 _TOP_LEVEL_PARAMS = TOP_LEVEL_PARAMS
 
 _SCHEMA_ONLY_PARAMS = SCHEMA_ONLY_PARAMS
@@ -1256,6 +1260,7 @@ class ImageGenerationAdapter:
 
         snippets: list[str] = []
         unsaved = 0
+        shown = 0
         for image in result.images:
             file_id = await self._persist(
                 image,
@@ -1267,7 +1272,8 @@ class ImageGenerationAdapter:
             if not file_id:
                 unsaved += 1
                 continue
-            label = "Generated image" if len(result.images) == 1 else f"Generated image {len(snippets) + 1}"
+            shown += 1
+            label = _label_for_generated_image(shown, len(result.images))
             snippets.append(f"![{label}](/api/v1/files/{file_id}/content)")
         if result.rejected:
             self._logger.warning(

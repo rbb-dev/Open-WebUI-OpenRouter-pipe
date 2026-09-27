@@ -1289,6 +1289,19 @@ The rendered message looks like:
 ![Generated image](/api/v1/files/01HX2K3D5N4P9F8GZQ2WV3R5BC/content)
 ```
 
+A reply with more than one image numbers them in the order they are
+shown, consecutively from 1:
+
+```markdown
+![Generated image 1](/api/v1/files/01HX2K3D5N4P9F8GZQ2WV3R5BC/content)
+
+![Generated image 2](/api/v1/files/01HX2K3D5N4P9F8GZQ2WV3R5BD/content)
+```
+
+So a reply that lost one of its images to a storage failure shows no
+gap: three generated, two stored, is `1` and `2` — never `2` and `3`.
+The count of what could not be saved is reported in the same message, on the line below the images; the labels count what is shown.
+
 OWUI displays the image inline with a download/copy/view-fullsize
 context menu. The file is registered in OWUI's `Files` table linked to
 the chat, surviving page reload.
