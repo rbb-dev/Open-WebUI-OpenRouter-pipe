@@ -12,9 +12,8 @@ from PIL import Image
 
 from .image_conversion import composite_on_white
 
-Image.MAX_IMAGE_PIXELS = 25_000_000
-
 _MAX_INPUT_BYTES = 50 * 1024 * 1024
+_MAX_INPUT_PIXELS = 50_000_000
 
 
 @dataclass
@@ -46,6 +45,11 @@ def make_thumbnail(
         raise ValueError(f"target_size must be in 1..4096, got {target_size}")
 
     src = Image.open(io.BytesIO(image_bytes))
+    if src.width * src.height > _MAX_INPUT_PIXELS:
+        raise ValueError(
+            f"image is too large: {src.width}x{src.height} exceeds "
+            f"{_MAX_INPUT_PIXELS} pixel cap"
+        )
     src.load()
     src = composite_on_white(src)
 

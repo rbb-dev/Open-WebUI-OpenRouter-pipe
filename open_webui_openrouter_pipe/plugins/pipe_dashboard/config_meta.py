@@ -380,7 +380,7 @@ CONFIG_META: dict[str, dict[str, str]] = {
     "HTTP_CONNECT_TIMEOUT_SECONDS": {
         "title": "Connection timeout",
         "group": "Connection & Routing/HTTP & Timeouts",
-        "detail": "How long the pipe waits to open the TCP/TLS connection to OpenRouter before failing, in seconds.\n\nThere is no upper bound; the default drops unreachable or stalled endpoints fast while tolerating normal latency. Lower it to give up sooner when OpenRouter is down, or raise it on slow networks where the handshake needs longer. It limits only connection setup - the length of an active request is governed separately by `Total request timeout` and `Idle read timeout` - and it also seeds the connect timeout for downloading remote images and files, capped there at 60 seconds."
+        "detail": "How long the pipe waits to open the TCP/TLS connection to OpenRouter before failing, in seconds.\n\nThere is no upper bound; the default drops unreachable or stalled endpoints fast while tolerating normal latency. Lower it to give up sooner when OpenRouter is down, or raise it on slow networks where the handshake needs longer. It limits only connection setup - the length of an active request is governed separately by `Total request timeout` and `Idle read timeout` - and it also seeds the connect budget for downloading remote images and files, capped there at 60 seconds. What is capped is that connect budget. On the streaming download used for generated video clips, the read budget is a separate 60-second silence budget this setting does not change; on the plain download used for remote images and files, this value is also the read budget."
     },
     "HTTP_REFERER_OVERRIDE": {
         "title": "App attribution URL",

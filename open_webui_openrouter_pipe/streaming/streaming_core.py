@@ -1087,7 +1087,7 @@ class StreamingHandler:
             stay in spinner state indefinitely.
             """
             nonlocal emitted_response_output_items
-            if not event_emitter or not (valves.SHOW_TOOL_CARDS or _shows_a_file_inline(name)):
+            if not event_emitter or not (valves.SHOW_TOOL_CARDS or _shows_a_file_inline(_origin_tool_name(name))):
                 return call_id
             effective_id = call_id or f"st-{uuid.uuid4().hex}"
             if effective_id in emitted_tool_call_items:
@@ -1099,7 +1099,7 @@ class StreamingHandler:
                 "type": "function_call",
                 "id": effective_id,
                 "call_id": effective_id,
-                "name": name,
+                "name": _origin_tool_name(name) if not valves.SHOW_TOOL_CARDS else name,
                 "arguments": arguments,
                 "status": status,
             }

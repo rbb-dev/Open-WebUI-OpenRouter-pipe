@@ -5080,8 +5080,9 @@ def test_a_null_list_field_still_renders_no_control(list_field):
 
 @pytest.mark.parametrize(
     ("clip_count", "fails_at"),
-    [(3, 1), (4, 2), (2, 1)],
-    ids=["3-clips-second-fails", "4-clips-third-fails", "2-clips-second-fails"],
+    [(3, 1), (4, 2), (2, 1), (3, 0), (20, 0)],
+    ids=["3-clips-second-fails", "4-clips-third-fails", "2-clips-second-fails",
+         "3-clips-the-first-fails", "20-clips-the-first-fails"],
 )
 @pytest.mark.asyncio
 async def test_a_clip_that_cannot_be_downloaded_is_declared_to_the_user(
@@ -5092,11 +5093,14 @@ async def test_a_clip_that_cannot_be_downloaded_is_declared_to_the_user(
     `unstored` was `len(downloads) - len(file_ids)`. A clip refused at download never
     enters `downloads`, so it moved both terms equally and vanished from the count meant
     to report it -- the loop breaks, the sentence computes zero, and the user gets an
-    ordinary success with fewer videos than they were billed for. Index 0 is excluded
-    because production correctly raises when nothing downloads at all; only clips 2+ are
-    silent.
+    ordinary success with fewer videos than they were billed for.
 
-    Three rows with different billed and delivered counts, so no constant satisfies them.
+    The TOTAL-LOSS row carries its own branch, and cannot use the assertions the partial
+    rows use. Production raises rather than building a success, so `_build_success_content`
+    never runs and the shortfall regex -- which needs leading digits -- cannot match the
+    total-loss message at all. `adapter.generate()` does not raise either: the lifecycle
+    catches and returns the failure content.
+
     This drives `adapter.generate()` because the unit test for the sentence never touches
     the call site that computes its arguments -- reverting that one line leaves 946 tests
     green.
@@ -5164,6 +5168,31 @@ async def test_a_clip_that_cannot_be_downloaded_is_declared_to_the_user(
     )
 
     match = re.search(r"(\d+) of the (\d+) clips this job produced could not be", result)
+    if fails_at == 0 and clip_count > 16:
+        assert attempted == list(range(16)), (
+            f"the download loop is bounded by a 16-clip cap, so exactly those were "
+            f"attempted: {attempted}"
+        )
+        assert "None of the 16 clips this job produced could be delivered" in result, result
+        assert "billed for all 20" in result, result
+        assert "### Video generation failed" in result, result
+        assert result.count("<video>") == 0, (
+            f"a total loss must not fabricate a video block: {result!r}"
+        )
+        return
+
+    if fails_at == 0:
+        assert attempted == [0, 1, 2], (
+            f"every clip was billed for and every one was attempted anyway: {attempted}"
+        )
+        assert "None of the 3 clips this job produced could be delivered" in result, result
+        assert "billed for all 3" in result, result
+        assert "### Video generation failed" in result, result
+        assert result.count("<video>") == 0, (
+            f"a total loss must not fabricate a video block: {result!r}"
+        )
+        return
+
     assert match, (
         f"{clip_count - fails_at} of {clip_count} billed clips never reached the user "
         f"and the message says nothing: {result!r}"
@@ -6672,10 +6701,10 @@ async def test_a_generation_whose_later_clips_fail_keeps_the_ones_it_already_has
 ):
     """OpenRouter has already charged for the generation by the time the download starts.
 
-    Throwing away two good clips because the third link 404s bills the user for work
-    they never receive; failing on the FIRST is different, because there is nothing to
-    keep and a job that produced no file is not a success. Neither arm was reached by any
-    test.
+    Which index broke never decides whether the rest of the job is attempted: the user
+    was billed for every clip it produced, so the loop continues past a refused one and
+    keeps what arrived. A total loss -- every clip refused -- is the one case that is not
+    a partial success, and it raises.
 
     The double SUBCLASSES the real client, so `output_count` is the production
     implementation reached through the MRO. Delegating to it by name re-read the
@@ -6757,8 +6786,8 @@ async def test_a_generation_whose_later_clips_fail_keeps_the_ones_it_already_has
         started_at=time.monotonic(),
     )
 
-    assert seen == list(range(failing_index + 1)), (
-        f"the loop kept downloading past the failure: tried {seen}"
+    assert seen == list(range(3)), (
+        f"every clip the job produced is attempted, whatever index broke: tried {seen}"
     )
     assert len(stored) == kept, f"{len(stored)} clip(s) were stored, expected {kept}"
     assert ("failed" in str(result.content).lower()) is raises, (

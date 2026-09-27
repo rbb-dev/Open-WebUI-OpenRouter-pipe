@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
 from open_webui_openrouter_pipe.integrations.video_intent import (
     FramePlanEntry,
     VideoIntentResult,
@@ -247,7 +248,7 @@ class TestShortCircuit:
             if not _ask():
                 break
             allowed += 1
-            adapter._intent_record_call("chat1", "")
+            adapter._intent_record_call("chat1", "", valves=valves)
 
         assert allowed == cap, (
             f"a cap of {cap} allowed {allowed} classifier call(s) before it closed"
@@ -269,7 +270,7 @@ class TestShortCircuit:
             ):
                 break
             allowed += 1
-            adapter._intent_record_call("", "user-1")
+            adapter._intent_record_call("", "user-1", valves=valves)
 
         assert allowed == cap, (
             f"a daily cap of {cap} allowed {allowed} classifier call(s) before it closed"
@@ -279,12 +280,13 @@ class TestShortCircuit:
     def test_one_chats_calls_are_not_charged_to_another(self):
         """The counters are per chat and per user; sharing one would close both together."""
         adapter = self._make_adapter()
-        adapter._intent_record_call("chat-a", "user-1")
-        adapter._intent_record_call("chat-a", "user-1")
+        valves = _make_valves(VIDEO_INTENT_MAX_CALLS_PER_CHAT=2)
+        adapter._intent_record_call("chat-a", "user-1", valves=valves)
+        adapter._intent_record_call("chat-a", "user-1", valves=valves)
 
         assert adapter._intent_call_counts_per_chat == {"chat-a": 2}
         assert adapter._intent_classifier_should_run(
-            valves=_make_valves(VIDEO_INTENT_MAX_CALLS_PER_CHAT=2),
+            valves=valves,
             persisted_content="", prompt="make a video",
             body={"messages": [{}, {}]}, video_meta={}, chat_id="chat-b",
         ), "a second chat was refused for calls the first one made"

@@ -12,7 +12,7 @@ are pinned here:
   declaring 9000x9000 costs 310 MB of resident memory once decoded, which is why the
   budget is checked against the header before `Image.load` is reached -- and why the
   refusal has to read the same way whether or not `PIL.Image.MAX_IMAGE_PIXELS` has
-  already been lowered by another module in this process.
+  already been lowered by another embedder in this process.
 - Decoding does not stall the event loop. Ten budget-sized icons held it for 2.9s.
 - Nothing holds the call open indefinitely. `HTTP_TOTAL_TIMEOUT_SECONDS` defaults to
   disabled and `sock_read` restarts on every byte, so a server dribbling one byte per
@@ -537,33 +537,15 @@ async def test_unexpected_download_failure_keeps_its_traceback(icon_handler):
 
 # ── the pixel budget ─────────────────────────────────────────────────────────
 
-# PIL's own ceiling, `int(1024 * 1024 * 1024 // 4 // 3)`, applies before anything in
-# this package runs; `media/thumbnail.py` and `media/frame_extraction.py` lower it to
-# 25_000_000 at import time, and `integrations/video.py` imports `..media`. A worker
-# that has built the video adapter therefore decodes icons in a different global state
-# from one that has not, and `None` disables the check entirely. All three must reach
-# the same verdict and say the same thing about it.
+# PIL's own ceiling, `int(1024 * 1024 * 1024 // 4 // 3)`, is what a worker starts in
+# and what it stays in: this package installs no process-global, so nothing here
+# decides it. Another embedder in the same process can still have lowered it, and
+# `None` disables the check entirely, so all three remain states a worker can decode
+# an icon in. The icon path carries its own `_MAX_MODEL_PROFILE_IMAGE_PIXELS` check,
+# so all three must reach the same verdict and say the same thing about it.
 PIL_DEFAULT_MAX_PIXELS = int(1024 * 1024 * 1024 // 4 // 3)
 MEDIA_MAX_PIXELS = 25_000_000
 IMPORT_STATES = [PIL_DEFAULT_MAX_PIXELS, MEDIA_MAX_PIXELS, None]
-
-
-def test_the_media_modules_really_do_lower_the_process_wide_ceiling():
-    """Why MEDIA_MAX_PIXELS above is a real state and not a number someone invented.
-
-    The import is the subject, and its side effect is process-wide and permanent, so the
-    ceiling is put back: a later test that reads `Image.MAX_IMAGE_PIXELS` would otherwise
-    see a different value depending on whether this file ran first.
-    """
-    from PIL import Image
-
-    previous = Image.MAX_IMAGE_PIXELS
-    try:
-        from open_webui_openrouter_pipe.media import thumbnail  # noqa: F401
-
-        assert Image.MAX_IMAGE_PIXELS == MEDIA_MAX_PIXELS
-    finally:
-        Image.MAX_IMAGE_PIXELS = previous
 
 
 @pytest.fixture()
@@ -970,8 +952,9 @@ async def test_an_ico_whose_header_only_reads_large_unsigned_is_refused(
     where an ICO decodes.
 
     Parametrised over the three `Image.MAX_IMAGE_PIXELS` states a worker can be in
-    because Pillow's own bomb check MASKS this at the 25M ceiling `media/` installs --
-    a test run only in that state passes on the defective code.
+    because another embedder in this process may have installed a lower one, and
+    Pillow's own bomb check MASKS this whenever it has -- a test run only in that
+    state passes on the defective code.
     """
     from PIL import Image
 

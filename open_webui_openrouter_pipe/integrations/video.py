@@ -528,6 +528,7 @@ class VideoGenerationAdapter:
                     self._intent_record_call(
                         chat_id if isinstance(chat_id, str) else "",
                         user_id if isinstance(user_id, str) else "",
+                        valves=valves,
                     )
                     if intent_result.classifier_failed:
                         self._intent_record_failure()
@@ -1033,14 +1034,15 @@ class VideoGenerationAdapter:
                             self.logger.warning(
                                 "Video job %s reported %d outputs but clip %d could not be "
                                 "downloaded; the clips already fetched are kept",
-                                job_id,
-                                outputs,
-                                index,
+                                job_id, reported, index,
                             )
-                            break
-                        raise VideoGenerationError(
-                            "Generated video could not be downloaded from OpenRouter."
-                        )
+                        else:
+                            self.logger.warning(
+                                "Video job %s reported %d outputs but clip %d could not be "
+                                "downloaded",
+                                job_id, reported, index,
+                            )
+                        continue
                     downloads.append(
                         DownloadedVideo(
                             path=download_result["path"],
@@ -1057,7 +1059,12 @@ class VideoGenerationAdapter:
 
             elapsed = max(0.0, time.monotonic() - started_at)
             if not downloads:
-                raise VideoGenerationError("Generated video download did not complete.")
+                raise VideoGenerationError(
+                    f"None of the {outputs} clips this job produced could be delivered from "
+                    f"OpenRouter. The job was billed for all {reported}."
+                    if reported > 1 else
+                    "Generated video could not be downloaded from OpenRouter."
+                )
             file_ids: list[str] = []
             for index, clip in enumerate(downloads):
                 suffix = "" if len(downloads) == 1 else f"-{index}"
@@ -2303,15 +2310,19 @@ class VideoGenerationAdapter:
                 return False
         return not time.time() < self._intent_breaker_until_ts
 
-    def _intent_record_call(self, chat_id: str, user_id: str) -> None:
+    def _intent_record_call(self, chat_id: str, user_id: str, *, valves: Any) -> None:
         """Increment the per-chat / per-user-day counters after a classifier call."""
-        if chat_id:
+        if chat_id and int(getattr(valves, "VIDEO_INTENT_MAX_CALLS_PER_CHAT", 0) or 0) > 0:
             self._intent_call_counts_per_chat[chat_id] = (
                 self._intent_call_counts_per_chat.get(chat_id, 0) + 1
             )
-        if user_id:
+        if user_id and int(getattr(valves, "VIDEO_INTENT_MAX_CALLS_PER_USER_DAY", 0) or 0) > 0:
             from datetime import datetime
             day = datetime.now(tz=UTC).strftime("%Y-%m-%d")
+            self._intent_call_counts_per_user_day = {
+                key: count for key, count in self._intent_call_counts_per_user_day.items()
+                if key[1] == day
+            }
             self._intent_call_counts_per_user_day[(user_id, day)] = (
                 self._intent_call_counts_per_user_day.get((user_id, day), 0) + 1
             )

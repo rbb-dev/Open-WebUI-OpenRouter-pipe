@@ -17,8 +17,6 @@ from typing import Literal
 import imageio.v3 as iio  # type: ignore[import-untyped]
 from PIL import Image
 
-Image.MAX_IMAGE_PIXELS = 25_000_000
-
 _MAX_FRAME_PIXELS = 25_000_000
 _FFMPEG_TIMEOUT_S = 30.0
 
@@ -193,11 +191,11 @@ async def _extract_frame_ffmpeg(
         if not stdout:
             raise FrameExtractionError("ffmpeg produced empty output", no_frame=True)
         img = Image.open(io.BytesIO(stdout))
-        img.load()
         if img.width * img.height > _MAX_FRAME_PIXELS:
             raise FrameExtractionError(
                 f"ffmpeg output {img.width}x{img.height} exceeds pixel cap",
             )
+        img.load()
         return stdout, img.width, img.height
     except asyncio.CancelledError:
         if proc is not None:

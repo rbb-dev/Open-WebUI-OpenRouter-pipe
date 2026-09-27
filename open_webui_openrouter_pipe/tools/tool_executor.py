@@ -695,8 +695,8 @@ class ToolExecutor:
                     )
                 except Exception:
                     self.logger.warning(
-                        "Direct tool spec transform failed; the model will be offered no "
-                        "direct tools this request",
+                        "Direct tool spec transform failed; the direct tools are still "
+                        "offered this request, re-derived from their registry entries",
                         exc_info=True,
                     )
                     direct_tool_specs = []

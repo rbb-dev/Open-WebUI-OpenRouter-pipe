@@ -89,6 +89,13 @@ _VETTED_CONNECTION_LIMIT_PER_HOST = 10
 
 _VETTED_DNS_CACHE_SECONDS = 300
 
+_REMOTE_DOWNLOAD_CONNECT_CAP_SECONDS = 60
+_REMOTE_DOWNLOAD_READ_SECONDS = 60.0
+
+
+def _seeded_connect_budget(seeded: int) -> int:
+    return min(int(seeded), _REMOTE_DOWNLOAD_CONNECT_CAP_SECONDS)
+
 
 async def _capped_body(resp: Any, cap: int) -> bytes | None:
     declared = (resp.headers.get("Content-Length") or "").strip()
@@ -725,7 +732,7 @@ class MultimodalHandler:
             timeout_seconds = self.valves.HTTP_CONNECT_TIMEOUT_SECONDS
         if timeout_seconds is None:
             timeout_seconds = 60
-        timeout_seconds = min(timeout_seconds, 60)
+        connect_budget = _seeded_connect_budget(timeout_seconds)
 
         attempt = 0
         start_time = time.perf_counter()
@@ -753,7 +760,7 @@ class MultimodalHandler:
                         )
 
                     async with (
-                        httpx.AsyncClient(timeout=timeout_seconds) as client,
+                        httpx.AsyncClient(timeout=httpx.Timeout(connect=connect_budget, read=connect_budget, write=connect_budget, pool=connect_budget)) as client,
                         client.stream(
                             "GET",
                             request_url,
@@ -856,7 +863,7 @@ class MultimodalHandler:
             timeout_seconds = self.valves.HTTP_CONNECT_TIMEOUT_SECONDS
         if timeout_seconds is None:
             timeout_seconds = 60
-        timeout_seconds = max(timeout_seconds, 60)
+        connect_budget = _seeded_connect_budget(timeout_seconds)
 
         effective_max = (
             max_size_bytes
@@ -896,7 +903,7 @@ class MultimodalHandler:
                     request_headers = dict(extra_headers) if extra_headers else {}
                     request_headers.update(pin_headers)
                     async with (
-                        httpx.AsyncClient(timeout=timeout_seconds) as client,
+                        httpx.AsyncClient(timeout=httpx.Timeout(connect=connect_budget, read=_REMOTE_DOWNLOAD_READ_SECONDS, write=connect_budget, pool=connect_budget)) as client,
                         client.stream(
                             "GET",
                             request_url,
