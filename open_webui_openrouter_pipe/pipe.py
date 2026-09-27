@@ -28,6 +28,7 @@ import threading
 import time
 import uuid
 import weakref
+from collections import Counter
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -408,6 +409,7 @@ class Pipe:
         self._close_lock: threading.Lock = threading.Lock()
         self._close_done: concurrent.futures.Future | None = None
         self._active_pipes_calls: int = 0
+        self._hand_back_counts: Counter[tuple[Any, Any]] = Counter()
 
         if os.environ.get("OWUI_PIPE_TEST_MODE") == "1":
             self._init_minimal_for_tests()

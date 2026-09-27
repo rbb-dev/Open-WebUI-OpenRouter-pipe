@@ -132,6 +132,13 @@ class ModelFamily:
         return frozenset()
 
     @classmethod
+    def rules_out_tool_use(cls, model_id: str) -> bool:
+        params = cls.supported_parameters(model_id)
+        if not params:
+            return False
+        return not {"tools", "tool_choice"} & set(params)
+
+    @classmethod
     def set_dynamic_specs(cls, specs: dict[str, dict[str, Any]] | None) -> None:
         """Update cached OpenRouter specs shared with :class:`ModelFamily`."""
         cls._DYNAMIC_SPECS = specs or {}

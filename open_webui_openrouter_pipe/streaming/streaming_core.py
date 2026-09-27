@@ -2801,6 +2801,15 @@ class StreamingHandler:
                     or any(str(c.get("name") or "") in offered_function_names and str(c.get("name") or "") not in tool_registry
                            for c in call_items)
                 )
+                if hand_back:
+                    reply_key = (metadata.get("chat_id"), metadata.get("message_id"))
+                    self._pipe._hand_back_counts[reply_key] += 1
+                    if self._pipe._hand_back_counts[reply_key] > valves.MAX_FUNCTION_CALL_LOOPS:
+                        hand_back = False
+                        self.logger.debug(
+                            "Hand-back cap reached for this reply (%d); answering in the loop instead",
+                            valves.MAX_FUNCTION_CALL_LOOPS,
+                        )
 
                 if (call_items or invalid_call_outputs) and not hand_back:
                     note_model_activity()

@@ -903,6 +903,7 @@ class RequestOrchestrator:
             "Fusion live UI gate: model=%s fusion=%s fusion_enable=%s direct=%s -> enabled=%s",
             responses_body.model, fusion_model, valves.ENABLE_OPENROUTER_FUSION, is_direct, fusion_live_enabled,
         )
+        capability_model_id = vvb.get(normalized_model_id, responses_body.model)
 
         task_mode = use_task_model_adapter
         if task_mode:
@@ -1209,6 +1210,19 @@ class RequestOrchestrator:
         ]
         offered_tools = [*server_tool_entries, *(tools or [])]
         responses_body.tools = offered_tools or None
+        builder_produced_names: set[str] = {
+            str(name)
+            for name, entry in (owui_registry or {}).items()
+            if isinstance(entry, dict)
+            for name in (name, (entry.get("spec") or {}).get("name"))
+            if isinstance(name, str) and name.strip()
+        }
+        builder_produced_names.update(
+            str((entry.get("spec") or {}).get("name"))
+            for entry in (direct_registry or {}).values()
+            if isinstance(entry, dict) and isinstance((entry.get("spec") or {}).get("name"), str)
+        )
+        rules_out_tool_use = ModelFamily.rules_out_tool_use(capability_model_id)
 
         pdf_parser = direct_uploads.get("pdf_parser") if direct_uploads else None
         if isinstance(pdf_parser, str) and pdf_parser.strip():
@@ -1260,6 +1274,21 @@ class RequestOrchestrator:
                 "Stripped openrouter server tools from fusion request model=%s",
                 responses_body.model,
             )
+
+        if rules_out_tool_use:
+            kept_tools = [
+                t
+                for t in (responses_body.tools or [])
+                if not (isinstance(t, dict) and t.get("type") == "function"
+                        and str(t.get("name") or "") in builder_produced_names)
+            ]
+            if len(kept_tools) != len(responses_body.tools or []):
+                self.logger.debug(
+                    "Withheld %d pipe-built tool(s) from a model the catalogue rules out of tool use (model=%s)",
+                    len(responses_body.tools or []) - len(kept_tools),
+                    capability_model_id,
+                )
+            responses_body.tools = kept_tools or None
 
 
         setattr(responses_body, "api_model", OpenRouterModelRegistry.api_model_id(normalized_model_id) or normalized_model_id)  # noqa: B010 - dynamic attribute not declared on ResponsesBody

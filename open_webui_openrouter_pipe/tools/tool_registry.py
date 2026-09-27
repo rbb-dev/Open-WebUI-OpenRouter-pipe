@@ -143,7 +143,7 @@ def _normalize_responses_function_tool_spec(tool: Any, *, strictify: bool) -> di
     if isinstance(tool.get("cache_control"), dict):
         spec["cache_control"] = tool["cache_control"]
     if "strict" in tool:
-        spec["strict"] = tool["strict"]
+        spec["strict"] = True if strictify else tool["strict"]
     return spec
 
 
@@ -309,7 +309,7 @@ def _build_collision_safe_tool_specs_and_registry(
         lookup_name = raw_name.strip() if isinstance(raw_name, str) else ""
         tool_cfg = _pick_executor(lookup_name) if lookup_name else None
         runnable = isinstance(tool_cfg, dict) and tool_cfg.get("callable") is not None
-        spec = _normalize_responses_function_tool_spec(raw_tool, strictify=strictify and runnable)
+        spec = _normalize_responses_function_tool_spec(raw_tool, strictify=strictify)
         if not spec:
             continue
         origin_name = spec["name"]
