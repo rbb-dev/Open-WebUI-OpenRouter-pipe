@@ -40,6 +40,31 @@ logger = logging.getLogger(__name__)
 _PIPE_DASHBOARD_MODEL_ID = "pipe-dashboard"
 
 
+def _overlay_update_form(
+    model_form_cls: Any,
+    model_meta_cls: Any,
+    model_params_cls: Any,
+    fresh: Any,
+    display_name: str,
+    description: str,
+) -> Any:
+    if fresh is None:
+        return None
+    fresh_meta = getattr(fresh, "meta", None)
+    meta_dict: dict[str, Any] = {}
+    if fresh_meta:
+        meta_dict = fresh_meta.model_dump() if hasattr(fresh_meta, "model_dump") else dict(fresh_meta)
+    meta_dict["description"] = description
+    return model_form_cls(
+        id=fresh.id,
+        base_model_id=fresh.base_model_id,
+        name=display_name,
+        meta=model_meta_cls(**meta_dict),
+        params=fresh.params if fresh.params else model_params_cls(),
+        is_active=fresh.is_active,
+    )
+
+
 def _registry_pricing(model_id: str) -> dict[str, Any] | None:
     """Pricing dict for a model id (accepts dotted pipe-prefixed ids)."""
     try:
@@ -277,18 +302,13 @@ class PipeDashboardPlugin(PluginBase):
                 existing_desc = getattr(existing_meta, "description", None) if existing_meta else None
                 if existing.name == display_name and existing_desc == description:
                     return
-                meta_dict: dict[str, Any] = {}
-                if existing_meta:
-                    meta_dict = existing_meta.model_dump() if hasattr(existing_meta, "model_dump") else dict(existing_meta)
-                meta_dict["description"] = description
-                form = ModelForm(
-                    id=existing.id,
-                    base_model_id=existing.base_model_id,
-                    name=display_name,
-                    meta=ModelMeta(**meta_dict),
-                    params=existing.params if existing.params else ModelParams(),
-                    is_active=existing.is_active,
+                form = _overlay_update_form(
+                    ModelForm, ModelMeta, ModelParams,
+                    await Models.get_model_by_id(owui_model_id),
+                    display_name, description,
                 )
+                if form is None:
+                    return
                 await Models.update_model_by_id(owui_model_id, form)
             else:
                 owner_id = ""
@@ -309,7 +329,18 @@ class PipeDashboardPlugin(PluginBase):
                     params=ModelParams(),
                     is_active=True,
                 )
-                await Models.insert_new_model(form, user_id=owner_id)
+                inserted = await Models.insert_new_model(form, user_id=owner_id)
+                if inserted is not None:
+                    return
+                fresh = await Models.get_model_by_id(owui_model_id)
+                if fresh is None:
+                    return
+                form = _overlay_update_form(
+                    ModelForm, ModelMeta, ModelParams, fresh, display_name, description,
+                )
+                if form is None:
+                    return
+                await Models.update_model_by_id(owui_model_id, form)
         except Exception:
             logging.getLogger(__name__).debug("pipe-dashboard model overlay ensure failed", exc_info=True)
 

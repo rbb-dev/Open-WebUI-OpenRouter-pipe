@@ -108,7 +108,7 @@ def test_route_binds_body_200_not_422(monkeypatch):
     from fastapi.testclient import TestClient
 
     monkeypatch.setattr(http_routes, "bearer_user", AsyncMock(return_value=SimpleNamespace(id="u1", role="user")))
-    monkeypatch.setattr(http_routes, "dispatch_action",AsyncMock(return_value=(200, {"ok": True, "result": {"x": 1}})))
+    monkeypatch.setattr(http_routes, "_live_dispatch", lambda: AsyncMock(return_value=(200, {"ok": True, "result": {"x": 1}})))
     http_routes.set_pipe_getter(lambda: SimpleNamespace(id="p"))
     http_routes._coarse_state.clear()
 
@@ -132,7 +132,7 @@ def test_route_forbidden_flows_through(monkeypatch):
     from fastapi.testclient import TestClient
 
     monkeypatch.setattr(http_routes, "bearer_user", AsyncMock(return_value=SimpleNamespace(id="u2", role="user")))
-    monkeypatch.setattr(http_routes, "dispatch_action",AsyncMock(return_value=(403, {"error": "forbidden"})))
+    monkeypatch.setattr(http_routes, "_live_dispatch", lambda: AsyncMock(return_value=(403, {"error": "forbidden"})))
     http_routes.set_pipe_getter(lambda: SimpleNamespace(id="p"))
     http_routes._coarse_state.clear()
 
@@ -207,13 +207,14 @@ def test_route_self_heals_unknown_action(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    seen: dict = {}
+    served: dict = {}
 
     async def _fresh(pipe, user, name, args, client_ip=None):
-        seen["pipe"] = pipe
+        served["pipe"] = pipe
         return 200, {"ok": True, "result": {"healed": name}}
 
     fresh_pipe = SimpleNamespace(id="openrouter", marker="fresh")
+    serving_pipe = SimpleNamespace(id="openrouter", marker="serving")
     app = FastAPI()
     monkeypatch.setattr(http_routes, "get_owui_app", lambda: app)
     monkeypatch.setattr(http_routes, "bearer_user",
@@ -222,7 +223,7 @@ def test_route_self_heals_unknown_action(monkeypatch):
     monkeypatch.setattr(http_routes, "_resolve_fresh", AsyncMock(return_value=(_fresh, fresh_pipe)))
     monkeypatch.setattr(http_routes, "_fresh_dispatch", None)
     monkeypatch.setattr(http_routes, "_reconcile_retry_until", 0.0)
-    http_routes.set_pipe_getter(lambda: SimpleNamespace(id="openrouter"))
+    http_routes.set_pipe_getter(lambda: serving_pipe)
     http_routes._registered_paths.clear()
 
     assert http_routes.register_action_route() is True
@@ -230,7 +231,10 @@ def test_route_self_heals_unknown_action(monkeypatch):
     http_routes._coarse_state.clear()
     r = client.post(http_routes._ACTION_PATH, json={"action": "config_get_v99", "args": {}})
     assert r.status_code == 200
-    assert getattr(seen["pipe"], "marker", "") == "fresh"
+    # The reconcile's freshly exec'd Pipe has `_plugin_registry = None` -- only
+    # `pipes()` initialises it, and an action route never reaches `pipes()`. So the
+    # reconcile's dispatcher runs against the pipe the plugin system initialised.
+    assert getattr(served["pipe"], "marker", "") == "serving"
     assert r.json()["result"]["healed"] == "config_get_v99"
     http_routes._registered_paths.clear()
 

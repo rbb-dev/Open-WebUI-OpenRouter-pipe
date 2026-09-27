@@ -15,13 +15,15 @@ import threading
 import time
 from typing import Any
 
-from fastapi import Request
+from fastapi import Depends, Request
 from pydantic import BaseModel
 
-from .actions import ACTIONS, _audit, dispatch_action
+from .actions import ACTIONS, _audit
 from .authz import can_view
 
 logger = logging.getLogger(__name__)
+
+_ACTIONS_MODNAME = "open_webui_openrouter_pipe.plugins.pipe_dashboard.actions"
 
 _ACTION_PATH = "/api/pipe/dashboard/action"
 _registered_paths: set[str] = set()
@@ -71,6 +73,41 @@ class ActionBody(BaseModel):
     args: dict = {}
 
 
+_MAX_JSON_DEPTH = 64
+
+
+def _exceeds_json_depth(raw: bytes, limit: int = _MAX_JSON_DEPTH) -> bool:
+    depth = 0
+    in_string = False
+    escaped = False
+    for byte in raw:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif byte == 0x5C:
+                escaped = True
+            elif byte == 0x22:
+                in_string = False
+            continue
+        if byte == 0x22:
+            in_string = True
+        elif byte == 0x5B or byte == 0x7B:
+            depth += 1
+            if depth > limit:
+                return True
+        elif byte == 0x5D or byte == 0x7D:
+            depth -= 1
+    return False
+
+
+async def _bounded_json_body(request: Request) -> None:
+    from fastapi import HTTPException
+
+    raw = await request.body()
+    if _exceeds_json_depth(raw):
+        raise HTTPException(status_code=400, detail="args nested too deeply")
+
+
 async def bearer_user(request: Request) -> Any:
     from fastapi import HTTPException
 
@@ -115,7 +152,7 @@ async def _resolve_fresh(request: Any, fid: str) -> tuple[Any, Any] | None:
         from open_webui.functions import get_function_module_by_id
 
         fresh_pipe = await get_function_module_by_id(request, fid)
-        mod = importlib.import_module("open_webui_openrouter_pipe.plugins.pipe_dashboard.actions")
+        mod = importlib.import_module(_ACTIONS_MODNAME)
         dispatch = getattr(mod, "dispatch_action", None)
         if dispatch is None:
             return None
@@ -125,7 +162,54 @@ async def _resolve_fresh(request: Any, fid: str) -> tuple[Any, Any] | None:
         return None
 
 
-async def _action_route(request: Request, body: ActionBody):
+def _live_actions() -> Any:
+    try:
+        mod = importlib.import_module(_ACTIONS_MODNAME)
+    except Exception:
+        logger.warning("pipe_dashboard action-route registry lookup failed", exc_info=True)
+        return None
+    return getattr(mod, "ACTIONS", None)
+
+
+def _live_dispatch() -> Any:
+    try:
+        mod = importlib.import_module(_ACTIONS_MODNAME)
+    except Exception:
+        logger.warning("pipe_dashboard action-route dispatch lookup failed", exc_info=True)
+        return None
+    return getattr(mod, "dispatch_action", None)
+
+
+def _preferred_dispatch(action: str) -> Any:
+    live = _live_dispatch()
+    if live is not None and action in (_live_actions() or {}):
+        return live
+    if _fresh_dispatch is not None:
+        return _fresh_dispatch[0]
+    if live is not None:
+        return live
+    return _audit
+
+
+async def _current_dispatch(request: Any, user: Any, pipe: Any, fid: Any, action: str = "") -> tuple[Any, Any]:
+    global _fresh_dispatch, _reconcile_retry_until
+    if pipe is not None and fid and time.monotonic() >= _reconcile_retry_until and await can_view(user, pipe):
+        async with _reconcile_lock:
+            if _fresh_dispatch is None and time.monotonic() >= _reconcile_retry_until:
+                fresh = await _resolve_fresh(request, fid)
+                if fresh is not None:
+                    _fresh_dispatch = fresh
+                    _reconcile_retry_until = 0.0
+                else:
+                    _reconcile_retry_until = time.monotonic() + _PD_RECONCILE_BACKOFF_S
+    return _preferred_dispatch(action), pipe
+
+
+async def _action_route(
+    request: Request,
+    body: ActionBody,
+    _depth: Any = Depends(_bounded_json_body),  # noqa: B008 - the guard must be declared here to run before the body is parsed
+):
     from fastapi import HTTPException
     from fastapi.responses import JSONResponse
 
@@ -134,22 +218,11 @@ async def _action_route(request: Request, body: ActionBody):
         _audit(user, body.action, "coarse_rate_limited", _client_ip(request))
         raise HTTPException(status_code=429)
     pipe = _routes_get_pipe() if _routes_get_pipe else None
-    dispatch = dispatch_action
-    if body.action not in ACTIONS and pipe is not None and getattr(pipe, "id", None):
-        global _fresh_dispatch, _reconcile_retry_until
-        if _fresh_dispatch is None and time.monotonic() >= _reconcile_retry_until and await can_view(user, pipe):
-            async with _reconcile_lock:
-                if _fresh_dispatch is None and time.monotonic() >= _reconcile_retry_until:
-                    fresh = await _resolve_fresh(request, pipe.id)
-                    if fresh is not None:
-                        _fresh_dispatch = fresh
-                        _reconcile_retry_until = 0.0
-                    else:
-                        _reconcile_retry_until = time.monotonic() + _PD_RECONCILE_BACKOFF_S
-        if _fresh_dispatch is not None:
-            dispatch, fresh_pipe = _fresh_dispatch
-            if fresh_pipe is not None:
-                pipe = fresh_pipe
+    fid = getattr(pipe, "id", None) if pipe is not None else None
+    if body.action not in ACTIONS and pipe is not None and fid:
+        dispatch, pipe = await _current_dispatch(request, user, pipe, fid, body.action)
+    else:
+        dispatch, _p = await _current_dispatch(request, user, pipe, None, body.action)
     kwargs: dict[str, Any] = {"client_ip": _client_ip(request)}
     try:
         params = inspect.signature(dispatch).parameters

@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import subprocess
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -389,6 +392,26 @@ class TestOnModels:
         assert "pipe-dashboard" in ids
         assert models[-1]["name"] == "Pipe Dashboard"
 
+
+# ── H180-2: the overlay must not clobber columns it does not own ──
+#
+# `Models.update_model_by_id` is a FULL-ROW update: it dumps the whole form
+# (`models.py:548`) and writes every column. There is no such thing as a partial
+# write, so the only thing the overlay controls is whether each value is CURRENT.
+#
+# These run in a SUBPROCESS against the REAL `ModelForm`: `owui_stubs` pre-seeds
+# `open_webui.models.models` with a plain attribute bag that has no `model_dump`
+# at all, so a test written against the stub cannot observe the default-`True`
+# `is_active` dump behaviour the whole item turns on. (Repo rule: a test that
+# loads an artifact runs in a subprocess.)
+#
+# The deactivation fake in the driver is a STANDING state, live on every read
+# after the diff read, not a one-shot flip: a one-shot fake would also let a
+# "re-read before writing" fix pass, and would make a hardcoded `is_active=True`
+# look correct.
+
+import os
+import subprocess
 
 # ── Message Extraction Tests ──
 

@@ -70,7 +70,7 @@ The plugin subscribes to six hooks, all at priority **50**:
 
 | Hook | Purpose |
 |------|---------|
-| `on_models` | Appends `{"id": "pipe-dashboard", "name": "Pipe Dashboard"}` to the model list |
+| `on_models` | Appends `{"id": "pipe-dashboard", "name": "Pipe Dashboard"}` to the model list, and ensures the row behind it exists. The hook **owns** the row's `name` and the whole of `meta`: every `meta` column is written from the row being updated, with only `meta.description` replaced, and every column outside `meta` — including `is_active`, `base_model_id` and `params` — is borrowed from a read taken immediately before the write, and the borrow is a point-in-time read, so a change landing after it is still lost. Open WebUI's `update_model_by_id` writes a whole row, so there is no partial write; keeping a borrowed column safe means writing a *current* value, not omitting it |
 | `on_request` | Intercepts requests sent to the `pipe-dashboard` model ID; starts live-session tracking for every other request |
 | `on_emitter_wrap` | Wraps the stream emitter to capture usage snapshots and tool-start events for the Live feed |
 | `on_tool_result` | Records on the live session the outcome of each tool call the pipe runs in a batch |
