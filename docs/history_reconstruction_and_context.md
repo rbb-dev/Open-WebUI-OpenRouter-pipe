@@ -210,6 +210,8 @@ When replayed artifacts include reasoning items, the pipe can optionally record 
 
 System default is `PERSIST_REASONING_TOKENS="conversation"`; see [Valves & Configuration Atlas](valves_and_configuration_atlas.md) for the exact semantics and defaults.
 
+A reasoning row keeps the `signature`, `format` and `encrypted_content` the provider sent, on every `/chat/completions` route, streamed or not: an unsigned row is one the next turn cannot replay, and on a later Anthropic turn that costs the whole span rather than the one block.
+
 ### 6.1 Where a replayed reasoning item goes
 
 A model produces reasoning at a particular moment: before a tool call, after its result, or between two
@@ -237,7 +239,9 @@ The pipe therefore offsets a continuation's ordinals by what the turn already co
 assistant messages the request carries before this generation starts. A turn that ends on reasoning gets one
 further step, so the continuation's first block is placed after its own text rather than beside the block that
 ended the previous generation. The offsets apply whether or not the Continue streams, since Open WebUI keeps the
-earlier generation on a non-streamed Continue as it does on a streamed one.
+earlier generation on a non-streamed Continue as it does on a streamed one. The two `/chat/completions` transports agree on that anchor whichever one carried the
+generation: the non-streamed one flushes each round's reasoning before its tool calls, exactly as the
+streamed one does, so a thought the model produced before a call is replayed before it on both.
 
 The continuation's first output also has to bring its own line break. Open WebUI joins that output onto the
 stored reply's last line. A hidden marker line that gains text after it is no longer a marker: its row stops

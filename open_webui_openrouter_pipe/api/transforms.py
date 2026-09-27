@@ -1129,6 +1129,7 @@ def _responses_payload_to_chat_completions_payload(
         "include_reasoning",
         "reasoning_effort",
         "verbosity",
+        "max_completion_tokens",
         "web_search_options",
         "parallel_tool_calls",
     )
@@ -1187,8 +1188,11 @@ def _responses_payload_to_chat_completions_payload(
                 chat_payload["verbosity"] = verbosity.strip()
 
     # Token limit mapping
+    explicit_cap = chat_payload.get("max_completion_tokens")
+    if isinstance(explicit_cap, int) and explicit_cap < 1:
+        chat_payload.pop("max_completion_tokens", None)
     max_output_tokens = responses_payload.get("max_output_tokens")
-    if max_output_tokens is not None:
+    if max_output_tokens is not None and "max_completion_tokens" not in chat_payload:
         chat_payload["max_tokens"] = max_output_tokens
 
     # Tools
@@ -1636,6 +1640,15 @@ def _filter_openrouter_request(payload: dict[str, Any]) -> dict[str, Any]:
     """Drop any keys not documented for the OpenRouter Responses API."""
     candidate = dict(payload or {})
     _normalise_openrouter_responses_text_format(candidate)
+    verbosity = candidate.get("verbosity")
+    if isinstance(verbosity, str) and verbosity.strip():
+        existing_text = candidate.get("text")
+        text_value: dict[str, Any] = dict(existing_text) if isinstance(existing_text, dict) else {}
+        current = text_value.get("verbosity")
+        if not isinstance(current, str) or not current.strip():
+            text_value["verbosity"] = verbosity.strip()
+        candidate["text"] = text_value
+        candidate.pop("verbosity", None)
     filtered: dict[str, Any] = {}
     for key, value in candidate.items():
         if key not in ALLOWED_OPENROUTER_FIELDS:

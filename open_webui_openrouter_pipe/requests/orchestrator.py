@@ -798,7 +798,8 @@ class RequestOrchestrator:
         refused = reasoning._apply_reasoning_preferences(responses_body, valves)
         refused = reasoning._apply_gemini_thinking_config(responses_body, valves) or refused
         reasoning._fit_effort_none_to_model(responses_body, settings_applied=valves.ENABLE_REASONING)
-        reasoning._apply_anthropic_verbosity(responses_body, valves)
+        if not use_task_model_adapter:
+            reasoning._apply_anthropic_verbosity(responses_body, valves)
         if refused and __event_emitter__:
             await self._pipe._event_emitter_handler._emit_status(
                 __event_emitter__,

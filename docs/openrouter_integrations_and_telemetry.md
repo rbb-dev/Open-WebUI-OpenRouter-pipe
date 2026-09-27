@@ -41,7 +41,7 @@ Before sending requests to OpenRouter, the pipe filters request bodies to the al
 | `tool_choice` | Tool selection directive. |
 | `plugins` | Legacy plugin configuration (retained for backward compatibility). |
 | `preset` | OpenRouter preset slug for pre-configured LLM settings (system prompts, provider routing, parameters). See [Model Variants & Presets](model_variants_and_presets.md#presets). |
-| `text` | Response text configuration (`text.format` for structured outputs / JSON mode; `text.verbosity` when supported). |
+| `text` | Response text configuration (`text.format` for structured outputs / JSON mode; `text.verbosity` when supported). `text.verbosity` is the `/responses` spelling of the verbosity setting: on chat requests the pipe writes it from a request's top-level `verbosity` (a Custom Parameter, or Open WebUI's own field) and from `REASONING_EFFORT=xhigh` on Claude Opus/Sonnet. The same value is sent as top-level `verbosity` on `/chat/completions`. Housekeeping requests are governed by the task valve, not this one. |
 | `parallel_tool_calls` | Tool parallelism hint (when supported). |
 | `user` | OpenRouter user identifier (optional; controlled by identifier valves). |
 | `session_id` | OpenRouter session identifier (optional; controlled by identifier valves). |
@@ -64,7 +64,8 @@ Before sending requests to OpenRouter, the pipe filters request bodies to the al
 
 Operational note:
 - The pipe always constructs a canonical "Responses-style" request first, then converts it to a Chat Completions payload only when needed (forced endpoint selection or automatic fallback).
-- Some parameters are Chat-only (for example `stop`, `seed`, `logprobs`, `preset`). These are ignored when calling `/responses`, but are preserved so they can be used if the request is sent via `/chat/completions`.
+- Some parameters are Chat-only (for example `stop`, `seed`, `logprobs`, `preset`, `max_completion_tokens`). These are ignored when calling `/responses`, but are preserved so they can be used if the request is sent via `/chat/completions`. The `/responses` spelling of the same cap is `max_output_tokens`, and only `max_output_tokens` is sent on that endpoint.
+- An explicit `max_completion_tokens` beats the pipe's automatic ceiling: when a request carries one, the value `USE_MODEL_MAX_OUTPUT_TOKENS` would otherwise fill is not sent, so only one token cap is ever on the wire. A `max_completion_tokens` below 1 is dropped exactly as a `max_tokens` below 1 is, so the valve's ceiling applies to it if enabled.
 - When a `preset` parameter is present in the request body, the pipe automatically forces `/chat/completions` because presets only work on that endpoint. For presets that work with `/responses`, use the VARIANT_MODELS approach with `@preset/slug` syntax instead. See [Model Variants & Presets](model_variants_and_presets.md#presets).
 
 ### 2.2 Advanced Model Parameters (per-model overrides)

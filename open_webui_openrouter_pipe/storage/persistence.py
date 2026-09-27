@@ -2094,7 +2094,7 @@ def normalize_persisted_item(
     if item_type == "function_call":
         name = normalized.get("name")
         arguments = normalized.get("arguments")
-        if not name or arguments is None:
+        if not (isinstance(name, str) and name.strip()) or arguments is None:
             return None
         if not isinstance(arguments, str):
             try:

@@ -232,6 +232,30 @@ class NonStreamingAdapter:
                         "annotation": {"type": "url_citation", "url": url, "title": title, "content": content},
                     }
 
+            if reasoning_item_id is not None:
+                reasoning_text = "".join(reasoning_text_parts).strip()
+                reasoning_item: dict[str, Any] = {
+                    "type": "reasoning",
+                    "id": reasoning_item_id,
+                    "status": "completed",
+                    "content": [{"type": "reasoning_text", "text": reasoning_text}] if reasoning_text else [],
+                    "summary": [{"type": "summary_text", "text": reasoning_summary_text}] if reasoning_summary_text else [],
+                }
+                for detail in (reasoning_details if isinstance(reasoning_details, list) else ()):
+                    if not isinstance(detail, dict):
+                        continue
+                    detail_type = detail.get("type")
+                    if detail_type == "reasoning.text":
+                        for field in ("signature", "format"):
+                            value = detail.get(field)
+                            if isinstance(value, str) and value and field not in reasoning_item:
+                                reasoning_item[field] = value
+                    elif detail_type == "reasoning.encrypted":
+                        data = detail.get("data")
+                        if isinstance(data, str) and data and "encrypted_content" not in reasoning_item:
+                            reasoning_item["encrypted_content"] = data
+                yield {"type": "response.output_item.done", "item": reasoning_item}
+
             tool_calls = message_obj.get("tool_calls")
             output_calls: list[dict[str, Any]] = []
             if isinstance(tool_calls, list) and tool_calls:
@@ -270,17 +294,6 @@ class NonStreamingAdapter:
                             "arguments": args,
                         }
                     )
-
-            if reasoning_item_id is not None:
-                reasoning_text = "".join(reasoning_text_parts).strip()
-                reasoning_item: dict[str, Any] = {
-                    "type": "reasoning",
-                    "id": reasoning_item_id,
-                    "status": "completed",
-                    "content": [{"type": "reasoning_text", "text": reasoning_text}] if reasoning_text else [],
-                    "summary": [{"type": "summary_text", "text": reasoning_summary_text}] if reasoning_summary_text else [],
-                }
-                yield {"type": "response.output_item.done", "item": reasoning_item}
 
             assistant_text = _extract_chat_message_text(message_obj)
             if not assistant_text:
