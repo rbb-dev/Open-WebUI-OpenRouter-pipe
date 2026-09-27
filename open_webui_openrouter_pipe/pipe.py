@@ -205,6 +205,8 @@ _RESTRICTION_REASON_USER_VALVES: dict[str, tuple[str, str]] = {
 
 _RESTRICTION_REASON_FALLBACK = "a restriction configured for this pipe"
 
+_PERSISTED_TASK_KINDS = frozenset({"title_generation", "tags_generation", "follow_up_generation"})
+
 
 def _task_visible_channel_emitter(
     emitter: EventEmitter | None, task: Any
@@ -774,6 +776,16 @@ class Pipe:
                 "that fail closed will do so",
             )
             rejected = sorted(set(rejected) | set(self.UserValves.model_fields))
+        elif not isinstance(stored, Mapping) and str(__user__.get("id") or ""):
+            known = getattr(stored, "model_fields_set", set()) or set()
+            rejected = sorted(
+                set(rejected) | (set(self.UserValves.model_fields) - set(known))
+            )
+            self.logger.log(
+                warn_level(_warned_user_valves, "stored_read_unavailable"),
+                "The stored row could not be read; every setting the pipe cannot "
+                "evidence from what Open WebUI supplied is reported unreadable",
+            )
         return user_valves, rejected
 
     def _maybe_configure_timing_file(self, *, reopen: bool = False) -> bool:
@@ -1056,6 +1068,55 @@ class Pipe:
             self._plugin_registry.init_plugins(self)
         return self._plugin_registry
 
+    async def _deactivate_switched_off_filters(self) -> None:
+        all_web_tools_disabled = every_web_tool_is_off(self.valves)
+        if all_web_tools_disabled:
+            try:
+                from open_webui.models.functions import Functions as _Funcs
+                wt = await _Funcs.get_function_by_id("openrouter_web_tools")
+                if wt and getattr(wt, "is_active", False):
+                    await _Funcs.update_function_by_id("openrouter_web_tools", {"is_active": False})
+                    self.logger.info("Disabled OpenRouter Web Tools filter (all tools disabled)")
+            except Exception:
+                self.logger.debug("Disabling OpenRouter Web Tools filter failed", exc_info=True)
+        if not self.valves.ENABLE_OPENROUTER_FUSION:
+            try:
+                from open_webui.models.functions import Functions as _Funcs
+                ff = await _Funcs.get_function_by_id("openrouter_fusion")
+                if ff and getattr(ff, "is_active", False):
+                    await _Funcs.update_function_by_id("openrouter_fusion", {"is_active": False})
+                    self.logger.info("Disabled OpenRouter Fusion filter (ENABLE_OPENROUTER_FUSION=False)")
+            except Exception:
+                self.logger.debug("Disabling OpenRouter Fusion filter failed", exc_info=True)
+        if not self.valves.ENABLE_IMAGE_GENERATION:
+            try:
+                from open_webui.models.functions import Functions as _Funcs
+                ig = await _Funcs.get_function_by_id("openrouter_image_gen")
+                if ig and getattr(ig, "is_active", False):
+                    await _Funcs.update_function_by_id("openrouter_image_gen", {"is_active": False})
+                    self.logger.info("Disabled OpenRouter Image Generation filter (ENABLE_IMAGE_GENERATION=False)")
+            except Exception:
+                self.logger.debug("Disabling OpenRouter Image Generation filter failed", exc_info=True)
+        if not self.valves.ENABLE_VIDEO_GENERATION:
+            try:
+                from open_webui.models.functions import Functions as _Funcs
+                vg = await _Funcs.get_function_by_id("openrouter_video_gen")
+                if vg and getattr(vg, "is_active", False):
+                    await _Funcs.update_function_by_id("openrouter_video_gen", {"is_active": False})
+                    self.logger.info("Disabled OpenRouter Video Generation filter (ENABLE_VIDEO_GENERATION=False)")
+            except Exception:
+                self.logger.debug("Disabling OpenRouter Video Generation filter failed", exc_info=True)
+        try:
+            from open_webui.models.functions import Functions as _Funcs
+            legacy = await _Funcs.get_function_by_id("openrouter_video_openrouter_video")
+            if legacy is not None:
+                await _Funcs.delete_function_by_id("openrouter_video_openrouter_video")
+                self.logger.info(
+                    "Removed legacy generic OpenRouter Video Generation filter row 'openrouter_video_openrouter_video'"
+                )
+        except Exception as exc:
+            self.logger.debug("Legacy video filter cleanup failed: %s", exc, exc_info=True)
+
     # ENTRY POINTS
 
     def _schedule_web_tools_filter_repair(self) -> None:
@@ -1144,6 +1205,7 @@ class Pipe:
         if refresh_error and available_models:
             level = warn_level(_warned_pipes_maintenance, f"catalog_cached:{type(refresh_error).__name__}")
             self.logger.log(level, "Serving %d cached OpenRouter model(s) due to refresh failure.", len(available_models))
+        await self._deactivate_switched_off_filters()
         if refresh_error and not available_models:
             return []
 
@@ -1165,55 +1227,18 @@ class Pipe:
             except Exception as exc:
                 level = warn_level(_warned_pipes_maintenance, f"fusion:{type(exc).__name__}")
                 self.logger.log(level, "AUTO_INSTALL_FUSION_FILTER failed: %s", exc, exc_info=True)
-        elif not self.valves.ENABLE_OPENROUTER_FUSION:
-            try:
-                from open_webui.models.functions import Functions as _Funcs
-                ff = await _Funcs.get_function_by_id("openrouter_fusion")
-                if ff and getattr(ff, "is_active", False):
-                    await _Funcs.update_function_by_id("openrouter_fusion", {"is_active": False})
-                    self.logger.info("Disabled OpenRouter Fusion filter (ENABLE_OPENROUTER_FUSION=False)")
-            except Exception:
-                self.logger.debug("Disabling OpenRouter Fusion filter failed", exc_info=True)
         if self.valves.AUTO_INSTALL_IMAGE_GEN_FILTER and self.valves.ENABLE_IMAGE_GENERATION:
             try:
                 await self._ensure_filter_manager().ensure_openrouter_image_gen_filter_function_id()
             except Exception as exc:
                 level = warn_level(_warned_pipes_maintenance, f"image_gen:{type(exc).__name__}")
                 self.logger.log(level, "AUTO_INSTALL_IMAGE_GEN_FILTER failed: %s", exc, exc_info=True)
-        elif not self.valves.ENABLE_IMAGE_GENERATION:
-            try:
-                from open_webui.models.functions import Functions as _Funcs
-                ig = await _Funcs.get_function_by_id("openrouter_image_gen")
-                if ig and getattr(ig, "is_active", False):
-                    await _Funcs.update_function_by_id("openrouter_image_gen", {"is_active": False})
-                    self.logger.info("Disabled OpenRouter Image Generation filter (ENABLE_IMAGE_GENERATION=False)")
-            except Exception:
-                self.logger.debug("Disabling OpenRouter Image Generation filter failed", exc_info=True)
         if self.valves.AUTO_INSTALL_VIDEO_FILTERS and self.valves.ENABLE_VIDEO_GENERATION:
             try:
                 await self._ensure_filter_manager().ensure_openrouter_video_gen_filter_function_ids(available_models)
             except Exception as exc:
                 level = warn_level(_warned_pipes_maintenance, f"video:{type(exc).__name__}")
                 self.logger.log(level, "AUTO_INSTALL_VIDEO_FILTERS per-model failed: %s", exc, exc_info=True)
-        elif not self.valves.ENABLE_VIDEO_GENERATION:
-            try:
-                from open_webui.models.functions import Functions as _Funcs
-                vg = await _Funcs.get_function_by_id("openrouter_video_gen")
-                if vg and getattr(vg, "is_active", False):
-                    await _Funcs.update_function_by_id("openrouter_video_gen", {"is_active": False})
-                    self.logger.info("Disabled OpenRouter Video Generation filter (ENABLE_VIDEO_GENERATION=False)")
-            except Exception:
-                self.logger.debug("Disabling OpenRouter Video Generation filter failed", exc_info=True)
-        try:
-            from open_webui.models.functions import Functions as _Funcs
-            legacy = await _Funcs.get_function_by_id("openrouter_video_openrouter_video")
-            if legacy is not None:
-                await _Funcs.delete_function_by_id("openrouter_video_openrouter_video")
-                self.logger.info(
-                    "Removed legacy generic OpenRouter Video Generation filter row 'openrouter_video_openrouter_video'"
-                )
-        except Exception as exc:
-            self.logger.debug("Legacy video filter cleanup failed: %s", exc, exc_info=True)
         if self.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER:
             try:
                 await self._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
@@ -1441,7 +1466,7 @@ class Pipe:
                 if safe_event_emitter:
                     await self._event_emitter_handler._emit_notification(safe_event_emitter, message, level="warning")
                 SessionLogger.cleanup()
-                return join_answer_and_card("", message)
+                return self._degraded_result(__task__, message)
 
             if self._warmup_failed and (self._startup_task is None or self._startup_task.done()):
                 message = "Service unavailable due to startup issues"
@@ -1453,7 +1478,7 @@ class Pipe:
                         done=True,
                     )
                 SessionLogger.cleanup()
-                return join_answer_and_card("", message)
+                return self._degraded_result(__task__, message)
             await self._ensure_concurrency_controls(valves)
             timing_mark("after_concurrency_controls")
             queue = self._request_queue
@@ -1467,7 +1492,7 @@ class Pipe:
                         done=True,
                     )
                 SessionLogger.cleanup()
-                return join_answer_and_card("", "Service temporarily unavailable")
+                return self._degraded_result(__task__, "Service temporarily unavailable")
 
             loop = asyncio.get_running_loop()
             stream_queue: asyncio.Queue[dict[str, Any] | str | None] | None = None
@@ -1526,7 +1551,7 @@ class Pipe:
                         done=True,
                     )
                 SessionLogger.cleanup()
-                return join_answer_and_card("", "Server busy (503)")
+                return self._degraded_result(__task__, "Server busy (503)")
         except Exception:
             self.logger.exception("Pre-enqueue setup failed")
             if safe_event_emitter:
@@ -1543,7 +1568,7 @@ class Pipe:
                 SessionLogger.cleanup()
             except Exception:
                 self.logger.debug("SessionLogger.cleanup failed during pre-enqueue recovery", exc_info=True)
-            return join_answer_and_card("", "Request setup failed. Please retry.")
+            return self._degraded_result(__task__, "Request setup failed. Please retry.")
 
         if wants_stream and stream_queue is not None:
             @timed
@@ -3584,7 +3609,7 @@ class Pipe:
         catalog_by_original: dict[str, dict[str, Any]] = {}
         catalog_by_sanitized: dict[str, dict[str, Any]] = {}
         catalog_by_norm: dict[str, dict[str, Any]] = {}
-        for model in available_models:
+        for model in allowlist_models:
             original_id = model.get("original_id", "")
             if original_id:
                 catalog_by_original[original_id] = model
@@ -3613,23 +3638,21 @@ class Pipe:
             if full_norm_id and full_norm_id in existing_norm_ids:
                 continue
 
-            is_real_variant = bool(full_norm_id and not is_preset and full_norm_id in catalog_by_norm)
-            if is_real_variant:
-                variant_model = dict(catalog_by_norm[full_norm_id])
-                expanded.append(variant_model)
-                existing_norm_ids.add(full_norm_id)
-                self.logger.debug(
-                    "Added enforcement variant: %s (base=%s, virtual=False)",
-                    full_norm_id,
-                    base_norm_id,
-                )
-                continue
+            if base_model is not None and not is_preset:
+                for _m in available_models:
+                    if _m.get("norm_id") == full_norm_id:
+                        expanded.append(dict(_m))
+                        existing_norm_ids.add(full_norm_id)
+                        break
+                if full_norm_id in existing_norm_ids:
+                    continue
 
             if not base_model:
                 separator = "@" if is_preset else ":"
                 self.logger.log(
-                    warn_level(_warned_pipes_maintenance, f"enforcement_base_missing:{base_id}"),
-                    "Variant model base not found in catalog: %s (skipping %s%s%s)",
+                    warn_level(_warned_pipes_maintenance, f"enforcement_base_not_allowed:{base_id}"),
+                    "Variant model base %s is not admitted by MODEL_ID (absent from the "
+                    "catalog, or not in the allowlist); skipping %s%s%s",
                     base_id, base_id, separator, variant_tag,
                 )
                 continue
@@ -3850,6 +3873,15 @@ class Pipe:
         if "title" in name:
             return json.dumps({"title": "Chat"})
         return ""
+
+    def _degraded_result(self, task: Any, content: str) -> str:
+        if TaskModelAdapter._uses_task_model_adapter(task):
+            if TaskModelAdapter._task_name(task) in _PERSISTED_TASK_KINDS:
+                return join_answer_and_card("", content)
+            fallback = self._build_task_fallback_content(TaskModelAdapter._task_name(task))
+            if fallback:
+                return fallback
+        return join_answer_and_card("", content)
 
     @timed
     def _merge_valves(self, global_valves, user_valves) -> Pipe.Valves:

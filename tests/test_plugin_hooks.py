@@ -441,7 +441,7 @@ async def test_a_failing_filter_install_is_reported_once_across_repeated_pipes_c
         # here rather than given a driver written to satisfy the census: a drive that
         # exists only to arm a latch passes for the wrong reason, and this file has
         # already paid for that twice.
-        "enforcement_base_missing",
+        "enforcement_base_not_allowed",
         "enforcement_base_unnormalized",
         "chat_catalog_refresh",
     }
@@ -455,7 +455,7 @@ async def test_a_failing_filter_install_is_reported_once_across_repeated_pipes_c
         "image_gen_model",
         "video", "direct_uploads", "provider_routing", "stale_prune", "on_models",
         "zdr_list_unavailable", "models_missing", "variant_base_missing",
-        "enforcement_base_missing", "enforcement_base_unnormalized",
+        "enforcement_base_not_allowed", "enforcement_base_unnormalized",
         "chat_catalog_refresh",
     }
     from tests.warn_latch_census import UNRESOLVABLE_MESSAGE

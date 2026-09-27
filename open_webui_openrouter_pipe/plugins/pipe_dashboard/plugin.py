@@ -100,7 +100,8 @@ class PipeDashboardPlugin(PluginBase):
             description=(
                 "Show the dashboard's Update tab and allow its actions (check, apply, restore, "
                 "delete snapshot). Off: the tab reports disabled and every update action fails "
-                "closed, including auto-update."
+                "closed, including auto-update. The tab also refuses when the stored valve set "
+                "cannot be read, and says so rather than reporting an admin disable."
             ),
         )),
         "PIPE_DASHBOARD_UPDATE_SNAPSHOT_KEEP": (int, Field(

@@ -802,8 +802,6 @@ class RequestOrchestrator:
                 user_requests_zdr = True
                 zdr_reason = "ZDR_PREFERENCE_UNREADABLE"
             else:
-                # None from the reader is a failed row read, not evidence about this
-                # field; an undecodable blob arrives above as every field rejected.
                 user_requests_zdr = user_valves.REQUEST_ZDR
         enforce_zdr = admin_enforce_zdr or user_requests_zdr
         if admin_enforce_zdr:

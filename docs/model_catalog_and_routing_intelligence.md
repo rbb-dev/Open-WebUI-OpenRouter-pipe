@@ -87,6 +87,7 @@ Behavior:
 
 At request time, the pipe computes the allowed model set based on `MODEL_ID` and the loaded catalog:
 
+- `VARIANT_MODELS` is a second source of admission: a variant whose base is outside `MODEL_ID` is refused at request time, however it is named, **once `MODEL_ID` resolves to at least one catalog model**; when `MODEL_ID` names nothing in the catalog the whole catalog is admitted instead (B35/H70-1).
 - For normal chat/API calls:
   - if the requested model is not in the allowed set, the pipe emits a user-facing error telling the user to choose an allowed model.
 - For Open WebUI “task” requests (`__task__`):

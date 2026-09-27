@@ -452,18 +452,21 @@ async def test_every_return_path_yields_something_parse_user_valves_understands(
 
 @pytest.mark.asyncio
 async def test_a_broken_valve_row_does_not_end_that_users_chat():
-    """A row read that fails must not decide the ZDR question.
+    """A row read that fails fails CLOSED, and the chat is not ended either way.
 
     Open WebUI returns None from `get_user_valves_by_id_and_user_id` for a single user
-    whose settings row will not validate. (A blob that will not DECRYPT is a different
-    case: decrypt_valves returns `{}`, and that is handled as unreadable rather than as
-    "nothing stored" -- see the sibling that drives it.) The host is
-    healthy and every other user is unaffected, but that row stays broken until someone
-    repairs it -- so treating the failure as "the user might have asked for ZDR" ends
-    that one user's chat indefinitely, for a preference they may never have set.
+    whose settings row will not validate, and then substitutes a default-constructed
+    instance for the pipe -- with no diagnostic of its own, because its own valves never
+    drive a privacy decision. This pipe does: it routes provider retention from
+    `REQUEST_ZDR`. An unreadable row is therefore not evidence the user declined, and
+    routing without ZDR is a privacy failure, while refusing a non-ZDR model is a
+    visible, repairable one. The one rule -- an unreadable preference fails closed --
+    covers both this and the undecodable-blob arm above.
 
-    A REJECTED FIELD is different: the row was read, REQUEST_ZDR was in it, and it would
-    not parse. There the answer is genuinely lost and enforcing is right.
+    What still holds from the original position: the chat is not ended. The request is
+    routed ZDR, or refused by the ordinary restriction card, which names the user's own
+    setting and tells them what to repair. Repairing the row restores the answer and the
+    card goes away by itself.
 
     Its opposite arm is the sibling below: the two end in opposite places -- one
     answered, one refused -- so neither a hardcoded enforce nor a hardcoded allow
@@ -474,13 +477,23 @@ async def test_a_broken_valve_row_does_not_end_that_users_chat():
 
     from open_webui_openrouter_pipe import Pipe
     from open_webui_openrouter_pipe.core.config import EncryptedStr
+    from open_webui_openrouter_pipe.core.error_formatter import ErrorFormatter
 
     class _RaisingFunctions:
         async def get_user_valves_by_id_and_user_id(self, _id, _user_id, db=None):
             raise RuntimeError("this user's settings row will not validate")
 
+    reasons: list[str] = []
+    real_emit = ErrorFormatter._emit_templated_error
+
+    async def _record(self, emitter, *, variables=None, **kw):
+        variables = variables or {}
+        reasons.append(variables.get("restriction_reasons", ""))
+        return await real_emit(self, emitter, variables=variables, **kw)
+
     original = owf.Functions
     owf.Functions = _RaisingFunctions()
+    ErrorFormatter._emit_templated_error = _record  # pyright: ignore[reportAttributeAccessIssue]
     pipe = Pipe()
     try:
         pipe.valves.API_KEY = EncryptedStr("test-api-key")
@@ -525,18 +538,22 @@ async def test_a_broken_valve_row_does_not_end_that_users_chat():
             await _consume_stream(result)
     finally:
         owf.Functions = original
+        ErrorFormatter._emit_templated_error = real_emit  # pyright: ignore[reportAttributeAccessIssue]
         await pipe.close()
 
-    assert captured, (
-        "the request never reached OpenRouter: a failed read of one user's valve row "
-        "refused a model that is not ZDR-capable, so that user cannot chat at all until "
-        "somebody repairs their settings row.\n"
+    assert not captured, (
+        "the stored valve row could not be read, so this user's Zero Data Retention "
+        "answer is unknown -- yet the request was sent to a model that is not "
+        f"ZDR-capable: {captured[-1] if captured else None!r}\n"
         f"events={[e.get('type') for e in events]}"
     )
-    provider = captured[-1].get("provider") or {}
-    assert provider.get("zdr") is not True, (
-        "ZDR was forced on by a failed row read, which is not evidence that this user "
-        f"asked for it (provider={provider!r})"
+    assert reasons, (
+        "the request was refused, but no restriction was rendered, so the card the user "
+        f"sees reports nothing about what to repair. events={[e.get('type') for e in events]}"
+    )
+    assert "ZDR_PREFERENCE_UNREADABLE" in reasons[-1] or "could not be read" in reasons[-1], (
+        f"the refusal reported {reasons[-1]!r}, which neither names the unreadable "
+        "preference nor says the answer could not be read"
     )
 
 

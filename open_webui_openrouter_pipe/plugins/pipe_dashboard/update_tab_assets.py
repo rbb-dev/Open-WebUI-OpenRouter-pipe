@@ -59,6 +59,7 @@ UPDATE_TAB_JS = """
       incompatible_owui: 'This release needs a newer Open WebUI than this server runs. Upgrade Open WebUI first.',
       update_in_progress: 'Another update is already running. Wait for it to finish, then press Check now.',
       disabled: 'Updates are switched off by the "Enable the Update tab" valve.',
+      valve_unreadable: 'The stored update settings could not be read, so every stored setting has fallen back to its default and every update action is refused until the server can read it again. A rotated WEBUI_SECRET_KEY with valve encryption on does this; the server log has the warning.',
       bad_repo_valve: 'The update repo valve is not a valid owner/repo value. Fix it in the Config tab.',
       repo_not_found: 'GitHub has no such repo or no releases for it. Check the update repo valve.',
       not_found: 'That snapshot no longer exists. The list has been refreshed.',
@@ -167,7 +168,9 @@ UPDATE_TAB_JS = """
     function updRender() {
       var d = updData || {};
       if (d.enabled === false) {
-        updEl('upd-installed-body').innerHTML = 'Updates are disabled by the admin valve.';
+        updEl('upd-installed-body').innerHTML = d.reason === 'valve_unreadable'
+          ? UPD_ERRORS.valve_unreadable
+          : 'Updates are disabled by the admin valve.';
         updEl('upd-latest-body').innerHTML = '';
         var cb0 = updEl('upd-check-now');
         if (cb0) cb0.style.display = 'none';
@@ -231,7 +234,8 @@ UPDATE_TAB_JS = """
         && (d.update_available || sameVersion));
       applyBtn.style.display = canApply ? '' : 'none';
       applyBtn.textContent = d.update_available ? 'Update...' : 'Reinstall...';
-      if (d.no_matching_asset) {
+      var updRelAssets = (latest && latest.assets) || {};
+      if (latest && !(updRelAssets.flat || updRelAssets.compressed)) {
         applyBtn.style.display = 'none';
         updSetMsg(UPD_ERRORS.no_matching_asset, true);
       }

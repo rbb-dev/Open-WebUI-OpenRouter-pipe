@@ -590,27 +590,6 @@ class TestVariantEnforcementExpansion:
         finally:
             pipe.shutdown()
 
-    def test_expand_variants_for_enforcement_real_variant_not_virtual(self):
-        """Real catalog variants should NOT be marked virtual or added to the virtual map."""
-        pipe = Pipe()
-        pipe.valves.VARIANT_MODELS = "arcee-ai/trinity-mini:free"
-        try:
-            available = [
-                {"id": "arcee-ai.trinity-mini", "norm_id": "arcee-ai.trinity-mini",
-                 "name": "Trinity Mini", "original_id": "arcee-ai/trinity-mini"},
-                {"id": "arcee-ai.trinity-mini:free", "norm_id": "arcee-ai.trinity-mini:free",
-                 "name": "Trinity Mini Free", "original_id": "arcee-ai/trinity-mini:free"},
-            ]
-            allowlist = [available[0]]
-            expanded, vvb = pipe._expand_variants_for_enforcement(allowlist, pipe.valves, available)
-
-            assert len(expanded) == 2
-            variant = next(m for m in expanded if m["norm_id"] == "arcee-ai.trinity-mini:free")
-            assert variant.get("variant_is_virtual") is not True
-            assert "arcee-ai.trinity-mini:free" not in vvb
-        finally:
-            pipe.shutdown()
-
     def test_expand_variants_for_enforcement_from_model_id(self):
         """MODEL_ID routing-only variants should be expanded for enforcement."""
         pipe = Pipe()
@@ -645,7 +624,6 @@ class TestVariantEnforcementExpansion:
             assert vvb == {}
         finally:
             pipe.shutdown()
-
 
 class TestVariantRegistryEnforcement:
     """Tests for variant-aware registry functions (Issue #16).

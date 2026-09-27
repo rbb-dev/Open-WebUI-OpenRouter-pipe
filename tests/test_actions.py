@@ -614,7 +614,7 @@ async def test_update_gate_uses_row_valves_over_ctx(update_env):
         update_env.pipe, _user(role="admin"), "update_check", {}, request=_req()
     )
     assert status == 200
-    assert payload["result"] == {"enabled": False}
+    assert payload["result"] == {"enabled": False, "reason": "disabled"}
     assert update_env.svc.calls == []
 
 
@@ -626,7 +626,7 @@ async def test_update_check_disabled_short_circuits(update_env):
         update_env.pipe, _user(), "update_check", {}, request=_req()
     )
     assert status == 200
-    assert payload["result"] == {"enabled": False}
+    assert payload["result"] == {"enabled": False, "reason": "disabled"}
     assert update_env.svc.calls == []
 
 
@@ -647,7 +647,7 @@ async def test_update_gate_denies_when_the_persisted_valve_is_unreadable(update_
         )
 
     assert status == 200
-    assert payload["result"] == {"enabled": False}, payload
+    assert payload["result"] == {"enabled": False, "reason": "valve_unreadable"}, payload
     assert update_env.svc.calls == [], "an update action ran behind an unverifiable gate"
     assert any(
         "refusing update actions" in m for m in caplog.messages

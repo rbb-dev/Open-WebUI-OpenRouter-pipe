@@ -17,6 +17,7 @@ import queue
 import threading
 import time
 from decimal import Decimal
+from types import SimpleNamespace
 from pathlib import Path
 from typing import Any, Dict, Optional
 from unittest.mock import MagicMock, Mock, patch, AsyncMock

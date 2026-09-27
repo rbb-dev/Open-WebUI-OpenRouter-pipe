@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import shutil
+import subprocess
+
 import pytest
 pytest.importorskip("open_webui_openrouter_pipe.plugins.pipe_dashboard")
 
@@ -26,8 +30,11 @@ def _js_fn_body(js: str, name: str) -> str:
     Asserting that an identifier *appears* says nothing about what it does: a
     ``freshToken`` that memoises its first read satisfies every name-based check while
     replaying the render-time token forever.
+
+    The ``(`` is part of the match and not decoration: without it ``updFetch`` finds
+    ``updFetchFailed`` first and silently returns the wrong function's body.
     """
-    start = js.index("function " + name)
+    start = js.index("function " + name + "(")
     open_brace = js.index("{", start)
     depth = 0
     for i in range(open_brace, len(js)):
@@ -268,6 +275,20 @@ def test_update_tab_markers():
     assert "Checking" in html
     assert "Confirm restore" in html and "Confirm delete" in html
     assert "this worker:" in html
+    assert "valve_unreadable" in html, (
+        "the shell carries no valve_unreadable string, so an update surface that refused "
+        "because the stored valve set could not be read renders the same sentence as a "
+        "genuine admin disable"
+    )
+    body = _js_fn_body(html, "updRender")
+    assert "d.reason === 'valve_unreadable'" in body, (
+        "updRender does not branch on d.reason, so the refusal text cannot distinguish "
+        "an admin switch from an unreadable stored valve set"
+    )
+    assert "d.enabled === false" in body, (
+        "the valve_unreadable branch is not beside the enabled:false early return, so it "
+        "is unreachable on the only payload that carries it"
+    )
     import re as _re
 
     native_dialogs = _re.findall(r"(?:(?<![\w$.])|window\.)(?:confirm|alert|prompt)\s*\(", html)
