@@ -7,9 +7,12 @@ and final status description formatting with usage metrics.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 from typing import TYPE_CHECKING, Any
+
+from starlette.responses import StreamingResponse
 
 from ..core.timing_logger import timed
 
@@ -106,6 +109,40 @@ def _error_is_present(value: Any) -> bool:
 
 def _as_text(value: Any) -> str | None:
     return value if isinstance(value, str) else None
+
+
+def _request_path(request: Any) -> str:
+    url = getattr(request, "url", None)
+    return getattr(url, "path", "") or ""
+
+
+_ANTHROPIC_MESSAGES_PATHS = ("/api/v1/messages", "/api/message")
+
+
+def _is_anthropic_endpoint(path: str) -> bool:
+    return any(path == p or path.startswith(p + "/") for p in _ANTHROPIC_MESSAGES_PATHS)
+
+
+def _api_caller_error_response(
+    exc: OpenRouterAPIError, *, stream: bool, path: str
+) -> StreamingResponse | None:
+    if stream or _is_anthropic_endpoint(path):
+        return None
+    error: dict[str, Any] = {
+        "message": exc.upstream_message or exc.openrouter_message or exc.reason,
+        "code": exc.status,
+    }
+    headers: dict[str, str] = {}
+    retry_after = _resolve_retry_after_seconds(exc.metadata)
+    if retry_after is not None:
+        error["retry_after_seconds"] = retry_after
+        headers["Retry-After"] = str(int(retry_after))
+    return StreamingResponse(
+        iter([json.dumps({"error": error}).encode("utf-8")]),
+        status_code=400,
+        media_type="application/json",
+        headers=headers,
+    )
 
 
 class ErrorFormatter:

@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import aiohttp
 from starlette.requests import Request
+from starlette.responses import StreamingResponse
 
 from ..api.transforms import (
     CompletionsBody,
@@ -25,10 +26,12 @@ from ..api.transforms import (
 )
 from ..core.config import _PIPE_METADATA_KEY
 from ..core.context_budget import build_futility_notice, default_output_reservation
+from ..core.error_formatter import _api_caller_error_response
 from ..core.errors import (
     OpenRouterAPIError,
     _is_reasoning_effort_error,
     _parse_supported_effort_values,
+    is_sign_in_failure,
 )
 from ..core.fusion_defaults import find_fusion_entry, resolve_fusion_run
 from ..core.logging_system import SessionLogger
@@ -76,6 +79,20 @@ if TYPE_CHECKING:
 
 
 from ..models.registry import uses_dedicated_image_api
+
+
+def _is_api_caller(metadata: dict[str, Any] | None) -> bool:
+    meta = metadata or {}
+    return not (bool(meta.get("chat_id")) and bool(meta.get("message_id")))
+
+
+def _provider_error_response(
+    exc: OpenRouterAPIError, *, stream: bool, request: Any
+) -> StreamingResponse | None:
+    url = getattr(request, "url", None)
+    return _api_caller_error_response(
+        exc, stream=stream, path=getattr(url, "path", "") or ""
+    )
 
 
 def _inject_image_modalities(
@@ -414,6 +431,16 @@ class RequestOrchestrator:
         self._pipe = pipe
         self.logger = logger
 
+    async def _note_provider_failure(self, exc: OpenRouterAPIError) -> None:
+        if is_sign_in_failure(exc):
+            self._pipe._note_auth_failure()
+        await self._pipe._dispatch_plugin_event(
+            "dispatch_on_generation_complete",
+            None,
+            "failed",
+            request_id=SessionLogger.request_id.get() or "",
+        )
+
     def _resolve_fusion_live_enabled(self, valves: Pipe.Valves, is_fusion: bool, is_direct: bool) -> bool:
         return bool(
             valves.ENABLE_OPENROUTER_FUSION
@@ -447,7 +474,7 @@ class RequestOrchestrator:
         outcome_sink: dict[str, Any] | None = None,
         user_valves: Any = None,
         rejected_user_valves: list[str] | None = None,
-    ) -> AsyncGenerator[str, None] | dict[str, Any] | str | None:
+    ) -> AsyncGenerator[str, None] | dict[str, Any] | str | StreamingResponse | None:
         def _extract_direct_uploads(metadata: dict[str, Any]) -> dict[str, Any]:
             pipe_meta = metadata.get(_PIPE_METADATA_KEY)
             if not isinstance(pipe_meta, dict):
@@ -1667,6 +1694,14 @@ class RequestOrchestrator:
                         request_id=SessionLogger.request_id.get() or "",
                     )
                     continue
+
+                if _is_api_caller(__metadata__):
+                    escape = _provider_error_response(
+                        exc, stream=responses_body.stream, request=__request__
+                    )
+                    if escape is not None:
+                        await self._note_provider_failure(exc)
+                        return escape
 
                 deferred_flush = retry_handoff.pop(DEFERRED_REASONING_FLUSH, None)
                 if deferred_flush is not None:

@@ -14,10 +14,11 @@ The pipe aims to avoid raw exception traces surfacing in the Open WebUI UI. Inst
 - Emits user-facing Markdown messages (templates) with actionable remediation guidance.
 - Includes contextual identifiers (session/user) when available.
 
-There are two main error rendering paths:
+There are two main error rendering paths, and a third that does not render at all:
 
 1. **OpenRouter “request rejected” templates** (OpenRouter HTTP status handling and parsed provider errors).
 2. **Generic templated errors** (timeouts/connectivity/internal failures handled by `_emit_templated_error`).
+3. **API callers with no chat**, where there is nowhere to write a card: a provider rejection is returned as an HTTP error instead. Gated on a truthy `chat_id` **and** `message_id` — Open WebUI's own idiom for "is there a chat to write this into" (`main.py:1703`, `utils/middleware.py:3286`) — with `stream: false`, and never on an Anthropic Messages path (`main.py:2054-2063` re-wraps the response for the Anthropic converter, which has no error branch). The gate is a negative test on the request path, not a check for `/api/chat/completions`, so it also fires on Open WebUI's task routes. See [API callers with no chat](#c-api-callers-with-no-chat-http-error-instead-of-a-card).
 
 ---
 
@@ -77,6 +78,32 @@ When a chat reply's call to OpenRouter fails without being rejected, or anything
 | Any other exception | `INTERNAL_ERROR_TEMPLATE` |
 
 The timeout template's `timeout_seconds` is the limit that ran out: `HTTP_CONNECT_TIMEOUT_SECONDS` while connecting, `HTTP_SOCK_READ_SECONDS` while waiting for data, or `HTTP_TOTAL_TIMEOUT_SECONDS` for the whole request. The connection template's `error_type` names the failure (for example `ClientConnectorError`). A stream that closes early without an error, once any of its events has arrived, also gets `STREAM_INTERRUPTED_TEMPLATE`; see [Streaming Pipeline & Emitters](streaming_pipeline_and_emitters.md). Picture-only image models, video models and the panel, judge and final-answer calls inside internal Fusion report failures in their own way, and a required internal file that cannot be read shows its own message.
+
+### C) API callers with no chat: HTTP error instead of a card
+
+A card is written into a chat, for a person to read. A caller with no chat to write it into has nothing to show it in, and no way to tell a failure from a success — so on that leg the rejection leaves the pipe as an HTTP error rather than as Markdown.
+
+| Condition | Result |
+| --- | --- |
+| No truthy `chat_id` **or** no truthy `message_id`, `stream: false`, on any path except the two Anthropic Messages paths (`/api/v1/messages`, `/api/message`) | `StreamingResponse`, `status_code: 400`, `Content-Type: application/json` |
+| Any truthy `chat_id` **and** `message_id` | the card, unchanged |
+| `stream: true` | the card — the escape's return value is discarded: on a streamed turn `pipe.py:1554` hands back `_stream()`, which never reads the job future, so the `StreamingResponse` the escape built is thrown away |
+
+The body is the error envelope, not the upstream payload:
+
+```json
+{"error": {"message": "<the upstream message>", "code": 503}}
+```
+
+**The status is normalised to `400`, and the upstream status travels in the body's `code`.** That is what Open WebUI does for its own models: `routers/openai.py:1736` returns `JSONResponse(status_code=r.status)`, and a task route only converts a *raised* exception into a 400 (`routers/tasks.py:205-211`) — a returned response passes through. Normalising to 400 matches that shape while keeping the caller's one branch (`code >= 400`) working, and the message survives verbatim so nothing is lost.
+
+The body is the uniform envelope for every case, including a 5xx that carries a provider's own `metadata.raw`. That object has no `code` field, so emitting it verbatim would drop the one signal the normalisation exists to preserve.
+
+**The gate is truthiness, on two keys.** `main.py:1243` builds `chat_id = form_data.pop('chat_id', None) or ''` for a caller with no chat, so the keys are *present and empty*; `utils/middleware.py:3286` tests truthiness for the same reason. A third key would be stricter than the idiom it copies, and a chat turn that races the socket (`session_id` is `undefined` until the socket connects) would lose its card. `__event_emitter__` is attached for both kinds of caller (`main.py:1277-1306` sets all three keys; `functions.py:239` tests key presence), so it is not a discriminator.
+
+**Open WebUI's own task routes reach this gate**, and that is the point: they send a `chat_id` and no `message_id`, and Open WebUI's own models surface a provider failure on those routes as a non-2xx — `routers/openai.py:1736` returns `JSONResponse(status_code=r.status)`, and a `StreamingResponse` a task route returns passes through its own handler untouched. Making the pipe agree with its own models is what the truthiness gate buys. Of the eight task routes, seven are consumed by the pipe's task-model adapter, which answers 200 with a `[Task error] …` string; **Mixture of Agents is the one that reaches the gate** (`task_model_adapter.py:90` excludes exactly one task name, `moa_response_generation`), and it gets the same non-2xx its host's own models get — a failure there reaches the browser console, not a chat.
+
+**`/api/v1/messages` is excluded.** `main.py:2068-2077` re-wraps *any* `StreamingResponse` through `openai_stream_to_anthropic_stream`, which skips every line that is not SSE `data:` and every payload without `choices` — it has no error branch at all. An HTTP error would arrive as an empty `end_turn` with the error text gone, which is strictly worse than the card.
 
 ---
 

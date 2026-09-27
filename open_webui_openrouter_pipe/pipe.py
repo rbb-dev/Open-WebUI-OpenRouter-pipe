@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast, no_type_check
 # Third-party imports
 import aiohttp
 from fastapi import Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from tenacity import (
     AsyncRetrying,
@@ -2536,7 +2536,7 @@ class Pipe:
         valves: Pipe.Valves | None = None,
         session: aiohttp.ClientSession | None = None,
         outcome_sink: dict[str, Any] | None = None,
-    ) -> AsyncGenerator[str, None] | dict[str, Any] | str | None:
+    ) -> AsyncGenerator[str, None] | dict[str, Any] | str | StreamingResponse | None:
         """Process a user request and return either a stream or final text.
 
         When ``body['stream']`` is ``True`` the method yields deltas from
@@ -2830,7 +2830,7 @@ class Pipe:
         user_valves: Pipe.UserValves | None = None,
         rejected_user_valves: list[str] | None = None,
         outcome_sink: dict[str, Any] | None = None,
-    ) -> AsyncGenerator[str, None] | dict[str, Any] | str | None:
+    ) -> AsyncGenerator[str, None] | dict[str, Any] | str | StreamingResponse | None:
         return await self._ensure_request_orchestrator().process_request(
             body, __user__, __request__, __event_emitter__, __event_call__, __metadata__, __tools__,
             __task__, __task_body__, valves, session, openwebui_model_id, pipe_identifier,
