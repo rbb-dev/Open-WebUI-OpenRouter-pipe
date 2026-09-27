@@ -540,7 +540,6 @@ class Pipe:
         self._redis_pending_key = f"{self._redis_namespace}:pending"
         self._redis_cache_prefix = f"{self._redis_namespace}:artifact"
         self._redis_flush_lock_key = f"{self._redis_namespace}:flush_lock"
-        self._redis_ttl = self.valves.REDIS_CACHE_TTL_SECONDS
 
         # Cleanup tasks
         self._cleanup_task: asyncio.Task | None = None

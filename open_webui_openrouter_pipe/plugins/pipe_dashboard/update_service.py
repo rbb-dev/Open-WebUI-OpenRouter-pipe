@@ -224,6 +224,7 @@ class UpdateService:
         self._lock = asyncio.Lock()
         self._last_good: dict[str, Any] | None = None
         self._last_error: dict[str, Any] | None = None
+        self._last_error_repo: str | None = None
         self._auto_skip: dict[str, dict[str, Any]] = {}
         self._auto_last: dict[str, Any] | None = None
         self._backoff_idx = 0
@@ -422,13 +423,16 @@ class UpdateService:
                 release = await self._fetch_latest(repo)
                 self._last_good = {"repo": repo, "at": now, "release": release}
                 self._last_error = None
+                self._last_error_repo = None
         except UpdateError as exc:
+            previous = self._last_error or {}
             self._last_error = {
                 "code": exc.code,
-                "ts": now,
+                "ts": min(previous.get("ts", now), now) if self._last_error_repo == repo else now,
                 "message": exc.message,
                 "reset": str(getattr(exc, "reset", "") or ""),
             }
+            self._last_error_repo = repo
             memo = self._last_good
             if memo is not None and memo.get("repo") == repo:
                 release = memo.get("release")

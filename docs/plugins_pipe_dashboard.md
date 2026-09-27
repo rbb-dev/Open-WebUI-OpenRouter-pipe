@@ -134,7 +134,8 @@ builds — forks inherit the release workflow, so assets, digests, and the chang
 - **Installed / Latest cards** — installed version with a flat/compressed variant badge (locally
   derived; the card shows no dates — the row's timestamps are modification times, not install
   times, and a release date belongs to the release, shown on the Latest card); the latest release with date, size, "Last checked" (the last *successful* check; a
-  separate line appears while checks are failing), the tracked repo (with a `fork` badge when it is
+  separate line appears while checks are failing, reporting the first failure of the
+  current run), the tracked repo (with a `fork` badge when it is
   not the default), and the auto-update status. Every visit to the tab refreshes its data (release
   data is memoized server-side for a minute, so tab switching never hammers GitHub). **Check now**
   bypasses that memo for admins; for read-only viewers it refreshes the installed/snapshot state
@@ -203,7 +204,7 @@ The About tab lists the registered plugins by name, id, and version.
 
 The Config tab is the pipe's configuration editor. It lists every admin valve in a searchable, grouped tree, each with its own help text. Edit any value in place.
 
-**How a save is stored.** A save records only the valves whose values differ from their defaults. Those valves show as **Custom** on Open WebUI's native valves screen; every other valve reads as its default. Clearing a **nullable** setting's box returns it to unset, so the saved row carries no name for it. Clearing an ordinary text setting's box stores an empty value, which is not the same as its default.
+**How a save is stored.** A save records only the valves whose values differ from their defaults. Those valves show as **Custom** on Open WebUI's native valves screen; every other valve reads as its default. Clearing a **nullable** setting's box returns it to unset, so the saved row carries no name for it. Clearing an ordinary text setting's box stores an empty value, which is not the same as its default. A stored value that a later release no longer accepts is dropped at the next save, so the tab can never be wedged by a row it cannot write.
 
 **When a value cannot be applied.** A save never fails for a value you did not type. If a setting stored by an earlier release is one this version no longer accepts — renamed, or a number whose allowed range has moved — it is dropped on its own, every other saved setting is kept, and nothing else on the row is affected. The Config tab counts what it dropped in its note bar, and the pipe log names each one; the next save is what removes them. What is left when a stored value is dropped is the valve's default, so re-enter the value you want before you rely on it.
 

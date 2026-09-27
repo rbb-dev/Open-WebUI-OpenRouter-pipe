@@ -78,6 +78,7 @@ _ENCRYPTED_PAYLOAD_VERSION = 1
 _PAYLOAD_HEADER_SIZE = 1
 
 _REDIS_FLUSH_CHANNEL = "db-flush"
+_REDIS_DELETE_MARKER_TTL_SECONDS = 3600
 
 REPLY_MEMORY_IDLE_SECONDS = 900.0
 REPLY_MEMORY_MAX_BYTES = 64 * 1024 * 1024
@@ -400,7 +401,6 @@ class ArtifactStore:
         self._redis_pending_key = f"{self._redis_namespace}:pending"
         self._redis_cache_prefix = f"{self._redis_namespace}:artifact"
         self._redis_flush_lock_key = f"{self._redis_namespace}:flush_lock"
-        self._redis_ttl = self.valves.REDIS_CACHE_TTL_SECONDS
 
     def _initialize_database_state(self):
         """Initialize SQLAlchemy state."""
@@ -1179,7 +1179,7 @@ class ArtifactStore:
 
         try:
             self._prepare_rows_for_storage(rows)
-            if self._redis_enabled:
+            if self._redis_active():
                 queued = await self._redis_enqueue_rows(rows)
                 self._reset_db_failure(user_id)
                 return queued
@@ -1242,7 +1242,7 @@ class ArtifactStore:
                     if self._is_duplicate_key_error(exc):
                         return await self._ack_rows_present_after_duplicate(rows, loop)
                     raise
-                if self._redis_enabled:
+                if self._redis_active():
                     await self._redis_cache_rows(rows)
                 self._reset_db_failure(user_id)
                 return ulids
@@ -1376,7 +1376,7 @@ class ArtifactStore:
 
         try:
             fetched = await self._db_fetch_direct(chat_id, message_id, missing_ids)
-            if fetched and self._redis_enabled:
+            if fetched and self._redis_active():
                 cache_rows = [
                     {
                         "id": item_id,
@@ -1437,22 +1437,32 @@ class ArtifactStore:
         return kept
 
     @timed
-    async def _delete_artifacts(self, refs: list[tuple[str, str]], keep_message_id: str | None = None) -> None:
+    async def _delete_artifacts(self, refs: list[tuple[str, str]], keep_message_id: str | None = None) -> bool:
         """Delete persisted artifacts (and cached copies) once they have been replayed."""
         if not refs:
-            return
+            return True
         ids = sorted({artifact_id for _, artifact_id in refs if artifact_id})
         if not ids or not self._db_executor:
-            return
+            return True
         owners = await self._redis_cached_owners(refs)
         if ids and self._redis_client:
             try:
                 pipe = self._redis_client.pipeline()
                 for row_id in ids:
-                    pipe.setex(self._redis_deleted_key(row_id), self._redis_ttl, keep_message_id or "1")
+                    pipe.setex(
+                        self._redis_deleted_key(row_id), _REDIS_DELETE_MARKER_TTL_SECONDS, keep_message_id or "1"
+                    )
                 await _await_if_needed(pipe.execute())
             except Exception as exc:
                 self.logger.warning("Redis delete marker write failed (best-effort): %s", exc, exc_info=True)
+
+        from open_webui_openrouter_pipe.core.logging_system import SessionLogger
+
+        user_id = SessionLogger.user_id.get() or ""
+        if not self._db_breaker_allows(user_id):
+            self.logger.warning("DB deletes disabled for user_id=%s due to repeated failures", user_id)
+            return False
+
         loop = asyncio.get_running_loop()
         kept = await loop.run_in_executor(
             self._db_executor, functools.partial(self._delete_artifacts_sync, ids, keep_message_id)
@@ -1471,6 +1481,7 @@ class ArtifactStore:
                     await _await_if_needed(self._redis_client.delete(*keys))
                 except Exception as exc:
                     self.logger.warning("Redis cache invalidation failed (best-effort): %s", exc, exc_info=True)
+        return True
 
 
     @timed
@@ -1787,6 +1798,9 @@ class ArtifactStore:
     def _redis_deleted_key(self, row_id: str) -> str:
         return f"{self._redis_namespace}:deleted:{row_id}"
 
+    def _redis_active(self) -> bool:
+        return bool(self._redis_enabled and self.valves.ENABLE_REDIS_CACHE)
+
     @timed
     async def _redis_cached_owners(self, refs: list[tuple[str, str]]) -> dict[str, Any]:
         if not (self._redis_enabled and self._redis_client):
@@ -1887,7 +1901,9 @@ class ArtifactStore:
                 cache_key = self._redis_cache_key(row.get("chat_id") or chat_id, row.get("id"))
                 if not cache_key:
                     continue
-                pipe.setex(cache_key, self._redis_ttl, json.dumps(row_payload, ensure_ascii=False))
+                pipe.setex(
+                    cache_key, self.valves.REDIS_CACHE_TTL_SECONDS, json.dumps(row_payload, ensure_ascii=False)
+                )
             await _await_if_needed(pipe.execute())
         except Exception as exc:
             self.logger.warning("Redis cache write failed (best-effort): %s", exc, exc_info=True)

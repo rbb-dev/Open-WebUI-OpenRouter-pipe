@@ -142,7 +142,7 @@ def drift(valves_cls: type) -> dict[str, list[str]]:
 
 
 def readable_stored(valves_cls: type, stored: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
-    kept = {k: v for k, v in stored.items() if v is not None}
+    kept = {k: v for k, v in stored.items() if v is not None and k in valves_cls.model_fields}
     try:
         valves_cls(**kept)
     except ValidationError as exc:

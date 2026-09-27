@@ -103,7 +103,7 @@ The pipe has an optional Redis-backed cache/write-behind path intended for multi
 
 ### When Redis is used
 
-`ENABLE_REDIS_CACHE` enables Redis support, but Redis is only used when the runtime environment indicates a multi-worker Open WebUI deployment and Redis tooling is available. In particular, the pipe requires:
+`ENABLE_REDIS_CACHE` enables Redis support, but Redis is only used when the runtime environment indicates a multi-worker Open WebUI deployment and Redis tooling is available. The switch and the cache lifetime are re-read on every operation, so turning the switch off takes effect without a restart; turning it on again needs the worker to have connected at start-up, as it would after a restart. In particular, the pipe requires:
 
 - `UVICORN_WORKERS > 1` (multi-worker mode), and
 - `REDIS_URL` is set, and
@@ -115,12 +115,12 @@ If these prerequisites are not met, the pipe runs without Redis and persists art
 High-level behavior:
 - When Redis caching is enabled and available, the pipe can enqueue persisted rows into Redis and flush them to the database asynchronously.
 - When Redis is enabled, the pipe can also cache persisted artifacts for faster replay reads.
-- When Redis write-behind is active, a row deleted while it is still queued is removed from the table and its cache entry, so it cannot be replayed from either. The marker carrying that decision lives in Redis for `REDIS_CACHE_TTL_SECONDS` (600 s by default): a row still queued when its marker expires is written to the table and the delete is lost, which is what a queue backlogged past that window means. The `{ns}:deleted:{row}` marker value is the `message_id` a cleanup spared, or the sentinel `"1"` when it spared none; the key layout and the TTL are unchanged. A worker from before this change reads `"1"` the same way, but reads a spared `message_id` as truthy and will **drop that row** during a rolling deploy — a lost row, never a resurrected one. The no-keep path is byte-identical and does not diverge.
+- When Redis write-behind is active, a row deleted while it is still queued is removed from the table and its cache entry, so it cannot be replayed from either. The marker carrying that decision lives in Redis for its own fixed lifetime of one hour, not for `REDIS_CACHE_TTL_SECONDS`: a row still queued when its marker expires is written to the table and the delete is lost, which is what a queue backlogged past that window means. The `{ns}:deleted:{row}` marker value is the `message_id` a cleanup spared, or the sentinel `"1"` when it spared none; the key layout and the TTL are unchanged. A worker from before this change reads `"1"` the same way, but reads a spared `message_id` as truthy and will **drop that row** during a rolling deploy — a lost row, never a resurrected one. The no-keep path is byte-identical and does not diverge.
 - Redis keys are namespaced per pipe so multiple pipes can share the same Redis deployment.
 
 Failure handling (operator-relevant):
 - If Redis is unavailable, the pipe degrades to direct database writes and continues serving requests.
-- If a user's database reads or writes keep failing, a breaker skips that user's database work for a while and shows a warning rather than letting the failures cascade.
+- If a user's database reads or writes keep failing, a breaker skips that user's database work for a while and shows a warning rather than letting the failures cascade. A delete skipped by the breaker keeps both the row and its cached copy, and the next turn retries it; the delete's Redis marker is written before the breaker is consulted, so a row still waiting in the queue is dropped by the next flush rather than reaching the table.
 
 See [Valves & Configuration Atlas](valves_and_configuration_atlas.md) for Redis-related valves and their defaults.
 
@@ -161,7 +161,7 @@ When an earlier turn's tool result is handed to the model again, `TOOL_OUTPUT_RE
 | `ENABLE_LZ4_COMPRESSION` | `True` | Compresses some payloads before encryption (when `lz4` is available and compression is beneficial). |
 | `MIN_COMPRESS_BYTES` | `0` | Compression threshold; `0` always attempts compression. |
 | `ENABLE_REDIS_CACHE` | `True` | Enables Redis support when Redis is available and the deployment is a candidate for it. |
-| `REDIS_CACHE_TTL_SECONDS` | `600` | TTL for cached artifacts in Redis. |
+| `REDIS_CACHE_TTL_SECONDS` | `600` | TTL for cached artifacts in Redis, read live at each write, so a change applies to entries written from that moment on. |
 | `ARTIFACT_CLEANUP_DAYS` | `90` | Time-based retention window. |
 | `ARTIFACT_CLEANUP_INTERVAL_HOURS` | `1.0` | Cleanup cadence. |
 | `DB_BATCH_SIZE` | `10` | DB transaction batching (also used for Redis flush batching). |

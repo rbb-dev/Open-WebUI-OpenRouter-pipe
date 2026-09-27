@@ -3216,6 +3216,7 @@ class TestPersistReasoning:
         deleted_refs: list[str] = []
         async def mock_delete(refs, keep_message_id=None):
             deleted_refs.extend(refs)
+            return True
 
         monkeypatch.setattr(pipe._artifact_store, "_delete_artifacts", mock_delete)
 
