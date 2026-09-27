@@ -423,6 +423,8 @@ class ArtifactStore:
 
         decrypted_encryption_key = EncryptedStr.decrypt(valves.ARTIFACT_ENCRYPTION_KEY)
         encryption_key = (decrypted_encryption_key or "").strip()
+        if encryption_key != self._encryption_key:
+            self._fernet = None
         self._encryption_key = encryption_key
         self._encrypt_all = valves.ENCRYPT_ALL
         self._compression_min_bytes = valves.MIN_COMPRESS_BYTES

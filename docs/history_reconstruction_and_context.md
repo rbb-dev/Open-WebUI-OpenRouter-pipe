@@ -159,8 +159,7 @@ keeps nothing, so with tool cards off its rounds reach no later request. (In Ope
 temporary chat's reply are held in memory until that reply ends, so Open WebUI's calls back after each round of tool
 calls still hand them to the model; see [Persistence](persistence_encryption_and_storage.md).) The calls are written when
 the round starts and each result when its call returns, in call order. So in a streamed reply, Stop keeps a round's
-calls before the first one still running. A call refused before it ran, such as one naming an unknown tool, is answered
-at once and kept wherever it sits. A call the model sends malformed is answered as Open WebUI's own tool loop answers it on the same route and is kept like any other call; several argument objects sent back to back become one call each.
+calls before the first one still running. A call refused before it ran is answered as soon as it is refused, and is handed to the model in the order the round asked for it. A call the model sends malformed is answered as Open WebUI's own tool loop answers it on the same route and is kept like any other call; several argument objects sent back to back become one call each.
 
 The copy carries the call's arguments and its full result, pictures included, whatever `PERSIST_TOOL_RESULTS`
 says, as a shown card does in the message Open WebUI saves; that setting decides what later turns receive, not

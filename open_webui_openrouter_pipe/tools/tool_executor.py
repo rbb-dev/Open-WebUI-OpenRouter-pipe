@@ -426,32 +426,32 @@ class ToolExecutor:
             )
 
         loop = asyncio.get_running_loop()
-        pending: list[tuple[dict[str, Any], asyncio.Future, float | None]] = []
+        pending: list[tuple[int, dict[str, Any], asyncio.Future, float | None]] = []
         batches: list[list[_QueuedToolCall]] = []
-        outputs: list[dict[str, Any]] = []
+        slots: list[dict[str, Any] | None] = [None] * len(calls)
         _on_complete = context.on_complete
         ask_user_refusal = self._ask_user_refusal(calls, tools)
 
-        async def _append_and_notify(call: dict, result: dict) -> None:
-            outputs.append(result)
+        async def _append_and_notify(index: int, call: dict, result: dict) -> None:
+            slots[index] = result
             if _on_complete:
                 with contextlib.suppress(Exception):
                     await _on_complete(call, result)
 
-        for call in calls:
+        for index, call in enumerate(calls):
             raw_name = call.get("name")
             tool_name = raw_name.strip() if isinstance(raw_name, str) else ""
             try:
                 args = parse_tool_arguments(call.get("arguments"))
             except ValueError:
-                await _append_and_notify(call, self._build_tool_output(
+                await _append_and_notify(index, call, self._build_tool_output(
                     call,
                     f"Error: Tool call arguments for `{tool_name}` must be a JSON object. Please try again.",
                     status="failed",
                 ))
                 continue
             if args is None:
-                await _append_and_notify(call, self._build_tool_output(
+                await _append_and_notify(index, call, self._build_tool_output(
                     call,
                     "Error: Tool call arguments could not be parsed. The model generated malformed or "
                     f"incomplete JSON for `{tool_name}`. Please try again.",
@@ -460,7 +460,7 @@ class ToolExecutor:
                 continue
             tool_cfg = tools.get(tool_name)
             if not tool_cfg:
-                await _append_and_notify(call, self._build_tool_output(
+                await _append_and_notify(index, call, self._build_tool_output(
                     call, f'Error: Tool "{tool_name}" not found.', status="failed",
                 ))
                 continue
@@ -468,7 +468,7 @@ class ToolExecutor:
                 with contextlib.suppress(ValueError):
                     args = _owui_normalize_ask_user_request(args)
             if ask_user_refusal and self._is_builtin_ask_user(tool_cfg):
-                await _append_and_notify(call, self._build_tool_output(
+                await _append_and_notify(index, call, self._build_tool_output(
                     call, ask_user_refusal, status="failed",
                 ))
                 continue
@@ -478,7 +478,7 @@ class ToolExecutor:
                 context.user_id, tool_type, str(call.get("name") or "")
             ):
                 await self._notify_tool_breaker(context, tool_type, call.get("name"))
-                await _append_and_notify(call, self._build_tool_output(
+                await _append_and_notify(index, call, self._build_tool_output(
                     call,
                     f"Tool '{call.get('name')}' skipped due to repeated failures.",
                     status="skipped",
@@ -486,7 +486,7 @@ class ToolExecutor:
                 continue
             fn = tool_cfg.get("callable")
             if fn is None:
-                await _append_and_notify(call, self._build_tool_output(
+                await _append_and_notify(index, call, self._build_tool_output(
                     call,
                     f"Tool '{call.get('name')}' has no callable configured.",
                     status="failed",
@@ -494,7 +494,7 @@ class ToolExecutor:
                 continue
             if context.tool_call_budget is not None:
                 if context.tool_call_budget <= 0:
-                    await _append_and_notify(call, self._build_tool_output(
+                    await _append_and_notify(index, call, self._build_tool_output(
                         call,
                         f"Tool '{call.get('name')}' skipped: fusion tool budget exhausted.",
                         status="skipped",
@@ -534,23 +534,23 @@ class ToolExecutor:
                 )
             else:
                 self.logger.debug("Enqueued tool %s (batch=%s)", call.get("name"), allow_batch)
-            pending.append((call, future, self._ask_user_window(tool_cfg, args)))
+            pending.append((index, call, future, self._ask_user_window(tool_cfg, args)))
 
         for batch in batches:
             await context.queue.put(batch)
 
         allowance = context.idle_timeout
         if allowance:
-            for _call, _future, window in pending:
+            for _index, _call, _future, window in pending:
                 if window is not None:
                     allowance = max(allowance, window)
         collected: dict[int, Any] = {}
         notified: set[int] = set()
         deadline = asyncio.get_running_loop().time() + allowance if allowance else None
-        for index, (call, future, _window) in enumerate(pending):
+        for pending_index, (index, call, future, _window) in enumerate(pending):
             try:
                 async with asyncio.timeout_at(deadline) if deadline is not None else contextlib.nullcontext():
-                    collected[index] = await future
+                    collected[pending_index] = await future
             except TimeoutError:
                 break
             except Exception as exc:  # pragma: no cover - defensive
@@ -561,18 +561,18 @@ class ToolExecutor:
                         call.get("call_id"),
                         exc_info=True,
                     )
-                collected[index] = self._build_tool_output(
+                collected[pending_index] = self._build_tool_output(
                     call,
                     self._tool_error_text(exc),
                     status="failed",
                 )
             if _on_complete:
                 with contextlib.suppress(Exception):
-                    await _on_complete(call, collected[index])
-            notified.add(index)
+                    await _on_complete(call, collected[pending_index])
+            notified.add(pending_index)
 
-        for index, (call, future, _window) in enumerate(pending):
-            result = collected.get(index)
+        for pending_index, (index, call, future, _window) in enumerate(pending):
+            result = collected.get(pending_index)
             if result is None and future.done() and not future.cancelled():
                 try:
                     result = future.result()
@@ -597,12 +597,12 @@ class ToolExecutor:
                     context.timeout_error = message
                 self.logger.warning("Tool idle timeout: %s", message)
                 result = self._build_tool_output(call, message, status="failed")
-            if _on_complete and index not in notified:
+            if _on_complete and pending_index not in notified:
                 with contextlib.suppress(Exception):
                     await _on_complete(call, result)
-            outputs.append(result)
+            slots[index] = result
 
-        return outputs
+        return [result for result in slots if result is not None]
 
     @timed
     def _build_direct_tool_server_registry(

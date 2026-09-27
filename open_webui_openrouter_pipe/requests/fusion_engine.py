@@ -179,6 +179,7 @@ async def run_fusion_member(
     pipe_meta = inner_metadata[_PIPE_METADATA_KEY]
     pipe_meta.pop("server_tools", None)
     pipe_meta.pop("stop_server_tools_when", None)
+    pipe_meta.pop("direct_uploads_warnings", None)
     if server_tools_config is not None:
         tools_cfg, stop_when = server_tools_config
         if tools_cfg:

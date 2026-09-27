@@ -515,6 +515,17 @@ class RequestOrchestrator:
             else:
                 raise ValueError("Direct uploads require a supported message content type.")
 
+            pre_present = {json.dumps(block, sort_keys=True) for block in content_blocks}
+            appended: set[tuple[str, str]] = set()
+
+            def _append(key: tuple[str, str], block: dict[str, Any]) -> None:
+                if key in appended:
+                    return
+                if json.dumps(block, sort_keys=True) in pre_present:
+                    return
+                appended.add(key)
+                content_blocks.append(block)
+
             max_bytes = valves.BASE64_MAX_SIZE_MB * 1024 * 1024
             chunk_size = valves.IMAGE_UPLOAD_CHUNK_BYTES
 
@@ -571,14 +582,15 @@ class RequestOrchestrator:
                     continue
                 name = item.get("name")
                 filename = name if isinstance(name, str) else ""
-                content_blocks.append(
+                _append(
+                    ("file", file_id),
                     {
                         "type": "file",
                         "file": {
                             "file_id": file_id,
                             "filename": filename,
                         },
-                    }
+                    },
                 )
 
             def _csv_set(value: Any) -> set[str]:
@@ -616,11 +628,12 @@ class RequestOrchestrator:
                     raise ValueError("Native audio attachment missing required 'format'.")
                 item["format"] = audio_format
                 item["responses_eligible"] = bool(audio_format in allowed_for_responses)
-                content_blocks.append(
+                _append(
+                    ("audio", file_id),
                     {
                         "type": "input_audio",
                         "input_audio": {"data": b64, "format": audio_format},
-                    }
+                    },
                 )
 
             for item in attachments.get("video", []):
@@ -639,11 +652,12 @@ class RequestOrchestrator:
                 if not isinstance(mime, str) or not mime.strip():
                     mime = infer_file_mime_type(file_obj)
                 data_url = f"data:{mime.strip()};base64,{b64}"
-                content_blocks.append(
+                _append(
+                    ("video", file_id),
                     {
                         "type": "video_url",
                         "video_url": {"url": data_url},
-                    }
+                    },
                 )
 
             last_user_msg["content"] = content_blocks

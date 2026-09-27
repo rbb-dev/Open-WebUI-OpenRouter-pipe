@@ -141,6 +141,10 @@ class TestInnerToolBudget:
         assert len(outputs) == 3
         assert sum("echo-ok" in s for s in texts) == 1
         assert sum("budget" in s for s in texts) == 2
+        # A member's budget is spent by the first call, so the other two are refused inside
+        # the first loop -- and the round comes back in the order the model asked for, not
+        # with the two refusals up front.
+        assert [o["call_id"] for o in outputs] == ["c0", "c1", "c2"]
 
     @pytest.mark.asyncio
     async def test_no_budget_means_unlimited(self, pipe_instance_async):
