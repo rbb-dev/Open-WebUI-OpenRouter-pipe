@@ -197,11 +197,15 @@ async def test_direct_uploads_audio_with_allowlisted_format_routes_to_responses(
                 async for _ in result:
                     pass
 
-        # When audio format IS in allowlist, should route to /responses
-        # (The exact routing depends on endpoint selection logic, but the test verifies
-        # the request went through successfully with the allowlisted format)
-        total_calls = len(responses_called) + len(chat_called)
-        assert total_calls >= 1, "Expected at least one API call"
+        # An allowlisted audio format must go to /responses, and to nothing else. The
+        # sum of both call lists that used to be asserted here is satisfied by any call
+        # at all, so the test this is named for could not fail. The count is not the
+        # claim: one reasoning-effort retry legitimately re-dispatches the same request
+        # to /responses, and the direction plus the exclusivity is what routing means.
+        assert responses_called and not chat_called, (
+            f"an allowlisted audio format should reach /responses and nothing else: "
+            f"responses={len(responses_called)} chat={len(chat_called)}"
+        )
 
     finally:
         await pipe.close()
@@ -322,10 +326,13 @@ async def test_direct_uploads_audio_without_allowlisted_format_forces_chat_compl
                 async for _ in result:
                     pass
 
-        # When audio format is NOT in allowlist, should force chat_completions
-        # The actual routing may vary but the test verifies the request completes
-        total_calls = len(responses_called) + len(chat_called)
-        assert total_calls >= 1, "Expected at least one API call"
+        # A format outside the allowlist must go to /chat/completions, and to nothing
+        # else — the sum of both lists was satisfied by any call at all. The count is
+        # not the claim: a retry may re-dispatch, but it may not cross endpoints.
+        assert chat_called and not responses_called, (
+            f"an audio format outside the allowlist should reach /chat/completions "
+            f"and nothing else: responses={len(responses_called)} chat={len(chat_called)}"
+        )
 
         # If chat_completions was called, verify audio was included
         if chat_called:

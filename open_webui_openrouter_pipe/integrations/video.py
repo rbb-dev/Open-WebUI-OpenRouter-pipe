@@ -583,12 +583,12 @@ class VideoGenerationAdapter:
                                 "notified): chat_key=%s", chat_key_f,
                             )
                         elif event_emitter is None:
-                            self.logger.warning(
+                            self.logger.debug(
                                 "first-failure toast suppressed: event_emitter "
                                 "is None (chat_key=%s)", chat_key_f,
                             )
-                            self._intent_failure_notified_chats.add(chat_key_f)
                         else:
+                            self._intent_failure_notified_chats.add(chat_key_f)
                             try:
                                 await event_emitter({
                                     "type": "notification",
@@ -600,7 +600,6 @@ class VideoGenerationAdapter:
                                         ),
                                     },
                                 })
-                                self._intent_failure_notified_chats.add(chat_key_f)
                                 self.logger.info(
                                     "first-failure toast emitted (chat_key=%s)",
                                     chat_key_f,
@@ -686,8 +685,13 @@ class VideoGenerationAdapter:
                     self._intent_record_failure()
                     chat_key = chat_id if isinstance(chat_id, str) else ""
                     if chat_key and chat_key not in self._intent_failure_notified_chats:
-                        self._intent_failure_notified_chats.add(chat_key)
-                        if event_emitter is not None:
+                        if event_emitter is None:
+                            self.logger.debug(
+                                "first-failure toast suppressed: event_emitter "
+                                "is None (chat_key=%s)", chat_key,
+                            )
+                        else:
+                            self._intent_failure_notified_chats.add(chat_key)
                             with contextlib.suppress(Exception):
                                 await event_emitter({
                                     "type": "notification",

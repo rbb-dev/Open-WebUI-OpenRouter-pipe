@@ -307,7 +307,12 @@ async def _config_get(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
     return snapshot
 
 
-@register_action("config_set", permission="write", schema={"edits": dict}, admin_only=True)
+@register_action(
+    "config_set",
+    permission="write",
+    schema={"edits": dict, "rev": optional((int, type(None)))},
+    admin_only=True,
+)
 async def _config_set(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
     """Merge edits into the stored custom subset (not the live model) and persist; rev-guarded."""
     current_rev = await _current_config_rev(pipe)

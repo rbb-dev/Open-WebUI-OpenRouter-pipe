@@ -133,6 +133,8 @@ _REPLAY_DROPPED_OPENING = (
     "did not receive:"
 )
 
+_OWUI_ORIGIN_SOURCES = frozenset({"owui_registry_tools", "owui_request_tools"})
+
 # Imports from storage.persistence
 from ..storage.multimodal import _guess_image_mime_type, image_extension_for_mime
 from ..storage.owui_files import is_temporary_chat
@@ -416,6 +418,13 @@ class StreamingHandler:
             raw_map = metadata.get("_pipe_exposed_to_origin") if isinstance(metadata, dict) else None
             origin = raw_map.get(exposed_name) if isinstance(raw_map, dict) else None
             return origin if isinstance(origin, str) and origin else exposed_name
+
+        def _is_owui_origin_tool(exposed_name: str) -> bool:
+            cfg = tool_registry.get(exposed_name)
+            if not isinstance(cfg, dict):
+                return True
+            origin_source = cfg.get("origin_source")
+            return origin_source is None or origin_source in _OWUI_ORIGIN_SOURCES
 
         tool_call_item_ids: dict[str, str] = {}
         streamed_tool_call_args: dict[str, str] = {}
@@ -3097,13 +3106,14 @@ class StreamingHandler:
                             call = call_by_id.get(cid)
                             if not call:
                                 continue
-                            tool_name = (call.get("name") or "").strip()
+                            tool_name = _origin_tool_name((call.get("name") or "").strip())
                             if output.get("status") != "completed" or tool_name in UNCITED_TOOLS:
                                 continue
                             try:
                                 tool_result = output.get("output") or ""
                                 if (
                                     tool_name in BUILTIN_CITATION_TOOLS
+                                    and _is_owui_origin_tool((call.get("name") or "").strip())
                                     and get_citation_source_from_tool_result is not None
                                 ):
                                     tool_params = _safe_json_loads(call.get("arguments") or "{}")

@@ -390,10 +390,10 @@ class TestRetargetingTelemetryField:
 # -----------------------------------------------------------------------------
 
 class TestClassifierFailureToastDiagnostics:
-    """The actual toast emission happens inside the larger generate() flow.
-    We exercise the path by calling the relevant branch logic directly via
-    the adapter's failure-tracking helpers, then verify both the breaker
-    state and the diagnostic log lines."""
+    """The toast emission itself is inside the larger generate() flow, so its behaviour —
+    that a chat is warned once, that a dead socket costs no video, that a request with no
+    emitter spends nothing — is tested against the real generate() in
+    tests/test_video_generation.py. What is left here is the state the flow reads."""
 
     def test_intent_record_failure_trips_breaker(self):
         adapter = _adapter()
@@ -402,42 +402,6 @@ class TestClassifierFailureToastDiagnostics:
         adapter._intent_record_failure()
         # Breaker is open 60s in the future.
         assert adapter._intent_breaker_until_ts > before + 50
-
-    def test_toast_emit_path_logs_when_event_emitter_none(self, caplog):
-        # We can't easily run the full generate() flow in unit tests, but we
-        # can construct an adapter and simulate the conditional sequence by
-        # invoking the same branch logic the production code does.
-        # Rather than refactor the entire block to be testable in isolation,
-        # we keep this as a smoke check: the diagnostic log paths exist.
-        from open_webui_openrouter_pipe.integrations.video import (
-            VideoGenerationAdapter,
-        )
-        import logging as _logging
-        log = _logging.getLogger("video_intent_test_bug_b")
-        log.setLevel(_logging.DEBUG)
-        adapter = VideoGenerationAdapter(
-            pipe=MagicMock(), logger=log,
-        )
-        # First failure: record it. Verify breaker is now armed.
-        adapter._intent_record_failure()
-        assert adapter._intent_failure_notified_chats == set()
-        # No exception is raised; the breaker state is set.
-
-    @pytest.mark.asyncio
-    async def test_emitter_failure_does_not_crash_pipe(self):
-        # If event_emitter raises during toast emission, we must NOT bubble
-        # the exception. The pipe needs to keep running and the /videos call
-        # must still go through. We verify by calling the emitter pattern
-        # directly with a raising mock.
-        emitter = AsyncMock(side_effect=RuntimeError("emitter broken"))
-        # The production code wraps the emit in try/except. We just verify
-        # the pattern works.
-        try:
-            await emitter({"type": "notification"})
-        except RuntimeError:
-            # Pipe code catches this and logs — the test confirms emitter
-            # CAN raise. Production code's try/except handles it.
-            pass
 
     def test_failure_reason_propagates_through_telemetry_field(self, caplog):
         caplog.set_level(logging.INFO, logger="t")

@@ -34,6 +34,45 @@ HEADERS = {"Content-Type": "application/json"}
 CHAT = {"chat_id": "chat-1", "message_id": "m1", "session_id": "s1", "terminal_id": "T1"}
 
 
+def _real_owui(*names: str) -> list[Any]:
+    """Open WebUI's own functions, compiled from the installed `utils/middleware.py` together with the module-level
+    helpers and constants they call, which the next release may add to (0.11.4 added two)."""
+    path = Path(str(importlib.metadata.distribution("open-webui").locate_file("open_webui/utils/middleware.py")))
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    from starlette.responses import HTMLResponse
+
+    async def _no_upload(*_a, **_k):
+        return "http://files/x"
+
+    namespace: dict[str, Any] = {
+        "json": json, "JSONCodec": json, "mimetypes": mimetypes, "os": os, "re": re, "Any": Any, "Optional": Optional,
+        "HTMLResponse": HTMLResponse, "log": logging.getLogger("open-webui-compiled"),
+        "get_file_url_from_base64": _no_upload,
+    }
+    defined: dict[str, ast.stmt] = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            defined[node.name] = node
+        elif isinstance(node, ast.Assign):
+            defined.update((target.id, node) for target in node.targets if isinstance(target, ast.Name))
+    missing = set(names) - defined.keys()
+    assert not missing, missing
+    wanted: set[str] = set()
+    pending = list(names)
+    while pending:
+        name = pending.pop()
+        if name in wanted or name in namespace:
+            continue
+        wanted.add(name)
+        pending.extend(
+            used.id for used in ast.walk(defined[name]) if isinstance(used, ast.Name) and used.id in defined
+        )
+    for node in tree.body:
+        if node in {defined[name] for name in wanted}:
+            exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), "exec"), namespace)
+    return [namespace[name] for name in names]
+
+
 _DECLARED_ARGUMENTS: dict[str, dict[str, Any]] = {
     "display_file": {"path": {"type": "string"}, "inline": {"type": "boolean"}, "page": {"type": "integer"}},
     "write_file": {"path": {"type": "string"}, "content": {"type": "string"}},

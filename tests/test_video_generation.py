@@ -49,6 +49,9 @@ from open_webui_openrouter_pipe.integrations.video_types import (
 )
 from open_webui_openrouter_pipe.models.registry import ModelFamily, OpenRouterModelRegistry
 from open_webui_openrouter_pipe.storage.video_persistence import VideoPersistence
+from open_webui_openrouter_pipe.integrations.video_intent import VideoIntentResult
+from open_webui_openrouter_pipe.integrations import video as video_module
+import pytest_asyncio
 
 
 

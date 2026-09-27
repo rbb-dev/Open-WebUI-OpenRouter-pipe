@@ -188,15 +188,16 @@ Every failure path in the classifier returns a fallback result equivalent to "no
 - **User cancels mid-classification** → cancellation propagates up; `/videos` is never submitted.
 - **Model can't honor `input_reference` for modify intent** → the validator drops the reference frame and downgrades the intent to `text_to_video`; the paid call proceeds as text-to-video with no confirmation prompt. See "When a model can't visually modify a previous video" above.
 
-The **first** classifier infrastructure failure per chat surfaces a notification toast: *"Intent inference unavailable; using simple text-to-video."* Subsequent failures within the same chat are silent (logged at WARNING).
+The **first** classifier infrastructure failure per chat surfaces a notification toast: *"Intent inference unavailable; using simple text-to-video."* Subsequent failures within the same chat are silent (logged at DEBUG). The rule covers both failure branches — a classifier that reported failure, and a classifier call that raised — and holds whether or not the emit itself succeeded.
 
 **Diagnostic log lines** for the toast emission path (search these when the toast doesn't appear as expected):
 
 - `video_intent classifier_failed=True; reason=<...>; breaker tripped` — WARNING, fires every time a classifier infrastructure failure is detected.
 - `first-failure toast emitted (chat_key=<...>)` — INFO, confirms the toast was sent to the OWUI event emitter.
 - `first-failure toast suppressed (chat already notified)` — DEBUG, expected on the 2nd+ failure in the same chat.
-- `first-failure toast suppressed: event_emitter is None` — WARNING, fires when OWUI didn't pass an emitter (rare; indicates an upstream integration issue).
-- `first-failure toast emission raised (suppressed): <exc>` — WARNING, fires if the event_emitter call itself raised. Pipe continues; user gets no toast for this turn.
+- `first-failure toast suppressed: event_emitter is None` — DEBUG, fires when OWUI didn't pass an emitter (rare; indicates an upstream integration issue). It fires **once per request** for the life of an emitter-less chat, not once per chat, because no notice is consumed on this path. Nobody was there, so the chat's one notice is **not** consumed: the next request that does have an emitter still warns.
+- `first-failure toast emission raised (suppressed): <exc>` — WARNING, `classifier_failed` branch only, fires if the event_emitter call itself raised. Pipe continues; the chat is latched and its one warning is spent, so later failures in it are silent. `video_intent classifier failed (degrade-open)` is the enclosing handler's own log line, and is the one to grep for this path.
+- The raise branch's emit sits in a bare `contextlib.suppress` and logs nothing of its own. The only record for that path is `video_intent classifier failed (degrade-open)`, written **before** the toast is attempted, so it says the classifier raised, not that the toast was lost.
 
 ## Rollback
 

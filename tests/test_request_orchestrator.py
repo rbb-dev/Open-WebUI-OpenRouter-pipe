@@ -1612,7 +1612,7 @@ async def test_audio_format_allowlist_from_metadata(monkeypatch):
             "model": {"id": "openai/gpt-4o-mini"},
             "openrouter_pipe": {
                 "direct_uploads": {
-                    "audio": [{"id": "audio_1", "format": "ogg"}],
+                    "audio": [{"id": "audio_1"}],
                     "responses_audio_format_allowlist": "mp3,wav,ogg",  # Custom allowlist
                 }
             },

@@ -12,8 +12,11 @@ So the resolver prefers upstream's list where the deployment publishes one. It c
 just import it unguarded: the floor is 0.11.4, where the module is present, so the guard
 is a safety net for a deployment that does not publish it -- a hand-edited or vendored
 Open WebUI, or a broken import -- rather than a compatibility requirement, and the
-import stays guarded today. Both halves of that need a test, and the upstream half is
-unreachable on this Open WebUI without injecting the module.
+import stays guarded today. That deployment is a live path, not a hypothetical one: the
+`ImportError` arm is exercised by
+`test_the_local_list_is_used_when_open_webui_has_no_such_module` below. Both halves of
+that need a test, and the upstream half is unreachable on this Open WebUI without
+injecting the module.
 
 Two resolvers now read one shared publisher, and all three are cached, so every cache
 the module owns has to be cleared between tests: a module injected by one test would

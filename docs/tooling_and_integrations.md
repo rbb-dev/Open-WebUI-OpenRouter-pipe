@@ -83,6 +83,8 @@ Tool *schemas* are assembled by the tool registry builder and attached to the ou
    - This pipe:
      - advertises the tools to the model under the names Open WebUI gives them (OpenAPI `operationId` values). Open WebUI keeps one tool per name, so a direct tool replaces a same-named tool from another source before the pipe sees it; when names collide among the tools the pipe receives, it disambiguates them with a source prefix (e.g. `direct__`), and
      - executes tool calls via the Socket.IO bridge (`__event_call__`) by emitting `execute:tool` so the browser performs the request.
+
+   The prefix is a provider-facing label only: the Open-WebUI hand-back and the tool-card name read the tool's origin name; citation routing additionally requires the registry entry to be an Open WebUI tool, so a direct tool's origin source keeps it out of Open WebUI's own builtin handling.
    - Direct tools are only advertised when `__event_call__` is available; without an active Socket.IO session there is no safe execution path, so the pipe skips them.
 
 3. **Extra tools** (`extra_tools`)

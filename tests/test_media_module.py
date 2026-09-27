@@ -317,7 +317,6 @@ class TestMakeThumbnail:
         with pytest.raises(ValueError, match="empty"):
             make_thumbnail(b"")
 
-
 # -----------------------------------------------------------------------------
 # frame_extraction
 # -----------------------------------------------------------------------------

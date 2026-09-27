@@ -12462,14 +12462,25 @@ class TestToolCitationHarvesting:
 
         return cycling_stream
 
-    async def _run_tool_round(self, pipe, monkeypatch, *, tool_name, tool_output, arguments="{}"):
+    async def _run_tool_round(
+        self, pipe, monkeypatch, *, tool_name, tool_output, arguments="{}",
+        exposed_to_origin=None, extra_tool=None, valve_overrides=None,
+    ):
         body = ResponsesBody(model="test/model", input=[], stream=True)
-        valves = pipe.valves.model_copy(update={"TOOL_EXECUTION_MODE": "Pipeline"})
+        updates: dict[str, Any] = {"TOOL_EXECUTION_MODE": "Pipeline"}
+        updates.update(valve_overrides or {})
+        valves = pipe.valves.model_copy(update=updates)
 
         async def mock_tool(**kwargs):
             return "unused"
 
         tool_registry = {tool_name: {"callable": mock_tool, "spec": {"name": tool_name}}}
+        if extra_tool:
+            for key, cfg in dict(extra_tool).items():
+                tool_registry[key] = dict(cfg, callable=mock_tool)
+        metadata: dict[str, Any] = {"model": {"id": "test"}}
+        if exposed_to_origin:
+            metadata["_pipe_exposed_to_origin"] = dict(exposed_to_origin)
         monkeypatch.setattr(
             Pipe, "send_openrouter_streaming_request",
             self._cycling_stream(self._events_for_call(tool_name, arguments)),
@@ -12487,10 +12498,56 @@ class TestToolCitationHarvesting:
 
         await pipe._streaming_handler._run_streaming_loop(
             body, valves, emitter,
-            metadata={"model": {"id": "test"}}, tools=tool_registry,
+            metadata=metadata, tools=tool_registry,
             session=cast(Any, object()), user_id="user-123",
         )
         return emitted
+
+    @staticmethod
+    def _collision_registry(*, collide: bool, name: str, source: str = "direct"):
+        """The real collision build: an Open WebUI registry tool of `name`, plus a second
+        tool of the same name from another origin, which forces the pipe to rename both."""
+        from open_webui_openrouter_pipe.tools.tool_registry import (
+            _build_collision_safe_tool_specs_and_registry,
+        )
+
+        async def builtin_callable(**_kwargs):
+            return "unused"
+
+        owui_registry = {name: {"callable": builtin_callable, "spec": {"name": name, "description": "owui", "parameters": {}}}}
+        direct_registry = None
+        if collide:
+            async def sibling_callable(**_kwargs):
+                return "unused"
+
+            sibling = {"callable": sibling_callable, "spec": {"name": name, "description": "sibling", "parameters": {}}}
+            if source == "direct":
+                sibling = dict(sibling, direct=True, server={"id": "s1", "url": "ws://x"}, origin_key=f"{name}::0::0")
+                direct_registry = {f"{name}::0::0": sibling}
+            else:
+                owui_registry = dict(owui_registry, **{f"other::{name}": sibling})
+        tools, exec_registry, exposed_to_origin = _build_collision_safe_tool_specs_and_registry(
+            request_tool_specs=None, owui_registry=owui_registry, direct_registry=direct_registry,
+            builtin_registry=None, extra_tools=None, strictify=False,
+            owui_tool_passthrough=False, logger=None,
+        )
+        return [t["name"] for t in tools], exec_registry, exposed_to_origin
+
+    @staticmethod
+    def _spy_on_owui_extractor(monkeypatch):
+        """Record which tool name reached Open WebUI's own extractor, and run the real one."""
+        import open_webui_openrouter_pipe.streaming.streaming_core as sc
+        from tests.test_open_terminal_parity import _real_owui
+
+        (real,) = _real_owui("get_citation_source_from_tool_result")
+        asked: list[str] = []
+
+        def spy(**kwargs):
+            asked.append(kwargs.get("tool_name"))
+            return real(**kwargs)
+
+        monkeypatch.setattr(sc, "get_citation_source_from_tool_result", spy)
+        return asked
 
     def _citation_events(self, emitted):
         found = []
@@ -12603,7 +12660,6 @@ class TestToolCitationHarvesting:
             for e in emitted if e.get("type") in ("source", "citation")
         ]
         assert chip_urls.count("https://same.example/page") == 1
-
 
 class TestToolCitationRoutingComplement:
 
