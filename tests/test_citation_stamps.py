@@ -29,7 +29,10 @@ PACKAGE = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 # 81 -> 82: the durable provider-routing row probe in pipe.py reaches the Functions table lazily.
 # 82 -> 83: `is_channel_chat`'s prefix resolver reaches the Functions table lazily, so the
 # channel predicate follows whatever prefix the host publishes instead of repeating one.
-_EXPECTED_OWUI_IMPORTS = (25, 83)
+# 83 -> 84: the video kill switch's two sweeps (`deactivate_video_gen_filters` and
+# `reactivate_video_gen_filters` in filters/filter_manager.py) each reach the Functions
+# table lazily, beside the other function-local lookups in the same module.
+_EXPECTED_OWUI_IMPORTS = (25, 84)
 
 @pytest.mark.skipif(
     bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),

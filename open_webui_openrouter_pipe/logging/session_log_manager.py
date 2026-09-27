@@ -37,6 +37,8 @@ _UNREADABLE_ARCHIVE_CAPTURE_AFTER = 3
 _INCOMPLETE_MARKER_PREFIX = "Session log finalized as incomplete"
 _INCOMPLETE_MARKER_FUNC = "_assemble_and_write_bundle"
 
+_LOCK_CONTENDED: Any = object()
+
 
 def _is_incomplete_marker(evt: Any) -> bool:
     if not isinstance(evt, dict):
@@ -193,8 +195,8 @@ class SessionLogManager:
         # Thread-safe configuration access
         self._lock = threading.Lock()
         self._cleanup_interval_seconds = self.valves.SESSION_LOG_CLEANUP_INTERVAL_SECONDS
-        self._retention_days = self.valves.SESSION_LOG_RETENTION_DAYS
         self._dirs: set[str] = set()
+        self._assembler_recent_failures: dict[tuple[str, str], float] = {}
         self._warned: set[str] = set()
         self._unreadable_archive_warnings: dict[str, float] = {}
         self._unreadable_archive_attempts: dict[str, int] = {}
@@ -250,7 +252,7 @@ class SessionLogManager:
     @property
     def retention_days(self) -> int:
         """Access the retention days setting."""
-        return self._retention_days
+        return int(self.valves.SESSION_LOG_RETENTION_DAYS)
 
     @property
     def warning_emitted(self) -> bool:
@@ -490,7 +492,6 @@ class SessionLogManager:
 
         with contextlib.suppress(Exception), self._lock:
             self._cleanup_interval_seconds = valves.SESSION_LOG_CLEANUP_INTERVAL_SECONDS
-            self._retention_days = valves.SESSION_LOG_RETENTION_DAYS
             self._dirs.add(base_dir)
 
         return base_dir, password.encode("utf-8"), zip_compression, zip_compresslevel
@@ -574,7 +575,6 @@ class SessionLogManager:
 
         with contextlib.suppress(Exception), self._lock:
             self._cleanup_interval_seconds = valves.SESSION_LOG_CLEANUP_INTERVAL_SECONDS
-            self._retention_days = valves.SESSION_LOG_RETENTION_DAYS
             self._dirs.add(base_dir)
 
         job = _SessionLogArchiveJob(
@@ -802,18 +802,55 @@ class SessionLogManager:
 
         self._cleanup_stale_locks(model, session_factory, lock_stale_seconds)
 
-        terminals = self._list_terminal_messages(model, session_factory, limit=batch_size)
+        exclude = self._recent_failure_exclusions(lock_stale_seconds)
+
+        terminals = self._list_terminal_messages(
+            model, session_factory, limit=batch_size, exclude=exclude
+        )
+        failed_now: set[tuple[str, str]] = set()
         for chat_id, message_id in terminals:
-            self._assemble_and_write_bundle(chat_id, message_id, terminal=True)
+            if self._assemble_and_write_bundle(chat_id, message_id, terminal=True) is False:
+                failed_now.add((chat_id, message_id))
+        if failed_now:
+            stamp = time.time()
+            with self._lock:
+                for key in failed_now:
+                    self._assembler_recent_failures[key] = stamp
+
+        exclude = exclude | failed_now
 
         stale = self._list_stale_messages(
             model,
             session_factory,
             stale_finalize_seconds=stale_finalize_seconds,
             limit=batch_size,
+            exclude=exclude,
         )
+        stale_failed: set[tuple[str, str]] = set()
         for chat_id, message_id in stale:
-            self._assemble_and_write_bundle(chat_id, message_id, terminal=False, stale_finalize_seconds=stale_finalize_seconds)
+            if (
+                self._assemble_and_write_bundle(
+                    chat_id,
+                    message_id,
+                    terminal=False,
+                    stale_finalize_seconds=stale_finalize_seconds,
+                )
+                is False
+            ):
+                stale_failed.add((chat_id, message_id))
+        if stale_failed:
+            stamp = time.time()
+            with self._lock:
+                for key in stale_failed:
+                    self._assembler_recent_failures[key] = stamp
+
+    def _recent_failure_exclusions(self, lock_stale_seconds: float) -> frozenset[tuple[str, str]]:
+        cutoff = time.time() - max(0.0, float(lock_stale_seconds))
+        with self._lock:
+            expired = [key for key, stamp in self._assembler_recent_failures.items() if stamp <= cutoff]
+            for key in expired:
+                self._assembler_recent_failures.pop(key, None)
+            return frozenset(self._assembler_recent_failures)
 
     @timed
     def _cleanup_stale_locks(
@@ -848,22 +885,45 @@ class SessionLogManager:
         session_factory: Any,
         *,
         limit: int,
+        exclude: frozenset[tuple[str, str]] = frozenset(),
     ) -> list[tuple[str, str]]:
+        rows: list[Any] = []
+        _page = int(limit) + len(exclude)
+        while True:
+            try:
+                with _db_session(session_factory) as session:
+                    rows = (
+                        session.query(model.chat_id, model.message_id)  # type: ignore[attr-defined]
+                        .filter(model.item_type == "session_log_segment_terminal")  # type: ignore[attr-defined]
+                        .group_by(model.chat_id, model.message_id)  # type: ignore[attr-defined]
+                        .order_by(func.min(model.created_at).asc())  # type: ignore[attr-defined]
+                        .limit(_page)
+                        .all()
+                    )
+            except Exception as exc:
+                self.logger.debug("Terminal message listing skipped — %s: %s", type(exc).__name__, exc, exc_info=True)
+                return []
+            if len(rows) < _page or len({(r[0], r[1]) for r in rows} - set(exclude)) >= int(limit):
+                break
+            _page *= 2
+            if _page > 100_000:
+                break
         try:
-            with _db_session(session_factory) as session:
-                rows = (
-                    session.query(model.chat_id, model.message_id)  # type: ignore[attr-defined]
-                    .filter(model.item_type == "session_log_segment_terminal")  # type: ignore[attr-defined]
-                    .group_by(model.chat_id, model.message_id)  # type: ignore[attr-defined]
-                    .order_by(func.min(model.created_at).asc())  # type: ignore[attr-defined]
-                    .limit(int(limit))
-                    .all()
-                )
-                return [
-                    (chat_id, message_id)
-                    for chat_id, message_id in rows
-                    if isinstance(chat_id, str) and isinstance(message_id, str)
-                ]
+            seen: set[tuple[str, str]] = set()
+            out: list[tuple[str, str]] = []
+            for chat_id, message_id in rows:
+                if not (isinstance(chat_id, str) and isinstance(message_id, str)):
+                    continue
+                key = (chat_id, message_id)
+                if key in seen:
+                    continue
+                seen.add(key)
+                if key in exclude:
+                    continue
+                out.append(key)
+                if len(out) >= int(limit):
+                    break
+            return out
         except Exception as exc:
             self.logger.debug("Terminal message listing skipped — %s: %s", type(exc).__name__, exc, exc_info=True)
             return []
@@ -876,6 +936,7 @@ class SessionLogManager:
         *,
         stale_finalize_seconds: float,
         limit: int,
+        exclude: frozenset[tuple[str, str]] = frozenset(),
     ) -> list[tuple[str, str]]:
         cutoff = datetime.datetime.now(datetime.UTC).replace(tzinfo=None) - datetime.timedelta(seconds=float(stale_finalize_seconds))
         try:
@@ -891,14 +952,15 @@ class SessionLogManager:
                     .having(func.max(model.created_at) < cutoff)  # type: ignore[attr-defined]
                     .having(terminal_count == 0)  # type: ignore[attr-defined]
                     .order_by(func.max(model.created_at).asc())  # type: ignore[attr-defined]
-                    .limit(int(limit))
+                    .limit(int(limit) * 5 + len(exclude))
                     .all()
                 )
                 out = [
                     (chat_id, message_id)
                     for chat_id, message_id in rows
                     if isinstance(chat_id, str) and isinstance(message_id, str)
-                ]
+                    and (chat_id, message_id) not in exclude
+                ][: int(limit)]
                 return out
         except Exception as exc:
             self.logger.debug("Stale message listing skipped — %s: %s", type(exc).__name__, exc, exc_info=True)
@@ -1143,7 +1205,7 @@ class SessionLogManager:
         terminal: bool,
         stale_finalize_seconds: float = 0.0,
         archive_settings: tuple[str, bytes, str, int | None] | None = None,
-    ) -> bool:
+    ) -> bool | Any:
         """Assemble all segments for one message into a single zip, then delete DB rows."""
         from ..core.logging_system import _SessionLogArchiveJob
         from ..core.utils import _sanitize_path_component, _stable_crockford_id
@@ -1177,7 +1239,7 @@ class SessionLogManager:
         # Use upsert-based lock acquisition (INSERT ON CONFLICT DO NOTHING)
         # to avoid noisy duplicate key errors in multi-worker environments
         if not self._artifact_store._try_acquire_lock_sync(lock_row):
-            return False  # Another worker holds the lock
+            return _LOCK_CONTENDED
 
         # Fetch all segment ids for this message (including any terminal markers).
         ids: list[str] = []
@@ -1417,7 +1479,7 @@ class SessionLogManager:
             return
         with self._lock:
             dirs = set(self._dirs)
-            retention_days = self._retention_days
+        retention_days = int(self.valves.SESSION_LOG_RETENTION_DAYS)
         if not dirs:
             return
         cutoff = time.time() - retention_days * 86400

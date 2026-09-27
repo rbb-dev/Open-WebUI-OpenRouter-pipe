@@ -386,7 +386,7 @@ class TestSessionLogArchiveEdgeCases:
         os.utime(new_path, (new_timestamp, new_timestamp))
 
         pipe._session_log_manager._dirs = {str(tmp_path)}
-        pipe._session_log_manager._retention_days = valves.SESSION_LOG_RETENTION_DAYS
+        pipe.valves.SESSION_LOG_RETENTION_DAYS = valves.SESSION_LOG_RETENTION_DAYS
         pipe._session_log_manager.cleanup_archives()
 
         assert not old_path.exists()
@@ -427,11 +427,14 @@ class TestSessionLogArchiveEdgeCases:
         assert archive_path.exists()
 
         # Age the archive and run the real cleanup, which should delete and prune empties.
+        # The age is two days rather than seconds because the retention window is now the
+        # public valve, whose floor is 1 day: a ten-second-old archive is inside every
+        # legal window, so this can only be expressed on the valve as a two-day age.
         fixed_now = 1_700_000_000.0
-        old_timestamp = fixed_now - 10
+        old_timestamp = fixed_now - 2 * 86400
         os.utime(archive_path, (old_timestamp, old_timestamp))
         pipe._session_log_manager._dirs = {str(tmp_path)}
-        pipe._session_log_manager._retention_days = 0
+        pipe.valves.SESSION_LOG_RETENTION_DAYS = 1
         monkeypatch.setattr(pipe_module.time, "time", lambda: fixed_now)
         pipe._session_log_manager.cleanup_archives()
 

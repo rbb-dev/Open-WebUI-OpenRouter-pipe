@@ -1339,7 +1339,11 @@ class Valves(BaseModel):
     SESSION_LOG_RETENTION_DAYS: int = Field(
         default=90,
         ge=1,
-        description="Retention window for stored session log archives. Cleanup deletes zip files older than this many days.",
+        description=(
+            "Retention window for stored session log archives. Cleanup deletes zip files older than this many days."
+            " The sweep reads this valve on every pass, so a changed window applies from the next cleanup"
+            " with no restart and no new turn."
+        ),
     )
     SESSION_LOG_CLEANUP_INTERVAL_SECONDS: int = Field(
         default=3600,
@@ -1406,7 +1410,7 @@ class Valves(BaseModel):
     SESSION_LOG_LOCK_STALE_SECONDS: int = Field(
         default=1800,
         ge=60,
-        description="Stale lock timeout (seconds) for DB-backed session log assembly locks; stale locks are reclaimed.",
+        description="Stale lock timeout (seconds) for DB-backed session log assembly locks; stale locks are reclaimed. It is also the write-failure backoff: a bundle the assembler could not write is skipped for this long before it is retried, so one bundle the pipe cannot write does not hold the window. A lock held by another worker is not a write failure and is never backed off.",
     )
     ENABLE_TIMING_LOG: bool = Field(
         default=False,
@@ -1428,7 +1432,7 @@ class Valves(BaseModel):
         default=200,
         ge=1,
         le=2000,
-        description="Maximum number of in-flight OpenRouter requests allowed per process. The wait list behind this limit is bounded: the pipe queues further requests and sheds load with a \"Server busy (503)\" card once that queue is full.",
+        description="Maximum number of in-flight OpenRouter requests allowed per process. A request holds its slot until its own tool calls have finished cleanup, so a tool-bearing request occupies its slot a little longer than its answer. The wait list behind this limit is bounded: the pipe queues further requests and sheds load with a \"Server busy (503)\" card once that queue is full.",
     )
     SSE_WORKERS_PER_REQUEST: int = Field(
         default=4,
@@ -1690,14 +1694,14 @@ class Valves(BaseModel):
         default=None,
         ge=1,
         description=(
-            "Maximum seconds to wait in total for one response's tool results, counted once from when the model asked; every call whose result has not arrived by then is reported as timed out, however long that call has been running; Open WebUI's ask_user waits at least its question window. On timeout, a call that is already running continues until it finishes, another tool limit ends it, or request cleanup cancels it after TOOL_SHUTDOWN_TIMEOUT_SECONDS (inside internal Fusion, without that wait, as soon as the calling model's answer ends). The model never receives the late result. Unless a streamed answer has already ended or the call ran inside internal Fusion, files or embeds the call returns still appear in the chat, and a file it shows through Open Terminal opens in the preview panel (or nowhere for a person whose Open WebUI shows terminal files inline). A call still waiting for a slot or a worker never starts. Null means no limit, leaving TOOL_TIMEOUT_SECONDS and TOOL_BATCH_TIMEOUT_SECONDS in charge."
+            "Maximum seconds to wait in total for one response's tool results, counted once from when the model asked; every call whose result has not arrived by then is reported as timed out, however long that call has been running; Open WebUI's ask_user waits at least its question window. On timeout, a call that is already running continues until it finishes, another tool limit ends it, or request cleanup cancels it after TOOL_SHUTDOWN_TIMEOUT_SECONDS (inside internal Fusion, without that wait, as soon as the calling model's answer ends). The model never receives the late result. Outside internal Fusion, files or embeds the call returns still appear in the chat: a streamed reply waits for the call, bounded by TOOL_SHUTDOWN_TIMEOUT_SECONDS, so a call that returns during that wait is read before the reply ends, and a file it shows through Open Terminal opens in the preview panel (or nowhere for a person whose Open WebUI shows terminal files inline). A call still waiting for a slot or a worker never starts. Null means no limit, leaving TOOL_TIMEOUT_SECONDS and TOOL_BATCH_TIMEOUT_SECONDS in charge."
         ),
     )
     TOOL_SHUTDOWN_TIMEOUT_SECONDS: float = Field(
         default=10.0,
         ge=0,
         description=(
-            "Maximum seconds to wait for a request's unfinished tool calls to finish during cleanup; after a Stop, calls that had not started can still start in this time. 0 disables the graceful wait and cancels workers immediately. Inside internal Fusion, a model's tool workers are cancelled without this wait as soon as that model's answer ends."
+            "Maximum seconds to wait for a request's unfinished tool calls to finish during cleanup; after a Stop, calls that had not started can still start in this time. A streamed reply ends after this wait and is bounded by it, so raising the valve raises how long a browser waits for a reply whose tools are still running. 0 disables the graceful wait and cancels workers immediately. Inside internal Fusion, a model's tool workers are cancelled without this wait as soon as that model's answer ends."
         ),
     )
     ENABLE_REDIS_CACHE: bool = Field(
@@ -1883,9 +1887,12 @@ class Valves(BaseModel):
         description=(
             "Add OpenRouter's video-generation models, which render in the background, to the model list. "
             "Video models are judged by OpenRouter's ZDR list like any other model, so a ZDR-only picker "
-            "excludes them unless OpenRouter lists a ZDR endpoint for them. "
-            "Turning this off also deactivates the per-model video filter rows it installed; they are "
-            "reactivated on the next model-list refresh only while AUTO_INSTALL_VIDEO_FILTERS is on."
+            "excludes them unless OpenRouter lists a ZDR endpoint for them."
+            + _PIPE_OFF_COMES_BACK
+            + " Turning it off deactivates all installed per-model video filter rows on the next model-list refresh;"
+            + " turning it back on re-activates the ones still in the catalogue, whether or not"
+            + " AUTO_INSTALL_VIDEO_FILTERS is on. The rows are identified by their source, so a copy you"
+            + " made by hand of one of these filters' source is switched off too."
         ),
     )
 

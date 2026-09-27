@@ -151,6 +151,14 @@ def _is_web_tools_filter(content: Any) -> bool:
     )
 
 
+def _is_video_gen_filter(content: Any) -> bool:
+    return (
+        isinstance(content, str)
+        and _OPENROUTER_VIDEO_GEN_FILTER_MARKER in content
+        and "class Filter" in content
+    )
+
+
 def _offered_web_tools(content: str) -> frozenset[str] | None:
     try:
         tree = ast.parse(content)
@@ -1165,6 +1173,74 @@ class FilterManager:
                 ", ".join(sorted(offered - dropped)) or "none",
             )
 
+    async def deactivate_video_gen_filters(self) -> None:
+        if self.valves.ENABLE_VIDEO_GENERATION:
+            return
+        try:
+            from open_webui.models.functions import Functions  # type: ignore
+        except ImportError:
+            return
+        except Exception:
+            self.logger.warning(
+                "open_webui.models.functions failed to import for a reason other than absence; "
+                "the Video Generation filters cannot be deactivated",
+                exc_info=True,
+            )
+            return
+        try:
+            found = await Functions.get_functions_by_type("filter", active_only=True)
+        except Exception:
+            self.logger.warning("Could not list the installed Video Generation filters", exc_info=True)
+            return
+        for row in found or []:
+            if not _is_video_gen_filter(getattr(row, "content", "")):
+                continue
+            if not getattr(row, "is_active", False):
+                continue
+            try:
+                await Functions.update_function_by_id(
+                    str(getattr(row, "id", "") or ""),
+                    {"is_active": False, "meta": switched_off_meta(row)},
+                )
+                self.logger.info("Disabled OpenRouter Video Generation filter %r (ENABLE_VIDEO_GENERATION=False)", row.id)
+            except Exception:
+                self.logger.debug("Disabling Video Generation filter %s failed", row.id, exc_info=True)
+
+    async def reactivate_video_gen_filters(self) -> None:
+        if not self.valves.ENABLE_VIDEO_GENERATION:
+            return
+        try:
+            from open_webui.models.functions import Functions  # type: ignore
+        except ImportError:
+            return
+        except Exception:
+            self.logger.warning(
+                "open_webui.models.functions failed to import for a reason other than absence; "
+                "the Video Generation filters cannot be reactivated",
+                exc_info=True,
+            )
+            return
+        try:
+            found = await Functions.get_functions_by_type("filter", active_only=False)
+        except Exception:
+            self.logger.warning("Could not list the installed Video Generation filters", exc_info=True)
+            return
+        for row in found or []:
+            if not _is_video_gen_filter(getattr(row, "content", "")):
+                continue
+            if getattr(row, "is_active", False):
+                continue
+            if not _switched_off_by_pipe(row):
+                continue
+            try:
+                await Functions.update_function_by_id(
+                    str(getattr(row, "id", "") or ""),
+                    {"is_active": True, "meta": _merged_meta(row, {}, off_by_pipe=False)},
+                )
+                self.logger.info("Re-enabled OpenRouter Video Generation filter %r (ENABLE_VIDEO_GENERATION=True)", row.id)
+            except Exception:
+                self.logger.debug("Re-enabling Video Generation filter %s failed", row.id, exc_info=True)
+
     # OPENROUTER FUSION FILTER
 
     async def ensure_openrouter_fusion_filter_function_id(self) -> str | None:
@@ -1442,13 +1518,9 @@ class FilterManager:
         model_id_token = f"VIDEO_MODEL_ID = {spec.model_id!r}"
 
         def _matches(content: str) -> bool:
-            if not isinstance(content, str) or not content:
+            if not _is_video_gen_filter(content):
                 return False
-            if _OPENROUTER_VIDEO_GEN_FILTER_MARKER not in content:
-                return False
-            if model_id_token not in content:
-                return False
-            return "class Filter" in content
+            return model_id_token in (content or "")
 
         desired_source = self.render_openrouter_video_gen_filter_source(
             model_id=model_id,

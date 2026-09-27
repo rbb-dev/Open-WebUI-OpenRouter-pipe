@@ -2010,7 +2010,7 @@ class TestCleanupSessionLogArchives:
         """Test that _cleanup_session_log_archives handles nonexistent directory."""
         pipe = Pipe()
         pipe._session_log_manager._dirs = {"/nonexistent/path/that/does/not/exist"}
-        pipe._session_log_manager._retention_days = 7
+        pipe.valves.SESSION_LOG_RETENTION_DAYS = 7
 
         try:
             pipe._session_log_manager.cleanup_archives()
@@ -2040,7 +2040,7 @@ class TestCleanupSessionLogArchives:
         os.utime(old_file, (old_time, old_time))
 
         pipe._session_log_manager._dirs = {str(log_dir)}
-        pipe._session_log_manager._retention_days = 7
+        pipe.valves.SESSION_LOG_RETENTION_DAYS = 7
 
         try:
             pipe._session_log_manager.cleanup_archives()
@@ -3835,6 +3835,10 @@ async def test_pipes_returns_cached_models_on_refresh_error(monkeypatch, pipe_in
 
     assert result == [{"id": "m1", "name": "Model m1"}]
 
+
+# ── pipes() reconciles switched-off filters even with no usable catalog ─────
+
+from open_webui_openrouter_pipe.core.config import _OPENROUTER_VIDEO_GEN_FILTER_MARKER
 
 @pytest.mark.asyncio
 async def test_pipes_returns_empty_when_refresh_error_no_models(monkeypatch, pipe_instance_async) -> None:

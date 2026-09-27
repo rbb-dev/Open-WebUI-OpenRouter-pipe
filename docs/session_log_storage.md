@@ -87,6 +87,8 @@ Archives are written by a background assembler thread when:
 - a “terminal” segment is staged for the message key (final assistant answer, error, or cancellation). The key is `(chat_id, message_id)` for a chat turn and the request surrogate `("api", "api-<request_id>")` for an API call, or
 - no terminal segment arrives for a long time (configurable “stale finalize”) — an **incomplete** archive is written so crash/cancel cases still leave a durable log trail. Each pass takes the oldest stranded bundles first and builds each archive from whatever segments exist at that moment, so a turn whose newest segment predates the delay is sealed **even if the turn is still running**; a segment it stages after that seal is left stranded until the next assembly, which may never come. The delay is what bounds that exposure, and it is why the default is long. The seal itself is conditional: if the log directory or passphrase no longer resolves, or the sealed write fails, the segments are kept for a retry and are removed only by the `ARTIFACT_CLEANUP_DAYS` sweep, which is not gated on the session-log valve. A later terminal segment for the same turn merges into that same zip and removes the finalized-incomplete line.
 
+A bundle the assembler cannot write does not hold the window: the failed turn keeps its segments for retry, and is skipped by the next `SESSION_LOG_ASSEMBLER_BATCH_SIZE` window so one unwritable bundle delays only itself. Its skip expires with `SESSION_LOG_LOCK_STALE_SECONDS`, after which it is retried on the normal schedule — a transient failure recovers on its own, and nothing is discarded.
+
 The incomplete marker appears **at most once** per archive: a later pass that finds the turn complete retires the marker rather than adding a second, and a pass that finds it already present leaves the count at one. A **refused pass resets the staleness clock**, so a stale turn waits a full window again before the assembler retries it.
 
 Non-blocking behavior:
@@ -154,7 +156,7 @@ When storage is enabled, a background cleanup loop periodically:
 
 Cleanup runs every `SESSION_LOG_CLEANUP_INTERVAL_SECONDS`. Turning `SESSION_LOG_STORE_ENABLED` off stops the sweep entirely: no archive is deleted and no directory is pruned, and every archive already on disk is left exactly where it is until you re-enable storage and the retention window passes again.
 
-With storage disabled the pipe neither writes nor deletes archives: turning the valve off stops the sweep on the next pass, and archives already on disk are left untouched until it is on again. Anything past `SESSION_LOG_RETENTION_DAYS` at that point is reclaimed on the first pass after it is turned back on.
+With storage disabled the pipe neither writes nor deletes archives: turning the valve off stops the sweep on the next pass, and archives already on disk are left untouched until it is on again. The sweep reads `SESSION_LOG_RETENTION_DAYS` on every pass, so a changed window applies from the next sweep with no restart and no new turn.
 
 Additionally, once an archive is assembled, the per-invocation DB segments used to build it are deleted. A separate “stale finalize” path can assemble + delete segments for abandoned turns after a long timeout; it is a cutoff on each turn’s last segment rather than on the turn itself, so a turn still running when it passes is sealed and its later segment is stranded until the next assembly.
 
@@ -184,7 +186,7 @@ See [Valves & Configuration Atlas](valves_and_configuration_atlas.md) for the ca
 | `SESSION_LOG_ASSEMBLER_JITTER_SECONDS` | int | `10` | Per-process jitter added to the assembler loop to avoid multi-worker lockstep. |
 | `SESSION_LOG_ASSEMBLER_BATCH_SIZE` | int | `25` | Max turns processed per assembler tick — a cap on turns, not rows, so a heavily split turn still takes one slot. |
 | `SESSION_LOG_STALE_FINALIZE_SECONDS` | int | `43200` | If no terminal segment arrives for a turn, assemble an **incomplete** archive after this timeout. A cutoff on the last segment, not on the turn: a turn **still running** when it passes is sealed as incomplete too, and a segment it stages afterwards is left stranded until the next assembly. That exposure is why the default is long. Each pass takes the oldest stranded bundles first and seals a bundle only if the sealed write succeeds, keeping the segments for a retry otherwise. |
-| `SESSION_LOG_LOCK_STALE_SECONDS` | int | `1800` | DB lock row stale timeout (multi-worker safety). |
+| `SESSION_LOG_LOCK_STALE_SECONDS` | int | `1800` | DB lock row stale timeout (multi-worker safety), and the write-failure backoff: a bundle the assembler could not write is skipped for this long before it is retried. A lock held by a peer is not a write failure, so a turn another worker is already archiving is never backed off at all. |
 | `ENABLE_TIMING_LOG` | bool | `false` | Capture function entrance/exit timing data. |
 | `TIMING_LOG_FILE` | str | `logs/timing.jsonl` | File path for timing log output. |
 

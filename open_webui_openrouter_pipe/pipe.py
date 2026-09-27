@@ -1229,17 +1229,18 @@ class Pipe:
                 self.logger.debug("Disabling OpenRouter Image Generation filter failed", exc_info=True)
         if not self.valves.ENABLE_VIDEO_GENERATION:
             try:
-                from open_webui.models.functions import Functions as _Funcs
-                vg = await _Funcs.get_function_by_id("openrouter_video_gen")
-                if vg and getattr(vg, "is_active", False):
-                    await _Funcs.update_function_by_id("openrouter_video_gen", {"is_active": False})
-                    self.logger.info("Disabled OpenRouter Video Generation filter (ENABLE_VIDEO_GENERATION=False)")
+                await self._ensure_filter_manager().deactivate_video_gen_filters()
             except Exception:
-                self.logger.debug("Disabling OpenRouter Video Generation filter failed", exc_info=True)
+                self.logger.debug("Disabling OpenRouter Video Generation filters failed", exc_info=True)
             try:
                 await self._ensure_filter_manager()._retire_variant_video_filters()
             except Exception as exc:
                 self.logger.debug("Retiring per-model video filters failed: %s", exc, exc_info=True)
+        else:
+            try:
+                await self._ensure_filter_manager().reactivate_video_gen_filters()
+            except Exception:
+                self.logger.debug("Re-enabling OpenRouter Video Generation filters failed", exc_info=True)
         try:
             from open_webui.models.functions import Functions as _Funcs
             legacy = await _Funcs.get_function_by_id("openrouter_video_openrouter_video")
@@ -2407,6 +2408,8 @@ class Pipe:
         tool_token: contextvars.Token[_ToolExecutionContext | None] | None = None
         stream_queue = job.stream_queue
         reached_openrouter = False
+        completed = False
+        deferred_result: Any = None
         try:
             stream_emitter = (
                 self._event_emitter_handler._make_middleware_stream_emitter(job, stream_queue)
@@ -2478,35 +2481,48 @@ class Pipe:
                     )
                 tool_token = self._TOOL_CONTEXT.set(tool_context)
                 outcome: dict[str, Any] = {}
-                result = await self._handle_pipe_call(
-                    job.body,
-                    job.user,
-                    job.request,
-                    stream_emitter or job.event_emitter,
-                    job.event_call,
-                    job.metadata,
-                    job.tools,
-                    job.task,
-                    job.task_body,
-                    valves=job.valves,
-                    session=session,
-                    user_valves=job.user_valves,
-                    rejected_user_valves=job.rejected_user_valves,
-                    outcome_sink=outcome,
-                    )
-                reached_openrouter = bool(outcome.get("reached_openrouter"))
-                record = outcome.get("output")
-                if isinstance(result, str) and isinstance(record, list) and record and not job.task:
-                    result = self._build_chat_completion_payload(
-                        model=str(job.body.get("model") or "pipe"), content=result
-                    )
-                    result["output"] = record
-                    if outcome.get("usage"):
-                        result["usage"] = outcome["usage"]
-                if not job.future.done():
-                    job.future.set_result(result)
-                if not job.task and outcome.get("error_occurred") is False:
-                    self._circuit_breaker.reset(job.user_id)
+                try:
+                    result = await self._handle_pipe_call(
+                        job.body,
+                        job.user,
+                        job.request,
+                        stream_emitter or job.event_emitter,
+                        job.event_call,
+                        job.metadata,
+                        job.tools,
+                        job.task,
+                        job.task_body,
+                        valves=job.valves,
+                        session=session,
+                        user_valves=job.user_valves,
+                        rejected_user_valves=job.rejected_user_valves,
+                        outcome_sink=outcome,
+                        )
+                    reached_openrouter = bool(outcome.get("reached_openrouter"))
+                    record = outcome.get("output")
+                    if isinstance(result, str) and isinstance(record, list) and record and not job.task:
+                        result = self._build_chat_completion_payload(
+                            model=str(job.body.get("model") or "pipe"), content=result
+                        )
+                        result["output"] = record
+                        if outcome.get("usage"):
+                            result["usage"] = outcome["usage"]
+                    if not job.future.done():
+                        if stream_queue is None:
+                            job.future.set_result(result)
+                        else:
+                            deferred_result = result
+                    if not job.task and outcome.get("error_occurred") is False:
+                        self._circuit_breaker.reset(job.user_id)
+                    completed = True
+                finally:
+                    if tool_context is not None:
+                        await self._shutdown_tool_context(tool_context)
+                        tool_context = None
+                    if completed and stream_queue is not None and not job.future.done():
+                        job.future.set_result(deferred_result)
+                    if completed and stream_queue is not None:
+                        await asyncio.sleep(0)
         except asyncio.CancelledError:
             if not job.future.done():
                 job.future.cancel()

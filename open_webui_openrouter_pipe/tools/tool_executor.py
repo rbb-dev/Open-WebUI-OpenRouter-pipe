@@ -435,178 +435,192 @@ class ToolExecutor:
         slots: list[dict[str, Any] | None] = [None] * len(calls)
         _on_complete = context.on_complete
         ask_user_refusal = self._ask_user_refusal(calls, tools)
+        deferred: list[tuple[int, dict, dict]] = []
 
         async def _append_and_notify(index: int, call: dict, result: dict) -> None:
             slots[index] = result
             if _on_complete:
+                deferred.append((index, call, result))
+
+        async def _flush_deferred(upto: int) -> None:
+            handler = _on_complete
+            if handler is None:
+                return
+            while deferred and deferred[0][0] < upto:
+                _index, call, result = deferred.pop(0)
                 with contextlib.suppress(Exception):
-                    await _on_complete(call, result)
+                    await handler(call, result)
 
         async def _refuse(index: int, call: dict, text: str) -> None:
             await _append_and_notify(index, call, self._build_tool_output(call, text, status="failed"))
 
-        for index, call in enumerate(calls):
-            raw_name = call.get("name")
-            tool_name = raw_name.strip() if isinstance(raw_name, str) else ""
-            try:
-                args = parse_tool_arguments(call.get("arguments"))
-            except ValueError:
-                await _refuse(
-                    index, call, f"Error: Tool call arguments for `{tool_name}` must be a JSON object. Please try again."
-                )
-                continue
-            if args is None:
-                await _refuse(
-                    index,
-                    call,
-                    "Error: Tool call arguments could not be parsed. The model generated malformed or "
-                    f"incomplete JSON for `{tool_name}`. Please try again.",
-                )
-                continue
-            tool_cfg = tools.get(tool_name)
-            if not tool_cfg:
-                await _refuse(index, call, f'Error: Tool "{tool_name}" not found.')
-                continue
-            if ask_user_refusal and self._is_builtin_ask_user(tool_cfg):
-                await _refuse(index, call, ask_user_refusal)
-                continue
-            if _owui_normalize_ask_user_request is not None and self._is_builtin_ask_user(tool_cfg):
+        try:
+            for index, call in enumerate(calls):
+                raw_name = call.get("name")
+                tool_name = raw_name.strip() if isinstance(raw_name, str) else ""
                 try:
-                    args = _owui_normalize_ask_user_request(args)
-                except ValueError as exc:
-                    await _refuse(index, call, f"Invalid arguments: {exc}")
+                    args = parse_tool_arguments(call.get("arguments"))
+                except ValueError:
+                    await _refuse(
+                        index, call, f"Error: Tool call arguments for `{tool_name}` must be a JSON object. Please try again."
+                    )
                     continue
-            tool_type = (tool_cfg.get("type") or "function").lower()
-            breaker = self._tool_breaker(context)
-            if breaker is not None and not breaker.tool_allows(
-                context.user_id, tool_type, str(call.get("name") or "")
-            ):
-                await self._notify_tool_breaker(context, tool_type, call.get("name"))
-                await _append_and_notify(index, call, self._build_tool_output(
-                    call,
-                    f"Tool '{call.get('name')}' skipped due to repeated failures.",
-                    status="skipped",
-                ))
-                continue
-            fn = tool_cfg.get("callable")
-            if fn is None:
-                await _append_and_notify(index, call, self._build_tool_output(
-                    call,
-                    f"Tool '{call.get('name')}' has no callable configured.",
-                    status="failed",
-                ))
-                continue
-            if context.tool_call_budget is not None:
-                if context.tool_call_budget <= 0:
+                if args is None:
+                    await _refuse(
+                        index,
+                        call,
+                        "Error: Tool call arguments could not be parsed. The model generated malformed or "
+                        f"incomplete JSON for `{tool_name}`. Please try again.",
+                    )
+                    continue
+                tool_cfg = tools.get(tool_name)
+                if not tool_cfg:
+                    await _refuse(index, call, f'Error: Tool "{tool_name}" not found.')
+                    continue
+                if ask_user_refusal and self._is_builtin_ask_user(tool_cfg):
+                    await _refuse(index, call, ask_user_refusal)
+                    continue
+                if _owui_normalize_ask_user_request is not None and self._is_builtin_ask_user(tool_cfg):
+                    try:
+                        args = _owui_normalize_ask_user_request(args)
+                    except ValueError as exc:
+                        await _refuse(index, call, f"Invalid arguments: {exc}")
+                        continue
+                tool_type = (tool_cfg.get("type") or "function").lower()
+                breaker = self._tool_breaker(context)
+                if breaker is not None and not breaker.tool_allows(
+                    context.user_id, tool_type, str(call.get("name") or "")
+                ):
+                    await self._notify_tool_breaker(context, tool_type, call.get("name"))
                     await _append_and_notify(index, call, self._build_tool_output(
                         call,
-                        f"Tool '{call.get('name')}' skipped: fusion tool budget exhausted.",
+                        f"Tool '{call.get('name')}' skipped due to repeated failures.",
                         status="skipped",
                     ))
                     continue
-                context.tool_call_budget -= 1
+                fn = tool_cfg.get("callable")
+                if fn is None:
+                    await _append_and_notify(index, call, self._build_tool_output(
+                        call,
+                        f"Tool '{call.get('name')}' has no callable configured.",
+                        status="failed",
+                    ))
+                    continue
+                if context.tool_call_budget is not None:
+                    if context.tool_call_budget <= 0:
+                        await _append_and_notify(index, call, self._build_tool_output(
+                            call,
+                            f"Tool '{call.get('name')}' skipped: fusion tool budget exhausted.",
+                            status="skipped",
+                        ))
+                        continue
+                    context.tool_call_budget -= 1
 
-            future: asyncio.Future = loop.create_future()
-            allow_batch = self._is_batchable_tool_call(args)
-            queued = _QueuedToolCall(
-                call=call,
-                tool_cfg=tool_cfg,
-                args=args,
-                future=future,
-                allow_batch=allow_batch,
-            )
-            batch = batches[-1] if batches else None
-            if (
-                batch is not None
-                and allow_batch
-                and batch[0].allow_batch
-                and len(batch) < context.batch_cap
-                and self._can_batch_tool_calls(batch[0], queued)
-            ):
-                batch.append(queued)
-            else:
-                batches.append([queued])
-            origin_source = tool_cfg.get("origin_source")
-            origin_name = tool_cfg.get("origin_name")
-            if isinstance(origin_source, str) and isinstance(origin_name, str):
-                self.logger.debug(
-                    "Enqueued tool %s (origin=%s source=%s batch=%s)",
-                    call.get("name"),
-                    origin_name,
-                    origin_source,
-                    allow_batch,
+                future: asyncio.Future = loop.create_future()
+                allow_batch = self._is_batchable_tool_call(args)
+                queued = _QueuedToolCall(
+                    call=call,
+                    tool_cfg=tool_cfg,
+                    args=args,
+                    future=future,
+                    allow_batch=allow_batch,
                 )
-            else:
-                self.logger.debug("Enqueued tool %s (batch=%s)", call.get("name"), allow_batch)
-            pending.append((index, call, future, self._ask_user_window(tool_cfg, args)))
-
-        for batch in batches:
-            await context.queue.put(batch)
-
-        allowance = context.idle_timeout
-        if allowance:
-            for _index, _call, _future, window in pending:
-                if window is not None:
-                    allowance = max(allowance, window)
-        collected: dict[int, Any] = {}
-        notified: set[int] = set()
-        deadline = asyncio.get_running_loop().time() + allowance if allowance else None
-        for pending_index, (index, call, future, _window) in enumerate(pending):
-            try:
-                async with asyncio.timeout_at(deadline) if deadline is not None else contextlib.nullcontext():
-                    collected[pending_index] = await future
-            except TimeoutError:
-                break
-            except Exception as exc:  # pragma: no cover - defensive
-                if self.logger.isEnabledFor(logging.DEBUG):
+                batch = batches[-1] if batches else None
+                if (
+                    batch is not None
+                    and allow_batch
+                    and batch[0].allow_batch
+                    and len(batch) < context.batch_cap
+                    and self._can_batch_tool_calls(batch[0], queued)
+                ):
+                    batch.append(queued)
+                else:
+                    batches.append([queued])
+                origin_source = tool_cfg.get("origin_source")
+                origin_name = tool_cfg.get("origin_name")
+                if isinstance(origin_source, str) and isinstance(origin_name, str):
                     self.logger.debug(
-                        "Tool '%s' raised while awaiting result (call_id=%s).",
+                        "Enqueued tool %s (origin=%s source=%s batch=%s)",
                         call.get("name"),
-                        call.get("call_id"),
-                        exc_info=True,
+                        origin_name,
+                        origin_source,
+                        allow_batch,
                     )
-                collected[pending_index] = self._build_tool_output(
-                    call,
-                    self._tool_error_text(exc),
-                    status="failed",
-                )
-            if _on_complete:
-                with contextlib.suppress(Exception):
-                    await _on_complete(call, collected[pending_index])
-            notified.add(pending_index)
+                else:
+                    self.logger.debug("Enqueued tool %s (batch=%s)", call.get("name"), allow_batch)
+                pending.append((index, call, future, self._ask_user_window(tool_cfg, args)))
 
-        for pending_index, (index, call, future, _window) in enumerate(pending):
-            result = collected.get(pending_index)
-            if result is None and future.done() and not future.cancelled():
+            for batch in batches:
+                await context.queue.put(batch)
+
+            allowance = context.idle_timeout
+            if allowance:
+                for _index, _call, _future, window in pending:
+                    if window is not None:
+                        allowance = max(allowance, window)
+            collected: dict[int, Any] = {}
+            notified: set[int] = set()
+            deadline = asyncio.get_running_loop().time() + allowance if allowance else None
+            for pending_index, (index, call, future, _window) in enumerate(pending):
+                await _flush_deferred(index)
                 try:
-                    result = future.result()
+                    async with asyncio.timeout_at(deadline) if deadline is not None else contextlib.nullcontext():
+                        collected[pending_index] = await future
+                except TimeoutError:
+                    break
                 except Exception as exc:  # pragma: no cover - defensive
                     if self.logger.isEnabledFor(logging.DEBUG):
                         self.logger.debug(
-                            "Tool '%s' had already failed when the wait for results ended (call_id=%s).",
+                            "Tool '%s' raised while awaiting result (call_id=%s).",
                             call.get("name"),
                             call.get("call_id"),
                             exc_info=True,
                         )
-                    result = self._build_tool_output(call, self._tool_error_text(exc), status="failed")
-            if result is None:
-                future.cancel()
-                tool_name = call.get("name")
-                message = (
-                    f"Tool '{tool_name}' timed out after {allowance:.0f}s (idle timeout)."
-                    if allowance
-                    else "Tool idle timeout exceeded."
-                )
-                if context and not context.timeout_error:
-                    context.timeout_error = message
-                self.logger.warning("Tool idle timeout: %s", message)
-                result = self._build_tool_output(call, message, status="failed")
-            if _on_complete and pending_index not in notified:
-                with contextlib.suppress(Exception):
-                    await _on_complete(call, result)
-            slots[index] = result
+                    collected[pending_index] = self._build_tool_output(
+                        call,
+                        self._tool_error_text(exc),
+                        status="failed",
+                    )
+                if _on_complete:
+                    with contextlib.suppress(Exception):
+                        await _on_complete(call, collected[pending_index])
+                notified.add(pending_index)
 
-        return [result for result in slots if result is not None]
+            for pending_index, (index, call, future, _window) in enumerate(pending):
+                await _flush_deferred(index)
+                result = collected.get(pending_index)
+                if result is None and future.done() and not future.cancelled():
+                    try:
+                        result = future.result()
+                    except Exception as exc:  # pragma: no cover - defensive
+                        if self.logger.isEnabledFor(logging.DEBUG):
+                            self.logger.debug(
+                                "Tool '%s' had already failed when the wait for results ended (call_id=%s).",
+                                call.get("name"),
+                                call.get("call_id"),
+                                exc_info=True,
+                            )
+                        result = self._build_tool_output(call, self._tool_error_text(exc), status="failed")
+                if result is None:
+                    future.cancel()
+                    tool_name = call.get("name")
+                    message = (
+                        f"Tool '{tool_name}' timed out after {allowance:.0f}s (idle timeout)."
+                        if allowance
+                        else "Tool idle timeout exceeded."
+                    )
+                    if context and not context.timeout_error:
+                        context.timeout_error = message
+                    self.logger.warning("Tool idle timeout: %s", message)
+                    result = self._build_tool_output(call, message, status="failed")
+                if _on_complete and pending_index not in notified:
+                    with contextlib.suppress(Exception):
+                        await _on_complete(call, result)
+                slots[index] = result
+
+            return [result for result in slots if result is not None]
+        finally:
+            await asyncio.shield(_flush_deferred(len(calls) + 1))
 
     @timed
     def _build_direct_tool_server_registry(
