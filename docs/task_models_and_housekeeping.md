@@ -20,6 +20,10 @@ The pipe treats a request as a task when the special `__task__` argument is pres
 - Housekeeping tasks log a DEBUG message (`Detected task model: ...`) and use the dedicated task adapter path.
 - `moa_response_generation` keeps the normal streaming/tool-execution path even though `__task__` is present.
 
+### Task output caps
+
+A task's cap is the caller's: `tasks.py` applies `{'max_tokens': 4}` to the emoji task and 1000 to a title, and an admin can set `task.model.params.max_tokens` to anything. The pipe never raises, floors or drops it. What it does do is bound the thinking budget inside it, because reasoning tokens count against the cap: on Gemini 2.5 the budget becomes `min(budget, cap - 64)`. When the cap leaves no room for any thinking the pipe asks for no bounded budget at all and writes no off flag, so the model thinks at its own default and the cap still governs the answer.
+
 ---
 
 ## Housekeeping task behavior (what is different vs normal chat)
@@ -54,9 +58,11 @@ Important nuance:
 
 For housekeeping tasks targeting models the pipe “owns”, the pipe overrides the request’s reasoning configuration using `TASK_MODEL_REASONING_EFFORT` (default: `low`):
 
-- If the model supports the modern `reasoning` parameter, the pipe sets `reasoning.effort` and keeps reasoning enabled. A `none` on a model whose reasoning is mandatory becomes the lowest level its catalog entry lists other than `none`, and no level at all when it lists no other level.
+- If the model supports the modern `reasoning` parameter, the pipe sets `reasoning.effort` and keeps reasoning enabled. A `none` on a model whose reasoning is mandatory becomes the lowest level its catalog entry lists other than `none`, and no level at all when it lists no other level. On any other model, an effort of `none` is the one that turns reasoning off, so the pipe also removes the `enabled` key the chat-turn pass left on the request — a task asking for no effort is not sent a request that also insists reasoning is on.
 - If the model supports only the legacy `include_reasoning` flag, the pipe toggles it based on the configured effort.
 - If the model supports neither, the pipe adds no reasoning field; any the task request itself carries (for example Open WebUI's task-model parameters) goes out as sent.
+
+A model the catalogue marks `reasoning.mandatory` is not asked to stop, whatever this valve says — the pipe substitutes an effort the row supports. Nothing is reported about it, because a task emits no status line of its own; the status line a chat shows does not apply here.
 
 ### Request-field filtering still applies
 
@@ -122,6 +128,7 @@ If you need tasks to be as fast as possible, reduce `TASK_MODEL_REASONING_EFFORT
 |---|---|---|
 | Tasks often return `[Task error] ...` | Provider errors or repeated request failures in the housekeeping task adapter | Check backend logs for `Task model attempt ... failed` (DEBUG gives full stack traces). |
 | Task outputs are overly verbose | Housekeeping prompt/model configuration encourages long-form responses | Tune the task prompt/model configuration for short outputs; consider lowering `TASK_MODEL_REASONING_EFFORT`. |
+| A task returns `[Task error]` and the model is one that thinks | The task's cap is below what the model needs for thinking | Two halves: the pipe's is `budget = min(budget, cap - 64)` on Gemini 2.5, and under `cap < 65` it asks for no bounded budget at all; the other half is the cap itself, which the pipe must not raise. Raise `task.model.params.max_tokens` (4 for the emoji task, 1000 for a title) or point the task at a different model. |
 | Housekeeping is running up unexpected spend | Housekeeping runs on every chat, so the task model it targets and the length of what that model produces both drive the total | Confirm the configured task model and review `usage`/cost snapshots (if enabled). What a model charges is on OpenRouter's pricing page. |
 | Housekeeping tasks bypass the model allowlist unexpectedly | The request is using the housekeeping task adapter path | Treat this as expected behavior; if you need strict enforcement, control task model selection at the Open WebUI admin/config level. |
 | MOA ignores housekeeping task settings | `moa_response_generation` now uses normal chat semantics | This is expected; MOA keeps the selected chat model and normal chat features. |

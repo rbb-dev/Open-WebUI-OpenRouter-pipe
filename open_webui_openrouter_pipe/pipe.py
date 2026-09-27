@@ -3416,26 +3416,20 @@ class Pipe:
             if not norm_id:
                 continue
 
-            is_virtual = model.get("variant_is_virtual", False)
-            if is_virtual:
-                spec_lookup_id = model.get("variant_base_norm_id") or norm_id.rsplit(":", 1)[0]
-            else:
-                spec_lookup_id = norm_id
-
             if zdr_only:
                 is_zdr_capable = OpenRouterModelRegistry.is_zdr_capable(norm_id)
                 if is_zdr_capable is False:
                     continue
 
             if free_mode != "all":
-                is_free = is_free_model(spec_lookup_id)
+                is_free = is_free_model(norm_id)
                 if free_mode == "only" and not is_free:
                     continue
                 if free_mode == "exclude" and is_free:
                     continue
 
             if tool_mode != "all":
-                supports_tools = supports_tool_calling(spec_lookup_id)
+                supports_tools = supports_tool_calling(norm_id)
                 if tool_mode == "only" and not supports_tools:
                     continue
                 if tool_mode == "exclude" and supports_tools:

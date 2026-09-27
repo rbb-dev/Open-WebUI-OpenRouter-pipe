@@ -144,10 +144,19 @@ class ModelFamily:
         cls._DYNAMIC_SPECS = specs or {}
 
     @classmethod
+    def _resolve_spec_key(cls, norm: str, specs: dict[str, dict[str, Any]]) -> str:
+        if norm in specs:
+            return norm
+        base, _, tag = norm.rpartition(":")
+        if not base or tag.startswith("preset/"):
+            return norm
+        return base
+
+    @classmethod
     def _lookup_spec(cls, model_id: str) -> dict[str, Any]:
         """Return the stored spec for ``model_id`` or an empty dict."""
         norm = cls.base_model(model_id)
-        return cls._DYNAMIC_SPECS.get(norm) or {}
+        return cls._DYNAMIC_SPECS.get(cls._resolve_spec_key(norm, cls._DYNAMIC_SPECS)) or {}
 
     @classmethod
     def catalog_norm_id(cls, model_id: str) -> str:
@@ -166,7 +175,8 @@ class ModelFamily:
     @classmethod
     def display_name(cls, model_id: str) -> str | None:
         """Return the OpenRouter catalog display name for ``model_id`` if cached."""
-        spec = cls._lookup_spec(model_id)
+        norm = cls.base_model(model_id)
+        spec = cls._DYNAMIC_SPECS.get(norm) or {}
         full = spec.get("full_model") if isinstance(spec, dict) else None
         name = full.get("name") if isinstance(full, dict) else None
         return name if isinstance(name, str) and name else None
@@ -991,7 +1001,7 @@ class OpenRouterModelRegistry:
     def spec(cls, model_id: str) -> dict[str, Any]:
         """Return the cached spec for ``model_id`` (or an empty dict)."""
         norm = ModelFamily.base_model(model_id)
-        return cls._specs.get(norm) or {}
+        return cls._specs.get(ModelFamily._resolve_spec_key(norm, cls._specs)) or {}
 
     @classmethod
     def zdr_model_ids(cls) -> set[str] | None:
@@ -1026,7 +1036,6 @@ class OpenRouterModelRegistry:
         which the three gates cannot disagree.
         """
         norm = ModelFamily.base_model(model_id)
-        base_norm = norm.rsplit(":", 1)[0] if ":" in norm else norm
         # The catalog decides, not the string. `:free` and `:thinking` are real,
         # separately-listed models -- 24 of 372 ids in the last dump -- served by
         # different providers under their own retention policies, so answering for them
@@ -1034,7 +1043,7 @@ class OpenRouterModelRegistry:
         # fallback is for the ids the catalog does NOT know: the routing variants the
         # pipe itself synthesises (`:nitro`, `:floor`, `:online`), whose endpoints ARE
         # the base model's.
-        lookup = norm if norm in cls._specs else base_norm
+        lookup = ModelFamily._resolve_spec_key(norm, cls._specs)
         if cls._zdr_model_ids is None:
             return None
         return lookup in cls._zdr_model_ids

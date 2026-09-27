@@ -143,6 +143,8 @@ This retry is only available while the attempt has published nothing the reader 
 
 This behavior is intended to convert certain provider-side “configuration mismatch” failures into a successful answer without requiring the user to change settings mid-conversation.
 
+A row the catalogue marks `reasoning.mandatory` is the exception: the pipe does not retry it, because stripping reasoning from a request that must think is the very shape the row refuses. The first response is returned to the user with the provider's own diagnostic rather than a resend that would fail the same way and hide it.
+
 ---
 
 ## Valve configuration (where to customize)

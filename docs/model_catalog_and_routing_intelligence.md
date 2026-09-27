@@ -121,7 +121,7 @@ See: [Tooling & Integrations](tooling_and_integrations.md).
 The pipe decides how to request reasoning from the selected model's catalog entry: its `supported_parameters` and its `reasoning` object (`ModelFamily.catalog_norm_id`, `ModelFamily.supported_parameters` and `ModelFamily.reasoning_contract`). Which entry is used:
 
 - A routing variant with no catalog entry of its own (for example `:nitro` or `:online`) uses its base model's entry, so it is sent what its base model is sent.
-- A suffixed id the catalog lists as a model of its own (for example a `:free` model) uses its own entry.
+- A suffixed id the catalog lists as a model of its own (for example a `:free` model) uses its own entry. The tags OpenRouter lists as a model in its own right are `:free` today, and `:batch` since 2026-08-09.
 - A preset model (`base_id@preset/slug`) gets no reasoning field of the pipe's own, so the preset's saved settings apply; a reasoning field the chat itself carries still goes out and overrides them for that request.
 
 When `ENABLE_REASONING=True`:
@@ -136,13 +136,16 @@ Gemini 2.5 models:
 - A budget of `0` sends `reasoning: {"effort": "none"}`, which switches thinking off, except on Gemini 2.5 Pro, which cannot stop thinking and thinks at its own default.
 - When nothing asks for reasoning (reasoning display off, and nothing in the chat requests it), the pipe sends only `include_reasoning: false`, to a model whose entry lists it.
 
+A request that sets its own `reasoning.max_tokens` wins over the valve: the pipe forwards that number and writes no competing thinking budget, on every model family and both endpoints. A request that sets none is unaffected by this paragraph.
+
 Effort `none`:
 
 - A model whose reasoning is mandatory (its entry's `reasoning.mandatory`) is never sent `none`: it gets the lowest level its entry lists other than `none`, and no level at all when it lists no other level.
 - On other models, a `none` that comes from the pipe's own settings goes out as exactly `reasoning: {"effort": "none"}`, OpenRouter's off switch.
+- A mandatory model cannot be asked to stop reasoning at all: an off arriving from the request or from the `REASONING_EFFORT` / `TASK_MODEL_REASONING_EFFORT` / `GEMINI_THINKING_BUDGET` valves is replaced by an effort the row supports, and a chat says so in a status line naming the model.
 
 Provider mismatch recovery:
-- If a provider rejects reasoning due to a “thinking” configuration mismatch, the pipe may retry once with reasoning disabled (see [Error Handling & User Experience](error_handling_and_user_experience.md)).
+- If a provider rejects reasoning due to a “thinking” configuration mismatch, the pipe may retry once with reasoning disabled (see [Error Handling & User Experience](error_handling_and_user_experience.md)). A row the catalogue marks `reasoning.mandatory` is not retried that way.
 
 ### 4.4 Web search server tool attachment
 
@@ -153,7 +156,9 @@ For the full User Interface story (Open WebUI Web Search vs OpenRouter Web Tools
 
 ### 4.5 Output token cap selection
 
-When `USE_MODEL_MAX_OUTPUT_TOKENS=True` and the request carries no limit of its own, the pipe fills `max_output_tokens` from the provider-advertised `max_completion_tokens` in the catalog. When it is disabled, the pipe adds no limit of its own and provider defaults apply. The valve controls the pipe's automatic value, not the caller's: a `max_tokens` of 1 or above is forwarded unchanged. OpenRouter documents the parameter as "1 or above" and Open WebUI's slider reaches -2, so a value below 1 is sent as no cap — and the automatic ceiling then applies if the valve is on.
+When `USE_MODEL_MAX_OUTPUT_TOKENS=True` and the request carries no limit of its own, the pipe fills `max_output_tokens` from the provider-advertised `max_completion_tokens` in the catalog. When it is disabled, the pipe adds no limit of its own and provider defaults apply. The valve controls the pipe's automatic value, not the caller's: a `max_tokens` of 1 or above is forwarded unchanged. OpenRouter documents the parameter as "1 or above" and Open WebUI's slider reaches -2, so a value below 1 is sent as no cap — and the automatic ceiling then applies if the valve is on. A routing variant resolves through its base's row, so it gets the base's ceiling.
+
+On Gemini 2.5 the same cap bounds the thinking budget: `budget = min(budget, cap - 64)`, never the other way round, because reasoning tokens count against the cap and a budget equal to the cap is the documented failure boundary. When the cap leaves no room the pipe writes no bounded budget at all, writes no off flag, and leaves the cap as the caller sent it.
 
 ### 4.6 Auto context trimming (context-compression plugin)
 

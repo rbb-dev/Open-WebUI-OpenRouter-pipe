@@ -24,6 +24,8 @@ from .registry import ModelFamily
 _XHIGH_EFFORT = "xhigh"
 _MAX_VERBOSITY = "max"
 _EFFORT_REASONING_OFF = frozenset({"none", ""})
+_NO_EFFORT = "none"
+_GEMINI_ANSWER_RESERVE_TOKENS = 64
 
 
 class ReasoningConfigManager:
@@ -50,10 +52,53 @@ class ReasoningConfigManager:
             value = None
         responses_body.include_reasoning = value
 
-    def _apply_reasoning_preferences(self, responses_body: ResponsesBody, valves: Pipe.Valves) -> None:
+    @classmethod
+    def _model_requires_reasoning(cls, model_id: str) -> bool:
+        return ModelFamily.reasoning_contract(model_id).get("mandatory") is True
+
+    @staticmethod
+    def _request_asks_for_no_reasoning(cfg: dict[str, Any]) -> bool:
+        if cfg.get("enabled") is False or cfg.get("exclude") is True:
+            return True
+        effort = cfg.get("effort")
+        return isinstance(effort, str) and effort.strip().lower() == _NO_EFFORT
+
+    @classmethod
+    def _refuse_off_on_mandatory_model(
+        cls,
+        model_id: str,
+        cfg: dict[str, Any],
+    ) -> tuple[dict[str, Any], bool]:
+        if not cls._request_asks_for_no_reasoning(cfg):
+            return cfg, False
+        if not cls._model_requires_reasoning(model_id):
+            return cfg, False
+        repaired = {k: v for k, v in cfg.items() if k not in ("enabled", "exclude")}
+        repaired["enabled"] = True
+        lowest = _select_best_effort_fallback(
+            _NO_EFFORT,
+            [e for e in ModelFamily.reasoning_contract(model_id).get("supported_efforts") or [] if e != _NO_EFFORT],
+        )
+        if lowest:
+            repaired["effort"] = lowest
+        return repaired, True
+
+    @classmethod
+    def _refuse_off_flag_on_mandatory_model(
+        cls,
+        model_id: str,
+        cfg: dict[str, Any],
+    ) -> tuple[dict[str, Any], bool]:
+        if cfg.get("enabled") is not False and cfg.get("exclude") is not True:
+            return cfg, False
+        if not cls._model_requires_reasoning(model_id):
+            return cfg, False
+        return cls._refuse_off_on_mandatory_model(model_id, cfg)
+
+    def _apply_reasoning_preferences(self, responses_body: ResponsesBody, valves: Pipe.Valves) -> str | None:
         """Automatically request reasoning traces when supported and enabled."""
         if not valves.ENABLE_REASONING:
-            return
+            return None
 
         supported = ModelFamily.supported_parameters(ModelFamily.catalog_norm_id(responses_body.model))
         supports_reasoning = "reasoning" in supported
@@ -64,6 +109,7 @@ class ReasoningConfigManager:
             requested_summary = summary_mode
 
         target_effort = valves.REASONING_EFFORT
+        refused: bool = False
 
         if supports_reasoning:
             cfg: dict[str, Any] = {}
@@ -74,6 +120,7 @@ class ReasoningConfigManager:
             if requested_summary and "summary" not in cfg:
                 cfg["summary"] = requested_summary
             cfg.setdefault("enabled", True)
+            cfg, refused = self._refuse_off_flag_on_mandatory_model(responses_body.model, cfg)
             responses_body.reasoning = cfg or None
             self._set_include_reasoning(responses_body, None)
         elif supports_legacy_only:
@@ -81,15 +128,17 @@ class ReasoningConfigManager:
             desired = target_effort not in _EFFORT_REASONING_OFF
             self._set_include_reasoning(responses_body, desired)
 
+        return responses_body.model if refused else None
 
-    def _apply_task_reasoning_preferences(self, responses_body: ResponsesBody, effort: str) -> None:
+    def _apply_task_reasoning_preferences(self, responses_body: ResponsesBody, effort: str) -> str | None:
         """Override reasoning effort for task models."""
         if not effort:
-            return
+            return None
         supported = ModelFamily.supported_parameters(ModelFamily.catalog_norm_id(responses_body.model))
         supports_reasoning = "reasoning" in supported
         supports_legacy_only = "include_reasoning" in supported and not supports_reasoning
         target_effort = effort.strip().lower()
+        refused: bool = False
 
         if supports_reasoning:
             cfg = (
@@ -99,7 +148,13 @@ class ReasoningConfigManager:
             )
             cfg = dict(cfg) if cfg else {}
             cfg["effort"] = target_effort
-            cfg.setdefault("enabled", True)
+            if (cfg.get("effort") or "").strip().lower() != _NO_EFFORT or self._model_requires_reasoning(
+                responses_body.model
+            ):
+                cfg.setdefault("enabled", True)
+            else:
+                cfg.pop("enabled", None)
+            cfg, refused = self._refuse_off_flag_on_mandatory_model(responses_body.model, cfg)
             responses_body.reasoning = cfg
             self._set_include_reasoning(responses_body, None)
         elif supports_legacy_only:
@@ -107,8 +162,15 @@ class ReasoningConfigManager:
             desired = target_effort not in _EFFORT_REASONING_OFF
             self._set_include_reasoning(responses_body, desired)
 
+        return responses_body.model if refused else None
 
-    def _apply_gemini_thinking_config(self, responses_body: ResponsesBody, valves: Pipe.Valves) -> None:
+    def _apply_gemini_thinking_config(
+        self,
+        responses_body: ResponsesBody,
+        valves: Pipe.Valves,
+        *,
+        honour_existing_budget: bool = True,
+    ) -> str | None:
         # Lazy import to avoid circular dependency
         from .registry import (
             _classify_gemini_thinking_family,
@@ -117,28 +179,52 @@ class ReasoningConfigManager:
 
         responses_body.thinking_config = None
         if not _classify_gemini_thinking_family(ModelFamily.base_model(responses_body.model)):
-            return
+            return None
         if "reasoning" not in ModelFamily.supported_parameters(ModelFamily.catalog_norm_id(responses_body.model)):
-            return
+            return None
         cfg = dict(responses_body.reasoning) if isinstance(responses_body.reasoning, dict) else {}
         requested = bool(responses_body.include_reasoning) or bool(cfg and cfg.get("enabled", True) and not cfg.get("exclude", False))
         if not requested:
             self._set_include_reasoning(responses_body, False)
-            return
-        if valves.GEMINI_THINKING_BUDGET == 0:
-            mandatory = ModelFamily.reasoning_contract(responses_body.model).get("mandatory") is True
-            responses_body.reasoning = {**cfg, "effort": "none"} if mandatory else {"effort": "none"}
+            return None
+
+        requested_budget = cfg.get("max_tokens")
+        if (
+            honour_existing_budget
+            and isinstance(requested_budget, int)
+            and not isinstance(requested_budget, bool)
+            and requested_budget >= 1
+            and cfg.get("enabled") is not False
+            and cfg.get("exclude") is not True
+        ):
+            responses_body.reasoning = cfg
             self._set_include_reasoning(responses_body, None)
-            return
+            return None
+
+        if valves.GEMINI_THINKING_BUDGET == 0:
+            mandatory = self._model_requires_reasoning(responses_body.model)
+            off = {**cfg, "effort": _NO_EFFORT} if mandatory else {"effort": _NO_EFFORT}
+            off, refused = self._refuse_off_on_mandatory_model(responses_body.model, off)
+            responses_body.reasoning = off
+            self._set_include_reasoning(responses_body, None)
+            return responses_body.model if refused else None
         effort = str(cfg.get("effort") or "").strip().lower() or valves.REASONING_EFFORT
         budget = _map_effort_to_gemini_budget(effort, valves.GEMINI_THINKING_BUDGET)
         if not budget:
-            return
+            return None
+        cap = responses_body.max_output_tokens
+        if isinstance(cap, int) and not isinstance(cap, bool) and cap >= 1 and budget:
+            budget = min(budget, cap - _GEMINI_ANSWER_RESERVE_TOKENS)
+            if budget < 1:
+                responses_body.reasoning = None
+                self._set_include_reasoning(responses_body, None)
+                return None
         cfg.pop("effort", None)
         cfg["max_tokens"] = budget
         cfg.setdefault("enabled", True)
         responses_body.reasoning = cfg
         self._set_include_reasoning(responses_body, None)
+        return None
 
     def _fit_effort_none_to_model(self, responses_body: ResponsesBody, *, settings_applied: bool) -> None:
         cfg = responses_body.reasoning
@@ -201,6 +287,9 @@ class ReasoningConfigManager:
         has_reasoning_dict = bool(getattr(responses_body, "reasoning", None))
         has_thinking_config = bool(getattr(responses_body, "thinking_config", None))
         if not any((include_flag, has_reasoning_dict, has_thinking_config)):
+            return False
+
+        if self._model_requires_reasoning(responses_body.model):
             return False
 
         trigger_phrases = (

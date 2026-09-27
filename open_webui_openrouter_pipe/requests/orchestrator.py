@@ -758,10 +758,16 @@ class RequestOrchestrator:
                 build_futility_notice(budget_outcome),
                 level="warning",
             )
-        self._pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences(responses_body, valves)
-        self._pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config(responses_body, valves)
-        self._pipe._ensure_reasoning_config_manager()._fit_effort_none_to_model(responses_body, settings_applied=valves.ENABLE_REASONING)
-        self._pipe._ensure_reasoning_config_manager()._apply_anthropic_verbosity(responses_body, valves)
+        reasoning = self._pipe._ensure_reasoning_config_manager()
+        refused = reasoning._apply_reasoning_preferences(responses_body, valves)
+        refused = reasoning._apply_gemini_thinking_config(responses_body, valves) or refused
+        reasoning._fit_effort_none_to_model(responses_body, settings_applied=valves.ENABLE_REASONING)
+        reasoning._apply_anthropic_verbosity(responses_body, valves)
+        if refused and __event_emitter__:
+            await self._pipe._event_emitter_handler._emit_status(
+                __event_emitter__,
+                f"Reasoning could not be turned off for '{refused}' - that model always thinks.",
+            )
         apply_context_transforms(responses_body, auto_context_trimming=valves.AUTO_CONTEXT_TRIMMING)
 
         if (not use_task_model_adapter) and isinstance(__metadata__, dict):
@@ -957,10 +963,11 @@ class RequestOrchestrator:
             owns_task_model = ModelFamily.base_model(requested_model) in allowlist_norm_ids if allowlist_norm_ids else True
             if owns_task_model:
                 task_effort = valves.TASK_MODEL_REASONING_EFFORT
-                self._pipe._ensure_reasoning_config_manager()._apply_task_reasoning_preferences(responses_body, task_effort)
-                self._pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config(responses_body, valves)
-                self._pipe._ensure_reasoning_config_manager()._fit_effort_none_to_model(responses_body, settings_applied=True)
-                self._pipe._ensure_reasoning_config_manager()._apply_anthropic_verbosity(responses_body, valves)
+                task_reasoning = self._pipe._ensure_reasoning_config_manager()
+                task_reasoning._apply_task_reasoning_preferences(responses_body, task_effort)
+                task_reasoning._apply_gemini_thinking_config(responses_body, valves, honour_existing_budget=False)
+                task_reasoning._fit_effort_none_to_model(responses_body, settings_applied=True)
+                task_reasoning._apply_anthropic_verbosity(responses_body, valves)
 
             result = await self._pipe._ensure_task_model_adapter()._run_task_model_request(
                 responses_body.model_dump(),
@@ -1472,7 +1479,9 @@ class RequestOrchestrator:
                                     "reasoning_effort",
                                     request_id=SessionLogger.request_id.get() or "",
                                 )
-                                self._pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config(responses_body, valves)
+                                self._pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config(
+                                    responses_body, valves, honour_existing_budget=False
+                                )
                                 self._pipe._ensure_reasoning_config_manager()._apply_anthropic_verbosity(responses_body, valves)
                                 continue
 

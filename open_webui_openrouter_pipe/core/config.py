@@ -1071,8 +1071,10 @@ class Valves(BaseModel):
         description=(
             "Default reasoning effort to request from supported models. 'none' switches reasoning off where the "
             "model allows it; a model that always reasons gets the lightest level its catalog entry lists other than "
-            "`none` instead, and no level at all when it lists no other level. Use 'xhigh' when maximum depth is "
-            "desired (only on supporting models)."
+            "`none` instead, and no level at all when it lists no other level. On such a model the pipe keeps asking "
+            "regardless, and in a chat it says so in a status line naming the model; a background task shows nothing. "
+            "A request that carries its own reasoning.max_tokens is forwarded as it stands, so this default does not "
+            "apply to it. Use 'xhigh' when maximum depth is desired (only on supporting models)."
         ),
     )
     REASONING_SUMMARY_MODE: Literal["auto", "concise", "detailed", "disabled"] = Field(
@@ -1088,7 +1090,12 @@ class Valves(BaseModel):
         description=(
             "Base thinking budget (tokens) for Gemini 2.5 models, sent as OpenRouter's reasoning.max_tokens and "
             "scaled by reasoning effort (minimal -> smaller, xhigh -> larger). When 0, thinking is switched off, "
-            "except on Gemini 2.5 Pro, which cannot stop thinking."
+            "except on Gemini 2.5 Pro, which cannot stop thinking; on such a model the pipe keeps asking regardless, "
+            "and in a chat it says so in a status line naming the model (a background task shows nothing). "
+            "A request that carries its own reasoning.max_tokens is forwarded as it stands, so this budget does not "
+            "apply to it. A request that carries its own output limit has the budget reduced to fit inside it, the "
+            "limit itself is never changed, and when the limit leaves no room the pipe asks for no bounded budget and "
+            "the model decides."
         ),
     )
     PERSIST_REASONING_TOKENS: Literal["disabled", "next_reply", "conversation"] = Field(
@@ -1600,7 +1607,7 @@ class Valves(BaseModel):
     )
     USE_MODEL_MAX_OUTPUT_TOKENS: bool = Field(
         default=False,
-        description="When enabled, and the request does not already set a limit, fill in the provider's advertised max_output_tokens. Disable to send no limit of the pipe's own. This valve controls the automatic value, not yours: A `max_tokens` of 1 or above is forwarded unchanged. OpenRouter documents the parameter as 1 or above and Open WebUI's slider reaches -2, so a value below 1 is sent as no cap -- which means the automatic ceiling applies if this valve is on.",
+        description="When enabled, and the request does not already set a limit, fill in the provider's advertised max_output_tokens. Disable to send no limit of the pipe's own. A routing variant such as base:nitro resolves through its base's catalog row, so it inherits the base's ceiling. This valve controls the automatic value, not yours: A `max_tokens` of 1 or above is forwarded unchanged. OpenRouter documents the parameter as 1 or above and Open WebUI's slider reaches -2, so a value below 1 is sent as no cap -- which means the automatic ceiling applies if this valve is on.",
     )
     SHOW_FINAL_USAGE_STATUS: bool = Field(
         default=True,

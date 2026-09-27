@@ -486,6 +486,8 @@ def _resolve_error_model_context(
     norm_id = ModelFamily.base_model(normalized_model_id or "") if normalized_model_id else None
     spec = ModelFamily._lookup_spec(norm_id or "")
     full_model = spec.get("full_model") or {}
+    exact_spec = ModelFamily._DYNAMIC_SPECS.get(norm_id or "") or {}
+    exact_full_model = exact_spec.get("full_model") or {}
 
     context_limit = spec.get("context_length") or full_model.get("context_length")
     max_output_tokens = spec.get("max_completion_tokens") or full_model.get("max_completion_tokens")
@@ -496,7 +498,7 @@ def _resolve_error_model_context(
         diagnostics.append(f"- **Max output tokens**: {max_output_tokens:,} tokens")
 
     display_label = (
-        full_model.get("name")
+        exact_full_model.get("name")
         or api_model_id
         or error.model_slug
         or error.requested_model

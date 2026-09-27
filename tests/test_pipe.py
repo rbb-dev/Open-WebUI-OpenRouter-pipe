@@ -1254,7 +1254,9 @@ class TestReasoningConfiguration:
         """Test that _apply_task_reasoning_preferences handles 'none' effort.
 
         Note: When 'none' is passed, the method still sets reasoning with effort='none'
-        for models that support reasoning parameter.
+        for models that support reasoning parameter. It adds no `enabled` beside it:
+        `effort: "none"` is the documented disable, so `enabled: true` beside it asks
+        for the opposite (T401).
         """
         pipe = Pipe()
 
@@ -1267,7 +1269,7 @@ class TestReasoningConfiguration:
             pipe._ensure_reasoning_config_manager()._apply_task_reasoning_preferences(body, "none")
 
             # When model supports reasoning, it sets effort to "none" (not None)
-            assert body.reasoning == {"effort": "none", "enabled": True}
+            assert body.reasoning == {"effort": "none"}
         finally:
             ModelFamily.set_dynamic_specs({})
             pipe.shutdown()
