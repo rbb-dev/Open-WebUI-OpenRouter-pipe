@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from open_webui_openrouter_pipe.core.config import EncryptedStr, Valves
 pytest.importorskip("open_webui_openrouter_pipe.plugins.pipe_dashboard")

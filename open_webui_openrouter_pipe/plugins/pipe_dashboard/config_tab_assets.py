@@ -429,6 +429,7 @@ function commitSave(){
     if(r.rev!=null){REV=r.rev;lastSeenRev=r.rev;}
     inflightSave=false;
     paintDriftNote($("#driftnote"),{drift:driftCache,reset:r.reset});
+    renderResetNote(r.post_reset||[]);
     invalid.clear(); $("#modal").classList.remove("show"); updateBar();
     if(SEL&&byName[SEL])renderDetail(byName[SEL]); buildTree();
     toast("Saved "+names.length+" setting"+(names.length>1?"s":"")); reportHeight();
@@ -451,6 +452,7 @@ function showConflict(msg){
   reportHeight();
 }
 function hideConflict(){ const c=$("#conflict"); if(c){c.style.display="none";c.innerHTML="";} }
+function renderResetNote(rs){ const rn=$("#resetnote"); if(rn)rn.textContent=rs.length?("reset to default: "+rs.join(", ")):""; }
 function paintDriftNote(dn,r){
   if(!dn)return;
   const u=(r&&r.drift&&r.drift.unenriched)?r.drift.unenriched.length:0;
@@ -462,6 +464,7 @@ function applySnapshot(r){
   byName={}; baseline={};
   VALVES.forEach(v=>{ byName[v.name]=v; baseline[v.name]=v.value; });
   Object.keys(edits).forEach(n=>delete edits[n]); invalid.clear();
+  renderResetNote(r.reset||[]);
   driftCache=r.drift; paintDriftNote($("#driftnote"),r);
   hideConflict(); updateBar();
   if(SEL&&byName[SEL])renderDetail(byName[SEL]); else { SEL=null; const d=$("#detail"); if(d)d.innerHTML='<div class="empty">Select a setting to view and edit it.</div>'; }

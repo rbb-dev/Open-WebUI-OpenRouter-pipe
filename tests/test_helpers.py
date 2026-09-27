@@ -497,19 +497,17 @@ class TestRedactPayloadBlobs:
         result = _redact_payload_blobs({"key": "normal text"})
         assert result == {"key": "normal text"}
 
-    def test_short_data_url_unchanged(self):
-        """Short data URLs are not redacted."""
-        short_url = "data:text/plain;base64,SGVsbG8="  # "Hello"
-        result = _redact_payload_blobs({"url": short_url}, max_chars=500)
-        assert result["url"] == short_url
-
     def test_long_data_url_redacted(self):
-        """Long data URLs are redacted."""
+        """A long data URL is reduced to its media type, with no payload prefix.
+
+        It used to keep the first 64 payload characters for diagnosis; that is the
+        leak this helper exists to close.
+        """
         long_b64 = "A" * 500
         long_url = f"data:image/png;base64,{long_b64}"
         result = _redact_payload_blobs({"url": long_url}, max_chars=100)
-        assert "[REDACTED]" in result["url"]
-        assert "500 chars" in result["url"]
+        assert result["url"] == "data:image/png"
+        assert "A" * 64 not in result["url"]
 
     def test_nested_dict(self):
         """Nested dicts are walked."""

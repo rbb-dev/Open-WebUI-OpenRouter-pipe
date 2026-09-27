@@ -141,6 +141,13 @@ def register_valve_event_sink() -> bool:
         return False
 
 
+def clear_socket_pipe_getter(instance: Any, name: str) -> None:
+    global _get_pipe
+    current = _get_pipe
+    if current is None or current == getattr(instance, name, None):
+        _get_pipe = None
+
+
 def register_socket_handler(get_pipe: Any = None) -> bool:
     global _registered, _get_pipe
     if get_pipe is not None:

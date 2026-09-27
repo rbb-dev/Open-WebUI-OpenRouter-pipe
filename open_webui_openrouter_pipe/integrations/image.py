@@ -9,13 +9,18 @@ import uuid
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from ..api.gateway.responses_adapter import _record_failed_call
-from ..core.config import _PIPE_METADATA_KEY, _select_openrouter_http_referer
+from ..core.config import (
+    _PIPE_METADATA_KEY,
+    OPENAI_EMPTY_USER_TURN_FALLBACK,
+    _select_openrouter_http_referer,
+)
 from ..core.costs import maybe_dump_costs_snapshot
 from ..core.errors import OpenRouterAPIError
 from ..core.logging_system import SessionLogger
 from ..core.utils import clamp_text, summarise_names
 from ..core.warn_latch import warn_level
 from ..filters.image_filter_renderer import IMAGE_KNOB_TITLES
+from ..requests.fusion_engine import latest_user_text
 from ..storage.multimodal import ADDRESS_CHECK_BUDGET_SECONDS, ADDRESS_CHECK_SECONDS
 from .image_client import OpenRouterImageClient
 from .image_types import (
@@ -160,6 +165,10 @@ def size_consistency_notes(
         _Note(*_superseded(name, value, f"{_labelled('size')}={shown_size} {reason}"))
         for name, value, reason in dropped
     ]
+
+
+def _is_only_the_empty_turn_marker(items: Any) -> bool:
+    return latest_user_text(items).strip() == OPENAI_EMPTY_USER_TURN_FALLBACK
 
 
 class ImageGenerationAdapter:
@@ -1134,10 +1143,12 @@ class ImageGenerationAdapter:
         api_model_id: str,
         outcome: _Outcome,
     ) -> str:
-        prompt = prompt_with_system(getattr(responses_body, "input", None))
-        if not prompt.strip():
-            prompt = prompt_with_system(body.get("messages") if isinstance(body, dict) else None)
-        if not prompt.strip():
+        responses_input = getattr(responses_body, "input", None)
+        body_messages = body.get("messages") if isinstance(body, dict) else None
+        prompt = prompt_with_system(responses_input)
+        if not prompt.strip() or _is_only_the_empty_turn_marker(responses_input):
+            prompt = prompt_with_system(body_messages)
+        if not prompt.strip() or _is_only_the_empty_turn_marker(body_messages):
             raise ImageGenerationError(
                 "An image prompt is required. Describe the image you want, or say what to "
                 "change about the one you attached."

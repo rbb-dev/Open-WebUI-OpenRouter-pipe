@@ -171,9 +171,15 @@ def _apply_single_id_filter_ids(
     auto_attach: bool,
     record_key: str,
     hands_off: bool = False,
+    blank_is_a_decision: bool = False,
 ) -> bool:
-    if hands_off or not filter_function_id:
+    if hands_off:
         return False
+    blank_id_release = bool(blank_is_a_decision and not filter_function_id and not supported)
+    blank_id_is_transient = not filter_function_id and not blank_id_release
+    if blank_id_is_transient:
+        return False
+    offered_id = filter_function_id or ""
     normalized = _normalize_id_list(meta_dict, "filterIds")
     pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
     owned_id = None
@@ -192,18 +198,18 @@ def _apply_single_id_filter_ids(
         wanted.discard(owned_id)
     attaching = supported and auto_attach
     if attaching:
-        wanted.add(filter_function_id)
+        wanted.add(offered_id)
     elif not supported:
-        wanted.discard(filter_function_id)
+        wanted.discard(offered_id)
     if wanted == had:
         return False
-    if attaching and filter_function_id not in normalized:
-        normalized.append(filter_function_id)
+    if attaching and offered_id not in normalized:
+        normalized.append(offered_id)
     normalized = [fid for fid in normalized if fid in wanted]
     meta_dict["filterIds"] = _dedupe_preserve_order(normalized)
     if attaching:
         pipe_meta = _ensure_pipe_meta(meta_dict)
-        pipe_meta[record_key] = filter_function_id
+        pipe_meta[record_key] = offered_id
         meta_dict[_PIPE_METADATA_KEY] = pipe_meta
     return True
 
@@ -225,6 +231,32 @@ def _detached_by_this_pass(
         elif isinstance(recorded, list):
             previous = [p for p in recorded if isinstance(p, str) and p]
     return set(previous) - set(filter_function_ids or [])
+
+
+def _recorded_filter_id(meta_dict: dict, record_key: str) -> str:
+    pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
+    if not isinstance(pipe_meta, dict):
+        return ""
+    recorded = pipe_meta.get(record_key)
+    if isinstance(recorded, str) and recorded:
+        return recorded
+    return ""
+
+
+def _apply_single_id_default_filter_ids(
+    meta_dict: dict,
+    *,
+    owned_id: str,
+    detached: set[str] | None = None,
+) -> bool:
+    if not owned_id or owned_id not in (detached or set()):
+        return False
+    default_ids = _normalize_id_list(meta_dict, "defaultFilterIds")
+    kept = [fid for fid in default_ids if fid != owned_id]
+    if len(kept) == len(default_ids):
+        return False
+    meta_dict["defaultFilterIds"] = _dedupe_preserve_order(kept)
+    return True
 
 
 def _recorded_ids_any_shape(meta_dict: dict, *, prune_key: str) -> set[str]:
@@ -311,6 +343,7 @@ def _apply_video_gen_filter_ids(
         auto_attach=auto_attach_video_gen_filter,
         record_key="video_gen_filter_id",
         hands_off=hands_off,
+        blank_is_a_decision=True,
     )
 
 
@@ -2137,6 +2170,7 @@ class ModelCatalogManager:
                 auto_attach=auto_attach_direct_uploads_filter,
                 record_key="direct_uploads_filter_id",
                 hands_off="direct_uploads_filter_id" in hands_off,
+                blank_is_a_decision=True,
             )
 
         def _apply_image_gen_filter_ids(meta_dict: dict) -> bool:
@@ -2146,54 +2180,105 @@ class ModelCatalogManager:
                 supported=image_gen_filter_supported,
                 auto_attach=auto_attach_image_gen_filter,
                 record_key="image_gen_filter_id",
+                blank_is_a_decision=True,
             )
 
 
-        def _apply_default_filter_ids(meta_dict: dict) -> bool:
-            owned_id = default_filter_id
-            if not owned_id:
+        def _apply_default_filter_ids(
+            meta_dict: dict,
+            *,
+            detached: set[str] | None = None,
+            attach_detached: set[str] | None = None,
+            hands_off: bool = False,
+        ) -> bool:
+            if hands_off:
                 return False
 
-            filter_ids = _normalize_id_list(meta_dict, "filterIds")
-            pipe_meta = _ensure_pipe_meta(meta_dict)
             seeded_key = "web_tools_default_seeded"
+            pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
+            if not isinstance(pipe_meta, dict):
+                pipe_meta = {}
             previous_id = pipe_meta.get("web_tools_filter_id")
             previous_id_str = previous_id if isinstance(previous_id, str) else ""
+            attached_id = pipe_meta.get("web_tools_attached_id")
+            recorded_id_str = attached_id if isinstance(attached_id, str) and attached_id else previous_id_str
+            owned_id = default_filter_id
+            owned_id_str = (
+                owned_id
+                if (owned_id and _web_tools_owned(
+                    pipe_meta, owned_id, previous_id_str, id_from_record=id_from_record
+                ))
+                else recorded_id_str
+            )
 
             default_ids = _normalize_id_list(meta_dict, "defaultFilterIds")
             changed = False
 
-            if owned_id in default_ids and _web_tools_owned(
-                pipe_meta,
-                owned_id,
-                previous_id_str,
-                id_from_record=id_from_record,
-            ) and (
-                not auto_default_filter or owned_id not in filter_ids
+            seeded_by_pipe = bool(pipe_meta.get(seeded_key, False))
+            release = set(detached or ())
+            blank_id_release = bool(
+                id_from_record and not filter_function_id and not auto_default_filter
+            )
+            if owned_id_str and (
+                blank_id_release
+                or (
+                    filter_function_id
+                    and seeded_by_pipe
+                    and (
+                        owned_id in release
+                        or filter_function_id in release
+                        or (detached is not None and not auto_default_filter)
+                        or (detached is not None and disable_web_tools_default_on)
+                    )
+                )
             ):
-                default_ids = [fid for fid in default_ids if fid != owned_id]
+                release.add(owned_id_str)
+            kept = [fid for fid in default_ids if fid not in release or fid != owned_id_str]
+            if len(kept) != len(default_ids):
+                default_ids = kept
                 changed = True
-                if pipe_meta.get(seeded_key):
+                pipe_meta = _ensure_pipe_meta(meta_dict)
+                pipe_meta[seeded_key] = False
+
+            seeding = bool(auto_default_filter and owned_id and filter_supported)
+            if not seeding:
+                superseded = [fid for fid in default_ids if fid in (attach_detached or set())]
+                if superseded:
+                    default_ids = [fid for fid in default_ids if fid not in superseded]
+                    changed = True
+                    pipe_meta = _ensure_pipe_meta(meta_dict)
                     pipe_meta[seeded_key] = False
-            elif auto_default_filter and filter_supported and owned_id in filter_ids:
-                if previous_id_str and previous_id_str != owned_id and previous_id_str in default_ids:
-                    default_ids = [owned_id if fid == previous_id_str else fid for fid in default_ids]
-                    changed = True
 
-                seeded = bool(pipe_meta.get(seeded_key, False))
-                if owned_id in default_ids:
-                    if not seeded:
-                        pipe_meta[seeded_key] = True
-                        changed = True
-                else:
-                    if not seeded:
-                        default_ids.append(owned_id)
-                        pipe_meta[seeded_key] = True
-                        changed = True
+            if not auto_default_filter or not owned_id or not filter_supported:
+                if changed:
+                    meta_dict["defaultFilterIds"] = _dedupe_preserve_order(default_ids)
+                    meta_dict[_PIPE_METADATA_KEY] = pipe_meta
+                return changed
 
-                if previous_id_str != owned_id:
-                    pipe_meta["web_tools_filter_id"] = owned_id
+            filter_ids = _normalize_id_list(meta_dict, "filterIds")
+            if owned_id not in filter_ids:
+                if changed:
+                    meta_dict["defaultFilterIds"] = _dedupe_preserve_order(default_ids)
+                    meta_dict[_PIPE_METADATA_KEY] = pipe_meta
+                return changed
+
+            pipe_meta = _ensure_pipe_meta(meta_dict)
+            if previous_id_str and previous_id_str != owned_id and previous_id_str in default_ids:
+                default_ids = [owned_id if fid == previous_id_str else fid for fid in default_ids]
+                changed = True
+
+            if owned_id not in default_ids:
+                if not seeded_by_pipe:
+                    default_ids.append(owned_id)
+                    pipe_meta[seeded_key] = True
                     changed = True
+            elif not seeded_by_pipe:
+                pipe_meta[seeded_key] = False
+                changed = True
+
+            if previous_id_str != owned_id:
+                pipe_meta["web_tools_filter_id"] = owned_id
+                changed = True
 
             if not changed:
                 return False
@@ -2313,16 +2398,68 @@ class ModelCatalogManager:
             if _prune_stale_openrouter_filter_ids(meta_dict):
                 meta_updated = True
 
+            web_tools_hands_off = "web_tools_attached_id" in hands_off
+            web_tools_ids_now = [filter_function_id] if (
+                filter_supported and auto_attach_filter and filter_function_id
+            ) else []
+            web_tools_attach_detached = _detached_by_this_pass(
+                meta_dict, prune_key="web_tools_attached_id",
+                filter_function_ids=web_tools_ids_now,
+            )
+            web_tools_detached = web_tools_attach_detached | _detached_by_this_pass(
+                meta_dict, prune_key="web_tools_filter_id",
+                filter_function_ids=web_tools_ids_now,
+            )
+            if not filter_function_id:
+                web_tools_attach_detached = set()
+                web_tools_detached = set()
+
             if _apply_filter_ids(meta_dict):
                 meta_updated = True
 
-            if _apply_default_filter_ids(meta_dict):
+            if _apply_default_filter_ids(
+                meta_dict, detached=web_tools_detached,
+                attach_detached=web_tools_attach_detached,
+                hands_off=web_tools_hands_off,
+            ):
                 meta_updated = True
 
+            direct_uploads_detached_id = _recorded_filter_id(meta_dict, "direct_uploads_filter_id")
+            direct_uploads_ids_now = [direct_uploads_filter_function_id] if (
+                direct_uploads_filter_supported and auto_attach_direct_uploads_filter
+                and direct_uploads_filter_function_id
+            ) else []
+            direct_uploads_detached = _detached_by_this_pass(
+                meta_dict, prune_key="direct_uploads_filter_id",
+                filter_function_ids=direct_uploads_ids_now,
+            )
+            if direct_uploads_filter_supported and not direct_uploads_filter_function_id:
+                direct_uploads_detached = set()
             if _apply_direct_uploads_filter_ids(meta_dict):
                 meta_updated = True
 
+            if _apply_single_id_default_filter_ids(
+                meta_dict, owned_id=direct_uploads_detached_id, detached=direct_uploads_detached,
+            ):
+                meta_updated = True
+
+            image_gen_detached_id = _recorded_filter_id(meta_dict, "image_gen_filter_id")
+            image_gen_ids_now = [image_gen_filter_function_id] if (
+                image_gen_filter_supported and auto_attach_image_gen_filter
+                and image_gen_filter_function_id
+            ) else []
+            image_gen_detached = _detached_by_this_pass(
+                meta_dict, prune_key="image_gen_filter_id",
+                filter_function_ids=image_gen_ids_now,
+            )
+            if image_gen_filter_supported and not image_gen_filter_function_id:
+                image_gen_detached = set()
             if _apply_image_gen_filter_ids(meta_dict):
+                meta_updated = True
+
+            if _apply_single_id_default_filter_ids(
+                meta_dict, owned_id=image_gen_detached_id, detached=image_gen_detached,
+            ):
                 meta_updated = True
 
             video_hands_off = "video_gen_filter_id" in hands_off

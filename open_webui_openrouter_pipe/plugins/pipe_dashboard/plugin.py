@@ -19,9 +19,18 @@ from .command_registry import CommandRegistry
 # Trigger command auto-imports so @register_command decorators fire
 from .commands.help_cmd import handle_help as _pd_commands_loaded  # noqa: F401
 from .context import CommandContext
-from .dashboard_publisher import run_dashboard_publisher, set_snapshot_getter
-from .dashboard_socket import register_socket_handler
-from .http_routes import register_action_route, set_pipe_getter
+from .dashboard_publisher import (
+    clear_snapshot_getter,
+    run_dashboard_publisher,
+    set_snapshot_getter,
+)
+from .dashboard_socket import clear_socket_pipe_getter, register_socket_handler
+from .http_routes import (
+    clear_fresh_dispatch,
+    clear_routes_pipe_getter,
+    register_action_route,
+    set_pipe_getter,
+)
 from .session_tracker import SessionTracker
 from .update_service import DEFAULT_REPO
 from .usage_store import UsageStore
@@ -51,6 +60,14 @@ def _registry_model_name(model_id: str) -> str:
         return resolve_model_name(model_id, build_model_name_map())
     except (ImportError, AttributeError, TypeError):
         return model_id
+
+
+_ST_LIVENESS_EVENT_TYPES = frozenset({
+    "chat:message:delta",
+    "response.output_text.delta",
+    "fusion:event",
+    "fusion_inner:reasoning.delta",
+})
 
 
 @PluginRegistry.register
@@ -160,18 +177,21 @@ class PipeDashboardPlugin(PluginBase):
         self.ctx = ctx
         self._get_pipe = lambda: getattr(ctx, "pipe", None)
 
-        register_socket_handler(self._get_pipe)
-        set_pipe_getter(self._get_pipe)
-        set_snapshot_getter(self._live_snapshot)
-        register_action_route()
-
         from .update_service import UpdateService
 
         self.update_service = UpdateService(self._get_pipe)
 
+        self._re_register_registrations(self._get_pipe)
+
+    def _re_register_registrations(self, get_pipe: Any) -> None:
+        register_socket_handler(get_pipe)
+        set_pipe_getter(get_pipe)
+        set_snapshot_getter(self._live_snapshot)
+        register_action_route()
+
         # Start the per-worker stats publisher background task.
         # The publisher is idle until a dashboard joins the viewers room.
-        self._maybe_start_publisher(self._get_pipe)
+        self._maybe_start_publisher(get_pipe)
         self._maybe_start_auto_update()
 
     def _maybe_start_auto_update(self) -> None:
@@ -234,10 +254,7 @@ class PipeDashboardPlugin(PluginBase):
         get_pipe = getattr(self, "_get_pipe", None)
         register_socket_handler(get_pipe)
         if get_pipe is not None:
-            set_pipe_getter(get_pipe)
-            register_action_route()
-            self._maybe_start_publisher(get_pipe)
-            self._maybe_start_auto_update()
+            self._re_register_registrations(get_pipe)
 
     async def _ensure_model_overlay(self, display_name: str, description: str) -> None:
         """Create or update the OWUI Models table entry for this virtual model."""
@@ -424,6 +441,8 @@ class PipeDashboardPlugin(PluginBase):
                             tracker.update_usage(request_id, usage)
                         else:
                             tracker.mark_streaming(request_id)
+                    elif etype in _ST_LIVENESS_EVENT_TYPES:
+                        tracker.mark_stream_alive(request_id)
                     elif etype == "response.output_item.added":
                         item = event.get("item") or {}
                         if (
@@ -483,7 +502,23 @@ class PipeDashboardPlugin(PluginBase):
         self._tracker.sweep()
         return self._tracker.live_snapshot()
 
+    def _clear_module_registrations(self) -> None:
+        for clear, name in (
+            (clear_socket_pipe_getter, "_get_pipe"),
+            (clear_routes_pipe_getter, "_get_pipe"),
+            (clear_snapshot_getter, "_live_snapshot"),
+        ):
+            try:
+                clear(self, name)
+            except Exception:
+                logger.debug("pipe_dashboard module-global teardown failed", exc_info=True)
+        try:
+            clear_fresh_dispatch(getattr(getattr(self, "ctx", None), "pipe", None))
+        except Exception:
+            logger.debug("pipe_dashboard module-global teardown failed", exc_info=True)
+
     def on_shutdown(self, **kwargs: Any) -> Any:
+        self._clear_module_registrations()
         pending: list[Any] = []
         task = self._publisher_task
         if task is not None and not task.done():

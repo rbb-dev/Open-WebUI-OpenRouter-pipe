@@ -23,18 +23,21 @@ from ..core.config import (
     _MARKDOWN_IMAGE_RE,
     _NON_REPLAYABLE_TOOL_ARTIFACTS,
     _RAW_REPLAYED_SERVER_TOOLS,
+    OPENAI_EMPTY_USER_TURN_FALLBACK,
 )
 
 # Import status messages
+from ..core.context_budget import inline_payload_bytes
 from ..core.errors import RequiredInternalFileError, StatusMessages
 from ..core.image_detail import image_detail_or_auto
 from ..core.url_scheme import (
     is_cleartext_http_url,
     is_http_or_https_url,
     is_inline_data_url,
+    link_media_type,
+    loggable_link,
     split_base64_data_url,
     url_scheme,
-    url_site,
 )
 
 # Import utility functions
@@ -210,18 +213,59 @@ class ImageRefusal(NamedTuple):
 
 
 def _inline_payload_bytes(value: str) -> int:
-    if url_scheme(value) != "data":
-        return (len(value) * 3) // 4
-    split = split_base64_data_url(value)
-    if split is not None:
-        return (len(split[1]) * 3) // 4
-    return len(value.partition(",")[2])
+    return inline_payload_bytes(value)
 
 
 def _inline_media_type(value: str) -> str:
     if url_scheme(value) != "data":
         return "raw base64"
     return value.partition(",")[0][len("data:"):].split(";", 1)[0][:64]
+
+
+def _payload_is_present(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, dict):
+        for key in ("url", "data"):
+            if key in value:
+                return _payload_is_present(value[key])
+    return False
+
+
+def _block_is_usable(block: dict[str, Any]) -> bool:
+    btype = block.get("type")
+    if btype == "input_text":
+        return isinstance(block.get("text"), str) and bool(block["text"].strip())
+    if btype == "input_file":
+        return any(block.get(key) for key in ("file_id", "file_data", "file_url"))
+    if btype in {"input_image", "image_url"}:
+        return _payload_is_present(block.get("image_url"))
+    if btype == "input_audio":
+        return _payload_is_present(block.get("input_audio"))
+    if btype == "video_url":
+        return _payload_is_present(block.get("video_url"))
+    return True
+
+
+def _unconverted_block_reason(block: dict[str, Any]) -> str | None:
+    btype = block.get("type")
+    if btype in {"input_image", "image_url", "image"}:
+        return "an image carried no picture data" if not _payload_is_present(
+            block.get("image_url", block.get("url"))
+        ) else None
+    if btype in {"input_audio", "audio"}:
+        return "an audio clip carried no audio data" if not _payload_is_present(
+            block.get("input_audio", block.get("audio", block.get("data")))
+        ) else None
+    if btype in {"video_url", "video"}:
+        return "a video clip carried no video data" if not _payload_is_present(
+            block.get("video_url", block.get("url"))
+        ) else None
+    if btype in {"input_file", "file"}:
+        return "a file carried no contents" if not any(
+            block.get(key) for key in ("file_id", "file_data", "file_url", "file")
+        ) else None
+    return None
 
 
 def _reinterleave_region(region: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -736,7 +780,9 @@ async def transform_messages_to_input(
                 last_image_blocks, last_image_turn = [], None
             if tool_images and _withheld(msg_turn_index):
                 continue
-            content_blocks = msg.get("content") or []
+            raw_content_value = msg.get("content")
+            content_blocks = raw_content_value or []
+            carried_blocks = (isinstance(raw_content_value, str) and bool(raw_content_value)) or isinstance(raw_content_value, (dict, list))
             if isinstance(content_blocks, str):
                 cleaned = _sanitize_free_text(content_blocks)
                 content_blocks = [{"type": "text", "text": cleaned}] if cleaned else []
@@ -755,7 +801,7 @@ async def transform_messages_to_input(
                 content_blocks = []
 
             def _image_subject(source: str) -> str:
-                return url_site(source) if is_http_or_https_url(source) else _inline_media_type(source)
+                return loggable_link(source)
 
             def _refuse(reason: str, cause: str, *, subject: str) -> ImageRefusal:
                 return ImageRefusal(reason, cause, subject=subject)
@@ -804,9 +850,18 @@ async def transform_messages_to_input(
                                 "set ALLOW_INSECURE_HTTP and list the host in "
                                 "ALLOW_INSECURE_HTTP_HOSTS to permit it",
                                 "insecure_http",
-                                severity="error",
-                                subject=url_site(url),
+                                subject=loggable_link(url),
                             )
+
+                    if not (
+                        url_scheme(url) in ("data", "http", "https")
+                        or is_internal_file_url(url)
+                    ):
+                        return ImageRefusal(
+                            "not a link the pipe can resolve into an image",
+                            "unusable_link",
+                            subject=loggable_link(url),
+                        )
 
                     if is_inline_data_url(url):
                         url = f"data:{url.partition(':')[2]}"
@@ -817,7 +872,7 @@ async def transform_messages_to_input(
                                     "a data URL that is not base64-encoded, which "
                                     "OpenRouter does not accept",
                                     "unencoded_inline",
-                                    subject=_inline_media_type(url),
+                                    subject=loggable_link(url),
                                 )
                             parsed = pipe._multimodal_handler._parse_data_url(url)
                             if not parsed:
@@ -827,8 +882,18 @@ async def transform_messages_to_input(
                                     if oversized
                                     else "not decodable as base64",
                                     "oversized_inline" if oversized else "undecodable_inline",
-                                    subject=_inline_media_type(url),
+                                    subject=loggable_link(url),
                                 )
+                            if split is not None:
+                                _body = "".join(split[1].split())
+                                try:
+                                    base64.b64decode(_body, validate=True)
+                                except (binascii.Error, ValueError):
+                                    return ImageRefusal(
+                                        "not decodable as base64", "undecodable_inline",
+                                        subject=loggable_link(url),
+                                    )
+                                url = split[0] + "," + _body
                         except Exception as exc:
                             pipe.logger.exception("Failed to process base64 image")
                             await pipe._ensure_error_formatter()._emit_error(
@@ -837,7 +902,8 @@ async def transform_messages_to_input(
                                 show_error_message=False
                             )
                             return ImageRefusal(
-                                f"could not be processed: {exc}", "base64_processing_error", subject=url[:64]
+                                f"could not be processed: {exc}", "base64_processing_error",
+                                subject=loggable_link(url),
                             )
 
                     elif is_http_or_https_url(url) and not is_internal_file_url(url):
@@ -864,7 +930,7 @@ async def transform_messages_to_input(
                                 else await pipe._multimodal_handler._download_remote_url(url)
                             )
                         except Exception:
-                            pipe.logger.exception("Failed to download remote image %s", url_site(url))
+                            pipe.logger.exception("Failed to download remote image %s", loggable_link(url))
                             downloaded = None
                         if downloaded and not downloaded.get("data"):
                             downloaded = None
@@ -872,7 +938,7 @@ async def transform_messages_to_input(
                             return _refuse(
                                 "could not be fetched, so it was not sent",
                                 "remote_unfetched",
-                                subject=url_site(url),
+                                subject=loggable_link(url),
                             )
                         if downloaded:
                             oversized = len(downloaded["data"]) > max_inline_bytes
@@ -881,7 +947,7 @@ async def transform_messages_to_input(
                                     f"{len(downloaded['data'])} bytes, over the "
                                     f"{max_inline_bytes}-byte limit, so it was not sent",
                                     "oversized_remote",
-                                    subject=url_site(url),
+                                    subject=loggable_link(url),
                                 )
                             if mode == "reuse" and memo_key is not None:
                                 request_memo[memo_key] = (
@@ -1035,7 +1101,10 @@ async def transform_messages_to_input(
                         and not is_internal_file_url(file_data)
                         and not pipe._multimodal_handler._is_insecure_http_allowed(file_data)
                     ):
-                        pipe.logger.error("Blocked insecure HTTP file_data URL by default: %s", file_data)
+                        pipe.logger.error(
+                            "Blocked insecure HTTP file_data URL by default: %s",
+                            loggable_link(file_data),
+                        )
                         await pipe._ensure_error_formatter()._emit_error(
                             event_emitter,
                             "File URL blocked by security policy (HTTP disabled by default). "
@@ -1059,7 +1128,7 @@ async def transform_messages_to_input(
                         and not is_internal_file_url(file_url)
                         and not pipe._multimodal_handler._is_insecure_http_allowed(file_url)
                     ):
-                        pipe.logger.error("Blocked insecure HTTP file_url by default: %s", file_url)
+                        pipe.logger.error("Blocked insecure HTTP file_url by default: %s", loggable_link(file_url))
                         await pipe._ensure_error_formatter()._emit_error(
                             event_emitter,
                             "File URL blocked by security policy (HTTP disabled by default). "
@@ -1089,7 +1158,7 @@ async def transform_messages_to_input(
                         return ImageRefusal(
                             f"larger than the {max_inline_bytes}-byte inline limit",
                             "oversized_inline_file",
-                            subject=_inline_media_type(next(iter(oversized.values()))),
+                            subject=link_media_type(next(iter(oversized.values()))),
                         )
                     if "file_data" in oversized:
                         file_data = None
@@ -1320,7 +1389,16 @@ async def transform_messages_to_input(
                                 )
                                 return _empty_audio_block()
                             audio_format = _map_format(parsed.get("mime_type"))
-                            return _build_audio_block(parsed.get("b64", ""), audio_format)
+                            audio_b64 = _normalize_base64(parsed.get("b64", ""))
+                            if not audio_b64:
+                                pipe.logger.warning("Audio payload rejected: invalid base64 data.")
+                                await pipe._ensure_error_formatter()._emit_error(
+                                    event_emitter,
+                                    "Audio input was not valid base64.",
+                                    show_error_message=False,
+                                )
+                                return _empty_audio_block()
+                            return _build_audio_block(audio_b64, audio_format)
 
                         cleaned = _normalize_base64(sanitized)
                         if not cleaned:
@@ -1418,7 +1496,7 @@ async def transform_messages_to_input(
                         is_cleartext_http_url(url)
                         and not pipe._multimodal_handler._is_insecure_http_allowed(url)
                     ):
-                        pipe.logger.error("Blocked insecure HTTP video URL by default: %s", url)
+                        pipe.logger.error("Blocked insecure HTTP video URL by default: %s", loggable_link(url))
                         await pipe._ensure_error_formatter()._emit_error(
                             event_emitter,
                             "Video URL blocked by security policy (HTTP disabled by default). "
@@ -1428,22 +1506,20 @@ async def transform_messages_to_input(
                         return {"type": "video_url", "video_url": {"url": ""}}
 
                     if url_scheme(url) == "data":
-                        if "," in url:
-                            b64_data = url.split(",", 1)[1]
-                            estimated_size_bytes = (len(b64_data) * 3) // 4
-                            max_size_bytes = video_max_size_mb * 1024 * 1024
-                            if estimated_size_bytes > max_size_bytes:
-                                estimated_size_mb = estimated_size_bytes / (1024 * 1024)
-                                pipe.logger.warning(
-                                    f"Base64 video size (~{estimated_size_mb:.1f}MB) exceeds configured limit "
-                                    f"({video_max_size_mb}MB), rejecting to prevent memory issues"
-                                )
-                                await pipe._ensure_error_formatter()._emit_error(
-                                    event_emitter,
-                                    f"Video too large (~{estimated_size_mb:.1f}MB, max: {video_max_size_mb}MB)",
-                                    show_error_message=True
-                                )
-                                return {"type": "video_url", "video_url": {"url": ""}}
+                        estimated_size_bytes = _inline_payload_bytes(url)
+                        max_size_bytes = video_max_size_mb * 1024 * 1024
+                        if estimated_size_bytes > max_size_bytes:
+                            estimated_size_mb = estimated_size_bytes / (1024 * 1024)
+                            pipe.logger.warning(
+                                f"Base64 video size (~{estimated_size_mb:.1f}MB) exceeds configured limit "
+                                f"({video_max_size_mb}MB), rejecting to prevent memory issues"
+                            )
+                            await pipe._ensure_error_formatter()._emit_error(
+                                event_emitter,
+                                f"Video too large (~{estimated_size_mb:.1f}MB, max: {video_max_size_mb}MB)",
+                                show_error_message=True
+                            )
+                            return {"type": "video_url", "video_url": {"url": ""}}
 
                         await pipe._event_emitter_handler._emit_status(
                             event_emitter,
@@ -1458,7 +1534,9 @@ async def transform_messages_to_input(
                         )
                     elif is_http_or_https_url(url):
                         if not await pipe._multimodal_handler._is_safe_url(url):
-                            pipe.logger.error(f"SSRF protection blocked video URL: {url}")
+                            pipe.logger.error(
+                                "SSRF protection blocked video URL: %s", loggable_link(url)
+                            )
                             await pipe._ensure_error_formatter()._emit_error(
                                 event_emitter,
                                 "Video URL blocked by security policy (private network)",
@@ -1719,12 +1797,36 @@ async def transform_messages_to_input(
                     done=False,
                 )
 
-            if not converted_blocks and (refused_images or refused_files):
-                reasons = "; ".join(reason.rstrip(".") for reason in refused_files + refused_images)
-                converted_blocks.append({
-                    "type": "input_text",
-                    "text": f"[An attached item was not sent: {reasons}.]",
-                })
+            if (
+                not any(_block_is_usable(b) for b in converted_blocks)
+                and any(b.get("type") == "input_text" for b in converted_blocks)
+                and any(_unconverted_block_reason(b) for b in content_blocks)
+            ):
+                for original in content_blocks:
+                    reason = _unconverted_block_reason(original) if isinstance(original, dict) else None
+                    if reason is None:
+                        continue
+                    if original.get("type") in {"input_image", "image_url", "image"}:
+                        refused_images.append(reason)
+                    else:
+                        refused_files.append(reason)
+
+            if carried_blocks and not any(_block_is_usable(b) for b in converted_blocks):
+                converted_blocks = [b for b in converted_blocks if _block_is_usable(b)]
+                if not converted_blocks:
+                    if refused_images or refused_files:
+                        reasons = "; ".join(
+                            reason.rstrip(".") for reason in refused_files + refused_images
+                        )
+                        converted_blocks.append({
+                            "type": "input_text",
+                            "text": f"[An attached item was not sent: {reasons}.]",
+                        })
+                    else:
+                        converted_blocks.append({
+                            "type": "input_text",
+                            "text": OPENAI_EMPTY_USER_TURN_FALLBACK,
+                        })
             openai_input.append({
                 "type": "message",
                 "role": "user",

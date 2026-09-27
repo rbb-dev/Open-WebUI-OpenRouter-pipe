@@ -594,7 +594,6 @@ def test_maybe_schedule_model_metadata_sync_running_task_no_reschedule(pipe_inst
     assert pipe._catalog_manager._model_metadata_sync_key is None
 
 
-
 async def _settle(manager) -> None:
     """Await the task the manager actually created, then let its callback run.
 

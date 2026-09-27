@@ -296,9 +296,9 @@ Two per-model custom parameters control Web Tools filter attachment on a per-mod
 | Parameter | Effect |
 | --- | --- |
 | `disable_web_tools_auto_attach` | Prevents auto-attaching the Web Tools filter to this model (the toggle will not appear in Integrations). |
-| `disable_web_tools_default_on` | Prevents auto-enabling the Web Tools filter by default for this model (the toggle appears but starts off). |
+| `disable_web_tools_default_on` | Prevents auto-enabling the Web Tools filter by default for this model (the toggle appears but starts off on the next sync, and a default the pipe had already seeded for it is released on that same sync). |
 
-These parameters are respected even when the global `AUTO_ATTACH_WEB_TOOLS_FILTER` and `AUTO_DEFAULT_WEB_TOOLS_FILTER` valves are enabled.
+These parameters are respected even when the global `AUTO_ATTACH_WEB_TOOLS_FILTER` and `AUTO_DEFAULT_WEB_TOOLS_FILTER` valves are enabled: `disable_web_tools_default_on` releases a default the pipe seeded for that model on the next sync, and neither of them detaches a panel the pipe attached.
 
 See: [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry.md) for the full list of per-model custom parameters.
 
@@ -347,7 +347,7 @@ Set `ENABLE_IMAGE_GENERATION=False`. The Image Generation filter will not be gen
 
 ### Web search opt-in (lower cost)
 
-Set `AUTO_DEFAULT_WEB_TOOLS_FILTER=False`. The Web Tools toggle remains available on models, but will not be enabled by default. Users must manually enable it per chat.
+Set `AUTO_DEFAULT_WEB_TOOLS_FILTER=False`. The Web Tools toggle remains available on models, but will not be enabled by default, and a default the pipe had already seeded for one of them is released on the next sync. Users must manually enable it per chat.
 
 ### Restrict search domains
 

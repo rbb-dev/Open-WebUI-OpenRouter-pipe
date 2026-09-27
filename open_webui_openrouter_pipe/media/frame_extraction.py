@@ -136,7 +136,9 @@ def _normalise_png_mode(img: Image.Image) -> bytes:
 def _scale_to_max_width(img: Image.Image) -> Image.Image:
     if img.width <= _MAX_FRAME_WIDTH:
         return img
-    height = max(2, 2 * round(img.height * _MAX_FRAME_WIDTH / img.width / 2))
+    height = max(
+        2, ((_MAX_FRAME_WIDTH * img.height + img.width) // (2 * img.width)) * 2,
+    )
     return img.resize((_MAX_FRAME_WIDTH, height), Image.Resampling.LANCZOS)
 
 

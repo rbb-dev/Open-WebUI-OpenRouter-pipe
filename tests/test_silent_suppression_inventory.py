@@ -76,12 +76,16 @@ _EXPECTED: dict[str, int] = {
     # bytes, and a storage error while recording it must not replace the failure the
     # user is being shown -- nor take down a cancellation that is already unwinding.
     "integrations/video.py": 7,
-    # 18th: the diagnostic, reassembled below. Measured from the finished tree, not
+    # 19th: the diagnostic, reassembled below. Measured from the finished tree, not
     # derived: B7-3's stamp restore dropped its `suppress` for a `try`/`except` that
     # reports a failed restore, and the stranded-turn capture now routes its row
     # delete through `_release_assembly_lock`, which is itself one guarded helper.
     # The success path keeps its own inline suppression, and the capture adds none.
-    "logging/session_log_manager.py": 18,
+    # T453 added the nineteenth: the writer thread's `task_done()` after it learns
+    # the manager died. `task_done` is bookkeeping on a queue the dying manager will
+    # never again read, and a ValueError from over-counting it must not take the
+    # thread's exit down with it.
+    "logging/session_log_manager.py": 19,
     "media/frame_extraction.py": 2,
     "models/catalog_manager.py": 2,
     # 19th: `MultimodalHandler.aclose()` during shutdown, closing the vetted transport's
@@ -97,10 +101,16 @@ _EXPECTED: dict[str, int] = {
     # letting it out would abort the shutdown that follows.
     # One more: the `shutdown()` inside `__del__`, which runs at interpreter teardown where an
     # exception escaping has no caller to see it; the close is scheduled outside the suppression.
+    # T453 added the second half of that destructor: the per-awaitable disposal of what
+    # `dispatch_on_shutdown` returned. The shapes differ -- a coroutine has `close()` and no
+    # `cancel()`, a Task the reverse, and a third-party plugin may hand back neither -- so the
+    # getattr-and-suppress is what makes the destructor total. It must be: an exception out of
+    # `__del__` is printed and ignored, and a bare awaitable left undisposed is a RuntimeWarning
+    # from the collector instead.
     # Two more: the `OWUI_CHAT_ID.reset(token)` calls in the `finally` blocks that undo the
     # channel-chat-id token; resetting a ContextVar is bookkeeping for the next request, and letting
     # one out would replace the turn's real outcome with an error raised while unwinding it.
-    "pipe.py": 27,
+    "pipe.py": 28,
     "storage/persistence.py": 3,
     # 1st: the caller-supplied fallback in `_emit_templated_error_event`. It is reached only because the
     # admin's own template already failed to render, and the generic card below it is the answer if the

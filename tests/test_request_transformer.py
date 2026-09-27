@@ -41,6 +41,27 @@ from open_webui_openrouter_pipe.requests.transformer import (
 )
 
 
+def _only_block(result: list[dict[str, Any]]) -> dict[str, Any]:
+    """The single content block of a one-block turn, whichever type it turned out to be.
+
+    A turn whose only block is refused no longer ships the refused shape: the pipe drops
+    a block with no payload and, when nothing usable is left, sends one text block
+    saying so. A test that wants to assert about a block the pipe *forwards* has to
+    find it by type now, not assume it is first.
+    """
+    blocks = result[0]["content"] if result else []
+    assert len(blocks) == 1, f"expected one content block, got {blocks!r}"
+    return blocks[0]
+
+
+def _forwarded_block(result: list[dict[str, Any]], btype: str) -> dict[str, Any] | None:
+    """The block of ``btype`` the turn actually forwarded, or None if it forwarded none."""
+    for block in (result[0]["content"] if result else []):
+        if isinstance(block, dict) and block.get("type") == btype:
+            return block
+    return None
+
+
 @pytest.fixture
 def pipe_instance(request):
     """Return a fresh Pipe instance for tests."""
@@ -1040,9 +1061,9 @@ class TestAudioHandling:
 
         result = await transform_messages_to_input(pipe_instance, messages)
 
-        # Should return empty audio block
-        audio_block = result[0]["content"][0]
-        assert audio_block["input_audio"]["data"] == ""
+        # The audio was refused for want of a payload, so none is forwarded.
+        assert _forwarded_block(result, "input_audio") is None
+        assert _only_block(result)["type"] == "input_text"
 
     @pytest.mark.asyncio
     async def test_audio_block_invalid_base64_rejected(self, pipe_instance):
@@ -1055,8 +1076,8 @@ class TestAudioHandling:
 
         result = await transform_messages_to_input(pipe_instance, messages)
 
-        audio_block = result[0]["content"][0]
-        assert audio_block["input_audio"]["data"] == ""
+        assert _forwarded_block(result, "input_audio") is None
+        assert _only_block(result)["type"] == "input_text"
 
     @pytest.mark.asyncio
     async def test_audio_format_normalization(self, pipe_instance, sample_audio_base64):
@@ -1083,8 +1104,8 @@ class TestAudioHandling:
 
         result = await transform_messages_to_input(pipe_instance, messages)
 
-        audio_block = result[0]["content"][0]
-        assert audio_block["input_audio"]["data"] == ""
+        assert _forwarded_block(result, "input_audio") is None
+        assert _only_block(result)["type"] == "input_text"
 
     @pytest.mark.asyncio
     async def test_audio_whitespace_only_data(self, pipe_instance):
@@ -1097,8 +1118,8 @@ class TestAudioHandling:
 
         result = await transform_messages_to_input(pipe_instance, messages)
 
-        audio_block = result[0]["content"][0]
-        assert audio_block["input_audio"]["data"] == ""
+        assert _forwarded_block(result, "input_audio") is None
+        assert _only_block(result)["type"] == "input_text"
 
     @pytest.mark.asyncio
     async def test_audio_dict_data_only(self, pipe_instance, sample_audio_base64):
@@ -1127,8 +1148,8 @@ class TestAudioHandling:
 
         result = await transform_messages_to_input(pipe_instance, messages)
 
-        audio_block = result[0]["content"][0]
-        assert audio_block["input_audio"]["data"] == ""
+        assert _forwarded_block(result, "input_audio") is None
+        assert _only_block(result)["type"] == "input_text"
 
 
 # =============================================================================
@@ -1193,8 +1214,8 @@ class TestVideoHandling:
 
         result = await transform_messages_to_input(pipe_instance, messages)
 
-        video_block = result[0]["content"][0]
-        assert video_block["video_url"]["url"] == ""
+        assert _forwarded_block(result, "video_url") is None
+        assert _only_block(result)["type"] == "input_text"
 
     @pytest.mark.asyncio
     async def test_video_data_url_size_check(self, pipe_instance):
@@ -1212,9 +1233,8 @@ class TestVideoHandling:
 
         result = await transform_messages_to_input(pipe_instance, messages)
 
-        video_block = result[0]["content"][0]
-        # Should be rejected (empty URL) due to size
-        assert video_block["video_url"]["url"] == ""
+        # Rejected by size, so no video block is forwarded at all.
+        assert _forwarded_block(result, "video_url") is None
 
 # =============================================================================
 # File Handling Tests
@@ -2841,7 +2861,7 @@ class TestAudioProcessingEdgeCases:
 
     @pytest.mark.asyncio
     async def test_audio_empty_payload(self, pipe_instance):
-        """Empty audio payload returns empty block."""
+        """An audio payload with nothing in it forwards no audio block."""
         messages = [
             {"role": "user", "content": [
                 {"type": "input_audio", "input_audio": None}
@@ -2850,8 +2870,8 @@ class TestAudioProcessingEdgeCases:
 
         result = await transform_messages_to_input(pipe_instance, messages)
 
-        audio_block = result[0]["content"][0]
-        assert audio_block["input_audio"]["data"] == ""
+        assert _forwarded_block(result, "input_audio") is None
+        assert _only_block(result)["type"] == "input_text"
 
     @pytest.mark.asyncio
     async def test_audio_unsupported_format_defaults_to_mp3(self, pipe_instance, sample_audio_base64):
@@ -3615,7 +3635,12 @@ class TestFileProcessingException:
 
     @pytest.mark.asyncio
     async def test_file_block_exception_returns_minimal_block(self, pipe_instance):
-        """Exception in file processing returns minimal block (lines 753-760)."""
+        """Exception in file processing never ships the payload-less block (lines 753-760).
+
+        `_to_input_file` used to hand back `{"type": "input_file"}` with no payload, and
+        that block was the whole turn: the provider was asked to read a file that was
+        never sent. The turn now carries text saying the file did not go out.
+        """
         async def mock_emit_error(*args, **kwargs):
             pass
 
@@ -3634,7 +3659,11 @@ class TestFileProcessingException:
 
         result = await transform_messages_to_input(pipe_instance, messages)
 
-        assert result[0]["content"] == [{"type": "input_file"}]
+        blocks = result[0]["content"]
+        assert blocks, "the turn shipped nothing at all"
+        assert _forwarded_block(result, "input_file") is None, blocks
+        assert blocks[0]["type"] == "input_text"
+        assert blocks[0]["text"] == "[The user sent an empty message.]", blocks
 
 
 class TestAudioProcessingEdgeCasesExtended:
@@ -3651,9 +3680,9 @@ class TestAudioProcessingEdgeCasesExtended:
 
         result = await transform_messages_to_input(pipe_instance, messages)
 
-        audio_block = result[0]["content"][0]
-        # Invalid base64 should result in empty data
-        assert audio_block["input_audio"]["data"] == ""
+        # Invalid base64 yields no payload, so no audio block is forwarded.
+        assert _forwarded_block(result, "input_audio") is None
+        assert _only_block(result)["type"] == "input_text"
 
     @pytest.mark.asyncio
     async def test_audio_data_url_non_audio_mime(self, pipe_instance, sample_audio_base64):
@@ -3669,9 +3698,9 @@ class TestAudioProcessingEdgeCasesExtended:
 
         result = await transform_messages_to_input(pipe_instance, messages)
 
-        audio_block = result[0]["content"][0]
-        # Non-audio mime should be rejected
-        assert audio_block["input_audio"]["data"] == ""
+        # Non-audio mime is rejected, so no audio block is forwarded.
+        assert _forwarded_block(result, "input_audio") is None
+        assert _only_block(result)["type"] == "input_text"
 
     @pytest.mark.asyncio
     async def test_audio_data_url_size_validation_fails(self, pipe_instance):
@@ -3725,9 +3754,9 @@ class TestVideoSSRFProtection:
 
         result = await transform_messages_to_input(pipe_instance, messages)
 
-        video_block = result[0]["content"][0]
-        # SSRF blocked URL should be empty
-        assert video_block["video_url"]["url"] == ""
+        # SSRF blocked, so no video block is forwarded.
+        assert _forwarded_block(result, "video_url") is None
+        assert _only_block(result)["type"] == "input_text"
 
 
 class TestVideoProcessingException:
@@ -3735,7 +3764,7 @@ class TestVideoProcessingException:
 
     @pytest.mark.asyncio
     async def test_video_processing_exception_caught(self, pipe_instance):
-        """Exception in video processing returns empty block (lines 1085-1092)."""
+        """An exception in video processing forwards no video block (lines 1085-1092)."""
         # Make _is_youtube_url raise an exception
         def raise_on_youtube(url):
             raise RuntimeError("YouTube check failed")
@@ -3756,9 +3785,9 @@ class TestVideoProcessingException:
 
         result = await transform_messages_to_input(pipe_instance, messages)
 
-        video_block = result[0]["content"][0]
-        # Exception should result in empty URL
-        assert video_block["video_url"]["url"] == ""
+        # The conversion failed, so no video block is forwarded.
+        assert _forwarded_block(result, "video_url") is None
+        assert _only_block(result)["type"] == "input_text"
 
         pipe_instance._multimodal_handler._is_youtube_url = original_youtube
 
@@ -4192,6 +4221,10 @@ class TestImageReuseRegister:
         return base64.b64decode(block.split(",", 1)[1])[8:9]
 
     @staticmethod
+    def _one_line(value: str) -> str:
+        return "".join(value.split())
+
+    @staticmethod
     async def _run(pipe_instance, messages, *, emitter=None, gateway=None, downloader=None,
                    chat_id="chat-1"):
         with patch("open_webui_openrouter_pipe.requests.transformer.ModelFamily") as mock_family:
@@ -4214,7 +4247,7 @@ class TestImageReuseRegister:
     @pytest.mark.parametrize(
         ("cause", "phrase", "banner"),
         [
-            ("insecure_http", "ALLOW_INSECURE_HTTP_HOSTS", True),
+            ("insecure_http", "ALLOW_INSECURE_HTTP_HOSTS", False),
             ("oversized_inline", "limit", False),
             ("oversized_remote", "limit", False),
         ],
@@ -4232,10 +4265,15 @@ class TestImageReuseRegister:
         distinct expectations, so an unconditional "an image was skipped" emitted from
         anywhere satisfies none of them.
 
-        The banner column is the load-bearing part. A blocked plaintext fetch is a policy
-        decision the user must be able to see and undo, so it writes an error into the
-        chat; a size refusal is a fact about the file and stays a status. Collapsing the
-        two back into one severity reddens this.
+        **The `insecure_http` row's banner expectation was `True` here and is now
+        `False`.** It was withdrawn by an operator decision (OD1), not because the
+        behaviour was a defect: `severity="error"` routed the plain-HTTP picture refusal
+        to a red error event instead of the `Images: skipped 1 (served over plain HTTP,
+        ...)` status every other picture refusal produces, and one person's picture then
+        reddened the turn of whoever else was reading the chat. The refusal now arrives
+        as a status like every other, still naming both valves, so the user can undo it.
+        The `banner` parameter stays so a future site can genuinely need the severity
+        split back; only this row changed.
         """
         pipe_instance.valves.BASE64_MAX_SIZE_MB = 1
         events: list[dict] = []
@@ -4284,11 +4322,6 @@ class TestImageReuseRegister:
         assert any(phrase in json.dumps(e) for e in surfaced), (
             f"the {cause} refusal never mentioned {phrase!r}, so the user cannot act on it"
         )
-        if banner:
-            assert not any(phrase in json.dumps(e) for e in statuses), (
-                "a security refusal was also emitted as a status, which the next status "
-                "line hides behind a click"
-            )
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("user_uploads_last", [False, True])
@@ -4703,7 +4736,9 @@ class TestImageReuseRegister:
         exception to verbatim forwarding, and the assertion below names it. The
         ``remote`` source is exempt from the verbatim check: its bytes are fetched and the
         pipe builds that block itself, so the test's own URL is never the one forwarded.
-        The verbatim form covers the line-wrapped axis too, modulo a trailing newline.
+        The verbatim form covers the line-wrapped axis too, modulo a trailing newline and
+        modulo the unwrapping: an RFC 2045 wrapped payload is normalised to one line before
+        it is forwarded, so the bytes must survive that and nothing else may change.
         """
         import base64 as _b64
 
@@ -4756,15 +4791,18 @@ class TestImageReuseRegister:
                     f"{[b[:60] for b in blocks]}; the pipe must assert the type from the bytes"
                 )
             elif source != "remote":
-                # Forwarded as it came, wrapping newlines and marker case included. A
-                # line-wrapped body ends in a newline and the two sources obtain the URL
-                # differently -- one through a markdown image link, one through the file
-                # gateway -- so a trailing newline survives one and not the other. It
-                # carries no base64, so both sides are compared without it; everything
-                # else, including every inner newline, is pinned.
-                assert blocks[0].rstrip() == data_url.rstrip(), (
+                # Forwarded as it came, marker case included, modulo line wrapping. A
+                # line-wrapped body is legal in a `data:` URL and is what most base64
+                # encoders produce; on the path that runs it through the picture leg it
+                # is now unwrapped to one line before it goes out, because forwarding it
+                # verbatim put a payload the pipe had never validated on the wire. Which
+                # sources unwrap is the picture leg's business, not this row's -- the
+                # reuse register hands the gateway's URL straight on -- so both sides are
+                # compared without their line breaks, which still pins the marker case and
+                # every base64 character.
+                assert self._one_line(blocks[0]) == self._one_line(data_url), (
                     f"a {source} whose declaration the bytes confirmed was rewritten to "
-                    f"{blocks[0][:60]!r}; a data URL is forwarded as it came"
+                    f"{blocks[0][:60]!r}; a data URL is forwarded as it came, unwrapped"
                 )
             else:
                 assert blocks[0].startswith(f"data:{expected};base64,"), (

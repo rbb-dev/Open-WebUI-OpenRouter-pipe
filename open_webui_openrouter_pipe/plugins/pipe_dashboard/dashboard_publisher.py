@@ -62,6 +62,13 @@ def set_snapshot_getter(getter: Any) -> None:
     _pd_snapshot_getter = getter
 
 
+def clear_snapshot_getter(instance: Any, name: str) -> None:
+    global _pd_snapshot_getter
+    current = _pd_snapshot_getter
+    if current is None or current == getattr(instance, name, None):
+        _pd_snapshot_getter = None
+
+
 def _snapshot_safe() -> tuple[list[dict[str, Any]], dict[str, float]]:
     getter = _pd_snapshot_getter
     if getter is None:

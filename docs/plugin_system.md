@@ -987,7 +987,7 @@ def on_shutdown(self, **kwargs: Any) -> Any:
 
 **When:** During `Pipe.shutdown()`, before the artifact store and session log manager are closed. Synchronous; runs on both hot-reload and process shutdown.
 
-**Return value:** `None`, or an awaitable (e.g. a background task the hook just cancelled). Returned awaitables are gathered and awaited by the async teardown path (5 s bound) so the task's cleanup `finally` completes before `close()` returns. The sync-only path (`__del__`) cannot await them — cleanup there is best-effort.
+**Return value:** `None`, or an awaitable (e.g. a background task the hook just cancelled). Returned awaitables are gathered and awaited by the async teardown path (5 s bound) so the task's cleanup `finally` completes before `close()` returns. When the pipe is collected without an orderly shutdown, a destructor cannot await them: it disposes of each one instead — a coroutine is closed, a task is cancelled — and never creates, runs or blocks on an event loop. The shipped dashboard plugin is unaffected either way.
 
 **Not subscription-based:** Always called for all plugins, like `on_init`.
 

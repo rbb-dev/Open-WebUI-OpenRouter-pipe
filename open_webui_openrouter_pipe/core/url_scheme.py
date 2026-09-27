@@ -55,6 +55,39 @@ def is_inline_data_url(url: Any) -> bool:
     return url_scheme(url) == "data"
 
 
+def _data_url_header(value: Any) -> tuple[bool, str] | None:
+    if not isinstance(value, str) or url_scheme(value) != "data":
+        return None
+    header, sep, _ = value[value.find(":") + 1:].partition(",")
+    return (bool(sep), header)
+
+
+def loggable_link(url: Any) -> str:
+    if not isinstance(url, str) or not url.strip():
+        return ""
+    candidate = url.strip()
+    if url_scheme(candidate) == "data":
+        parsed = _data_url_header(candidate)
+        if parsed is None or not parsed[0]:
+            return ""
+        return f"data:{parsed[1].partition(';')[0].strip()[:64]}"
+    try:
+        parts = urlsplit(candidate)
+    except ValueError:
+        return ""
+    if not parts.netloc:
+        return ""
+    authority = parts.netloc.rsplit("@", 1)[-1]
+    return f"{parts.scheme}://{authority}" if parts.scheme else f"//{authority}"
+
+
+def link_media_type(value: Any) -> str:
+    _r = _data_url_header(value)
+    if _r is None or not _r[0]:
+        return ""
+    return _r[1].partition(";")[0].strip()[:64]
+
+
 def split_base64_data_url(value: Any) -> tuple[str, str] | None:
     if url_scheme(value) != "data" or not isinstance(value, str):
         return None

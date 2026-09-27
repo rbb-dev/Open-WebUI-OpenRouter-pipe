@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..models.registry import ModelFamily
-from .url_scheme import split_base64_data_url
+from .url_scheme import url_scheme
 from .utils import (
     TOOL_CALL_STATUSES,
     _coerce_positive_int,
@@ -308,11 +308,26 @@ _NAMES_CONTENT: tuple[int, str, tuple[str, ...] | None] = (0, "", None)
 _LOCATOR_RE = re.compile(r"^(?!data:)[A-Za-z][A-Za-z0-9+.\-]*:")
 
 
+def _is_base64_parameter(header: str) -> bool:
+    return any(p.strip().lower() == "base64" for p in header.partition(":")[2].split(";")[1:])
+
+
+def inline_payload_bytes(value: str) -> int:
+    if url_scheme(value[:_DATA_URL_PREFIX_CHARS]) != "data":
+        return (len(value) * 3) // 4
+    header, sep, raw = value.partition(",")
+    if not sep:
+        return len(value)
+    if _is_base64_parameter(header):
+        return (len(raw) * 3) // 4
+    return len(raw)
+
+
 def _payload_bytes(value: Any) -> tuple[int, str, tuple[str, ...] | None] | None:
     if isinstance(value, str):
         media_type = ""
         payload_head: tuple[str, ...] | None = None
-        if split_base64_data_url(value[:_DATA_URL_PREFIX_CHARS]) is not None:
+        if url_scheme(value[:_DATA_URL_PREFIX_CHARS]) == "data":
             header, _, raw = value.partition(",")
             if header.startswith("data:"):
                 media_type = header[len("data:") :].split(";", 1)[0].strip().lower()
@@ -321,7 +336,7 @@ def _payload_bytes(value: Any) -> tuple[int, str, tuple[str, ...] | None] | None
             return _NAMES_CONTENT
         else:
             raw = value
-        size = len(raw) * 3 // 4
+        size = inline_payload_bytes(value)
         return (size, media_type, payload_head) if size else None
     if isinstance(value, dict):
         for sub_key in ("url", "data"):

@@ -401,6 +401,7 @@ def _build_dashboard_shell(dash_id: str) -> str:
           <div class="searchwrap"><input id="search" placeholder="Search settings" autocomplete="off"><span id="searchcount" class="searchcount"></span></div>
           <div class="toolbar">
             <span id="driftnote" class="driftnote"></span>
+            <span id="resetnote" class="driftnote"></span>
             <div class="savebar" id="savebar"><span class="dirtybadge"><span id="dirtyN">0</span> unsaved</span>
               <button id="discard" class="btn ghost">Discard</button><button id="save" class="btn primary" disabled>Save</button></div>
             <label class="chk"><input type="checkbox" id="chgToggle"> Changed only</label>

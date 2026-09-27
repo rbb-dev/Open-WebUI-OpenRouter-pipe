@@ -91,7 +91,7 @@ Most current OpenRouter video models (Seedance, Veo, Kling, Wan, …) only suppo
 When the selected model cannot honor `input_reference`, the pipe **does not** stop to ask the user — it degrades open, and the paid `/videos` call still proceeds:
 
 - The validator drops the `input_reference` frame entry (recorded as the `dropped_input_reference_no_frame_support_for_model` downgrade). If that leaves a `modify_prior_video` intent with no usable frames, the intent is downgraded to `text_to_video` (`modify_prior_video_dropped_to_text_no_frame_support`) and the request runs as a plain text-to-video generation from the classifier's rewritten prompt.
-- If the model *does* advertise `input_reference`, the reference frame is passed through and the model transforms it as requested.
+- There is no catalog branch to take. The catalog's `supported_frame_images` is a fixed two-value enum (`first_frame`, `last_frame`), so it cannot name `input_reference` and that branch is never taken. Where a model entry does carry `input_modalities`, the pipe withholds a reference whose kind that model does not declare, with a notice; where it does not, the pipe sends the reference and cannot know whether the model read it.
 
 Either way there is no confirmation prompt and no `1`/`2` question; the downgrade is surfaced only in the disclosure block and the telemetry `downgrades` list.
 
@@ -126,7 +126,7 @@ All admin-scoped on the global `Valves` model. User-tunable per-chat versions of
 | `VIDEO_INTENT_TIMEOUT_S` | `int` | `8` | Hard timeout (seconds) on the classifier call. On breach, the pipe falls back to sending only the latest user message — the paid video request still proceeds. |
 | `VIDEO_INTENT_CONFIRM_MODE` | `always` / `on_reference` / `low_confidence` / `never` | `on_reference` | When to surface the confirmation footer. `on_reference` confirms only when a prior video's frame is reused or more than one frame is combined; a lone attached image does not trigger it. |
 | `VIDEO_INTENT_MAX_CALLS_PER_CHAT` | `int` | `0` (unlimited) | Cost guard. `0` = unlimited. Admin sets a positive integer to enforce a per-chat ceiling. |
-| `VIDEO_INTENT_MAX_CALLS_PER_USER_DAY` | `int` | `0` (unlimited) | Cost guard. `0` = unlimited. Admin sets a positive integer to enforce a per-user-per-day ceiling. |
+| `VIDEO_INTENT_MAX_CALLS_PER_USER_DAY` | `int` | `0` (unlimited) | Cost guard. `0` = unlimited. Admin sets a positive integer to enforce a per-user-per-day ceiling. Tallying is O(1) per classifier call however many distinct users have already called today: yesterday's keys are dropped once per day, not once per call. |
 | `VIDEO_INTENT_LOG_DECISIONS` | `bool` | `False` | Log the per-turn classification summary (intent, confidence, language, frame counts, latency, fallback/failure flags, hashed chat id) at INFO instead of DEBUG; always written, level-only. Excludes the verbatim prompt and the model's free-text reason. |
 
 ## User-tunable settings (per-model filter UserValves)
@@ -191,6 +191,8 @@ Every failure path in the classifier returns a fallback result equivalent to "no
 - **Model can't honor `input_reference` for modify intent** → the validator drops the reference frame and downgrades the intent to `text_to_video`; the paid call proceeds as text-to-video with no confirmation prompt. See "When a model can't visually modify a previous video" above.
 
 The **first** classifier infrastructure failure per chat surfaces a notification toast: *"Intent inference unavailable; using simple text-to-video."* Subsequent failures within the same chat are silent (logged at DEBUG). The rule covers both failure branches — a classifier that reported failure, and a classifier call that raised — and holds whether or not the emit itself succeeded.
+
+The "already notified" record is a bounded window of the most recent **300** failing chats, oldest evicted first. It is not valve-gated — it fills on the shipped configuration — and the bound is why a chat that falls out of the window may be shown the toast a second time. In practice eviction is not expected within months of continuous, total classifier failure: a failure arms a 60-second process-global breaker, so the window gains at most one entry per minute, i.e. roughly five hours of unbroken failure just to fill it and five more before the first eviction. Eviction happens on the add path only, so the classifier hot path's membership check stays constant-time. The real cost of the bound is that the attribute is an insertion-ordered mapping rather than a `set`.
 
 **Diagnostic log lines** for the toast emission path (search these when the toast doesn't appear as expected):
 

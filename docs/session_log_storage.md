@@ -41,6 +41,7 @@ Notes:
 - `logs.jsonl` is the **evidence** and the text sinks are the **presentation**, so for a record carrying a neutralised character the two renderings differ: the archive keeps the caller's original bytes, while the console and `logs.txt` show the neutralised text.
 - The `LOG_LEVEL` valve controls what is written to stdout/backend logs for a request. The stored archive is sourced from the in-memory session buffer and can include entries that are not emitted to stdout.
 - Session logs can contain sensitive content (prompts, tool arguments, provider errors). Enable this only if you understand your retention and access controls.
+- Every media field appears as scheme, host and port only — the path and query are dropped, so a signed CDN link cannot be recovered from an archive. (The fields are the media-URL keys the pipe keys on, not a list maintained here: it goes stale the moment one is added.) A `data:` URL contributes only its media type (for example `data:image/png`); its bytes never reach a log, including when the URL carries no comma.
 
 ---
 

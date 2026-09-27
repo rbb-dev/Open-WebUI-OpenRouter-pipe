@@ -11,6 +11,7 @@ import secrets
 import shutil
 import tempfile
 import time
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC
@@ -114,6 +115,8 @@ _OPTIONS_HOP_DEPTH = 3
 _MAX_VIDEO_OUTPUTS = 16
 
 _REFERENCE_KINDS_NEEDING_A_LINK = frozenset({"audio_url", "video_url"})
+
+_INTENT_NOTIFIED_WINDOW = 300
 
 
 def _reference_write_key(video_meta: dict[str, Any]) -> str:
@@ -351,6 +354,13 @@ def _spoken_duration(seconds: float) -> str:
     return f"{round(seconds / 60)} minutes"
 
 
+def _intent_counters_enabled(valves: Any) -> tuple[int, int]:
+    return (
+        int(getattr(valves, "VIDEO_INTENT_MAX_CALLS_PER_CHAT", 0) or 0),
+        int(getattr(valves, "VIDEO_INTENT_MAX_CALLS_PER_USER_DAY", 0) or 0),
+    )
+
+
 def _video_stall_window(valves: Any) -> float:
     total = getattr(valves, "HTTP_TOTAL_TIMEOUT_SECONDS", None)
     one_request = float(total) if total else float(getattr(valves, "HTTP_SOCK_READ_SECONDS", 0) or 0)
@@ -467,8 +477,9 @@ class VideoGenerationAdapter:
         self._persistence = VideoPersistence(logger=logger)
         self._intent_call_counts_per_chat: dict[str, int] = {}
         self._intent_call_counts_per_user_day: dict[tuple[str, str], int] = {}
+        self._intent_pruned_day: str = ""
         self._intent_breaker_until_ts: float = 0.0
-        self._intent_failure_notified_chats: set[str] = set()
+        self._intent_failure_notified_chats: OrderedDict[str, None] = OrderedDict()
 
     async def generate(
         self,
@@ -640,7 +651,7 @@ class VideoGenerationAdapter:
                             chat_id if isinstance(chat_id, str) and chat_id
                             else "__no_chat_id__"
                         )
-                        if chat_key_f in self._intent_failure_notified_chats:
+                        if self._intent_was_failure_notified(chat_key_f):
                             self.logger.debug(
                                 "first-failure toast suppressed (chat already "
                                 "notified): chat_key=%s", chat_key_f,
@@ -651,7 +662,7 @@ class VideoGenerationAdapter:
                                 "is None (chat_key=%s)", chat_key_f,
                             )
                         else:
-                            self._intent_failure_notified_chats.add(chat_key_f)
+                            self._intent_note_failure_notified(chat_key_f)
                             try:
                                 await event_emitter({
                                     "type": "notification",
@@ -747,14 +758,14 @@ class VideoGenerationAdapter:
                     )
                     self._intent_record_failure()
                     chat_key = chat_id if isinstance(chat_id, str) else ""
-                    if chat_key and chat_key not in self._intent_failure_notified_chats:
+                    if chat_key and not self._intent_was_failure_notified(chat_key):
                         if event_emitter is None:
                             self.logger.debug(
                                 "first-failure toast suppressed: event_emitter "
                                 "is None (chat_key=%s)", chat_key,
                             )
                         else:
-                            self._intent_failure_notified_chats.add(chat_key)
+                            self._intent_note_failure_notified(chat_key)
                             with contextlib.suppress(Exception):
                                 await event_emitter({
                                     "type": "notification",
@@ -2482,13 +2493,12 @@ class VideoGenerationAdapter:
                 has_attachments = bool(collect_attachments_from_video_meta(video_meta))
                 if not has_attachments:
                     return False
-        cap_chat = int(getattr(valves, "VIDEO_INTENT_MAX_CALLS_PER_CHAT", 0) or 0)
+        cap_chat, cap_day = _intent_counters_enabled(valves)
         if (
             cap_chat > 0 and chat_id
             and self._intent_call_counts_per_chat.get(chat_id, 0) >= cap_chat
         ):
             return False
-        cap_day = int(getattr(valves, "VIDEO_INTENT_MAX_CALLS_PER_USER_DAY", 0) or 0)
         if cap_day > 0 and user_id:
             from datetime import datetime
             day = datetime.now(tz=UTC).strftime("%Y-%m-%d")
@@ -2498,17 +2508,20 @@ class VideoGenerationAdapter:
 
     def _intent_record_call(self, chat_id: str, user_id: str, *, valves: Any) -> None:
         """Increment the per-chat / per-user-day counters after a classifier call."""
-        if chat_id and int(getattr(valves, "VIDEO_INTENT_MAX_CALLS_PER_CHAT", 0) or 0) > 0:
+        cap_chat, cap_day = _intent_counters_enabled(valves)
+        if chat_id and cap_chat > 0:
             self._intent_call_counts_per_chat[chat_id] = (
                 self._intent_call_counts_per_chat.get(chat_id, 0) + 1
             )
-        if user_id and int(getattr(valves, "VIDEO_INTENT_MAX_CALLS_PER_USER_DAY", 0) or 0) > 0:
+        if user_id and cap_day > 0:
             from datetime import datetime
             day = datetime.now(tz=UTC).strftime("%Y-%m-%d")
-            self._intent_call_counts_per_user_day = {
-                key: count for key, count in self._intent_call_counts_per_user_day.items()
-                if key[1] == day
-            }
+            if self._intent_pruned_day != day:
+                self._intent_call_counts_per_user_day = {
+                    key: count for key, count in self._intent_call_counts_per_user_day.items()
+                    if key[1] == day
+                }
+                self._intent_pruned_day = day
             self._intent_call_counts_per_user_day[(user_id, day)] = (
                 self._intent_call_counts_per_user_day.get((user_id, day), 0) + 1
             )
@@ -2516,6 +2529,16 @@ class VideoGenerationAdapter:
     def _intent_record_failure(self) -> None:
         """Open the in-process circuit breaker for 60 seconds after auth/quota errors."""
         self._intent_breaker_until_ts = time.time() + 60.0
+
+    def _intent_was_failure_notified(self, chat_key: str) -> bool:
+        return chat_key in self._intent_failure_notified_chats
+
+    def _intent_note_failure_notified(self, chat_key: str) -> None:
+        notified = self._intent_failure_notified_chats
+        notified[chat_key] = None
+        notified.move_to_end(chat_key)
+        while len(notified) > _INTENT_NOTIFIED_WINDOW:
+            notified.popitem(last=False)
 
     def _emit_intent_telemetry(
         self,

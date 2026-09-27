@@ -1713,8 +1713,10 @@ def test_a_short_unpadded_payload_still_decodes(payload_bytes: int, residue: int
             base64.b64encode(_ASCII_384).decode("ascii"),
             ";name=" + "n" * 2_000,
             "a.bin",
-            False,
-            "a ';base64,' beyond the prefix is not a data URL, so only the name decides",
+            True,
+            "';base64' is a parameter name found at any distance, not a literal inside "
+            "a fixed-width prefix, so a 2000-character parameter is not evidence of "
+            "binary -- the same payload reads the same way at any parameter length",
         ),
         (
             base64.encodebytes(_ASCII_384).decode("ascii"),
@@ -1737,6 +1739,12 @@ def test_the_sniff_survives_the_shapes_a_real_client_sends(
     marker past the scan window, and an undecodable window was read as evidence of binary
     rather than as no evidence at all. The first two rows differ only in the filename,
     so a sniff that answers where it should abstain reddens one of them.
+
+    The two parameter rows carry the *same* payload, so the sniff must give them the
+    same answer. The absurd-parameter row once expected the binary rate on the theory
+    that a `;base64,` past the scan window is not a data URL at all; that was the
+    fixed-width literal sniff, and it measured such a URL as zero bytes rather than as
+    the payload it carries. `;base64` is a parameter name now, found at any distance.
     """
     charged, size = _encoded_charge(body, filename, params)
     assert (charged > size // 2) is text_rate, (

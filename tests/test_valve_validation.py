@@ -6,7 +6,6 @@ from __future__ import annotations
 from typing import cast
 
 import pytest
-from pydantic import ValidationError
 
 from open_webui_openrouter_pipe import (
     EncryptedStr,
@@ -106,16 +105,6 @@ class TestUserValveInheritNormalization:
 
 class TestValveNumericBounds:
     """Tests for valve numeric constraints."""
-
-    def test_valve_numeric_bounds_enforced(self) -> None:
-        """Pydantic ge/le constraints reject invalid valve values."""
-        with pytest.raises(ValidationError):
-            Pipe.Valves(HTTP_CONNECT_TIMEOUT_SECONDS=0)
-        with pytest.raises(ValidationError):
-            Pipe.Valves(MAX_CONCURRENT_REQUESTS=0)
-        with pytest.raises(ValidationError):
-            Pipe.Valves(SSE_WORKERS_PER_REQUEST=0)
-
 
 class TestValveEnvironmentDefaults:
     """Tests for valve defaults from environment variables."""

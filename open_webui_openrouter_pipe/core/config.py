@@ -36,6 +36,14 @@ from .fusion_defaults import (
     DEFAULT_FUSION_SYNTHESIS_SYSTEM_PROMPT,
 )
 from .url_scheme import is_http_or_https_url
+from .valve_salvage import (
+    _STALE_VALVES_WARN_EVERY_S,  # noqa: F401
+    _VALVE_SCHEMA_CACHE,  # noqa: F401
+    _valve_schema,  # noqa: F401
+    _warned_stale_valves,  # noqa: F401
+    drop_unvalidatable,
+    is_secret_field,  # noqa: F401
+)
 from .warn_latch import warn_level
 
 try:
@@ -146,6 +154,8 @@ NO_CONTENT_AFTER_TOOLS_FALLBACK = (
     "I couldn't produce a final answer after running tools. "
     "Please retry with a narrower tool query or a shorter context window."
 )
+
+OPENAI_EMPTY_USER_TURN_FALLBACK = "[The user sent an empty message.]"
 
 DEFAULT_OPENROUTER_ERROR_TEMPLATE = (
     "{{#if heading}}\n"
@@ -792,6 +802,11 @@ class Valves(BaseModel):
             return dict(values, MAX_FUNCTION_CALL_LOOPS=1)
         return values
 
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_unvalidatable(cls, values):
+        return drop_unvalidatable(cls, values)
+
     # Connection & Auth
     BASE_URL: str = Field(
         default=((os.getenv("OPENROUTER_API_BASE_URL") or "").strip() or "https://openrouter.ai/api/v1"),
@@ -855,7 +870,7 @@ class Valves(BaseModel):
     HTTP_SOCK_READ_SECONDS: int = Field(
         default=300,
         ge=1,
-        description="Idle read timeout (seconds) applied to active streams when HTTP_TOTAL_TIMEOUT_SECONDS is disabled. Generous default favors smoother User Interface behavior for slow providers.",
+        description="Idle read timeout (seconds) applied to active streams when HTTP_TOTAL_TIMEOUT_SECONDS is disabled. Generous default favors smoother User Interface behavior for slow providers. A stored value this release no longer accepts is left at this valve's default and named in the log.",
     )
 
     # Remote File/Image Download Settings
@@ -913,19 +928,19 @@ class Valves(BaseModel):
         default=50,
         ge=1,
         le=500,
-        description="Maximum size in MB for base64-encoded files, images and audio before decoding. Larger payloads will be rejected to prevent memory issues and excessive HTTP request sizes.",
+        description="Maximum size in MB for inline files, images and audio. A base64 payload is measured as its decoded size; any other inline payload is measured as its own length. Larger payloads will be rejected to prevent memory issues and excessive HTTP request sizes.",
     )
     IMAGE_UPLOAD_CHUNK_BYTES: int = Field(
         default=1 * 1024 * 1024,
         ge=64 * 1024,
         le=8 * 1024 * 1024,
-        description="Maximum number of bytes to buffer at a time when loading Open WebUI-hosted images before forwarding them to a provider. Lower values reduce peak memory usage when multiple users edit images concurrently.",
+        description="Maximum number of bytes to buffer at a time when loading Open WebUI-hosted images before forwarding them to a provider. Lower values reduce peak memory usage when multiple users edit images concurrently. A stored value this release no longer accepts is left at this valve's default and named in the log.",
     )
     VIDEO_MAX_SIZE_MB: int = Field(
         default=100,
         ge=1,
         le=1000,
-        description="Maximum size in MB for inline base64 (data:) video payloads and for stored videos re-read to extract frames. Oversized videos are rejected/skipped; remote http(s) and YouTube video links are forwarded to the provider unmeasured.",
+        description="Maximum size in MB for inline (data:) video payloads and for stored videos re-read to extract frames. A base64 payload is measured as its decoded size; a token-free payload is measured as its own length, and is a real gate on it. Oversized videos are rejected/skipped; remote http(s) and YouTube video links are forwarded to the provider unmeasured.",
     )
     FALLBACK_STORAGE_EMAIL: str = Field(
         default=(os.getenv("OPENROUTER_STORAGE_USER_EMAIL") or "openrouter-pipe@system.local"),
@@ -1443,12 +1458,12 @@ class Valves(BaseModel):
     STREAMING_CHUNK_QUEUE_MAXSIZE: int = Field(
         default=0,
         ge=0,
-        description="Maximum number of raw SSE chunks buffered before the pipe stops reading from OpenRouter until the backlog clears. 0=unbounded (cannot stall, recommended); bounded values risk stalls on tool-heavy loads, slow database writes, or a slow browser (a slow reader fills the decoded-event backlog, which fills the raw-chunk backlog, which stops the pipe reading from OpenRouter), and a consumer that stops reading entirely is held by that backpressure rather than ended, with the abandoned generator released on cancellation.",
+        description="Maximum number of raw SSE chunks buffered before the pipe stops reading from OpenRouter until the backlog clears. 0=unbounded (cannot stall, recommended); bounded values risk stalls on tool-heavy loads, slow database writes, or a slow browser (a slow reader fills the decoded-event backlog, which fills the raw-chunk backlog, which stops the pipe reading from OpenRouter). A consumer that stops reading entirely is no longer held by that backpressure forever: cancelling the request tears the pipeline down and returns, leaving no background task behind.",
     )
     STREAMING_EVENT_QUEUE_MAXSIZE: int = Field(
         default=0,
         ge=0,
-        description="Maximum number of decoded events buffered before the rest of the pipe handles them. 0=unbounded (cannot stall, recommended); bounded values risk stalls on tool-heavy loads, slow database writes, or a slow browser (a slow reader fills the decoded-event backlog, which fills the raw-chunk backlog, which stops the pipe reading from OpenRouter). Unlike the raw-chunk buffer, a worker mid-put on this queue when the reply ends can hold the stream, so a consumer that has stopped reading can leave a reply open rather than ended.",
+        description="Maximum number of decoded events buffered before the rest of the pipe handles them. 0=unbounded (cannot stall, recommended); bounded values risk stalls on tool-heavy loads, slow database writes, or a slow browser (a slow reader fills the decoded-event backlog, which fills the raw-chunk backlog, which stops the pipe reading from OpenRouter). A worker mid-put on this queue when the reply ends no longer holds the stream: cancelling the request tears the pipeline down and returns, leaving no background task behind.",
 
     )
     STREAMING_CHUNK_QUEUE_WARN_SIZE: int = Field(
@@ -1906,11 +1921,11 @@ class Valves(BaseModel):
     )
     AUTO_ATTACH_WEB_TOOLS_FILTER: bool = Field(
         default=True,
-        description="Automatically attach the OpenRouter Web Tools per-chat switch to every pipe model that is not an image-output, a video-generation or a Fusion model (so the toggle appears in the Integrations menu). Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. This relies on the ownership record the pipe writes when it attaches, so a model already carrying the panel has nothing recorded until the pipe next attaches it; run one sync with the valve on, after the panel is detached, and only then does turning this off detach it.",
+        description="Automatically attach the OpenRouter Web Tools per-chat switch to every pipe model that is not an image-output, a video-generation or a Fusion model (so the toggle appears in the Integrations menu). Turning this off detaches the filters the pipe attached, and also releases the default the pipe seeded for them; a filter id an admin attached by hand is left alone. This relies on the ownership record the pipe writes when it attaches, so a model already carrying the panel has nothing recorded until the pipe next attaches it; run one sync with the valve on, after the panel is detached, and only then does turning this off detach it.",
     )
     AUTO_DEFAULT_WEB_TOOLS_FILTER: bool = Field(
         default=False,
-        description="When enabled, marks the OpenRouter Web Tools filter as a Default Filter on every pipe model that is not an image-output, a video-generation or a Fusion model (pre-enabled per chat; users can still turn it off). Turning it off removes the already-seeded default from models on the next sync.",
+        description="When enabled, marks the OpenRouter Web Tools filter as a Default Filter on every pipe model that is not an image-output, a video-generation or a Fusion model (pre-enabled per chat; users can still turn it off). Turning it off removes the already-seeded default from models on the next sync, and so does switching every Web Tool off. A default an installer hiccup left in place is not one of them: a blank filter id is a lookup that failed, not a decision to release, so a seeded default survives it, and with the valve on it is never looked for.",
     )
 
     AUTO_INSTALL_IMAGE_GEN_FILTER: bool = Field(
@@ -1924,7 +1939,7 @@ class Valves(BaseModel):
     )
     AUTO_ATTACH_IMAGE_GEN_FILTER: bool = Field(
         default=True,
-        description="Automatically attach the OpenRouter Image Generation filter to every pipe model that can send the tool: not a model whose catalogue entry rules tool use out, not a picture-only model, not a video model, not the hosted Fusion model. A model that stops qualifying loses the switch at the next refresh. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone.",
+        description="Automatically attach the OpenRouter Image Generation filter to every pipe model that can send the tool: not a model whose catalogue entry rules tool use out, not a picture-only model, not a video model, not the hosted Fusion model. A model that stops qualifying loses the switch at the next refresh, and the id the pipe had recorded for it is released from `filterIds` on that same refresh. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone.",
     )
     ENABLE_OPENROUTER_IMAGE_GENERATION: bool = Field(
         default=True,
@@ -2070,7 +2085,8 @@ class Valves(BaseModel):
             "person can press Continue Response on that message to pick it back up. The "
             "wait is never allowed to be shorter than a single status check can take, so "
             "anything below `Maximum poll interval` plus the HTTP read timeout is raised "
-            "to that."
+            "to that. A stored value this release no longer accepts is left at this "
+            "valve's default and named in the log."
         ),
     )
     VIDEO_STATUS_POLL_MAX_ERRORS: int = Field(
@@ -2196,7 +2212,7 @@ class Valves(BaseModel):
         default=1024 * 1024,
         ge=64 * 1024,
         le=8 * 1024 * 1024,
-        description="Chunk size in bytes used when downloading generated video content.",
+        description="Chunk size in bytes used when downloading generated video content. A stored value this release no longer accepts is left at this valve's default and named in the log.",
     )
     MAX_CONCURRENT_VIDEO_GENS: int = Field(
         default=2,

@@ -89,7 +89,7 @@ The pipe accepts the following Advanced Model Parameters:
 | `disable_image_updates` | `bool-ish` | Model metadata sync | Prevents overwriting the model icon/profile image (`meta.profile_image_url`). |
 | `disable_description_updates` | `bool-ish` | Model metadata sync | Prevents overwriting the model description (`meta.description`). |
 | `disable_web_tools_auto_attach` | `bool-ish` | Model metadata sync | Prevents auto-attaching the **OR Web Tools** integration toggle (filter id) for this model. |
-| `disable_web_tools_default_on` | `bool-ish` | Model metadata sync | Prevents auto-enabling **OR Web Tools** by default for this model (prevents seeding `meta.defaultFilterIds`, and removes a default the pipe seeded). |
+| `disable_web_tools_default_on` | `bool-ish` | Model metadata sync | Prevents auto-enabling **OR Web Tools** by default for this model (prevents seeding `meta.defaultFilterIds`, and releases one the pipe had already seeded for it). |
 | `disable_direct_uploads_auto_attach` | `bool-ish` | Model metadata sync | Prevents auto-attaching the **Direct Uploads** integration toggle (filter id) for this model. |
 
 Notes:
@@ -261,11 +261,12 @@ This is a per-model “master kill switch” for the pipe’s Open WebUI model m
   - The pipe will not add/remove the OpenRouter Web Tools filter id in `meta.filterIds` for that model, even when `AUTO_ATTACH_WEB_TOOLS_FILTER=True`.
   - As a consequence, default-on seeding is also avoided (the pipe will not mark a filter as default unless it is attached).
 
-### 2.11 `disable_web_tools_default_on` → preserve default-on behavior
+### 2.11 `disable_web_tools_default_on` → stop seeding, and release a default already seeded
 - Custom param: `disable_web_tools_default_on` (bool-ish)
 - Pipe behavior (when truthy):
-  - The pipe will not seed OpenRouter Web Tools into `meta.defaultFilterIds` for that model, even when `AUTO_DEFAULT_WEB_TOOLS_FILTER=True`, and a default it seeded there previously is removed.
-  - The OpenRouter Web Tools toggle may still be auto-attached if `AUTO_ATTACH_WEB_TOOLS_FILTER=True` and the model supports it.
+  - The pipe will not seed OpenRouter Web Tools into `meta.defaultFilterIds` for that model, even when `AUTO_DEFAULT_WEB_TOOLS_FILTER=True`.
+  - A default the pipe had already seeded for that model is released on the next sync: the id is removed from `meta.defaultFilterIds` and the seeding latch is cleared in the same write, so the row is not rewritten on any sync after that. It comes back on its own if the parameter is later removed.
+  - The OpenRouter Web Tools toggle may still be auto-attached if `AUTO_ATTACH_WEB_TOOLS_FILTER=True` and the model supports it — the release is of the *default*, never of the wiring, so the toggle stays in the Integrations menu to be switched back on.
 
 ### 2.12 `disable_direct_uploads_auto_attach` → preserve the Direct Uploads toggle wiring
 - Custom param: `disable_direct_uploads_auto_attach` (bool-ish)

@@ -1448,7 +1448,9 @@ attachment was meant to anchor. A **picture** is not measured before it is
 sent: it is encoded at whatever size it was attached at and counts against
 the combined budget like any other reference, so on a turn carrying several
 references one large picture can push a later one out with a notice naming
-it.
+it. An image reference is sent as-is and the pipe cannot know whether the
+model read it, because nothing in the video catalog says which models honour
+image references.
 
 A turn with attachments and **no typed words** is refused rather than
 submitted: the intent classifier is off for a textless turn, so nothing would

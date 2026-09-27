@@ -38,6 +38,7 @@ from ..core.config import (
     _NON_REPLAYABLE_TOOL_ARTIFACTS,
     _PIPE_METADATA_KEY,
     _PROVIDER_SLUG_PATTERN,
+    OPENAI_EMPTY_USER_TURN_FALLBACK,
 )
 from ..core.fusion_defaults import _REQUIRED_TOOL_CHOICE, has_active_fusion_entry
 from ..core.image_detail import image_detail_or_auto
@@ -759,6 +760,73 @@ def _normalise_openrouter_responses_text_format(payload: dict[str, Any]) -> None
 
 # Message and Input Transforms
 
+def _replay_payload_is_present(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, dict):
+        for key in ("url", "data"):
+            if key in value:
+                return _replay_payload_is_present(value[key])
+    return False
+
+
+def _replay_block_is_usable(block: Any) -> bool:
+    if not isinstance(block, dict):
+        return True
+    btype = block.get("type")
+    if btype in {"text", "input_text", "output_text"}:
+        return isinstance(block.get("text"), str) and bool(block["text"].strip())
+    if btype in {"file", "input_file"}:
+        payload = block.get("file")
+        if isinstance(payload, dict):
+            return any(payload.get(key) for key in ("file_id", "file_data", "file_url"))
+        return any(block.get(key) for key in ("file_id", "file_data", "file_url"))
+    if btype in {"image_url", "input_image"}:
+        return _replay_payload_is_present(block.get("image_url"))
+    if btype == "input_audio":
+        return _replay_payload_is_present(block.get("input_audio"))
+    if btype == "video_url":
+        return _replay_payload_is_present(block.get("video_url"))
+    return True
+
+
+def _replay_block_refusal(block: Any) -> str | None:
+    if not isinstance(block, dict):
+        return None
+    btype = block.get("type")
+    if btype in {"image_url", "input_image"}:
+        return "an image carried no picture data"
+    if btype == "input_audio":
+        return "an audio clip carried no audio data"
+    if btype == "video_url":
+        return "a video clip carried no video data"
+    if btype in {"file", "input_file"}:
+        return "a file carried no contents"
+    return None
+
+
+def _replay_blocks_or_note(
+    blocks: list[Any],
+    siblings: list[Any] | None = None,
+    *,
+    role: str = "user",
+) -> list[Any]:
+    if any(_replay_block_is_usable(b) for b in blocks):
+        return [b for b in blocks if _replay_block_is_usable(b)]
+    refusals = [r for r in (_replay_block_refusal(b) for b in (siblings or blocks)) if r]
+    if not refusals:
+        if role != "user":
+            return blocks
+        originals = siblings or blocks
+        if any(_replay_block_is_usable(b) for b in originals):
+            return [b for b in originals if _replay_block_is_usable(b)]
+        return [{"type": "text", "text": OPENAI_EMPTY_USER_TURN_FALLBACK}]
+    return [{
+        "type": "text",
+        "text": f"[An attached item was not sent: {'; '.join(refusals)}.]",
+    }]
+
+
 def _responses_input_to_chat_messages(
     input_value: Any,
     *,
@@ -895,6 +963,8 @@ def _responses_input_to_chat_messages(
                         "role": role,
                         "content": strip_hidden_marker_lines(raw_content),
                     }
+                    if role == "user" and not msg["content"].strip():
+                        msg["content"] = OPENAI_EMPTY_USER_TURN_FALLBACK
                     if msg_annotations:
                         msg["annotations"] = msg_annotations
                     if msg_reasoning_details:
@@ -966,6 +1036,9 @@ def _responses_input_to_chat_messages(
                                 blocks_out.append({"type": "file", "file": file_payload})
                             continue
 
+                if isinstance(raw_content, list) and raw_content:
+                    blocks_out = _replay_blocks_or_note(blocks_out, raw_content, role=role)
+
                 if not blocks_out:
                     msg: dict[str, Any] = {"role": role, "content": ""}
                     if msg_annotations:
@@ -990,6 +1063,8 @@ def _responses_input_to_chat_messages(
 
             if isinstance(raw_content, str):
                 msg["content"] = strip_hidden_marker_lines(raw_content)
+                if role == "user" and not msg["content"].strip():
+                    msg["content"] = OPENAI_EMPTY_USER_TURN_FALLBACK
                 _attach_reasoning_details(msg)
                 messages.append(msg)
                 continue
@@ -1080,6 +1155,9 @@ def _responses_input_to_chat_messages(
                         continue
 
                     blocks_out.append(dict(block))
+
+            if isinstance(raw_content, list) and raw_content:
+                blocks_out = _replay_blocks_or_note(blocks_out, raw_content, role=role)
 
             msg["content"] = blocks_out if blocks_out else ""
             _attach_reasoning_details(msg)

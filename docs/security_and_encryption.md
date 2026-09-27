@@ -237,9 +237,16 @@ Recommended operator action:
 - HTTP is disabled by default; only enable plaintext `http://` with a narrow allowlist (`ALLOW_INSECURE_HTTP_HOSTS`) and compensating egress controls.
 - To constrain which hosts a per-user video reference link may name, set `VIDEO_REFERENCE_ALLOWED_DOMAINS` (parent-domain match, and it governs the `provider.options` route as well as the filter fields). Remember it cannot govern a link the media relay published for the request, by design.
 
-### Debug log safety
+### Log safety
 
-When debug logging is active, the pipe automatically redacts large base64 data URLs in log output via `_redact_payload_blobs()`, preventing multi-megabyte log entries and reducing risk of sensitive data leakage in debug logs.
+`_redact_payload_blobs()` runs over every request payload the pipe records, at any log level. It reduces two kinds of value:
+
+- **Large base64 blobs** — a `data:` URL's payload, or a bare blob under a key such as `b64_json`, is truncated to a marker with its length. This prevents multi-megabyte log entries.
+- **Media links** — any value under a media-URL key (`image_url`, `file_url`, `video_url`, `url`, `file_data`) is reduced to scheme, host and port by `loggable_link()`. The path and query are dropped, so a presigned or signed CDN link cannot be recovered from a log. This holds for a link whose netloc does not parse and for a `data:` URL with no comma as well as for a well-formed `https://` one: a value that cannot be described at all is replaced by `[REDACTED]` rather than echoed.
+
+The ERROR path is covered too. A refusal's log subject is the link the pipe declined, so subjects are built with `loggable_link()` rather than the raw URL. This means turning DEBUG on shows you every media field as `scheme://host:port` rather than the full URL — the pipe is telling you which host it was about to contact, not the signed path it was given.
+
+A `data:` URL contributes only its media type (for example `data:image/png`); the bytes after it never reach a log, including when the URL carries no comma and its payload is the remainder of the string.
 
 ---
 

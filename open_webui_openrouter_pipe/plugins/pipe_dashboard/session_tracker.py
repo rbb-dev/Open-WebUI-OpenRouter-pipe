@@ -28,6 +28,7 @@ _ST_ACTIVE_CAP = 30
 _ST_RECENT_CAP = 300
 _ST_RECENT_MAX_AGE_S = 10800.0
 _ST_ABANDON_S = 7200.0
+_ST_STREAM_STAMP_COALESCE_S = 5.0
 
 _ST_STATUS_MAP = {"ok": "completed", "failed": "failed", "cancelled": "cancelled"}
 
@@ -61,6 +62,7 @@ class SessionTracker:
         self._lock = threading.Lock()
         self._active: dict[str, dict[str, Any]] = {}
         self._recent: list[dict[str, Any]] = []
+        self._stream_stamps: dict[str, float] = {}
         self._pricing_fn = pricing_fn
         self._name_fn = name_fn
         self._warned_name_fn: set[str] = set()
@@ -145,6 +147,16 @@ class SessionTracker:
                 if entry["status"] == "queued":
                     entry["status"] = "streaming"
 
+    def mark_stream_alive(self, request_id: str) -> None:
+        if time.monotonic() - self._stream_stamps.get(request_id, 0.0) < _ST_STREAM_STAMP_COALESCE_S:
+            return
+        with self._lock:
+            entry = self._active.get(request_id)
+            if entry is None:
+                return
+            self._stream_stamps[request_id] = time.monotonic()
+            entry["seen"] = time.time()
+
     def tool_started(self, request_id: str, tool_name: str) -> None:
         with self._lock:
             entry = self._active.get(request_id)
@@ -193,6 +205,7 @@ class SessionTracker:
         numbers = _usage_numbers(usage)
         row: dict[str, Any] | None = None
         with self._lock:
+            self._stream_stamps.pop(request_id, None)
             entry = self._active.pop(request_id, None)
             if entry is None:
                 return

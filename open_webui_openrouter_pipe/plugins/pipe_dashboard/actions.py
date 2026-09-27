@@ -280,22 +280,22 @@ def _config_snapshot(valves: Any) -> dict[str, Any]:
     return {"valves": specs, "drift": drift(valves_cls)}
 
 
-async def _saved_values(pipe: Any, names: Iterable[str]) -> dict[str, Any]:
+async def _saved_values(pipe: Any, names: Iterable[str]) -> tuple[dict[str, Any], list[str]]:
     wanted = set(names)
     try:
-        effective = await _effective_valves(pipe)
+        effective, reset = await _effective_valves_and_drops(pipe)
     except _ClientMessage:
         logger.warning(
             "pipe_dashboard: the store became unreadable while echoing a completed save; "
             "the write is committed, so the echo is dropped rather than reported as a failure"
         )
-        return {}
+        return {}, []
     snapshot = _config_snapshot(effective)
     return {
         spec["name"]: spec["value"]
         for spec in snapshot["valves"]
         if spec["name"] in wanted and not spec["secret"]
-    }
+    }, list(reset)
 
 
 @register_action("config_get", permission="read", schema=None, admin_only=True)
@@ -346,11 +346,13 @@ async def _config_set(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
         raise RuntimeError("valve update rejected by store")
     rev = getattr(result, "updated_at", None)
     await emit_config_changed(rev)
+    values, post_reset = await _saved_values(pipe, edits)
     return {
         "saved": len(edits),
         "rev": rev,
         "reset": dropped,
-        "values": await _saved_values(pipe, edits),
+        "post_reset": post_reset,
+        "values": values,
     }
 
 

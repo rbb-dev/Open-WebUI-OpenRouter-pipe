@@ -55,9 +55,9 @@ from ..core.errors import (
 from ..core.timing_logger import timed
 from ..core.url_scheme import (
     is_http_or_https_url,
+    loggable_link,
     split_base64_data_url,
     url_scheme,
-    url_site,
 )
 from ..core.warn_latch import warn_level
 
@@ -735,7 +735,7 @@ class MultimodalHandler:
         if pinned is None:
             self.logger.error(
                 "Remote download blocked by security policy (SSRF or HTTP disabled by default): %s",
-                url_site(url),
+                loggable_link(url),
             )
             return None
         request_url, pin_headers, pin_extensions = pinned
@@ -777,7 +777,7 @@ class MultimodalHandler:
                     if attempt > 1 and elapsed > max_retry_time:
                         self.logger.warning(
                             "Download retry timeout exceeded for %s after %.1fs",
-                            url_site(url),
+                            loggable_link(url),
                             elapsed,
                         )
                         return None
@@ -787,7 +787,7 @@ class MultimodalHandler:
                             "Retry attempt %d/%d for %s after %.1fs",
                             attempt - 1,
                             max_retries,
-                            url_site(url),
+                            loggable_link(url),
                             elapsed,
                         )
 
@@ -819,7 +819,7 @@ class MultimodalHandler:
                                     self.logger.warning(
                                         "Remote file %s exceeds configured limit based on Content-Length header "
                                         "(%s bytes > %s bytes); aborting download.",
-                                        url_site(url),
+                                        loggable_link(url),
                                         content_length,
                                         max_size_bytes,
                                     )
@@ -837,7 +837,7 @@ class MultimodalHandler:
                                 self.logger.warning(
                                     "Remote file %s exceeds configured limit "
                                     "(%.1fMB > %dMB), aborting download.",
-                                    url_site(url),
+                                    loggable_link(url),
                                     size_mb,
                                     effective_limit_mb,
                                 )
@@ -849,7 +849,7 @@ class MultimodalHandler:
                         elapsed = time.perf_counter() - start_time
                         self.logger.info(
                             "Successfully downloaded %s after %d attempt(s) in %.1fs",
-                            url_site(url),
+                            loggable_link(url),
                             attempt,
                             elapsed,
                         )
@@ -863,7 +863,7 @@ class MultimodalHandler:
         except Exception:
             elapsed = time.perf_counter() - start_time
             self.logger.exception(
-                "Failed to download %s after %d attempt(s) in %.1fs", url_site(url), attempt, elapsed
+                "Failed to download %s after %d attempt(s) in %.1fs", loggable_link(url), attempt, elapsed
             )
             return None
 
@@ -930,12 +930,13 @@ class MultimodalHandler:
                     elapsed = time.perf_counter() - start_time
                     if attempt > 1 and elapsed > max_retry_time:
                         self.logger.warning(
-                            f"Streaming download retry timeout exceeded for {url} after {elapsed:.1f}s"
+                            "Streaming download retry timeout exceeded for %s after %.1fs", loggable_link(url), elapsed
                         )
                         return None
                     if attempt > 1:
                         self.logger.info(
-                            f"Streaming retry attempt {attempt - 1}/{max_retries} for {url} after {elapsed:.1f}s"
+                            "Streaming retry attempt %d/%d for %s after %.1fs",
+                            attempt - 1, max_retries, loggable_link(url), elapsed
                         )
 
                     dest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -972,7 +973,7 @@ class MultimodalHandler:
                                     self.logger.warning(
                                         "Remote streaming target %s exceeds configured limit per Content-Length "
                                         "(%s bytes > %s bytes); aborting.",
-                                        url, content_length, effective_max,
+                                        loggable_link(url), content_length, effective_max,
                                     )
                                     return None
                             except ValueError:
@@ -990,8 +991,9 @@ class MultimodalHandler:
                                     size_mb = projected / (1024 * 1024)
                                     limit_mb = effective_max / (1024 * 1024)
                                     self.logger.warning(
-                                        f"Streaming download {url} exceeds limit "
-                                        f"({size_mb:.1f}MB > {limit_mb:.1f}MB); aborting."
+                                        "Streaming download %s exceeds limit "
+                                        "(%.1fMB > %.1fMB); aborting.",
+                                        loggable_link(url), size_mb, limit_mb
                                     )
                                     return None
                                 if len(sniff_buffer) < _SNIFF_PREFIX_BYTES:
@@ -1016,7 +1018,8 @@ class MultimodalHandler:
 
                     if attempt > 1:
                         self.logger.info(
-                            f"Successfully streamed {url} ({written:,} bytes) after {attempt} attempt(s)"
+                            "Successfully streamed %s (%d bytes) after %d attempt(s)",
+                            loggable_link(url), written, attempt
                         )
 
                     return {
@@ -1059,7 +1062,7 @@ class MultimodalHandler:
         except TimeoutError:
             self.logger.warning(
                 "Address check for %s did not finish within %.1fs; treating it as unsafe",
-                url, seconds,
+                loggable_link(url), seconds,
             )
             return False
         return resolved is not None
@@ -1112,12 +1115,12 @@ class MultimodalHandler:
         try:
             parsed = _DialledURL(url)
         except ValueError:
-            self.logger.warning("URL cannot be parsed: %s", url_site(url))
+            self.logger.warning("URL cannot be parsed: %s", loggable_link(url))
             return False
         scheme = (parsed.scheme or "").lower()
         if scheme not in _FETCHABLE_SCHEMES:
             self.logger.warning(
-                "Blocked URL whose scheme is neither http nor https: %s", url_site(url)
+                "Blocked URL whose scheme is neither http nor https: %s", loggable_link(url)
             )
             return False
         if scheme == "https":
@@ -1126,19 +1129,19 @@ class MultimodalHandler:
             self.logger.warning(
                 "Blocked insecure HTTP URL by default (HTTP disabled by default; "
                 "set ALLOW_INSECURE_HTTP and ALLOW_INSECURE_HTTP_HOSTS to allow): %s",
-                url_site(url),
+                loggable_link(url),
             )
             return False
         allowlist = self._parse_insecure_http_allowlist(self.valves.ALLOW_INSECURE_HTTP_HOSTS)
         if not allowlist:
             self.logger.warning(
                 "Blocked insecure HTTP URL; allowlist empty (HTTP disabled by default): %s",
-                url_site(url),
+                loggable_link(url),
             )
             return False
         host = (parsed.raw_host or "").lower().rstrip(".")
         if not host:
-            self.logger.warning("HTTP URL has no hostname: %s", url_site(url))
+            self.logger.warning("HTTP URL has no hostname: %s", loggable_link(url))
             return False
         port = parsed.explicit_port or 80
         for allowed_host, allowed_port in allowlist:
@@ -1146,7 +1149,7 @@ class MultimodalHandler:
                 return True
         self.logger.warning(
             "Blocked insecure HTTP URL (host not allowlisted): %s (host=%s, port=%s)",
-            url_site(url),
+            loggable_link(url),
             host,
             port,
         )
@@ -1180,11 +1183,11 @@ class MultimodalHandler:
             parsed = _DialledURL(url)
             port = parsed.port
         except ValueError:
-            self.logger.warning("URL cannot be parsed: %s", url_site(url))
+            self.logger.warning("URL cannot be parsed: %s", loggable_link(url))
             return None
         host = parsed.raw_host
         if not host:
-            self.logger.warning("URL has no hostname: %s", url_site(url))
+            self.logger.warning("URL has no hostname: %s", loggable_link(url))
             return None
         return (host, port)
 
@@ -1317,7 +1320,7 @@ class MultimodalHandler:
         except TimeoutError:
             self.logger.warning(
                 "Address check for %s did not finish within %.1fs; treating it as unsafe",
-                url, ADDRESS_CHECK_SECONDS,
+                loggable_link(url), ADDRESS_CHECK_SECONDS,
             )
             return None
         if ips is None:
@@ -1400,7 +1403,7 @@ class MultimodalHandler:
         try:
             ipaddress.ip_address(host)
         except ValueError:
-            self.logger.warning("Address-shaped host is not an address: %s", url)
+            self.logger.warning("Address-shaped host is not an address: %s", loggable_link(url))
             return True
         return self._validated_ips_for_host(host, target[1]) is None
 
@@ -1408,7 +1411,7 @@ class MultimodalHandler:
         try:
             return urljoin(target, location)
         except ValueError:
-            self.logger.warning("Redirect target cannot be parsed: %s", location)
+            self.logger.warning("Redirect target cannot be parsed: %s", loggable_link(location))
             return None
 
     @asynccontextmanager

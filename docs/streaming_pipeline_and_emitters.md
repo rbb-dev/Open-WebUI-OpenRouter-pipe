@@ -31,6 +31,17 @@ The producer reads the OpenRouter `text/event-stream` response and:
 - assigns an incrementing sequence number (`seq`)
 - enqueues `(seq, data_blob)` into the **chunk queue**
 
+### End of body
+The read buffer is consumed line by line, so when the body ends the buffer still
+holds the bytes after the last newline. A `data:` frame the body ended without a
+terminator is dispatched from that residual rather than dropped, and a complete
+frame already pending at end of body is dispatched first, on its own — the two are
+never joined into one blob, because a worker parses a blob as a single JSON unit and
+the pending frame would be lost with the residual. A body cut mid-frame produces a
+residual that is not valid JSON; it takes the same per-chunk parse path as any other
+malformed frame and is discarded, so a truncated tail is not reported as a transport
+fault. A `[DONE]`-terminated body is unaffected.
+
 ### Workers (JSON parsers)
 The pipe spawns `SSE_WORKERS_PER_REQUEST` worker tasks. Each worker:
 - dequeues `(seq, data_blob)` from the chunk queue
@@ -57,7 +68,7 @@ The streaming pipeline uses two queues with valve controls:
 
 Defaults are `0` (unbounded) for both queues.
 
-**Warning:** A bounded queue applies backpressure: when it fills, the pipe stops reading from OpenRouter until the backlog clears. The chain runs the other way from what it used to — a slow drain (tool-heavy or persistence-heavy workloads) → event queue fills → workers block → chunk queue fills → producer blocks on its next put → and the source stops being read. As long as the consumer keeps draining, the cost is added latency on a slow drain, not a stalled stream: the reply still ends on its own. A consumer that stops reading entirely, such as a closed browser tab, is held by that backpressure rather than ended.
+**Warning:** A bounded queue applies backpressure: when it fills, the pipe stops reading from OpenRouter until the backlog clears. The chain runs the other way from what it used to — a slow drain (tool-heavy or persistence-heavy workloads) → event queue fills → workers block → chunk queue fills → producer blocks on its next put → and the source stops being read. As long as the consumer keeps draining, the cost is added latency on a slow drain, not a stalled stream: the reply still ends on its own. A consumer that stops reading entirely, such as a closed browser tab, does not hang the request: cancelling it tears the pipeline down and returns, and no producer or worker task is left behind.
 
 Monitoring:
 - `STREAMING_CHUNK_QUEUE_WARN_SIZE` emits a backend warning (rate-limited per request) when the raw-chunk queue backlog is high.
@@ -153,9 +164,10 @@ left unfinished by Stop, on a message that is then continued, stays unfinished i
 being repaired, so Open WebUI does not replay it. The events that would repair it cannot reach storage -
 `response.output_item.added` matches ids only within the new output, and `response.output_item.done` replaces by
 position - so an attempt to heal it would duplicate or corrupt the saved copy instead. The model still learns the
-round's calls before the first one still running: Open WebUI saves their cards as finished and hands them back, and
+round's calls before the first one still running, in the order the model emitted them: Open WebUI saves their cards as finished and hands them back, and
 with cards off the pipe's own copy does (not in a temporary chat, where the pipe keeps no copy), since the pipe writes
-a round's calls when the round starts and each result when its call returns, in call order (see
+a round's calls when the round starts and each result when its call returns, that is as the calls are answered, so a
+refused call's answer is written ahead of the results that were still running (see
 [History Reconstruction & Context Replay](history_reconstruction_and_context.md), section 5.4).
 
 ---

@@ -109,6 +109,11 @@ def _is_ordered_object(event: Any) -> TypeGuard[dict[str, Any]]:
     return isinstance(event, dict)
 
 
+def _task_is_cancelling() -> bool:
+    task = asyncio.current_task()
+    return task is not None and bool(task.cancelling())
+
+
 class _AcceptedResponseLostBody(aiohttp.ClientPayloadError, RuntimeError):
     pass
 
@@ -269,6 +274,10 @@ class ResponsesAdapter:
                 return
             return self._pipe._ensure_error_formatter()._extract_streaming_error_event(current, requested_model)
 
+        async def _send_worker_sentinels() -> None:
+            for _ in range(workers):
+                await chunk_queue.put(chunk_sentinel)
+
         @timed
         async def _producer() -> None:
             seq = 0
@@ -400,6 +409,34 @@ class ResponsesAdapter:
                                         if stream_complete:
                                             break
 
+                                if buf and not stream_complete:
+                                    residual = bytes(buf).strip()
+                                    if residual.startswith(b"data:") or (residual and not residual.startswith(b":")):
+                                        if event_data_parts:
+                                            pending_blob = b"\n".join(event_data_parts).strip()
+                                            event_data_parts.clear()
+                                            if pending_blob and pending_blob != b"[DONE]":
+                                                queued_any = True
+                                                if not delivered_any:
+                                                    _probe_inband(pending_blob)
+                                                if _visible(pending_blob):
+                                                    await _emit(pending_blob)
+                                                else:
+                                                    held.append(pending_blob)
+                                        residual_blob = (
+                                            residual[5:].lstrip()
+                                            if residual.startswith(b"data:")
+                                            else residual
+                                        )
+                                        if residual_blob and residual_blob != b"[DONE]":
+                                            queued_any = True
+                                            if not delivered_any:
+                                                _probe_inband(residual_blob)
+                                            if _visible(residual_blob):
+                                                await _emit(residual_blob)
+                                            else:
+                                                held.append(residual_blob)
+
                                 if event_data_parts and not stream_complete:
                                     data_blob = b"\n".join(event_data_parts).strip()
                                     event_data_parts.clear()
@@ -434,8 +471,9 @@ class ResponsesAdapter:
                             if stream_complete:
                                 break
             finally:
-                for _ in range(workers):
-                    await chunk_queue.put(chunk_sentinel)
+                if _task_is_cancelling():
+                    raise asyncio.CancelledError()
+                await _send_worker_sentinels()
 
         worker_first_event_queued = False
 
@@ -490,8 +528,9 @@ class ResponsesAdapter:
                     finally:
                         chunk_queue.task_done()
             finally:
-                with contextlib.suppress(asyncio.CancelledError):
-                    await event_queue.put((None, None))
+                if _task_is_cancelling():
+                    raise asyncio.CancelledError()
+                await event_queue.put((None, None))
 
         producer_task = asyncio.create_task(_producer(), name="openrouter-sse-producer")
         worker_tasks = [

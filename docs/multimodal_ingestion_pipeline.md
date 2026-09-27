@@ -15,12 +15,41 @@ For user messages that include multimodal content, the pipe normalizes content b
 
 At a high level:
 
-- **Images** are converted to Responses-style `input_image` blocks. A `data:` URL within `BASE64_MAX_SIZE_MB` is sent as it came apart from the scheme, which is lower-cased to `data:`, and one over it is not sent, the picture being skipped and the person told in a status on their latest message; a remote image is downloaded and sent inline (or forwarded as its link when it cannot be downloaded, unless the pipe's own address check refused the host), a picture the pipe refuses to forward is dropped and reported rather than sent, and an Open WebUI file URL is read with the requester's access and sent inline.
+- **Images** are converted to Responses-style `input_image` blocks. A `data:` URL within `BASE64_MAX_SIZE_MB` is sent with its declared type and parameters preserved, its payload de-wrapped and validated first, and one over it is not sent, the picture being skipped and the person told in a status on their latest message; a remote image is downloaded and sent inline (or forwarded as its link when it cannot be downloaded, unless the pipe's own address check refused the host), a link the pipe cannot resolve into an image is refused on the inline leg with an `Images: skipped N (not a link the pipe can resolve into an image)` status, a picture the pipe refuses to forward is dropped and reported rather than sent, and an Open WebUI file URL is read with the requester's access and sent inline.
 - **Files** are converted to Responses-style `input_file` blocks and forwarded as they came: a `data:` URL or link in `file_data` or `file_url` goes out unchanged, and the pipe never downloads a file link. Inline data over `BASE64_MAX_SIZE_MB` is the exception: it is not sent, and the person sees "Files: skipped …" for their latest message, as with pictures. An Open WebUI file URL is read with the requester's access and sent inline.
 - **Audio** is converted to Responses-style `input_audio` blocks and must be **base64/data URL** (remote URLs are rejected).
 - **Video** is passed using Chat Completions-style `video_url` blocks (the Responses API does not provide a dedicated `input_video` block). Videos are **not** downloaded or re-hosted by the pipe; the pipe applies basic validation and SSRF checks for remote URLs.
 
 Nothing a person attaches is written to Open WebUI storage by the pipe, in any chat and by any request of a turn.
+
+### What a user turn is allowed to carry
+
+Every user turn the pipe dispatches carries at least one usable block. Four shapes are dropped rather than sent:
+
+- a text block that is **only whitespace**;
+- an `input_file` with no `file_id`, `file_data` or `file_url`;
+- a media block whose wrapper is present but whose payload is not — an `input_image` / `image_url` whose `url` is `""`, an `input_audio` whose `data` is `""` inside a non-empty `{ "data": …, "format": … }` wrapper, a `video_url` whose `url` is `""`.
+
+The media cases are decided on the **payload**, not on the wrapper. `{"url": ""}` and `{"data": "", "format": "mp3"}` are non-empty objects, so a plain truthiness test passes exactly the blocks being dropped; the payload itself is what has to be there. These are all the pipe's own conversion failures — the block never existed to be sent — which is why the empty `data`/`url` wrapper is not a thing Open WebUI produces and the pipe does not forward it as one.
+
+A whitespace text block beside a block that *is* usable is **kept**: only a wholly void turn is emptied. So a person who sends a real picture and a blank box gets both blocks, in the order they wrote them.
+
+What an emptied turn carries instead depends on what was dropped:
+
+- A turn that was **blank text with no attachment at all** carries `[The user sent an empty message.]`. It states the fact in the same bracketed register as the attachment note and tells the model nothing false.
+- A turn that was **blank text beside a block that carried no payload** carries `[An attached item was not sent: <reason>.]`, the note the pipe already sends for an attachment that did not go out, naming the conversion failure that dropped it. Open WebUI's own empty-block rule (`strip_empty_content_blocks`, `utils/misc.py`) drops the blank text here and invents nothing; the note is this pipe adding what did not go out, in the register it already uses for exactly that.
+- A turn that was **only an attachment that could not be converted** carries the same note.
+
+A turn whose `content` is absent or `None` is not one of these: it carried no block to drop, so it is forwarded as an empty list, unchanged. `content: ""` is the third spelling of the same thing and is forwarded as an empty list too, which is why it is named separately from `content: []` below: a caller that sent an empty *block list* carried a block list, and that turn takes the empty-message line, while an empty *string* carried nothing at all.
+
+The line a turn carries in place of its content is a *statement to the model*, and the
+pipe reads these turns back. The image adapter derives its prompt from the transformed
+body, so a turn that carried nothing reads there as that literal sentence. It must not be
+taken for one: the adapter refuses before sending any turn whose only user text is that
+line, exactly as it does for a blank message, so a turn where the person said nothing is
+not sent as a generation. The video adapter reads the raw body rather than the transformed
+one, so it never sees the line and must not grow this guard: a refactor that unified the
+two adapters would silently re-open the image case.
 
 ---
 
@@ -67,7 +96,7 @@ For cloud/unknown backends, a file whose declared `meta['size']` is missing or i
 ### What is sent (important)
 
 The pipe never writes an image the person attached to Open WebUI storage: not for a saved, channel or temporary chat, and not for any request of a turn (its first answer, a Regenerate, each further model answering it, a Continue, or Open WebUI's calls back after each round of tool calls). Every request sends the image as the message carries it:
-- A **data URL** (`data:image/...;base64,...`) within `BASE64_MAX_SIZE_MB` is sent as it came apart from the scheme, which is lower-cased to `data:`; one over the limit is not sent, the picture is skipped and the person sees `"Images: skipped N (…)."` on their latest message. One that fails validation is dropped and reported, never sent unvalidated. The `;base64` marker is matched case-insensitively, as the data-URL standard requires, so `;BASE64,` is a spelling of the same thing and the URL is still forwarded with its own spelling intact. A token-free `data:` URL — the word `base64` in a payload, or a parameter that merely starts with those letters — is not base64 and is refused, in every spelling.
+- A **data URL** (`data:image/...;base64,...`) within `BASE64_MAX_SIZE_MB` is sent with the declared type and parameters preserved; one over the limit is not sent, the picture is skipped and the person sees `"Images: skipped N (…)."` on their latest message. Whitespace inside the payload is removed before sending, so an RFC 2045 line-wrapped body arrives at the provider as one line, and the payload is validated before it is sent: one that is not decodable as base64 — including a URL-safe-base64 payload, whose alphabet is not the one this data-URL form declares — is refused rather than forwarded, with the same `Images: skipped N (not decodable as base64)` status. The `;base64` marker is matched case-insensitively, as the data-URL standard requires, so `;BASE64,` is a spelling of the same thing and the URL is still forwarded with its own spelling intact. A token-free `data:` URL — the word `base64` in a payload, or a parameter that merely starts with those letters — is not base64 and is refused, in every spelling.
 - A **remote URL** (`https://`) is downloaded (with retries/limits/SSRF protection) and its bytes are sent upstream as a `data:` URL; one that cannot be downloaded is forwarded as its link **unless the pipe's own address check refused the host**: a host that does not resolve, or resolves to a non-routable address, fails closed and is not sent, and the person sees `Images: skipped N (could not be fetched, so it was not sent).` A public link the pipe merely failed to *download* (404, timeout, slow host) is forwarded as before, so OpenRouter may fetch it. A failed download costs one further address check on top of the one the download already ran, so a picture the pipe cannot fetch is refused after two address checks, and a turn carrying N such pictures waits for up to 2 x N x `ADDRESS_CHECK_SECONDS` (5s each) of checking, one picture after another. A download that returns no bytes counts as a failed download, so it is forwarded as its link rather than shipped as a zero-byte `data:` URL. One larger than `BASE64_MAX_SIZE_MB` once downloaded is not sent. Plain `http://` is disabled by default and requires explicit allowlisting.
 - An **Open WebUI file URL** (for example `/api/v1/files/...`) is streamed with the requester's access and inlined as a `data:` URL to avoid requiring OpenRouter to fetch from your Open WebUI host.
 
@@ -127,7 +156,7 @@ The pipe uses Chat Completions-style `video_url` blocks:
 ```
 
 ### Validation and SSRF behavior
-- Data URLs (`data:video/...;base64,...`) are accepted only if their estimated decoded size is at or below `VIDEO_MAX_SIZE_MB`.
+- Data URLs (`data:video/...;base64,...`) are accepted only if their size is at or below `VIDEO_MAX_SIZE_MB`. A base64 payload's size is its decoded size; a token-free payload's is its own length, which is the actual size rather than an estimate.
 - YouTube URLs are allowed (and may only work on certain model/provider combinations).
 - Remote URLs (`https://` by default; `http://` only when allowlisted) that are not Open WebUI file URLs are checked by the SSRF guard when `ENABLE_SSRF_PROTECTION=True`.
 

@@ -21,6 +21,7 @@ import queue
 import random
 import threading
 import time
+import weakref
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -31,6 +32,109 @@ from ..core.warn_latch import warn_level
 from ..storage.persistence import _db_session
 
 logger = logging.getLogger(__name__)
+
+_THREAD_WAKE_SLICE_S = 30.0
+
+
+def _wait_alive(mgr_ref: Any, stop_event: threading.Event, seconds: float) -> bool:
+    remaining = max(0.0, float(seconds))
+    while remaining > 0.0:
+        if mgr_ref() is None or stop_event.is_set():
+            return True
+        if stop_event.wait(timeout=min(_THREAD_WAKE_SLICE_S, remaining)):
+            return True
+        remaining -= _THREAD_WAKE_SLICE_S
+    return mgr_ref() is None or stop_event.is_set()
+
+
+def _writer_loop(mgr_ref: Any, stop_event: threading.Event, job_queue: queue.Queue) -> None:
+    while True:
+        if mgr_ref() is None or stop_event.is_set():
+            break
+        item: Any = None
+        try:
+            item = job_queue.get(timeout=0.5)
+        except queue.Empty:
+            continue
+        except Exception:
+            logger.debug("Session log writer queue.get failed", exc_info=True)
+            continue
+        mgr = mgr_ref()
+        if mgr is None:
+            with contextlib.suppress(Exception):
+                job_queue.task_done()
+            break
+        if item is None:
+            with contextlib.suppress(Exception):
+                job_queue.task_done()
+            continue
+        try:
+            mgr._write_archive(item)
+        except Exception:
+            logger.debug("Session log writer failed", exc_info=True)
+        finally:
+            with contextlib.suppress(Exception):
+                job_queue.task_done()
+        mgr = None
+
+
+def _cleanup_loop(mgr_ref: Any, stop_event: threading.Event) -> None:
+    while True:
+        mgr = mgr_ref()
+        if mgr is None:
+            break
+        try:
+            mgr.cleanup_archives()
+        except Exception:
+            logger.debug("Session log cleanup failed", exc_info=True)
+        interval = 3600
+        with contextlib.suppress(Exception):
+            interval = mgr._cleanup_interval_seconds  # type: ignore[attr-defined]
+        mgr = None
+        if _wait_alive(mgr_ref, stop_event, interval):
+            break
+
+
+def _assembler_loop(mgr_ref: Any, stop_event: threading.Event) -> None:
+    mgr = mgr_ref()
+    if mgr is None:
+        return
+
+    try:
+        jitter = mgr.valves.SESSION_LOG_ASSEMBLER_JITTER_SECONDS
+    except Exception:
+        logger.debug("Session log assembler exiting: jitter valve unavailable", exc_info=True)
+        return
+    mgr = None
+    if jitter and _wait_alive(mgr_ref, stop_event, random.uniform(0.0, jitter)):
+        return
+
+    while True:
+        mgr = mgr_ref()
+        if mgr is None or stop_event.is_set():
+            break
+        try:
+            mgr.run_assembler_once()
+        except Exception:
+            logger.debug("Session log assembler failed", exc_info=True)
+        if stop_event.is_set():
+            break
+        interval = 30
+        extra = 0.0
+        mgr = None
+        try:
+            valves = mgr_ref()
+            if valves is None:
+                break
+            interval = valves.valves.SESSION_LOG_ASSEMBLER_INTERVAL_SECONDS
+            extra = valves.valves.SESSION_LOG_ASSEMBLER_JITTER_SECONDS
+        except Exception:
+            logger.debug("Session log assembler exiting: interval valves unavailable", exc_info=True)
+            break
+        valves = None
+        delay = interval + (random.uniform(0.0, extra) if extra else 0.0)
+        if _wait_alive(mgr_ref, stop_event, delay):
+            break
 
 _UNREADABLE_ARCHIVE_CAPTURE_AFTER = 3
 
@@ -307,8 +411,6 @@ class SessionLogManager:
     @timed
     def start_workers(self) -> None:
         """Start session log writer + cleanup threads if not already running."""
-        from ..core.logging_system import _SessionLogArchiveJob
-
         if self._worker_thread and self._worker_thread.is_alive():
             return
         if self._cleanup_thread and self._cleanup_thread.is_alive():
@@ -321,50 +423,10 @@ class SessionLogManager:
         ):
             self._stop_event = threading.Event()
 
-        def _writer_loop() -> None:
-            stop_event = self._stop_event
-            while True:
-                if stop_event and stop_event.is_set():
-                    break
-                item: _SessionLogArchiveJob | None = None
-                try:
-                    item = self._queue.get(timeout=0.5) if self._queue else None
-                except queue.Empty:
-                    continue
-                except Exception:
-                    self.logger.debug("Session log writer queue.get failed", exc_info=True)
-                    continue
-                if item is None:
-                    with contextlib.suppress(Exception):
-                        if self._queue:
-                            self._queue.task_done()
-                    continue
-                try:
-                    self._write_archive(item)
-                except Exception:
-                    self.logger.debug("Session log writer failed", exc_info=True)
-                finally:
-                    with contextlib.suppress(Exception):
-                        if self._queue:
-                            self._queue.task_done()
-
-        def _cleanup_loop() -> None:
-            stop_event = self._stop_event
-            if stop_event is None:
-                return
-            while not stop_event.is_set():
-                try:
-                    self.cleanup_archives()
-                except Exception:
-                    self.logger.debug("Session log cleanup failed", exc_info=True)
-                interval = 3600
-                with contextlib.suppress(Exception), self._lock:
-                    interval = self._cleanup_interval_seconds
-                if stop_event.wait(timeout=max(0.0, float(interval))):
-                    break
-
+        mgr_ref = weakref.ref(self)
         self._worker_thread = threading.Thread(
             target=_writer_loop,
+            args=(mgr_ref, self._stop_event, self._queue),
             name="openrouter-session-log-writer",
             daemon=True,
         )
@@ -372,6 +434,7 @@ class SessionLogManager:
 
         self._cleanup_thread = threading.Thread(
             target=_cleanup_loop,
+            args=(mgr_ref, self._stop_event),
             name="openrouter-session-log-cleanup",
             daemon=True,
         )
@@ -389,51 +452,9 @@ class SessionLogManager:
         ):
             self._stop_event = threading.Event()
 
-        def _wait(stop_event: threading.Event, seconds: float) -> bool:
-            try:
-                return stop_event.wait(timeout=max(0.0, float(seconds)))
-            except Exception:
-                self.logger.debug("Session log assembler wait failed; falling back to time.sleep", exc_info=True)
-                time.sleep(max(0.0, float(seconds)))
-                return stop_event.is_set()
-
-        def _assembler_loop() -> None:
-            stop_event = self._stop_event
-            if stop_event is None:
-                return
-
-            # Desynchronize workers so multiple UVicorn processes don't spike the DB at once.
-            try:
-                jitter = self.valves.SESSION_LOG_ASSEMBLER_JITTER_SECONDS
-            except Exception:
-                self.logger.debug("Session log assembler exiting: jitter valve unavailable", exc_info=True)
-                return
-            if jitter:
-                initial = random.uniform(0.0, jitter)
-                if _wait(stop_event, initial):
-                    return
-
-            while True:
-                if stop_event.is_set():
-                    break
-                try:
-                    self.run_assembler_once()
-                except Exception:
-                    self.logger.debug("Session log assembler failed", exc_info=True)
-                if stop_event.is_set():
-                    break
-                try:
-                    interval = self.valves.SESSION_LOG_ASSEMBLER_INTERVAL_SECONDS
-                    extra = self.valves.SESSION_LOG_ASSEMBLER_JITTER_SECONDS
-                except Exception:
-                    self.logger.debug("Session log assembler exiting: interval valves unavailable", exc_info=True)
-                    break
-                delay = interval + (random.uniform(0.0, extra) if extra else 0.0)
-                if _wait(stop_event, delay):
-                    break
-
         self._assembler_thread = threading.Thread(
             target=_assembler_loop,
+            args=(weakref.ref(self), self._stop_event),
             name="openrouter-session-log-assembler",
             daemon=True,
         )

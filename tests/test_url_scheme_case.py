@@ -296,6 +296,11 @@ async def test_a_remote_audio_url_is_refused_rather_than_read_as_base64(
     """Audio takes base64 only. A URL that slipped the scheme test was handed to the
     base64 normaliser, which strips the characters it does not recognise and ships
     whatever is left as audio bytes. The last row is the real base64 that must survive.
+
+    For the four URL rows there is now nothing to inspect: the refusal yields an audio
+    block with no payload, T433 stops that block from being shipped, and the turn carries
+    the one line that says so. The base64 row is the control -- it must still arrive as
+    audio, which is what keeps "refuse everything" from satisfying this row.
     """
     pipe = _vision_pipe(pipe_instance_async)
     ModelFamily.set_dynamic_specs({"vision-model": {"features": {"vision", "audio"}}})
@@ -305,7 +310,11 @@ async def test_a_remote_audio_url_is_refused_rather_than_read_as_base64(
     )
     block = transformed[0]["content"][0]
 
-    assert block["input_audio"]["data"] == data, f"payload={payload!r} produced {block!r}"
+    if data:
+        assert block["input_audio"]["data"] == data, f"payload={payload!r} produced {block!r}"
+        return
+    assert block["type"] == "input_text", f"payload={payload!r} produced {block!r}"
+    assert block["text"] == "[The user sent an empty message.]"
 
 
 # ── the video path, end to end ────────────────────────────────────────────────
@@ -325,9 +334,15 @@ async def test_cleartext_video_urls_are_gated_however_the_scheme_is_typed(
     pipe_instance_async, monkeypatch, scheme, host, allow, hosts, forwarded
 ):
     """The video branch reads its own copy of the cleartext test and emits an EMPTY
-    ``video_url`` when the gate refuses, so the tell is the forwarded url, not a missing
+    ``video_url`` when the gate refuses, so the tell was the forwarded url, not a missing
     block. ``_is_safe_url`` is stubbed because it resolves DNS; the decision under test
     sits above it.
+
+    The refused case no longer ships that empty ``video_url`` either -- a block with an
+    empty url is a void attachment, and T433 stops void attachments from reaching the
+    provider. The gate's decision is still what is under test: a refused URL produces no
+    video block at all, and an allowed one forwards the URL unchanged. An allowed row
+    that stopped forwarding, or a refused row that started, would both show up here.
     """
     pipe = _vision_pipe(pipe_instance_async, allow=allow, hosts=hosts)
     monkeypatch.setattr(pipe._multimodal_handler, "_is_safe_url", AsyncMock(return_value=True))
@@ -336,9 +351,16 @@ async def test_cleartext_video_urls_are_gated_however_the_scheme_is_typed(
     transformed = await _transform_block(pipe, {"type": "video_url", "video_url": {"url": url}})
     videos = [b for b in transformed[0]["content"] if b.get("type") == "video_url"]
 
-    assert videos and videos[0]["video_url"]["url"] == (url if forwarded else ""), (
-        f"url={url} ALLOW_INSECURE_HTTP={allow}: got {videos!r}"
+    if forwarded:
+        assert videos and videos[0]["video_url"]["url"] == url, (
+            f"url={url} ALLOW_INSECURE_HTTP={allow}: got {videos!r}"
+        )
+        return
+    assert not videos, (
+        f"url={url} ALLOW_INSECURE_HTTP={allow}: a refused cleartext URL was sent as "
+        f"{videos!r}"
     )
+    assert transformed[0]["content"][0]["text"] == "[The user sent an empty message.]"
 
 
 @pytest.mark.asyncio

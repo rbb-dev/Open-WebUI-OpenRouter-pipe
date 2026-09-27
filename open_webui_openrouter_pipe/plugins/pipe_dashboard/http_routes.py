@@ -43,6 +43,20 @@ def set_pipe_getter(get_pipe: Any) -> None:
     _routes_get_pipe = get_pipe
 
 
+def clear_routes_pipe_getter(instance: Any, name: str) -> None:
+    global _routes_get_pipe
+    current = _routes_get_pipe
+    if current is None or current == getattr(instance, name, None):
+        _routes_get_pipe = None
+
+
+def clear_fresh_dispatch(pipe: Any) -> None:
+    global _fresh_dispatch
+    cached = _fresh_dispatch
+    if cached is not None and cached[1] is pipe:
+        _fresh_dispatch = None
+
+
 def _coarse_rate_limited(user_id: str) -> bool:
     now = time.monotonic()
     last = _coarse_state.get(user_id, 0.0)

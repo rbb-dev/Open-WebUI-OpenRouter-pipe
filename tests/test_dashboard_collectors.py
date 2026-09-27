@@ -7,13 +7,16 @@ was replaced by OWUI socket.io (the collector/aggregation code is unchanged).
 from __future__ import annotations
 
 import time
-from collections import deque
+from collections import defaultdict, deque
+from pathlib import Path
+from typing import Any
 from unittest.mock import Mock, patch
 
 import pytest
 pytest.importorskip("open_webui_openrouter_pipe.plugins.pipe_dashboard")
 
 from open_webui_openrouter_pipe.plugins.pipe_dashboard.runtime_metrics import (
+    _collect_db_stats,
     collect_fast_stats,
     collect_identity,
     collect_medium_stats,

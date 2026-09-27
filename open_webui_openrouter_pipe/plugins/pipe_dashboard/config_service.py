@@ -9,7 +9,7 @@ from typing import Any
 import annotated_types as at
 from pydantic import ValidationError
 
-from ...core.config import EncryptedStr, _is_template_valve
+from ...core.config import EncryptedStr, _is_template_valve, _valve_schema
 from .config_meta import CONFIG_META
 
 logger = logging.getLogger(__name__)
@@ -144,11 +144,12 @@ def drift(valves_cls: type) -> dict[str, list[str]]:
 def readable_stored(valves_cls: type, stored: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     kept = {k: v for k, v in stored.items() if v is not None and k in valves_cls.model_fields}
     try:
-        valves_cls(**kept)
+        built = valves_cls(**kept)
     except ValidationError as exc:
         bad = {str(err["loc"][0]) for err in exc.errors() if err.get("loc")}
         return {k: v for k, v in kept.items() if k not in bad}, sorted(bad)
-    return kept, []
+    bad = {k for k in kept if k not in built.model_fields_set}
+    return {k: v for k, v in kept.items() if k not in bad}, sorted(bad)
 
 
 class _ClientMessage(RuntimeError):
@@ -181,6 +182,7 @@ def merge_for_save_with_drops(
         if nullable and isinstance(value, str) and not value.strip():
             merged[key] = None
             continue
+        _valve_schema(valves_cls)(**{key: value})
         merged[key] = value
     full = valves_cls(**merged).model_dump()
     defaults = valves_cls().model_dump()

@@ -9,6 +9,14 @@ they covered this reduced to `x == x`.
 
 Net effect: changing the validator to store API keys in plain text passed all 5593
 tests. These tests set a real key and assert the ciphertext property directly.
+
+A second history, kept separate: the cross-key assertion here used to be guarded by
+`getattr(_get_encryption_key, "cache_clear", None)`. `_get_encryption_key` is a bare
+`@classmethod` with no `cache_clear` and no `__wrapped__`, so that guard could never
+fire -- it defended a seam that does not exist. The guard is gone, and
+`test_the_key_resolver_follows_the_environment` replaces it with the premise the
+guard was standing in for: the resolver re-reads `WEBUI_SECRET_KEY` on every call, so
+a memo can never hide under it.
 """
 
 from __future__ import annotations
@@ -116,9 +124,6 @@ def test_a_secret_valve_is_ciphertext_at_rest(field, _real_secret_key, monkeypat
 
     with monkeypatch.context() as other:
         other.setenv("WEBUI_SECRET_KEY", "a-different-application-secret-entirely")
-        clear = getattr(_Enc._get_encryption_key, "cache_clear", None)
-        if callable(clear):
-            clear()
         recovered = _Enc.decrypt(stored)
     assert recovered != plaintext, (
         f"{field}'s stored value decrypts under a DIFFERENT WEBUI_SECRET_KEY, so it is "

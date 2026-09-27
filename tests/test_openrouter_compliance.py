@@ -123,7 +123,13 @@ async def test_audio_requires_base64_not_urls(
     pipe_instance,
     mock_user,
 ):
-    """Remote URLs should be rejected per OpenRouter's audio spec."""
+    """Remote URLs should be rejected per OpenRouter's audio spec.
+
+    The rejection and its one error event are unchanged. What this row now also pins is
+    that the rejection does not leave an `input_audio` block behind for OpenRouter: an
+    empty `data` field is a claim that a clip was attached, so the turn says what
+    actually happened instead.
+    """
 
     pipe_instance._ensure_error_formatter()._emit_error = AsyncMock()
 
@@ -131,8 +137,8 @@ async def test_audio_requires_base64_not_urls(
 
     result = await _transform_single_block(pipe_instance, block, mock_user)
 
-    assert result["type"] == "input_audio"
-    assert result["input_audio"]["data"] == ""
+    assert result["type"] == "input_text"
+    assert result["text"] == "[The user sent an empty message.]"
     assert pipe_instance._ensure_error_formatter()._emit_error.await_count == 1
 
 

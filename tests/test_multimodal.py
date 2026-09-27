@@ -3474,12 +3474,19 @@ class TestAudioTransformer:
         pipe_instance,
         mock_user,
     ):
-        """Should return empty audio block for malformed payloads."""
+        """A malformed audio payload reaches the provider as no audio at all.
+
+        The converter still returns the empty `input_audio` block it always did -- the
+        per-block contract is unchanged, and the row that pins it is the one below. What
+        changed is what happens to that void block: it is no longer shipped, because
+        T433 established that a payload-less `input_audio` must never be put in front of
+        OpenRouter. The turn now carries the one line that says so.
+        """
         block = {"type": "input_audio", "input_audio": 12345}
         audio_block = await _transform_single_block(pipe_instance, block, mock_user)
         assert audio_block is not None
-        assert audio_block["input_audio"]["data"] == ""
-        assert audio_block["input_audio"]["format"] == "mp3"
+        assert audio_block["type"] == "input_text"
+        assert audio_block["text"] == "[The user sent an empty message.]"
 
     @pytest.mark.asyncio
     async def test_audio_error_returns_minimal_block(
@@ -3489,7 +3496,12 @@ class TestAudioTransformer:
         sample_audio_base64,
         monkeypatch,
     ):
-        """Should swallow exceptions and return minimal block."""
+        """A converter that raises still yields a void block, and still no audio.
+
+        The exception is swallowed by `_to_input_audio` exactly as before, so the
+        per-block contract this row documents is intact; the block it produces is empty,
+        and T433 stops that empty block from reaching OpenRouter.
+        """
         boom = RuntimeError("boom")
         monkeypatch.setattr(pipe_instance._multimodal_handler, "_parse_data_url", Mock(side_effect=boom))
         block = {
@@ -3498,8 +3510,8 @@ class TestAudioTransformer:
         }
         audio_block = await _transform_single_block(pipe_instance, block, mock_user)
         assert audio_block is not None
-        assert audio_block["input_audio"]["data"] == ""
-        assert audio_block["input_audio"]["format"] == "mp3"
+        assert audio_block["type"] == "input_text"
+        assert audio_block["text"] == "[The user sent an empty message.]"
 
     @pytest.mark.asyncio
     async def test_audio_data_url_supported(
@@ -3524,15 +3536,21 @@ class TestAudioTransformer:
         pipe_instance,
         mock_user,
     ):
-        """Should reject remote URLs to match OpenRouter requirements."""
+        """A remote audio URL reaches OpenRouter as no audio at all, not as an empty field.
+
+        The rejection is unchanged; what is new is that its result is not shipped as a
+        payload-less `input_audio`. A URL that OpenRouter will refuse is worth no more
+        to it than an empty string would be, and shipping one is what made this turn
+        look to the provider like a user who attached nothing and said nothing.
+        """
         block = {
             "type": "input_audio",
             "input_audio": "https://example.com/audio.mp3",
         }
         audio_block = await _transform_single_block(pipe_instance, block, mock_user)
         assert audio_block is not None
-        assert audio_block["input_audio"]["data"] == ""
-        assert audio_block["input_audio"]["format"] == "mp3"
+        assert audio_block["type"] == "input_text"
+        assert audio_block["text"] == "[The user sent an empty message.]"
 
     @pytest.mark.asyncio
     async def test_audio_partial_dict_without_format(

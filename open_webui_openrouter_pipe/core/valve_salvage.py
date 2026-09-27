@@ -1,0 +1,114 @@
+from __future__ import annotations
+
+import logging
+import typing
+from collections.abc import Mapping
+from typing import Any
+
+from pydantic import BaseModel, ValidationError, create_model
+
+from .warn_latch import warn_level
+
+logger = logging.getLogger(__name__)
+
+_VALVE_SCHEMA_CACHE: dict[type, type] = {}
+_warned_stale_valves: dict[str, float] = {}
+_STALE_VALVES_WARN_EVERY_S = 300.0
+
+
+def _encrypted_type() -> Any:
+    from .config import EncryptedStr
+
+    return EncryptedStr
+
+
+def is_secret_field(cls: type, name: str) -> bool:
+    field = cls.model_fields.get(name)
+    if field is None:
+        return False
+    annotation = field.annotation
+    if annotation is _encrypted_type():
+        return True
+    return any(arg is _encrypted_type() for arg in typing.get_args(annotation))
+
+
+def _secret_as_str(value: Any) -> str:
+    if isinstance(value, (list, tuple)) and len(value) == 1 and isinstance(value[0], str):
+        return value[0]
+    return "" if value is None else str(value)
+
+
+def _valve_schema(cls: type) -> type:
+    shell = _VALVE_SCHEMA_CACHE.get(cls)
+    if shell is None:
+        fields: dict[str, Any] = {
+            name: (field.annotation, field) for name, field in cls.model_fields.items()
+        }
+        shell = create_model(
+            f"_StoredValveSchema{len(_VALVE_SCHEMA_CACHE)}",
+            __base__=BaseModel,
+            __config__=typing.cast("typing.Any", dict(cls.model_config)),
+            **fields,
+        )
+        _VALVE_SCHEMA_CACHE[cls] = shell
+    return shell
+
+
+def drop_unvalidatable(cls: type, values: Any) -> Any:
+    if not isinstance(values, Mapping):
+        return values
+    kept = dict(values)
+    unread: list[tuple[str, str]] = []
+    for _ in range(len(kept) + 2):
+        try:
+            _valve_schema(cls)(**kept)
+            break
+        except ValidationError as exc:
+            names = {str(err["loc"][0]) for err in exc.errors() if err.get("loc")}
+            for name in names:
+                if not is_secret_field(cls, name) or isinstance(kept.get(name), str):
+                    continue
+                value = kept.get(name)
+                if value is None:
+                    kept.pop(name, None)
+                    note = "was not set and has been cleared"
+                elif (
+                    isinstance(value, (list, tuple))
+                    and len(value) == 1
+                    and isinstance(value[0], str)
+                ):
+                    kept[name] = _secret_as_str(value)
+                    note = "was not text and has been read as the text it holds"
+                else:
+                    kept[name] = _secret_as_str(value)
+                    note = (
+                        "was kept and is not a key this release can use; re-enter it "
+                        "where you configure the pipe"
+                    )
+                if all(existing != name for existing, _ in unread):
+                    unread.append((name, note))
+            bad = {name for name in names if not is_secret_field(cls, name)}
+            if not bad:
+                break
+            for name in bad:
+                kept.pop(name, None)
+    for name, note in unread:
+        logger.log(
+            warn_level(_warned_stale_valves, name, cooldown_s=_STALE_VALVES_WARN_EVERY_S),
+            "pipe: stored setting %s %s.",
+            name,
+            note,
+        )
+    if len(kept) != len(values):
+        stored = values
+        for name in sorted(set(values) - set(kept) - {n for n, _ in unread}):
+            default = cls.model_fields[name].get_default(call_default_factory=True)
+            shown = "<redacted>" if is_secret_field(cls, name) else stored[name]
+            logger.log(
+                warn_level(_warned_stale_valves, name, cooldown_s=_STALE_VALVES_WARN_EVERY_S),
+                "pipe: stored setting %s (was %r) is not accepted by this release and "
+                "was left at its default %r. The pipe keeps running; set it again where "
+                "you configure the pipe.",
+                name, shown, default,
+            )
+    return kept

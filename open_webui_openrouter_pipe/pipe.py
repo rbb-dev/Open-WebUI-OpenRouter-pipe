@@ -2150,7 +2150,13 @@ class Pipe:
         if getattr(self, "_closed", False):
             return
         with contextlib.suppress(Exception):
-            self.shutdown()
+            for pending in self.shutdown() or ():
+                with contextlib.suppress(Exception):
+                    closer = getattr(pending, "close", None)
+                    if callable(closer):
+                        closer()
+                    else:
+                        pending.cancel()
         self._schedule_close()
 
     # UTILITY METHODS
