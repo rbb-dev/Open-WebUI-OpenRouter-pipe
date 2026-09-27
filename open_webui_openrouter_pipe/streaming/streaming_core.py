@@ -1464,6 +1464,9 @@ class StreamingHandler:
             outcome_sink["was_cancelled"] = was_cancelled
             outcome_sink["reason"] = session_log_reason or None
 
+        final_response: dict[str, Any] | None = None
+        dispatched_metered_chars: int | None = None
+        dispatched_model_id: str = ""
         try:
             for loop_index in range(valves.MAX_FUNCTION_CALL_LOOPS + 1):
                 if loop_index >= valves.MAX_FUNCTION_CALL_LOOPS and not loop_limit_reached:
@@ -1479,9 +1482,6 @@ class StreamingHandler:
                     reasoning_stream_buffers.pop("__reasoning__", None)
                     reasoning_stream_completed.discard("__reasoning__")
                     reasoning_display.pop("__reasoning__", None)
-                final_response: dict[str, Any] | None = None
-                dispatched_metered_chars: int | None = None
-                dispatched_model_id: str = ""
                 if event_source is not None:
                     if loop_index > 0:
                         break
@@ -2917,6 +2917,30 @@ class StreamingHandler:
                         committed_output_rows.clear()
                         calls_carded_this_round.clear()
 
+                        if emitter_supplied:
+                            try:
+                                for call in call_items:
+                                    call_id = _extract_call_id(call)
+                                    if not call_id:
+                                        continue
+                                    tool_name = (call.get("name") or "").strip()
+                                    raw_args = call.get("arguments") or "{}"
+                                    if not tool_name:
+                                        continue
+                                    args_text = (
+                                        raw_args.strip()
+                                        if isinstance(raw_args, str)
+                                        else json.dumps(raw_args, ensure_ascii=False)
+                                    )
+                                    await _emit_tool_start(
+                                        call_id=call_id,
+                                        name=tool_name,
+                                        arguments=args_text,
+                                        status="in_progress" if tool_name == "ask_user" else "completed",
+                                    )
+                            except Exception as exc:
+                                self.logger.warning("Failed to emit in-progress tool cards: %s", exc, exc_info=True)
+
                         if loop_limit_reached:
                             limit = valves.MAX_FUNCTION_CALL_LOOPS
                             self.logger.info(
@@ -2939,29 +2963,6 @@ class StreamingHandler:
                                     }
                                 )
                         else:
-                            if emitter_supplied:
-                                try:
-                                    for call in call_items:
-                                        call_id = _extract_call_id(call)
-                                        if not call_id:
-                                            continue
-                                        tool_name = (call.get("name") or "").strip()
-                                        raw_args = call.get("arguments") or "{}"
-                                        if not tool_name:
-                                            continue
-                                        args_text = (
-                                            raw_args.strip()
-                                            if isinstance(raw_args, str)
-                                            else json.dumps(raw_args, ensure_ascii=False)
-                                        )
-                                        await _emit_tool_start(
-                                            call_id=call_id,
-                                            name=tool_name,
-                                            arguments=args_text,
-                                            status="in_progress" if tool_name == "ask_user" else "completed",
-                                        )
-                                except Exception as exc:
-                                    self.logger.warning("Failed to emit in-progress tool cards: %s", exc, exc_info=True)
 
                             _tool_ctx = self._pipe._TOOL_CONTEXT.get()
                             if _tool_ctx:
@@ -3194,16 +3195,17 @@ class StreamingHandler:
 
             if ran_out and tool_loops_executed and last_round_had_calls:
                 limit_note = f"Tool-call limit reached ({valves.MAX_FUNCTION_CALL_LOOPS} iterations)."
-                if event_emitter:
-                    await _open_message()
-                    await event_emitter(
-                        {
-                            "type": "chat:message:error",
-                            "data": {"error": {"content": limit_note}},
-                        }
-                    )
-                else:
+                if not emitter_supplied:
                     assistant_message = join_answer_and_card(assistant_message, limit_note)
+                else:
+                    await self._pipe._event_emitter_handler._emit_notification(
+                        event_emitter, limit_note, level="warning"
+                    )
+                    if (not was_cancelled) and chat_id and message_id and Chats is not None:
+                        with contextlib.suppress(Exception):
+                            await Chats.upsert_message_to_chat_by_id_and_message_id(
+                                chat_id, message_id, {"error": {"content": limit_note}}
+                            )
 
             if (
                 tool_loops_executed
@@ -3662,10 +3664,14 @@ class StreamingHandler:
         metadata = {} if metadata is None else metadata
 
         emitter_supplied = event_emitter is not None
-        wrapped_emitter = _wrap_event_emitter(
-            event_emitter,
-            suppress_chat_messages=True,
-            suppress_completion=False,
+        wrapped_emitter = (
+            None
+            if event_emitter is None
+            else _wrap_event_emitter(
+                event_emitter,
+                suppress_chat_messages=True,
+                suppress_completion=False,
+            )
         )
 
         if session is None:

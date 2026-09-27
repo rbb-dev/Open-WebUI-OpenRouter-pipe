@@ -413,9 +413,7 @@ def latest_user_text(input_items: Any) -> str:
     for item in reversed(input_items):
         if not isinstance(item, dict) or item.get("role") != "user":
             continue
-        text = item_text(item)
-        if text is not None:
-            return text
+        return item_text(item) or ""
     return ""
 
 

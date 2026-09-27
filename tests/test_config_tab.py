@@ -16,6 +16,19 @@ _ALL_FIELDS = list(Valves.model_fields.items())
 _IDS = [name for name, _ in _ALL_FIELDS]
 
 
+def _survives_the_model(name, candidate):
+    """False when a validator repairs the candidate, so the edit stops round-tripping by design.
+
+    ``MAX_FUNCTION_CALL_LOOPS`` is floored at the model: the pipe always gets at least one generation turn, so
+    an edit to ``0`` is stored as ``1``. That is the field doing its job, not a broken round trip, and this
+    node is the one that must not certify the old value back to the operator.
+    """
+    try:
+        return getattr(Valves(**{name: candidate}), name) == candidate
+    except Exception:
+        return False
+
+
 def _valid_new_value(name, field):
     annotation = field.annotation
     if cs.is_secret(annotation):
@@ -39,14 +52,14 @@ def _valid_new_value(name, field):
         if "lt" in bounds and "le" not in bounds:
             hi -= 1
         for cand in (lo, lo + 1, hi, (lo + hi) // 2):
-            if lo <= cand <= hi and cand != default:
+            if lo <= cand <= hi and cand != default and _survives_the_model(name, cand):
                 return cand
         return lo
     if base is float:
         lo = float(bounds.get("ge", bounds.get("gt", 0.0)))
         hi = float(bounds.get("le", bounds.get("lt", lo + 10.0)))
         for cand in (lo, lo + 0.5, hi, (lo + hi) / 2):
-            if lo <= cand <= hi and cand != default:
+            if lo <= cand <= hi and cand != default and _survives_the_model(name, cand):
                 return cand
         return lo
     if name.endswith("_TEMPLATE"):

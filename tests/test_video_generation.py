@@ -53,6 +53,10 @@ async def _a_listening_chat(_event):
     """
     return None
 
+NEEDS_A_PROMPT_REASON = (
+    "Video generation needs a prompt in your message. Add words describing the video you want "
+    "\u2014 an attachment alone is not enough."
+)
 _VIDEO_CATALOG_FIXTURE = Path(__file__).parent / "fixtures" / "video_models_catalog.json"
 VIDEO_MODELS = json.loads(_VIDEO_CATALOG_FIXTURE.read_text())["data"]
 VIDEO_BY_ID = {item["id"]: item for item in VIDEO_MODELS}
@@ -4574,87 +4578,6 @@ def test_a_system_prompt_alone_is_not_a_request(system_text):
     )
 
 
-@pytest.mark.parametrize(
-    ("frame_file_id", "frame_bytes"),
-    [("frame-A", b"\x89PNG\r\n\x1a\n" + b"A" * 64), ("frame-B", b"\x89PNG\r\n\x1a\n" + b"B" * 96)],
-)
-@pytest.mark.asyncio
-async def test_an_empty_prompt_with_a_frame_image_still_submits(
-    monkeypatch, frame_file_id, frame_bytes
-):
-    """Image-to-video: two distinct frames so a constant payload cannot pass.
-
-    The submitted payload must carry the caller's own frame, and the prompt key must be
-    present-but-empty -- `prompt` has no minLength in either OpenAPI copy, so "" is valid,
-    but omitting the key is not.
-    """
-    submitted: list[dict[str, Any]] = []
-    pipe = Pipe()
-    pipe.valves.API_KEY = EncryptedStr("test-api-key")
-    OpenRouterModelRegistry.register_video_models([VIDEO_BY_ID["google/veo-3.1"]])
-    adapter = pipe._ensure_video_generation_adapter()
-    cast(Any, adapter)._persistence = _MemoryPersistence("")
-
-    class FakeClient:
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-        async def submit(self, payload):
-            submitted.append(payload)
-            raise VideoGenerationError("stop after submit")
-
-    async def fake_get_file_by_id(file_id, _logger):
-        return SimpleNamespace(id=file_id, meta={"content_type": "image/png"}, filename="f.png")
-
-    async def fake_read_b64(*_args, **_kwargs):
-        return base64.b64encode(frame_bytes).decode()
-
-    monkeypatch.setattr(
-        "open_webui_openrouter_pipe.integrations.video.OpenRouterVideoClient", FakeClient
-    )
-    monkeypatch.setattr(
-        "open_webui_openrouter_pipe.integrations.video.get_file_by_id", fake_get_file_by_id
-    )
-    monkeypatch.setattr(
-        "open_webui_openrouter_pipe.integrations.video.infer_file_mime_type",
-        lambda _obj: "image/png",
-    )
-    monkeypatch.setattr(pipe._file_gateway, "read_file_record_base64", fake_read_b64)
-
-    result = await adapter.generate(
-        body={"messages": [{"role": "user", "content": ""}]},
-        responses_body=SimpleNamespace(provider={}),
-        session=None,
-        event_emitter=None,
-        metadata={
-            "chat_id": "chat-1",
-            "message_id": "msg-1",
-            "openrouter_pipe": {
-                "video_generation": {
-                    "params": {},
-                    "frame_images": [
-                        {"id": frame_file_id, "frame_type": "first_frame",
-                         "content_type": "image/png", "name": "f.png"}
-                    ],
-                }
-            },
-        },
-        user={"id": "user-1"},
-        request=None,
-        user_obj={"id": "user-1"},
-        normalized_model_id="google.veo-3.1",
-        api_model_id="google/veo-3.1",
-        valves=pipe.valves,
-    )
-
-    assert submitted, f"the request never reached submit: {result!r}"
-    assert submitted[0]["prompt"] == ""
-    assert submitted[0]["frame_images"][0]["image_url"]["url"].endswith(
-        base64.b64encode(frame_bytes).decode()
-    )
-    assert pipe._video_user_active_counts == {}
-
-
 @pytest.mark.parametrize("model_id", ["google/veo-3.1", "openai/sora-2-pro"])
 @pytest.mark.asyncio
 async def test_an_empty_prompt_with_nothing_attached_is_still_refused(monkeypatch, model_id):
@@ -4700,7 +4623,7 @@ async def test_an_empty_prompt_with_nothing_attached_is_still_refused(monkeypatc
         "by any failure and cannot tell a refusal from a blow-up at the transport"
     )
     assert "### Video generation failed" in result
-    assert "generate from" in result, (
+    assert NEEDS_A_PROMPT_REASON in result, (
         f"the refusal must say what is missing rather than surfacing a transport error: {result!r}"
     )
     assert pipe._video_user_active_counts == {}

@@ -22,7 +22,7 @@ The pipe runs the tool loop itself:
 
 - Provider returns `function_call` items.
 - The pipe executes those tools (Open WebUI registry tools + Direct Tool Servers where available).
-- The pipe appends `function_call_output` items and re-calls the provider until the model stops requesting tools or `MAX_FUNCTION_CALL_LOOPS` is reached (at which point the model gets a synthesis turn).
+- The pipe appends `function_call_output` items and re-calls the provider until the model stops requesting tools or `MAX_FUNCTION_CALL_LOOPS` is reached (at which point the model gets a synthesis turn, and each call abandoned at the cap is shown as a **failed** card).
 
 **You gain:**
 - Pipe-level concurrency controls, batching, timeouts, and breaker protections around tool execution.
@@ -104,7 +104,7 @@ Tool execution happens in the request loop that follows each Responses API call:
 4. The pipe executes the tools and converts each result into `function_call_output` items.
 5. The `function_call` items (normalized) and their outputs are appended to the next request’s `input[]`, and the loop continues until either:
    - no more `function_call` items are returned, or
-   - `MAX_FUNCTION_CALL_LOOPS` is reached — pending tool calls receive stub responses and the model gets one additional turn to synthesize a final answer.
+   - `MAX_FUNCTION_CALL_LOOPS` is reached — pending tool calls receive stub responses and the model gets one additional turn to synthesize a final answer. Each abandoned call is also shown to the person as a **failed** card, the shape a genuinely failed tool produces.
 
 Notes:
 

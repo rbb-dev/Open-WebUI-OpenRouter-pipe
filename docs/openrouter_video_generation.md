@@ -1431,8 +1431,11 @@ the combined budget like any other reference, so on a turn carrying several
 references one large picture can push a later one out with a notice naming
 it.
 
-Because a reference is enough to generate from, a turn with attachments
-and **no typed words** is now submitted rather than refused.
+A turn with attachments and **no typed words** is refused rather than
+submitted: the intent classifier is off for a textless turn, so nothing would
+stand in for the words, and the reply names what is missing — *Video generation
+needs a prompt in your message. Add words describing the video you want — an
+attachment alone is not enough.*
 
 Whether an attachment also stays visible in the chat as a normal
 attachment depends on Open WebUI's **File context** capability for that
@@ -1805,6 +1808,44 @@ into the `files` table, and linked to the chat message via
 `Chats.insert_chat_files`. The file appears in the chat's Files panel
 and can be downloaded directly.
 
+Which link is made depends on the conversation, and the pipe writes the
+upload metadata the way Open WebUI's own middleware reads it
+(`backend/open_webui/utils/middleware.py:1839`), so a channel and a
+chat are never both named:
+
+- **A saved chat** — the link is a `chat_file` row, made under **the
+  account the file was uploaded as**. That is the Files-panel sentence
+  above, and it is the only case it describes. Open WebUI re-checks
+  that ownership before the insert
+  (`backend/open_webui/models/chats.py:2590-2607`, "Only link files the
+  caller can read"), so a row naming an identity that cannot read the
+  file is not written at all.
+- **A channel conversation** (`chat_id = "channel:<id>"`) — the link is
+  the channel's own `channel_file` row, and that row is the only thing
+  that makes a generated file readable by a second member
+  (`backend/open_webui/utils/access_control/files.py:66-69`), so
+  **every member** of the channel can open the file and not just the
+  person who triggered the generation. What Open WebUI decides from is the *uploader's*
+  membership, not the requester's: if the request's user could not be
+  resolved, the upload falls back to the storage account, which is a
+  member of nobody's channel, and the file stays unattached. That is
+  Open WebUI's rule, not a gap in the pipe.
+- **A temporary or local chat** — there is no link, and none is
+  attempted: those ids name a conversation with no `chat` row, so a
+  link would reach an insert whose foreign key cannot resolve. Nothing
+  is lost but the chat's own message history, which those chats never
+  had.
+
+The link is always made under the account the file was uploaded as, and
+**that is the only account that can open it**: Open WebUI serves file
+content to the owner, an admin, or a user with an explicit access grant
+(`backend/open_webui/routers/files.py:919`,
+`backend/open_webui/utils/access_control/files.py:41-43`). So a
+request whose user could not be resolved — the fallback storage
+account was used — leaves a listed picture the person cannot load
+(**404**). The row is a link into a chat, never an access grant for the
+requester.
+
 ---
 
 ## Resume, recovery, and disconnect resilience
@@ -1860,7 +1901,10 @@ What does NOT survive:
   on-submit `'message'` emit is skipped for all three. `local:` is Open WebUI's legacy
   spelling of `temporary:`; `channel:` is an ordinary channel invocation, not an edge case.
   They complete in-process but aren't recoverable across process
-  restarts.
+  restarts. What is lost is the chat's own message history, and nothing
+  else: a generated image or video in a `channel:` conversation **is**
+  attached to that channel, as a `channel_file` row, so the channel's
+  members can open it.
 - **OpenRouter job expiry**: OpenRouter videos expire after a
   provider-specific window (typically days). Resuming a too-old job
   returns an `expired` terminal status which the adapter renders as a

@@ -2638,39 +2638,6 @@ class TestUploadToOwuiStorage:
             owui_files_module.upload_file_handler = original_handler
 
     @pytest.mark.asyncio
-    async def test_uses_owui_user_id_override(self, pipe_instance_async, mock_request, mock_user):
-        """Should use owui_user_id when provided instead of user.id."""
-
-        captured_user_id = None
-
-        async def mock_upload_handler(*args, **kwargs):
-            return SimpleNamespace(id="uploaded-file-id")
-
-        original_handler = owui_files_module.upload_file_handler
-
-        original_link = pipe_instance_async._file_gateway.try_link_file_to_chat
-
-        def capture_link(*, chat_id, message_id, file_id, user_id):
-            nonlocal captured_user_id
-            captured_user_id = user_id
-            return True
-
-        try:
-            owui_files_module.upload_file_handler = mock_upload_handler
-            pipe_instance_async._file_gateway.try_link_file_to_chat = capture_link
-
-            await pipe_instance_async._file_gateway.upload_to_owui_storage(
-                mock_request, mock_user, b"test data", "test.txt", "text/plain",
-                chat_id="chat-123",
-                owui_user_id="override-user-id"
-            )
-
-            assert captured_user_id == "override-user-id"
-        finally:
-            owui_files_module.upload_file_handler = original_handler
-            pipe_instance_async._file_gateway.try_link_file_to_chat = original_link
-
-    @pytest.mark.asyncio
     async def test_swallows_link_exception(self, pipe_instance_async, mock_request, mock_user):
         """Should swallow exception from _try_link_file_to_chat and still return file_id."""
 
@@ -2696,68 +2663,6 @@ class TestUploadToOwuiStorage:
         finally:
             owui_files_module.upload_file_handler = original_handler
             pipe_instance_async._file_gateway.try_link_file_to_chat = original_link
-
-    @pytest.mark.asyncio
-    async def test_handles_response_without_id(self, pipe_instance_async, mock_request, mock_user):
-        """Should return None when response has no id."""
-
-        async def mock_upload_handler(*args, **kwargs):
-            return SimpleNamespace()
-
-        original_handler = owui_files_module.upload_file_handler
-        try:
-            owui_files_module.upload_file_handler = mock_upload_handler
-            result = await pipe_instance_async._file_gateway.upload_to_owui_storage(
-                mock_request, mock_user, b"test data", "test.txt", "text/plain"
-            )
-            assert result is None
-        finally:
-            owui_files_module.upload_file_handler = original_handler
-
-    @pytest.mark.asyncio
-    async def test_handles_dict_response_without_id(
-        self, pipe_instance_async, mock_request, mock_user
-    ):
-        """Should return None when dict response has no id."""
-
-        async def mock_upload_handler(*args, **kwargs):
-            return {"status": "ok"}
-
-        original_handler = owui_files_module.upload_file_handler
-        try:
-            owui_files_module.upload_file_handler = mock_upload_handler
-            result = await pipe_instance_async._file_gateway.upload_to_owui_storage(
-                mock_request, mock_user, b"test data", "test.txt", "text/plain"
-            )
-            assert result is None
-        finally:
-            owui_files_module.upload_file_handler = original_handler
-
-    @pytest.mark.asyncio
-    async def test_includes_chat_id_and_message_id_in_metadata(
-        self, pipe_instance_async, mock_request, mock_user
-    ):
-        """Should include valid chat_id and message_id in metadata."""
-
-        captured_metadata = None
-
-        async def mock_upload_handler(*args, **kwargs):
-            nonlocal captured_metadata
-            captured_metadata = kwargs.get("metadata", {})
-            return SimpleNamespace(id="file-id")
-
-        original_handler = owui_files_module.upload_file_handler
-        try:
-            owui_files_module.upload_file_handler = mock_upload_handler
-            await pipe_instance_async._file_gateway.upload_to_owui_storage(
-                mock_request, mock_user, b"test data", "test.txt", "text/plain",
-                chat_id="chat-123",
-                message_id="msg-456"
-            )
-            assert captured_metadata.get("chat_id") == "chat-123"
-            assert captured_metadata.get("message_id") == "msg-456"
-        finally:
-            owui_files_module.upload_file_handler = original_handler
 
 
 # ===== From test_multimodal_inputs.py =====
@@ -4558,22 +4463,25 @@ class TestUploadToOwuiStorageFromPath:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("chat_id", "carries_chat"),
+        ("chat_id", "carries_chat", "carries_channel"),
         [
-            ("chat-1", True),
-            ("temporary:abc", False),
-            ("channel:abc", False),
-            ("local:abc", False),
+            ("chat-1", True, False),
+            ("temporary:abc", False, False),
+            ("channel:abc", False, True),
+            ("local:abc", False, False),
         ],
     )
     async def test_only_a_linkable_chat_reaches_the_upload_metadata(
         self, pipe_instance_async, mock_request, mock_user, tmp_path,
-        recording_handler, chat_id, carries_chat, monkeypatch,
+        recording_handler, chat_id, carries_chat, carries_channel, monkeypatch,
     ):
         """Parametrised so `is_linkable_chat` is load-bearing.
 
         A single "chat-1" case is satisfied by `if normalized_chat_id:` — the gate has
-        to be given an id it must refuse.
+        to be given an id it must refuse. A channel is asked about FIRST, the way
+        `middleware.py:1839` makes it: `is_linkable_chat` correctly says no to `channel:`
+        (a channel has no `chat` row), so asking it first would drop the channel's own
+        key and the file would be attached to nothing.
         """
         async def _linked(**_kw):
             return True
@@ -4598,6 +4506,9 @@ class TestUploadToOwuiStorageFromPath:
             "conversation with no chat row reaches an INSERT whose foreign key cannot "
             "resolve"
         )
+        assert ("channel_id" in recording_handler["metadata"]) is carries_channel, recording_handler["metadata"]
+        if carries_channel:
+            assert recording_handler["metadata"]["channel_id"] == "abc", recording_handler["metadata"]
 
     @pytest.mark.asyncio
     async def test_a_refused_link_warns_but_keeps_the_file(

@@ -776,6 +776,23 @@ class Valves(BaseModel):
             restored[name] = default
         return values if restored is None else restored
 
+    @model_validator(mode="before")
+    @classmethod
+    def _floor_the_tool_loop_count(cls, values):
+        if not isinstance(values, Mapping):
+            return values
+        count = values.get("MAX_FUNCTION_CALL_LOOPS")
+        if isinstance(count, str):
+            try:
+                count = int(count.strip())
+            except ValueError:
+                return values
+        if isinstance(count, float) and count.is_integer():
+            count = int(count)
+        if isinstance(count, int) and count < 1:
+            return dict(values, MAX_FUNCTION_CALL_LOOPS=1)
+        return values
+
     # Connection & Auth
     BASE_URL: str = Field(
         default=((os.getenv("OPENROUTER_API_BASE_URL") or "").strip() or "https://openrouter.ai/api/v1"),
@@ -1201,6 +1218,7 @@ class Valves(BaseModel):
             "one or more function/tool calls, executing all requested functions, and feeding "
             "the results back into the model. When the limit is reached, pending tool calls "
             "are returned to the model marked as skipped so it can write a final answer. "
+            "The model always gets at least one generation turn, so 0 and below are stored as 1. "
             "Has no effect on the calls Open WebUI runs, where the round limit is managed by Open WebUI."
         )
     )

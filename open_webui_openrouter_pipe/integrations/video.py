@@ -679,13 +679,13 @@ class VideoGenerationAdapter:
             disclosure_block = self._with_the_file_host_record(
                 disclosure_block, valves, relayed_families
             )
-            if not prompt.strip() and not (frame_images or input_references):
+            if not prompt.strip():
                 content = self._build_failure_content(
                     job_id="",
                     model_id=api_model_id,
                     reason=(
-                        "Video generation needs a prompt, or an image, reference or clip to "
-                        "generate from."
+                        "Video generation needs a prompt in your message. Add words describing "
+                        "the video you want \u2014 an attachment alone is not enough."
                     ),
                 )
                 if disclosure_block:

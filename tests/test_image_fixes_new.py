@@ -109,10 +109,15 @@ def test_item_text_keeps_an_empty_part_exactly_as_the_walk_it_replaced_did(parts
     [([{"type": "input_image", "image_url": "u"}], None), ("", "")],
 )
 def test_item_text_separates_no_text_from_empty_text(content, expected):
-    """``None`` means look past this item; ``""`` means it really is blank.
+    """``None`` means this item carries no text at all; ``""`` means it really is blank.
 
-    Collapsing the two makes ``latest_user_text`` return ``""`` for an image-only turn
-    instead of walking back to the last turn that carried words.
+    The split is what the system-prompt callers need -- ``system_prompt_text`` treats ``None``
+    as "no system text" -- so ``item_text`` keeps it. What ``latest_user_text`` does with it
+    is a separate question: it stops at the last user turn either way, per Open WebUI's
+    ``get_last_user_message_item`` and the contract in
+    ``integrations/video_intent_prompts.py:91`` ("verbatim latest user message text.
+    Nothing else is folded into it"). A textless turn is a turn, not an instruction to go
+    looking for an earlier one.
     """
     assert item_text({"role": "user", "content": content}) == expected
 

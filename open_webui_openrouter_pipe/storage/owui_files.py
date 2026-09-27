@@ -318,6 +318,24 @@ def is_temporary_chat(chat_id: Any) -> bool:
     return isinstance(chat_id, str) and chat_id.strip().startswith(temporary_chat_prefixes())
 
 
+def channel_id_for_chat(chat_id: Any) -> str | None:
+    if not isinstance(chat_id, str):
+        return None
+    normalized = chat_id.strip()
+    if normalized.startswith("channel:"):
+        return normalized.removeprefix("channel:") or None
+    return None
+
+
+def _upload_identity(user: Any, owui_user_id: str | None) -> str | None:
+    candidate = getattr(user, "id", None)
+    if isinstance(candidate, str) and candidate.strip():
+        return candidate.strip()
+    if isinstance(owui_user_id, str) and owui_user_id.strip():
+        return owui_user_id.strip()
+    return None
+
+
 def is_real_owui_file_record(file_obj: Any) -> bool:
     """True when the record carries a real OWUI file id (so it requires authorisation)."""
     return bool(getattr(file_obj, "id", None))
@@ -1003,7 +1021,10 @@ class OwuiFileGateway:
             upload_metadata: dict[str, Any] = {"mime_type": mime_type}
             if isinstance(chat_id, str):
                 normalized_chat_id = chat_id.strip()
-                if is_linkable_chat(normalized_chat_id):
+                channel_id = channel_id_for_chat(normalized_chat_id)
+                if channel_id is not None:
+                    upload_metadata["channel_id"] = channel_id
+                elif is_linkable_chat(normalized_chat_id):
                     upload_metadata["chat_id"] = normalized_chat_id
             if isinstance(message_id, str):
                 normalized_message_id = message_id.strip()
@@ -1036,13 +1057,7 @@ class OwuiFileGateway:
                 self.logger.error("Upload handler returned an object without an id; aborting OWUI storage write.")
                 return None
 
-            effective_user_id: str | None = None
-            if isinstance(owui_user_id, str) and owui_user_id.strip():
-                effective_user_id = owui_user_id.strip()
-            else:
-                candidate = getattr(user, "id", None)
-                if isinstance(candidate, str) and candidate.strip():
-                    effective_user_id = candidate.strip()
+            effective_user_id: str | None = _upload_identity(user, owui_user_id)
 
             try:
                 linked = await self.try_link_file_to_chat(
@@ -1093,7 +1108,10 @@ class OwuiFileGateway:
             upload_metadata: dict[str, Any] = {"mime_type": mime_type}
             if isinstance(chat_id, str):
                 normalized_chat_id = chat_id.strip()
-                if is_linkable_chat(normalized_chat_id):
+                channel_id = channel_id_for_chat(normalized_chat_id)
+                if channel_id is not None:
+                    upload_metadata["channel_id"] = channel_id
+                elif is_linkable_chat(normalized_chat_id):
                     upload_metadata["chat_id"] = normalized_chat_id
             if isinstance(message_id, str):
                 normalized_message_id = message_id.strip()
@@ -1130,13 +1148,7 @@ class OwuiFileGateway:
                 self.logger.error("Streaming upload handler returned an object without an id; aborting.")
                 return None
 
-            effective_user_id: str | None = None
-            if isinstance(owui_user_id, str) and owui_user_id.strip():
-                effective_user_id = owui_user_id.strip()
-            else:
-                candidate = getattr(user, "id", None)
-                if isinstance(candidate, str) and candidate.strip():
-                    effective_user_id = candidate.strip()
+            effective_user_id: str | None = _upload_identity(user, owui_user_id)
 
             try:
                 linked = await self.try_link_file_to_chat(

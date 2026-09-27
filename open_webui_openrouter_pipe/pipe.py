@@ -26,6 +26,7 @@ import secrets
 import sys
 import threading
 import time
+import traceback
 import uuid
 import weakref
 from collections import Counter
@@ -298,6 +299,13 @@ def _get_lifecycle_registry():
         reg = _LifecycleRegistry()
         sys.modules[_LIFECYCLE_REGISTRY_KEY] = reg  # type: ignore[assignment]
     return reg
+
+
+def _tool_body_raised(exc: BaseException, fn: Any) -> bool:
+    name = getattr(fn, "__name__", None)
+    if not isinstance(name, str):
+        return True
+    return any(frame.name == name for frame in traceback.extract_tb(exc.__traceback__))
 
 
 _warned_plugin_dispatch: set[str] = set()
@@ -3343,7 +3351,10 @@ class Pipe:
                 and isinstance(exc, RuntimeError)
                 and "not connected" in str(exc)
             )
-            if breaker is not None and not mcp_disconnected and not (timed_out and ask_user_window is not None):
+            argument_binding_failure = isinstance(exc, TypeError) and not _tool_body_raised(exc, fn_to_call)
+            if (breaker is not None and not mcp_disconnected
+                    and not (timed_out and ask_user_window is not None)
+                    and not argument_binding_failure):
                 breaker.record_tool_failure(
                     context.user_id, tool_type, breaker_key
                 )

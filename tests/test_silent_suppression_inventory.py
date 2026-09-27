@@ -97,7 +97,11 @@ _EXPECTED: dict[str, int] = {
     # after the hand-back has cancelled it, where the await exists to finalise it and a
     # failure to do so changes nothing the caller can act on -- the terminal writes it
     # feeds are all gated off this path anyway.
-    "streaming/streaming_core.py": 2,
+    # 3rd: the loop-limit note's write of `{"error": {"content": …}}` to the saved chat row, so the
+    # banner survives a reload the way Open WebUI's own `emit_message_error` makes it survive. It
+    # runs after the notification has already reached the caller, so a storage failure costs the
+    # persisted copy alone and must not replace the note the person is being shown.
+    "streaming/streaming_core.py": 3,
     # 5th: the tool card emitted as each call's result is collected, the twin of the one in the loop that
     # follows. The card is what the person sees; a failure emitting it must not lose the tool result the
     # loop is in the middle of collecting, which is the model's answer.

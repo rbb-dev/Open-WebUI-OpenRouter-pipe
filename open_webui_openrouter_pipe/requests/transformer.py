@@ -427,6 +427,7 @@ async def transform_messages_to_input(
     image_reuse_turns = active_valves.IMAGE_REUSE_MAX_TURNS
     chunk_size = active_valves.IMAGE_UPLOAD_CHUNK_BYTES
     max_inline_bytes = active_valves.BASE64_MAX_SIZE_MB * 1024 * 1024
+    video_max_size_mb = active_valves.VIDEO_MAX_SIZE_MB
     target_model_id = model_id or openwebui_model_id or ""
     vision_lookup_id = capability_model_id or target_model_id
     phase_lookup_id = capability_model_id or target_model_id
@@ -1368,16 +1369,16 @@ async def transform_messages_to_input(
                         if "," in url:
                             b64_data = url.split(",", 1)[1]
                             estimated_size_bytes = (len(b64_data) * 3) // 4
-                            max_size_bytes = pipe.valves.VIDEO_MAX_SIZE_MB * 1024 * 1024
+                            max_size_bytes = video_max_size_mb * 1024 * 1024
                             if estimated_size_bytes > max_size_bytes:
                                 estimated_size_mb = estimated_size_bytes / (1024 * 1024)
                                 pipe.logger.warning(
                                     f"Base64 video size (~{estimated_size_mb:.1f}MB) exceeds configured limit "
-                                    f"({pipe.valves.VIDEO_MAX_SIZE_MB}MB), rejecting to prevent memory issues"
+                                    f"({video_max_size_mb}MB), rejecting to prevent memory issues"
                                 )
                                 await pipe._ensure_error_formatter()._emit_error(
                                     event_emitter,
-                                    f"Video too large (~{estimated_size_mb:.1f}MB, max: {pipe.valves.VIDEO_MAX_SIZE_MB}MB)",
+                                    f"Video too large (~{estimated_size_mb:.1f}MB, max: {video_max_size_mb}MB)",
                                     show_error_message=True
                                 )
                                 return {"type": "video_url", "video_url": {"url": ""}}

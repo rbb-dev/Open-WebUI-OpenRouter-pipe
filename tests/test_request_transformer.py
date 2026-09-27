@@ -1215,7 +1215,6 @@ class TestVideoHandling:
         # Should be rejected (empty URL) due to size
         assert video_block["video_url"]["url"] == ""
 
-
 # =============================================================================
 # File Handling Tests
 # =============================================================================
@@ -1421,6 +1420,7 @@ class TestValvesOverride:
             IMAGE_REUSE_MAX_TURNS=3,
             IMAGE_UPLOAD_CHUNK_BYTES=1024,
             BASE64_MAX_SIZE_MB=10,
+            VIDEO_MAX_SIZE_MB=100,
             ENABLE_ANTHROPIC_PROMPT_CACHING=False,
         )
 
