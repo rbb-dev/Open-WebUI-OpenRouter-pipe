@@ -327,6 +327,10 @@ def channel_id_for_chat(chat_id: Any) -> str | None:
     return None
 
 
+def _is_channel_chat(chat_id: Any) -> bool:
+    return channel_id_for_chat(chat_id) is not None
+
+
 def _upload_identity(user: Any, owui_user_id: str | None) -> str | None:
     candidate = getattr(user, "id", None)
     if isinstance(candidate, str) and candidate.strip():

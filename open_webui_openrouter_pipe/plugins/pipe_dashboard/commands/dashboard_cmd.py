@@ -461,7 +461,7 @@ def _build_dashboard_shell(dash_id: str) -> str:
     </div>
 
     <div class="footer-legend">
-      <b>+t</b> cost incl. folded task-model requests &middot; <b>&#10003; / &#10007;</b> tools succeeded / failed
+      <b>+t</b> cost incl. folded task-model requests &middot; <b>&#10003; / &#10007; / &#8856;</b> tools succeeded / failed / skipped (live sessions)
     </div>
     <div class="footer" id="{sid}-footer"></div>
   </div>
@@ -739,8 +739,8 @@ def _build_dashboard_shell(dash_id: str) -> str:
       var now = Date.now() / 1000;
       var modelText = nameMode === 'slugs' ? (r2.model_id || '') : (r2.model_name || r2.model_id || '');
       var elapsed = r2.done ? (r2.done - r2.started) : (now - (r2.started || now));
-      var tools = (r2.tools_ok || r2.tools_failed)
-        ? (r2.tools_ok || 0) + ' \\u2713' + (r2.tools_failed ? ' <span style="color:#ef4444;">' + (r2.tools_failed || 0) + ' \\u2717</span>' : '')
+      var tools = (r2.tools_ok || r2.tools_failed || r2.tools_skipped)
+        ? (r2.tools_ok ? (r2.tools_ok || 0) + ' \\u2713' : '') + (r2.tools_failed ? ' <span style="color:#ef4444;">' + (r2.tools_failed || 0) + ' \\u2717</span>' : '') + (r2.tools_skipped ? ' <span style="color:#f59e0b;">' + (r2.tools_skipped || 0) + ' \\u2298</span>' : '')
         : '\\u2013';
       var costCell = r2.done
         ? esc(fmtCost(r2.cost)) + (r2.task_cost ? ' <span style="color:var(--text-faint);font-size:10px;" title="includes task-model cost">+t</span>' : '')
@@ -788,7 +788,7 @@ def _build_dashboard_shell(dash_id: str) -> str:
         {{ k: 'model', label: 'Model', get: function(r) {{ return r.model_name || r.model_id || ''; }} }},
         {{ k: 'status', label: 'Status', get: function(r) {{ return r.status || ''; }} }},
         {{ k: 'elapsed', label: 'Elapsed', cls: 'r', num: true, get: function(r) {{ return r.elapsed_s || 0; }} }},
-        {{ k: 'tools', label: 'Tools', cls: 'r', num: true, get: function(r) {{ return (r.tools_ok || 0) + (r.tools_failed || 0); }} }},
+        {{ k: 'tools', label: 'Tools', cls: 'r', num: true, get: function(r) {{ return (r.tools_ok || 0) + (r.tools_failed || 0) + (r.tools_skipped || 0); }} }},
         {{ k: 'tokens', label: 'Tokens in \\u2192 cached \\u2192 out', cls: 'r', num: true, title: 'cached input tokens shown in the middle', get: function(r) {{ return (r.tokens_in || 0) + (r.tokens_out || 0); }} }},
         {{ k: 'cost', label: 'Cost', cls: 'r', num: true, get: function(r) {{ return r.cost || 0; }} }},
         {{ k: 'worker', label: 'Worker', cls: 'r', num: true, get: function(r) {{ return r.worker_pid || 0; }} }}

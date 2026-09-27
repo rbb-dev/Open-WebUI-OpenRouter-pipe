@@ -300,6 +300,7 @@ class SessionTracker:
                 "tokens_out": int(item.get("tout") or 0),
                 "tools_ok": int(item.get("tools_ok") or 0),
                 "tools_failed": int(item.get("tools_failed") or 0),
+                "tools_skipped": int(item.get("tools_skipped") or 0),
                 "cost": round(float(item.get("cost") or 0.0) + float(item.get("task_cost") or 0.0), 6),
                 "task_cost": round(float(item.get("task_cost") or 0.0), 6),
                 "worker_pid": self._pid,

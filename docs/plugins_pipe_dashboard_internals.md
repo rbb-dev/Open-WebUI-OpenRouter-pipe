@@ -77,6 +77,8 @@ The plugin subscribes to six hooks, all at priority **50**:
 | `on_request_retry` | Increments the live session's retry counter |
 | `on_generation_complete` | Finalizes the live session and persists a usage row when collection is enabled |
 
+**A Fusion chat in a channel loses the answer panel.** `streaming_core.py` records the Fusion answer item into `terminal_output` *before* it applies the `<details type="fusion_answer">` wrapper to `assistant_message`, so the `_is_channel_chat` guard routes a channel through `output`, which by construction holds the **unwrapped** answer. A Fusion channel row therefore renders the plain-text reconstruction, not the collapsible panel. `__channel_emitter__` has branches only for `chat:completion`, `response:completion`, `files`/`chat:message:files` and `chat:message:error`, so `fusion:event` and `embeds` reach no branch at all.
+
 ---
 
 ## Live Dashboard Transport (Socket.IO)
@@ -180,7 +182,7 @@ Each `openrouter:pipe_dashboard` event carries a JSON object. Keys are present o
   "rate_limits": {"tracked_users": 3, "tripped_users": 0, "...": "..."},
   "videos": {"active": 0, "max": 4},
   "sessions": {"in_flight": 1},
-  "sessions_live": [{"user": "sam", "model_id": "...", "model_name": "...", "kind": "chat", "status": "streaming", "started": 1751690000.0, "done": null, "elapsed_s": 12.3, "tokens_in": 1200, "tokens_cached": 900, "tokens_out": 80, "tools_ok": 1, "tools_failed": 0, "cost": 0.012, "task_cost": 0.0, "worker_pid": 12345}],
+  "sessions_live": [{"user": "sam", "model_id": "...", "model_name": "...", "kind": "chat", "status": "streaming", "started": 1751690000.0, "done": null, "elapsed_s": 12.3, "tokens_in": 1200, "tokens_cached": 900, "tokens_out": 80, "tools_ok": 1, "tools_failed": 0, "tools_skipped": 0, "cost": 0.012, "task_cost": 0.0, "worker_pid": 12345}],
   "workers_rss": 1987654321,
   "system": {"cpu_pct": 12.0, "mem_used_pct": 61.0, "mem_total": 16000000000, "disk_free": 142000000000, "disk_total": 250000000000},
   "workers": [{"pid": 12345, "uptime_s": 3600.5, "last_seen_age": 0.4, "active_requests": 2, "health": {"init": 1, "wf": 0, "http": 1, "r": 1, "rss": 123456789}}],
@@ -705,9 +707,11 @@ The Live and Usage tabs are backed by two layers: an in-memory `SessionTracker` 
 | `started`, `done` | float / null | Unix timestamps; `done` is `null` while in flight |
 | `elapsed_s` | float | Seconds since `started`, frozen at `done` |
 | `tokens_in`, `tokens_cached`, `tokens_out` | int | Cumulative token counts |
-| `tools_ok`, `tools_failed` | int | Outcomes of the tool calls the pipe ran in a batch, as `on_tool_result` reports them |
+| `tools_ok`, `tools_failed`, `tools_skipped` | int | The three outcomes of the tool calls the pipe ran in a batch, as `on_tool_result` reports them: succeeded, failed, and skipped (a breaker-open tool the pipe never awaited, or one its breaker disabled). Live rows only; `db_row` persists the first two, and the by-model and by-user tables aggregate them. |
 | `cost`, `task_cost` | float | Running cost; `task_cost` is the folded-in task portion |
 | `worker_pid` | int | The worker that owns the row |
+
+`tools_skipped` is a **live-row key only**. It is deliberately not persisted and not aggregated: `USAGE_ROW_FIELDS` and the ORM model are unchanged, and the by-model and by-user tables keep counting only `tools_ok` and `tools_failed`, so they still under-report skips. That is a deferral, not an oversight. `UsageStore.ensure` creates the table with `checkfirst=True` and never issues an `ALTER TABLE`, so adding the column alone would make every insert on an existing deployment fail with `no column named tools_skipped` and be swallowed at DEBUG level — the usage table would go dark silently, on every host, with nothing in the log above DEBUG. Persisting skips needs a real migration step alongside the column. `test_the_usage_row_column_set_is_stable_across_a_release` is the tripwire: it builds one engine from the current model and a second from the column set an earlier release created, and fails if they stop mapping 1:1, so the day someone adds the column without the migration the suite says so out loud.
 
 **Usage records.** With `PIPE_DASHBOARD_USAGE_COLLECT` on, each finalized session is mapped by `SessionTracker.db_row(...)` and written to the `dashboard_{suffix}` table. The columns (`USAGE_ROW_FIELDS`, plus a generated `id`):
 

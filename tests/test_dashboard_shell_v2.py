@@ -13,6 +13,7 @@ pytest.importorskip("open_webui_openrouter_pipe.plugins.pipe_dashboard")
 from open_webui_openrouter_pipe.plugins.pipe_dashboard._socketio_client import SOCKETIO_UMD
 from open_webui_openrouter_pipe.plugins.pipe_dashboard.commands import dashboard_cmd
 from open_webui_openrouter_pipe.plugins.pipe_dashboard.commands.dashboard_cmd import _build_dashboard_shell
+from pathlib import Path
 
 
 def _own_js(dash_id: str = "dash-v2") -> str:

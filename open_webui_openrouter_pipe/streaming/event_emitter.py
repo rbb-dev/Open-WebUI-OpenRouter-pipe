@@ -497,6 +497,7 @@ class EventEmitterHandler:
         event_emitter: EventEmitter | None,
         *,
         content: str | None = "",
+        output:   list[dict[str, Any]] | None = None,
         title:   str | None = None,
         usage:   dict[str, Any] | None = None,
         done:    bool = True,
@@ -518,6 +519,7 @@ class EventEmitterHandler:
                     "data": {
                         "done": done,
                         "content": content,
+                        **({"output": output} if output is not None else {}),
                         **({"title": title} if title is not None else {}),
                         **({"usage": usage} if usage is not None else {}),
                     }

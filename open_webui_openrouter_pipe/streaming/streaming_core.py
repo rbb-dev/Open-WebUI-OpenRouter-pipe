@@ -137,7 +137,7 @@ _OWUI_ORIGIN_SOURCES = frozenset({"owui_registry_tools", "owui_request_tools"})
 
 # Imports from storage.persistence
 from ..storage.multimodal import _guess_image_mime_type, image_extension_for_mime
-from ..storage.owui_files import is_temporary_chat
+from ..storage.owui_files import _is_channel_chat, is_temporary_chat
 from ..storage.persistence import generate_item_id, normalize_persisted_item
 from ..tools.citation_harvester import (
     BUILTIN_CITATION_TOOLS,
@@ -3577,9 +3577,18 @@ class StreamingHandler:
                 self._audit_orphan_tool_cards(emitted_tool_call_items, emitted_tool_output_items)
                 if terminal:
                     final_content = None if emitted_response_output_items else assistant_message
+                    final_output = None
+                    if (
+                        final_content is None
+                        and terminal_output
+                        and isinstance(chat_id, str)
+                        and _is_channel_chat(chat_id)
+                    ):
+                        final_output = terminal_output
                     await self._pipe._event_emitter_handler._emit_completion(
                         event_emitter,
                         content=final_content,
+                        output=final_output,
                         usage=total_usage,
                         done=True,
                     )
