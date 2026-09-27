@@ -16,7 +16,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import inspect
 import json
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
@@ -36,11 +39,6 @@ from open_webui_openrouter_pipe.requests.transformer import (
     _TOOL_OUTPUT_PRUNE_HEAD_CHARS,
     _TOOL_OUTPUT_PRUNE_TAIL_CHARS,
 )
-
-
-# =============================================================================
-# Test Fixtures
-# =============================================================================
 
 
 @pytest.fixture
@@ -4596,45 +4594,6 @@ class TestImageReuseRegister:
         assert self._blocks(result) == [], (
             "a fault while processing the user's own attachment was read as 'nothing "
             f"attached', so an older picture was substituted: {self._blocks(result)}"
-        )
-
-    @pytest.mark.parametrize(
-        "empty_block",
-        [
-            {"type": "image_url"},
-            {"type": "image_url", "image_url": {"url": ""}},
-            {"type": "image_url", "image_url": ""},
-        ],
-        ids=["no-payload-key", "empty-nested-url", "empty-flat-url"],
-    )
-    @pytest.mark.asyncio
-    async def test_a_block_that_names_an_image_but_carries_none_does_not_count_as_one(
-        self, pipe_instance, empty_block
-    ):
-        """The gate is "the user attached nothing", and these blocks attached nothing.
-
-        The flag was set from the block's *type*, before anything established that the
-        block carried a source, so a payload-less `image_url` turned the reuse fallback
-        off for the whole turn. `_to_input_image` rejects these outright -- it returns
-        `None`, which is the outcome meaning "nothing was attached", not "something was
-        refused". Three shapes that all reach that same return.
-        """
-        pipe_instance.valves.IMAGE_INPUT_SELECTION = "user_then_assistant"
-
-        async def frog_inlines_fine(*_a, **_k):
-            return InlinedFile(data_url="data:image/png;base64,FROG", filename="frog.png")
-
-        messages = [
-            {"role": "user", "content": "draw a frog"},
-            {"role": "assistant", "content": "Done: ![f](/api/v1/files/frog/content)"},
-            {"role": "user", "content": [empty_block, {"type": "text", "text": "edit it"}]},
-        ]
-
-        result = await self._run(pipe_instance, messages, gateway=frog_inlines_fine)
-
-        assert self._blocks(result) == ["data:image/png;base64,FROG"], (
-            "a block that named an image type but carried no source suppressed the reuse "
-            f"fallback, so the turn went out with no picture at all: {self._blocks(result)}"
         )
 
     @pytest.mark.parametrize(

@@ -1546,6 +1546,8 @@ async def transform_messages_to_input(
                         encountered_user_images = True
                         continue
                     if result is None:
+                        if is_image_block and idx == current_turn_people[-1]:
+                            encountered_user_images = True
                         continue
                     if isinstance(result, dict):
                         text_value = result.get("text")

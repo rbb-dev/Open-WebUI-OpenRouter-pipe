@@ -10,12 +10,11 @@ import contextlib
 import json
 import logging
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeGuard
 
 import aiohttp
 from tenacity import (
     AsyncRetrying,
-    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
 )
@@ -72,6 +71,40 @@ def _should_retry_stream(emitted_any: bool, exc: BaseException | None) -> bool:
 _STREAM_END_EVENTS = frozenset({"response.completed", "response.done", "response.incomplete"})
 
 
+def _is_ordered_object(event: Any) -> TypeGuard[dict[str, Any]]:
+    return isinstance(event, dict)
+
+
+class _AcceptedResponseLostBody(aiohttp.ClientPayloadError, RuntimeError):
+    pass
+
+
+def _should_retry_accepted(retry_state: Any) -> bool:
+    exc = retry_state.outcome.exception() if retry_state.outcome is not None else None
+    if isinstance(exc, _AcceptedResponseLostBody):
+        return False
+    return isinstance(exc, (aiohttp.ClientError, asyncio.TimeoutError))
+
+
+async def _decode_json_body(resp: Any, logger: Any, endpoint: str) -> Any:
+    try:
+        return await resp.json()
+    except (aiohttp.ClientPayloadError, aiohttp.ServerDisconnectedError) as exc:
+        raise _AcceptedResponseLostBody(str(exc)) from exc
+    except Exception:
+        logger.debug(
+            "OpenRouter response was not decodable JSON; falling back to text",
+            exc_info=True,
+        )
+        try:
+            return json.loads(await resp.text())
+        except (aiohttp.ClientPayloadError, aiohttp.ServerDisconnectedError) as exc:
+            raise _AcceptedResponseLostBody(str(exc)) from exc
+        except Exception as exc:
+            raise RuntimeError(f"Invalid JSON response from {endpoint}") from exc
+
+
+
 def _record_failed_call(pipe: Pipe, breaker_key: str | None) -> None:
     if breaker_key:
         pipe._circuit_breaker.record_failure(breaker_key)
@@ -81,6 +114,8 @@ def _record_failed_call(pipe: Pipe, breaker_key: str | None) -> None:
 async def _count_failed_call(pipe: Pipe, breaker_key: str | None) -> AsyncGenerator[None, None]:
     try:
         yield
+    except _AcceptedResponseLostBody:
+        raise
     except (OpenRouterAPIError, aiohttp.ClientError, TimeoutError):
         _record_failed_call(pipe, breaker_key)
         raise
@@ -406,7 +441,11 @@ class ResponsesAdapter:
                 while next_seq in pending_events:
                     current = pending_events.pop(next_seq)
                     next_seq += 1
-                    if current is None:
+                    if not _is_ordered_object(current):
+                        if current is not None:
+                            self.logger.debug(
+                                "Discarding a non-object SSE frame: %s", type(current).__name__
+                            )
                         continue
                     streaming_error = self._pipe._ensure_error_formatter()._extract_streaming_error_event(current, requested_model)
                     if streaming_error is not None:
@@ -430,7 +469,11 @@ class ResponsesAdapter:
                     while next_seq in pending_events:
                         current = pending_events.pop(next_seq)
                         next_seq += 1
-                        if current is None:
+                        if not _is_ordered_object(current):
+                            if current is not None:
+                                self.logger.debug(
+                                    "Discarding a non-object SSE frame: %s", type(current).__name__
+                                )
                             continue
                         streaming_error = self._pipe._ensure_error_formatter()._extract_streaming_error_event(current, requested_model)
                         if streaming_error is not None:
@@ -519,7 +562,7 @@ class ResponsesAdapter:
         retryer = AsyncRetrying(
             stop=stop_after_attempt(3),
             wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
-            retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError)),
+            retry=_should_retry_accepted,
             reraise=True,
         )
 
@@ -546,7 +589,9 @@ class ResponsesAdapter:
                             requested_model=request_params.get("model"),
                             extra_metadata=extra_meta or None,
                         )
-                    payload = await resp.json()
+                    payload = await _decode_json_body(resp, self.logger, "/responses")
+                    if not isinstance(payload, dict):
+                        raise RuntimeError("Invalid JSON response from /responses")  # noqa: TRY004 - a remote body of the wrong shape is a runtime fault, and a ClientError subclass would be re-POSTed
                     _debug_print_response(payload, logger=self.logger)
                     reported_error = self._pipe._ensure_error_formatter()._extract_streaming_error_event(
                         payload, request_params.get("model")

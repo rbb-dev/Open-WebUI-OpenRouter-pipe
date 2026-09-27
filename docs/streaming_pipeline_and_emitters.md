@@ -41,6 +41,8 @@ The pipe spawns `SSE_WORKERS_PER_REQUEST` worker tasks. Each worker:
 The drain loop:
 - stores out-of-order events in a `pending_events` map
 - emits events strictly in ascending `seq` order
+- discards any event that is not a JSON object (an array, a string, a number, a
+  boolean) and does not pass it on, so one such frame does not take the reply down
 - raises a structured error if it detects a streaming error event
 
 ---

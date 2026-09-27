@@ -5,7 +5,6 @@ This module handles Chat Completions API streaming and non-streaming requests.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import uuid
@@ -15,7 +14,6 @@ from typing import TYPE_CHECKING, Any, Literal
 import aiohttp
 from tenacity import (
     AsyncRetrying,
-    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
 )
@@ -58,7 +56,9 @@ from ..transforms import (
 )
 from .responses_adapter import (
     _count_failed_call,
+    _decode_json_body,
     _record_failed_call,
+    _should_retry_accepted,
     _should_retry_stream,
 )
 
@@ -766,7 +766,7 @@ class ChatCompletionsAdapter:
         retryer = AsyncRetrying(
             stop=stop_after_attempt(3),
             wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
-            retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError)),
+            retry=_should_retry_accepted,
             reraise=True,
         )
 
@@ -797,18 +797,7 @@ class ChatCompletionsAdapter:
                             requested_model=chat_payload.get("model"),
                             extra_metadata=extra_meta or None,
                         )
-                    try:
-                        data = await resp.json()
-                    except Exception:
-                        self.logger.debug(
-                            "OpenRouter response was not decodable JSON; falling back to text",
-                            exc_info=True,
-                        )
-                        text = await resp.text()
-                        try:
-                            data = json.loads(text)
-                        except Exception as exc:
-                            raise RuntimeError("Invalid JSON response from /chat/completions") from exc
+                    data = await _decode_json_body(resp, self.logger, "/chat/completions")
                     if isinstance(data, dict):
                         _debug_print_response(data, logger=self.logger)
                         reported_error = self._pipe._ensure_error_formatter()._extract_streaming_error_event(
