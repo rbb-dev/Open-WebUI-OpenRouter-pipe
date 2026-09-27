@@ -637,8 +637,9 @@ def test_the_header_sizer_declines_these_formats_so_the_post_open_check_is_their
 @pytest.mark.filterwarnings("ignore::PIL.Image.DecompressionBombWarning")
 @pytest.mark.asyncio
 @pytest.mark.parametrize("pil_ceiling", IMPORT_STATES, indirect=True)
+@pytest.mark.parametrize("side", [8000, 6000])
 async def test_an_oversized_bitmap_is_refused_the_same_way_in_every_import_state(
-    icon_handler, pil_ceiling
+    icon_handler, pil_ceiling, side
 ):
     """One branch, one log shape.
 
@@ -646,12 +647,21 @@ async def test_an_oversized_bitmap_is_refused_the_same_way_in_every_import_state
     and logged without a stack; with the ceiling media/ installs, PIL raised first and
     the same icon was logged as a conversion failure WITH a traceback. Two shapes for
     one decision, chosen by an unrelated import. The refusal is the same either way, so
-    the record has to be too -- compared as the format string, the level and whether a
+    the record has to be too -- compared on the rendered text, the level and whether a
     stack was attached, which is what a log search and an operator actually key on.
+
+    It reads `getMessage()`, not `record.msg`: the pipe's log filter pre-renders
+    `%`-arguments onto the message so that attacker text in an argument cannot be
+    substituted at render time, and a check against the raw format string would go red
+    against that. The guard it gives up -- "the numbers are separate `%` arguments, so a
+    string assertion still passes if both are hardcoded" -- is recovered the only way a
+    rendered-text assertion can keep it: the expected counts are asserted as literal
+    digits, over TWO DIFFERENT SIDE LENGTHS, so a hardcoded pair satisfies neither
+    parametrisation completely.
     """
     recorder = _record_logs(icon_handler)
     session = _Session(
-        _Response(_LiteralBody(_png(8000)), {"Content-Type": "image/png"})
+        _Response(_LiteralBody(_png(side)), {"Content-Type": "image/png"})
     )
     icon_handler._vetted_http_session = session
     try:
@@ -662,19 +672,30 @@ async def test_an_oversized_bitmap_is_refused_the_same_way_in_every_import_state
         icon_handler.logger.removeHandler(recorder)
 
     assert result is None
+    budget = mm._MAX_MODEL_PROFILE_IMAGE_PIXELS
     shapes = [
-        (r.msg, r.levelno, r.exc_info is not None)
+        (r.getMessage(), r.levelno, r.exc_info is not None)
         for r in recorder.records
         if "bomb.png" in r.getMessage()
     ]
-    assert shapes == [
-        (
-            "Skipping model icon not provably within the %d pixel budget "
-            "(%d bytes, url=%s)",
-            logging.DEBUG,
-            False,
-        )
-    ], shapes
+    assert len(shapes) == 1, shapes
+    message, levelno, has_stack = shapes[0]
+    assert levelno == logging.DEBUG, (
+        f"the refusal is logged at {logging.getLevelName(levelno)}, not DEBUG: {message!r}"
+    )
+    assert has_stack is False, (
+        f"the refusal now carries a traceback, so the two import states differ again: "
+        f"{message!r}"
+    )
+    assert message.startswith("Skipping model icon not provably within the "), message
+    assert f"{budget} pixel budget" in message, (
+        f"the pixel budget {budget} does not appear in the rendered refusal: {message!r}"
+    )
+    byte_count = len(_png(side))
+    assert f"({byte_count} bytes, url=https://cdn.example.com/bomb.png)" in message, (
+        f"the {byte_count}-byte count for a {side}x{side} icon does not appear in the "
+        f"rendered refusal: {message!r}"
+    )
 
 
 @pytest.mark.filterwarnings("ignore::PIL.Image.DecompressionBombWarning")

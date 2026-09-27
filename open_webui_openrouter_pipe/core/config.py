@@ -1287,7 +1287,8 @@ class Valves(BaseModel):
         default="jsonl",
         description=(
             "Format written inside session log archives. "
-            "logs.jsonl is always written; 'jsonl' writes only it (one JSON object per record), while 'text' and 'both' additionally write a plain-text logs.txt (so 'text' and 'both' produce the same files)."
+            "logs.jsonl is always written; 'jsonl' writes only it (one JSON object per record), while 'text' and 'both' additionally write a plain-text logs.txt (so 'text' and 'both' produce the same files). "
+            "logs.txt writes one record per physical line, except for a record's exception block."
         ),
     )
     SESSION_LOG_ASSEMBLER_INTERVAL_SECONDS: int = Field(

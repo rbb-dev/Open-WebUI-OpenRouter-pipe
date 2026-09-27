@@ -4253,8 +4253,16 @@ class _HostileModel(dict):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("escapes_apply", [False, True], ids=["sync-call-fails", "apply-raises"])
+@pytest.mark.parametrize(
+    ("models", "expected"),
+    [
+        (["vendor/good", "vendor/bad"], (1, 2)),
+        (["vendor/ok1", "vendor/ok2", "vendor/bad"], (1, 3)),
+    ],
+    ids=["one-of-two", "one-of-three"],
+)
 async def test_a_partial_metadata_sync_failure_is_reported_with_its_counts(
-    pipe_instance_async, caplog, escapes_apply
+    pipe_instance_async, caplog, escapes_apply, models, expected
 ) -> None:
     """An operator must learn HOW MANY models failed, not just that something did.
 
@@ -4264,14 +4272,22 @@ async def test_a_partial_metadata_sync_failure_is_reported_with_its_counts(
     the suite green -- restoring exactly the silence the diagnostic was added to end.
     Capabilities, descriptions and filter attachments would silently stop updating.
 
-    Two models with ONE failing, so the counts are distinguishable: with a single model
-    `1/1` cannot tell the real counters from two hardcoded `1`s.
+    It reads `getMessage()`, not `record.args`: the pipe's log filter pre-renders
+    `%`-arguments onto the message so that attacker text in an argument cannot be
+    substituted again at render time, and `record.args` is emptied there. That is
+    precisely the premise this test's original rationale rested on -- "asserted on
+    `record.args`, not on the rendered string, so a string assertion ... still passes if
+    both counts are hardcoded" -- and the fix invalidates it, which is a deliberate,
+    recorded weakening rather than a silent one: the substituted text is identical, so
+    what the operator sees does not change.
 
-    Asserted on `record.args`, not on the rendered string -- the numbers are separate `%`
-    arguments, so a string assertion couples the test to the formatting and still passes
-    if both counts are hardcoded.
+    The anti-hardcode property is recovered instead of dropped. Two DIFFERENT count sets
+    are parametrised (1 of 2, and 1 of 3), so a hardcoded pair cannot satisfy both, and
+    each expected count is additionally required to appear as literal digits in the
+    rendered text.
     """
     import logging as _logging
+    import re as _re
 
     from tests.log_capture import emitted
 
@@ -4289,25 +4305,18 @@ async def test_a_partial_metadata_sync_failure_is_reported_with_its_counts(
 
     manager._update_or_insert_model_with_metadata = AsyncMock(side_effect=_one_fails)
 
-    bad = (
-        _HostileModel({"id": "vendor/bad", "name": "Bad"})
-        if escapes_apply
-        else {"id": "vendor/bad", "name": "Bad"}
-    )
+    rows = []
+    for model_id in models:
+        row = {"id": model_id, "name": model_id.rsplit("/", 1)[-1].title()}
+        rows.append(_HostileModel(row) if escapes_apply and "bad" in model_id else row)
+
     with caplog.at_level(_logging.DEBUG, logger=manager.logger.name):
-        await manager._sync_model_metadata_to_owui(
-            [{"id": "vendor/good", "name": "Good"}, bad],
-            pipe_identifier="openrouter",
-        )
+        await manager._sync_model_metadata_to_owui(rows, pipe_identifier="openrouter")
 
     aggregates = [
         r
         for r in emitted(caplog, min_level=_logging.WARNING)
-        if r.args
-        and isinstance(r.args, tuple)
-        and len(r.args) >= 2
-        and isinstance(r.args[0], int)
-        and isinstance(r.args[1], int)
+        if _re.search(r"sync failed for \d+/\d+ model", r.getMessage())
     ]
     assert len(aggregates) == 1, (
         f"expected exactly one aggregate sync-failure warning, got {len(aggregates)}: "
@@ -4325,10 +4334,17 @@ async def test_a_partial_metadata_sync_failure_is_reported_with_its_counts(
     assert per_model[0].exc_info is not None, (
         "the per-model line carries no traceback, so raising the log level buys nothing"
     )
-    failed, total = aggregates[0].args[0], aggregates[0].args[1]
-    assert (failed, total) == (1, 2), (
-        f"the warning reported {failed}/{total} model(s) failed; one of two did. An "
-        "operator sizes the blast radius from these numbers."
+    reported = aggregates[0].getMessage()
+    failed, total = (int(part) for part in _re.search(
+        r"sync failed for (\d+)/(\d+) model", reported
+    ).groups())
+    assert (failed, total) == expected, (
+        f"the warning reported {failed}/{total} model(s) failed; {expected[0]} of "
+        f"{expected[1]} did. An operator sizes the blast radius from these numbers.\n"
+        f"{reported}"
+    )
+    assert f"{expected[0]}/{expected[1]}" in reported, (
+        f"the counts do not appear as literal digits in the rendered warning: {reported!r}"
     )
 
 

@@ -551,7 +551,7 @@ Notes:
 | `SESSION_LOG_ZIP_COMPRESSION` | `Literal[\"stored\", \"deflated\", \"bzip2\", \"lzma\"]` | `lzma` | Zip compression algorithm for session log archives. |
 | `SESSION_LOG_ZIP_COMPRESSLEVEL` | `Optional[int]` | `null` | Compression level (0–9) for deflated/bzip2 compression. Ignored for stored/lzma. The Config tab expresses `null` as an empty box: clearing the box and saving returns the setting to its default codec level. |
 | `SESSION_LOG_MAX_LINES` | `int` | `20000` | Maximum number of in-memory SessionLogger records retained per request (older entries are dropped). |
-| `SESSION_LOG_FORMAT` | `Literal[\"jsonl\", \"text\", \"both\"]` | `jsonl` | Archive log file format. `logs.jsonl` is always written; `jsonl` writes only it, while `text` and `both` additionally write `logs.txt` (so `text` and `both` yield the same file set). |
+| `SESSION_LOG_FORMAT` | `Literal[\"jsonl\", \"text\", \"both\"]` | `jsonl` | Archive log file format. `logs.jsonl` is always written; `jsonl` writes only it, while `text` and `both` additionally write `logs.txt` (so `text` and `both` yield the same file set). `logs.txt` writes one record per physical line, except for a record's exception block. |
 | `SESSION_LOG_ASSEMBLER_INTERVAL_SECONDS` | `int` | `30` | How often each process scans the DB for completed/stale turns to assemble into zip archives. |
 | `SESSION_LOG_ASSEMBLER_JITTER_SECONDS` | `int` | `10` | Per-process jitter added to the assembler loop to avoid multi-worker lockstep. |
 | `SESSION_LOG_ASSEMBLER_BATCH_SIZE` | `int` | `25` | Max turns processed per assembler tick. |

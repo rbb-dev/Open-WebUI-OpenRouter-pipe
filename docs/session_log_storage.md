@@ -35,7 +35,8 @@ A reply that may hand a call back -- in Open-WebUI mode, or in Pipeline mode for
 Notes:
 
 - `logs.jsonl` records are always **one JSON object per line**. Multi-line payloads in the original message are stored as JSON strings with `\n` escapes.
-- `logs.txt` may include multi-line payloads for some messages (for example pretty-printed JSON), so a single log record can span multiple physical lines.
+- `logs.txt` writes **one log record per physical line**, with one exception. A control character in a *message* (including the newline-like separators `\x85`, U+2028 and U+2029) is replaced with a space rather than emitted, so a newline inside a user-supplied URL or a provider error cannot append a line shaped like a real record. The text stays present and readable, escaped in place. A record's **exception block** — the traceback `logger.exception(...)` captured — may span lines, because a traceback legitimately does; any line in it that would itself render as a record is de-formed first, so the forged line cannot stand on its own. The `logs.jsonl` guarantee above is unchanged and needs no counterpart here: it is one JSON object per line by construction, and that is exactly what re-assembly reads.
+- `logs.jsonl` is the **evidence** and the text sinks are the **presentation**, so for a record carrying a neutralised character the two renderings differ: the archive keeps the caller's original bytes, while the console and `logs.txt` show the neutralised text.
 - The `LOG_LEVEL` valve controls what is written to stdout/backend logs for a request. The stored archive is sourced from the in-memory session buffer and can include entries that are not emitted to stdout.
 - Session logs can contain sensitive content (prompts, tool arguments, provider errors). Enable this only if you understand your retention and access controls.
 
@@ -165,7 +166,7 @@ See [Valves & Configuration Atlas](valves_and_configuration_atlas.md) for the ca
 | `SESSION_LOG_ZIP_COMPRESSION` | enum | `lzma` | Zip compression algorithm. |
 | `SESSION_LOG_ZIP_COMPRESSLEVEL` | int? | `null` | Compression level for deflated/bzip2. |
 | `SESSION_LOG_MAX_LINES` | int | `20000` | Max in-memory log records retained per request before older entries are dropped. |
-| `SESSION_LOG_FORMAT` | enum | `jsonl` | Archive log file format. `logs.jsonl` is always written as the canonical record; `jsonl` writes only `logs.jsonl`, while `text` and `both` additionally write `logs.txt` (so `text` and `both` produce an identical file set). |
+| `SESSION_LOG_FORMAT` | enum | `jsonl` | Archive log file format. `logs.jsonl` is always written as the canonical record; `jsonl` writes only `logs.jsonl`, while `text` and `both` additionally write `logs.txt` (so `text` and `both` produce an identical file set). `logs.txt` writes one record per physical line, except for a record's exception block. |
 | `SESSION_LOG_ASSEMBLER_INTERVAL_SECONDS` | int | `30` | How often each process scans the DB for completed/stale turns to assemble into zip archives. |
 | `SESSION_LOG_ASSEMBLER_JITTER_SECONDS` | int | `10` | Per-process jitter added to the assembler loop to avoid multi-worker lockstep. |
 | `SESSION_LOG_ASSEMBLER_BATCH_SIZE` | int | `25` | Max turns processed per assembler tick. |

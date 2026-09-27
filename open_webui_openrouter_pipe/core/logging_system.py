@@ -19,6 +19,7 @@ import datetime
 import json
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -72,17 +73,61 @@ def _safe_message(record: logging.LogRecord) -> str:
     return object.__repr__(msg)
 
 
+def _neutralise_log_text(value: str) -> str:
+    out: list[str] = []
+    append = out.append
+    for char in value:
+        code = ord(char)
+        if code < 0x20 or code == 0x7F or code in (0x85, 0x2028, 0x2029):
+            append(" ")
+        else:
+            append(char)
+    return "".join(out)
+
+
 # SessionLogger Class
 
-def _render_exception_suffix(event: dict[str, Any]) -> str:
-    """Render a captured traceback for the text outputs.
+_RECORD_SHAPE_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}[.,]\d{3}[ \t]"
+    r"(?:\[[A-Z]+\] \[user=|\|)"
+)
 
-    Both text renderers emit only ``message``. Logging an error via
-    ``logger.exception(...)`` / ``exc_info=`` moves the error detail out of the
-    message and into ``event["exception"]``, so without this the human-readable
-    logs.txt and the error-log citation dump show the headline and silently drop
-    what actually went wrong. The jsonl output keeps it either way.
-    """
+
+def _deform_exception_text(text: str) -> str:
+    shaped = [
+        f" {line}" if _RECORD_SHAPE_RE.match(line) else _neutralise_log_text(line)
+        for line in text.splitlines()
+    ]
+    return "\n".join(shaped)
+
+
+def _deforms_exception_text(text: str) -> bool:
+    return any(
+        _RECORD_SHAPE_RE.match(line) or _neutralise_log_text(line) != line
+        for line in text.splitlines()
+    )
+
+
+class _ShapedException(Exception):
+    pass
+
+
+def _shaped_exc_info(exc_info: Any, text: str) -> tuple[Any, Any, Any]:
+    etype, _value, tb = exc_info
+    name = getattr(etype, "__qualname__", None) or "Exception"
+    carrier = type(
+        name,
+        (_ShapedException,),
+        {
+            "__name__": getattr(etype, "__name__", name.split(".")[-1]),
+            "__qualname__": name,
+            "__module__": getattr(etype, "__module__", "builtins"),
+        },
+    )(text)
+    return (type(carrier), carrier, tb)
+
+
+def _render_exception_suffix(event: dict[str, Any]) -> str:
     block = event.get("exception")
     if not isinstance(block, dict):
         return ""
@@ -90,7 +135,37 @@ def _render_exception_suffix(event: dict[str, Any]) -> str:
         text = str(block.get("text") or "").rstrip()
     except Exception:  # noqa: BLE001 - render helper; a bad payload must not lose the line
         return "\n<<unrenderable exception>>"
-    return f"\n{text}" if text else ""
+    if not text:
+        return ""
+    shaped = _deform_exception_text(text)
+    return "\n" + shaped if shaped else ""
+
+
+def _render_event_line(event: dict[str, Any], default_user_id: str = "-") -> str:
+    created_raw = event.get("created")
+    try:
+        created = float(created_raw) if created_raw is not None else time.time()
+    except (TypeError, ValueError, OverflowError):
+        created = time.time()
+    try:
+        base = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created))
+        msecs = int((created - int(created)) * 1000)
+        asctime = f"{base},{msecs:03d}"
+    except (ValueError, OverflowError, OSError):
+        asctime = datetime.datetime.fromtimestamp(
+            time.time(), tz=datetime.UTC
+        ).astimezone().strftime("%Y-%m-%d %H:%M:%S,000")
+    level = _neutralise_log_text(str(event.get("level") or "INFO"))
+    uid = _neutralise_log_text(str(event.get("user_id") or default_user_id or "-"))
+    message = event.get("message")
+    try:
+        message_str = str(message) if message is not None else ""
+    except Exception:  # noqa: BLE001 - str-coercion guard in render helper; sentinel fallback
+        message_str = "<<unrenderable message>>"
+    return (
+        f"{asctime} [{level}] [user={uid}] {_neutralise_log_text(message_str)}"
+        + _render_exception_suffix(event)
+    )
 
 
 def resolve_level(name: str | None, fallback: int) -> int:
@@ -170,6 +245,9 @@ class SessionLogger:
             message = record.getMessage()
         except Exception:  # noqa: BLE001 - capture path: self-log recurses; in-band fallback
             message = _safe_message(record)
+        raw_message = getattr(record, "raw_msg", None)
+        if isinstance(raw_message, str):
+            message = raw_message
 
         event_type = cls._classify_event_type(message)
 
@@ -188,7 +266,9 @@ class SessionLogger:
 
         try:
             exc_info = getattr(record, "exc_info", None)
-            exc_text = getattr(record, "exc_text", None)
+            exc_text = getattr(record, "raw_exc_text", None) or getattr(
+                record, "exc_text", None
+            )
             if exc_text:
                 event["exception"] = {"text": str(exc_text)}
             elif exc_info:
@@ -202,28 +282,7 @@ class SessionLogger:
     @classmethod
     def format_event_as_text(cls, event: dict[str, Any]) -> str:
         """Best-effort text rendering for debug dumps and optional logs.txt archives."""
-        created_raw = event.get("created")
-        try:
-            created = float(created_raw) if created_raw is not None else time.time()
-        except (TypeError, ValueError, OverflowError):
-            created = time.time()
-        try:
-            base = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created))
-            msecs = int((created - int(created)) * 1000)
-            asctime = f"{base},{msecs:03d}"
-        except (ValueError, OverflowError, OSError):
-            asctime = datetime.datetime.fromtimestamp(time.time(), tz=datetime.UTC).astimezone().strftime("%Y-%m-%d %H:%M:%S,000")
-        level = str(event.get("level") or "INFO")
-        uid = str(event.get("user_id") or "-")
-        message = event.get("message")
-        try:
-            message_str = str(message) if message is not None else ""
-        except Exception:  # noqa: BLE001 - str-coercion guard in render helper; sentinel fallback
-            message_str = "<<unrenderable message>>"
-        return (
-            f"{asctime} [{level}] [user={uid}] {message_str}"
-            + _render_exception_suffix(event)
-        )
+        return _render_event_line(event)
 
     class _HostForwardHandler(logging.Handler):
         """Re-emit to the host's handlers, honouring the session log level.
@@ -287,7 +346,6 @@ class SessionLogger:
         logger.propagate = False
 
         def filter(record):
-            """Attach session metadata and capture the per-request console log level."""
             try:
                 sid = cls.session_id.get()
                 rid = cls.request_id.get()
@@ -301,6 +359,52 @@ class SessionLogger:
                         cls._session_last_seen[rid] = time.time()
             except Exception:  # noqa: BLE001, S110 - logging Filter: self-log re-enters Logger.handle
                 pass
+            had_args = bool(getattr(record, "args", ()))
+            if not hasattr(record, "raw_msg"):
+                try:
+                    raw = (record.msg % record.args) if (
+                        isinstance(record.msg, str) and had_args
+                    ) else record.msg
+                except Exception:  # noqa: BLE001 - logging Filter: self-log re-enters Logger.handle
+                    raw = record.msg
+                record.raw_msg = raw
+            if isinstance(record.msg, str) and had_args:
+                try:
+                    record.msg = record.msg % record.args
+                except Exception:  # noqa: BLE001, S110 - a mismatched site must keep its record
+                    pass
+            if had_args:
+                record.args = ()
+            if isinstance(record.msg, str):
+                try:
+                    record.msg = _neutralise_log_text(record.msg)
+                except Exception:  # noqa: BLE001, S110 - logging Filter: self-log re-enters Logger.handle
+                    pass
+            if record.exc_info:  # noqa: SIM102 - nested so the sentinel guards the whole block
+                if not getattr(record, "_exc_shaped", False):
+                    record._exc_shaped = True  # type: ignore[attr-defined]
+                    raw_exc = None
+                    try:
+                        raw_exc = "".join(traceback.format_exception(*record.exc_info))
+                    except Exception:  # noqa: BLE001, S110 - logging Filter: self-log re-enters Logger.handle
+                        pass
+                    if raw_exc:
+                        record.raw_exc_text = raw_exc  # type: ignore[attr-defined]
+                        deformed = None
+                        try:
+                            deformed = _deform_exception_text(raw_exc)
+                        except Exception:  # noqa: BLE001, S110 - logging Filter: self-log re-enters Logger.handle
+                            pass
+                        if deformed is not None:
+                            record.exc_text = deformed  # type: ignore[attr-defined]
+                        if deformed is not None and _deforms_exception_text(raw_exc):
+                            shaped = None
+                            try:
+                                shaped = _shaped_exc_info(record.exc_info, deformed)
+                            except Exception:  # noqa: BLE001, S110 - logging Filter: self-log re-enters Logger.handle
+                                pass
+                            if shaped is not None:
+                                record.exc_info = shaped
             return True
 
         async_handler = logging.Handler()
@@ -532,31 +636,8 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
     write_text = log_format in {"text", "both"}
     write_jsonl = True
 
-    def _format_asctime_local(created: float) -> str:
-        try:
-            base = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created))
-            msecs = int((created - int(created)) * 1000)
-            return f"{base},{msecs:03d}"
-        except (ValueError, OverflowError, OSError):
-            return datetime.datetime.fromtimestamp(time.time(), tz=datetime.UTC).astimezone().strftime("%Y-%m-%d %H:%M:%S,000")
-
     def _format_event_as_text(event: dict[str, Any]) -> str:
-        created = event.get("created")
-        try:
-            created_val = float(created) if created is not None else time.time()
-        except (TypeError, ValueError, OverflowError):
-            created_val = time.time()
-        level = str(event.get("level") or "INFO")
-        uid = str(event.get("user_id") or job.user_id or "-")
-        message = event.get("message")
-        try:
-            message_str = str(message) if message is not None else ""
-        except Exception:  # noqa: BLE001 - per-event str-coercion guard; sentinel fallback
-            message_str = "<<unrenderable message>>"
-        return (
-            f"{_format_asctime_local(created_val)} [{level}] [user={uid}] {message_str}"
-            + _render_exception_suffix(event)
-        )
+        return _render_event_line(event, str(job.user_id or "-"))
 
     def _format_iso_utc(created: float) -> str:
         try:
