@@ -186,6 +186,14 @@ class _ToolExecutionContext:
     messages: list[dict[str, Any]] = field(default_factory=list)
 
 
+def is_builtin_ask_user(tool_cfg: Any) -> bool:
+    return (
+        isinstance(tool_cfg, dict)
+        and tool_cfg.get("type") == "builtin"
+        and tool_cfg.get("tool_id") == "builtin:ask_user"
+    )
+
+
 class ToolExecutor:
     """Orchestrates tool execution and direct tool server integration."""
 
@@ -216,11 +224,7 @@ class ToolExecutor:
 
     @staticmethod
     def _is_builtin_ask_user(tool_cfg: Any) -> bool:
-        return (
-            isinstance(tool_cfg, dict)
-            and tool_cfg.get("type") == "builtin"
-            and tool_cfg.get("tool_id") == "builtin:ask_user"
-        )
+        return is_builtin_ask_user(tool_cfg)
 
     def _tool_breaker(self, context: _ToolExecutionContext) -> CircuitBreaker | None:
         return context.tool_breaker if context.fusion_inner else self._pipe._circuit_breaker

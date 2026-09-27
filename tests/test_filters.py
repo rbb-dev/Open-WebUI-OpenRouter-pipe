@@ -2475,6 +2475,17 @@ class TestProviderRoutingHashPersistence:
         assert undeliverable not in third
         assert third == second
 
+    @staticmethod
+    def _routing_map(*slugs: str) -> dict:
+        return {
+            slug: {
+                "providers": ["alpha", "beta"],
+                "quantizations": ["fp8"],
+                "short_name": slug,
+                "provider_names": {"alpha": "Alpha", "beta": "Beta"},
+            }
+            for slug in slugs
+        }
 
 @pytest.mark.parametrize("auto_install", [True, False])
 @pytest.mark.asyncio

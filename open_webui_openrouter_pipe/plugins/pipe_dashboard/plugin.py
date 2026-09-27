@@ -403,8 +403,7 @@ class PipeDashboardPlugin(PluginBase):
             return json.dumps({"title": "Pipe Dashboard"})
         if "emoji" in name:
             return json.dumps({"emoji": ""})
-        # Unknown task type — return empty JSON object as safe default
-        return "{}"
+        return ""
 
     async def on_emitter_wrap(self, stream_emitter: Any, **kwargs: Any) -> Any | None:
         job_metadata = kwargs.get("job_metadata") or {}

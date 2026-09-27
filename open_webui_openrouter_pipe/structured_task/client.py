@@ -12,6 +12,25 @@ from ..core.utils import utf8_stream_decoder
 
 _logger = logging.getLogger(__name__)
 
+def _content_part_text(item: Any) -> str | None:
+    if not isinstance(item, dict):
+        return str(item)
+    if "text" in item and (item["text"] is not None or "content" not in item):
+        return str(item["text"])
+    if "content" in item:
+        return str(item["content"])
+    return None
+
+
+def _join_content_parts(value: list[Any]) -> str:
+    parts: list[str] = []
+    for item in value:
+        piece = _content_part_text(item)
+        if piece is not None:
+            parts.append(piece)
+    return "".join(parts)
+
+
 def normalise_model_content(value: Any) -> str:
     """Best-effort conversion of model content fragments to string.
 
@@ -20,18 +39,7 @@ def normalise_model_content(value: Any) -> str:
     if isinstance(value, str):
         return value
     if isinstance(value, list):
-        parts: list[str] = []
-        for item in value:
-            if isinstance(item, dict):
-                if item.get("type") == "text":
-                    parts.append(str(item.get("text", "")))
-                elif "content" in item:
-                    parts.append(str(item.get("content", "")))
-                else:
-                    parts.append(str(item))
-            else:
-                parts.append(str(item))
-        return "".join(parts)
+        return _join_content_parts(value)
     if isinstance(value, dict):
         for key in ("text", "content"):
             if value.get(key):
@@ -175,6 +183,8 @@ async def read_task_model_response_json(response: Any) -> dict[str, Any]:
         raise RuntimeError(f"task_model_refusal: {refusal.strip()}")
 
     content_value = message.get("content")
+    if isinstance(content_value, list):
+        content_value = normalise_model_content(content_value)
     if isinstance(content_value, dict):
         return content_value
     if isinstance(content_value, str):

@@ -1367,6 +1367,42 @@ class ArtifactStore:
             return any(keyword in lowered for keyword in keywords)
         return False
 
+    def _db_touch_sync(
+        self,
+        chat_id: str,
+        message_id: str | None,
+        item_ids: list[str],
+    ) -> None:
+        if not (self._item_model and self._session_factory):
+            return
+        model = self._item_model
+        with _db_session(self._session_factory) as touch_session:
+            now = datetime.datetime.now(datetime.UTC)
+            touch_query = touch_session.query(model).filter(model.chat_id == chat_id)
+            touch_query = touch_query.filter(model.id.in_(item_ids))
+            if message_id:
+                touch_query = touch_query.filter(model.message_id == message_id)
+            touch_query.update({model.created_at: now}, synchronize_session=False)
+            touch_session.commit()
+
+    async def _touch_cached(self, chat_id: str, message_id: str | None, ids: list[str]) -> None:
+        executor = self._db_executor
+        if not (executor and self._item_model and self._session_factory and ids):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                executor, functools.partial(self._db_touch_sync, chat_id, message_id, ids)
+            )
+        except Exception as exc:
+            self.logger.debug(
+                "Artifact touch failed (chat_id=%s, message_id=%s): %s",
+                chat_id,
+                message_id or "",
+                exc,
+                exc_info=True,
+            )
+
     @timed
     def _db_fetch_sync(
         self,
@@ -1458,11 +1494,14 @@ class ArtifactStore:
         cached: dict[str, dict] = {}
         if self._redis_enabled:
             cached = await self._redis_fetch_rows(chat_id, item_ids)
+            cache_hit_ids = list(cached)
             missing_ids = [item_id for item_id in item_ids if item_id not in cached]
         else:
+            cache_hit_ids = []
             missing_ids = item_ids
 
         if not missing_ids:
+            await self._touch_cached(chat_id, message_id, list(cached))
             return cached
 
         if not (self._db_executor and self._item_model and self._session_factory):
@@ -1503,6 +1542,9 @@ class ArtifactStore:
         except Exception as exc:
             self._record_db_failure(user_id)
             self.logger.warning("Artifact fetch failed: %s", exc, exc_info=True)
+        await self._touch_cached(
+            chat_id, message_id, [item_id for item_id in cached if item_id in set(cache_hit_ids)]
+        )
         return cached
 
     @timed

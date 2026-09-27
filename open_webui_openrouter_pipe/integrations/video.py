@@ -525,6 +525,9 @@ class VideoGenerationAdapter:
         submitted = False
         job_id = ""
         disclosure_block = ""
+        withheld_record_written = False
+        withheld: list[tuple[str, str]] = []
+        relayed_families: set[tuple[str, str]] = set()
 
         try:
             existing = await self._get_active_task(key)
@@ -781,21 +784,21 @@ class VideoGenerationAdapter:
                 return content
 
             video_meta = self._extract_video_metadata(metadata)
-            withheld: list[tuple[str, str]] = []
             frame_images = await self._encode_frame_images(
                 video_meta, video_model, valves, user_obj=user_obj or user,
             )
-            relayed_families: set[tuple[str, str]] = set()
             vetted_addresses: dict[str, bool] = {}
-            input_references = await self._encode_input_references(
-                video_meta, valves, withheld=withheld, user_obj=user_obj or user,
-                video_model=video_model, relayed=relayed_families,
-                companions=bool(frame_images), event_emitter=event_emitter,
-                vetted=vetted_addresses,
-            )
-            disclosure_block = self._with_the_file_host_record(
-                disclosure_block, valves, relayed_families
-            )
+            try:
+                input_references = await self._encode_input_references(
+                    video_meta, valves, withheld=withheld, user_obj=user_obj or user,
+                    video_model=video_model, relayed=relayed_families,
+                    companions=bool(frame_images), event_emitter=event_emitter,
+                    vetted=vetted_addresses,
+                )
+            finally:
+                disclosure_block = self._with_the_file_host_record(
+                    disclosure_block, valves, relayed_families
+                )
             if not prompt.strip():
                 content = self._build_failure_content(
                     job_id="",
@@ -834,6 +837,7 @@ class VideoGenerationAdapter:
             global_slot_acquired = True
 
             disclosure_block = self._with_the_withheld_record(disclosure_block, withheld)
+            withheld_record_written = True
             await self._emit_status(event_emitter, "Submitting video generation job...", done=False)
 
             client = OpenRouterVideoClient(
@@ -910,6 +914,8 @@ class VideoGenerationAdapter:
         except Exception as exc:
             self._count_a_failed_start(submitted and not lifecycle_transferred, outcome_sink, breaker_key)
             self.logger.exception("Video generation request failed (job_id=%s)", job_id)
+            if not withheld_record_written:
+                disclosure_block = self._with_the_withheld_record(disclosure_block, withheld)
             reason = str(exc) or exc.__class__.__name__
             content = self._build_failure_content(job_id=job_id, model_id=api_model_id, reason=reason)
             if disclosure_block:

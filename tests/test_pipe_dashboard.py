@@ -271,7 +271,6 @@ class TestTaskStubs:
         assert isinstance(result, dict)
         assert '"follow_ups"' in result["choices"][0]["message"]["content"]
 
-
 # ── Authorization Tests ──
 
 
@@ -562,11 +561,6 @@ class TestResolvesCasePreservation:
 
 
 class TestBuildTaskFallbackUnknown:
-    def test_unknown_task_returns_empty_json_object(self):
-        """Unknown task type returns '{}' as safe fallback."""
-        assert PipeDashboardPlugin._build_task_fallback("search_generation") == "{}"
-        assert PipeDashboardPlugin._build_task_fallback("some_future_task") == "{}"
-
     def test_known_tasks_still_work(self):
         """Existing task types still return correct JSON."""
         import json

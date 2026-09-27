@@ -2783,6 +2783,7 @@ class Filter:
             slug
             for slug in all_models
             if not self._routing_controls(self.model_transport(slug))
+            or not (provider_map.get(slug) or {}).get("providers")
         }
         stale_active = {
             slug
@@ -2830,6 +2831,7 @@ class Filter:
             prov_names: dict[str, str] = raw_prov_names if isinstance(raw_prov_names, dict) else {}
 
             if not providers:
+                undeliverable.append(slug)
                 self.logger.warning("Skipping filter for %s: no providers found in catalog (check slug spelling)", slug)
                 continue
 
@@ -2965,9 +2967,21 @@ class Filter:
             if slug in undeliverable or slug not in all_models:
                 existing_id = getattr(existing, "id", "")
                 if existing_id:
-                    await Functions.update_function_by_id(
-                        existing_id, {"is_active": False, "meta": switched_off_meta(existing)}
-                    )
+                    if (
+                        slug not in all_models
+                        or getattr(existing, "is_active", False)
+                        or _switched_off_by_pipe(existing)
+                    ):
+                        deactivation = {
+                            "is_active": False,
+                            "meta": switched_off_meta(existing),
+                        }
+                    else:
+                        deactivation = {
+                            "is_active": False,
+                            "meta": _merged_meta(existing, {}, off_by_pipe=False),
+                        }
+                    await Functions.update_function_by_id(existing_id, deactivation)
                     disabled += 1
                     self.logger.info("Disabled provider routing filter: %s", existing_id)
 

@@ -60,7 +60,7 @@ CONFIG_META: dict[str, dict[str, str]] = {
     "ARTIFACT_CLEANUP_DAYS": {
         "title": "Artifact retention period",
         "group": "Storage/Cleanup",
-        "detail": "How long an artifact can go untouched before the background cleanup sweep deletes it.\n\nThe clock runs from each artifact's last database read, not its original creation: reloading a chat that pulls its artifacts from the database resets their age, so records in actively-used conversations survive and only those left unread for the whole window are purged. Shorten it to reclaim database space sooner, lengthen it to keep more history. There is no off switch - retention always applies, so choose a window rather than trying to disable it. `Cleanup sweep frequency` sets how often the sweep runs. Rows a temporary chat left behind are deleted at the next sweep, whatever their age."
+        "detail": "How long an artifact can go untouched before the background cleanup sweep deletes it.\n\nThe clock runs from each artifact's last read, not its original creation: reloading a chat that replays its artifacts resets their age, whether those artifacts came from the database or from the cache, so records in actively-used conversations survive and only those left unread for the whole window are purged. Shorten it to reclaim database space sooner, lengthen it to keep more history. There is no off switch - retention always applies, so choose a window rather than trying to disable it. `Cleanup sweep frequency` sets how often the sweep runs. Rows a temporary chat left behind are deleted at the next sweep, whatever their age."
     },
     "ARTIFACT_CLEANUP_INTERVAL_HOURS": {
         "title": "Cleanup sweep frequency",

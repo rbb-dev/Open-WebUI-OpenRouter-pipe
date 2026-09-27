@@ -1736,7 +1736,7 @@ class Valves(BaseModel):
         default=90,
         ge=1,
         le=365,
-        description="Days an artifact is kept before cleanup. Its stored timestamp is refreshed on every database read, so retention runs from last access, not creation. Rows a temporary chat left behind are deleted at the next cleanup, whatever their age.",
+        description="Days an artifact is kept before cleanup. Its stored timestamp is refreshed on every read of the artifact that goes through the database store — whether that read is served from the database or from the cache — so retention runs from last access, not creation. Reads that never reach the database store do not refresh it, either because the database breaker is open or because the artifact store failed to initialise. The cache only serves reads on a deployment with the Redis artifact cache enabled. Rows a temporary chat left behind are deleted at the next cleanup, whatever their age.",
     )
     ARTIFACT_CLEANUP_INTERVAL_HOURS: float = Field(
         default=1.0,

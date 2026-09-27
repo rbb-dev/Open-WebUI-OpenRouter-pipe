@@ -39,8 +39,12 @@ import pytest
 from aioresponses import aioresponses, CallbackResult
 
 from open_webui_openrouter_pipe import Pipe, EncryptedStr
+from open_webui_openrouter_pipe.requests import transformer as transformer_module
 from open_webui_openrouter_pipe.storage.owui_files import InlinedFile
 from open_webui.constants import TASKS
+from open_webui_openrouter_pipe.tools.tool_registry import (
+    _build_collision_safe_tool_specs_and_registry,
+)
 
 
 # -----------------------------------------------------------------------------

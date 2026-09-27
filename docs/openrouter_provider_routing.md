@@ -275,6 +275,17 @@ When a model is removed from routing valves:
 - The filter is **disabled** (`is_active=False`)
 - The filter is **not deleted** — this preserves user settings if the model is re-added later
 
+A model that stays in the routing valves but whose catalog entry currently reports no
+providers is detached and disabled the same way, and is not re-advertised on a later
+pass. The row is not deleted either, so settings survive if providers come back. A
+deactivation the pipe itself performs comes back by itself when providers return; only an
+admin's own hand-switch-off survives the same cycle, and for that one switch it back on in
+the Functions list.
+
+Note that the entry may still be visible in the model's filter list while it is inactive.
+Open WebUI applies only the active entries, so a listed-but-inactive provider routing entry
+does nothing until it is switched on again.
+
 ---
 
 ## Troubleshooting

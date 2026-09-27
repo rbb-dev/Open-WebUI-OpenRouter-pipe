@@ -140,16 +140,26 @@ def _as_replayed(item: dict[str, Any], fallback_id: Any = None) -> list[dict[str
     )
 
 
-def _without_tool_result(item: dict[str, Any], names: dict[str, str]) -> list[dict[str, Any]] | None:
+def _is_ask_user_name(name: str, ask_user_names: frozenset[str] | None) -> bool:
+    if ask_user_names is None:
+        return name == "ask_user"
+    return name == "ask_user" or name in ask_user_names
+
+
+def _without_tool_result(
+    item: dict[str, Any],
+    names: dict[str, str],
+    ask_user_names: frozenset[str] | None,
+) -> list[dict[str, Any]] | None:
     item_type = item.get("type")
     call_id = item.get("call_id")
     if item_type == "function_call":
         name = str(item.get("name") or "")
         if isinstance(call_id, str):
             names.setdefault(call_id, name)
-        return None if name == "ask_user" else [{**item, "arguments": "{}"}]
+        return None if _is_ask_user_name(name, ask_user_names) else [{**item, "arguments": "{}"}]
     if item_type == "function_call_output":
-        if names.get(str(call_id)) == "ask_user":
+        if _is_ask_user_name(names.get(str(call_id)) or "", ask_user_names):
             return None
         text = tool_output_text_and_pictures(item.get("output"))[0]
         return [{**item, "output": unretained_tool_result(_tool_result_failed(text, item.get("status")))}]
@@ -440,6 +450,7 @@ async def transform_messages_to_input(
     model_id: str | None = None,
     valves: Pipe.Valves | None = None,
     capability_model_id: str | None = None,
+    ask_user_names: frozenset[str] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Build an OpenAI Responses-API `input` array from Open WebUI-style messages.
@@ -704,7 +715,9 @@ async def transform_messages_to_input(
                 except (TypeError, ValueError):
                     tool_content_text = str(tool_content)
 
-            if _withheld(msg_turn_index) and _tool_name_for_round(messages, idx) != "ask_user":
+            if _withheld(msg_turn_index) and not _is_ask_user_name(
+                _tool_name_for_round(messages, idx), ask_user_names
+            ):
                 tool_content_text = unretained_tool_result(_tool_result_failed(tool_content_text))
 
             tool_item: dict[str, Any] = {
@@ -1853,7 +1866,9 @@ async def transform_messages_to_input(
                         if item_type == "function_call_output" and is_picture_output(item.get("output")):
                             last_image_blocks, last_image_turn = [], None
                         if _withheld(msg_turn_index):
-                            withheld_items = _without_tool_result(item, tool_names_by_call_id)
+                            withheld_items = _without_tool_result(
+                                item, tool_names_by_call_id, ask_user_names
+                            )
                             if withheld_items is not None:
                                 openai_input.extend(_from_pipe_storage(withheld) for withheld in withheld_items)
                                 continue
@@ -1909,7 +1924,7 @@ async def transform_messages_to_input(
                         args_text = json.dumps(arguments or {}, ensure_ascii=False)
                     except (TypeError, ValueError):
                         args_text = "{}"
-                if _withheld(msg_turn_index) and name != "ask_user":
+                if _withheld(msg_turn_index) and not _is_ask_user_name(name, ask_user_names):
                     args_text = "{}"
 
                 openai_input.append(

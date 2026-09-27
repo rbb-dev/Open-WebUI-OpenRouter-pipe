@@ -3523,3 +3523,9 @@ async def test_a_save_neither_redis_nor_the_database_takes_keeps_the_users_datab
 
     assert saved == []
     assert len(store._db_breakers["user-1"]) == earlier_failures + 1
+
+
+# ===== Cache-served reads refresh retention =====
+
+
+import sqlalchemy

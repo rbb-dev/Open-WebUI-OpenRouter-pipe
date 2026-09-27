@@ -3021,7 +3021,7 @@ class StreamingHandler:
                                         call_id=call_id,
                                         name=tool_name,
                                         arguments=args_text,
-                                        status="in_progress" if tool_name == "ask_user" else "completed",
+                                        status="in_progress" if _origin_tool_name(tool_name) == "ask_user" else "completed",
                                     )
                             except Exception as exc:
                                 self.logger.warning("Failed to emit in-progress tool cards: %s", exc, exc_info=True)

@@ -55,6 +55,7 @@ from ..integrations.provider_options import (
     requested_provider_block,
     restrict_provider_block,
 )
+from ..media.image_conversion import normalise_mime
 from ..models.registry import ModelFamily, OpenRouterModelRegistry
 from ..storage.owui_files import (
     get_file_by_id,
@@ -166,6 +167,15 @@ def _reaches_display_file(exposed_to_origin: dict[str, str] | None) -> bool:
         name == "display_file" or origin == "display_file"
         for name, origin in exposed_to_origin.items()
     )
+
+
+def _chat_id_kwarg(metadata: dict[str, Any]) -> dict[str, Any]:
+    chat_id = metadata.get("chat_id")
+    return {"chat_id": chat_id} if chat_id else {}
+
+
+def _openwebui_model_id_kwarg(model_id: Any) -> dict[str, Any]:
+    return {"openwebui_model_id": model_id} if model_id else {}
 
 
 def _switched_off_web_tools_asked_for(metadata: Any, valves: Any) -> bool:
@@ -742,7 +752,7 @@ class RequestOrchestrator:
                 mime = item.get("content_type")
                 if not isinstance(mime, str) or not mime.strip():
                     mime = infer_file_mime_type(file_obj)
-                data_url = f"data:{mime.strip()};base64,{b64}"
+                data_url = f"data:{normalise_mime(mime)};base64,{b64}"
                 _append(
                     ("video", file_id),
                     {
@@ -903,11 +913,134 @@ class RequestOrchestrator:
         request_pipe_meta = __metadata__.get(_PIPE_METADATA_KEY) if isinstance(__metadata__, dict) else None
         fusion_inner = bool(isinstance(request_pipe_meta, dict) and request_pipe_meta.get("fusion_inner"))
 
+        tools_registry = __tools__
+        tools_registry_failed = False
+        if inspect.isawaitable(tools_registry):
+            try:
+                tools_registry = await tools_registry
+            except Exception as exc:
+                self.logger.warning(
+                    "Tool registry unavailable; continuing without tools: %s",
+                    exc,
+                    exc_info=True,
+                )
+                tools_registry_failed = True
+                tools_registry = {}
+        __tools__ = tools_registry
+
+        direct_registry: dict[str, dict[str, Any]] = {}
+        try:
+            direct_registry = self._pipe._ensure_tool_executor()._build_direct_tool_server_registry(
+                __metadata__,
+                event_call=__event_call__,
+                event_emitter=__event_emitter__,
+            )
+        except Exception:
+            self.logger.warning(
+                "Direct tool server registry unavailable; the model will be offered no "
+                "direct tools this request",
+                exc_info=True,
+            )
+            direct_registry = {}
+
+        merged_extra_tools: list[dict[str, Any]] = []
+        try:
+            upstream_extra = getattr(completions_body, "extra_tools", None)
+            if isinstance(upstream_extra, list):
+                merged_extra_tools.extend([t for t in upstream_extra if isinstance(t, dict)])
+        except Exception:
+            self.logger.warning(
+                "Could not read extra tools from the request body; continuing without them",
+                exc_info=True,
+            )
+
+        owui_tool_passthrough = open_webui_runs_the_calls(
+            valves, __metadata__, stream=bool(completions_body.stream)
+        )
+        incoming_tools_raw = body.get("tools")
+        incoming_tools = _chat_tools_to_responses_tools(incoming_tools_raw)
+        strictify = valves.ENABLE_STRICT_TOOL_CALLING and (not owui_tool_passthrough)
+
+        owui_registry: dict[str, dict[str, Any]] = {}
+        if isinstance(__tools__, dict):
+            owui_registry = {k: v for k, v in __tools__.items() if isinstance(v, dict)}
+        elif isinstance(__tools__, list):
+            for entry in __tools__:
+                if not isinstance(entry, dict):
+                    continue
+                name = entry.get("name")
+                if not name and isinstance(entry.get("spec"), dict):
+                    name = entry["spec"].get("name")
+                if isinstance(name, str) and name.strip():
+                    owui_registry[name.strip()] = entry
+
+        if isinstance(__metadata__, dict):
+            metadata_tools_raw = __metadata__.get("tools")
+            if isinstance(metadata_tools_raw, dict):
+                metadata_tools = {
+                    k: v for k, v in metadata_tools_raw.items() if isinstance(k, str) and isinstance(v, dict)
+                }
+                if metadata_tools:
+                    exposed_map = __metadata__.get("_pipe_exposed_to_origin")
+                    known_origins: set[str] = set()
+                    if isinstance(exposed_map, dict):
+                        for exposed_name in owui_registry:
+                            origin = exposed_map.get(exposed_name, exposed_name)
+                            if isinstance(origin, str):
+                                known_origins.add(origin)
+                    for name, tool_cfg in metadata_tools.items():
+                        if name not in owui_registry and name not in known_origins:
+                            owui_registry[name] = tool_cfg
+
+        owui_registry = {
+            name: cfg for name, cfg in owui_registry.items() if not (cfg.get("direct") is True and cfg.get("callable") is None)
+        }
+
+        if fusion_inner:
+            is_builtin_ask_user = self._pipe._ensure_tool_executor()._is_builtin_ask_user
+            owui_registry = {name: cfg for name, cfg in owui_registry.items() if not is_builtin_ask_user(cfg)}
+
+        request_params = __metadata__.get("params")
+        request_params = request_params if isinstance(request_params, dict) else {}
+        withhold_owui_tools = bool(
+            request_params.get("function_calling") == "legacy"
+            or (
+                request_params.get("tool_approval_mode") == "ask"
+                and (
+                    fusion_inner
+                    or (
+                        is_linkable_chat(__metadata__.get("chat_id"))
+                        and __metadata__.get("message_id")
+                    )
+                )
+            )
+        )
+        if withhold_owui_tools:
+            resolved_names = _resolved_tool_names(owui_registry, direct_registry)
+            owui_registry = {}
+            direct_registry = {}
+            incoming_tools = [
+                t for t in (incoming_tools or [])
+                if not (isinstance(t, dict) and t.get("name") in resolved_names)
+            ]
+
+        builtin_ask_user_names: set[str] = set()
+        tools, exec_registry, exposed_to_origin = _build_collision_safe_tool_specs_and_registry(
+            request_tool_specs=incoming_tools if incoming_tools else None,
+            owui_registry=owui_registry or None,
+            direct_registry=direct_registry or None,
+            builtin_registry=None,
+            extra_tools=merged_extra_tools or None,
+            strictify=strictify,
+            owui_tool_passthrough=owui_tool_passthrough,
+            logger=self.logger,
+            builtin_ask_user_names=builtin_ask_user_names,
+        )
         responses_body = await ResponsesBody.from_completions(
             completions_body=completions_body,
 
-            **({"chat_id": __metadata__["chat_id"]} if __metadata__.get("chat_id") else {}),
-            **({"openwebui_model_id": openwebui_model_id} if openwebui_model_id else {}),
+            **_chat_id_kwarg(__metadata__),
+            **_openwebui_model_id_kwarg(openwebui_model_id),
             artifact_loader=functools.partial(
                 self._pipe._artifact_store._db_fetch, reply_id=__metadata__.get("message_id")
             ),
@@ -917,6 +1050,7 @@ class RequestOrchestrator:
             event_emitter=__event_emitter__,
             transformer_valves=valves,
             capability_model_id=pre_capability_model_id,
+            ask_user_names=frozenset(builtin_ask_user_names) if builtin_ask_user_names else None,
         )
         responses_body._continued_turn = continued_turn_counts(responses_body.input)
         responses_body._continues_after_marker = ends_on_hidden_marker_line(CONTINUED_REPLY.get())
@@ -1275,130 +1409,13 @@ class RequestOrchestrator:
                     ", ".join(unsupported),
                 )
 
-        tools_registry = __tools__
-        if inspect.isawaitable(tools_registry):
-            try:
-                tools_registry = await tools_registry
-            except Exception as exc:
-                self.logger.warning(
-                    "Tool registry unavailable; continuing without tools: %s",
-                    exc,
-                    exc_info=True,
-                )
-                await self._pipe._event_emitter_handler._emit_notification(
-                    __event_emitter__,
-                    "Tool registry unavailable; continuing without tools.",
-                    level="warning",
-                )
-                tools_registry = {}
-        __tools__ = tools_registry
-
-        direct_registry: dict[str, dict[str, Any]] = {}
-        try:
-            direct_registry = self._pipe._ensure_tool_executor()._build_direct_tool_server_registry(
-                __metadata__,
-                event_call=__event_call__,
-                event_emitter=__event_emitter__,
-            )
-        except Exception:
-            self.logger.warning(
-                "Direct tool server registry unavailable; the model will be offered no "
-                "direct tools this request",
-                exc_info=True,
-            )
-            direct_registry = {}
-
-        merged_extra_tools: list[dict[str, Any]] = []
-        try:
-            upstream_extra = getattr(completions_body, "extra_tools", None)
-            if isinstance(upstream_extra, list):
-                merged_extra_tools.extend([t for t in upstream_extra if isinstance(t, dict)])
-        except Exception:
-            self.logger.warning(
-                "Could not read extra tools from the request body; continuing without them",
-                exc_info=True,
+        if tools_registry_failed:
+            await self._pipe._event_emitter_handler._emit_notification(
+                __event_emitter__,
+                "Tool registry unavailable; continuing without tools.",
+                level="warning",
             )
 
-        owui_tool_passthrough = open_webui_runs_the_calls(
-            valves, __metadata__, stream=bool(responses_body.stream)
-        )
-        incoming_tools_raw = body.get("tools")
-        incoming_tools = _chat_tools_to_responses_tools(incoming_tools_raw)
-        strictify = valves.ENABLE_STRICT_TOOL_CALLING and (not owui_tool_passthrough)
-
-        owui_registry: dict[str, dict[str, Any]] = {}
-        if isinstance(__tools__, dict):
-            owui_registry = {k: v for k, v in __tools__.items() if isinstance(v, dict)}
-        elif isinstance(__tools__, list):
-            for entry in __tools__:
-                if not isinstance(entry, dict):
-                    continue
-                name = entry.get("name")
-                if not name and isinstance(entry.get("spec"), dict):
-                    name = entry["spec"].get("name")
-                if isinstance(name, str) and name.strip():
-                    owui_registry[name.strip()] = entry
-
-        if isinstance(__metadata__, dict):
-            metadata_tools_raw = __metadata__.get("tools")
-            if isinstance(metadata_tools_raw, dict):
-                metadata_tools = {
-                    k: v for k, v in metadata_tools_raw.items() if isinstance(k, str) and isinstance(v, dict)
-                }
-                if metadata_tools:
-                    exposed_map = __metadata__.get("_pipe_exposed_to_origin")
-                    known_origins: set[str] = set()
-                    if isinstance(exposed_map, dict):
-                        for exposed_name in owui_registry:
-                            origin = exposed_map.get(exposed_name, exposed_name)
-                            if isinstance(origin, str):
-                                known_origins.add(origin)
-                    for name, tool_cfg in metadata_tools.items():
-                        if name not in owui_registry and name not in known_origins:
-                            owui_registry[name] = tool_cfg
-
-        owui_registry = {
-            name: cfg for name, cfg in owui_registry.items() if not (cfg.get("direct") is True and cfg.get("callable") is None)
-        }
-
-        if fusion_inner:
-            is_builtin_ask_user = self._pipe._ensure_tool_executor()._is_builtin_ask_user
-            owui_registry = {name: cfg for name, cfg in owui_registry.items() if not is_builtin_ask_user(cfg)}
-
-        request_params = __metadata__.get("params")
-        request_params = request_params if isinstance(request_params, dict) else {}
-        withhold_owui_tools = bool(
-            request_params.get("function_calling") == "legacy"
-            or (
-                request_params.get("tool_approval_mode") == "ask"
-                and (
-                    fusion_inner
-                    or (
-                        is_linkable_chat(__metadata__.get("chat_id"))
-                        and __metadata__.get("message_id")
-                    )
-                )
-            )
-        )
-        if withhold_owui_tools:
-            resolved_names = _resolved_tool_names(owui_registry, direct_registry)
-            owui_registry = {}
-            direct_registry = {}
-            incoming_tools = [
-                t for t in (incoming_tools or [])
-                if not (isinstance(t, dict) and t.get("name") in resolved_names)
-            ]
-
-        tools, exec_registry, exposed_to_origin = _build_collision_safe_tool_specs_and_registry(
-            request_tool_specs=incoming_tools if incoming_tools else None,
-            owui_registry=owui_registry or None,
-            direct_registry=direct_registry or None,
-            builtin_registry=None,
-            extra_tools=merged_extra_tools or None,
-            strictify=strictify,
-            owui_tool_passthrough=owui_tool_passthrough,
-            logger=self.logger,
-        )
         _advertised_names_for_replayed_calls(responses_body.input, exposed_to_origin)
         if self.logger.isEnabledFor(logging.DEBUG):
             renames = [

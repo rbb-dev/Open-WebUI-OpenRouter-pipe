@@ -204,6 +204,7 @@ def _build_collision_safe_tool_specs_and_registry(
     strictify: bool,
     owui_tool_passthrough: bool,
     logger: logging.Logger | None,
+    builtin_ask_user_names: set[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], dict[str, str]]:
     """Build collision-safe tool specs and an execution registry.
 
@@ -212,6 +213,8 @@ def _build_collision_safe_tool_specs_and_registry(
       - exec_registry: mapping exposed_name -> OWUI tool cfg dict (callable/spec/etc).
       - exposed_to_origin: mapping exposed_name -> origin tool name (for passthrough execution).
     """
+    from .tool_executor import is_builtin_ask_user
+
     log = logger or _module_logger
     request_tool_specs = request_tool_specs or []
     extra_tools = extra_tools or []
@@ -415,6 +418,8 @@ def _build_collision_safe_tool_specs_and_registry(
         spec["name"] = exposed_name
         tools_out.append(spec)
         exposed_to_origin[exposed_name] = origin_name
+        if builtin_ask_user_names is not None and is_builtin_ask_user(c.get("tool_cfg")):
+            builtin_ask_user_names.add(exposed_name)
 
         tool_cfg = c.get("tool_cfg")
         if owui_tool_passthrough:

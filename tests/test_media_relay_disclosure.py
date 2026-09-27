@@ -32,6 +32,7 @@ from aioresponses import CallbackResult, aioresponses
 from PIL import Image
 
 from open_webui_openrouter_pipe.core.config import Valves
+from open_webui_openrouter_pipe.core.errors import OpenRouterAPIError
 from open_webui_openrouter_pipe.integrations import video as video_module
 from open_webui_openrouter_pipe.integrations.media_relay import _ENDPOINTS
 from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
