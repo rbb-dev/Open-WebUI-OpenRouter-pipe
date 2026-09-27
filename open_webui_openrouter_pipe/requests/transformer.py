@@ -148,9 +148,10 @@ def _without_tool_result(item: dict[str, Any], names: dict[str, str]) -> list[di
         return _server_round(item, "{}", unretained_tool_result(server_tool_status(item) != "completed"))
     return None
 _REUSE_DOWNLOAD_MEMO_MAX_BYTES = 8 * 1024 * 1024
+_REUSE_WARN_COOLDOWN_S = 30.0
 _reuse_download_memo: OrderedDict[tuple[str, str], tuple[bytes, str]] = OrderedDict()
-_warned_image_reuse: set[str] = set()
-_warned_oversized_inline: set[str] = set()
+_warned_image_reuse: dict[str, float] = {}
+_warned_oversized_inline: dict[str, float] = {}
 
 
 class ImageRefusal(NamedTuple):
@@ -553,6 +554,7 @@ async def transform_messages_to_input(
     ]
     person_images_this_turn = False
     temporary_chat = is_temporary_chat(chat_id)
+    request_memo: dict[tuple[str, str], tuple[bytes, str]] = {}
     tool_names_by_call_id: dict[str, str] = {
         str(call.get("id")): str((call.get("function") or {}).get("name") or "")
         for message in messages
@@ -762,10 +764,16 @@ async def transform_messages_to_input(
                         try:
                             memo_key = (chat_id, url) if chat_id else None
                             remembered = (
-                                _reuse_download_memo.get(memo_key)
+                                request_memo.get(memo_key)
                                 if mode == "reuse" and memo_key is not None
                                 else None
                             )
+                            if remembered is None and mode == "reuse" and not temporary_chat:
+                                remembered = (
+                                    _reuse_download_memo.get(memo_key)
+                                    if memo_key is not None
+                                    else None
+                                )
                             downloaded = (
                                 {"data": remembered[0], "mime_type": remembered[1]}
                                 if remembered is not None
@@ -780,8 +788,14 @@ async def transform_messages_to_input(
                                         "oversized_remote",
                                         subject=url,
                                     )
+                                if mode == "reuse" and memo_key is not None:
+                                    request_memo[memo_key] = (
+                                        downloaded["data"],
+                                        downloaded.get("mime_type") or "",
+                                    )
                                 if (
                                     mode == "reuse"
+                                    and not temporary_chat
                                     and remembered is None
                                     and memo_key is not None
                                     and len(downloaded["data"])
@@ -1436,7 +1450,11 @@ async def transform_messages_to_input(
                     if isinstance(result, ImageRefusal):
                         if not is_image_block:
                             pipe.logger.log(
-                                warn_level(_warned_oversized_inline, result.cause),
+                                warn_level(
+                                    _warned_oversized_inline,
+                                    result.cause,
+                                    cooldown_s=_REUSE_WARN_COOLDOWN_S,
+                                ),
                                 "Skipping an attached file (%s): %s",
                                 result.subject or "no source",
                                 result.reason,
@@ -1450,7 +1468,11 @@ async def transform_messages_to_input(
                                 kind="image",
                             )
                         pipe.logger.log(
-                            warn_level(_warned_oversized_inline, result.cause),
+                            warn_level(
+                                _warned_oversized_inline,
+                                result.cause,
+                                cooldown_s=_REUSE_WARN_COOLDOWN_S,
+                            ),
                             "Skipping an attached image (%s): %s",
                             result.subject or "no source",
                             result.reason,
@@ -1511,7 +1533,11 @@ async def transform_messages_to_input(
                         transformed = await _to_input_image(source_block, mode="reuse")
                         if isinstance(transformed, ImageRefusal):
                             pipe.logger.log(
-                                warn_level(_warned_image_reuse, transformed.cause),
+                                warn_level(
+                                    _warned_image_reuse,
+                                    transformed.cause,
+                                    cooldown_s=_REUSE_WARN_COOLDOWN_S,
+                                ),
                                 "Not reusing an earlier image: %s",
                                 transformed.reason,
                             )
@@ -1521,7 +1547,11 @@ async def transform_messages_to_input(
                         pipe.logger.log(
                             logging.WARNING
                             if exc.denied
-                            else warn_level(_warned_image_reuse, "reuse_unavailable"),
+                            else warn_level(
+                                _warned_image_reuse,
+                                "reuse_unavailable",
+                                cooldown_s=_REUSE_WARN_COOLDOWN_S,
+                            ),
                             "Not reusing an earlier image: %s",
                             exc.user_message,
                         )

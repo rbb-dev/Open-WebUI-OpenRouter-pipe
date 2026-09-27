@@ -5057,6 +5057,15 @@ class TestImageReuseRegister:
             f"the memo holds {held} bytes against its own 1,000 byte cap"
         )
 
+    @staticmethod
+    async def _untyped_download(url, *_a, **_k):
+        return {"data": b"not an image at all", "mime_type": "application/octet-stream"}
+
+    @staticmethod
+    async def _unreadable_gateway(*_a, **_k):
+        raise RequiredInternalFileError(
+            "Cannot read a referenced file.", kind="image", denied=False
+        )
 
 class TestTransformerFeedsTheBudget:
     """The seam where one unit's output shape is another unit's input assumption.

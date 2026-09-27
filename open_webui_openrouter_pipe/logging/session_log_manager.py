@@ -1101,6 +1101,8 @@ class SessionLogManager:
     @timed
     def cleanup_archives(self) -> None:
         """Delete expired session log archives and prune empty directories."""
+        if not self.valves.SESSION_LOG_STORE_ENABLED:
+            return
         with self._lock:
             dirs = set(self._dirs)
             retention_days = self._retention_days

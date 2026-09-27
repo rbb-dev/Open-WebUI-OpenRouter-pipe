@@ -1181,7 +1181,8 @@ class Valves(BaseModel):
         description=(
             "When True, save the full log of each request to encrypted zip files on disk. "
             "Archives capture the full OpenRouter request/response (prompts, model output, tool calls, provider errors) plus request identifiers — treat as sensitive conversation data at rest. "
-            "Persistence is skipped when any required IDs are missing (user_id, chat_id, message_id, request_id), and for every temporary chat."
+            "Persistence is skipped when any required IDs are missing (user_id, chat_id, message_id, request_id), and for every temporary chat. "
+            "With it False the retention sweep is skipped too, so archives already on disk are left untouched rather than deleted."
         ),
     )
     SESSION_LOG_DIR: str = Field(

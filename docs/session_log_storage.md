@@ -130,6 +130,8 @@ When storage is enabled, a background cleanup loop periodically:
 
 Cleanup runs every `SESSION_LOG_CLEANUP_INTERVAL_SECONDS`.
 
+With storage disabled the pipe neither writes nor deletes archives: turning the valve off stops the sweep on the next pass, and archives already on disk are left untouched until it is on again. Anything past `SESSION_LOG_RETENTION_DAYS` at that point is reclaimed on the first pass after it is turned back on.
+
 Additionally, once an archive is assembled, the per-invocation DB segments used to build it are deleted. A separate “stale finalize” path can assemble + delete segments for abandoned turns after a long timeout.
 
 Operational note:

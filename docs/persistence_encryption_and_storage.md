@@ -20,7 +20,7 @@ Persisted artifacts include (at least):
 
 The pipe never stores a copy of a picture or file a person attaches, in any chat.
 
-A temporary chat keeps none of its content in the pipe's storage. Open WebUI keeps it only in the browser, and the pipe stores none of it (database, disk or file storage): no tool round, no reasoning and no session log. When usage collection (`PIPE_DASHBOARD_USAGE_COLLECT`) or cost snapshots (`COSTS_REDIS_DUMP`) are switched on (both off by default), a temporary chat's records keep every figure but name no chat: its usage row leaves the chat and session ids empty, and its cost snapshot carries no chat or message id. Saved and channel chats keep those ids. While an admin has the dashboard open on a deployment that uses Redis, a temporary chat's live row passes through Redis (rewritten every 2 seconds, each entry expiring after 10) under an anonymous stand-in keyed by `WEBUI_SECRET_KEY`, never under its chat id, its socket id or the key sent to OpenRouter, and with no id at all when that secret is unset. Three things are kept the way Open WebUI keeps them:
+A temporary chat keeps none of its content in the pipe's storage. Open WebUI keeps it only in the browser, and the pipe stores none of it (database, disk or file storage): no tool round, no reasoning and no session log, and no picture bytes in the worker's memory - a picture a temporary chat reuses is fetched again on each request that needs it rather than cached in the process. When usage collection (`PIPE_DASHBOARD_USAGE_COLLECT`) or cost snapshots (`COSTS_REDIS_DUMP`) are switched on (both off by default), a temporary chat's records keep every figure but name no chat: its usage row leaves the chat and session ids empty, and its cost snapshot carries no chat or message id. Saved and channel chats keep those ids. While an admin has the dashboard open on a deployment that uses Redis, a temporary chat's live row passes through Redis (rewritten every 2 seconds, each entry expiring after 10) under an anonymous stand-in keyed by `WEBUI_SECRET_KEY`, never under its chat id, its socket id or the key sent to OpenRouter, and with no id at all when that secret is unset. Three things are kept the way Open WebUI keeps them:
 
 - Pictures and videos a model generates are saved to Open WebUI's file storage so the chat can show them, as Open WebUI does for pictures its own image generation makes.
 - Pictures and audio an MCP tool returns are saved as files by Open WebUI's own tool handling, as it does in any chat.
@@ -115,6 +115,7 @@ If these prerequisites are not met, the pipe runs without Redis and persists art
 High-level behavior:
 - When Redis caching is enabled and available, the pipe can enqueue persisted rows into Redis and flush them to the database asynchronously.
 - When Redis is enabled, the pipe can also cache persisted artifacts for faster replay reads.
+- When Redis write-behind is active, a row deleted while it is still queued is removed from the table and its cache entry, so it cannot be replayed from either. The marker carrying that decision lives in Redis for `REDIS_CACHE_TTL_SECONDS` (600 s by default): a row still queued when its marker expires is written to the table and the delete is lost, which is what a queue backlogged past that window means. The `{ns}:deleted:{row}` marker value is the `message_id` a cleanup spared, or the sentinel `"1"` when it spared none; the key layout and the TTL are unchanged. A worker from before this change reads `"1"` the same way, but reads a spared `message_id` as truthy and will **drop that row** during a rolling deploy — a lost row, never a resurrected one. The no-keep path is byte-identical and does not diverge.
 - Redis keys are namespaced per pipe so multiple pipes can share the same Redis deployment.
 
 Failure handling (operator-relevant):
@@ -142,7 +143,9 @@ Reasoning retention controls whether replayed reasoning artifacts are deleted af
 
 Tool-round copies do not follow this setting: they stay for the whole conversation, until time-based cleanup
 removes them. Under `next_reply` the cleanup that runs at the end of a request spares the rows of the message that
-request is still writing, so continuing an answer does not delete the reasoning of the generation it continues.
+request is still writing, so continuing an answer does not delete the reasoning of the generation it continues. The
+sparing holds on the Redis write-behind path too: a spared row still in the pending queue is committed and re-cached
+rather than dropped, because the decision is read from the queued row's own message id.
 
 ### Tool output pruning
 When an earlier turn's tool result is handed to the model again, `TOOL_OUTPUT_RETENTION_TURNS` decides how much of it goes: results from the most recent turns go in full, while a long result from an older turn is cut to its first and last few hundred characters with a note of how much was removed. OpenRouter's own advisor, subagent and model-search items go back whole. The stored row is not changed.

@@ -2087,6 +2087,7 @@ class TestCleanupSessionLogArchives:
     def test_cleanup_session_log_archives_with_files(self, tmp_path):
         """Test that _cleanup_session_log_archives removes old files."""
         pipe = Pipe()
+        pipe.valves.SESSION_LOG_STORE_ENABLED = True
 
         # Create test directory structure
         log_dir = tmp_path / "logs"
@@ -2116,7 +2117,6 @@ class TestCleanupSessionLogArchives:
             assert new_file.exists()
         finally:
             pipe.shutdown()
-
 
 # =============================================================================
 # CONCURRENCY CONTROLS TESTS

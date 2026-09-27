@@ -1443,12 +1443,11 @@ class ArtifactStore:
         if not ids or not self._db_executor:
             return
         owners = await self._redis_cached_owners(refs)
-        dropped_while_queued = [row_id for row_id, owner in owners.items() if owner != keep_message_id]
-        if dropped_while_queued and self._redis_client:
+        if ids and self._redis_client:
             try:
                 pipe = self._redis_client.pipeline()
-                for row_id in dropped_while_queued:
-                    pipe.setex(self._redis_deleted_key(row_id), self._redis_ttl, "1")
+                for row_id in ids:
+                    pipe.setex(self._redis_deleted_key(row_id), self._redis_ttl, keep_message_id or "1")
                 await _await_if_needed(pipe.execute())
             except Exception as exc:
                 self.logger.warning("Redis delete marker write failed (best-effort): %s", exc, exc_info=True)
@@ -1689,7 +1688,26 @@ class ArtifactStore:
                 failure = f"{type(exc).__name__}: {exc}"
                 self.logger.exception("❌ DB flush failed! %d artifacts could not be persisted", len(rows))
             if committed:
-                await self._drop_rows_deleted_while_queued(sorted(committed))
+                committed_rows = [row for row in rows if row.get("id") in committed]
+                dropped = await self._drop_rows_deleted_while_queued(committed_rows)
+                if dropped and self._redis_client:
+                    dropped_ids = set(dropped)
+                    keys = [
+                        key
+                        for key in (
+                            self._redis_cache_key(row.get("chat_id"), row.get("id"))
+                            for row in committed_rows if row.get("id") in dropped_ids
+                        )
+                        if key
+                    ]
+                    if keys:
+                        try:
+                            await _await_if_needed(self._redis_client.delete(*keys))
+                        except Exception as exc:
+                            self.logger.warning(
+                                "Redis cache invalidation of dropped rows failed (best-effort): %s",
+                                exc, exc_info=True,
+                            )
 
             unrecoverable = [row for _entry, row in entries_by_row if row.get("payload") is None]
             uncommitted = [
@@ -1798,19 +1816,33 @@ class ArtifactStore:
         return owners
 
     @timed
-    async def _drop_rows_deleted_while_queued(self, row_ids: list[str]) -> None:
+    async def _drop_rows_deleted_while_queued(self, rows: list[dict[str, Any]]) -> list[str]:
         if not (self._redis_client and self._db_executor):
-            return
+            return []
+        row_ids = [str(row.get("id")) for row in rows if row.get("id")]
+        if not row_ids:
+            return []
         try:
             markers = await _await_if_needed(
                 self._redis_client.mget([self._redis_deleted_key(row_id) for row_id in row_ids])
             )
-            deleted = [row_id for row_id, marker in zip(row_ids, markers or []) if marker]
+            owners = {row.get("id"): row.get("message_id") for row in rows if row.get("id")}
+            deleted = [
+                row_id
+                for row_id, marker in zip(row_ids, markers or [])
+                if marker is not None and marker != owners.get(row_id)
+            ]
             if deleted:
                 loop = asyncio.get_running_loop()
-                await loop.run_in_executor(self._db_executor, functools.partial(self._delete_artifacts_sync, deleted))
+                await loop.run_in_executor(
+                    self._db_executor, functools.partial(self._delete_artifacts_sync, deleted)
+                )
+            return deleted
         except Exception as exc:
-            self.logger.warning("Removing flushed artifacts deleted while queued failed: %s", exc, exc_info=True)
+            self.logger.warning(
+                "Removing flushed artifacts deleted while queued failed: %s", exc, exc_info=True
+            )
+            return []
 
     @timed
     async def _redis_enqueue_rows(self, rows: list[dict[str, Any]]) -> list[str]:

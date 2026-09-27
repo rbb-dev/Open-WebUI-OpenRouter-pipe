@@ -36,6 +36,8 @@ The pipe stores only what a model generates, and for that it resolves a storage 
   - `FALLBACK_STORAGE_NAME`
   - `FALLBACK_STORAGE_ROLE`
 
+  The resolved account is memoised, but the memo is keyed on the email it was derived from: an unchanged email reuses the same account, and a changed one re-resolves on the next request that needs a storage owner.
+
 If storage cannot be resolved (for example in tests or synthetic contexts), the pipe skips the upload.
 
 ---
@@ -69,7 +71,7 @@ The pipe never writes an image the person attached to Open WebUI storage: not fo
 - A **remote URL** (`https://`) is downloaded (with retries/limits/SSRF protection) and its bytes are sent upstream as a `data:` URL; one that cannot be downloaded is forwarded as its link, and one larger than `BASE64_MAX_SIZE_MB` once downloaded is not sent. Plain `http://` is disabled by default and requires explicit allowlisting.
 - An **Open WebUI file URL** (for example `/api/v1/files/...`) is streamed with the requester's access and inlined as a `data:` URL to avoid requiring OpenRouter to fetch from your Open WebUI host.
 
-An image the pipe **reuses** from an earlier turn is inlined as a `data:` URL too. Bytes that carry a recognisable image signature decide its media type, whatever the source declared; where they carry none, the declaration decides. A reuse is dropped only when the type settled on this way is not an image type - so a payload declaring an image type whose bytes the pipe does not recognise (BMP and TIFF among them) is forwarded under its declaration, and one the pipe could not fetch at all is dropped. Nothing on this input path writes a file - images the model *generates* are stored separately, and that is an output-side behavior.
+An image the pipe **reuses** from an earlier turn is inlined as a `data:` URL too. A remote picture a saved chat reuses is cached in the worker's memory for the life of the process so later turns fetch it once; in a temporary chat it is re-fetched per request and kept nowhere. Bytes that carry a recognisable image signature decide its media type, whatever the source declared; where they carry none, the declaration decides. A reuse is dropped only when the type settled on this way is not an image type - so a payload declaring an image type whose bytes the pipe does not recognise (BMP and TIFF among them) is forwarded under its declaration, and one the pipe could not fetch at all is dropped. Nothing on this input path writes a file - images the model *generates* are stored separately, and that is an output-side behavior.
 
 ### Limits and selection
 - `MAX_INPUT_IMAGES_PER_REQUEST` caps how many images one of the person's messages forwards, counting a picture reused from earlier in the conversation. Pictures a tool returns are never cut by this limit. Whenever a tool round's result reaches the model, all of its pictures go with it.

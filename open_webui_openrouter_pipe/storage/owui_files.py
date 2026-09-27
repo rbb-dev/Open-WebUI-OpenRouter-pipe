@@ -641,6 +641,7 @@ class OwuiFileGateway:
         self._valves = valves
         self._valves_owner = valves_owner
         self._storage_user_cache = None
+        self._storage_user_cache_email: str | None = None
         self._storage_user_lock = None
         self._storage_role_warning_emitted = False
         self._user_insert_param_names = None
@@ -1253,17 +1254,23 @@ class OwuiFileGateway:
             self.logger.debug("Cannot create storage user: Open WebUI integration not available")
             return None
 
-        if self._storage_user_cache is not None:
+        fallback_email = self.valves.FALLBACK_STORAGE_EMAIL or "openrouter-pipe@system.local"
+        if (
+            self._storage_user_cache is not None
+            and self._storage_user_cache_email == fallback_email
+        ):
             return self._storage_user_cache
 
         if self._storage_user_lock is None:
             self._storage_user_lock = asyncio.Lock()
 
         async with self._storage_user_lock:
-            if self._storage_user_cache is not None:
+            if (
+                self._storage_user_cache is not None
+                and self._storage_user_cache_email == fallback_email
+            ):
                 return self._storage_user_cache
 
-            fallback_email = self.valves.FALLBACK_STORAGE_EMAIL or "openrouter-pipe@system.local"
             fallback_name = self.valves.FALLBACK_STORAGE_NAME or "OpenRouter Pipe Storage"
             fallback_role = self.valves.FALLBACK_STORAGE_ROLE or "pending"
 
@@ -1322,4 +1329,5 @@ class OwuiFileGateway:
                     return None
 
             self._storage_user_cache = fallback_user
+            self._storage_user_cache_email = fallback_email
             return fallback_user

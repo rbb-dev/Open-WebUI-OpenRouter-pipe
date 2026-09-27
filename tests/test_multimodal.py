@@ -1420,6 +1420,9 @@ class TestEnsureStorageUser:
         cached_user = Mock()
         cached_user.email = "cached@example.com"
         pipe_instance_async._file_gateway._storage_user_cache = cached_user
+        pipe_instance_async._file_gateway._storage_user_cache_email = (
+            pipe_instance_async.valves.FALLBACK_STORAGE_EMAIL
+        )
 
         result = await pipe_instance_async._file_gateway.ensure_storage_user()
         assert result is cached_user
@@ -1464,6 +1467,9 @@ class TestEnsureStorageUser:
 
             async def set_cache_during_wait():
                 pipe_instance_async._file_gateway._storage_user_cache = cached_user
+                pipe_instance_async._file_gateway._storage_user_cache_email = (
+                    pipe_instance_async.valves.FALLBACK_STORAGE_EMAIL
+                )
 
             await set_cache_during_wait()
 
@@ -3911,6 +3917,9 @@ class TestEnsureStorageUserCacheLock:
         cached_user = SimpleNamespace(id="cached-during-wait", email="cached@test.local")
 
         pipe_instance_async._file_gateway._storage_user_cache = cached_user
+        pipe_instance_async._file_gateway._storage_user_cache_email = (
+            pipe_instance_async.valves.FALLBACK_STORAGE_EMAIL
+        )
 
         result = await pipe_instance_async._file_gateway.ensure_storage_user()
         assert result is cached_user

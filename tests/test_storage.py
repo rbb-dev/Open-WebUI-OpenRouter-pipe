@@ -3129,6 +3129,7 @@ async def test_rows_cleaned_up_while_waiting_to_be_written_never_stay_in_the_tab
 
         assert store._redis_client.lists[store._redis_pending_key] == []
         assert sorted(store._db_fetch_sync("chat", None, ids)) == [ids_by_message["m-writing"]]
+        assert sorted(await store._db_fetch("chat", None, ids)) == [ids_by_message["m-writing"]]
 
 
 @pytest.mark.asyncio

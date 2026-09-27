@@ -329,6 +329,7 @@ class TestSessionLogArchiveEdgeCases:
 
         # Set retention to 1 day for testing
         valves = pipe.Valves(SESSION_LOG_RETENTION_DAYS=1)
+        pipe.valves.SESSION_LOG_STORE_ENABLED = True
         fixed_now = 1_700_000_000.0
         monkeypatch.setattr(pipe_module.time, "time", lambda: fixed_now)
 
@@ -392,6 +393,7 @@ class TestSessionLogArchiveEdgeCases:
     def test_cleanup_prunes_empty_directories(self, tmp_path, monkeypatch, pipe_instance) -> None:
         """Empty user/chat directories removed after archive deletion."""
         pipe = pipe_instance
+        pipe.valves.SESSION_LOG_STORE_ENABLED = True
 
         # Create archive
         job = _SessionLogArchiveJob(
@@ -432,7 +434,6 @@ class TestSessionLogArchiveEdgeCases:
         assert not archive_path.exists()
         assert not chat_dir.exists()
         assert not user_dir.exists()
-
 
 # ===== From test_session_log_merge.py =====
 
