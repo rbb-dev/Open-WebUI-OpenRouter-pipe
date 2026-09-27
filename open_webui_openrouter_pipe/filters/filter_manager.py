@@ -2283,37 +2283,35 @@ class Filter:
             return "" if val == _NO_PREF else val
 
         def get_bool(field: str, api_default: bool = False) -> bool | None:
-            """Get boolean value. Returns None if not explicitly set or matches API default."""
+            """Get a boolean: None when this holder never set the field, else the value it holds (an explicit False is returned)."""
+            for holder, holder_set in __BOOL_HOLDERS__:
+                if holder is not None and field in holder_set:
+                    return bool(getattr(holder, field, api_default))
+            return None
+
+        def get_float(field: str) -> float | None:
 '''
+        _bool_holder_terms = []
+        if visibility in ("user", "both"):
+            _bool_holder_terms.append("(user_valves, user_set)")
+        if visibility in ("admin", "both"):
+            _bool_holder_terms.append('(getattr(self, "valves", None), admin_set)')
+        logic = logic.replace(
+            "__BOOL_HOLDERS__", "[" + ", ".join(_bool_holder_terms) + "]"
+        )
         if visibility in ("user", "both"):
             logic += '''            if field in user_set and user_valves is not None:
-                val = getattr(user_valves, field, api_default)
-                if val != api_default:
-                    return val
+                val = getattr(user_valves, field, None)
+                if isinstance(val, (int, float)):
+                    return float(val)
 '''
         if visibility in ("admin", "both"):
             logic += '''            if field in admin_set and hasattr(self, "valves"):
-                val = getattr(self.valves, field, api_default)
-                if val != api_default:
-                    return val
+                val = getattr(self.valves, field, None)
+                if isinstance(val, (int, float)):
+                    return float(val)
 '''
         logic += '''            return None
-
-        def get_float(field: str) -> float:
-'''
-        if visibility in ("user", "both"):
-            logic += '''            if field in user_set and user_valves is not None:
-                val = getattr(user_valves, field, 0)
-                if isinstance(val, (int, float)) and val > 0:
-                    return float(val)
-'''
-        if visibility in ("admin", "both"):
-            logic += '''            if field in admin_set and hasattr(self, "valves"):
-                val = getattr(self.valves, field, 0)
-                if isinstance(val, (int, float)) and val > 0:
-                    return float(val)
-'''
-        logic += '''            return 0
 
 '''
         drawn = FilterManager._routing_controls(transport)
@@ -2402,13 +2400,13 @@ class Filter:
 '''
         if "MIN_THROUGHPUT" in drawn:
             logic += '''        min_throughput = get_float("MIN_THROUGHPUT")
-        if min_throughput > 0:
+        if min_throughput is not None and min_throughput > 0:
             provider["preferred_min_throughput"] = min_throughput
 
 '''
         if "MAX_LATENCY" in drawn:
             logic += '''        max_latency = get_float("MAX_LATENCY")
-        if max_latency > 0:
+        if max_latency is not None and max_latency > 0:
             provider["preferred_max_latency"] = max_latency
 
 '''
@@ -2420,22 +2418,22 @@ class Filter:
         max_price_audio = get_float("MAX_PRICE_AUDIO")
         max_price_request = get_float("MAX_PRICE_REQUEST")
         if (
-            max_price_prompt > 0
-            or max_price_completion > 0
-            or max_price_image > 0
-            or max_price_audio > 0
-            or max_price_request > 0
+            (max_price_prompt is not None and max_price_prompt > 0)
+            or (max_price_completion is not None and max_price_completion > 0)
+            or (max_price_image is not None and max_price_image > 0)
+            or (max_price_audio is not None and max_price_audio > 0)
+            or (max_price_request is not None and max_price_request > 0)
         ):
             provider["max_price"] = {}
-            if max_price_prompt > 0:
+            if max_price_prompt is not None and max_price_prompt > 0:
                 provider["max_price"]["prompt"] = max_price_prompt
-            if max_price_completion > 0:
+            if max_price_completion is not None and max_price_completion > 0:
                 provider["max_price"]["completion"] = max_price_completion
-            if max_price_image > 0:
+            if max_price_image is not None and max_price_image > 0:
                 provider["max_price"]["image"] = max_price_image
-            if max_price_audio > 0:
+            if max_price_audio is not None and max_price_audio > 0:
                 provider["max_price"]["audio"] = max_price_audio
-            if max_price_request > 0:
+            if max_price_request is not None and max_price_request > 0:
                 provider["max_price"]["request"] = max_price_request
 
 '''
@@ -2558,13 +2556,13 @@ class Filter:
             "QUANTIZATION": f'        QUANTIZATION: Literal[{quantizations_literal}] = Field(default=_NO_PREF, description="Filter by quantization")',
             "SORT": '        SORT: Literal[_NO_PREF, "price", "throughput", "latency", "exacto"] = Field(default=_NO_PREF, description="Sort providers by; exacto favours endpoints that reproduce the model most faithfully")',
             "SORT_PARTITION": '        SORT_PARTITION: Literal[_NO_PREF, "model", "none"] = Field(default=_NO_PREF, description="Whether sorting groups endpoints by model first (model) or ranks them all together (none)")',
-            "MIN_THROUGHPUT": '        MIN_THROUGHPUT: float = Field(default=0, ge=0, description="Min throughput (tokens/sec), 0=no pref")',
-            "MAX_LATENCY": '        MAX_LATENCY: float = Field(default=0, ge=0, description="Max latency (seconds), 0=no pref")',
-            "MAX_PRICE_PROMPT": '        MAX_PRICE_PROMPT: float = Field(default=0, ge=0, description="Max price for prompt ($/M tokens), 0=no limit")',
-            "MAX_PRICE_COMPLETION": '        MAX_PRICE_COMPLETION: float = Field(default=0, ge=0, description="Max price for completion ($/M tokens), 0=no limit")',
-            "MAX_PRICE_IMAGE": '        MAX_PRICE_IMAGE: float = Field(default=0, ge=0, description="Max price per image ($/image), 0=no limit")',
-            "MAX_PRICE_AUDIO": '        MAX_PRICE_AUDIO: float = Field(default=0, ge=0, description="Max price for audio ($/unit), 0=no limit")',
-            "MAX_PRICE_REQUEST": '        MAX_PRICE_REQUEST: float = Field(default=0, ge=0, description="Max price per request ($/request), 0=no limit")',
+            "MIN_THROUGHPUT": '        MIN_THROUGHPUT: float = Field(default=0, ge=0, description="Min throughput (tokens/sec); 0 clears the admin default, omit for no constraint")',
+            "MAX_LATENCY": '        MAX_LATENCY: float = Field(default=0, ge=0, description="Max latency (seconds); 0 clears the admin default, omit for no constraint")',
+            "MAX_PRICE_PROMPT": '        MAX_PRICE_PROMPT: float = Field(default=0, ge=0, description="Max price for prompt ($/M tokens); 0 clears the admin default, omit for no limit")',
+            "MAX_PRICE_COMPLETION": '        MAX_PRICE_COMPLETION: float = Field(default=0, ge=0, description="Max price for completion ($/M tokens); 0 clears the admin default, omit for no limit")',
+            "MAX_PRICE_IMAGE": '        MAX_PRICE_IMAGE: float = Field(default=0, ge=0, description="Max price per image ($/image); 0 clears the admin default, omit for no limit")',
+            "MAX_PRICE_AUDIO": '        MAX_PRICE_AUDIO: float = Field(default=0, ge=0, description="Max price for audio ($/unit); 0 clears the admin default, omit for no limit")',
+            "MAX_PRICE_REQUEST": '        MAX_PRICE_REQUEST: float = Field(default=0, ge=0, description="Max price per request ($/request); 0 clears the admin default, omit for no limit")',
         }
         if set(control_lines) != set(_ROUTING_CONTROL_KEYS):
             raise ValueError(
@@ -2791,7 +2789,12 @@ class Filter:
             if getattr(existing_filters.get(slug), "is_active", False)
         }
 
-        if hash_unchanged and not missing_filters and not stale_active:
+        orphaned_active = {
+            slug for slug, existing in existing_filters.items()
+            if slug not in all_models and getattr(existing, "is_active", False)
+        }
+
+        if hash_unchanged and not missing_filters and not stale_active and not orphaned_active:
             for slug in all_models:
                 if slug in undeliverable_slugs:
                     continue

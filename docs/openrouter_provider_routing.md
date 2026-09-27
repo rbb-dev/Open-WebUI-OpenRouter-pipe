@@ -20,6 +20,9 @@ When you configure provider routing for a model, the pipe:
 2. **Generates a dedicated filter** for each model with human-readable dropdown options
 3. **Installs the filter** in Open WebUI's Functions database
 4. **Attaches the filter** to the model so it appears in the Integrations menu, enabled by default in new chats (`AUTO_DEFAULT_PROVIDER_ROUTING_FILTERS`, on by default) so saved preferences apply without a per-chat toggle
+5. **Detaches on clearing** — emptying both valve lists switches that model's filter row off (`is_active: False`, not deleted) on the next model-list refresh, and removes the filter from the model's own `filterIds` and `defaultFilterIds` on the next metadata sync, so a model you took out of routing stops enforcing it
+
+**Limit.** The two halves above have different clocks, and the second is the one that can wait: the filter row is switched off on the next model-list refresh, while the model's own `filterIds` and `defaultFilterIds` entries are removed on the next metadata sync. So a model whose metadata sync is switched off — `UPDATE_MODEL_CAPABILITIES`, `UPDATE_MODEL_IMAGES` and `UPDATE_MODEL_DESCRIPTIONS` all off, with no other sync valve on — keeps its stale `filterIds` and `defaultFilterIds` until a sync valve comes back on. The filter row itself is inactive, so the chat path is unaffected; only the Integrations menu entry lingers until the next sync.
 
 The generated filters expose OpenRouter's provider routing options as easy-to-use dropdowns and toggles — no need to guess provider slugs or remember API field names.
 
@@ -36,6 +39,8 @@ Provider routing filters support **two visibility modes** that control who can c
 | **Both** | Both (user overrides admin) | Yes | Admin defaults + user choice |
 
 When a model appears in **both** `ADMIN_PROVIDER_ROUTING_MODELS` and `USER_PROVIDER_ROUTING_MODELS`, the filter has both `Valves` (admin defaults) and `UserValves` (user overrides), with user settings taking precedence.
+
+Precedence is over *presence*, not value: a user who explicitly sets a switch off, or a ceiling to `0`, overrides the admin's setting rather than being read as "no preference". A value nobody set is simply not sent, so the admin's setting applies.
 
 ---
 
@@ -125,12 +130,12 @@ Allow or deny providers that may store data — `(no preference)` / `allow` / `d
 
 ### Performance floors
 
-- **MIN_THROUGHPUT** — require a minimum provider throughput in tokens/sec (`0` = no preference). Maps to `provider.preferred_min_throughput`.
-- **MAX_LATENCY** — require a maximum provider latency in seconds (`0` = no preference). Maps to `provider.preferred_max_latency`.
+- **MIN_THROUGHPUT** — require a minimum provider throughput in tokens/sec. Leave it blank for no constraint; a `0` in a *Both* filter clears the admin's value and drops the key. Maps to `provider.preferred_min_throughput`.
+- **MAX_LATENCY** — require a maximum provider latency in seconds. Leave it blank for no constraint; a `0` in a *Both* filter clears the admin's value and drops the key. Maps to `provider.preferred_max_latency`.
 
 ### Price ceilings
 
-Skip any provider that would charge more than the cap (`0` = no limit on that axis). Each maps under `provider.max_price`:
+Skip any provider that would charge more than the cap. Leave a ceiling blank for no limit on that axis; a `0` in a *Both* filter clears the admin's value for that axis and omits the key, which is what "no limit" means to OpenRouter — sending a literal `0` would exclude every provider. Each maps under `provider.max_price`:
 
 - **MAX_PRICE_PROMPT** — `$/M` prompt tokens
 - **MAX_PRICE_COMPLETION** — `$/M` completion tokens
@@ -164,8 +169,10 @@ These are configured on the **pipe** function in Open WebUI (Admin → Functions
 
 | Valve | Type | Default | Purpose |
 |-------|------|---------|---------|
-| `ADMIN_PROVIDER_ROUTING_MODELS` | `str` | `""` | Comma-separated model slugs for admin-only provider routing filters. Users cannot override or disable these filters. |
-| `USER_PROVIDER_ROUTING_MODELS` | `str` | `""` | Comma-separated model slugs for user-configurable provider routing filters. Users can toggle and configure these per-chat. |
+| `ADMIN_PROVIDER_ROUTING_MODELS` | `str` | `""` | Comma-separated model slugs for admin-only provider routing filters. Users cannot override or disable these filters. Empty detaches on the next refresh. |
+| `USER_PROVIDER_ROUTING_MODELS` | `str` | `""` | Comma-separated model slugs for user-configurable provider routing filters. Users can toggle and configure these per-chat. Empty detaches on the next refresh. |
+
+**Sync cost.** While `AUTO_DEFAULT_PROVIDER_ROUTING_FILTERS` is on, it alone keeps a model-metadata sync scheduled even when every other sync valve is off — that is the only configuration it serves, and it is what lets clearing both routing lists still retract what the pipe attached. The sync it produces is idempotent, so paying for it changes nothing about the result.
 
 ### Generated filter valves (per filter)
 

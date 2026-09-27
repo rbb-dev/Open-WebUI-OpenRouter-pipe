@@ -148,6 +148,21 @@ _LEGACY_RECORD_KEYS = {"web_tools_attached_id": "web_tools_filter_id"}
 _SYNC_RETRY_FLOOR_SECONDS = 60.0
 
 
+def _web_tools_owned(
+    pipe_meta: dict,
+    fid: str,
+    previous_id_str: str,
+    *,
+    id_from_record: bool,
+) -> bool:
+    attached = pipe_meta.get("web_tools_attached_id")
+    return (
+        bool(pipe_meta.get("web_tools_default_seeded"))
+        or previous_id_str == fid
+        or (id_from_record and isinstance(attached, str) and bool(attached))
+    )
+
+
 def _apply_single_id_filter_ids(
     meta_dict: dict,
     *,
@@ -205,11 +220,38 @@ def _detached_by_this_pass(
     previous: list[str] = []
     if isinstance(pipe_meta, dict):
         recorded = pipe_meta.get(prune_key)
-        if isinstance(recorded, str):
-            previous = [p for p in (recorded,) if p]
-        if isinstance(recorded, list):
+        if isinstance(recorded, str) and recorded:
+            previous = [recorded]
+        elif isinstance(recorded, list):
             previous = [p for p in recorded if isinstance(p, str) and p]
     return set(previous) - set(filter_function_ids or [])
+
+
+def _recorded_ids_any_shape(meta_dict: dict, *, prune_key: str) -> set[str]:
+    pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
+    recorded: list[str] = []
+    if isinstance(pipe_meta, dict):
+        prev = pipe_meta.get(prune_key)
+        if isinstance(prev, str) and prev:
+            recorded = [prev]
+        elif isinstance(prev, list):
+            recorded = [p for p in prev if isinstance(p, str) and p]
+    return set(recorded)
+
+
+def _detached_with_default_off(
+    meta_dict: dict,
+    *,
+    prune_key: str,
+    filter_function_ids: list[str] | None,
+    auto_default: bool,
+) -> set[str]:
+    detached = _detached_by_this_pass(
+        meta_dict, prune_key=prune_key, filter_function_ids=filter_function_ids
+    )
+    if not auto_default:
+        detached |= _recorded_ids_any_shape(meta_dict, prune_key=prune_key)
+    return detached
 
 
 def _apply_list_default_filter_ids(
@@ -313,11 +355,7 @@ def _apply_provider_routing_default_filter_ids(
     detached: set[str] | None = None,
 ) -> bool:
     """Apply provider routing filter default-on flag to `meta_dict["defaultFilterIds"]`."""
-    if not auto_default_provider_routing_filter or not provider_routing_filter_id:
-        return False
     filter_ids = _normalize_id_list(meta_dict, "filterIds")
-    if provider_routing_filter_id not in filter_ids:
-        return False
     default_ids = _normalize_id_list(meta_dict, "defaultFilterIds")
     changed = False
 
@@ -326,12 +364,17 @@ def _apply_provider_routing_default_filter_ids(
         default_ids = kept
         changed = True
 
-    if provider_routing_filter_id in default_ids:
-        if not changed:
-            return False
-        meta_dict["defaultFilterIds"] = _dedupe_preserve_order(default_ids)
-        return True
-    default_ids.append(provider_routing_filter_id)
+    if (
+        auto_default_provider_routing_filter
+        and provider_routing_filter_id
+        and provider_routing_filter_id not in default_ids
+        and provider_routing_filter_id in filter_ids
+    ):
+        default_ids.append(provider_routing_filter_id)
+        changed = True
+
+    if not changed:
+        return False
     meta_dict["defaultFilterIds"] = _dedupe_preserve_order(default_ids)
     return True
 
@@ -412,6 +455,7 @@ def syncs_owui_models(valves: Any, provider_routing_enabled: bool) -> bool:
         or valves.AUTO_ATTACH_IMAGE_FILTERS
         or valves.AUTO_INSTALL_FUSION_FILTER
         or valves.AUTO_ATTACH_FUSION_FILTER
+        or valves.AUTO_DEFAULT_PROVIDER_ROUTING_FILTERS
         or provider_routing_enabled
     )
 
@@ -2001,6 +2045,24 @@ class ModelCatalogManager:
         if disable_description_updates:
             update_descriptions = False
 
+        id_from_record = False
+        default_filter_id = filter_function_id
+        if not filter_function_id and existing is not None and not disable_web_tools_default_on:
+            recorded_pipe_meta = getattr(existing.meta, "model_dump", None)
+            recorded_meta = recorded_pipe_meta() if callable(recorded_pipe_meta) else {}
+            recorded_pipe_meta = (
+                recorded_meta.get(_PIPE_METADATA_KEY)
+                if isinstance(recorded_meta, dict)
+                else None
+            )
+            if isinstance(recorded_pipe_meta, dict):
+                for key in ("web_tools_attached_id", "web_tools_filter_id"):
+                    candidate = recorded_pipe_meta.get(key)
+                    if isinstance(candidate, str) and candidate:
+                        default_filter_id = candidate
+                        id_from_record = True
+                        break
+
         def _ensure_pipe_meta(meta_dict: dict) -> dict:
             pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
             if isinstance(pipe_meta, dict):
@@ -2088,13 +2150,11 @@ class ModelCatalogManager:
 
 
         def _apply_default_filter_ids(meta_dict: dict) -> bool:
-            if not auto_default_filter or not filter_function_id or not filter_supported:
+            owned_id = default_filter_id
+            if not owned_id:
                 return False
 
             filter_ids = _normalize_id_list(meta_dict, "filterIds")
-            if filter_function_id not in filter_ids:
-                return False
-
             pipe_meta = _ensure_pipe_meta(meta_dict)
             seeded_key = "web_tools_default_seeded"
             previous_id = pipe_meta.get("web_tools_filter_id")
@@ -2103,24 +2163,37 @@ class ModelCatalogManager:
             default_ids = _normalize_id_list(meta_dict, "defaultFilterIds")
             changed = False
 
-            if previous_id_str and previous_id_str != filter_function_id and previous_id_str in default_ids:
-                default_ids = [filter_function_id if fid == previous_id_str else fid for fid in default_ids]
+            if owned_id in default_ids and _web_tools_owned(
+                pipe_meta,
+                owned_id,
+                previous_id_str,
+                id_from_record=id_from_record,
+            ) and (
+                not auto_default_filter or owned_id not in filter_ids
+            ):
+                default_ids = [fid for fid in default_ids if fid != owned_id]
                 changed = True
-
-            seeded = bool(pipe_meta.get(seeded_key, False))
-            if filter_function_id in default_ids:
-                if not seeded:
-                    pipe_meta[seeded_key] = True
-                    changed = True
-            else:
-                if not seeded:
-                    default_ids.append(filter_function_id)
-                    pipe_meta[seeded_key] = True
+                if pipe_meta.get(seeded_key):
+                    pipe_meta[seeded_key] = False
+            elif auto_default_filter and filter_supported and owned_id in filter_ids:
+                if previous_id_str and previous_id_str != owned_id and previous_id_str in default_ids:
+                    default_ids = [owned_id if fid == previous_id_str else fid for fid in default_ids]
                     changed = True
 
-            if previous_id_str != filter_function_id:
-                pipe_meta["web_tools_filter_id"] = filter_function_id
-                changed = True
+                seeded = bool(pipe_meta.get(seeded_key, False))
+                if owned_id in default_ids:
+                    if not seeded:
+                        pipe_meta[seeded_key] = True
+                        changed = True
+                else:
+                    if not seeded:
+                        default_ids.append(owned_id)
+                        pipe_meta[seeded_key] = True
+                        changed = True
+
+                if previous_id_str != owned_id:
+                    pipe_meta["web_tools_filter_id"] = owned_id
+                    changed = True
 
             if not changed:
                 return False
@@ -2137,17 +2210,33 @@ class ModelCatalogManager:
                 provider_routing_filter_id,
             )
 
-            if not provider_routing_filter_id:
-                self.logger.debug("PR attach: filter_id is None/empty, skipping")
-                return False
-
             normalized = _normalize_id_list(meta_dict, "filterIds")
             pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
             previous_id = None
+            recorded_id = None
             if isinstance(pipe_meta, dict):
                 prev = pipe_meta.get("provider_routing_filter_id")
-                if isinstance(prev, str) and prev and prev != provider_routing_filter_id:
-                    previous_id = prev
+                if isinstance(prev, str) and prev:
+                    recorded_id = prev
+                    if prev != provider_routing_filter_id:
+                        previous_id = prev
+
+            if not provider_routing_filter_id:
+                if recorded_id and recorded_id in normalized:
+                    self.logger.debug(
+                        "PR retire: detaching '%s' from model '%s'",
+                        recorded_id,
+                        openwebui_model_id,
+                    )
+                    meta_dict["filterIds"] = _dedupe_preserve_order(
+                        [fid for fid in normalized if fid != recorded_id]
+                    )
+                    pipe_meta = _ensure_pipe_meta(meta_dict)
+                    pipe_meta.pop("provider_routing_filter_id", None)
+                    meta_dict[_PIPE_METADATA_KEY] = pipe_meta
+                    return True
+                self.logger.debug("PR attach: filter_id is None/empty, skipping")
+                return False
 
             had = set(normalized)
             wanted = set(had)
@@ -2240,8 +2329,11 @@ class ModelCatalogManager:
             video_ids_now = [video_gen_filter_function_id] if (
                 video_gen_filter_supported and auto_attach_video_gen_filter and video_gen_filter_function_id
             ) else []
-            video_detached = _detached_by_this_pass(
-                meta_dict, prune_key="video_gen_filter_id", filter_function_ids=video_ids_now
+            video_detached = _detached_with_default_off(
+                meta_dict,
+                prune_key="video_gen_filter_id",
+                filter_function_ids=video_ids_now,
+                auto_default=auto_default_video_gen_filter,
             )
             if not video_gen_filter_function_id and video_gen_filter_supported:
                 video_detached = set()
@@ -2268,10 +2360,11 @@ class ModelCatalogManager:
             image_ids_now = image_filter_function_ids if (
                 image_filter_supported and auto_attach_image_filter
             ) else []
-            image_detached = _detached_by_this_pass(
+            image_detached = _detached_with_default_off(
                 meta_dict,
                 prune_key="image_filter_ids",
                 filter_function_ids=image_ids_now,
+                auto_default=auto_default_image_filter,
             )
             if _apply_list_filter_ids(
                 meta_dict,
@@ -2297,10 +2390,11 @@ class ModelCatalogManager:
             fusion_ids_now = fusion_filter_function_ids if (
                 fusion_filter_supported and auto_attach_fusion_filter
             ) else []
-            fusion_detached = _detached_by_this_pass(
+            fusion_detached = _detached_with_default_off(
                 meta_dict,
                 prune_key="fusion_filter_ids",
                 filter_function_ids=fusion_ids_now,
+                auto_default=auto_default_fusion_filter,
             )
             if _apply_list_filter_ids(
                 meta_dict,
@@ -2323,10 +2417,11 @@ class ModelCatalogManager:
                 meta_updated = True
 
             pr_ids_now = [provider_routing_filter_id] if provider_routing_filter_id else []
-            pr_detached = _detached_by_this_pass(
+            pr_detached = _detached_with_default_off(
                 meta_dict,
                 prune_key="provider_routing_filter_id",
                 filter_function_ids=pr_ids_now,
+                auto_default=auto_default_provider_routing_filter,
             )
             if _apply_provider_routing_filter_ids(meta_dict):
                 meta_updated = True
@@ -2397,16 +2492,24 @@ class ModelCatalogManager:
                 video_gen_filter_supported=video_gen_filter_supported,
                 auto_attach_video_gen_filter=auto_attach_video_gen_filter,
             )
+            video_detached = _detached_with_default_off(
+                meta_dict,
+                prune_key="video_gen_filter_id",
+                filter_function_ids=[video_gen_filter_function_id] if video_gen_filter_function_id else [],
+                auto_default=auto_default_video_gen_filter,
+            )
             _apply_video_default_filter_ids(
                 meta_dict,
                 video_gen_filter_function_id=video_gen_filter_function_id,
                 video_gen_filter_supported=video_gen_filter_supported,
                 auto_default_video_gen_filter=auto_default_video_gen_filter,
+                detached=video_detached,
             )
-            image_detached = _detached_by_this_pass(
+            image_detached = _detached_with_default_off(
                 meta_dict,
                 prune_key="image_filter_ids",
                 filter_function_ids=image_filter_function_ids,
+                auto_default=auto_default_image_filter,
             )
             _apply_list_filter_ids(
                 meta_dict,
@@ -2422,6 +2525,12 @@ class ModelCatalogManager:
                 filter_supported=image_filter_supported,
                 auto_default=auto_default_image_filter,
             )
+            fusion_detached = _detached_with_default_off(
+                meta_dict,
+                prune_key="fusion_filter_ids",
+                filter_function_ids=fusion_filter_function_ids,
+                auto_default=auto_default_fusion_filter,
+            )
             _apply_list_filter_ids(
                 meta_dict,
                 filter_function_ids=fusion_filter_function_ids,
@@ -2431,9 +2540,16 @@ class ModelCatalogManager:
             )
             _apply_list_default_filter_ids(
                 meta_dict,
+                detached=fusion_detached,
                 filter_function_ids=fusion_filter_function_ids,
                 filter_supported=fusion_filter_supported,
                 auto_default=auto_default_fusion_filter,
+            )
+            pr_detached = _detached_with_default_off(
+                meta_dict,
+                prune_key="provider_routing_filter_id",
+                filter_function_ids=[provider_routing_filter_id] if provider_routing_filter_id else [],
+                auto_default=auto_default_provider_routing_filter,
             )
             if _apply_provider_routing_filter_ids(meta_dict):
                 self.logger.debug(
@@ -2443,6 +2559,7 @@ class ModelCatalogManager:
                 )
             _apply_provider_routing_default_filter_ids(
                 meta_dict,
+                detached=pr_detached,
                 provider_routing_filter_id=provider_routing_filter_id,
                 auto_default_provider_routing_filter=auto_default_provider_routing_filter,
             )

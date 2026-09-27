@@ -453,6 +453,7 @@ def test_maybe_schedule_model_metadata_sync_no_valves_enabled(pipe_instance) -> 
     pipe.valves.AUTO_ATTACH_IMAGE_FILTERS = False
     pipe.valves.AUTO_INSTALL_FUSION_FILTER = False
     pipe.valves.AUTO_ATTACH_FUSION_FILTER = False
+    pipe.valves.AUTO_DEFAULT_PROVIDER_ROUTING_FILTERS = False
 
     pipe._catalog_manager.maybe_schedule_model_metadata_sync(
         [{"id": "test"}],

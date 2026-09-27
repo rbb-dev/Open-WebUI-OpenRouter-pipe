@@ -1783,6 +1783,45 @@ class TestProviderRoutingFilter:
         assert "OWUI_OPENROUTER_PIPE_MARKER" in source
         assert "openrouter_pipe:provider_routing:" in source
 
+    # --- H133-2: presence, not value. A user who explicitly clears a boolean or a
+    # number the admin set must have that clear reach the request. ---
+
+    _BOOL_CONTROLS = [
+        ("ZDR", "zdr"),
+        ("REQUIRE_PARAMETERS", "require_parameters"),
+        ("ENFORCE_DISTILLABLE_TEXT", "enforce_distillable_text"),
+        ("ALLOW_FALLBACKS", "allow_fallbacks"),
+    ]
+
+    _NUMERIC_CONTROLS = [
+        ("MIN_THROUGHPUT", "preferred_min_throughput"),
+        ("MAX_LATENCY", "preferred_max_latency"),
+        ("MAX_PRICE_PROMPT", ("max_price", "prompt")),
+        ("MAX_PRICE_COMPLETION", ("max_price", "completion")),
+        ("MAX_PRICE_IMAGE", ("max_price", "image")),
+        ("MAX_PRICE_AUDIO", ("max_price", "audio")),
+        ("MAX_PRICE_REQUEST", ("max_price", "request")),
+    ]
+
+    @staticmethod
+    def _emitted(provider, spec):
+        """Read a control out of the emitted provider dict, None when absent."""
+        if isinstance(spec, tuple):
+            return provider.get(spec[0], {}).get(spec[1]) if spec[0] in provider else None
+        return provider.get(spec)
+
+    def _drive(self, provider_filter_both, *, admin=None, user=None):
+        filt = provider_filter_both()
+        if admin is not None:
+            filt.valves = filt.Valves(**admin)
+        user_valves = filt.UserValves(**user) if user is not None else None
+        metadata = {}
+        kwargs = {"__metadata__": metadata}
+        if user_valves is not None:
+            kwargs["__user__"] = {"valves": user_valves}
+        filt.inlet({"messages": []}, **kwargs)
+        return metadata.get("openrouter_pipe", {}).get("provider", {})
+
     def test_provider_filter_escapes_model_slug(self):
         """Test provider filter properly escapes model slugs."""
         source = FilterManager._render_provider_routing_filter_source(
@@ -3147,3 +3186,6 @@ async def test_setting_frames_to_none_stops_every_picture_reaching_the_model(
     assert bool(reached) is any_picture_sent, (
         f"{model_id} with frames={frame_mode!r} sent {reached}"
     )
+
+
+from unittest.mock import AsyncMock, patch  # noqa: E402

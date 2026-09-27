@@ -323,7 +323,7 @@ nothing. The pipe repairs the rows:
   does not add it back. Hand edits in the code are lost and a warning names the row and the tools removed.
 - **A filter the pipe cannot read** (its code does not parse, or has no `Filter.UserValves`) is left exactly as it is
   and named in a warning; repeats for the same row and set of switched-off tools log below WARNING.
-- **With every web tool off,** every Web Tools filter is switched off.
+- **With every web tool off,** every Web Tools filter is switched off, and the default the pipe seeded is removed from every model it seeded it on.
 - **When it happens:** at the next model-list refresh, or in the background after a message that still asks for a
   switched-off web tool. That message has already gone out without Open WebUI's search; the repair is for the chats
   after it.

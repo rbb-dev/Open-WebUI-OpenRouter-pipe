@@ -113,6 +113,8 @@ The pipe has an optional Redis-backed cache/write-behind path intended for multi
 
 If these prerequisites are not met, the pipe runs without Redis and persists artifacts directly to the database (when persistence is enabled).
 
+The master switch is read at the moment a Redis gate is reached, not frozen at start-up, so a change saved in the admin UI takes effect on the next request that reaches one without a restart. A change to `False` stops new connections immediately; a client that is already running keeps serving its existing connections and keeps writing through them, until restart or `close()`.
+
 High-level behavior:
 - When Redis caching is enabled and available, the pipe can enqueue persisted rows into Redis and flush them to the database asynchronously.
 - When Redis is enabled, the pipe can also cache persisted artifacts for faster replay reads.

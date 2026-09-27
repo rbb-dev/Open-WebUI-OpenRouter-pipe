@@ -26,7 +26,8 @@ PACKAGE = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 # extracted install body. Both are function-local for the same reason as their
 # neighbours -- `open_webui` may be absent -- so the count is the honest one.
 # 80 -> 81: the video sweep's own `Functions` lookup (`filters/filter_manager.py`), beside the image sweep's.
-_EXPECTED_OWUI_IMPORTS = (25, 81)
+# 81 -> 82: the durable provider-routing row probe in pipe.py reaches the Functions table lazily.
+_EXPECTED_OWUI_IMPORTS = (25, 82)
 
 @pytest.mark.skipif(
     bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),

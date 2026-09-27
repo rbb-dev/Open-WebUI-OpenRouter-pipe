@@ -1819,7 +1819,7 @@ class Valves(BaseModel):
     )
     AUTO_DEFAULT_WEB_TOOLS_FILTER: bool = Field(
         default=False,
-        description="When enabled, marks the OpenRouter Web Tools filter as a Default Filter on every pipe model that is not an image-output, a video-generation or a Fusion model (pre-enabled per chat; users can still turn it off).",
+        description="When enabled, marks the OpenRouter Web Tools filter as a Default Filter on every pipe model that is not an image-output, a video-generation or a Fusion model (pre-enabled per chat; users can still turn it off). Turning it off removes the already-seeded default from models on the next sync.",
     )
 
     AUTO_INSTALL_IMAGE_GEN_FILTER: bool = Field(
@@ -1874,8 +1874,9 @@ class Valves(BaseModel):
     AUTO_DEFAULT_IMAGE_FILTERS: bool = Field(
         default=True,
         description=(
-            "Always keep the attached image filters enabled by default on "
-            "image-output models. Reapplied at every catalog refresh."
+            "Keep the attached image filters enabled by default on "
+            "image-output models. Reapplied at every catalog refresh; turning it off "
+            "clears the default the pipe seeded, leaving the filter attached."
         ),
     )
 
@@ -1898,7 +1899,7 @@ class Valves(BaseModel):
     )
     AUTO_DEFAULT_VIDEO_FILTERS: bool = Field(
         default=True,
-        description="Always keep the per-model video filter enabled by default on its video model. Reapplied at every catalog refresh. Models that require a per-model parameter (e.g. Veo's personGeneration) cannot be driven without it; parameter-free models still generate.",
+        description="Keep the per-model video filter enabled by default on its video model. Reapplied at every catalog refresh; turning it off clears the default the pipe seeded, leaving the filter attached. Models that require a per-model parameter (e.g. Veo's personGeneration) cannot be driven without it; parameter-free models still generate.",
     )
     ENABLE_OPENROUTER_FUSION: bool = Field(
         default=True,
@@ -1918,7 +1919,7 @@ class Valves(BaseModel):
     )
     AUTO_DEFAULT_FUSION_FILTER: bool = Field(
         default=True,
-        description="Mark the OpenRouter Fusion filter as a Default Filter on the openrouter/fusion model (pre-enabled per chat). Does NOT force Fusion to run — the per-user 'Always run Fusion' toggle is off by default. Reapplied at every catalog refresh.",
+        description="Mark the OpenRouter Fusion filter as a Default Filter on the openrouter/fusion model (pre-enabled per chat). Does NOT force Fusion to run — the per-user 'Always run Fusion' toggle is off by default. Reapplied at every catalog refresh; turning it off clears the default the pipe seeded, leaving the filter attached.",
     )
     FUSION_BACKEND: Literal["openrouter", "internal"] = Field(
         default="internal",
@@ -2275,7 +2276,8 @@ class Valves(BaseModel):
             "Enable attached provider routing filters by default in new chats, so saved provider "
             "preferences apply without users having to switch the filter on per chat. The filter does "
             "nothing until preferences are actually configured, so defaulting it on is free. "
-            "Disable to make users opt in per chat."
+            "Disable to make users opt in per chat; on the next sync this also clears the default "
+            "the pipe seeded, leaving the filters attached."
         ),
     )
 

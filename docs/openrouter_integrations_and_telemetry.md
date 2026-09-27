@@ -89,7 +89,7 @@ The pipe accepts the following Advanced Model Parameters:
 | `disable_image_updates` | `bool-ish` | Model metadata sync | Prevents overwriting the model icon/profile image (`meta.profile_image_url`). |
 | `disable_description_updates` | `bool-ish` | Model metadata sync | Prevents overwriting the model description (`meta.description`). |
 | `disable_web_tools_auto_attach` | `bool-ish` | Model metadata sync | Prevents auto-attaching the **OR Web Tools** integration toggle (filter id) for this model. |
-| `disable_web_tools_default_on` | `bool-ish` | Model metadata sync | Prevents auto-enabling **OR Web Tools** by default for this model (prevents seeding `meta.defaultFilterIds`). |
+| `disable_web_tools_default_on` | `bool-ish` | Model metadata sync | Prevents auto-enabling **OR Web Tools** by default for this model (prevents seeding `meta.defaultFilterIds`, and removes a default the pipe seeded). |
 | `disable_direct_uploads_auto_attach` | `bool-ish` | Model metadata sync | Prevents auto-attaching the **Direct Uploads** integration toggle (filter id) for this model. |
 
 Notes:
@@ -264,7 +264,7 @@ This is a per-model “master kill switch” for the pipe’s Open WebUI model m
 ### 2.11 `disable_web_tools_default_on` → preserve default-on behavior
 - Custom param: `disable_web_tools_default_on` (bool-ish)
 - Pipe behavior (when truthy):
-  - The pipe will not seed OpenRouter Web Tools into `meta.defaultFilterIds` for that model, even when `AUTO_DEFAULT_WEB_TOOLS_FILTER=True`.
+  - The pipe will not seed OpenRouter Web Tools into `meta.defaultFilterIds` for that model, even when `AUTO_DEFAULT_WEB_TOOLS_FILTER=True`, and a default it seeded there previously is removed.
   - The OpenRouter Web Tools toggle may still be auto-attached if `AUTO_ATTACH_WEB_TOOLS_FILTER=True` and the model supports it.
 
 ### 2.12 `disable_direct_uploads_auto_attach` → preserve the Direct Uploads toggle wiring
@@ -276,11 +276,13 @@ This is a per-model “master kill switch” for the pipe’s Open WebUI model m
 - Custom param: `disable_image_filter_auto_attach` (bool-ish)
 - Pipe behavior (when truthy):
   - The pipe will not attach the native image filters to that image-output model in `meta.filterIds`, even when `AUTO_ATTACH_IMAGE_FILTERS=True`.
+  - Turning the valve off detaches what the pipe attached; `AUTO_DEFAULT_IMAGE_FILTERS=False` instead clears the default it seeded in `meta.defaultFilterIds` and leaves the filter attached.
 
 ### 2.14 `disable_video_gen_auto_attach` → preserve the Video Generation filter wiring
 - Custom param: `disable_video_gen_auto_attach` (bool-ish)
 - Pipe behavior (when truthy):
   - The pipe will not attach the per-model video generation filter to that video model in `meta.filterIds`, even when `AUTO_ATTACH_VIDEO_FILTERS=True`.
+  - Turning the valve off detaches what the pipe attached; `AUTO_DEFAULT_VIDEO_FILTERS=False` instead clears the default it seeded in `meta.defaultFilterIds` and leaves the filter attached.
 
 ### 2.15 Provider routing custom parameters → OpenRouter `provider` dict
 

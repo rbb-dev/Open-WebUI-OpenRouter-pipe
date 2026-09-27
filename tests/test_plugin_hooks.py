@@ -353,6 +353,21 @@ async def test_a_failing_filter_install_is_reported_once_across_repeated_pipes_c
     cast(Any, catalog_mgr).prune_stale_openrouter_filter_ids = _explode_async
     cast(Any, pipe)._stale_filter_ids_pruned = False
 
+    # The routing row probe opens its own handle on the filter table (it has to see
+    # inactive rows, which the manager's cache-eligible read cannot), so the manager
+    # stub cannot reach it. Patching the classmethod it calls makes the real probe
+    # method run and fail for real; the latch under test is the one it arms on the
+    # way out, not a stubbed call that never reaches its body.
+    async def _explode_functions(*_args, **_kwargs):
+        raise RuntimeError("filter table is read-only")
+
+    import open_webui.models.functions as _owui_functions
+
+    _real_get_functions_by_type = _owui_functions.Functions.get_functions_by_type
+    _owui_functions.Functions.get_functions_by_type = staticmethod(_explode_functions)
+    cast(Any, pipe)._provider_routing_rows_probed = False
+    cast(Any, pipe)._provider_routing_filters_installed = False
+
     pipe_module._warned_pipes_maintenance.clear()
 
     maintenance_functions = _pipes_maintenance_functions()
@@ -414,9 +429,32 @@ async def test_a_failing_filter_install_is_reported_once_across_repeated_pipes_c
                 for _ in range(3):
                     await pipe.pipes()
 
+            # Third phase: the routing row probe. It runs only when BOTH routing valve
+            # lists are empty and no routing filter was installed this worker, so the
+            # drive has to clear them; the latch has to be un-probed for the same
+            # reason. Same once-per-cause rule as every other site here.
+            pipe.valves.ADMIN_PROVIDER_ROUTING_MODELS = ""
+            pipe.valves.USER_PROVIDER_ROUTING_MODELS = ""
+            cast(Any, pipe)._provider_routing_filters_installed = False
+            cast(Any, pipe)._provider_routing_rows_probed = False
+            with aioresponses() as http:
+                http.get(
+                    "https://openrouter.ai/api/v1/models",
+                    exception=RuntimeError("catalog endpoint down"),
+                    repeat=True,
+                )
+                http.get(
+                    "https://openrouter.ai/api/v1/endpoints/zdr",
+                    exception=RuntimeError("ZDR endpoint down"),
+                    repeat=True,
+                )
+                for _ in range(3):
+                    await pipe.pipes()
+
             emitted = _warnings()
             armed = {c.split(":", 1)[0] for c in pipe_module._warned_pipes_maintenance}
     finally:
+        _owui_functions.Functions.get_functions_by_type = _real_get_functions_by_type
         pipe_module._warned_pipes_maintenance.clear()
         await pipe.close()
 
@@ -461,7 +499,8 @@ async def test_a_failing_filter_install_is_reported_once_across_repeated_pipes_c
     expected_sites = {
         "catalog_refresh", "catalog_cached", "web_tools", "web_tools_repair", "fusion", "image_gen",
         "image_gen_model",
-        "video", "direct_uploads", "provider_routing", "stale_prune", "on_models",
+        "video", "direct_uploads", "provider_routing", "provider_routing_probe", "stale_prune",
+        "on_models",
         "zdr_list_unavailable", "models_missing", "variant_base_missing",
         "enforcement_base_not_allowed", "enforcement_base_unnormalized",
         "chat_catalog_refresh", "metadata_sync", "web_tools_repair",

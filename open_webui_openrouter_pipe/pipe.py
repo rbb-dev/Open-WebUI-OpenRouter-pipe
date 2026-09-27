@@ -567,6 +567,9 @@ class Pipe:
         )
 
         self._stale_filter_ids_pruned = False
+        self._provider_routing_filters_installed = False
+        self._provider_routing_rows_probed = False
+        self._provider_routing_rows_may_exist_flag = False
 
         # Startup check coordination
         self._startup_task: asyncio.Task | None = None
@@ -875,10 +878,14 @@ class Pipe:
         )
         return False
 
+    @property
+    def _redis_allowed(self) -> bool:
+        return bool(self._redis_candidate) and bool(self.valves.ENABLE_REDIS_CACHE)
+
     @timed
     def _maybe_start_redis(self) -> None:
         """Initialize Redis cache if enabled."""
-        if not self._redis_candidate or self._redis_enabled:
+        if not self._redis_allowed or self._redis_enabled:
             return
         try:
             loop = asyncio.get_running_loop()
@@ -921,7 +928,7 @@ class Pipe:
 
     @timed
     async def _init_redis_client(self) -> None:
-        if not self._redis_candidate or self._redis_enabled or not self._redis_url:
+        if not self._redis_allowed or self._redis_enabled or not self._redis_url:
             return
         if aioredis is None:
             self.logger.warning("Redis cache requested but redis-py is unavailable.")
@@ -1080,6 +1087,60 @@ class Pipe:
                 logger=self.logger,
             )
         return self._filter_manager
+
+    async def _routing_rows_may_exist(self) -> bool:
+        if self._provider_routing_rows_probed:
+            return self._provider_routing_rows_may_exist_flag
+        from open_webui.models.functions import Functions
+
+        from .core.config import _PROVIDER_ROUTING_FILTER_MARKER_PREFIX
+
+        try:
+            rows = await Functions.get_functions_by_type("filter", active_only=False)
+        except Exception as exc:
+            level = warn_level(_warned_pipes_maintenance, f"provider_routing_probe:{type(exc).__name__}")
+            self.logger.log(level, "Provider routing row probe failed: %s", exc, exc_info=True)
+            return False
+        self._provider_routing_rows_may_exist_flag = any(
+            _PROVIDER_ROUTING_FILTER_MARKER_PREFIX in (getattr(row, "content", "") or "")
+            for row in rows
+        )
+        self._provider_routing_rows_probed = True
+        return self._provider_routing_rows_may_exist_flag
+
+    async def _run_routing_pass(
+        self,
+        admin_routing: str,
+        user_routing: str,
+        models: list[dict[str, Any]],
+        *,
+        install: bool,
+    ) -> bool:
+        try:
+            provider_map = self._ensure_catalog_manager().get_cached_provider_map()
+            if install:
+                if not provider_map:
+                    return False
+            else:
+                provider_map = provider_map or {}
+            await self._ensure_filter_manager().ensure_provider_routing_filters(
+                admin_routing,
+                user_routing,
+                provider_map,
+                models,
+                self.id,
+            )
+            return True
+        except Exception as exc:
+            level = warn_level(_warned_pipes_maintenance, f"provider_routing:{type(exc).__name__}")
+            self.logger.log(
+                level,
+                "Provider routing filter %s failed: %s",
+                "creation" if install else "disable pass",
+                exc,
+                exc_info=True,
+            )
+            return False
 
     def _ensure_video_generation_adapter(self) -> VideoGenerationAdapter:
         if self._video_generation_adapter is None:
@@ -1333,20 +1394,11 @@ class Pipe:
         admin_routing = (self.valves.ADMIN_PROVIDER_ROUTING_MODELS or "").strip()
         user_routing = (self.valves.USER_PROVIDER_ROUTING_MODELS or "").strip()
         if admin_routing or user_routing:
-            try:
-                catalog_mgr = self._ensure_catalog_manager()
-                provider_map = catalog_mgr.get_cached_provider_map()
-                if provider_map:
-                    await self._ensure_filter_manager().ensure_provider_routing_filters(
-                        admin_routing,
-                        user_routing,
-                        provider_map,
-                        selected_models,
-                        self.id,
-                    )
-            except Exception as exc:
-                level = warn_level(_warned_pipes_maintenance, f"provider_routing:{type(exc).__name__}")
-                self.logger.log(level, "Provider routing filter creation failed: %s", exc, exc_info=True)
+            if await self._run_routing_pass(admin_routing, user_routing, selected_models, install=True):
+                self._provider_routing_filters_installed = True
+        elif self._provider_routing_filters_installed or await self._routing_rows_may_exist():
+            self._provider_routing_filters_installed = False
+            await self._run_routing_pass("", "", selected_models, install=False)
 
         if not self._stale_filter_ids_pruned:
             self._stale_filter_ids_pruned = True
