@@ -1,6 +1,7 @@
 """Tests for retargeting telemetry and classifier-failure toast diagnostics."""
 from __future__ import annotations
 
+import io
 import logging
 from pathlib import Path
 from types import SimpleNamespace
@@ -44,6 +45,14 @@ def _adapter():
     )
     pipe = MagicMock()
     return VideoGenerationAdapter(pipe=pipe, logger=logging.getLogger("t"))
+
+
+def _a_real_png() -> bytes:
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (64, 64), (12, 34, 56)).save(buffer, "PNG")
+    return buffer.getvalue()
 
 
 # -----------------------------------------------------------------------------

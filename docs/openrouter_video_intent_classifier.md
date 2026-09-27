@@ -184,7 +184,7 @@ Every failure path in the classifier returns a fallback result equivalent to "no
 - **Task model returns invalid JSON** → one corrective retry per candidate; on second failure, fall through to the next candidate; if all candidates fail, fallback.
 - **Task model timeout** (>`VIDEO_INTENT_TIMEOUT_S`) → fallback.
 - **Frame extraction fails** (corrupt prior video, unsupported codec) → drop that frame_plan entry, append a downgrade note to the disclosure block, continue with other entries; if every entry fails, send text-only. A clip whose tail is damaged but which still decodes is not this case: the end-seek ladder widens its window until one reads, and the frame that comes back is labelled as the nearest decodable one, not as a frame from past the end.
-- **Thumbnail upload fails** → disclosure block omits that thumbnail; the `frame_images` entry still ships.
+- **Thumbnail upload fails** → disclosure block omits that thumbnail and says so on a ⚠️ line ("A preview picture for this frame could not be stored."); the `frame_images` entry still ships. A thumbnail that cannot be *made* is recorded the same way, with "…could not be made." Every per-entry outcome carries the plan position as well as the source index, so two entries asked of the same prior video record two separate codes and read as two separate ⚠️ lines rather than one duplicated.
 - **User cancels mid-classification** → cancellation propagates up; `/videos` is never submitted.
 - **Model can't honor `input_reference` for modify intent** → the validator drops the reference frame and downgrades the intent to `text_to_video`; the paid call proceeds as text-to-video with no confirmation prompt. See "When a model can't visually modify a previous video" above.
 

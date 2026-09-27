@@ -2025,7 +2025,9 @@ class Valves(BaseModel):
             "lengths of time: falling back from litterbox to catbox turns a file that would "
             "have deleted itself within the hour into one that stays up for good, with no "
             "way for anyone here to remove it. Turn it on only if you would rather the "
-            "request succeed."
+            "request succeed. This valve decides only whether a second copy is ever made: "
+            "when a host's answer leaves it possible that it stored the file anyway, the "
+            "user is told that a copy may already be there whether or not this is on."
         ),
     )
     MEDIA_FILE_HOST_MAX_SIZE_MB: int = Field(
@@ -2068,9 +2070,11 @@ class Valves(BaseModel):
             "Warn in the chat before a user's attachment is uploaded to the file host. Their "
             "own media leaves this server, so they are warned by default -- and while this is "
             "on, an upload that could not be announced does not happen: the request fails "
-            "instead of publishing the file unannounced. Switch it off if you have told your "
-            "users another way. Either way the finished message keeps a written record of "
-            "what was uploaded and where; only this advance warning is optional."
+            "instead of publishing the file unannounced. That includes a warning with no "
+            "words to give, so an empty notice below stops the upload too. Switch it off if "
+            "you have told your users another way. Either way the finished message keeps a "
+            "written record of what was uploaded and where; only this advance warning is "
+            "optional."
         ),
     )
     FILE_HOST_NOTICE: str = Field(
@@ -2080,7 +2084,11 @@ class Valves(BaseModel):
         description=(
             "The wording of that advance warning. Rewrite it in your own words or your own "
             "language. {kind} becomes clip, sound file or picture; {host} names the file "
-            "host; {retention} says how long it stays there. Leave out any you do not want. "
+            "host; {retention} says how long it stays there. Leave out any you do not want, "
+            "but keep enough that a sentence is left: an empty or blank setting leaves the "
+            "warning nothing to say, and while the setting above is on, a warning that "
+            "cannot be said stops the upload instead -- turn "
+            "TELL_USERS_ABOUT_THE_FILE_HOST off if you want no warning at all. "
             "{kind} and {retention} are written in English, so if you are writing this in "
             "another language, say those parts yourself rather than using the placeholders. "
             "The record kept in the finished message is written separately and is not this "

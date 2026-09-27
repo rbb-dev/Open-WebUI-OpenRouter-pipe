@@ -773,6 +773,7 @@ async def _encode_references_for(
         SEND_AUDIO_VIA_FILE_HOST=True,
         SEND_IMAGES_VIA_FILE_HOST=False,
         MEDIA_FILE_HOST="litterbox",
+        FILE_HOST_NOTICE="Sending your {kind} to {host} so the model can read it, {retention}.",
     )
     withheld: list[tuple[str, str]] = []
     with patch.object(video_module, "get_file_by_id", _file), \
@@ -6902,6 +6903,7 @@ async def test_the_relay_records_its_verdict_where_the_link_is_minted(link, fami
         SEND_AUDIO_VIA_FILE_HOST=True,
         SEND_IMAGES_VIA_FILE_HOST=False,
         MEDIA_FILE_HOST="litterbox",
+        FILE_HOST_NOTICE="Sending your {kind} to {host} so the model can read it, {retention}.",
     )
     vetted: dict[str, bool] = {}
 

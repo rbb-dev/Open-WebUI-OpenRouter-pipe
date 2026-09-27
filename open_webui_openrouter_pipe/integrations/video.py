@@ -248,13 +248,25 @@ _OVER_REFERENCE_BUDGET = (
 )
 
 _A_COPY_MAY_ALREADY_BE_THERE = (
-    "{host} may already hold a copy of it, so no second host was tried"
+    "{host} may already hold a copy of it{second}"
 )
 
 _COULD_NOT_SAY_IT_FIRST = (
     "Your attachment has to be uploaded to a public file host before a video model can "
-    "read it, and this chat could not be told that before it happened. Nothing was "
-    "uploaded. Reload the chat and send it again."
+    "read it, and this chat could not be told that before it happened, because {cause}. "
+    "Nothing was uploaded. Reload the chat and send it again."
+)
+
+_BLANK_NOTICE_CAUSE = (
+    "the FILE_HOST_NOTICE setting has no wording to send"
+)
+
+_NO_EMITTER_CAUSE = (
+    "there is no channel to this chat to send it on"
+)
+
+_NOTICE_REFUSED_CAUSE = (
+    "this chat would not accept the notice"
 )
 
 _VIDEO_IS_STILL_RUNNING = (
@@ -662,9 +674,7 @@ class VideoGenerationAdapter:
                             intent=intent_result,
                             thumb_urls=thumbs,
                         )
-                    if intent_result.use_user_prompt:
-                        pass
-                    elif intent_result.prompt:
+                    if intent_result.prompt:
                         prompt = intent_result.prompt
                     self._emit_intent_telemetry(intent_result, valves=valves, chat_id=chat_id)
                 except asyncio.CancelledError:
@@ -2066,22 +2076,33 @@ class VideoGenerationAdapter:
             for family in families
             for host in self._relay_hosts(valves)
         }
-        if not await self._emit_file_host_notice(valves, planned, event_emitter):
-            raise VideoGenerationError(_COULD_NOT_SAY_IT_FIRST)
+        said, cause = await self._emit_file_host_notice(valves, planned, event_emitter)
+        if not said:
+            self.logger.warning(
+                "Could not tell this chat the upload is about to happen: %s. Set "
+                "TELL_USERS_ABOUT_THE_FILE_HOST off if you warn your users another way, "
+                "or give FILE_HOST_NOTICE a sentence to send.",
+                cause,
+            )
+            raise VideoGenerationError(_COULD_NOT_SAY_IT_FIRST.format(cause=cause))
         return planned
 
     async def _emit_file_host_notice(
         self, valves: Any, pairs: set[tuple[str, str]], event_emitter: Any
-    ) -> bool:
+    ) -> tuple[bool, str]:
         if not bool(getattr(valves, "TELL_USERS_ABOUT_THE_FILE_HOST", True)):
-            return True
+            return True, ""
         if event_emitter is None:
-            return False
-        return bool(
+            return False, _NO_EMITTER_CAUSE
+        notice = self._file_host_notice(valves, pairs)
+        if not notice.strip():
+            return False, _BLANK_NOTICE_CAUSE
+        delivered = bool(
             await self._pipe._event_emitter_handler._emit_notification(
-                event_emitter, self._file_host_notice(valves, pairs), level="info"
+                event_emitter, notice, level="info"
             )
         )
+        return delivered, "" if delivered else _NOTICE_REFUSED_CAUSE
 
     @staticmethod
     def _relay_hosts_named(relayed: set[tuple[str, str]]) -> list[str]:
@@ -2276,10 +2297,13 @@ class VideoGenerationAdapter:
                         family, host, exc,
                     )
                     if getattr(exc, "may_have_stored_it", True):
-                        if host != hosts[-1]:
-                            failures.append(
-                                _A_COPY_MAY_ALREADY_BE_THERE.format(host=host)
+                        failures.append(
+                            _A_COPY_MAY_ALREADY_BE_THERE.format(
+                                host=host,
+                                second=", so no second host was tried"
+                                if host != hosts[-1] else "",
                             )
+                        )
                         break
         raise VideoGenerationError(
             f"The attached {family} could not be sent: {'; '.join(failures)}."
@@ -2512,7 +2536,7 @@ class VideoGenerationAdapter:
         if not intent.frame_plan:
             return thumb_urls
 
-        for entry in intent.frame_plan:
+        for position, entry in enumerate(intent.frame_plan):
             if entry.source == "uploaded_attachment":
                 thumb_urls.append("")
                 continue
@@ -2526,7 +2550,7 @@ class VideoGenerationAdapter:
                 )
                 if not file_id:
                     intent.downgrades.append(
-                        f"prior_video_index_{entry.source_index}_unresolvable"
+                        f"prior_video_index_{entry.source_index}_unresolvable_at_{position}"
                     )
                     thumb_urls.append("")
                     continue
@@ -2536,7 +2560,7 @@ class VideoGenerationAdapter:
                 )
                 if tmp_path is None:
                     intent.downgrades.append(
-                        f"prior_video_download_failed_idx_{entry.source_index}"
+                        f"prior_video_download_failed_idx_{entry.source_index}_at_{position}"
                     )
                     thumb_urls.append("")
                     continue
@@ -2566,7 +2590,7 @@ class VideoGenerationAdapter:
                         entry.source_index, exc,
                     )
                     intent.downgrades.append(
-                        f"frame_extract_failed_idx_{entry.source_index}"
+                        f"frame_extract_failed_idx_{entry.source_index}_at_{position}"
                     )
                     thumb_urls.append("")
                     continue
@@ -2584,7 +2608,7 @@ class VideoGenerationAdapter:
                 )
                 if not frame_file_id:
                     intent.downgrades.append(
-                        f"frame_upload_failed_idx_{entry.source_index}"
+                        f"frame_upload_failed_idx_{entry.source_index}_at_{position}"
                     )
                     thumb_urls.append("")
                     continue
@@ -2623,9 +2647,18 @@ class VideoGenerationAdapter:
                     if thumb_file_id:
                         thumb_urls.append(f"/api/v1/files/{thumb_file_id}/content")
                     else:
+                        intent.downgrades.append(
+                            f"thumbnail_upload_failed_idx_{entry.source_index}_at_{position}"
+                        )
                         thumb_urls.append("")
                 except Exception as exc:
-                    self.logger.debug("thumbnail generation failed: %s", exc, exc_info=True)
+                    self.logger.warning(
+                        "thumbnail generation failed for entry %s: %s",
+                        entry.source_index, exc, exc_info=True,
+                    )
+                    intent.downgrades.append(
+                        f"thumbnail_generation_failed_idx_{entry.source_index}_at_{position}"
+                    )
                     thumb_urls.append("")
             except asyncio.CancelledError:
                 raise

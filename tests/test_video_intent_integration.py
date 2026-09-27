@@ -11,8 +11,11 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import io
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -501,6 +504,20 @@ class TestMaterialiseFramePlan:
                 chat_id="c1", message_id="m1",
             )
         assert not real_temp.exists(), "prior-video temp leaked; _materialise_frame_plan must unlink it"
+
+
+# -----------------------------------------------------------------------------
+# A thumbnail that could not be made is told to the user
+# -----------------------------------------------------------------------------
+
+
+def _a_real_png() -> bytes:
+    """Bytes PIL can actually open, so `make_thumbnail` runs for real in these tests."""
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (64, 64), (12, 34, 56)).save(buffer, "PNG")
+    return buffer.getvalue()
 
 
 # -----------------------------------------------------------------------------

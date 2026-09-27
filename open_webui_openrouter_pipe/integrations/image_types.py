@@ -192,3 +192,4 @@ class ImageGenerationResult:
     images: list[GeneratedImage] = field(default_factory=list)
     usage: dict[str, object] = field(default_factory=dict)
     rejected: list[str] = field(default_factory=list)
+    warning: str = ""

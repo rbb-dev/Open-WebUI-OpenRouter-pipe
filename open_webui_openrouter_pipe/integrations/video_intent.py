@@ -970,6 +970,8 @@ _DOWNGRADE_USER_MESSAGES: dict[str, str] = {
     "prior_video_index_unresolvable": "Referenced previous video not found.",
     "prior_video_unauthorized": "Cannot access referenced video (different user).",
     "frame_upload_failed": "Frame could not be uploaded.",
+    "thumbnail_generation_failed": "A preview picture for this frame could not be made.",
+    "thumbnail_upload_failed": "A preview picture for this frame could not be stored.",
     "input_reference_target_skipped": "Style reference skipped (not supported by model yet).",
     "materialise_failed": "A non-critical step was skipped.",
     "discarded_classifier_plan_explicit_attachments_present": "Used your uploaded frame instead of an inferred one.",

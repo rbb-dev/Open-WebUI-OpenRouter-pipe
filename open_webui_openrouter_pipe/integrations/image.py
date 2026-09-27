@@ -1296,6 +1296,8 @@ class ImageGenerationAdapter:
             )
         if unsaved and snippets:
             snippets.append(f"_{unsaved} generated image(s) could not be saved to storage._")
+        if result.warning and snippets:
+            snippets.append(f"_{result.warning}_")
 
         if not snippets:
             await self._close_status(event_emitter)

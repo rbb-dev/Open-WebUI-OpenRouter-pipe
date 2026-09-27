@@ -15,7 +15,7 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 import pytest
 from aioresponses import aioresponses
@@ -900,3 +900,8 @@ def test_an_edit_is_refused_a_stream_even_on_the_recorded_contract_that_allows_o
     assert ImageGenerationAdapter._every_endpoint_publishes_streaming(records(GPT_IMAGE_2)) is True
     assert ImageGenerationAdapter._should_ask_for_a_stream(generate, records(GPT_IMAGE_2)) is True
     assert ImageGenerationAdapter._should_ask_for_a_stream(edit, records(GPT_IMAGE_2)) is False
+
+
+async def _streaming(body: str, on_progress: Any = None):
+    """A stream that ends cleanly, so only the events themselves decide the outcome."""
+    return await _streamed(body, on_progress=on_progress)

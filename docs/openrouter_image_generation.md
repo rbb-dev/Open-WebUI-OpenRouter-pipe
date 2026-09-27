@@ -1464,6 +1464,12 @@ a failed generation and there is nothing to salvage. It costs nothing:
 OpenRouter bills image generation all or nothing, so previews already
 delivered are not charged. Re-submit to retry.
 
+A stream that breaks *after* the finished image has arrived is different:
+that image is delivered as usual, and the run is billed for it. The
+reason it broke is appended to the answer next to the image, so the
+user is told what happened in the same message that carries the
+picture.
+
 ### Image generation succeeds but no image renders inline
 
 Check:
@@ -1755,7 +1761,10 @@ with a picture as well as text.
   nothing downstream — including iterative editing — sees a difference.
   A stream that ends before the finished image is a failed generation:
   OpenRouter bills image generation all-or-nothing, so previews already
-  delivered cost nothing and there is nothing to salvage.
+  delivered cost nothing and there is nothing to salvage. A stream that
+  breaks after the finished image arrived still delivers that image, and
+  is billed for it, and the user is told what went wrong in the answer
+  beside it.
 - **No batch generation.** One request, one image (or set of images
   the model emits per turn). For batch use, send multiple chats.
 - **Multimodal models may emit text without an image.** GPT-5 Image

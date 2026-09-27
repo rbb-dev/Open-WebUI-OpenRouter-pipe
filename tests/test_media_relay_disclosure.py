@@ -20,6 +20,7 @@ import base64
 import io
 import json
 import logging
+from contextlib import suppress
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast

@@ -80,13 +80,18 @@ def _image_stream_completed(event: dict[str, Any], state: dict[str, Any]) -> str
     return ""
 
 
-def _image_stream_error(event: dict[str, Any], _state: dict[str, Any]) -> str:
+def _image_stream_error(event: dict[str, Any], state: dict[str, Any]) -> str:
     detail = event.get("error")
     message = detail.get("message") if isinstance(detail, dict) else None
+    reason = clamp_text(
+        message if isinstance(message, str) and message else "no reason was given", 160
+    )
+    if state["data"]:
+        sentence = f"OpenRouter reported a problem after delivering the image: {reason}."
+        state["warning"] = sentence
+        return sentence
     raise ImageGenerationError(
-        "OpenRouter stopped generating the image: "
-        f"{clamp_text(message if isinstance(message, str) and message else 'no reason was given', 160)}. "
-        "Nothing was billed."
+        f"OpenRouter stopped generating the image: {reason}. Nothing was billed."
     )
 
 
@@ -199,9 +204,8 @@ class OpenRouterImageClient:
             await on_progress(message)
 
     async def _read_stream_as_buffered_response(
-        self, resp: Any, on_progress: Any
+        self, resp: Any, on_progress: Any, state: dict[str, Any]
     ) -> dict[str, Any]:
-        state: dict[str, Any] = {"data": [], "usage": None, "previews": 0, "drawing": False}
         buffer = ""
         _utf8 = utf8_stream_decoder()
         async for chunk in resp.content.iter_any():
@@ -233,8 +237,32 @@ class OpenRouterImageClient:
                     body,
                     requested_model=payload.get("model") if isinstance(payload, dict) else None,
                 )
+            state: dict[str, Any] = {
+                "data": [], "usage": None, "previews": 0, "drawing": False, "warning": "",
+            }
             if resp.content_type == _IMAGE_SSE_CONTENT_TYPE:
-                data = await self._read_stream_as_buffered_response(resp, on_progress)
+                try:
+                    data = await self._read_stream_as_buffered_response(
+                        resp, on_progress, state
+                    )
+                except (ImageGenerationError, aiohttp.ClientError, TimeoutError) as exc:
+                    if not state["data"]:
+                        if isinstance(exc, ImageGenerationError):
+                            raise
+                        raise ImageGenerationError(
+                            "OpenRouter's image stream ended before the finished image "
+                            "arrived. Nothing was billed for it."
+                        ) from exc
+                    self._logger.warning(
+                        "Image stream failed after the finished image arrived; "
+                        "delivering it anyway: %s", exc
+                    )
+                    if not state["warning"]:
+                        state["warning"] = (
+                            "The image stream failed after the finished image had "
+                            f"already arrived: {clamp_text(str(exc), 160)}."
+                        )
+                    data = {"data": state["data"], "usage": state["usage"]}
             else:
                 data = await resp.json()
         _debug_print_response(data, logger=self._logger)
@@ -294,4 +322,6 @@ class OpenRouterImageClient:
                 f"OpenRouter image generation returned no usable images{detail}.", usage=billed
             )
 
-        return ImageGenerationResult(images=images, usage=billed, rejected=rejected)
+        return ImageGenerationResult(
+            images=images, usage=billed, rejected=rejected, warning=state.get("warning", "")
+        )
