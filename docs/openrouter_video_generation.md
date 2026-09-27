@@ -1305,6 +1305,10 @@ rules:
   on that write — and because the write replaces the row, the withdrawn value
   is not kept for later. That is the intended outcome of the guard, not a loss
   of unrelated settings.
+- These fields track the model's live published contract, so when
+  OpenRouter narrows that contract — a duration withdrawn, a ratio
+  removed, an upscale bound lowered — a stored value that no longer fits
+  is dropped on its own, and every value that still fits is kept.
 
 The filter is **always-on by default** for its model
 (`AUTO_DEFAULT_VIDEO_FILTERS`). Disabling it for a single chat usually

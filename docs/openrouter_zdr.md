@@ -29,9 +29,10 @@ Configure these in **Open WebUI → Admin → Functions → [OpenRouter pipe] �
 - **`ZDR_ENFORCE`**
   - Forces `provider.zdr=true` on every request.
   - Rejects requests for models without ZDR endpoints.
+  - **What a failed read means.** A read that did not succeed carries the last read that did, so a `500`/`429` on `/models`, or an outage of `/endpoints/zdr`, no longer makes the pipe forget what it knew: a model that has been answering for an hour keeps its ZDR answer, and every enforced request still carries `provider.zdr=true`, which is what makes OpenRouter hold it to a no-retention endpoint. A request is refused outright only when **no ZDR list has ever been read** — that is what `zdr_list_available() is False` now means, and it is the cold-start path this behaviour deliberately does not weaken. The limit of the carry-forward is worth stating plainly: it can still prove a model is *not* ZDR-capable (and that stays refused), but a model that genuinely lost its ZDR endpoints is noticed only once a read succeeds.
   - Routing suffixes the pipe synthesises (`:nitro`, `:floor`, `:online`) are checked against their base model: if the base has ZDR endpoints, the variant is admitted and `provider.zdr=true` guarantees only ZDR endpoints are used. A suffix OpenRouter lists as a model in its own right — `:free`, `:thinking` — is answered for **itself**, not for its base, so a listed `:free` with no ZDR endpoint is refused here rather than routed.
   - Video models are always rejected, with or without a variant suffix.
-  - `ZDR_MODELS_ONLY` matches against the suffix-stripped base id, the same rule `ZDR_ENFORCE` uses, so routing variants (`:nitro`, `:floor`, `:online`) of a ZDR-capable base are shown and allowed. It stays a catalog and request-admission filter: it never sends `provider.zdr: true`, and it fails open when the ZDR endpoint list cannot be loaded, leaving every model - video models included - visible.
+  - `ZDR_MODELS_ONLY` matches against the suffix-stripped base id, the same rule `ZDR_ENFORCE` uses, so routing variants (`:nitro`, `:floor`, `:online`) of a ZDR-capable base are shown and allowed. It stays a catalog and request-admission filter: it never sends `provider.zdr: true`. It filters from the last ZDR list read successfully, so a later read that fails does not let non-ZDR models back into the picker; only a list that has *never* been read leaves filtering skipped. Video models are filtered like any other model.
 
 - **`ALLOW_USER_ZDR_OVERRIDE`**
   - Allows users to request ZDR per chat.
@@ -48,6 +49,30 @@ When `ALLOW_USER_ZDR_OVERRIDE` is enabled (and `ZDR_ENFORCE` is disabled), users
 
 - **`REQUEST_ZDR`**
   - Requests ZDR routing for that chat.
+
+---
+
+## When the ZDR list is stale, and what that means for enforcement
+
+One rule governs both ways a read can fail: **a read that did not succeed carries the last read that did.** A `500`/`429` on `/models`, or an outage of `/endpoints/zdr`, leaves the previous endpoint list in force.
+
+This **knowingly reverses** an earlier deliberate choice (commit `1f75dc1`, 2026-05-03) that wiped the list on failure and failed closed. The reason it was reversed: the wipe was invisible and much wider than it looked. `ensure_loaded` already serves the cached catalogue across a failed refresh, so nothing appeared broken — yet with `ZDR_ENFORCE` on, *every* chat was refused with a "restricted" card, including a model that had been answering for hours; a task silently returned its default; a Fusion run came back with every member failed for a reason no member mentioned. With `ZDR_MODELS_ONLY` on, filtering switched off and non-ZDR models became requestable again. Because `_refresh` returns normally on a ZDR-only outage, this recurred on **every** refresh, indefinitely, with no backoff.
+
+The security argument does not rest on the list's freshness, and that is what makes the reversal safe:
+
+- **Nothing unverified gets through.** Every enforced request still carries a per-request `provider.zdr=true`. That flag, not the catalogue, is what makes OpenRouter hold the request to a no-retention endpoint.
+- **A negative answer still stands.** The carried list can prove a model is *not* ZDR-capable, and such a request is still refused. A stale list cannot *manufacture* a capability claim for a model it says is capable-of — it only repeats the last verified answer.
+- **Never-read is still a hard stop.** If no list has ever been read, `zdr_list_available()` is `False`, `is_zdr_capable()` is `None`, and enforcement refuses every request. `ZDR_MODELS_ONLY` skips filtering in the same state. This is the cold-start path, and the change deliberately does not weaken it — an outage on the very first read must never read as "no model is zero-retention".
+
+### The limits, stated plainly
+
+- A model that **genuinely lost** its ZDR endpoints is noticed only once a read succeeds. The carry-forward can lag reality by at most one cache interval; the "bounded carry-over" and "staleness deadline" alternatives were both considered and rejected (the first is inert — a retired model cannot be requested; the second re-creates the very outage being removed).
+- The image and video catalogue writers read the same kept list, so a media model can also carry a ZDR verdict from a list that is no longer current. This was a conscious choice for one rule over two.
+- `spec["zdr_capable"]` and `is_zdr_capable()` agree for every model in the **current** roster. For a model the latest `/models` read dropped, the spec key is simply absent while the method still answers from the carried list. Nothing in the pipe reads the key, so this is bookkeeping rather than behaviour — but it is why the two are not claimed to agree in every state.
+
+### If you are reading a note that says the list is cleared on failure
+
+That text is stale. It describes the behaviour before this change and should not be "fixed" again.
 
 ---
 

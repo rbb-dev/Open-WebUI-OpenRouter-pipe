@@ -978,7 +978,9 @@ class Valves(BaseModel):
         description=(
             "When enabled, hide models that are not ZDR-capable (based on OpenRouter's /endpoints/zdr list). "
             "A hidden model is also refused if requested directly. It never sends provider.zdr=true -- "
-            "use Enforce ZDR routing for that -- and filtering is skipped if the ZDR list cannot be loaded, so every model stays visible, video models included."
+            "use Enforce ZDR routing for that. Filtering is skipped only if the ZDR list has never been read; "
+            "if a later read fails, the last list read successfully stays in force and filtering carries on from it. "
+            "Video models are filtered like any other model."
         ),
     )
     ZDR_ENFORCE: bool = Field(
@@ -986,7 +988,10 @@ class Valves(BaseModel):
         title="Enforce ZDR routing",
         description=(
             "When enabled, all requests include provider.zdr=true and will be rejected if the selected model "
-            "does not have any ZDR endpoints."
+            "does not have any ZDR endpoints. Requests are refused outright only if the ZDR list has never been read; "
+            "if a later read fails, the last list read successfully stays in force, so an outage does not lock out a model "
+            "that was answering a moment ago -- and every request still carries provider.zdr=true, which is what makes "
+            "OpenRouter hold it to a no-retention endpoint."
         ),
     )
     ALLOW_USER_ZDR_OVERRIDE: bool = Field(

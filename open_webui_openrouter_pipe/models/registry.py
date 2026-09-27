@@ -310,12 +310,11 @@ class OpenRouterModelRegistry:
                 resp.raise_for_status()
                 payload = await resp.json()
         except Exception:
-            cls._zdr_model_ids = None
             logger.debug("Failed to load OpenRouter model catalog", exc_info=True)
             raise
 
         data = payload.get("data") or []
-        zdr_model_ids: set[str] | None = None
+        zdr_model_ids: set[str] | None = cls._zdr_model_ids
         try:
             zdr_model_ids = await cls._fetch_zdr_model_ids(
                 session,

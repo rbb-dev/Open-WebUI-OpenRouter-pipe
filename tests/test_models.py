@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import asyncio
 import copy
+
+import contextlib
 import logging
 import pathlib
 import sys
@@ -589,6 +591,20 @@ def test_maybe_schedule_model_metadata_sync_running_task_no_reschedule(pipe_inst
     )
     # Key should not be updated
     assert pipe._catalog_manager._model_metadata_sync_key is None
+
+
+async def _settle(manager) -> None:
+    """Await the task the manager actually created, then let its callback run.
+
+    A done-callback is dispatched with call_soon, so it runs on a later loop turn than
+    the one that completed the task. One `sleep(0)` per schedule leaves the callback
+    unrun, and the count reads as though the fix does nothing.
+    """
+    task = manager._model_metadata_sync_task
+    if task is not None:
+        with contextlib.suppress(BaseException):
+            await task
+    await asyncio.sleep(0)
 
 
 # Sync Model Metadata Tests

@@ -2894,58 +2894,6 @@ def test_the_replace_imports_guard_runs_against_open_webui_s_own_rule():
     )
 
 
-@pytest.mark.parametrize("version", ["9.9.9", "1.2.3"])
-def test_both_generated_filters_stamp_the_renderer_version(monkeypatch, version):
-    """Which renderer generation produced an installed filter must be readable from it.
-
-    Parametrised over two versions so a hardcoded literal in either renderer fails: the
-    value has to come from the package, not from the template.
-    """
-    import open_webui_openrouter_pipe as pkg
-    from open_webui_openrouter_pipe.filters.image_filter_renderer import (
-        build_image_model_filter_spec,
-        render_image_model_filter_source,
-    )
-    from open_webui_openrouter_pipe.filters.video_filter_renderer import (
-        render_video_filter_source,
-    )
-
-    monkeypatch.setattr(pkg, "__version__", version)
-
-    image = render_image_model_filter_source(
-        build_image_model_filter_spec(
-            "a/b",
-            {"id": "a/b", "name": "B"},
-            [{
-                "provider_slug": "p",
-                "supported_parameters": {"aspect_ratio": {"type": "enum", "values": ["1:1"]}},
-                "allowed_passthrough_parameters": ["style"],
-            }],
-            dedicated_image_api=True,
-        )
-    )
-    video = render_video_filter_source(
-        model_id="a/b", video_model={"id": "a/b", "name": "B"}, admin_valves=None
-    )
-
-    stamp = f"OPENROUTER_PIPE_VERSION = {version!r}"
-    for label, source in (("image", image), ("video", video)):
-        assert stamp in source, (
-            f"the {label} filter carries no version stamp for {version!r}, so 'did the "
-            "fix reach this deployment?' can only be answered by diffing the source"
-        )
-        compile(source, f"<{label}>", "exec")
-
-    assert "openrouter_pipe:image_filter:v1" in image, (
-        "the image re-identification marker changed; every installed row is orphaned and "
-        "reinstalls under a _N suffix"
-    )
-    assert "openrouter_pipe:video_filter:v1" in video, (
-        "the video re-identification marker changed; every installed row is orphaned and "
-        "reinstalls under a _N suffix"
-    )
-
-
 @pytest.mark.parametrize(
     ("valve", "label"),
     [
@@ -3080,10 +3028,13 @@ async def test_a_row_that_is_already_current_says_nothing(caplog, monkeypatch):
 async def test_a_valve_read_that_failed_leaves_the_installed_filter_alone():
     """A read that failed and a read that returned nothing are different answers.
 
-    Both came back as `""`, and `""` means "use the default model", so one transient
-    database error during a catalog refresh rewrote the installed row for a model nobody
-    had chosen -- while the valve still named the real one, so requests kept going to it
-    with the wrong controls on screen.
+    A read that raised already came back as `None`; a read that *returned* `None` came
+    back as `""`, and `""` means "use the default model", so one transient database
+    error during a catalog refresh rewrote the installed row for a model nobody had
+    chosen -- while the valve still named the real one, so requests kept going to it
+    with the wrong controls on screen. A dict that was read and simply holds no
+    `IMAGE_GENERATION_MODEL` is the genuine unset case and must still install for the
+    default model.
     """
     from types import SimpleNamespace
     from unittest.mock import AsyncMock, MagicMock

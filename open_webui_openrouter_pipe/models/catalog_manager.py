@@ -719,6 +719,27 @@ class ModelCatalogManager:
         )
         if self._task_done_callback:
             self._model_metadata_sync_task.add_done_callback(self._task_done_callback)
+        self._model_metadata_sync_task.add_done_callback(self._on_model_metadata_sync_done)
+
+    def _on_model_metadata_sync_done(self, task: asyncio.Task) -> None:
+        if self._model_metadata_sync_task is not task and self._model_metadata_sync_task is not None:
+            return
+        if task.cancelled():
+            self._model_metadata_sync_key = None
+            return
+        exc = task.exception()
+        if exc is None:
+            return
+        try:
+            self.logger.error(
+                "Model metadata sync failed (%s); the key is released so the next "
+                "model-list refresh retries it",
+                exc,
+                exc_info=exc,
+            )
+        except Exception:
+            self.logger.exception("Model metadata sync failed and could not be logged")
+        self._model_metadata_sync_key = None
 
     @timed
     def _build_icon_mapping(self, frontend_data: dict[str, Any] | None) -> dict[str, str]:

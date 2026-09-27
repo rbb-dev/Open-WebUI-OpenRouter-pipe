@@ -201,7 +201,7 @@ Direct uploads are intentionally gated. There are **two kinds** of limits:
    - The pipe must inline internal Open WebUI file references into base64 data URLs
    - Inlining is bounded by the pipe valve `BASE64_MAX_SIZE_MB`
 
-If a diverted upload exceeds limits, the request fails with a clear error instead of silently falling back.
+If a diverted upload exceeds limits, the request fails with a clear error instead of silently falling back. An attachment is measured only when its own modality’s user valve is on; otherwise it is handed straight back to Open WebUI.
 
 ---
 
@@ -269,8 +269,9 @@ Notes:
 This is emitted by the pipe (not OpenRouter) when direct uploads can’t be applied safely.
 
 Common causes:
-- File exceeds size limits
-- MIME type is not allowlisted (or the model/provider rejects it)
+- File exceeds size limits (the size checks apply only to a modality whose user valve is on)
+- The uploaded file's dict carries no `size`
+- The MIME type is allowlisted but the model or provider still rejects it (see "Provider says unsupported MIME/type" below)
 - Open WebUI storage object could not be loaded by ID
 - Admin enforced an incompatible endpoint override (forced `/responses` but the request requires `/chat/completions`)
 
@@ -296,6 +297,12 @@ If you don’t see it reaching the model:
 If direct uploads are enabled but the selected model does not support a required modality (file/audio/video), the filter will **fail open**:
 - The upload stays on the normal Open WebUI path (RAG/Knowledge), and
 - The pipe emits a warning notification that direct uploads were not applied for those attachments.
+
+Fail-open covers a missing capability and a missing `size` alike, so the check’s ordering is documented behaviour. The four paths on which an attachment is handed back instead of measured are:
+- **valve off** — the modality’s `DIRECT_*` user valve is off,
+- **modality unsupported by the model**,
+- **MIME not allowlisted** for that modality, and
+- **audio only** — the audio format could not be inferred from the name or content type.
 
 ### Debug logging (useful strings)
 

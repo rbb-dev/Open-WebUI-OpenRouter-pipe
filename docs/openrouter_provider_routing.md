@@ -251,8 +251,9 @@ Filters are generated when:
 Filters are regenerated when:
 - Provider catalog refreshes (new providers added/removed)
 - Valve lists change (models added/removed from routing)
+- The pipe is upgraded (the generated source carries the pipe version, so a version that changes the template regenerates it)
 
-The pipe uses a **state hash** to avoid unnecessary database writes when nothing has changed.
+The pipe uses a **state hash** to avoid unnecessary database writes when nothing has changed. That hash covers every renderer input, including the pipe version.
 
 When regeneration changes the dropdown options, previously saved selections that no longer
 exist in the new option list (for example an ORDER preference saved before a provider was

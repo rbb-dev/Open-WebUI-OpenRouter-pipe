@@ -197,9 +197,11 @@ class TestInletBehavior:
         src = _render(admin=admin)
         # Pre-seed `Literal` and `Any` so pydantic's deferred-annotation
         # resolution finds them when instantiating UserValves. The rendered
-        # filter does `from typing import Any, Literal` itself, but with
-        # `from __future__ import annotations` pydantic resolves annotations
-        # via eval() in the module namespace at instantiation time.
+        # filter imports these itself (and, with the keep-what-still-fits
+        # validator, also `Annotated`, `TypeAdapter`, `ValidationError` and
+        # `model_validator`), but with `from __future__ import annotations`
+        # pydantic resolves annotations via eval() in the module namespace at
+        # instantiation time.
         from typing import Any, Literal
         ns: dict = {"Literal": Literal, "Any": Any}
         exec(compile(src, "<test_filter>", "exec"), ns)
@@ -459,3 +461,21 @@ STORED = {
     "VIDEO_RESOLUTION": "1080p",
     "VIDEO_NEGATIVE_PROMPT": "no blur, no grain",
 }
+
+
+# Stale stored values: the live contract narrows under a stored UserValves
+# -----------------------------------------------------------------------------
+
+def _catalog_rows():
+    import json
+    from pathlib import Path
+
+    raw = json.loads((Path(__file__).parent / "fixtures" / "video_models_catalog.json").read_text())
+    return raw["data"] if isinstance(raw, dict) else raw
+
+
+def _model(model_id):
+    for row in _catalog_rows():
+        if row.get("id") == model_id:
+            return row
+    raise AssertionError(f"no fixture model {model_id!r}")

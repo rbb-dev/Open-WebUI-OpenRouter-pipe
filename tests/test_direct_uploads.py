@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import base64
 import json
+import sys
+from pathlib import Path
+from types import ModuleType
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -1613,3 +1616,9 @@ def test_direct_uploads_filter_bypasses_owui_file_context_via_metadata_files():
             "content_type": "application/pdf",
         }
     ]
+
+
+# ===== docs/openrouter_direct_uploads.md "Common causes:" differential =====
+
+
+from open_webui_openrouter_pipe.filters import FilterManager as _FilterManager

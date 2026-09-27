@@ -1279,6 +1279,15 @@ class FilterManager:
             )
             return None
 
+        if stored is None:
+            self.logger.log(
+                warn_level(_warned_stale_filter_rows, "valve_read:none"),
+                "Could not read the image generation filter's selected model, so the "
+                "installed filter is left as it is rather than rebuilt for the default "
+                "model",
+            )
+            return None
+
         selected = (stored or {}).get("IMAGE_GENERATION_MODEL")
         return selected.strip() if isinstance(selected, str) else ""
 
@@ -2074,7 +2083,9 @@ class Filter:
         transports = {
             slug: FilterManager.model_transport(slug) for slug in sorted(relevant_slugs)
         }
-        data = f"{admin_sorted}|{user_sorted}|{provider_data}|{transports}"
+        from open_webui_openrouter_pipe import __version__
+
+        data = f"{admin_sorted}|{user_sorted}|{provider_data}|{transports}|{__version__}"
         return hashlib.md5(data.encode()).hexdigest()
 
     @staticmethod
@@ -2342,6 +2353,8 @@ class Filter:
         safe_id = FilterManager.sanitize_model_for_filter_id(model_slug)
         filter_id = f"{_PROVIDER_ROUTING_FILTER_ID_PREFIX}{safe_id}"
 
+        from open_webui_openrouter_pipe import __version__
+
         if not isinstance(model_slug, str) or not model_slug:
             raise ValueError("model_slug must be a non-empty string")
         safe_model_slug_escaped = json.dumps(model_slug)[1:-1]
@@ -2501,6 +2514,7 @@ except Exception:  # noqa: BLE001 - open_webui.env does filesystem work on impor
 
 OWUI_OPENROUTER_PIPE_MARKER = "{safe_marker_escaped}"
 MODEL_SLUG = "{safe_model_slug_escaped}"
+OPENROUTER_PIPE_VERSION = {__version__!r}
 
 # Sentinel value for "no preference" dropdown option
 _NO_PREF = "(no preference)"
