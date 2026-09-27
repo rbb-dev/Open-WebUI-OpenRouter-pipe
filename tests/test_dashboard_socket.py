@@ -6,6 +6,7 @@ import asyncio
 import concurrent.futures
 import contextlib
 import logging
+import os
 import sys
 import time
 import types
@@ -631,19 +632,21 @@ class TestBuildEmitPayload:
              "concurrency": {"active_requests": 2, "max_requests": 50, "active_tools": 0, "max_tools": 10},
              "queues": {}, "rate_limits": {}, "sessions": {"in_flight": 0}},
         ]
-        agg_state = {"workers": list(cached), "misses": 0}
+        agg_state = {"workers": list(cached), "misses": 0, "set_at": time.monotonic()}
         payload = await _build_emit_payload(pipe, client, "ns", "wk", 1, {}, agg_state)
         assert payload["degraded"] is True
         assert payload["worker_count"] == 3
         pids = {w["pid"] for w in payload["workers"]}
         assert {111, 222}.issubset(pids)
 
-        agg_state = {"workers": list(cached), "misses": 2}
+        agg_state = {"workers": list(cached), "misses": 2, "set_at": time.monotonic()}
         payload = await _build_emit_payload(pipe, client, "ns", "wk", 2, {}, agg_state)
-        # The collapse is a fallback too, so it is a partial result and the banner must
-        # say so. The panel is NOT showing last known workers on this tick.
+        # The replay is a fallback too, so it is a partial result and the banner must
+        # say so. The set on screen is the last known one, not a live read.
         assert payload["degraded"] is True
-        assert payload["worker_count"] == 1
+        # Three, not two: the cached set is still inside the 3 x _PD_KEY_TTL age
+        # bound, so it is replayed and the local worker joins it.
+        assert payload["worker_count"] == 3
         # Two, not three: the cached set is the two-entry `cached` above and the fix
         # skips the cache write on a fallback tick, so the good set survives the outage.
         assert len(agg_state["workers"]) == 2

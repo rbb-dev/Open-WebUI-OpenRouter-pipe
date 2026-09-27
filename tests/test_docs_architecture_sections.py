@@ -23,7 +23,6 @@ DOCS = Path(__file__).resolve().parents[1] / "docs"
 
 IMAGE_DOC = "openrouter_image_generation.md"
 VIDEO_DOC = "openrouter_video_generation.md"
-
 # (doc, heading level, heading text, minimum non-blank body lines, required strings)
 SECTIONS: list[tuple[str, int, str, int, tuple[str, ...]]] = [
     (
@@ -145,6 +144,29 @@ def test_the_tables_of_contents_do_not_point_at_a_deleted_section():
         f"{dangling} link to #architecture-overview from the table of contents but have "
         "no such heading, so the link resolves to nothing."
     )
+
+
+_SLUG_STRIP = re.compile(r"[^\w\- ]+", re.UNICODE)
+
+
+def _gh_slug(heading: str) -> str:
+    """GitHub's heading anchor: lowercase, drop punctuation, spaces to hyphens."""
+    return _SLUG_STRIP.sub("", heading.strip().lower()).replace(" ", "-")
+
+
+def _anchors(text: str) -> set[str]:
+    """Every anchor the file actually defines, duplicate-suffixed as GitHub does."""
+    seen: dict[str, int] = {}
+    anchors: set[str] = set()
+    for line in text.splitlines():
+        m = re.match(r"^(#{1,6})\s+(.*?)\s*#*$", line)
+        if not m:
+            continue
+        base = _gh_slug(m.group(2))
+        n = seen.get(base, 0)
+        seen[base] = n + 1
+        anchors.add(base if n == 0 else f"{base}-{n}")
+    return anchors
 
 
 def test_the_video_client_is_not_called_by_a_name_that_does_not_exist():

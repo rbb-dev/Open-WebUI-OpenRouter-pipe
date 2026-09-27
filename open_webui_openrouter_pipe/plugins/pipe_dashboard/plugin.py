@@ -222,7 +222,8 @@ class PipeDashboardPlugin(PluginBase):
         _display_name = "Pipe Dashboard"
         _description = (
             "Live dashboard for pipe monitoring and diagnostics. "
-            "Access: a read grant = view the dashboard; a write grant = run operator actions."
+            "Access: a read grant = view the dashboard; a write grant = run operator actions; "
+            "the Config tab = the admin role."
         )
         models.append({"id": _PIPE_DASHBOARD_MODEL_ID, "name": _display_name})
         # Write a clean display name into OWUI's Models table so the UI shows

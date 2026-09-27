@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -462,26 +463,6 @@ async def test_config_set_invalid_value_raises_before_write(fake_functions):
             pipe, _user(), {"edits": {"REASONING_EFFORT": "bogus"}, "rev": 1000}
         )
     assert fake_functions.saved is None
-
-
-@pytest.mark.asyncio
-async def test_config_set_forbidden_for_non_operator(monkeypatch, fake_functions):
-    monkeypatch.setattr(actions, "can_act", AsyncMock(return_value=False))
-    monkeypatch.setattr(actions, "can_view", AsyncMock(return_value=True))
-    status, _ = await actions.dispatch_action(
-        _config_pipe(), _user(), "config_set", {"edits": {"MODEL_ID": "x"}, "rev": 1000}
-    )
-    assert status == 403
-    assert fake_functions.saved is None
-
-
-@pytest.mark.asyncio
-async def test_config_get_allowed_for_viewer(monkeypatch, fake_functions):
-    monkeypatch.setattr(actions, "can_view", AsyncMock(return_value=True))
-    monkeypatch.setattr(actions, "can_act", AsyncMock(return_value=False))
-    status, payload = await actions.dispatch_action(_config_pipe(), _user(), "config_get", {})
-    assert status == 200
-    assert "valves" in payload["result"]
 
 
 @pytest.mark.asyncio

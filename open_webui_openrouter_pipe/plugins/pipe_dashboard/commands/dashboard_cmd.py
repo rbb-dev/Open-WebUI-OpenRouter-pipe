@@ -1291,9 +1291,10 @@ def _build_dashboard_shell(dash_id: str) -> str:
 
     function updateIdentity(d) {{
       var wc = d.worker_count || 1;
-      var workerText = wc > 1 ? 'Aggregated from ' + wc + ' workers' : 'Single worker';
+      var sep = state.degraded ? '' : ' \u00b7 ';
+      var workerText = state.degraded ? '' : (wc > 1 ? 'Aggregated from ' + wc + ' workers' : 'Single worker');
       var pidText = state.pid ? ' \\u00b7 emitter pid ' + state.pid : '';
-      $(ID + '-footer').textContent = 'v' + (d.version || '?') + ' \u00b7 ' + (d.pipe_id || '?') + ' \u00b7 ' + workerText + pidText;
+      $(ID + '-footer').textContent = 'v' + (d.version || '?') + ' \u00b7 ' + (d.pipe_id || '?') + sep + workerText + pidText;
     }}
 
     function updateConcurrency(c) {{
@@ -1574,6 +1575,7 @@ def _build_dashboard_shell(dash_id: str) -> str:
     function updateDashboard(d) {{
       if (d.worker_count !== undefined) state.workerCount = d.worker_count;
       if (d.pid !== undefined) state.pid = d.pid;
+      state.degraded = !!d.degraded;
       $(ID + '-degraded').style.display = d.degraded ? 'block' : 'none';
       if (d.identity) {{ state.identity = d.identity; updateIdentity(d.identity); }}
       if (d.concurrency) updateConcurrency(d.concurrency);

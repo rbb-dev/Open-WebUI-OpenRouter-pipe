@@ -30,10 +30,12 @@ _registration_lock = threading.Lock()
 _PD_COARSE_MIN_INTERVAL = 0.25
 _coarse_state: dict[str, float] = {}
 
+_PD_RECONCILE_BACKOFF_S = 5.0
+
 _routes_get_pipe: Any = None
 _reconcile_lock = asyncio.Lock()
 _fresh_dispatch: Any = None
-_reconcile_attempted = False
+_reconcile_retry_until: float = 0.0
 
 
 def set_pipe_getter(get_pipe: Any) -> None:
@@ -120,12 +122,16 @@ async def _action_route(request: Request, body: ActionBody):
     pipe = _routes_get_pipe() if _routes_get_pipe else None
     dispatch = dispatch_action
     if body.action not in ACTIONS and pipe is not None and getattr(pipe, "id", None):
-        global _fresh_dispatch, _reconcile_attempted
-        if _fresh_dispatch is None and not _reconcile_attempted and await can_view(user, pipe):
+        global _fresh_dispatch, _reconcile_retry_until
+        if _fresh_dispatch is None and time.monotonic() >= _reconcile_retry_until and await can_view(user, pipe):
             async with _reconcile_lock:
-                if _fresh_dispatch is None and not _reconcile_attempted:
-                    _reconcile_attempted = True
-                    _fresh_dispatch = await _resolve_fresh(request, pipe.id)
+                if _fresh_dispatch is None and time.monotonic() >= _reconcile_retry_until:
+                    fresh = await _resolve_fresh(request, pipe.id)
+                    if fresh is not None:
+                        _fresh_dispatch = fresh
+                        _reconcile_retry_until = 0.0
+                    else:
+                        _reconcile_retry_until = time.monotonic() + _PD_RECONCILE_BACKOFF_S
         if _fresh_dispatch is not None:
             dispatch, fresh_pipe = _fresh_dispatch
             if fresh_pipe is not None:

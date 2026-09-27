@@ -37,7 +37,7 @@ Three admin valves control the feature. They appear in Open WebUI's Settings onc
 Access is governed by Open WebUI's model access control on this overlay model — there is no separate admin flag. Assign users and groups in the model's **Access** editor:
 
 - A **read** grant makes a **viewer**: open the dashboard and watch the live feed.
-- A **write** grant makes an **operator**: everything a viewer can do, plus edit configuration and use the action buttons.
+- A **write** grant makes an **operator**: everything a viewer can do, plus use the action buttons. Editing configuration is separate — see [Access](#access) below.
 
 Owners and admins hold both grants. A user with no grant receives an access-denied message.
 
@@ -91,6 +91,8 @@ With collection on, the tab presents:
 Select a range: 1h, 6h, 24h, 7d, or 30d. Ranges longer than the retention window are disabled. A footnote shows the collection-start date, the retention window, and the record count.
 
 **Invoice note.** Task models configured outside this pipe never reach it, so they are absent from these totals. Expect a small gap against the OpenRouter invoice when such task models are in use.
+
+A request that is still running and producing liveness signals when the two-hour sweep passes is recorded by whoever really ends it, so its status, duration and token counts are the real ones. Streaming requests refresh the liveness stamp on every chunk. A non-streaming request that runs a tool call, or whose provider call retries, refreshes it too and is likewise spared: the sweep abandons a non-streaming request only when it has produced no liveness signal at all in two hours. A non-streaming request with no tool activity and no retry is still abandoned as a failure after two hours — that case is not covered here.
 
 The Usage tables sort on any column and have a filter box.
 
@@ -188,7 +190,8 @@ builds — forks inherit the release workflow, so assets, digests, and the chang
 Requirements for the checks and downloads: unauthenticated GitHub API (shared 60/hour budget per
 egress IP — checks are memoized, and only one worker per deployment polls in the background).
 Apply, restore, and snapshot-delete additionally require the acting account to hold the `admin`
-role; package/stub installs show a pin-bump note instead of an Update button.
+role, as do the two configuration actions behind the Config tab; package/stub installs show a pin-bump
+note instead of an Update button.
 
 ### About
 
@@ -212,7 +215,7 @@ The Config tab is the pipe's configuration editor. It lists every admin valve in
 
 If the stored configuration cannot be read at all — the database is unreachable, say — the Config tab says so and refuses to save, rather than showing defaults over your real settings. Your settings are still stored and are not being changed. Restore the database, then reload; the tab will not overwrite what it cannot read.
 
-**Access.** A read grant opens the tab. Saving requires a write grant.
+**Access.** The Config tab is for administrators end to end: reading the configuration and saving it both require the `admin` role, on top of a model grant. A write grant alone opens the tab's button but not its contents — it answers *forbidden* and the tab reports that it could not load the configuration.
 
 ---
 

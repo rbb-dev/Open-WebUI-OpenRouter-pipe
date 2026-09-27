@@ -178,12 +178,12 @@ def test_registered_route_resolves_real_config_get(monkeypatch):
     app = FastAPI()
     monkeypatch.setattr(http_routes, "get_owui_app", lambda: app)
     monkeypatch.setattr(http_routes, "bearer_user",
-                        AsyncMock(return_value=SimpleNamespace(id="u1", role="user")))
+                        AsyncMock(return_value=SimpleNamespace(id="u1", role="admin")))
     monkeypatch.setattr(actions, "can_view", AsyncMock(return_value=True))
     monkeypatch.setattr(http_routes, "can_view", AsyncMock(return_value=True))
     monkeypatch.setattr(http_routes, "_resolve_fresh", AsyncMock(return_value=None))
     monkeypatch.setattr(http_routes, "_fresh_dispatch", None)
-    monkeypatch.setattr(http_routes, "_reconcile_attempted", False)
+    monkeypatch.setattr(http_routes, "_reconcile_retry_until", 0.0)
     monkeypatch.setattr(actions, "_current_config_rev", AsyncMock(return_value=1000))
     http_routes.set_pipe_getter(lambda: SimpleNamespace(id="openrouter", valves=Valves()))
     http_routes._registered_paths.clear()
@@ -221,7 +221,7 @@ def test_route_self_heals_unknown_action(monkeypatch):
     monkeypatch.setattr(http_routes, "can_view", AsyncMock(return_value=True))
     monkeypatch.setattr(http_routes, "_resolve_fresh", AsyncMock(return_value=(_fresh, fresh_pipe)))
     monkeypatch.setattr(http_routes, "_fresh_dispatch", None)
-    monkeypatch.setattr(http_routes, "_reconcile_attempted", False)
+    monkeypatch.setattr(http_routes, "_reconcile_retry_until", 0.0)
     http_routes.set_pipe_getter(lambda: SimpleNamespace(id="openrouter"))
     http_routes._registered_paths.clear()
 
@@ -250,7 +250,7 @@ def test_route_reconcile_requires_can_view(monkeypatch):
     monkeypatch.setattr(actions, "can_view", AsyncMock(return_value=False))
     monkeypatch.setattr(http_routes, "_resolve_fresh", resolve)
     monkeypatch.setattr(http_routes, "_fresh_dispatch", None)
-    monkeypatch.setattr(http_routes, "_reconcile_attempted", False)
+    monkeypatch.setattr(http_routes, "_reconcile_retry_until", 0.0)
     http_routes.set_pipe_getter(lambda: SimpleNamespace(id="openrouter"))
     http_routes._registered_paths.clear()
     actions._rate_state.clear()
@@ -262,3 +262,11 @@ def test_route_reconcile_requires_can_view(monkeypatch):
     assert r.status_code == 403
     resolve.assert_not_awaited()
     http_routes._registered_paths.clear()
+
+
+def _post(client, action):
+    from open_webui_openrouter_pipe.plugins.pipe_dashboard import actions
+
+    http_routes._coarse_state.clear()
+    actions._rate_state.clear()
+    return client.post(http_routes._ACTION_PATH, json={"action": action, "args": {}})

@@ -18,6 +18,7 @@ from .config_service import (
     _ClientMessage,
     describe_valves,
     drift,
+    is_secret,
     json_safe,
     merge_for_save_with_drops,
     readable_stored,
@@ -50,6 +51,7 @@ class ActionEntry:
     schema: Mapping[str, SchemaValue] | None
     handler: Callable[..., Awaitable[dict[str, Any]]]
     needs_request: bool = False
+    admin_only: bool = False
 
 
 ACTIONS: dict[str, ActionEntry] = {}
@@ -61,10 +63,12 @@ def register_action(
     permission: str = "write",
     schema: Mapping[str, SchemaValue] | None = None,
     needs_request: bool = False,
+    admin_only: bool = False,
 ):
     def deco(fn):
         ACTIONS[name] = ActionEntry(
-            name=name, permission=permission, schema=schema, handler=fn, needs_request=needs_request
+            name=name, permission=permission, schema=schema, handler=fn,
+            needs_request=needs_request, admin_only=admin_only,
         )
         return fn
 
@@ -100,6 +104,21 @@ def _scrub(value: Any, limit: int = 200) -> str:
     return str(value).replace("\r", " ").replace("\n", " ")[:limit]
 
 
+def _redacted_args(pipe: Any, args: Any) -> Any:
+    if not isinstance(args, dict):
+        return args
+    edits = args.get("edits")
+    if not isinstance(edits, dict):
+        return args
+    fields = getattr(type(getattr(pipe, "valves", None)), "model_fields", {})
+    if not any(is_secret(fields[k].annotation) for k in edits if k in fields):
+        return args
+    return {**args, "edits": {
+        k: ("<redacted>" if k in fields and is_secret(fields[k].annotation) else v)
+        for k, v in edits.items()
+    }}
+
+
 def _audit(user: Any, name: str, outcome: str, client_ip: Any, args: Any = None) -> None:
     uid = getattr(user, "id", None)
     level = logger.debug if outcome == "ok" else logger.warning
@@ -117,6 +136,9 @@ async def dispatch_action(
     required = entry.permission if entry else "read"
     allowed = await (can_act if required == "write" else can_view)(user, pipe)
     if not allowed:
+        _audit(user, name, "forbidden", client_ip)
+        return 403, {"error": "forbidden"}
+    if entry is not None and entry.admin_only and getattr(user, "role", None) != "admin":
         _audit(user, name, "forbidden", client_ip)
         return 403, {"error": "forbidden"}
     if entry is None:
@@ -140,10 +162,10 @@ async def dispatch_action(
             result = await entry.handler(pipe, user, args)
     except Exception as exc:
         logger.exception("pipe_dashboard action %s failed", name)
-        _audit(user, name, "error", client_ip, args=args if write else None)
+        _audit(user, name, "error", client_ip, args=_redacted_args(pipe, args) if write else None)
         text = str(exc).strip() if isinstance(exc, _ClientMessage) else exc.__class__.__name__
         return 500, {"error": "action failed", "detail": text}
-    _audit(user, name, "ok", client_ip, args=args if write else None)
+    _audit(user, name, "ok", client_ip, args=_redacted_args(pipe, args) if write else None)
     return 200, {"ok": True, "result": result}
 
 
@@ -276,7 +298,7 @@ async def _saved_values(pipe: Any, names: Iterable[str]) -> dict[str, Any]:
     }
 
 
-@register_action("config_get", permission="read", schema=None)
+@register_action("config_get", permission="read", schema=None, admin_only=True)
 async def _config_get(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
     effective, dropped = await _effective_valves_and_drops(pipe)
     snapshot = _config_snapshot(effective)
@@ -285,7 +307,7 @@ async def _config_get(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
     return snapshot
 
 
-@register_action("config_set", permission="write", schema={"edits": dict})
+@register_action("config_set", permission="write", schema={"edits": dict}, admin_only=True)
 async def _config_set(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
     """Merge edits into the stored custom subset (not the live model) and persist; rev-guarded."""
     current_rev = await _current_config_rev(pipe)

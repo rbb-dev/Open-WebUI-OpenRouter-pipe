@@ -188,6 +188,7 @@ def test_sweep_abandons_stale_sessions():
     _start(tracker)
     with tracker._lock:
         tracker._active["r1"]["started"] = time.time() - 8000
+        tracker._active["r1"]["seen"] = time.time() - 8000
     tracker.sweep()
     assert finalized and finalized[0]["status"] == "failed"
     assert tracker.live_sessions()[0]["status"] == "failed"

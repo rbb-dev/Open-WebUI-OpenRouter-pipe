@@ -458,13 +458,17 @@ async def _build_emit_payload(
         if worker_payloads is None:
             misses = agg_state.get("misses", 0) + 1
             agg_state["misses"] = misses
+            set_at = agg_state.get("set_at")
             cached = agg_state.get("workers") or []
-            if cached and misses <= 2:
+            if (
+                cached
+                and set_at is not None
+                and (time.monotonic() - set_at) < 3 * _PD_KEY_TTL
+            ):
                 worker_payloads = list(cached)
-                degraded = True
             else:
                 worker_payloads = []
-                degraded = True
+            degraded = True
         else:
             read_ok = True
             agg_state["misses"] = 0
@@ -476,6 +480,7 @@ async def _build_emit_payload(
                 logger.debug("Local worker payload collect error", exc_info=True)
         if read_ok:
             agg_state["workers"] = list(worker_payloads)
+            agg_state["set_at"] = time.monotonic()
         if worker_payloads:
             payload.update(aggregate_worker_payloads(worker_payloads))
             worker_count = len(worker_payloads)

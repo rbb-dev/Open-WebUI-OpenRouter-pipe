@@ -95,6 +95,7 @@ class SessionTracker:
             "model_name": self._resolve_name(model_id),
             "status": "queued",
             "started": time.time(),
+            "seen": time.time(),
             "done": None,
             "tin": 0,
             "tout": 0,
@@ -139,13 +140,16 @@ class SessionTracker:
     def mark_streaming(self, request_id: str) -> None:
         with self._lock:
             entry = self._active.get(request_id)
-            if entry is not None and entry["status"] == "queued":
-                entry["status"] = "streaming"
+            if entry is not None:
+                entry["seen"] = time.time()
+                if entry["status"] == "queued":
+                    entry["status"] = "streaming"
 
     def tool_started(self, request_id: str, tool_name: str) -> None:
         with self._lock:
             entry = self._active.get(request_id)
             if entry is not None:
+                entry["seen"] = time.time()
                 entry["current_tool"] = str(tool_name or "?")
                 entry["status"] = "tool"
 
@@ -154,6 +158,7 @@ class SessionTracker:
             entry = self._active.get(request_id)
             if entry is None:
                 return
+            entry["seen"] = time.time()
             if status == "failed":
                 entry["tools_failed"] += 1
             elif status == "skipped":
@@ -168,6 +173,7 @@ class SessionTracker:
         with self._lock:
             entry = self._active.get(request_id)
             if entry is not None:
+                entry["seen"] = time.time()
                 entry["retries"] += 1
 
     def update_usage(self, request_id: str, usage: Any) -> None:
@@ -176,6 +182,7 @@ class SessionTracker:
             entry = self._active.get(request_id)
             if entry is None:
                 return
+            entry["seen"] = time.time()
             for key in ("tin", "tout", "treason", "tcached", "cost", "discount"):
                 if numbers[key]:
                     entry[key] = numbers[key]
@@ -250,7 +257,7 @@ class SessionTracker:
     def sweep(self) -> None:
         cutoff = time.time() - _ST_ABANDON_S
         with self._lock:
-            stale = [rid for rid, item in self._active.items() if (item.get("started") or 0.0) < cutoff]
+            stale = [rid for rid, item in self._active.items() if (item.get("seen", item.get("started") or 0.0) or 0.0) < cutoff]
         for rid in stale:
             self.finalize(rid, None, "failed")
 
