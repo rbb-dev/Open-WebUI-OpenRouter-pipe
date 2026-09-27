@@ -56,11 +56,6 @@ _timing_request_id: ContextVar[str | None] = ContextVar(
 # Maximum events per request to prevent unbounded growth
 MAX_TIMING_EVENTS = 10000
 
-# Maximum number of distinct requests retained in the in-memory buffer. The
-# per-request entries are only cleared by test helpers, never in production, so
-# without this cap the dict grows once per request forever when ENABLE_TIMING_LOG
-# is on. Oldest requests are evicted beyond this bound (the JSONL file remains
-# the complete record).
 MAX_TIMING_REQUESTS = 256
 
 

@@ -21,10 +21,12 @@ Tests:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime
 import json
+import re
 from io import StringIO
-from typing import Any
+from typing import Any, cast
 from unittest import mock
 
 import pytest
@@ -649,3 +651,18 @@ def test_pipe_teardown_chain_emits_no_timing_events_under_active_context():
     tl.set_timing_context("req-teardown-probe", enabled=True)
     pipe.shutdown()
     assert tl.get_timing_events("req-teardown-probe") == []
+
+
+async def _settle(seconds: float = 0.3) -> None:
+    """Let the request's own closing frames finish writing before anything is read.
+
+    The residual the design bounds is written by `@timed` decorators whose `finally`
+    runs *after* the teardown that released the request. Reading the buffer the instant
+    the request returns therefore catches the frames still open at that moment, not the
+    ones the valve leaves behind. The designers measured at settle times 0.05/0.5/2.0 s
+    and got the same number at all three, so a short fixed settle is enough and does not
+    make the assertion a race.
+    """
+    for _ in range(10):
+        await asyncio.sleep(0)
+    await asyncio.sleep(seconds)

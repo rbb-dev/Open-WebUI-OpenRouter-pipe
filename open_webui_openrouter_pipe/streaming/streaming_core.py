@@ -73,7 +73,7 @@ from ..core.errors import OpenRouterAPIError, RequiredInternalFileError, StatusM
 from ..core.logging_system import SessionLogger
 
 # Import timing instrumentation
-from ..core.timing_logger import timed, timing_mark
+from ..core.timing_logger import clear_timing_events, timed, timing_mark
 from ..core.url_scheme import is_http_or_https_url
 
 # Imports from core.utils
@@ -3713,6 +3713,7 @@ class StreamingHandler:
             if request_id:
                 with SessionLogger._state_lock:
                     SessionLogger.logs.pop(request_id, None)
+                clear_timing_events(request_id)
             SessionLogger.cleanup()
 
             chat_id = metadata.get("chat_id")

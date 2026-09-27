@@ -107,12 +107,17 @@ class CircuitBreaker:
         if not user_id:
             return True
 
-        window = self._breaker_records[user_id]
+        window = self._breaker_records.get(user_id)
+        if window is None:
+            return True
         now = time.time()
 
         # Evict old failures outside the time window
         while window and now - window[0] > self._window_seconds:
             window.popleft()
+
+        if not window:
+            self._breaker_records.pop(user_id, None)
 
         return len(window) < self._threshold
 
@@ -134,8 +139,7 @@ class CircuitBreaker:
         """
         if not user_id:
             return
-        if user_id in self._breaker_records:
-            self._breaker_records[user_id].clear()
+        self._breaker_records.pop(user_id, None)
 
     # --------------------------------------------------------------------------
     # Tool Circuit Breaker (per-user per-tool-type)
@@ -154,10 +158,15 @@ class CircuitBreaker:
         if not user_id or not tool_type:
             return True
 
-        window = self._tool_breakers[user_id][(tool_type, tool_name)]
+        tools = self._tool_breakers.get(user_id)
+        window = tools.get((tool_type, tool_name)) if tools else None
+        if tools is None or window is None:
+            return True
         live = live_tool_failures(window, time.time(), self._window_seconds)
         if not live:
-            window.clear()
+            tools.pop((tool_type, tool_name), None)
+            if not tools:
+                self._tool_breakers.pop(user_id, None)
         return live < self._threshold
 
     def record_tool_failure(self, user_id: str, tool_type: str, tool_name: str = "") -> None:
@@ -181,8 +190,12 @@ class CircuitBreaker:
         if not user_id or not tool_type:
             return
         tool_key = (tool_type, tool_name)
-        if user_id in self._tool_breakers and tool_key in self._tool_breakers[user_id]:
-            self._tool_breakers[user_id][tool_key].clear()
+        tools = self._tool_breakers.get(user_id)
+        if not tools or tool_key not in tools:
+            return
+        tools.pop(tool_key, None)
+        if not tools:
+            self._tool_breakers.pop(user_id, None)
 
     # --------------------------------------------------------------------------
     # Auth Failure Tracking (class-level, shared across all instances)
@@ -208,6 +221,10 @@ class CircuitBreaker:
 
         until = time.time() + ttl
         with cls._AUTH_FAILURE_LOCK:
+            now = time.time()
+            expired = [key for key, expires in cls._AUTH_FAILURE_UNTIL.items() if expires <= now]
+            for key in expired:
+                cls._AUTH_FAILURE_UNTIL.pop(key, None)
             cls._AUTH_FAILURE_UNTIL[scope_key] = until
 
     @classmethod

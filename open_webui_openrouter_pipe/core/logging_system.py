@@ -138,6 +138,7 @@ class SessionLogger:
     request_id: ContextVar[str | None] = ContextVar("request_id", default=None)
     user_id: ContextVar[str | None] = ContextVar("user_id", default=None)
     log_level: ContextVar[int | None] = ContextVar("log_level", default=None)
+    max_lines: ContextVar[int | None] = ContextVar("max_lines", default=None)
     process_log_level: int = resolve_level(os.getenv("GLOBAL_LOG_LEVEL"), logging.INFO)
     SESSION_LOG_MAX_LINES: int = 20000
     logs: ClassVar[dict[str, deque[dict[str, Any]]]] = {}
@@ -292,6 +293,7 @@ class SessionLogger:
                 record.session_id = sid
                 record.request_id = rid
                 record.user_id = uid or "-"
+                record.max_lines = cls.max_lines.get()
                 if rid:
                     with cls._state_lock:
                         cls._session_last_seen[rid] = time.time()
@@ -420,12 +422,13 @@ class SessionLogger:
                         "message": _safe_message(record),
                     }
                 with cls._state_lock:
+                    cap = getattr(record, "max_lines", None) or cls.SESSION_LOG_MAX_LINES
                     buffer = cls.logs.get(request_id)
                     if buffer is None:
-                        buffer = deque(maxlen=cls.SESSION_LOG_MAX_LINES)
+                        buffer = deque(maxlen=cap)
                         cls.logs[request_id] = buffer
-                    elif buffer.maxlen != cls.SESSION_LOG_MAX_LINES:
-                        buffer = deque(buffer, maxlen=cls.SESSION_LOG_MAX_LINES)
+                    elif buffer.maxlen != cap:
+                        buffer = deque(buffer, maxlen=cap)
                         cls.logs[request_id] = buffer
                     buffer.append(event)
                     cls._session_last_seen[request_id] = time.time()

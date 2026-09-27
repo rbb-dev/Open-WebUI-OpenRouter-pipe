@@ -101,7 +101,7 @@ except ImportError:
     aioredis = None  # type: ignore
 
 # Timing instrumentation
-from .core.timing_logger import timed, timing_mark
+from .core.timing_logger import clear_timing_events, timed, timing_mark
 from .storage.persistence import _detect_redis_config, _RedisClient
 
 try:
@@ -655,7 +655,6 @@ class Pipe:
             self._log_queue_loop = loop
             SessionLogger.set_log_queue(self._log_queue)
         SessionLogger.set_main_loop(loop)
-        SessionLogger.SESSION_LOG_MAX_LINES = self.valves.SESSION_LOG_MAX_LINES
 
         pipe_ref = weakref.ref(self)
 
@@ -2334,6 +2333,7 @@ class Pipe:
                         )
                     with SessionLogger._state_lock:
                         SessionLogger.logs.pop(rid, None)
+                clear_timing_events(rid)
 
             backstop_rid = job.request_id or SessionLogger.request_id.get() or ""
             if backstop_rid:
@@ -2408,12 +2408,14 @@ class Pipe:
         request_id = job.request_id or None
         user_id = job.user_id or None
         log_level = resolve_level(str(job.valves.LOG_LEVEL), SessionLogger.process_log_level)
-        SessionLogger.SESSION_LOG_MAX_LINES = job.valves.SESSION_LOG_MAX_LINES
         tokens: list[tuple[ContextVar[Any], contextvars.Token[Any]]] = []
         tokens.append((SessionLogger.session_id, SessionLogger.session_id.set(session_id)))
         tokens.append((SessionLogger.request_id, SessionLogger.request_id.set(request_id)))
         tokens.append((SessionLogger.user_id, SessionLogger.user_id.set(user_id)))
         tokens.append((SessionLogger.log_level, SessionLogger.log_level.set(log_level)))
+        tokens.append(
+            (SessionLogger.max_lines, SessionLogger.max_lines.set(int(job.valves.SESSION_LOG_MAX_LINES)))
+        )
 
         if request_id:
             with contextlib.suppress(Exception):

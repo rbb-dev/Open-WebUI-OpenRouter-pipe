@@ -1662,7 +1662,7 @@ async def test_a_response_that_ends_incomplete_is_a_finished_call_and_clears_the
 
     assert "Response interrupted" not in reply, reply
     assert "Total tokens: 18 (Input: 7, Output: 11)" in reply, reply[-600:]
-    assert len(pipe._circuit_breaker._breaker_records["user-1"]) == 0, reply
+    assert "user-1" not in pipe._circuit_breaker._breaker_records, reply
 
 
 @pytest.mark.asyncio

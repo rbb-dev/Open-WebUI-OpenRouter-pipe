@@ -100,7 +100,7 @@ The Health tab tracks the pipe's live load:
 
 - **Concurrency** — active requests and tools, in-flight calls, and active video generations when the video pool is configured.
 - **Queues** — pending requests and the log and archive queue depths, each with its bound.
-- **User Circuit Breakers** — request, tool, and auth breaker counts. "Seen" counts distinct users since the worker started; "Users w/ fail" counts users with recent failures.
+- **User Circuit Breakers** — request, tool, and auth breaker counts. "Seen" counts records currently held, and the two rows mean different things: the Requests row counts users holding a request-breaker record, and the Tools row counts user+tool pairs holding a tool-breaker record. A record is created by a failure. The Requests row's record is dropped when that user's next request succeeds, or when a later check finds its window empty; a tripped user who stops sending requests keeps one until restart. A Tools record is dropped when that user next invokes that tool and the call succeeds, or when a later check finds the window empty — a tripped pair for a tool never invoked again is kept until restart. "Users w/ fail" counts users with recent failures, so the two numbers converge while a user's window still holds failures.
 - **Models** — the model catalog with a per-type breakdown (text, image, video), the ZDR-capable count, and per-type fetch clocks. The status badge tracks the chat-catalog fetch loop.
 
 ### System

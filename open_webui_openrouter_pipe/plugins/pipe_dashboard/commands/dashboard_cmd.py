@@ -1336,19 +1336,21 @@ def _build_dashboard_shell(dash_id: str) -> str:
       var ws = rl.window_s || 0;
       var tt = rl.tool_tracked || 0, tf = rl.tool_with_failures || 0, tp = rl.tool_tripped || 0;
       var aa = rl.auth_failures_active || 0;
+      var SEEN_REQ_TITLE = 'users holding a breaker record; a record is created by a failure and dropped when that user\\'s next request succeeds, or when a later check finds its window empty; a tripped user who stops sending requests keeps one until restart.';
+      var SEEN_TOOL_TITLE = 'user+tool pairs holding a breaker record; a pair is dropped when that user next invokes that tool and the call succeeds, or when a later check finds the window empty \\u2014 a tripped pair for a tool never invoked again is kept until restart.';
       var h = '<div class="tbl-wrap"><table class="tbl"><thead><tr>' +
-        '<th>Type</th><th class="r" title="distinct users/pairs seen since worker start">Seen</th>' +
+        '<th>Type</th><th class="r">Seen</th>' +
         '<th class="r">Users w/ fail</th>' +
         '<th class="r">Tripped</th><th class="r">Threshold</th><th class="r">Window</th>' +
         '</tr></thead><tbody>';
       var reqLevel = tru > 0 ? 'err' : (fu > 0 ? 'warn' : 'ok');
-      h += '<tr><td>Requests</td><td class="r">' + tu + '</td>' +
+      h += '<tr><td>Requests</td><td class="r" title="' + SEEN_REQ_TITLE + '">' + tu + '</td>' +
         '<td class="r">' + fu + '</td>' +
         '<td class="r">' + badge(String(tru), reqLevel) + '</td>' +
         '<td class="r">' + th + '</td>' +
         '<td class="r">' + ws + 's</td></tr>';
       var toolLevel = tp > 0 ? 'err' : (tf > 0 ? 'warn' : 'ok');
-      h += '<tr><td>Tools</td><td class="r">' + tt + '</td>' +
+      h += '<tr><td>Tools</td><td class="r" title="' + SEEN_TOOL_TITLE + '">' + tt + '</td>' +
         '<td class="r">' + tf + '</td>' +
         '<td class="r">' + badge(String(tp), toolLevel) + '</td>' +
         '<td class="r">' + th + '</td>' +

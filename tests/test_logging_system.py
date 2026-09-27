@@ -13,6 +13,7 @@ This test module covers:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime
 import io
 import json
@@ -2411,8 +2412,8 @@ class TestSessionBufferResize:
             SessionLogger.logs.pop("resize-shrink", None)
 
     def test_a_change_does_not_wipe_every_other_session_in_flight(self):
-        """The cap is process-wide and the buffers are per-request, so one admin edit
-        reached every request in flight at that instant -- not just one."""
+        """The out-of-request default is process-wide and the buffers are per-request, so one
+        change to that default reaches every request in flight at that instant -- not just one."""
         from open_webui_openrouter_pipe.core.logging_system import SessionLogger
 
         saved = SessionLogger.SESSION_LOG_MAX_LINES
