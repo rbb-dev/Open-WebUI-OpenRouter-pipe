@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import inspect
 import os
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any, cast
 
 import pytest

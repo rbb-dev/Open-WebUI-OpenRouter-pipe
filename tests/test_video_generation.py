@@ -5605,7 +5605,12 @@ async def test_a_video_filter_is_re_identified_whatever_its_id_needs_escaping(mo
     )
 
     await manager._ensure_single_video_gen_filter_function_id(
-        model_id=model_id, video_model={"id": model_id, "name": "N"}
+        model_id=model_id,
+        video_model={
+            "id": model_id,
+            "name": "N",
+            "allowed_passthrough_parameters": ["negative_prompt"],
+        },
     )
 
     matches = captured["matches_candidate"]

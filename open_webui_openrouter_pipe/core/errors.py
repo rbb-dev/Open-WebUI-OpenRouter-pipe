@@ -468,7 +468,12 @@ def is_sign_in_failure(exc: Any) -> bool:
     code = getattr(exc, "openrouter_code", None)
     if isinstance(code, str) and code.strip().lower() in _BLOCKED_NATIVE_CODES:
         return False
-    return not (getattr(exc, "moderation_reasons", None) or getattr(exc, "flagged_input", None))
+    metadata = getattr(exc, "metadata", None) or {}
+    return not (
+        getattr(exc, "moderation_reasons", None)
+        or getattr(exc, "flagged_input", None)
+        or metadata.get("patterns")
+    )
 
 
 def _resolve_error_model_context(
@@ -511,24 +516,77 @@ def _resolve_error_model_context(
     }
 
 
-def _read_rag_file_constraints() -> tuple[bool, int | None]:
-    """Return (rag_enabled, rag_file_size_mb) gleaned from Open WebUI config."""
+_OPEN_WEBUI_CONFIG_STORE: Any | None = None
+
+
+def _get_open_webui_config_store() -> Any | None:
+    global _OPEN_WEBUI_CONFIG_STORE
+    if _OPEN_WEBUI_CONFIG_STORE is not None:
+        return _OPEN_WEBUI_CONFIG_STORE
+    try:
+        from open_webui.models.config import Config  # type: ignore
+    except Exception:  # noqa: BLE001
+        return None
+    _OPEN_WEBUI_CONFIG_STORE = Config
+    return Config
+
+
+async def _read_rag_file_constraints() -> tuple[bool, int | None]:
     module = _get_open_webui_config_module()
     if module is None:
         return False, None
 
-    bypass_raw = _unwrap_config_value(getattr(module, "BYPASS_EMBEDDING_AND_RETRIEVAL", None))
-    bypass_bool = _coerce_bool(bypass_raw)
+    store = _get_open_webui_config_store()
+    live: dict[str, Any] | None = None
+    if store is not None:
+        try:
+            rows = await store.get_many(
+                "rag.bypass_embedding_and_retrieval", "rag.file.max_size"
+            )
+            if isinstance(rows, dict):
+                live = rows
+        except Exception:  # noqa: BLE001
+            live = None
+
+    source = _LiveRow(live) if live is not None else _ModuleAttrs(module)
+    bypass_bool = _coerce_bool(
+        _unwrap_config_value(source.bypass_embedding_and_retrieval())
+    )
     rag_enabled = True if bypass_bool is None else not bypass_bool
 
-    limit_mb: int | None = None
-    for attr_name in ("RAG_FILE_MAX_SIZE", "FILE_MAX_SIZE"):
-        attr_value = _unwrap_config_value(getattr(module, attr_name, None))
-        limit_mb = _coerce_positive_int(attr_value)
-        if limit_mb is not None:
-            break
-
-    if limit_mb is not None:
-        limit_mb = min(limit_mb, _REMOTE_FILE_MAX_SIZE_MAX_MB)
-
+    limit_mb = _cap_at_ceiling(
+        _coerce_positive_int(_unwrap_config_value(source.file_max_size()))
+    )
     return rag_enabled, limit_mb
+
+
+class _LiveRow:
+    __slots__ = ("_row",)
+
+    def __init__(self, row: dict[str, Any]) -> None:
+        self._row = row
+
+    def bypass_embedding_and_retrieval(self) -> Any:
+        return self._row.get("rag.bypass_embedding_and_retrieval")
+
+    def file_max_size(self) -> Any:
+        return self._row.get("rag.file.max_size")
+
+
+class _ModuleAttrs:
+    __slots__ = ("_module",)
+
+    def __init__(self, module: Any) -> None:
+        self._module = module
+
+    def bypass_embedding_and_retrieval(self) -> Any:
+        return getattr(self._module, "BYPASS_EMBEDDING_AND_RETRIEVAL", None)
+
+    def file_max_size(self) -> Any:
+        return getattr(self._module, "RAG_FILE_MAX_SIZE", None)
+
+
+def _cap_at_ceiling(limit_mb: int | None) -> int | None:
+    if limit_mb is not None:
+        return min(limit_mb, _REMOTE_FILE_MAX_SIZE_MAX_MB)
+    return limit_mb

@@ -687,6 +687,36 @@ def _get_open_webui_config_module() -> Any | None:
     return ow_config
 
 
+_KEEP_WHAT_STILL_FITS = '''        @model_validator(mode="before")
+        @classmethod
+        def _keep_what_still_fits(cls, data: Any) -> Any:
+            """Drop stored values the model no longer publishes, keep the rest.
+
+            These fields track a live contract, so a provider joining the model can
+            narrow a range or remove a ratio while a value the user chose earlier is
+            still stored. Open WebUI builds this class from that stored dict and passes
+            no valves at all if construction raises -- so one stale entry silently threw
+            away every other choice the user had made.
+            """
+            if not isinstance(data, dict):
+                return data
+            kept = {}
+            for name, field in cls.model_fields.items():
+                if name not in data:
+                    continue
+                annotated = (
+                    Annotated[(field.annotation, *field.metadata)]
+                    if field.metadata
+                    else field.annotation
+                )
+                try:
+                    TypeAdapter(annotated).validate_python(data[name])
+                except ValidationError:
+                    continue
+                kept[name] = data[name]
+            return kept'''
+
+
 def _unwrap_config_value(value: Any) -> Any:
     """Return the raw value from a PersistentConfig-like object."""
     if value is None:

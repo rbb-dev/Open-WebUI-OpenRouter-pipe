@@ -1788,6 +1788,12 @@ _BLOCK_SHAPES = {
                    "metadata": {"reasons": ["hate"], "flagged_input": "the words that were flagged"}}},
         False,
     ),
+    "a-guardrail-block-returned-as-a-status": (
+        "responses", 403,
+        {"error": {"code": 403, "message": "Request blocked: prompt injection patterns detected",
+                   "metadata": {"patterns": ["ignore all previous instructions"]}}},
+        False,
+    ),
     "a-sign-in-failure": (
         "responses", 200,
         {"id": "resp-1", "status": "failed", "error": {"code": "server_error", "message": "Invalid credentials"},
@@ -1802,11 +1808,12 @@ _BLOCK_SHAPES = {
 async def test_a_content_block_never_pauses_background_work_however_it_arrives(monkeypatch, shape):
     """The pause is about credentials, so how a block is delivered must not decide whether it fires.
 
-    A provider can report a content block four ways: under OpenRouter's typed kind, under its own native code,
-    as a bare `403` whose metadata carries the moderation reasons, or as a `403` status before the reply
-    starts. Only the last of these existed before failures reported inside a reply carried a real status, and
-    a predicate that reads the status alone treats all but the typed one as a dead key - taking the person's
-    titles, tags and follow-ups with it for a minute.
+    A provider can report a content block five ways: under OpenRouter's typed kind, under its own native code,
+    as a bare `403` whose metadata carries the moderation reasons, as a `403` status before the reply
+    starts, or as a guardrail `403` whose only marker is the `patterns` it matched. Only the last of these
+    existed before failures reported inside a reply carried a real status, and a predicate that reads the
+    status alone treats all but the typed one as a dead key - taking the person's titles, tags and
+    follow-ups with it for a minute.
 
     Each arm asserts what the person gets from the next background task and whether it was sent at all, so a
     pause that is recorded but harmless would still be caught.

@@ -12,6 +12,7 @@ in v2.6.x. Covers:
 from __future__ import annotations
 
 import ast
+from typing import Any
 from types import SimpleNamespace
 
 import pytest
@@ -450,3 +451,11 @@ class TestConsumerWiring:
                                {"role": "user", "content": "y"}]},
             video_meta={},
         )
+
+
+STORED = {
+    "VIDEO_DURATION": 8,
+    "VIDEO_ASPECT_RATIO": "9:16",
+    "VIDEO_RESOLUTION": "1080p",
+    "VIDEO_NEGATIVE_PROMPT": "no blur, no grain",
+}

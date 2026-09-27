@@ -2486,7 +2486,8 @@ class TestIsSafeUrlAsync:
 class TestGetEffectiveRemoteFileLimit:
     """Test RAG constraint handling in file size limits."""
 
-    def test_returns_base_limit_when_rag_disabled(self, pipe_instance):
+    @pytest.mark.asyncio
+    async def test_returns_base_limit_when_rag_disabled(self, pipe_instance):
         """Should return base limit when RAG is disabled."""
         pipe_instance.valves.REMOTE_FILE_MAX_SIZE_MB = 100
 
@@ -2494,10 +2495,11 @@ class TestGetEffectiveRemoteFileLimit:
             "open_webui_openrouter_pipe.storage.multimodal._read_rag_file_constraints",
             return_value=(False, None)
         ):
-            result = pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb()
+            result = await pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb()
             assert result == 100
 
-    def test_returns_rag_limit_when_lower(self, pipe_instance):
+    @pytest.mark.asyncio
+    async def test_returns_rag_limit_when_lower(self, pipe_instance):
         """Should return RAG limit when it's lower than base."""
         pipe_instance.valves.REMOTE_FILE_MAX_SIZE_MB = 100
 
@@ -2505,10 +2507,11 @@ class TestGetEffectiveRemoteFileLimit:
             "open_webui_openrouter_pipe.storage.multimodal._read_rag_file_constraints",
             return_value=(True, 50)
         ):
-            result = pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb()
+            result = await pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb()
             assert result == 50
 
-    def test_upgrades_default_to_rag_limit(self, pipe_instance):
+    @pytest.mark.asyncio
+    async def test_upgrades_default_to_rag_limit(self, pipe_instance):
         """Should upgrade default limit to RAG limit when RAG limit is higher."""
         from open_webui_openrouter_pipe.core.config import _REMOTE_FILE_MAX_SIZE_DEFAULT_MB
 
@@ -2518,10 +2521,11 @@ class TestGetEffectiveRemoteFileLimit:
             "open_webui_openrouter_pipe.storage.multimodal._read_rag_file_constraints",
             return_value=(True, 200)
         ):
-            result = pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb()
+            result = await pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb()
             assert result == 200
 
-    def test_returns_base_limit_when_non_default_and_lower_than_rag(self, pipe_instance):
+    @pytest.mark.asyncio
+    async def test_returns_base_limit_when_non_default_and_lower_than_rag(self, pipe_instance):
         """Should return base limit when it's non-default and lower than RAG."""
         pipe_instance.valves.REMOTE_FILE_MAX_SIZE_MB = 30
 
@@ -2529,7 +2533,7 @@ class TestGetEffectiveRemoteFileLimit:
             "open_webui_openrouter_pipe.storage.multimodal._read_rag_file_constraints",
             return_value=(True, 100)
         ):
-            result = pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb()
+            result = await pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb()
             assert result == 30
 
 
@@ -2954,7 +2958,7 @@ class TestRemoteURLDownloading:
         """Should reject files larger than the configured limit (default 50MB)."""
         pipe_instance_async._multimodal_handler._prepare_pinned_request = AsyncMock(side_effect=lambda u, *a, **k: (u, {}, {}))
         pipe_instance_async.valves.REMOTE_FILE_MAX_SIZE_MB = 1
-        limit_bytes = pipe_instance_async._multimodal_handler._get_effective_remote_file_limit_mb() * 1024 * 1024
+        limit_bytes = await pipe_instance_async._multimodal_handler._get_effective_remote_file_limit_mb() * 1024 * 1024
 
         with patch("httpx.AsyncClient") as mock_client:
             mock_response = Mock()
@@ -3121,47 +3125,114 @@ class TestRemoteFileLimitResolution:
         )
         return config
 
-    def test_uses_valve_when_rag_disabled(self, pipe_instance, monkeypatch):
+    def _no_store(self, monkeypatch):
+        """Force the store-unavailable fallback for the arms that exercise it.
+
+        `open_webui.models.config` is not stubbed in the harness (`owui_stubs.py:50-57`
+        and `:250-256` register only chats/models/files/users/functions), so
+        `from open_webui.models.config import Config` raises under pytest and the
+        accessor returns None whether or not this runs. It is patched anyway so the arm
+        keeps meaning what it says the day a store stub does exist, and so no arm can
+        reach the database by accident.
+        """
+        from open_webui_openrouter_pipe.core import errors as ow_errors
+
+        monkeypatch.setattr(
+            ow_errors, "_get_open_webui_config_store", lambda: None, raising=False
+        )
+
+    @pytest.mark.asyncio
+    async def test_uses_valve_when_rag_disabled(self, pipe_instance, monkeypatch):
+        self._no_store(monkeypatch)
         config = self._prepare_config(monkeypatch)
         monkeypatch.setattr(config.BYPASS_EMBEDDING_AND_RETRIEVAL, "value", True, raising=False)
         monkeypatch.setattr(config.RAG_FILE_MAX_SIZE, "value", 200, raising=False)
         pipe_instance.valves.REMOTE_FILE_MAX_SIZE_MB = 60
 
-        assert pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb() == 60
+        assert await pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb() == 60
 
-    def test_caps_to_rag_when_smaller(self, pipe_instance, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_caps_to_rag_when_smaller(self, pipe_instance, monkeypatch):
+        self._no_store(monkeypatch)
         config = self._prepare_config(monkeypatch)
         monkeypatch.setattr(config.BYPASS_EMBEDDING_AND_RETRIEVAL, "value", False, raising=False)
         monkeypatch.setattr(config.RAG_FILE_MAX_SIZE, "value", 25, raising=False)
         pipe_instance.valves.REMOTE_FILE_MAX_SIZE_MB = 50
 
-        assert pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb() == 25
+        assert await pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb() == 25
 
-    def test_adopts_rag_when_default_and_larger(self, pipe_instance, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_adopts_rag_when_default_and_larger(self, pipe_instance, monkeypatch):
+        self._no_store(monkeypatch)
         config = self._prepare_config(monkeypatch)
         monkeypatch.setattr(config.BYPASS_EMBEDDING_AND_RETRIEVAL, "value", False, raising=False)
         monkeypatch.setattr(config.RAG_FILE_MAX_SIZE, "value", 120, raising=False)
         pipe_instance.valves.REMOTE_FILE_MAX_SIZE_MB = 50
 
-        assert pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb() == 120
+        assert await pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb() == 120
 
-    def test_respects_custom_limit_when_lower_than_rag(self, pipe_instance, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_respects_custom_limit_when_lower_than_rag(self, pipe_instance, monkeypatch):
+        self._no_store(monkeypatch)
         config = self._prepare_config(monkeypatch)
         monkeypatch.setattr(config.BYPASS_EMBEDDING_AND_RETRIEVAL, "value", False, raising=False)
         monkeypatch.setattr(config.RAG_FILE_MAX_SIZE, "value", 150, raising=False)
         pipe_instance.valves.REMOTE_FILE_MAX_SIZE_MB = 80
 
-        assert pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb() == 80
+        assert await pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb() == 80
 
-    def test_falls_back_to_file_max_size_when_rag_missing(self, pipe_instance, monkeypatch):
-        config = self._prepare_config(monkeypatch)
-        monkeypatch.setattr(config.BYPASS_EMBEDDING_AND_RETRIEVAL, "value", False, raising=False)
-        monkeypatch.setattr(config.RAG_FILE_MAX_SIZE, "value", None, raising=False)
-        monkeypatch.setattr(config.FILE_MAX_SIZE, "value", 180, raising=False)
-        pipe_instance.valves.REMOTE_FILE_MAX_SIZE_MB = 50
+    # -- the cap Open WebUI's own admin box set, read from its store ----------------
 
-        assert pipe_instance._multimodal_handler._get_effective_remote_file_limit_mb() == 180
+    def _start_up(self, monkeypatch, *, bypass, size):
+        """The import-time env snapshot: what `open_webui.config` holds forever.
 
+        A `SimpleNamespace` of the two module attributes, because `RAG_FILE_MAX_SIZE`
+        is one `os.getenv` evaluated at import (`config.py:983`) and never revisited --
+        the whole defect is that the pipe reads this instead of the store.
+        """
+        from open_webui_openrouter_pipe.core import errors as ow_errors
+
+        module = SimpleNamespace(
+            BYPASS_EMBEDDING_AND_RETRIEVAL=SimpleNamespace(value=bypass),
+            RAG_FILE_MAX_SIZE=SimpleNamespace(value=size),
+        )
+        return module
+
+    def _store_of(self, values):
+        """The store stub for one row, as `test_open_terminal_parity.py:557-570` builds
+        `_OwuiConfig`.
+
+        `get_many(*keys)` returns what `values` holds for exactly the keys it was asked
+        for, so a caller can pass `None` and the key still counts as *present* -- which
+        is the whole point of the cleared row, and the distinction a plain `{}` cannot
+        express. A key `values` does not name is simply absent.
+        """
+        class _Store:
+            @staticmethod
+            async def get_many(*keys: str) -> dict:
+                return {k: values[k] for k in keys if k in values}
+
+        return _Store()
+
+    def _patch_both(self, monkeypatch, *, bypass, size, values):
+        """Patch both accessors together -- the pattern `test_helpers.py:1334` uses.
+
+        Both are always patched, so no row can read the real store or the real module by
+        accident. The difference between a fallback row and a store row is the *value* of
+        the store accessor, never whether it was patched. `values=None` models the
+        import failing, which is the one fallback a deployment can actually reach.
+        """
+        from open_webui_openrouter_pipe.core import errors as ow_errors
+
+        module = self._start_up(monkeypatch, bypass=bypass, size=size)
+        store = None if values is None else self._store_of(values)
+        monkeypatch.setattr(
+            ow_errors, "_get_open_webui_config_store", lambda: store, raising=False
+        )
+        monkeypatch.setattr(
+            ow_errors, "_get_open_webui_config_module", lambda: module, raising=False
+        )
+        return module
 
 class TestRetryHelpers:
     """Unit tests for retry helper utilities."""

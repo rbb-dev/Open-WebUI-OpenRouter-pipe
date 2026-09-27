@@ -1303,6 +1303,12 @@ class FilterManager:
         from .video_filter_renderer import build_video_filter_spec
 
         spec = build_video_filter_spec(model_id, video_model)
+        if not spec.contract_read:
+            self.logger.info(
+                "Catalogue entry for %s publishes no video contract, so no OpenRouter Video "
+                "Generation filter is installed or refreshed for it", spec.model_id,
+            )
+            return None
 
         model_id_token = f"VIDEO_MODEL_ID = {spec.model_id!r}"
 

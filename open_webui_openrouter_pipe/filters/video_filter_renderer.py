@@ -8,8 +8,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..core.config import _OPENROUTER_VIDEO_GEN_FILTER_MARKER, _PIPE_METADATA_KEY
+from ..core.utils import (
+    _KEEP_WHAT_STILL_FITS,
+    _clean_str,
+    scrub_surrogates,
+    summarise_names,
+)
 from ..core.utils import OWUI_FUNCTION_ID_ILLEGAL_RE as _FILTER_ID_RE
-from ..core.utils import _clean_str, scrub_surrogates, summarise_names
 from ..integrations.image_types import (
     PASSTHROUGH_DESCRIPTION,
     PROVIDER_OPTIONS_DESCRIPTION,
@@ -488,6 +493,7 @@ class VideoFilterSpec:
     size_options: tuple[str, ...]
     upscale_bounds: tuple[float, float] | None = None
     creativity_modes: tuple[int, ...] = ()
+    contract_read: bool = True
     seed_capable: bool = False
     seed_declared: bool = False
     audio_capable: bool = False
@@ -683,6 +689,11 @@ def build_video_filter_spec(
         if isinstance(raw_confirm, str) and raw_confirm in _VALID_CONFIRM_MODES:
             intent_confirm = raw_confirm
 
+    contract_read = bool(
+        allowed_params or aspect_ratios or durations or resolutions
+        or frame_types or size_options or upscale_bounds or creativity_modes
+    )
+
     return VideoFilterSpec(
         model_id=canonical_id,
         display_name=display_name,
@@ -696,6 +707,7 @@ def build_video_filter_spec(
         size_options=size_options,
         upscale_bounds=upscale_bounds,
         creativity_modes=creativity_modes,
+        contract_read=contract_read,
         seed_capable="seed" in model and not capability_declared_off(model.get("seed")),
         seed_declared=model.get("seed") is True,
         audio_capable="generate_audio" in model
@@ -749,9 +761,9 @@ from __future__ import annotations
 import json
 import logging
 import math
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
 
 try:
     from open_webui.env import SRC_LOG_LEVELS
@@ -788,6 +800,8 @@ class Filter:
         )
 
     class UserValves(BaseModel):
+{_KEEP_WHAT_STILL_FITS}
+
 {user_valves_fields}
 
     def __init__(self) -> None:

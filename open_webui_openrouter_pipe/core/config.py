@@ -850,7 +850,7 @@ class Valves(BaseModel):
         default=_REMOTE_FILE_MAX_SIZE_DEFAULT_MB,
         ge=1,
         le=_REMOTE_FILE_MAX_SIZE_MAX_MB,
-        description="Maximum size in MB for downloading a picture from a link: one in the conversation, or one a model returns for a picture it generated. A picture over this limit is not downloaded. A file link a person attaches is passed on to the provider without being downloaded, so this limit does not apply to it. When Open WebUI RAG is enabled, the pipe automatically caps downloads to Open WebUI's FILE_MAX_SIZE (if set).",
+        description="Maximum size in MB for downloading a picture from a link: one in the conversation, or one a model returns for a picture it generated. A picture over this limit is not downloaded. A file link a person attaches is passed on to the provider without being downloaded, so this limit does not apply to it. When Open WebUI RAG is enabled, the pipe also holds downloads to the cap the Open WebUI admin last saved under Admin > Settings > Documents > Max Upload Size. That setting is read from Open WebUI's own store, so changing it takes effect without restarting anything. Normally the smaller of the two wins, with one exception: this valve left at its 50 MB default gives way to a larger admin cap, clipped to the pipe's own 500 MB ceiling. Set it away from its default to keep full control in both directions; a valve off its default is never overridden. Clearing the admin's box lifts Open WebUI's cap, not the pipe's, so with this valve at its 50 MB default a cleared box still refuses anything over 50 MB. An environment variable set before Open WebUI first started is used only if that store cannot be read, so a RAG_FILE_MAX_SIZE value set after Open WebUI's first boot no longer has any effect: the stored admin value wins.",
     )
     BASE64_MAX_SIZE_MB: int = Field(
         default=50,
@@ -1809,7 +1809,14 @@ class Valves(BaseModel):
 
     AUTO_INSTALL_VIDEO_FILTERS: bool = Field(
         default=True,
-        description="Automatically install/update the OpenRouter Video Generation companion filter function in Open WebUI.",
+        description=(
+            "Automatically install/update the OpenRouter Video Generation companion filter "
+            "function in Open WebUI. A model whose catalogue entry publishes no video "
+            "contract is left as it is: any filter it already has is kept, and none is "
+            "installed for it. With this valve off the pipe logs an installed row whose "
+            "stored source is out of date but will not rewrite it, so fixes to that filter "
+            "stay undelivered until this is on."
+        ),
     )
     AUTO_ATTACH_VIDEO_FILTERS: bool = Field(
         default=True,

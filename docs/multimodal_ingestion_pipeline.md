@@ -142,7 +142,7 @@ Remote downloads are used for picture links: one in the conversation, or one a m
 - **Protocols:** `https://` only by default; `http://` requires `ALLOW_INSECURE_HTTP` + allowlisting.
 - **SSRF protection:** blocks private/internal address targets when enabled.
 - **Retry/backoff:** retries on network errors and transient HTTP statuses (`>=500` and `408/425/429`), with exponential backoff controlled by valves.
-- **Size limits:** enforced via `REMOTE_FILE_MAX_SIZE_MB` (and may be further capped to Open WebUI’s configured upload limits when available).
+- **Size limits:** enforced via `REMOTE_FILE_MAX_SIZE_MB`, and — when RAG is enabled and an admin cap is stored — additionally held to the value the Open WebUI admin last saved under **Admin → Settings → Documents → Max Upload Size**, the same number Open WebUI applies to the same file, read from its own store so a change takes effect without a restart. Normally the lower of the two wins; the one exception is this valve left at its default of 50, where a larger admin cap wins instead, clipped to the pipe’s own 500 MB ceiling. A cleared admin box lifts Open WebUI’s cap, not the valve’s: left at its 50 MB default the valve still refuses anything over 50 MB.
 
 ---
 

@@ -176,7 +176,7 @@ URL pasted into a chat, and those can carry credentials.
 ### Additional mitigations for downloads
 
 Even when a URL passes SSRF checks, downloads are constrained by:
-- `REMOTE_FILE_MAX_SIZE_MB` (and optional Open WebUI RAG upload caps)
+- `REMOTE_FILE_MAX_SIZE_MB`, and the cap the Open WebUI admin last saved under Admin → Settings → Documents → Max Upload Size — normally the lower of the two applies, except that a `REMOTE_FILE_MAX_SIZE_MB` left at its 50 MB default gives way to a larger admin cap, clipped to the pipe’s own 500 MB ceiling; clearing the admin’s box lifts Open WebUI’s cap, not this valve’s
 - `REMOTE_DOWNLOAD_*` retry/time budget valves
 - `BASE64_MAX_SIZE_MB` and `VIDEO_MAX_SIZE_MB` for certain inline/base64 payloads
 

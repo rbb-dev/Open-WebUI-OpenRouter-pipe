@@ -780,7 +780,7 @@ class MultimodalHandler:
                         if mime_type == "image/jpg":
                             mime_type = "image/jpeg"
 
-                        effective_limit_mb = self._get_effective_remote_file_limit_mb()
+                        effective_limit_mb = await self._get_effective_remote_file_limit_mb()
                         max_size_bytes = effective_limit_mb * 1024 * 1024
 
                         content_length = response.headers.get("content-length")
@@ -868,7 +868,7 @@ class MultimodalHandler:
         effective_max = (
             max_size_bytes
             if max_size_bytes is not None
-            else self._get_effective_remote_file_limit_mb() * 1024 * 1024
+            else await self._get_effective_remote_file_limit_mb() * 1024 * 1024
         )
 
         attempt = 0
@@ -1478,14 +1478,14 @@ class MultimodalHandler:
 
         return any(re.match(pattern, url, re.IGNORECASE) for pattern in patterns)
 
-    def _get_effective_remote_file_limit_mb(self) -> int:
+    async def _get_effective_remote_file_limit_mb(self) -> int:
         """Return the active remote download limit, honoring RAG constraints.
 
         Returns:
             Effective file size limit in MB
         """
         base_limit_mb = self.valves.REMOTE_FILE_MAX_SIZE_MB
-        rag_enabled, rag_limit_mb = _read_rag_file_constraints()
+        rag_enabled, rag_limit_mb = await _read_rag_file_constraints()
         if not rag_enabled or rag_limit_mb is None:
             return base_limit_mb
 
@@ -1498,7 +1498,6 @@ class MultimodalHandler:
         ):
             return rag_limit_mb
         return base_limit_mb
-
 
     @timed
     async def _fetch_image_as_data_url(self, url: str) -> str | None:

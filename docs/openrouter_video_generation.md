@@ -129,6 +129,12 @@ If the per-model filters do not appear in the Integrations menu, check:
   delivered; the pipe writes a warning to its log naming any filter whose
   stored version is out of date.
 - The pipe has been called at least once with a logged-in user.
+- The model's catalogue entry published something. An entry that publishes no video
+  contract at all gets no filter and no refresh — the pipe writes one INFO line per
+  such model naming it, "publishes no video contract, so no OpenRouter Video Generation
+  filter is installed or refreshed for it". Absence of an "Updating" line for a model
+  is otherwise indistinguishable from this valve being off, which is why the line is
+  written at all.
 - Open WebUI's own Admin → Functions screen lists one entry per catalogued video model,
   named ` Veo 3.1 Lite`,
   ` Seedance 2.0`, etc. (note the leading space — that's intentional, see
@@ -850,6 +856,10 @@ This section enumerates exactly which filter knobs each model exposes,
 based on the OpenRouter catalog at the time of writing.
 The chat-filter UI auto-hides knobs the model does not support, so this table
 is also the spec for the **model-specific** knobs you can change per-message.
+The table tracks OpenRouter's published contract, which can narrow between
+releases, so a value you saved earlier can fall back to the model's own
+default — see
+[The chat filter UI](#the-chat-filter-ui-uservalves).
 
 Four further controls are on every video filter and are in none of these
 tables, because they are pipe behaviour rather than anything a model
@@ -1277,6 +1287,23 @@ rules:
   error names the knob. A bare number is sent as a number, since several
   provider options take one; `NaN`, `Infinity` and numbers too large to
   write down are refused rather than sent.
+- These knobs track the contract the model publishes right now, and that
+  contract can narrow between releases. When OpenRouter no longer offers a
+  value you have saved, **that one setting** falls back to the model's own
+  default and every other setting you saved stays exactly as it is. The same
+  is true in the other direction: saving your settings after a release that
+  withdrew a value succeeds, and that one value is **dropped** from what is
+  stored — the rest of your settings are written and nothing else changes.
+- **Changing any control in a video filter's settings — in the in-chat valve
+  panel or the Admin form — replaces that filter's whole stored settings row.**
+  The in-chat panel (Controls → Valves, any user with the chat-valves
+  permission) re-posts the entire stored `valves` object about half a second
+  after any single control changes; there is no Save to press. The form is
+  built from the live schema while the stored values are fetched raw and saved
+  with "only what was set", so a field the model no longer publishes is dropped
+  on that write — and because the write replaces the row, the withdrawn value
+  is not kept for later. That is the intended outcome of the guard, not a loss
+  of unrelated settings.
 
 The filter is **always-on by default** for its model
 (`AUTO_DEFAULT_VIDEO_FILTERS`). Disabling it for a single chat usually
@@ -1857,7 +1884,7 @@ Functions → OpenRouter pipe → Valves.
 | Valve | Default | Range | Purpose |
 |-------|---------|-------|---------|
 | `ENABLE_VIDEO_GENERATION` | `True` | bool | Master kill switch. False removes all video models from `pipes()` output. |
-| `AUTO_INSTALL_VIDEO_FILTERS` | `True` | bool | Install per-model filter rows in OWUI Functions table on `pipes()`. |
+| `AUTO_INSTALL_VIDEO_FILTERS` | `True` | bool | Install per-model filter rows in OWUI Functions table on `pipes()`. A model whose catalogue entry publishes no video contract is left as it is: any filter it already has is kept, and none is installed for it. With this off, an installed row whose stored source is out of date is logged but never rewritten, so every fix to that filter stays undelivered until it is on. |
 | `AUTO_ATTACH_VIDEO_FILTERS` | `True` | bool | Attach each filter to its corresponding video model row. |
 | `AUTO_DEFAULT_VIDEO_FILTERS` | `True` | bool | Keep per-model filter enabled by default per chat (**re-asserted on every catalog metadata sync** — admins who manually disable a filter will see it re-defaulted on the next sync; set to `False` to opt out). |
 | `VIDEO_INITIAL_POLL_DELAY_SECONDS` | `5.0` | 0.0–60.0 | Wait before the first poll on a freshly submitted job. |
@@ -2030,6 +2057,13 @@ pipe()
         └─ outer returns content string
               └─ functions.py wraps as SSE chunk, OWUI middleware accumulates,
                  stream finalizer upserts to message DB (one write).
+
+  └─ if AUTO_INSTALL_VIDEO_FILTERS:
+        ensure_openrouter_video_gen_filter_function_ids(available_models)
+          ├─ one settings row per video model, built from its own contract
+          ├─ a model with no published contract gets none
+          ├─ each install in own try/except — partial failures isolated
+          └─ no retirement step: the video path never had fixed variants
 ```
 
 Key invariant: **exactly one `_emit_completion` per `(chat_id,

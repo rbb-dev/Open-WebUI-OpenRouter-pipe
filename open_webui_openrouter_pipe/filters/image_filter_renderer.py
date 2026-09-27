@@ -22,8 +22,8 @@ from ..core.config import (
     _OPENROUTER_IMAGE_GEN_FILTER_PREFERRED_FUNCTION_ID,
     _PIPE_METADATA_KEY,
 )
+from ..core.utils import _KEEP_WHAT_STILL_FITS, scrub_surrogates
 from ..core.utils import OWUI_FUNCTION_ID_ILLEGAL_RE as _IMAGE_FILTER_ID_RE
-from ..core.utils import scrub_surrogates
 from ..integrations.image_types import (
     PASSTHROUGH_DESCRIPTION,
     PASSTHROUGH_ENUMS,
@@ -838,36 +838,6 @@ def _render_image_overrides(
         lines.append("        if raw:")
         lines.append(f"            {target}[{_key(name)!r}] = self._decode(raw, {name!r})")
     return "\n".join(lines) if lines else "        pass"
-
-
-_KEEP_WHAT_STILL_FITS = '''        @model_validator(mode="before")
-        @classmethod
-        def _keep_what_still_fits(cls, data: Any) -> Any:
-            """Drop stored values the model no longer publishes, keep the rest.
-
-            These fields track a live contract, so a provider joining the model can
-            narrow a range or remove a ratio while a value the user chose earlier is
-            still stored. Open WebUI builds this class from that stored dict and passes
-            no valves at all if construction raises -- so one stale entry silently threw
-            away every other choice the user had made.
-            """
-            if not isinstance(data, dict):
-                return data
-            kept = {}
-            for name, field in cls.model_fields.items():
-                if name not in data:
-                    continue
-                annotated = (
-                    Annotated[(field.annotation, *field.metadata)]
-                    if field.metadata
-                    else field.annotation
-                )
-                try:
-                    TypeAdapter(annotated).validate_python(data[name])
-                except ValidationError:
-                    continue
-                kept[name] = data[name]
-            return kept'''
 
 
 def render_image_model_filter_source(spec: ImageModelFilterSpec) -> str:

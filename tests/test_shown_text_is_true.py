@@ -5487,3 +5487,6 @@ def test_a_reply_that_reported_no_counts_gets_no_counts_on_the_line(pipe_instanc
         f"a reply reporting none loses are {sorted(dropped)}; the counts are surviving a "
         "reply that never carried them"
     )
+
+
+_ROOT = Path(__file__).resolve().parents[1]
