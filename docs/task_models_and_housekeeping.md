@@ -26,7 +26,7 @@ The pipe treats a request as a task when the special `__task__` argument is pres
 
 ### Non-streaming request
 
-Housekeeping tasks are forced to **non-streaming** behavior (`stream=false`) and processed as a single request/response. The pipe then extracts plain text from the Responses payload.
+Housekeeping tasks are forced to **non-streaming** behavior (`stream=false`) and processed as a single request/response. They use whichever OpenRouter endpoint a non-streamed chat turn would use under the same valves — `Default API endpoint`, both `Models forced to …` valves and the responses-to-chat fallback included — because Open WebUI sends a task through the same `generate_chat_completion` as a chat turn. Two request-side inputs fix the endpoint ahead of the valves, and a task honours both exactly as a chat turn does: a request-level `preset`, or a direct video/audio upload that requires chat. A chat reply is converted to Responses shape first, so the extraction below reads the same payload either way. The pipe then extracts plain text from that payload.
 
 ### Output extraction rules
 
@@ -36,6 +36,10 @@ The pipe extracts housekeeping task output text from:
 - Fallback: a top-level `output_text` string (some providers return a collapsed field).
 
 If the provider returns no usable text, the pipe returns a safe placeholder error string to Open WebUI rather than raising an exception.
+
+### How many requests a failing task makes
+
+A task tries twice. While `AUTO_FALLBACK_CHAT_COMPLETIONS` is on, one attempt is itself two requests where the fallback fires, so a failing task makes at most **three**: either `responses, chat/completions` in the first attempt with one left, or `responses, chat/completions, chat/completions` when the retry goes straight back to the endpoint the first attempt settled on. A retry does not re-run a fallback it has already taken. With the fallback off, the bound is two.
 
 ### Model whitelist bypass (task-mode only)
 
@@ -56,7 +60,7 @@ For housekeeping tasks targeting models the pipe “owns”, the pipe overrides 
 
 ### Request-field filtering still applies
 
-Housekeeping tasks are still passed through the same OpenRouter request-field filter (only documented OpenRouter Responses fields are retained; explicit `null` values are dropped).
+Housekeeping tasks are still passed through the same OpenRouter request-field filter (only documented OpenRouter Responses fields are retained; explicit `null` values are dropped). That filter runs on the responses branch only: a task routed to `/chat/completions` is translated after the filter has already had its say, so the field it drops is the one the responses endpoint does not take.
 
 ### Nothing a housekeeping task does reaches the chat message
 

@@ -65,11 +65,6 @@ class ModelFamily:
 
     @classmethod
     def _norm(cls, model_id: str) -> str:
-        """Normalize model ids by stripping pipe prefixes and date suffixes.
-
-        Preserves variant/preset suffixes (after :) unchanged to avoid corrupting
-        preset slugs that contain forward slashes (e.g., preset/my-preset).
-        """
         m = (model_id or "").strip()
 
         suffix = ""
@@ -84,7 +79,7 @@ class ModelFamily:
             pref = f"{pipe_id}."
             m = m.removeprefix(pref)
 
-        base = cls._DATE_RE.sub("", m.lower())
+        base = m.lower()
 
         if suffix:
             return f"{base}:{suffix}"
@@ -92,8 +87,14 @@ class ModelFamily:
 
     @classmethod
     def base_model(cls, model_id: str) -> str:
-        """Canonical base model id (prefix/date stripped)."""
         return cls._norm(model_id)
+
+    @classmethod
+    def undated(cls, model_id: str) -> str:
+        name, separator, suffix = (model_id or "").rpartition(":")
+        if not separator or not suffix:
+            return cls._DATE_RE.sub("", cls._norm(model_id or ""))
+        return f"{cls._DATE_RE.sub('', cls._norm(name))}:{suffix}"
 
     @classmethod
     def features(cls, model_id: str) -> frozenset[str]:
@@ -165,7 +166,7 @@ class ModelFamily:
 
 
 _PHASE_SUPPORTED_MODELS_BASE = frozenset(
-    ModelFamily.base_model(model_id) for model_id in PHASE_SUPPORTED_MODELS
+    ModelFamily.undated(model_id) for model_id in PHASE_SUPPORTED_MODELS
 )
 
 
@@ -174,7 +175,7 @@ def supports_phase_model(model_id: str) -> bool:
     candidate = (model_id or "").strip()
     if "@" in candidate:
         candidate, _ = candidate.split("@", 1)
-    normalized = ModelFamily.base_model(candidate)
+    normalized = ModelFamily.undated(candidate)
     if ":" in normalized:
         normalized, _ = normalized.rsplit(":", 1)
     key = normalized.removeprefix("~")
@@ -191,6 +192,15 @@ def uses_dedicated_image_api(spec: Any) -> bool:
     if not isinstance(modalities, list):
         return False
     return "image" in modalities and "text" not in modalities
+
+
+def is_image_output_architecture(architecture: Any) -> bool:
+    if not isinstance(architecture, dict):
+        return False
+    modalities = architecture.get("output_modalities")
+    if not isinstance(modalities, list) or "image" not in modalities:
+        return False
+    return not (architecture.get("tokenizer") == "Router" and "text" in modalities)
 
 
 class OpenRouterModelRegistry:
@@ -476,8 +486,7 @@ class OpenRouterModelRegistry:
         if pricing.get("web_search") is not None:
             features.add("web_search_tool")
 
-        output_modalities = architecture.get("output_modalities") or []
-        if "image" in output_modalities:
+        if is_image_output_architecture(architecture):
             features.add("image_gen_tool")
             features.add("image_output")
 
@@ -550,11 +559,10 @@ class OpenRouterModelRegistry:
             return normalized
 
         input_modalities = _normalize(architecture.get("input_modalities") or [])
-        output_modalities = _normalize(architecture.get("output_modalities") or [])
 
         vision_capable = "image" in input_modalities or "video" in input_modalities
         file_upload_capable = True
-        image_generation_capable = "image" in output_modalities
+        image_generation_capable = is_image_output_architecture(architecture)
         web_search_capable = OpenRouterModelRegistry._supports_web_search(pricing)
 
         return {

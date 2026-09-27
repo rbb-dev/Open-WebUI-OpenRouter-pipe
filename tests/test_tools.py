@@ -4714,7 +4714,7 @@ async def test_tool_exception_logs_stack_trace(caplog, pipe_instance_async):
 
     result = future.result()
     assert isinstance(result, dict)
-    assert "Tool error:" in (result.get("output") or "")
+    assert result.get("output") == '{\n  "error": "boom"\n}', result.get("output")
 
     debug_records = [
         record

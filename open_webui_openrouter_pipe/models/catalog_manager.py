@@ -1547,7 +1547,6 @@ class ModelCatalogManager:
                 auto_attach_image_filter = bool(
                     valves.AUTO_ATTACH_IMAGE_FILTERS
                     and valves.ENABLE_OPENROUTER_IMAGE_GENERATION
-                    and pipe_capabilities.get("image_output")
                 )
 
                 from ..filters.fusion_filter_renderer import is_fusion_model

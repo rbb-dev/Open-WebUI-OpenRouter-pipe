@@ -1442,7 +1442,7 @@ class Valves(BaseModel):
     SERVICE_ERROR_TEMPLATE: str = Field(
         default=DEFAULT_SERVICE_ERROR_TEMPLATE,
         description=(
-            "Markdown template for OpenRouter 5xx errors, and for a failure OpenRouter reports inside a reply it has already started under one of its own typed codes: provider_unavailable, provider_overloaded, timeout, server or unmapped, or under its native code server_error. Available variables: {error_id}, {status_code}, {reason}, {timestamp}, {session_id}, {user_id}, {support_email}. A 5xx that OpenRouter itself returned also fills {request_id}, its own reference for that request. A 5xx reported inside a started reply fills it whenever the failure carries an id: the failed response's id on Responses, the generation id on Chat Completions, also available as {error_chunk_id}; {provider} likewise appears only when the error names the provider. A 5xx raised by the connection to OpenRouter, or by a failure inside the pipe, carries no such reference and a line using it prints the braces verbatim unless it is wrapped in a conditional. Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to show them only when that value is set."
+            "Markdown template for OpenRouter 5xx errors, and for a failure OpenRouter reports inside a reply it has already started under one of its own typed codes: provider_unavailable, provider_overloaded, timeout, server or unmapped, or under its native code server_error. Available variables: {error_id}, {status_code}, {reason}, {timestamp}, {session_id}, {user_id}, {support_email}. A 5xx that OpenRouter itself returned also fills {request_id}, its own reference for that request. A 5xx reported inside a started reply fills it whenever the failure carries an id: the failed response's id on Responses, the generation id on Chat Completions, also available as {error_chunk_id}; {provider} likewise appears only when the error names the provider. A 5xx raised by the connection to OpenRouter carries no such reference and a line using it prints the braces verbatim unless it is wrapped in a conditional. Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to show them only when that value is set."
         )
     )
 
@@ -1683,7 +1683,12 @@ class Valves(BaseModel):
             "your workspace with 'Built-in tools' already unticked, so you can see the "
             "setting rather than wonder why tools are quiet. Tick it back on for any single "
             "model and your choice stays put; the pipe only sets it the first time it adds "
-            "the model. Requires model capability syncing to be enabled."
+            "the model. A router such as openrouter/auto publishes a picture among its "
+            "possible outputs but is a chat model, so neither box is cleared on it going "
+            "forward: a model that synced before this change already has both boxes "
+            "cleared, and the sync only fills a box that is still empty, so tick them back "
+            "by hand if you want attachments and built-in tools on it. "
+            "Requires model capability syncing to be enabled."
         ),
     )
     UPDATE_MODEL_DESCRIPTIONS: bool = Field(

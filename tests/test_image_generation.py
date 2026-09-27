@@ -365,7 +365,6 @@ def test_image_help_covers_multimodal_models():
     multimodal_models = [
         "openai/gpt-5-image",
         "google/gemini-3.1-flash-image-preview",
-        "openrouter/auto",
     ]
     for model_id in multimodal_models:
         assert model_id in IMAGE_HELP_BY_MODEL, f"{model_id} missing curated help entry"
@@ -4805,12 +4804,13 @@ def test_a_setting_no_panel_draws_is_named_by_itself_and_not_by_an_empty_title(
     )
 
 
-_DOCUMENTED_BUT_UNLISTED = frozenset({"openrouter/auto"})
+_DOCUMENTED_BUT_UNLISTED: frozenset[str] = frozenset()
 """Models with a deep dive that the image catalogue does not list.
 
-`openrouter/auto` is a router, not a model: `GET /images/models` excludes it and both auto
-routers by design, but a reader who picks it in the chat still needs the section. Named here
-so a section for a model OpenRouter actually withdrew cannot hide behind the same allowance.
+Empty: it once held `openrouter/auto`, whose section described image routing through the
+pipe. A router is a chat model, so it no longer takes part in image generation here and the
+section went with the behaviour. A future entry may only name a model OpenRouter withdrew,
+never one the pipe declined to treat as an image model.
 """
 
 
@@ -4836,3 +4836,23 @@ def test_the_documented_deep_dives_cover_exactly_the_catalogued_image_models():
         f"deep dive for a model the catalogue does not list: "
         f"{sorted((dived - catalogued) - _DOCUMENTED_BUT_UNLISTED)}"
     )
+
+
+_GEMINI_IMAGE = {
+    "id": "google/gemini-2.5-flash-image",
+    "name": "Google: Nano Banana (Gemini 2.5 Flash Image)",
+    "supported_parameters": [
+        "max_tokens", "response_format", "seed", "stop", "structured_outputs",
+        "temperature", "top_p",
+    ],
+    "architecture": {
+        "modality": "text+image->text+image",
+        "input_modalities": ["image", "text"],
+        "output_modalities": ["image", "text"],
+        "tokenizer": "Gemini",
+        "instruct_type": None,
+    },
+    "pricing": {"prompt": "0.0000003", "completion": "0.0000025", "web_search": "0.014"},
+    "top_provider": {"context_length": 32768, "max_completion_tokens": 8192, "is_moderated": False},
+}
+_MODALITIES = [_GEMINI_IMAGE]

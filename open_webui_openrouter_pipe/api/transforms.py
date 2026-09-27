@@ -212,7 +212,6 @@ class ResponsesBody(BaseModel):
 
     @model_validator(mode='after')
     def _normalize_model_id(self) -> ResponsesBody:
-        """Ensure the model name references the canonical base id (prefix/date stripped)."""
         normalized = ModelFamily.base_model(self.model or "")
         if normalized and normalized != self.model:
             self.model = normalized
@@ -1235,6 +1234,33 @@ def _responses_payload_to_chat_completions_payload(
 
 
 # Model Fallback
+
+def _drop_include_reasoning_for_unsupported_fallbacks(
+    request_payload: dict[str, Any], logger: logging.Logger
+) -> None:
+    if request_payload.get("include_reasoning") is None:
+        return
+    models = request_payload.get("models")
+    if not isinstance(models, list):
+        return
+    for model_id in models:
+        if not isinstance(model_id, str) or not model_id:
+            continue
+        if "include_reasoning" in ModelFamily.supported_parameters(model_id):
+            continue
+        dropped = request_payload.pop("include_reasoning")
+        if dropped is False:
+            primary = str(request_payload.get("model") or "")
+            if "reasoning" in ModelFamily.supported_parameters(primary):
+                request_payload["reasoning"] = {"effort": "none"}
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "Dropped include_reasoning=%r: fallback %r does not list it.",
+                dropped,
+                model_id,
+            )
+        return
+
 
 def _apply_model_fallback_to_payload(payload: dict[str, Any], *, logger: logging.Logger = logger) -> None:
     """Map OWUI custom `model_fallback` (CSV string) to OpenRouter `models` (array).

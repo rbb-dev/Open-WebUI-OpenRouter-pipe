@@ -40,6 +40,7 @@ from ..api.transforms import (
     _apply_model_fallback_to_payload,
     _apply_openrouter_trace_to_payload,
     _apply_provider_routing_params_to_payload,
+    _drop_include_reasoning_for_unsupported_fallbacks,
     _parse_url_citation_annotations,
     _strip_disable_model_settings_params,
     _unhandled_citation_types,
@@ -1631,6 +1632,9 @@ class StreamingHandler:
                         logger=self.logger,
                     )
                     _apply_model_fallback_to_payload(request_payload, logger=self.logger)
+                    _drop_include_reasoning_for_unsupported_fallbacks(
+                        request_payload, self.logger
+                    )
                     _apply_openrouter_trace_to_payload(request_payload, logger=self.logger)
                     _apply_disable_native_websearch_to_payload(request_payload, logger=self.logger)
                     _apply_provider_routing_params_to_payload(request_payload, logger=self.logger)
@@ -3390,16 +3394,7 @@ class StreamingHandler:
             error_occurred = True
             session_log_reason = str(e)
             self.logger.exception("Unexpected error in streaming loop")
-            exc_status = getattr(e, "status", None)
-            if isinstance(exc_status, int) and exc_status >= 500:
-                reported = await self._pipe._ensure_error_formatter()._emit_templated_error(
-                    event_emitter,
-                    template=self._pipe.valves.SERVICE_ERROR_TEMPLATE,
-                    variables={"status_code": exc_status, "reason": str(e)},
-                    log_message=f"Server error in streaming loop: {e}",
-                    partial_answer=assistant_message,
-                )
-            elif isinstance(e, (TimeoutError, aiohttp.ClientConnectionError, aiohttp.ClientPayloadError)):
+            if isinstance(e, (TimeoutError, aiohttp.ClientConnectionError, aiohttp.ClientPayloadError)):
                 if strip_hidden_marker_lines(assistant_message).strip():
                     template, variables = valves.STREAM_INTERRUPTED_TEMPLATE, {"model": body.model or ""}
                 elif isinstance(e, aiohttp.ConnectionTimeoutError):
@@ -3837,9 +3832,12 @@ class StreamingHandler:
     ) -> Literal["responses", "chat_completions"]:
         """Choose which OpenRouter endpoint to use for a given model id."""
         base_id = ModelFamily.base_model(model_id or "") or (model_id or "")
+        undated_id = ModelFamily.undated(base_id) or base_id
         force_chat = _parse_model_patterns(valves.FORCE_CHAT_COMPLETIONS_MODELS)
         force_responses = _parse_model_patterns(valves.FORCE_RESPONSES_MODELS)
-        if _matches_any_model_pattern(base_id, force_responses):
+        if _matches_any_model_pattern(base_id, force_responses) or _matches_any_model_pattern(
+            undated_id, force_responses
+        ):
             if self.logger.isEnabledFor(logging.DEBUG):
                 self.logger.debug(
                     "LLM endpoint selection: model_id=%s base_id=%s -> responses (FORCE_RESPONSES_MODELS=%s)",
@@ -3848,7 +3846,9 @@ class StreamingHandler:
                     force_responses,
                 )
             return "responses"
-        if _matches_any_model_pattern(base_id, force_chat):
+        if _matches_any_model_pattern(base_id, force_chat) or _matches_any_model_pattern(
+            undated_id, force_chat
+        ):
             if self.logger.isEnabledFor(logging.DEBUG):
                 self.logger.debug(
                     "LLM endpoint selection: model_id=%s base_id=%s -> chat_completions (FORCE_CHAT_COMPLETIONS_MODELS=%s)",
@@ -3878,11 +3878,16 @@ class StreamingHandler:
     ) -> tuple[Literal["responses", "chat_completions"], bool]:
         """Return (endpoint, forced) where forced=True when a FORCE_* valve matched the model id."""
         base_id = ModelFamily.base_model(model_id or "") or (model_id or "")
+        undated_id = ModelFamily.undated(base_id) or base_id
         force_chat = _parse_model_patterns(valves.FORCE_CHAT_COMPLETIONS_MODELS)
         force_responses = _parse_model_patterns(valves.FORCE_RESPONSES_MODELS)
-        if _matches_any_model_pattern(base_id, force_responses):
+        if _matches_any_model_pattern(base_id, force_responses) or _matches_any_model_pattern(
+            undated_id, force_responses
+        ):
             return "responses", True
-        if _matches_any_model_pattern(base_id, force_chat):
+        if _matches_any_model_pattern(base_id, force_chat) or _matches_any_model_pattern(
+            undated_id, force_chat
+        ):
             return "chat_completions", True
         return self._select_llm_endpoint(model_id, valves=valves), False
 

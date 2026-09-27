@@ -93,10 +93,9 @@ def _inject_image_modalities(
     spec = OpenRouterModelRegistry.spec(raw_model)
     if not isinstance(spec, dict):
         return
-    arch = spec.get("architecture") or {}
-    out_mods = arch.get("output_modalities") or []
-    if "image" not in out_mods:
+    if "image_output" not in set(spec.get("features") or set()):
         return
+    out_mods = (spec.get("architecture") or {}).get("output_modalities") or []
     if "text" in out_mods:
         body["modalities"] = ["image", "text"]
     else:
@@ -922,6 +921,7 @@ class RequestOrchestrator:
                 responses_body.model_dump(),
                 valves,
                 session=session,
+                endpoint_override=endpoint_override,
                 task_context=__task__,
                 owui_metadata=__metadata__,
                 user_id=user_id or "",
@@ -954,11 +954,7 @@ class RequestOrchestrator:
                 breaker_key=user_id or None,
             )
 
-        model_output_modalities = (
-            (video_spec.get("architecture") or {}).get("output_modalities") or []
-            if isinstance(video_spec, dict) else []
-        )
-        if "image" in model_output_modalities and not use_task_model_adapter:
+        if "image_output" in video_features and not use_task_model_adapter:
             prompt_text = latest_user_text(body.get("messages") if isinstance(body, dict) else None)
             if asks_for_help(prompt_text):
                 api_model_id = OpenRouterModelRegistry.api_model_id(normalized_model_id) or normalized_model_id

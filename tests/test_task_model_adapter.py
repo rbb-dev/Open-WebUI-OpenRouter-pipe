@@ -854,3 +854,153 @@ def test_task_model_adapter_initialization(pipe_instance):
 
     assert adapter._pipe is pipe
     assert adapter.logger is logger
+
+
+# ============================================================================
+# T379 · a task request obeys the endpoint settings, exactly as a chat turn does
+# ============================================================================
+#
+# `_run_task_model_request` called `send_openai_responses_nonstreaming_request` directly,
+# so `DEFAULT_LLM_ENDPOINT`, both FORCE_* valves and the responses->chat fallback never
+# applied to a title, tag or follow-up. Open WebUI sends a task through the same
+# `generate_chat_completion` as a chat turn (`routers/tasks.py`), so the two must choose
+# the same endpoint under the same valves.
+#
+# The rows are real (OpenRouter /api/v1/models, 2026-09-12) and the stubs return two
+# different texts, so a hardcoded title cannot satisfy both arms.
+
+_T379_GPT_41_MINI = {
+    "id": "openai/gpt-4.1-mini",
+    "name": "OpenAI: GPT-4.1 Mini",
+    "supported_parameters": [
+        "max_completion_tokens", "max_tokens", "response_format", "seed",
+        "structured_outputs", "temperature", "tool_choice", "tools", "top_p",
+    ],
+    "architecture": {
+        "input_modalities": ["image", "text", "file"],
+        "output_modalities": ["text"],
+        "tokenizer": "GPT",
+    },
+    "pricing": {"prompt": "0.0000004", "completion": "0.0000016", "web_search": "0.01"},
+}
+_T379_GPT_4O_1120 = {
+    "id": "openai/gpt-4o-2024-11-20",
+    "name": "OpenAI: GPT-4o (2024-11-20)",
+    "supported_parameters": [
+        "frequency_penalty", "logit_bias", "logprobs", "max_tokens", "prediction",
+        "presence_penalty", "response_format", "seed", "stop", "structured_outputs",
+        "temperature", "tool_choice", "tools", "top_logprobs", "top_p", "web_search_options",
+    ],
+    "architecture": {
+        "input_modalities": ["text", "image", "file"],
+        "output_modalities": ["text"],
+        "tokenizer": "GPT",
+    },
+    "pricing": {"prompt": "0.0000025", "completion": "0.00001"},
+}
+_T379_CATALOG = [_T379_GPT_41_MINI, _T379_GPT_4O_1120]
+
+_TASK_TEXT = "A title from the task path"
+_TASK_UNSUPPORTED = {
+    "message": "This model does not support the Responses API",
+    "code": "unsupported_endpoint",
+}
+
+# A plain 500 from whichever leg the request is on. Distinct from `_TASK_UNSUPPORTED`
+# because only the endpoint code makes the pipe fall back, and a transient failure must not.
+_TASK_SERVER_500 = {"message": "Provider returned error", "code": 500}
+_TASK_CHAT_500 = _TASK_SERVER_500
+
+
+def _t379_rejection(error: dict[str, Any]) -> CallbackResult:
+    return CallbackResult(
+        status=400,
+        body=json.dumps({"error": error}),
+        headers={"Content-Type": "application/json"},
+    )
+
+
+async def _t379_run(
+    model: str,
+    *,
+    task: str | None,
+    valves: dict[str, Any] | None = None,
+    text: str = _TASK_TEXT,
+    reject_responses: bool = False,
+    reject_responses_with: dict[str, Any] | None = None,
+    fail_chat: bool = False,
+    preset: str | None = None,
+    pipe: Pipe | None = None,
+) -> tuple[list[str], list[dict[str, Any]], str]:
+    """Drive one real request through `Pipe.pipe()`; return (endpoints, bodies, answer).
+
+    A caller that passes its own `pipe` keeps it (and its circuit breaker) after the call,
+    which is how the breaker arm below reads the records the task left behind.
+    """
+    from tests.test_request_orchestrator import _consume_stream, _smart_callback
+
+    owns_pipe = pipe is None
+    pipe = pipe if pipe is not None else Pipe()
+    endpoints: list[str] = []
+    bodies: list[dict[str, Any]] = []
+    answer = _smart_callback([], text)
+    collected: list[str] = []
+
+    def _record(url, **kwargs):
+        endpoint = "chat/completions" if str(url).endswith("/chat/completions") else "responses"
+        endpoints.append(endpoint)
+        bodies.append(dict(kwargs.get("json") or {}))
+        if reject_responses_with is not None and endpoint == "responses":
+            return _t379_rejection(reject_responses_with)
+        if reject_responses and endpoint == "responses":
+            return _t379_rejection(_TASK_UNSUPPORTED)
+        if fail_chat and endpoint == "chat/completions":
+            return _t379_rejection(_TASK_CHAT_500)
+        return answer(url, **kwargs)
+
+    async def _emit(event) -> None:
+        payload = getattr(event, "data", event)
+        if isinstance(payload, dict):
+            payload = payload.get("content")
+        if isinstance(payload, str):
+            collected.append(payload)
+
+    try:
+        pipe.valves.API_KEY = EncryptedStr("test-api-key")
+        pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
+        for name, value in (valves or {}).items():
+            setattr(pipe.valves, name, value)
+        with aioresponses() as http:
+            http.post("https://openrouter.ai/api/v1/responses", callback=_record, repeat=True)
+            http.post(
+                "https://openrouter.ai/api/v1/chat/completions", callback=_record, repeat=True
+            )
+            http.get(
+                "https://openrouter.ai/api/v1/models",
+                payload={"data": [dict(row) for row in _T379_CATALOG]},
+                repeat=True,
+            )
+            http.get("https://openrouter.ai/api/v1/endpoints/zdr", payload={"data": []}, repeat=True)
+            result = await pipe.pipe(
+                body={
+                    "model": model,
+                    "messages": [{"role": "user", "content": "help"}],
+                    "stream": False,
+                    **({"params": {"custom_params": {"preset": preset}}} if preset else {}),
+                },
+                __user__={"id": "u1", "valves": Pipe.UserValves()},
+                __request__=None,
+                __event_emitter__=_emit,
+                __event_call__=None,
+                __metadata__={"model": {"id": model}},
+                __tools__=None,
+                __task__=task,
+                __task_body__=None,
+            )
+            if isinstance(result, str):
+                collected.append(result)
+            await _consume_stream(result)
+    finally:
+        if owns_pipe:
+            await pipe.close()
+    return endpoints, bodies, "".join(collected)

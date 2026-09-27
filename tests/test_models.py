@@ -2494,11 +2494,10 @@ class TestQualifyModelForPipe:
         assert result == "mypipe.anthropic.claude-3-opus"
 
     def test_model_ids_with_dates_are_normalized(self, pipe_instance):
-        """Test that date suffixes in model IDs are stripped during normalization."""
+        """A dated snapshot is its own model, so its id is kept whole under the pipe prefix."""
         pipe = pipe_instance
         result = pipe._qualify_model_for_pipe("mypipe", "gpt-4-2024-01-15")
-        assert "2024" not in result
-        assert result.startswith("mypipe.")
+        assert result == "mypipe.gpt-4-2024-01-15"
 
     def test_case_normalization(self, pipe_instance):
         """Test that model IDs are normalized to lowercase."""

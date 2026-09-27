@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
@@ -213,7 +214,9 @@ class ToolExecutor:
 
     @staticmethod
     def _tool_error_text(exc: BaseException) -> str:
-        return f"Tool error: {str(exc) or type(exc).__name__}"
+        return json.dumps(
+            {"error": str(exc) or type(exc).__name__}, indent=2, ensure_ascii=False
+        )
 
     def _ask_user_window(self, tool_cfg: Any, args: dict[str, Any]) -> float | None:
         if _owui_normalize_ask_user_request is None or not self._is_builtin_ask_user(tool_cfg):

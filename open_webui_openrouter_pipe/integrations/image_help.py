@@ -77,19 +77,6 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
             "512 renders far fewer pixels than 1K — enough to settle composition and framing before you commit to a full-size render.",
         ],
     },
-    "openrouter/auto": {
-        "display_name": "OpenRouter: Auto (Image Routing)",
-        "best_known_for": (
-            "OpenRouter's automatic routing for image generation. Routes to "
-            "the best available image model based on prompt. Useful when you "
-            "want OpenRouter to pick rather than committing to a specific "
-            "provider."
-        ),
-        "tips_and_pitfalls": [
-            "Auto-routing — exact model used varies; check the response metadata for routed model id.",
-            "Takes text, images, audio, files and video alongside the prompt, so almost anything you attach can go with it.",
-        ],
-    },
     "qwen/qwen-image-3": {
         "display_name": "Qwen: Qwen Image 3",
         "best_known_for": (

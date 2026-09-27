@@ -3563,7 +3563,7 @@ class TestToolExecution:
             status, text, _files, _embeds, _pictures = await pipe._invoke_tool_call(item, context)
 
             assert status == "failed"
-            assert "Tool error" in text
+            assert text == '{\n  "error": "db not connected"\n}', text
             assert "no longer available" not in text
             windows = pipe._circuit_breaker._tool_breakers.get(context.user_id) or {}
             assert len(windows.get(("function", "db_query"), [])) == 1

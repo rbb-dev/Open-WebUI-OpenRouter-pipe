@@ -102,7 +102,7 @@ async def test_every_failure_the_model_is_told_about_counts_against_the_tool(pip
     """The switch counts what the model was told, and the model is told about both kinds.
 
     A tool whose library stops it raises something that is not an `Exception`, and the pipe renders that
-    to the model as `Tool error: ...` exactly as it renders an ordinary one. Counting only the ordinary
+    to the model as Open WebUI's own `{"error": ...}` text exactly as it renders an ordinary one. Counting only the ordinary
     kind means such a tool is retried for ever, a whole call timeout at a time, while the model is told
     every round that it failed.
 
@@ -361,7 +361,7 @@ async def test_a_tool_first_called_after_the_saved_failure_count_changes_still_r
         json.dumps(["lookup result"]),
         json.dumps(["search result"]),
         json.dumps(["lookup result", "search result"]),
-        json.dumps(["Tool error: tool exploded"]),
+        json.dumps([_T383_ERROR_TEXT]),
     ]
     assert sorted(ran) == ["fail", "lookup", "lookup", "search", "search"]
 
@@ -663,6 +663,24 @@ _TITLE_UPSTREAM = {
         "usage": {},
     },
 }
+
+
+_CHAT_TITLE_UPSTREAM = {
+    "status": 200,
+    "payload": {
+        "id": "chatcmpl-title",
+        "object": "chat.completion",
+        "model": "m1",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": '{"title": "Pipe title"}'},
+                     "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+    },
+}
+"""The same title in the shape /chat/completions delivers.
+
+A task uses whichever endpoint a chat turn would (T379), so under
+`DEFAULT_LLM_ENDPOINT=chat_completions` the title arrives here rather than on /responses.
+"""
 
 
 async def _title_task(pipe, task: str = "title_generation") -> str:
@@ -1807,6 +1825,8 @@ async def test_a_content_block_never_pauses_background_work_however_it_arrives(m
             else:
                 mock_http.post(url, status=status, payload=body)
             mock_http.post("https://openrouter.ai/api/v1/responses", **_TITLE_UPSTREAM)
+            if streamed:
+                mock_http.post("https://openrouter.ai/api/v1/chat/completions", **_CHAT_TITLE_UPSTREAM)
             await _chat_turn(pipe, stream=streamed)
             title = await _title_task(pipe)
             posts = _posts(mock_http)
@@ -1815,3 +1835,15 @@ async def test_a_content_block_never_pauses_background_work_however_it_arrives(m
 
     assert ("Pipe title" in title) is not pauses, (shape, title)
     assert posts == (1 if pauses else 2), (shape, posts, title)
+
+
+# --- the text a raising tool sends the model is Open WebUI's own (T383) -------------------------
+#
+# Open WebUI stores a failed tool call as `{'error': str(exc)}` and serialises it with
+# `json.dumps(..., indent=2, ensure_ascii=False)`, so the model reads
+# '{\n  "error": "…"\n}'. The pipe sent `Tool error: {str(exc) or type(exc).__name__}`,
+# which is a different shape from the one the person already sees on the card, and the one
+# Open WebUI itself produces when a tool raises. The only intended difference is the
+# empty-message case, which names the exception class.
+
+_T383_ERROR_TEXT = '{\n  "error": "tool exploded"\n}'

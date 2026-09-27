@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import aiohttp
 
 from ..api.transforms import (
     _apply_identifier_valves_to_payload,
+    _drop_include_reasoning_for_unsupported_fallbacks,
     _filter_openrouter_request,
 )
 from ..core.config import EncryptedStr
@@ -95,6 +96,7 @@ class TaskModelAdapter:
         body: dict[str, Any],
         valves: Pipe.Valves,
         *,
+        endpoint_override: Literal["responses", "chat_completions"] | None = None,
         session: aiohttp.ClientSession | None = None,
         task_context: Any = None,
         owui_metadata: dict[str, Any] | None = None,
@@ -103,12 +105,6 @@ class TaskModelAdapter:
         pipe_id: str | None = None,
         snapshot_model_id: str | None = None,
     ) -> str:
-        """Process a housekeeping task model request via the Responses API.
-
-        Task models (e.g. generating a chat title or tags) return their
-        information as standard Responses output.  This helper performs a single
-        non-streaming call and extracts the plain text from the response items.
-        """
         task_body = dict(body or {})
         source_model_id = task_body.get("model", "")
         task_body["model"] = OpenRouterModelRegistry.api_model_id(source_model_id) or source_model_id
@@ -132,6 +128,7 @@ class TaskModelAdapter:
             logger=self.logger,
         )
         task_body = _filter_openrouter_request(task_body)
+        _drop_include_reasoning_for_unsupported_fallbacks(task_body, self.logger)
 
         attempts = 2
         delay_seconds = 0.2
@@ -140,17 +137,27 @@ class TaskModelAdapter:
         if session is None:
             raise RuntimeError("HTTP session is required for task model requests")
 
+        last_endpoint = endpoint_override
         for attempt in range(1, attempts + 1):
             try:
-                response = await self._pipe.send_openai_responses_nonstreaming_request(
+                response: dict[str, Any] = {}
+                async for event in self._pipe.send_openrouter_nonstreaming_request_as_events(
                     session,
                     task_body,
                     api_key=EncryptedStr.decrypt(valves.API_KEY),
                     base_url=valves.BASE_URL,
                     valves=valves,
+                    endpoint_override=last_endpoint,
                     user=user_obj,
                     owui_chat_id=str((owui_metadata or {}).get("chat_id") or "") or None,
-                )
+                ):
+                    if event.get("type") == "openrouter_pipe.chat_fallback":
+                        last_endpoint = "chat_completions"
+                        continue
+                    if event.get("type") == "response.completed":
+                        completed = event.get("response")
+                        if isinstance(completed, dict):
+                            response = completed
 
                 usage = response.get("usage") if isinstance(response, dict) else None
                 if usage and isinstance(usage, dict) and user_id:

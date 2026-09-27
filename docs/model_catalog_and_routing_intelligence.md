@@ -15,7 +15,18 @@ OpenRouter model IDs use slash-separated provider slugs like `vendor/model`. Ope
 - `sanitize_model_id("vendor/model")` → `vendor.model` (slash-to-dot conversion for Open WebUI display).
 - `ModelFamily.base_model(...)` → lowercase, with:
   - pipe prefix stripped when present (`<pipe-id>.…`), and
-  - date suffixes like `-YYYY-MM-DD` removed.
+  - date suffixes like `-YYYY-MM-DD` **kept**.
+
+A dated snapshot is a model OpenRouter prices and serves separately, so it is its own key: a request
+for `openai/gpt-4o-2024-11-20` goes out with that id, and `spec()`, `supported_parameters`,
+`max_completion_tokens` and ZDR membership are read from that row. This is also what Open WebUI
+does with a connection's `model_ids` — it publishes exactly the ids that are listed, and never
+normalises dates.
+
+`ModelFamily.undated(...)` is the date-insensitive form (`openai.gpt-4o-2024-11-20` →
+`openai.gpt-4o`, with any `:variant`/`:preset` suffix kept). Only the rules documented to be
+date-insensitive use it: `Models forced to chat completions`, `Models forced to responses` (a
+pattern that names a date stamp still matches only that snapshot) and the phase-capable model list.
 
 The normalized ID is used as the stable key for catalog specs and feature lookups.
 
@@ -99,6 +110,8 @@ Details are in: [Multimodal Intake Pipeline](multimodal_ingestion_pipeline.md).
 ### 4.2 Tooling and function calling
 
 Tool definitions are built from Open WebUI tool registries and other configured sources, but the pipe only attaches `responses_body.tools` when the selected model supports function calling per catalog-derived feature flags.
+
+A request-parameter gate has the same shape and the same caveat. `include_reasoning` is sent only when the primary model **and every fallback in `models`** list it, because OpenRouter forwards the key to whichever model ends up serving and a provider that does not know the parameter rejects the whole request rather than its own leg of it. An id the catalogue does not know counts as not listing it. The gate cannot live in `reasoning_config.py`, which reads the primary only: `model_fallback` is merged into `models` later, on the request payload, after every reasoning decision has been made.
 
 See: [Tooling & Integrations](tooling_and_integrations.md).
 

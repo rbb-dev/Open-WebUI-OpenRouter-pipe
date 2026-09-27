@@ -94,7 +94,7 @@ image model returns a curated model-specific help blurb covering:
 It quotes no prices: what a model charges is on OpenRouter's pricing page.
 
 This is the fastest way to learn a model without leaving the chat. Try
-it on each image model — the answers are different for every one (the auto-router `openrouter/auto` is a routing layer rather than a generator).
+it on each image model — the answers are different for every one.
 
 ### For administrators
 
@@ -284,7 +284,10 @@ Pick model selection rules of thumb:
 - **Deterministic regeneration with same prompt** → any model that
   publishes a seed: the four FLUX.2 variants, Seedream 4.5, the three
   Krea 2 variants, and Qwen Image 3 and 3 Pro.
-- **Don't know which to pick** → `openrouter/auto` routes for you.
+- **Don't know which to pick** → pick the family (FLUX, Seedream, Krea, Qwen Image,
+  Gemini Image) and let the model list narrow it. `openrouter/auto` is a chat router:
+  it is not one of these models and asking it for a picture returns the routed model's
+  text answer, so choose a model below for a picture.
 
 ---
 
@@ -321,13 +324,28 @@ re-registered as image-only. They answer with both a picture and text.
 
 - **Settings**: these models get their own settings row too, built from
   what they publish, exactly like the image-only ones.
-- **`openrouter/auto`**: this auto-router is treated as multimodal
-  (universal input modalities). Lives in the chat catalog.
+- **`openrouter/auto` and `openrouter/auto-beta`**: routers, not image models. Their
+  catalogue rows carry `output_modalities: ["text", "image"]` because the model
+  OpenRouter routes to may answer with a picture, but the row also says
+  `tokenizer: "Router"` and its price is variable. The pipe treats a row like that as a
+  chat model: no `modalities` is sent, the image controls are not offered, the image
+  filter is not attached, and "help" asks the router itself. They stay in the chat
+  catalog and take part in routing, but they do not take part in image generation
+  through this pipe. Open WebUI behaves the same way on its own connection, and it
+  never sends `modalities`.
+
+  Upgrading has two visible effects on a router row, neither of which the sync
+  repairs by itself. The per-model image panel it was given before this change is
+  removed on the next sync, from the model's filters and from their default-on
+  list both, because a panel left attached keeps writing controls for a contract the
+  router does not have. And a row that synced before this change keeps its `File
+  context` and `Built-in tools` boxes cleared: the sync only fills a box that is
+  still empty, so tick them back by hand if you want attachments and built-in tools
+  on it. Nothing else on the row moves.
 
 ## Per-model deep dive
 
-This section is written-up prose about most of the models, plus
-`openrouter/auto`, which picks a model rather than being one. It does not
+This section is written-up prose about most of the models. It does not
 cover all of them. Qwen Image 3 and Qwen Image 3 Pro, the three Krea 2
 tiers, GPT Image 1, GPT Image 1 Mini and GPT Image 2, Nano Banana Pro
 (Gemini 3 Pro Image), Nano Banana 2 (Gemini 3.1 Flash Image), Nano Banana 2
@@ -416,19 +434,6 @@ the Lite.
 - Set aspect from this model's own aspect-ratio control; the values it
   offers are the ones this model published.
 - 512 renders far fewer pixels than 1K — good for prompt iteration.
-
-### OpenRouter: Auto (Image Routing)
-
-> **id**: `openrouter/auto` · **router**
-
-OpenRouter's automatic routing for image generation. Routes to the
-best available image model based on prompt. Useful when you want
-OpenRouter to pick rather than committing to a specific provider.
-
-- Auto-routing — exact model used varies; check the response metadata
-  for routed model id.
-- Takes text, images, audio, files and video alongside the prompt, so
-  almost anything you attach can go with it.
 
 ### Microsoft: MAI-Image-2.5
 
@@ -1437,12 +1442,6 @@ If a streamed generation stops before the finished image arrives, it is
 a failed generation and there is nothing to salvage. It costs nothing:
 OpenRouter bills image generation all or nothing, so previews already
 delivered are not charged. Re-submit to retry.
-
-### Aspect ratio not honored on `openrouter/auto`
-
-Auto-routing means OpenRouter picks the underlying model. Some
-providers may not honor all aspect ratios. The router maps to the
-closest equivalent. To get exact aspect ratio, pick a specific model.
 
 ### Image generation succeeds but no image renders inline
 

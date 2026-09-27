@@ -2104,7 +2104,10 @@ class TestImageModelHelp:
         pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
 
         def fake_spec(model_id):
-            return {"architecture": {"output_modalities": ["image", "text"]}}
+            return {
+                "features": frozenset({"image_output", "image_gen_tool"}),
+                "architecture": {"output_modalities": ["image", "text"]},
+            }
 
         monkeypatch.setattr(OpenRouterModelRegistry, "spec", staticmethod(fake_spec))
         monkeypatch.setattr(OpenRouterModelRegistry, "api_model_id", staticmethod(lambda m: m))
@@ -2151,7 +2154,10 @@ class TestImageModelHelp:
         pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value=({}, []))
 
         def fake_spec(model_id):
-            return {"architecture": {"output_modalities": ["image", "text"]}}
+            return {
+                "features": frozenset({"image_output", "image_gen_tool"}),
+                "architecture": {"output_modalities": ["image", "text"]},
+            }
 
         monkeypatch.setattr(OpenRouterModelRegistry, "spec", staticmethod(fake_spec))
         monkeypatch.setattr(OpenRouterModelRegistry, "api_model_id", staticmethod(lambda m: m))
@@ -2191,7 +2197,12 @@ class TestDedicatedImageApiDispatch:
         monkeypatch.setattr(
             OpenRouterModelRegistry,
             "spec",
-            staticmethod(lambda model_id: {"architecture": {"output_modalities": list(modalities)}}),
+            staticmethod(
+                lambda model_id: {
+                    "features": frozenset({"image_output", "image_gen_tool"}),
+                    "architecture": {"output_modalities": list(modalities)},
+                }
+            ),
         )
         monkeypatch.setattr(
             OpenRouterModelRegistry,

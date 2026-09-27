@@ -328,6 +328,7 @@ class NonStreamingAdapter:
                     getattr(exc, "openrouter_code", None),
                     exc,
                 )
+                yield {"type": "openrouter_pipe.chat_fallback"}
                 async for event in _run_chat():
                     yield event
                 return

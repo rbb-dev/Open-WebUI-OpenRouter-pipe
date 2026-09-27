@@ -228,7 +228,7 @@ class ErrorFormatter:
         choices = event.get("choices") or response_block.get("choices")
         native_finish_reason = None
         if isinstance(choices, list) and choices:
-            first_choice = choices[0] or {}
+            first_choice = choices[0] if isinstance(choices[0], dict) else {}
             native_finish_reason = first_choice.get("native_finish_reason") or first_choice.get("finish_reason")
         chunk_id = event.get("id") or response_block.get("id")
         chunk_created = event.get("created") or response_block.get("created")
