@@ -24,6 +24,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from open_webui_openrouter_pipe import Pipe
 from open_webui_openrouter_pipe.core.logging_system import SessionLogger
 from open_webui_openrouter_pipe.storage import persistence as persistence_mod
+from open_webui_openrouter_pipe.storage.owui_files import temporary_chat_prefixes
 from open_webui_openrouter_pipe.storage.persistence import (
     ArtifactStore,
     _sanitize_table_fragment,
@@ -124,8 +125,9 @@ class _FakeSession:
     def close(self) -> None:
         return None
 
-    def query(self, model):
-        query = _FakeQuery(self._rows)
+    def query(self, *fields):
+        select_fields = [field for field in fields if isinstance(field, _Field)]
+        query = _FakeQuery(self._rows, select_fields=select_fields or None)
         if self._fail_on_update:
             original_update = query.update
 

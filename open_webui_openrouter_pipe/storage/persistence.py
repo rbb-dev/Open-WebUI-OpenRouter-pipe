@@ -1984,8 +1984,8 @@ class ArtifactStore:
             return
         with _db_session(self._session_factory) as session:
             doomed = [
-                str(getattr(row, "id", "") or "")
-                for row in session.query(self._item_model)
+                str(row_id or "")
+                for (row_id,) in session.query(self._item_model.id)
                 .filter(self._item_model.created_at < cutoff)
                 .all()
             ]

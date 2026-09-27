@@ -22,7 +22,7 @@ from ..core.utils import (
     join_answer_and_card,
 )
 
-EventEmitter = Callable[[dict[str, Any]], Awaitable[None]]
+EventEmitter = Callable[[dict[str, Any]], Awaitable[bool | None]]
 
 if TYPE_CHECKING:
     from ..pipe import _PipeJob
@@ -147,7 +147,7 @@ class EventEmitterHandler:
 
     async def _emit_status(
         self,
-        event_emitter: Callable[[dict], Awaitable[None]] | None,
+        event_emitter: EventEmitter | None,
         message: str,
         done: bool = False
     ):
@@ -602,18 +602,18 @@ class EventEmitterHandler:
         job: _PipeJob,
         stream_queue: asyncio.Queue[dict[str, Any] | str | None],
         item: dict[str, Any] | str,
-    ) -> None:
+    ) -> bool:
         if job.future.cancelled():
             raise asyncio.CancelledError()
 
         if job.valves.MIDDLEWARE_STREAM_QUEUE_MAXSIZE <= 0:
             await stream_queue.put(item)
-            return
+            return True
 
         timeout = job.valves.MIDDLEWARE_STREAM_QUEUE_PUT_TIMEOUT_SECONDS
         if timeout <= 0:
             await stream_queue.put(item)
-            return
+            return True
 
         try:
             await asyncio.wait_for(stream_queue.put(item), timeout=timeout)
@@ -623,6 +623,8 @@ class EventEmitterHandler:
                 job.request_id,
                 stream_queue.maxsize,
             )
+            return False
+        return True
 
 
     def _make_middleware_stream_emitter(
@@ -651,7 +653,7 @@ class EventEmitterHandler:
 
         assistant_sent = ""
 
-        async def _emit(event: dict[str, Any]) -> None:
+        async def _emit(event: dict[str, Any]) -> bool | None:
             nonlocal assistant_sent
             if not isinstance(event, dict):
                 return
@@ -727,13 +729,14 @@ class EventEmitterHandler:
                             json.dumps(summaries, ensure_ascii=False),
                         )
                     chunk = openai_chat_chunk_message_template(model_id, tool_calls=tool_calls)
-                    await self._put_middleware_stream_item(job, stream_queue, chunk)
+                    return await self._put_middleware_stream_item(job, stream_queue, chunk)
                 except Exception:
                     self.logger.debug(
                         "Failed to emit tool_calls chunk (request_id=%s)",
                         job.request_id,
                         exc_info=True,
                     )
+                    return False
                 return
 
             if etype == "chat:completion":

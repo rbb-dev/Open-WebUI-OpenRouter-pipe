@@ -4407,6 +4407,15 @@ class TestImageReuseRegister:
             f"a speculative reuse put an error into the chat: {emitted}"
         )
 
+    @staticmethod
+    async def _none(*_a, **_k):
+        return None
+
+    @staticmethod
+    async def _inlined(*_a, **_k):
+        return InlinedFile(data_url="data:image/png;base64," + base64.b64encode(
+            b"\x89PNG\r\n\x1a\n" + b"g" * 40).decode(), filename="ok.png")
+
     @pytest.mark.asyncio
     async def test_a_failed_reuse_cannot_end_the_turn(self, pipe_instance):
         """`inline_owui_file_id` catches only ValueError.

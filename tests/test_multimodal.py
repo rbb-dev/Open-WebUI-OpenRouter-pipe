@@ -3358,15 +3358,22 @@ class TestImageTransformer:
         mock_user,
         monkeypatch,
     ):
-        """Errors while processing images should not leak exceptions."""
+        """A picture the pipe failed to validate is dropped, not forwarded unvalidated.
+
+        This test pinned the defect: it asserted the block came BACK carrying the very
+        URL whose validation had just raised, so it was green because of the bug and is
+        now true to its name.
+
+        It cannot assert a status either: `_transform_single_block` hardcodes
+        `event_emitter=None`, so there is nothing to observe. `test_a_data_url_that_fails
+        _validation_is_dropped_and_reported` drives the real path with an emitter.
+        """
         parse_mock = Mock(side_effect=RuntimeError("boom"))
         monkeypatch.setattr(pipe_instance._multimodal_handler, "_parse_data_url", parse_mock)
         block = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
         image_block = await _transform_single_block(pipe_instance, block, mock_user)
         parse_mock.assert_called_once()
-        assert image_block is not None
-        assert image_block["image_url"] == "data:image/png;base64,AAAA"
-        assert image_block["detail"] == "auto"
+        assert image_block is None
 
 
 # File Transformer Tests
@@ -3827,11 +3834,14 @@ class TestMultimodalIntegration:
         )
 
         parse_mock.assert_called_once()
-        blocks = transformed[0]["content"]
-        assert [b["type"] for b in blocks] == ["input_image", "input_file"]
-        assert blocks[0]["image_url"] == "data:image/png;base64,AAAA"
+        # Every block whose transform did not return an ImageRefusal, taken from the
+        # WHOLE outgoing content list: a splice around the bad block would drop whatever
+        # followed it, and a `content[:i]` / `content[i+1:]` loop would cut the wrong
+        # image on a message whose SECOND one is the bad one.
+        blocks = [b for b in transformed[0]["content"] if b.get("type") in ("input_image", "input_file")]
+        assert [b["type"] for b in blocks] == ["input_file"]
         # File should still be processed.
-        assert blocks[1]["file_url"] == remote_file_url
+        assert blocks[0]["file_url"] == remote_file_url
 
 
 class TestSSRFBlockingSpecificIPTypes:

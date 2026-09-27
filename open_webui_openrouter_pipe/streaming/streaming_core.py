@@ -1070,6 +1070,12 @@ class StreamingHandler:
             }
             await event_emitter({"type": "response.output_item.added", "output_index": _output_index(opened), "item": opened})
 
+        async def _publish_turn_frame(event: dict[str, Any]) -> None:
+            nonlocal retry_barrier_crossed
+            published = await event_emitter(event)
+            if body.stream and published is not False:
+                retry_barrier_crossed = True
+
         def _shows_a_file_inline(name: str) -> bool:
             context = self._pipe._TOOL_CONTEXT.get()
             return name == "display_file" and bool(
@@ -1917,7 +1923,7 @@ class StreamingHandler:
                                 include_name = call_id not in streamed_tool_call_name_sent
                                 if include_name:
                                     streamed_tool_call_name_sent.add(call_id)
-                                await event_emitter(
+                                await _publish_turn_frame(
                                     {
                                         "type": "chat:tool_calls",
                                         "data": {
@@ -1954,7 +1960,7 @@ class StreamingHandler:
                                 include_name = call_id not in streamed_tool_call_name_sent
                                 if include_name:
                                     streamed_tool_call_name_sent.add(call_id)
-                                await event_emitter(
+                                await _publish_turn_frame(
                                     {
                                         "type": "chat:tool_calls",
                                         "data": {
@@ -3715,7 +3721,7 @@ class StreamingHandler:
             async def _persist_message_field(
                 field_key: str, data: Any, *, log_label: str, notify_label: str
             ) -> None:
-                if (not was_cancelled) and chat_id and message_id and data and Chats is not None:
+                if (not was_cancelled) and (not handed_back_for_retry) and chat_id and message_id and data and Chats is not None:
                     try:
                         await Chats.upsert_message_to_chat_by_id_and_message_id(
                             chat_id, message_id, {field_key: data}

@@ -552,6 +552,14 @@ async def transform_messages_to_input(
         and turn_indices[position] == total_turns - 1
         and not (position and is_tool_image_handoff(messages[position - 1], message))
     ]
+    tool_handoff_positions = [
+        position
+        for position, message in enumerate(messages)
+        if (message.get("role") or "").lower() == "user"
+        and position
+        and is_tool_image_handoff(messages[position - 1], message)
+    ]
+    last_tool_handoff_index = tool_handoff_positions[-1] if tool_handoff_positions else -1
     person_images_this_turn = False
     temporary_chat = is_temporary_chat(chat_id)
     request_memo: dict[tuple[str, str], tuple[bytes, str]] = {}
@@ -758,6 +766,9 @@ async def transform_messages_to_input(
                                 event_emitter,
                                 f"Failed to process base64 image: {exc}",
                                 show_error_message=False
+                            )
+                            return ImageRefusal(
+                                f"could not be processed: {exc}", "base64_processing_error", subject=url[:64]
                             )
 
                     elif is_http_or_https_url(url) and not is_internal_file_url(url):
@@ -1541,6 +1552,7 @@ async def transform_messages_to_input(
                                 "Not reusing an earlier image: %s",
                                 transformed.reason,
                             )
+                            refused_images.append(transformed.reason)
                         elif transformed is not None:
                             fallback_blocks.append(transformed)
                     except RequiredInternalFileError as exc:
@@ -1555,6 +1567,7 @@ async def transform_messages_to_input(
                             "Not reusing an earlier image: %s",
                             exc.user_message,
                         )
+                        refused_images.append(exc.user_message)
                     except Exception:
                         pipe.logger.exception("Failed to reuse assistant image")
                 if fallback_blocks:
@@ -1585,7 +1598,7 @@ async def transform_messages_to_input(
             notices = ["Images: " + "; ".join(image_notices) + "."] if image_notices else []
             if refused_files:
                 notices.append(f"Files: skipped {len(refused_files)} ({'; '.join(refused_files)}).")
-            if notices and latest_user_message:
+            if notices and (latest_user_message or (tool_images and idx == last_tool_handoff_index)):
                 await pipe._event_emitter_handler._emit_status(
                     event_emitter,
                     " ".join(notices),
