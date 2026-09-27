@@ -185,6 +185,7 @@ class ImageGenerationAdapter:
             api_key=self._resolve_api_key(valves),
             logger=self._logger,
             http_referer=_select_openrouter_http_referer(valves),
+            valves=valves,
             user=user,
             owui_chat_id=owui_chat_id,
         )

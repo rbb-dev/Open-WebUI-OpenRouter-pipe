@@ -4,8 +4,10 @@ retention clamp — against a real seeded sqlite usage table."""
 from __future__ import annotations
 
 import datetime
+import json
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
@@ -104,6 +106,11 @@ def test_cards_current_vs_prev_and_totals(seeded):
     assert cards["cost"]["total"] == pytest.approx(0.03)
     assert cards["errors"]["rate"] == pytest.approx(0.5)
     assert cards["cached"]["pct"] == pytest.approx(0.4)
+    # The two card figures no test in this file read, so nothing pinned them: a
+    # mis-transcribed projection that drops `cache_savings` or `tokens_reasoning`
+    # raises nothing. Derived from `_row`, which seeds 0.001 and 2.
+    assert cards["cached"]["savings"] == pytest.approx(0.002)
+    assert cards["tokens"]["reasoning"] == 2 * _row(now)["tokens_reasoning"]
     assert result["prev"] is not None
     assert result["prev"]["sessions"]["count"] == 1
     assert result["totals"]["sessions"] == 4

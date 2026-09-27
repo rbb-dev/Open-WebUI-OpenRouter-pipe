@@ -32,7 +32,7 @@ from ...core.errors import (
 )
 from ...core.logging_system import SessionLogger
 from ...core.timing_logger import timed, timing_mark
-from ...core.utils import _apply_retry_after_metadata
+from ...core.utils import _apply_retry_after_metadata, http_timeout
 from ...core.warn_latch import warn_level
 from ...integrations.anthropic import _maybe_apply_responses_toplevel_cache_control
 from ...requests.debug import (
@@ -156,6 +156,9 @@ class ResponsesAdapter:
         self._pipe = pipe
         self.logger = logger
 
+    def _timeout(self, effective_valves: Any) -> aiohttp.ClientTimeout:
+        return http_timeout(effective_valves)
+
     @timed
     async def send_openai_responses_streaming_request(
         self,
@@ -266,7 +269,8 @@ class ResponsesAdapter:
                         try:
                             timing_mark("responses_http_request_start")
                             async with _count_failed_call(self._pipe, breaker_key), session.post(
-                                url, json=request_body, headers=headers
+                                url, json=request_body, headers=headers,
+                                timeout=self._timeout(effective_valves),
                             ) as resp:
                                 timing_mark("responses_http_headers_received")
                                 if resp.status >= 400:
@@ -616,7 +620,8 @@ class ResponsesAdapter:
         async for attempt in retryer:
             with attempt:
                 async with _count_failed_call(self._pipe, breaker_key), session.post(
-                    url, json=request_params, headers=headers
+                    url, json=request_params, headers=headers,
+                    timeout=self._timeout(effective_valves),
                 ) as resp:
                     if resp.status >= 400:
                         error_body = await _debug_print_error_response(resp, logger=self.logger)

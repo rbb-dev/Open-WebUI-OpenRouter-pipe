@@ -12,6 +12,7 @@ from ..core.config import (
     _apply_owui_forward_user_headers,
 )
 from ..core.errors import _build_openrouter_api_error
+from ..core.utils import _DEFAULT_VALVES, http_timeout
 from ..requests.debug import (
     _debug_print_error_response,
     _debug_print_request,
@@ -34,6 +35,7 @@ _VIDEO_MIME_EXTENSIONS: dict[str, str] = {
 }
 
 
+
 def extension_for_video_mime(mime: str) -> str:
     normalized = (mime or "").split(";", 1)[0].strip().lower()
     return _VIDEO_MIME_EXTENSIONS.get(normalized, ".mp4")
@@ -51,14 +53,24 @@ class OpenRouterVideoClient:
         http_referer: str | None = None,
         user: Any = None,
         owui_chat_id: str | None = None,
+        valves: Any = None,
     ) -> None:
         self._session = session
+        self._valves = valves
         self._base_url = (base_url or "https://openrouter.ai/api/v1").rstrip("/")
         self._api_key = api_key
         self._logger = logger
         self._http_referer = http_referer or _OPENROUTER_REFERER
         self._user = user
         self._owui_chat_id = owui_chat_id
+
+    def _timeout(self) -> aiohttp.ClientTimeout:
+        return http_timeout(self._valves if self._valves is not None else _DEFAULT_VALVES)
+
+    def _timeout_kwargs(self) -> dict[str, Any]:
+        if self._valves is None:
+            return {}
+        return {"timeout": self._timeout()}
 
     def content_url(self, job_id: str, index: int = 0) -> str:
         url = f"{self._base_url}/videos/{job_id}/content"
@@ -143,7 +155,7 @@ class OpenRouterVideoClient:
         url = f"{self._base_url}/videos"
         headers = self._headers()
         _debug_print_request(headers, {"method": "POST", "url": url, "json": payload}, logger=self._logger)
-        async with self._session.post(url, headers=headers, json=payload) as resp:
+        async with self._session.post(url, headers=headers, json=payload, **self._timeout_kwargs()) as resp:
             if resp.status >= 400:
                 body = await _debug_print_error_response(resp, logger=self._logger)
                 raise _build_openrouter_api_error(
@@ -165,7 +177,7 @@ class OpenRouterVideoClient:
         url = self.poll_url(safe_job_id, polling_url)
         headers = self._headers()
         _debug_print_request(headers, {"method": "GET", "url": url}, logger=self._logger)
-        async with self._session.get(url, headers=headers) as resp:
+        async with self._session.get(url, headers=headers, **self._timeout_kwargs()) as resp:
             if resp.status >= 400:
                 body = await _debug_print_error_response(resp, logger=self._logger)
                 raise _build_openrouter_api_error(

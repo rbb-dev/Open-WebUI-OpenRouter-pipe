@@ -142,6 +142,10 @@ EXEMPT: dict[str, str] = {
         "OPENROUTER_API_BASE_URL from valves plus the literal '/endpoints/zdr'",
     "open_webui_openrouter_pipe/pipe.py::Pipe::_ping_openrouter":
         "OPENROUTER_API_BASE_URL from valves plus the literal '/models?limit=1'",
+    "open_webui_openrouter_pipe/pipe.py::Pipe::_shared_request_session":
+        "builds the pooled client with the existing _create_http_session, whose connector "
+        "opens no address here; the pooled session is issued at no URL and every request that "
+        "rides it is vetted or exempted at its own call site",
 }
 
 # Helpers that take the URL as a parameter, so nothing inside them can vet it, and whose
@@ -153,9 +157,10 @@ SOLE_CALLER: dict[str, str] = {}
 # derive. Each was read at the call site. Keyed by receiver AND enclosing function, so a
 # second one at a new site is a new decision rather than something an old entry licenses.
 NOT_A_SESSION: dict[str, str] = {
-    "open_webui_openrouter_pipe/pipe.py::Pipe::_terminal_files_shown_inline::_OwuiConfig.get":
-        "Open WebUI's own settings store (open_webui.models.config.Config); `get` reads the admin's "
-        "`ui.default_interface_settings` from its database, not an HTTP request",
+    "open_webui_openrouter_pipe/pipe.py::_terminal_site_default::_OwuiConfig.get":
+        "the same Open WebUI settings store, read by the TTL memo that caches the site default. "
+        "It calls the module-level `_OwuiConfig`, so the key names the function rather than the "
+        "`Pipe` method that used to make this read",
     "open_webui_openrouter_pipe/pipe.py::Pipe::_shutdown_tool_context::_graceful::context.queue.put":
         "ToolContext.queue is the asyncio.Queue the tool workers drain; the sentinel None "
         "is pushed once per worker and `context.queue.join()` follows",

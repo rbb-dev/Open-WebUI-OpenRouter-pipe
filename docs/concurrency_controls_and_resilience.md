@@ -16,6 +16,16 @@ The pipe applies multiple layers of admission control per process:
 
 ---
 
+## HTTP client pool (one per event loop)
+
+Outbound requests share a single `aiohttp.ClientSession` per event loop rather than building one per request, so a reply no longer repeats DNS and a TLS handshake and a streamed reply reuses its connection across its own round trips. The session is closed when the pipe shuts down, and a session left behind by a dead event loop is retired rather than reused. It is pooled per event loop because a connector is bound to the loop that created it.
+
+The pool is not a second admission control. Its per-host limit is unlimited and its total connection limit follows the concurrency limit actually in force — `MAX_CONCURRENT_REQUESTS` as adjusted at startup — so it never queues work the semaphore has already admitted. Because that limit is fixed when the connector is built, lowering `MAX_CONCURRENT_REQUESTS` at runtime takes effect only after a restart, exactly as it does for the semaphore itself.
+
+Timeout valves (`HTTP_CONNECT_TIMEOUT_SECONDS`, `HTTP_TOTAL_TIMEOUT_SECONDS`, `HTTP_SOCK_READ_SECONDS`) are applied **per call** at every site that issues an outbound request, so a valve changed at runtime governs the next request. The pooled session also carries the values from the request that built it; that default applies only to a site that supplies no `timeout=` of its own.
+
+---
+
 ## Tool concurrency (per request and global)
 
 Tool execution is constrained to prevent a single request (or a single user) from consuming all compute:

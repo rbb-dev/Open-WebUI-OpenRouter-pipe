@@ -117,6 +117,32 @@ def switched_off_meta(row: Any) -> dict[str, Any]:
     return _merged_meta(row, {}, off_by_pipe=True)
 
 
+def _stored_source(row: Any) -> str:
+    return (getattr(row, "content", "") or "").strip() + "\n"
+
+
+def _row_needs_update(row: Any, desired_name: str, desired_meta: dict[str, Any]) -> bool:
+    desired_is_active = _switch_on(row)
+    return (
+        bool(getattr(row, "is_active", False)) != desired_is_active
+        or bool(getattr(row, "is_global", False))
+        or (getattr(row, "name", "") or "") != desired_name
+        or (getattr(row, "type", "") or "") != "filter"
+        or _merged_meta(row, desired_meta, off_by_pipe=False) != _meta_dict(row)
+    )
+
+
+def _meta_dict(row: Any) -> dict[str, Any]:
+    stored = getattr(row, "meta", None)
+    dump = getattr(stored, "model_dump", None)
+    if callable(dump):
+        try:
+            stored = dump()
+        except Exception:  # noqa: BLE001 - any pydantic/meta failure means "not a dict"
+            stored = None
+    return stored if isinstance(stored, dict) else {}
+
+
 def _is_web_tools_filter(content: Any) -> bool:
     return (
         isinstance(content, str)
@@ -383,6 +409,7 @@ class FilterManager:
         matches_candidate: Callable[[str], bool],
         primary_marker: str | None = None,
         prefer_id: str | None = None,
+        rows: list[Any] | None = None,
     ) -> str | None:
         """Generic filter install/update lifecycle shared by all filter types.
 
@@ -408,15 +435,43 @@ class FilterManager:
             )
             return None
 
-        try:
-            filters = await Functions.get_functions_by_type("filter", active_only=False)
-        except Exception:
-            self.logger.warning(
-                "Cannot enumerate OWUI filter functions; %s will not be installed or updated",
-                log_label,
-                exc_info=True,
-            )
-            return None
+        if rows is None:
+            try:
+                filters = await Functions.get_functions_by_type("filter", active_only=False)
+            except Exception:
+                self.logger.warning(
+                    "Cannot enumerate OWUI filter functions; %s will not be installed or updated",
+                    log_label,
+                    exc_info=True,
+                )
+                return None
+        else:
+            filters = rows
+
+        return await self._install_from_rows(
+            filters, desired_source, desired_name, desired_meta, preferred_id,
+            auto_install_valve, log_label, matches_candidate, primary_marker, prefer_id,
+        )
+
+    def _validate_before_write(self, desired_source: str, log_label: str) -> None:
+        valid, error = self.validate_filter_source(desired_source)
+        if not valid:
+            raise ValueError(f"Generated {log_label} is invalid: {error}")
+
+    async def _install_from_rows(
+        self,
+        filters: list[Any],
+        desired_source: str,
+        desired_name: str,
+        desired_meta: dict[str, Any],
+        preferred_id: str,
+        auto_install_valve: str,
+        log_label: str,
+        matches_candidate: Callable[[str], bool],
+        primary_marker: str | None,
+        prefer_id: str | None = None,
+    ) -> str | None:
+        from open_webui.models.functions import Functions  # type: ignore
 
         candidates = [f for f in filters if matches_candidate(getattr(f, "content", ""))]
         chosen = None
@@ -442,6 +497,8 @@ class FilterManager:
         if chosen is None:
             if not getattr(self.valves, auto_install_valve, False):
                 return None
+
+            self._validate_before_write(desired_source, log_label)
 
             candidate_id = preferred_id
             suffix = 0
@@ -489,7 +546,7 @@ class FilterManager:
         if not function_id:
             return None
 
-        existing_content = (getattr(chosen, "content", "") or "").strip() + "\n"
+        existing_content = _stored_source(chosen)
         if getattr(self.valves, auto_install_valve, False):
             switch_on = _switch_on(chosen)
             if not switch_on:
@@ -501,6 +558,7 @@ class FilterManager:
                     function_id,
                 )
             if existing_content != desired_source:
+                self._validate_before_write(desired_source, log_label)
                 self.logger.info("Updating %s: %s", log_label, function_id)
                 await Functions.update_function_by_id(
                     function_id,
@@ -514,16 +572,18 @@ class FilterManager:
                     },
                 )
             else:
-                await Functions.update_function_by_id(
-                    function_id,
-                    {
-                        "name": desired_name,
-                        "meta": _merged_meta(chosen, desired_meta, off_by_pipe=False),
-                        "type": "filter",
-                        "is_active": switch_on,
-                        "is_global": False,
-                    },
-                )
+                needs_write = _row_needs_update(chosen, desired_name, desired_meta)
+                if needs_write:
+                    await Functions.update_function_by_id(
+                        function_id,
+                        {
+                            "name": desired_name,
+                            "meta": _merged_meta(chosen, desired_meta, off_by_pipe=False),
+                            "type": "filter",
+                            "is_active": switch_on,
+                            "is_global": False,
+                        },
+                    )
         elif existing_content != desired_source:
             self.logger.log(
                 warn_level(_warned_stale_filter_rows, f"stale_row:{function_id}"),
@@ -1315,6 +1375,10 @@ class FilterManager:
     ) -> dict[str, str]:
         from ..models.registry import ModelFamily, OpenRouterModelRegistry
 
+        rows = await self._filter_rows()
+        if rows is None:
+            return {}
+
         installed: dict[str, str] = {}
         for model in models:
             model_id = model.get("id")
@@ -1336,6 +1400,7 @@ class FilterManager:
                 function_id = await self._ensure_single_video_gen_filter_function_id(
                     model_id=canonical_id,
                     video_model=video_model,
+                    rows=rows,
                 )
             except Exception as exc:
                 self.logger.warning(
@@ -1354,6 +1419,7 @@ class FilterManager:
         *,
         model_id: str,
         video_model: dict[str, Any] | None,
+        rows: list[Any] | None = None,
     ) -> str | None:
         from .video_filter_renderer import build_video_filter_spec
 
@@ -1380,10 +1446,6 @@ class FilterManager:
             model_id=model_id,
             video_model=video_model,
         ).strip() + "\n"
-        valid, error = self.validate_filter_source(desired_source)
-        if not valid:
-            raise ValueError(f"Generated OpenRouter Video Generation filter is invalid: {error}")
-
         return await self._ensure_filter_installed(
             desired_source=desired_source,
             desired_name=f" {spec.display_name}"[:80],
@@ -1403,6 +1465,7 @@ class FilterManager:
             auto_install_valve="AUTO_INSTALL_VIDEO_FILTERS",
             log_label=f"OpenRouter Video Generation filter for {spec.model_id}",
             matches_candidate=_matches,
+            rows=rows,
         )
 
 
@@ -1429,6 +1492,28 @@ class FilterManager:
             )
         )
 
+    async def _filter_rows(self) -> list[Any] | None:
+        try:
+            from open_webui.models.functions import Functions  # type: ignore
+        except ImportError:
+            return None
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "open_webui.models.functions failed to import for a reason other than absence; "
+                "the features that depend on it are now disabled",
+                exc_info=True,
+            )
+            return None
+        try:
+            return list(await Functions.get_functions_by_type("filter", active_only=False))
+        except Exception:
+            self.logger.warning(
+                "Cannot enumerate OWUI filter functions; the filters that depend on it "
+                "will not be installed or updated",
+                exc_info=True,
+            )
+            return None
+
     @timed
     async def ensure_openrouter_image_filter_function_ids(
         self,
@@ -1445,6 +1530,10 @@ class FilterManager:
             OpenRouterModelRegistry,
             uses_dedicated_image_api,
         )
+
+        rows = await self._filter_rows()
+        if rows is None:
+            return {}
 
         installed: dict[str, list[str]] = {}
         for model in models:
@@ -1476,6 +1565,7 @@ class FilterManager:
                     image_model=image_model,
                     endpoint_record=endpoint_record,
                     dedicated_image_api=uses_dedicated_image_api(spec),
+                    rows=rows,
                 )
             except Exception as exc:
                 # One model's install failure costs that model its filter and nothing
@@ -1539,6 +1629,7 @@ class FilterManager:
         image_model: dict[str, Any] | None,
         endpoint_record: list[dict[str, Any]] | dict[str, Any] | None,
         dedicated_image_api: bool,
+        rows: list[Any] | None = None,
     ) -> str | None:
         from .image_filter_renderer import build_image_model_filter_spec
 
@@ -1569,10 +1660,6 @@ class FilterManager:
             endpoint_record=endpoint_record,
             dedicated_image_api=dedicated_image_api,
         ).strip() + "\n"
-        valid, error = self.validate_filter_source(desired_source)
-        if not valid:
-            raise ValueError(f"Generated OpenRouter image filter is invalid: {error}")
-
         return await self._ensure_filter_installed(
             desired_source=desired_source,
             desired_name=spec.display_name[:80],
@@ -1592,6 +1679,7 @@ class FilterManager:
             auto_install_valve="AUTO_INSTALL_IMAGE_FILTERS",
             log_label=f"OpenRouter image filter for {spec.model_id}",
             matches_candidate=_matches,
+            rows=rows,
         )
 
     # DIRECT UPLOADS FILTER

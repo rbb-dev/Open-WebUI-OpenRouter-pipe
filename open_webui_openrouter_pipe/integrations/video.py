@@ -722,6 +722,7 @@ class VideoGenerationAdapter:
                 api_key=self._resolve_api_key(valves),
                 logger=self.logger,
                 http_referer=_select_openrouter_http_referer(valves),
+                valves=valves,
                 user=user_obj,
                 owui_chat_id=chat_id,
             )
@@ -987,6 +988,7 @@ class VideoGenerationAdapter:
                     api_key=self._resolve_api_key(valves),
                     logger=self.logger,
                     http_referer=_select_openrouter_http_referer(valves),
+                    valves=valves,
                     user=user_obj,
                     owui_chat_id=chat_id,
                 )

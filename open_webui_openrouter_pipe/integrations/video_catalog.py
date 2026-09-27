@@ -8,9 +8,9 @@ from typing import Any
 
 import aiohttp
 
-from ..core.config import _select_openrouter_http_referer
 from ..core.warn_latch import warn_level
 from ..models.registry import OpenRouterModelRegistry
+from .catalog_client import _build_catalog_client
 from .video_client import OpenRouterVideoClient
 
 _warned_video_catalog: set[str] = set()
@@ -50,12 +50,12 @@ async def ensure_video_catalog_loaded(
         if last_attempt and (time.time() - last_attempt) < cache_seconds:
             return
 
-        client = OpenRouterVideoClient(
+        client = _build_catalog_client(
+            OpenRouterVideoClient,
             session,
-            base_url=valves.BASE_URL,
+            valves=valves,
             api_key=api_key,
             logger=logger,
-            http_referer=_select_openrouter_http_referer(valves),
         )
 
         try:

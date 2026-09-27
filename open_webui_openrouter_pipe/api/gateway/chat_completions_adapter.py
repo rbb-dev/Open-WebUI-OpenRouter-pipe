@@ -32,7 +32,7 @@ from ...core.errors import (
     _build_openrouter_api_error,
 )
 from ...core.timing_logger import timed, timing_mark
-from ...core.utils import _apply_retry_after_metadata
+from ...core.utils import _apply_retry_after_metadata, http_timeout
 from ...core.warn_latch import warn_level
 from ...requests.debug import (
     _debug_print_error_response,
@@ -83,6 +83,9 @@ class ChatCompletionsAdapter:
         """
         self._pipe = pipe
         self.logger = logger
+
+    def _timeout(self, effective_valves: Any) -> aiohttp.ClientTimeout:
+        return http_timeout(effective_valves)
 
     @timed
     async def _inline_internal_chat_files(self, chat_payload: dict, effective_valves: Any, *, user: Any = None) -> None:
@@ -610,7 +613,8 @@ class ChatCompletionsAdapter:
 
                 timing_mark("chat_http_request_start")
                 async with _count_failed_call(self._pipe, breaker_key), session.post(
-                    url, json=chat_payload, headers=headers
+                    url, json=chat_payload, headers=headers,
+                    timeout=self._timeout(effective_valves),
                 ) as resp:
                     timing_mark("chat_http_headers_received")
                     if resp.status >= 400:
@@ -845,7 +849,8 @@ class ChatCompletionsAdapter:
 
                 timing_mark("chat_nonstream_http_request_start")
                 async with _count_failed_call(self._pipe, breaker_key), session.post(
-                    url, json=chat_payload, headers=headers
+                    url, json=chat_payload, headers=headers,
+                    timeout=self._timeout(effective_valves),
                 ) as resp:
                     timing_mark("chat_nonstream_http_response")
                     if resp.status >= 400:

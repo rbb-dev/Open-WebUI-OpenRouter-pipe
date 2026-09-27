@@ -15,6 +15,12 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
 
+_ADAPTERS: dict = {}
+
+
+def _adapters_for(cls: type) -> dict:
+    return _ADAPTERS.setdefault(cls, {})
+
 try:
     from open_webui.env import SRC_LOG_LEVELS
 except Exception:  # noqa: BLE001 - open_webui.env does filesystem work on import
@@ -57,16 +63,22 @@ class Filter:
             if not isinstance(data, dict):
                 return data
             kept = {}
-            for name, field in cls.model_fields.items():
-                if name not in data:
+            table = _adapters_for(cls)
+            for name in data:
+                field = cls.model_fields.get(name)
+                if field is None:
                     continue
-                annotated = (
-                    Annotated[(field.annotation, *field.metadata)]
-                    if field.metadata
-                    else field.annotation
-                )
+                adapter = table.get(name)
+                if adapter is None:
+                    metadata = field.metadata
+                    annotated = (
+                        Annotated[(field.annotation, *metadata)]
+                        if metadata
+                        else field.annotation
+                    )
+                    adapter = table[name] = TypeAdapter(annotated)
                 try:
-                    TypeAdapter(annotated).validate_python(data[name])
+                    adapter.validate_python(data[name])
                 except ValidationError:
                     continue
                 kept[name] = data[name]

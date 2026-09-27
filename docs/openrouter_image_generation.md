@@ -1191,6 +1191,14 @@ publishes gets a plain-English label — `n` appears as **Number of images**.
 An option specific to the provider keeps the name OpenRouter publishes for
 it, because only that provider's own documentation defines what it means.
 
+The fields follow the model's current contract, which can change after you
+have filled them in. When a model stops publishing a choice you picked — a
+ratio it dropped, a count range it narrowed — the stored value is dropped
+**while the rest of your settings survive**. Only the setting that no longer
+fits falls back to its default; the panel does not fail, and the other
+fields keep what you chose. That check runs every time the panel is read,
+against whatever the model publishes right now.
+
 ### Installing the panels (admin)
 
 Panels are installed and refreshed on their own while

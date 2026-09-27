@@ -18,8 +18,10 @@ from ..core.config import (
 from ..core.costs import chat_usage_to_responses_usage
 from ..core.errors import _build_openrouter_api_error
 from ..core.utils import (
+    _DEFAULT_VALVES,
     IMAGE_NO_IMAGES_REASON,
     clamp_text,
+    http_timeout,
     summarise_names,
     utf8_stream_decoder,
 )
@@ -108,14 +110,24 @@ class OpenRouterImageClient:
         http_referer: str | None = None,
         user: Any = None,
         owui_chat_id: str | None = None,
+        valves: Any = None,
     ) -> None:
         self._session = session
+        self._valves = valves
         self._base_url = (base_url or "https://openrouter.ai/api/v1").rstrip("/")
         self._api_key = api_key
         self._logger = logger
         self._http_referer = http_referer or _OPENROUTER_REFERER
         self._user = user
         self._owui_chat_id = owui_chat_id
+
+    def _timeout(self) -> aiohttp.ClientTimeout:
+        return http_timeout(self._valves if self._valves is not None else _DEFAULT_VALVES)
+
+    def _timeout_kwargs(self) -> dict[str, Any]:
+        if self._valves is None:
+            return {}
+        return {"timeout": self._timeout()}
 
     def _headers(self) -> dict[str, str]:
         if not self._api_key:
@@ -212,7 +224,7 @@ class OpenRouterImageClient:
         url = f"{self._base_url}/images"
         headers = self._headers()
         _debug_print_request(headers, {"method": "POST", "url": url, "json": payload}, logger=self._logger)
-        async with self._session.post(url, headers=headers, json=payload) as resp:
+        async with self._session.post(url, headers=headers, json=payload, **self._timeout_kwargs()) as resp:
             if resp.status >= 400:
                 body = await _debug_print_error_response(resp, logger=self._logger)
                 raise _build_openrouter_api_error(

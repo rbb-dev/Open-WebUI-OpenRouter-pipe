@@ -88,10 +88,14 @@ _EXPECTED: dict[str, int] = {
     # session and its decode pool. It sits among the teardown steps either side of it,
     # all of which suppress for the same reason: a failure here has no consequence
     # beyond itself, and letting it out would skip the cleanup that follows.
+    # 22nd-24th: the pooled request session's teardown and retirement. Closing a
+    # session whose loop has already gone away can fail on any transport resource, and
+    # the caller is either shutting down or building a replacement -- in both cases there
+    # is nothing left to serve, and a raised close would skip the rest of the cleanup.
     # 21st: clearing the pointer to the background Web Tools repair task in `_do_close`.
     # The task has just been cancelled, so a failure here is a stale reference at worst;
     # letting it out would abort the shutdown that follows.
-    "pipe.py": 21,
+    "pipe.py": 24,
     "storage/persistence.py": 3,
     # 1st: the caller-supplied fallback in `_emit_templated_error_event`. It is reached only because the
     # admin's own template already failed to render, and the generic card below it is the answer if the

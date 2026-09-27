@@ -213,6 +213,13 @@ when the model does. A typed parameter becomes a field named `IMAGE_<PARAMETER>`
 — `IMAGE_ASPECT_RATIO` for `aspect_ratio`, and so on. A provider-specific option
 becomes a free-text field under the same naming rule.
 
+Because the fields track a live contract, a value the model no longer publishes
+is dropped on read — one field falls back to its default and every other stored
+value on the panel survives. A key the model has never published is dropped the
+same way. Which fields a model publishes, and what it accepts for each, is
+re-read on every panel construction, so this follows the model rather than the
+version of the pipe that first installed the panel.
+
 For a worked example, `recraft/recraft-v3` publishes `aspect_ratio` (six
 choices), `n` (1 to 6) and the provider options `style`, `controls` and
 `text_layout`, so its filter carries `IMAGE_ASPECT_RATIO`, `IMAGE_N`,

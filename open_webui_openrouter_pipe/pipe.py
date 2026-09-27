@@ -95,6 +95,10 @@ except Exception:
     )
     _OwuiConfig = None  # type: ignore
 
+_TERMINAL_SITE_DEFAULT_MEMO: dict[str, tuple[float, str | None]] = {}
+_TERMINAL_SITE_DEFAULT_TTL = 30.0
+_TERMINAL_SITE_DEFAULT_MAX = 256
+
 # Optional Redis support
 try:
     import redis.asyncio as aioredis
@@ -141,6 +145,8 @@ from .core.utils import (
     _tool_result_failed,
     brings_tool_results,
     continued_reply_text,
+    http_timeout,
+    http_timeout_str,
     join_answer_and_card,
 )
 from .core.warn_latch import warn_level
@@ -270,6 +276,45 @@ def _tool_side_emitter(emitter: EventEmitter | None) -> EventEmitter | None:
                 raise
 
     return _emit
+
+
+def _connector_kwargs(
+    valves: Any,
+    *,
+    shared: bool,
+    semaphore_limit: int = 0,
+) -> dict[str, Any]:
+    if not shared:
+        return {"limit": 50, "limit_per_host": 10, "keepalive_timeout": 75, "ttl_dns_cache": 300}
+    return {
+        "limit": max(50, semaphore_limit or 0),
+        "limit_per_host": 0,
+        "keepalive_timeout": 75,
+        "ttl_dns_cache": 300,
+    }
+
+
+async def _terminal_site_default(logger: Any) -> str | None:
+    now = time.monotonic()
+    hit = _TERMINAL_SITE_DEFAULT_MEMO.get("value")
+    if hit is not None and now - hit[0] < _TERMINAL_SITE_DEFAULT_TTL:
+        return hit[1]
+    try:
+        defaults = await _OwuiConfig.get("ui.default_interface_settings")  # type: ignore[union-attr]
+    except Exception:
+        logger.debug("Open WebUI's interface defaults could not be read", exc_info=True)
+        defaults = None
+    site = defaults.get("terminalFileDisplay") if isinstance(defaults, dict) else None
+    choice = site if isinstance(site, str) else None
+    if len(_TERMINAL_SITE_DEFAULT_MEMO) >= _TERMINAL_SITE_DEFAULT_MAX:
+        for key in [
+            k for k, (at, _) in _TERMINAL_SITE_DEFAULT_MEMO.items() if now - at >= _TERMINAL_SITE_DEFAULT_TTL
+        ]:
+            _TERMINAL_SITE_DEFAULT_MEMO.pop(key, None)
+        if len(_TERMINAL_SITE_DEFAULT_MEMO) >= _TERMINAL_SITE_DEFAULT_MAX:
+            _TERMINAL_SITE_DEFAULT_MEMO.clear()
+    _TERMINAL_SITE_DEFAULT_MEMO["value"] = (now, choice)
+    return choice
 
 
 def _fallback_tool_text(raw_result: Any) -> str:
@@ -432,6 +477,9 @@ class Pipe:
         self.logger = SessionLogger.get_logger(__name__.split(".")[0])
 
         self._http_session: aiohttp.ClientSession | None = None
+        self._request_sessions: dict[asyncio.AbstractEventLoop, aiohttp.ClientSession] = {}
+        self._request_session_lock: asyncio.Lock | None = None
+        self._request_session_lock_loop: asyncio.AbstractEventLoop | None = None
         self._initialized = False
         self._closed = False
         self._shutdown_lock: asyncio.Lock | None = None
@@ -1992,6 +2040,9 @@ class Pipe:
             if self._multimodal_handler:
                 self._multimodal_handler.set_http_session(None)
 
+        with contextlib.suppress(Exception):
+            await self._close_request_sessions()
+
         handler = getattr(self, "_multimodal_handler", None)
         if handler is not None:
             with contextlib.suppress(Exception):
@@ -2061,7 +2112,7 @@ class Pipe:
             self._warmup_failed = True
             self._startup_checks_complete = False
             self._startup_checks_pending = True
-        finally: 
+        finally:
             if session:
                 with contextlib.suppress(Exception):
                     await session.close()
@@ -2237,6 +2288,7 @@ class Pipe:
             return
 
         session: aiohttp.ClientSession | None = None
+        owned_session = False
         tokens: list[tuple[ContextVar[Any], contextvars.Token[Any]]] = []
         tool_context: _ToolExecutionContext | None = None
         tool_token: contextvars.Token[_ToolExecutionContext | None] | None = None
@@ -2271,7 +2323,7 @@ class Pipe:
                     self.logger.debug("Plugin on_emitter_wrap dispatch failed", exc_info=True)
 
             async with self._acquire_semaphore(semaphore, job.request_id):
-                session = self._create_http_session(job.valves)
+                session = await self._shared_request_session(job.valves)
                 tokens = self._apply_logging_context(job)
                 tokens.append(
                     (ModelFamily._PIPE_ID, ModelFamily._PIPE_ID.set(self.id))
@@ -2299,7 +2351,6 @@ class Pipe:
                     user=job.user,
                     metadata=job.metadata,
                     request_id=job.request_id,
-                    terminal_files_inline=await self._terminal_files_shown_inline(job.user),
                     messages=job.body.get("messages") or [],
                 )
                 worker_count = job.valves.MAX_PARALLEL_TOOLS_PER_REQUEST
@@ -2444,12 +2495,13 @@ class Pipe:
                 for var, token in tokens:
                     with contextlib.suppress(Exception):
                         var.reset(token)
-                if session:
+                if session and owned_session:
                     with contextlib.suppress(Exception):
                         await session.close()
             finally:
                 if job.counter_state is not None:
                     Pipe._release_stream_counter(job.pipe, job.counter_state)
+
 
 
     @contextlib.asynccontextmanager
@@ -2666,6 +2718,7 @@ class Pipe:
                 api_key=api_key_value or "",
                 cache_seconds=valves.MODEL_CATALOG_REFRESH_SECONDS,
                 logger=self.logger,
+                valves=valves,
             )
             from .integrations.image_catalog import ensure_image_catalog_loaded
             from .integrations.video_catalog import ensure_video_catalog_loaded
@@ -3003,13 +3056,7 @@ class Pipe:
         ui = settings.get("ui") if isinstance(settings, dict) else None
         choice = ui.get("terminalFileDisplay") if isinstance(ui, dict) else None
         if choice is None and _OwuiConfig is not None:
-            try:
-                defaults = await _OwuiConfig.get("ui.default_interface_settings")
-            except Exception:
-                self.logger.debug("Open WebUI's interface defaults could not be read", exc_info=True)
-                defaults = None
-            if isinstance(defaults, dict):
-                choice = defaults.get("terminalFileDisplay")
+            choice = await _terminal_site_default(self.logger)
         return choice == "inline"
 
     async def _shutdown_tool_context(self, context: _ToolExecutionContext) -> None:
@@ -3450,21 +3497,61 @@ class Pipe:
 
 
     @timed
-    def _create_http_session(self, valves: Pipe.Valves | None = None) -> aiohttp.ClientSession:
-        """Return a fresh ClientSession with sane defaults for per-request use."""
+    def _request_transport_lock(self) -> asyncio.Lock:
+        running = asyncio.get_running_loop()
+        if self._request_session_lock is None or self._request_session_lock_loop is not running:
+            self._request_session_lock = asyncio.Lock()
+            self._request_session_lock_loop = running
+        return self._request_session_lock
+
+    @staticmethod
+    def _request_loop_is_retirable(loop: asyncio.AbstractEventLoop | None) -> bool:
+        return loop is None or loop.is_closed()
+
+    @staticmethod
+    def _request_session_still_open(session: Any) -> bool:
+        return session is not None and not session.closed
+
+    async def _retire_request_session(self) -> None:
+        for loop, session in list(self._request_sessions.items()):
+            if not self._request_loop_is_retirable(loop):
+                continue
+            self._request_sessions.pop(loop, None)
+            if self._request_session_still_open(session):
+                with contextlib.suppress(Exception):
+                    await session.close()
+
+    async def _shared_request_session(self, valves: Pipe.Valves | None = None) -> aiohttp.ClientSession:
+        async with self._request_transport_lock():
+            running = asyncio.get_running_loop()
+            await self._retire_request_session()
+            session = self._request_sessions.get(running)
+            if session is not None and not session.closed:
+                return session
+            session = self._create_http_session(valves, shared=True)
+            self._request_sessions[running] = session
+            return session
+
+    async def _close_request_sessions(self) -> None:
+        sessions = list(self._request_sessions.values())
+        self._request_sessions.clear()
+        for session in sessions:
+            if session is not None and not session.closed:
+                with contextlib.suppress(Exception):
+                    await session.close()
+
+    def _create_http_session(
+        self,
+        valves: Pipe.Valves | None = None,
+        *,
+        shared: bool = False,
+    ) -> aiohttp.ClientSession:
         valves = valves or self.valves
         connector = aiohttp.TCPConnector(
-            limit=50,
-            limit_per_host=10,
-            keepalive_timeout=75,
-            ttl_dns_cache=300,
+            **_connector_kwargs(valves, shared=shared, semaphore_limit=self._semaphore_limit)
         )
-        connect_timeout = valves.HTTP_CONNECT_TIMEOUT_SECONDS
-        total_timeout_value = valves.HTTP_TOTAL_TIMEOUT_SECONDS
-        total_timeout = total_timeout_value if total_timeout_value else None
-        sock_read = valves.HTTP_SOCK_READ_SECONDS if total_timeout is None else None
-        timeout = aiohttp.ClientTimeout(total=total_timeout, connect=connect_timeout, sock_read=sock_read)
-        self.logger.debug("HTTP timeouts: connect=%ss total=%s sock_read=%s", connect_timeout, total_timeout if total_timeout is not None else "disabled", sock_read if sock_read is not None else "disabled")
+        self.logger.debug("HTTP timeouts: %s", http_timeout_str(valves))
+        timeout = http_timeout(valves)
         return aiohttp.ClientSession(
             connector=connector,
             timeout=timeout,

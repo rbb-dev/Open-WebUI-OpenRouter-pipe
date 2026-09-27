@@ -22,7 +22,7 @@ from ..core.config import (
     _OPENROUTER_IMAGE_GEN_FILTER_PREFERRED_FUNCTION_ID,
     _PIPE_METADATA_KEY,
 )
-from ..core.utils import _KEEP_WHAT_STILL_FITS, scrub_surrogates
+from ..core.utils import _ADAPTER_CACHE, _KEEP_WHAT_STILL_FITS, scrub_surrogates
 from ..core.utils import OWUI_FUNCTION_ID_ILLEGAL_RE as _IMAGE_FILTER_ID_RE
 from ..integrations.image_types import (
     PASSTHROUGH_DESCRIPTION,
@@ -855,6 +855,8 @@ from typing import Annotated, Any, Literal, Optional
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
 
+{_ADAPTER_CACHE}
+
 try:
     from open_webui.env import SRC_LOG_LEVELS
 except Exception:  # pragma: no cover - OWUI runtime only
@@ -1247,6 +1249,8 @@ import logging
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
+
+{_ADAPTER_CACHE}
 
 try:
     from open_webui.env import SRC_LOG_LEVELS

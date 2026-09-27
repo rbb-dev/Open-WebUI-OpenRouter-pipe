@@ -52,7 +52,7 @@ At a high level, a request follows this shape:
 
 1. **Admission and isolation**
    - Requests are queued into a bounded per-process request queue and executed under a per-process concurrency semaphore.
-   - Each request receives its own `aiohttp.ClientSession` and per-request logging context.
+   - Each request gets its own per-request logging context, and shares one pooled `aiohttp.ClientSession` per event loop, which is closed at shutdown. Because that session outlives a single request, the timeout valves are applied per call at every site that issues an outbound request; the session also carries the values from the request that built it, and that default applies only to a site that supplies no `timeout=` of its own.
 
 2. **Normalization and transforms**
    - The incoming Open WebUI payload is normalized into a `ResponsesBody` (history reconstruction, multimodal transforms, request defaults).

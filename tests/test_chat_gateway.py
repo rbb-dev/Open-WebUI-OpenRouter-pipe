@@ -4644,7 +4644,7 @@ class _ScriptedStreamSession:
         self._scripts = scripts
         self.calls = 0
 
-    def post(self, url: str, json: Any = None, headers: Any = None):
+    def post(self, url: str, json: Any = None, headers: Any = None, timeout: Any = None):
         script = self._scripts[min(self.calls, len(self._scripts) - 1)]
         self.calls += 1
         return _ScriptedResponseCM(script)

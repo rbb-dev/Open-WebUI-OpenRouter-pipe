@@ -14,9 +14,9 @@ from typing import Any
 
 import aiohttp
 
-from ..core.config import _select_openrouter_http_referer
 from ..core.warn_latch import warn_level
 from ..models.registry import OpenRouterModelRegistry
+from .catalog_client import _build_catalog_client
 from .image_client import OpenRouterImageClient
 
 _warned_image_catalog: set[str] = set()
@@ -102,12 +102,12 @@ async def _refresh_image_catalog(
     logger: Any,
     wants_filters: bool,
 ) -> None:
-    client = OpenRouterImageClient(
+    client = _build_catalog_client(
+        OpenRouterImageClient,
         session,
-        base_url=valves.BASE_URL,
+        valves=valves,
         api_key=api_key,
         logger=logger,
-        http_referer=_select_openrouter_http_referer(valves),
     )
 
     try:

@@ -148,6 +148,15 @@ def _server_tool_type(tool_key: str) -> str:
     return _SERVER_TOOL_TYPE_OVERRIDES.get(tool_key, f"openrouter:{tool_key}")
 
 
+def _reaches_display_file(exposed_to_origin: dict[str, str] | None) -> bool:
+    if not isinstance(exposed_to_origin, dict):
+        return False
+    return any(
+        name == "display_file" or origin == "display_file"
+        for name, origin in exposed_to_origin.items()
+    )
+
+
 def _switched_off_web_tools_asked_for(metadata: Any, valves: Any) -> bool:
     pipe_meta = metadata.get(_PIPE_METADATA_KEY) if isinstance(metadata, dict) else None
     server_tools = pipe_meta.get("server_tools") if isinstance(pipe_meta, dict) else None
@@ -1354,6 +1363,10 @@ class RequestOrchestrator:
         __tools__ = exec_registry
         if isinstance(__metadata__, dict) and exposed_to_origin:
             __metadata__["_pipe_exposed_to_origin"] = exposed_to_origin
+
+        context = self._pipe._TOOL_CONTEXT.get()
+        if context is not None and _reaches_display_file(exposed_to_origin):
+            context.terminal_files_inline = await self._pipe._terminal_files_shown_inline(__user__)
 
         server_tool_entries = [
             t for t in (responses_body.tools or [])

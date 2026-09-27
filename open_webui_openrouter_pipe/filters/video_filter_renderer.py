@@ -9,6 +9,7 @@ from typing import Any
 
 from ..core.config import _OPENROUTER_VIDEO_GEN_FILTER_MARKER, _PIPE_METADATA_KEY
 from ..core.utils import (
+    _ADAPTER_CACHE,
     _KEEP_WHAT_STILL_FITS,
     _clean_str,
     scrub_surrogates,
@@ -764,6 +765,8 @@ import math
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
+
+{_ADAPTER_CACHE}
 
 try:
     from open_webui.env import SRC_LOG_LEVELS

@@ -21,6 +21,28 @@ import pytest_asyncio
 
 _PIPES_TO_CLOSE: list["Pipe"] = []
 
+
+@pytest.fixture(autouse=True)
+def _reset_site_default_memo():
+    """Clear the site-default memo around every test, and never the user's own choice.
+
+    The memo is process-wide, so without this it outlives the
+    `monkeypatch.setattr(pipe_module, "_OwuiConfig", ...)` that the terminal parity
+    matrix does per case: the second case would read a site default captured while the
+    first case's stub was installed, and go red for the wrong reason in the very tests
+    meant to certify the memo. Before *and* after, so a test cannot leave a value behind
+    for a suite that never asked for it.
+    """
+    import open_webui_openrouter_pipe.pipe as pipe_module
+
+    memo = getattr(pipe_module, "_TERMINAL_SITE_DEFAULT_MEMO", None)
+    if isinstance(memo, dict):
+        memo.clear()
+    yield
+    if isinstance(memo, dict):
+        memo.clear()
+
+
 def _schedule_pipe_cleanup(pipe: "Pipe") -> None:
     try:
         asyncio.get_running_loop()

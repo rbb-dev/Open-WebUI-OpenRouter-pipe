@@ -225,6 +225,12 @@ def is_image_output_architecture(architecture: Any) -> bool:
     return not (architecture.get("tokenizer") == "Router" and "text" in modalities)
 
 
+def _catalog_timeout(valves: Any) -> aiohttp.ClientTimeout:
+    from ..core.utils import _DEFAULT_VALVES, http_timeout
+
+    return http_timeout(valves if valves is not None else _DEFAULT_VALVES)
+
+
 class OpenRouterModelRegistry:
     """Fetches and caches the OpenRouter model catalog."""
 
@@ -250,6 +256,7 @@ class OpenRouterModelRegistry:
         cache_seconds: int,
         logger: logging.Logger,
         http_referer: str | None = None,
+        valves: Any = None,
     ) -> None:
         """Refresh the model catalog if the cache is empty or stale."""
         if not api_key:
@@ -272,6 +279,7 @@ class OpenRouterModelRegistry:
                     api_key=api_key,
                     logger=logger,
                     http_referer=http_referer,
+                    valves=valves,
                 )
             except Exception as exc:
                 cls._record_refresh_failure(exc, cache_seconds)
@@ -296,6 +304,7 @@ class OpenRouterModelRegistry:
         api_key: str,
         logger: logging.Logger,
         http_referer: str | None = None,
+        valves: Any = None,
     ) -> None:
         """Fetch and cache the OpenRouter catalog."""
         from ..requests.debug import _debug_print_error_response, _debug_print_request
@@ -307,9 +316,10 @@ class OpenRouterModelRegistry:
             "X-OpenRouter-Categories": _OPENROUTER_CATEGORIES,
             "HTTP-Referer": (http_referer or _OPENROUTER_REFERER),
         }
+        _catalog_read_timeout = _catalog_timeout(valves)
         _debug_print_request(headers, {"method": "GET", "url": url}, logger=logger)
         try:
-            async with session.get(url, headers=headers) as resp:
+            async with session.get(url, headers=headers, timeout=_catalog_read_timeout) as resp:
                 if resp.status >= 400:
                     await _debug_print_error_response(resp, logger=logger)
                 resp.raise_for_status()
@@ -327,6 +337,7 @@ class OpenRouterModelRegistry:
                 api_key=api_key,
                 logger=logger,
                 http_referer=http_referer,
+                timeout=_catalog_read_timeout,
             )
         except Exception as exc:
             logger.warning(
@@ -1088,6 +1099,7 @@ class OpenRouterModelRegistry:
         api_key: str,
         logger: logging.Logger,
         http_referer: str | None = None,
+        timeout: aiohttp.ClientTimeout | None = None,
     ) -> set[str]:
         """Fetch OpenRouter ZDR endpoints and return normalized model ids."""
         from ..requests.debug import _debug_print_error_response, _debug_print_request
@@ -1100,7 +1112,11 @@ class OpenRouterModelRegistry:
             "HTTP-Referer": (http_referer or _OPENROUTER_REFERER),
         }
         _debug_print_request(headers, {"method": "GET", "url": url}, logger=logger)
-        async with session.get(url, headers=headers) as resp:
+        async with session.get(
+            url,
+            headers=headers,
+            timeout=timeout if timeout is not None else _catalog_timeout(None),
+        ) as resp:
             if resp.status >= 400:
                 await _debug_print_error_response(resp, logger=logger)
             resp.raise_for_status()

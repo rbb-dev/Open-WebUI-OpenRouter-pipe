@@ -6,6 +6,7 @@ import asyncio
 import copy
 import logging
 import time
+from collections import namedtuple
 from collections.abc import Callable
 from typing import Any
 
@@ -24,6 +25,26 @@ USAGE_RANGES: dict[str, tuple[int, int]] = {
 _UQ_MEMO: dict[tuple[str, bool, int], tuple[float, dict[str, Any]]] = {}
 _UQ_MEMO_TTL = 30.0
 _UQ_MEMO_MAX = 256
+
+_USAGE_ROW_COLUMNS = (
+    "ts",
+    "kind",
+    "status",
+    "retries",
+    "tokens_in",
+    "tokens_out",
+    "tokens_reasoning",
+    "tokens_cached",
+    "cost",
+    "tools_ok",
+    "tools_failed",
+    "cache_savings",
+    "user_id",
+    "user_name",
+    "model_id",
+)
+
+usage_row = namedtuple("usage_row", _USAGE_ROW_COLUMNS)
 
 
 logger = logging.getLogger(__name__)
@@ -108,7 +129,7 @@ def query_usage_stats(
     off = int(tz_offset_min) * 60
 
     with _db_session(session_factory) as session:
-        from sqlalchemy import case, func
+        from sqlalchemy import case, func, select
 
         totals_q = session.query(
             func.sum(case((model.kind == "task", 0), else_=1)), func.min(model.ts),
@@ -119,11 +140,14 @@ def query_usage_stats(
             totals_q = totals_q.filter(model.kind != "task")
         total_count, min_ts, tot_tin, tot_tcached, tot_tout, tot_tools, tot_cost = totals_q.one()
 
-        rows = (
-            session.query(model)
-            .filter(model.ts >= usage_ts_from_epoch(prev_start))
-            .all()
-        )
+        rows = [
+            usage_row(*row)
+            for row in session.execute(
+                select(*(getattr(model, name) for name in _USAGE_ROW_COLUMNS)).where(
+                    model.ts >= usage_ts_from_epoch(prev_start)
+                )
+            )
+        ]
 
     cur = _new_acc()
     prev = _new_acc()

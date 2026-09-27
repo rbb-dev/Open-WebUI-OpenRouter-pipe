@@ -20,7 +20,11 @@ PACKAGE = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 
 # Interpolated into the failure message, never retyped there: the message used to quote
 # a stale literal while the assertion compared a different one.
-_EXPECTED_OWUI_IMPORTS = (25, 78)
+# 78 -> 80 with the filter-install hoist: `_filter_rows` reads the table for a caller
+# that installs more than one row per sweep, and `_install_from_rows` holds the
+# extracted install body. Both are function-local for the same reason as their
+# neighbours -- `open_webui` may be absent -- so the count is the honest one.
+_EXPECTED_OWUI_IMPORTS = (25, 80)
 
 @pytest.mark.skipif(
     bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),

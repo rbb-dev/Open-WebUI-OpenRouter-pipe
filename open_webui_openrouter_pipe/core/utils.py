@@ -30,6 +30,8 @@ from collections.abc import Awaitable
 from contextvars import ContextVar
 from typing import Any, TypeVar, cast
 
+import aiohttp
+
 from .config import (
     CROCKFORD_ALPHABET,
     DEFAULT_OPENROUTER_ERROR_TEMPLATE,
@@ -821,6 +823,13 @@ def _get_open_webui_config_module() -> Any | None:
     return ow_config
 
 
+_ADAPTER_CACHE = '''_ADAPTERS: dict = {}
+
+
+def _adapters_for(cls: type) -> dict:
+    return _ADAPTERS.setdefault(cls, {})'''
+
+
 _KEEP_WHAT_STILL_FITS = '''        @model_validator(mode="before")
         @classmethod
         def _keep_what_still_fits(cls, data: Any) -> Any:
@@ -835,16 +844,22 @@ _KEEP_WHAT_STILL_FITS = '''        @model_validator(mode="before")
             if not isinstance(data, dict):
                 return data
             kept = {}
-            for name, field in cls.model_fields.items():
-                if name not in data:
+            table = _adapters_for(cls)
+            for name in data:
+                field = cls.model_fields.get(name)
+                if field is None:
                     continue
-                annotated = (
-                    Annotated[(field.annotation, *field.metadata)]
-                    if field.metadata
-                    else field.annotation
-                )
+                adapter = table.get(name)
+                if adapter is None:
+                    metadata = field.metadata
+                    annotated = (
+                        Annotated[(field.annotation, *metadata)]
+                        if metadata
+                        else field.annotation
+                    )
+                    adapter = table[name] = TypeAdapter(annotated)
                 try:
-                    TypeAdapter(annotated).validate_python(data[name])
+                    adapter.validate_python(data[name])
                 except ValidationError:
                     continue
                 kept[name] = data[name]
@@ -1367,3 +1382,29 @@ def join_answer_and_card(answer: str, card: str) -> str:
 
 def utf8_stream_decoder() -> codecs.IncrementalDecoder:
     return codecs.getincrementaldecoder("utf-8")(errors="replace")
+
+
+class _NoValves:
+    HTTP_CONNECT_TIMEOUT_SECONDS = None
+    HTTP_TOTAL_TIMEOUT_SECONDS = None
+    HTTP_SOCK_READ_SECONDS = None
+
+
+_DEFAULT_VALVES = _NoValves()
+
+
+def http_timeout(valves: Any) -> aiohttp.ClientTimeout:
+    connect = getattr(valves, "HTTP_CONNECT_TIMEOUT_SECONDS", None)
+    total_value = getattr(valves, "HTTP_TOTAL_TIMEOUT_SECONDS", None)
+    total = total_value if total_value else None
+    sock_read = getattr(valves, "HTTP_SOCK_READ_SECONDS", None) if total is None else None
+    return aiohttp.ClientTimeout(total=total, connect=connect, sock_read=sock_read)
+
+
+def http_timeout_str(valves: Any) -> str:
+    timeout = http_timeout(valves)
+    return (
+        f"connect={timeout.connect}s "
+        f"total={timeout.total if timeout.total is not None else 'disabled'} "
+        f"sock_read={timeout.sock_read if timeout.sock_read is not None else 'disabled'}"
+    )
