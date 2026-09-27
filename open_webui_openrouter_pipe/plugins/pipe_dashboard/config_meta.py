@@ -480,7 +480,7 @@ CONFIG_META: dict[str, dict[str, str]] = {
     "MODEL_CATALOG_REFRESH_SECONDS": {
         "title": "Catalog refresh interval",
         "group": "Models & Catalog/Catalog & Access",
-        "detail": "How long the pipe keeps its cached copy of the OpenRouter model list before fetching a fresh one, in seconds.\n\nAt its default the list refreshes about once an hour, trading catalog freshness against OpenRouter API traffic. Shorten it to surface newly added or withdrawn models within minutes at the cost of more frequent fetches; lengthen it when the model list rarely changes. If a fetch fails, the pipe keeps serving the last good catalog and retries with an exponential backoff that never waits longer than this interval. The same interval also governs the video and image catalogs when `Enable video generation` or `Show native image models` is on."
+        "detail": "How long the pipe keeps its cached copy of the OpenRouter model list before fetching a fresh one, in seconds.\n\nAt its default the list refreshes about once an hour, trading catalog freshness against OpenRouter API traffic. Shorten it to surface newly added or withdrawn models within minutes at the cost of more frequent fetches; lengthen it when the model list rarely changes. If a fetch of the chat model list fails, the pipe keeps serving the last good list and retries with an exponential backoff that never waits longer than this interval. The video and image catalogs are gated on the same interval but re-fetched flat, with no backoff."
     },
     "MODEL_ID": {
         "title": "Model allowlist",
@@ -935,7 +935,7 @@ CONFIG_META: dict[str, dict[str, str]] = {
     "VIDEO_INTENT_FRAME_EXTRACTION_INDEX": {
         "title": "Reused frame position",
         "group": "Files & Media/Video Intent",
-        "detail": "Which frame - `first` or `last` - the pipe substitutes when the classifier asks for a moment past an earlier video's end.\n\nThis is only the overshoot fallback: when a continuation reuses a prior clip and the requested timestamp runs longer than that clip, the pipe grabs this frame instead and notes the swap in the disclosure footer. It does not change extraction when the requested moment is in range.\n\n- `last` - the earlier video's final frame, so the new clip resumes where the old one stopped (default).\n- `first` - its opening frame, restarting the scene from the beginning.\n\nA site-wide default users can override for their own chats on each video model."
+        "detail": "Which frame - `first` or `last` - the pipe substitutes when the classifier asks for a moment past an earlier video's end.\n\nThis is only the overshoot fallback: when a continuation reuses a prior clip and the requested timestamp runs past the point the pipe can measure as the end of the video — its video track's length where the host can measure it, the file's overall length otherwise — the pipe grabs this frame instead and names it in the disclosure footer. It does not change extraction when the requested moment is in range.\n\n- `last` - the earlier video's final frame, so the new clip resumes where the old one stopped (default).\n- `first` - its opening frame, restarting the scene from the beginning.\n\nA site-wide default users can override for their own chats on each video model."
     },
     "VIDEO_INTENT_LOG_DECISIONS": {
         "title": "Log intent decisions",

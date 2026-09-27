@@ -247,15 +247,16 @@ class TestFfmpegArgvGuard:
     @pytest.mark.asyncio
     async def test_rejects_path_starting_with_dash(self):
         from open_webui_openrouter_pipe.media.frame_extraction import (
-            FrameExtractionError, _extract_frame_ffmpeg,
+            FrameExtractionError,
+            _extract_frame_ffmpeg,
         )
+
         with pytest.raises(FrameExtractionError, match="argv injection"):
             await _extract_frame_ffmpeg(
                 Path("-malicious-flag"),
                 timestamp_seconds=0.0,
                 logger=logging.getLogger("test"),
             )
-
 
 # -----------------------------------------------------------------------------
 # B.2 decompression bomb / size cap

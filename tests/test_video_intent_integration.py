@@ -558,3 +558,17 @@ class TestDisclosurePersistence:
         assert "[openrouter:v1:intent_block_end:1]: #" in block
         assert "/api/v1/files/T/content" in block
         assert "a black cat" in block
+
+
+# -----------------------------------------------------------------------------
+# H9-3 — the disclosure block pairs each frame with its OWN thumbnail
+# -----------------------------------------------------------------------------
+
+_VIDEO_CATALOG_FIXTURE = Path(__file__).parent / "fixtures" / "video_models_catalog.json"
+_VIDEO_MODELS = json.loads(_VIDEO_CATALOG_FIXTURE.read_text())["data"]
+_VIDEO_BY_ID = {item["id"]: item for item in _VIDEO_MODELS}
+_VIDEO_MODEL_PUBLISHING_FRAMES = next(
+    model_id
+    for model_id, model in _VIDEO_BY_ID.items()
+    if {"first_frame", "last_frame"} <= set(model.get("supported_frame_images") or [])
+)

@@ -620,7 +620,7 @@ class VideoGenerationAdapter:
                     ):
                         disclosure_block = render_intent_disclosure_block(
                             intent=intent_result,
-                            thumb_urls=[t for t in thumbs if t],
+                            thumb_urls=thumbs,
                         )
                     if intent_result.use_user_prompt:
                         pass

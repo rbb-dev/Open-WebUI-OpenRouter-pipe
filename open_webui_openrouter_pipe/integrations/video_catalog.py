@@ -17,6 +17,10 @@ _warned_video_catalog: set[str] = set()
 
 _MODALITY_FETCH_CONCURRENCY = 6
 
+_VIDEO_SWEEP_BUDGET_SECONDS = 45
+
+_VIDEO_CATALOG_LOCK = asyncio.Lock()
+
 
 async def ensure_video_catalog_loaded(
     session: aiohttp.ClientSession,
@@ -36,39 +40,40 @@ async def ensure_video_catalog_loaded(
             logger.debug("Video catalog skipped: ENABLE_VIDEO_GENERATION is False.")
         return
 
-    last_attempt = OpenRouterModelRegistry.last_video_attempt()
-    if last_attempt and (time.time() - last_attempt) < cache_seconds:
-        return
+    async with _VIDEO_CATALOG_LOCK:
+        last_attempt = OpenRouterModelRegistry.last_video_attempt()
+        if last_attempt and (time.time() - last_attempt) < cache_seconds:
+            return
 
-    client = OpenRouterVideoClient(
-        session,
-        base_url=valves.BASE_URL,
-        api_key=api_key,
-        logger=logger,
-        http_referer=_select_openrouter_http_referer(valves),
-    )
-
-    try:
-        models = await client.list_models()
-    except (TimeoutError, aiohttp.ClientError, OSError) as exc:
-        OpenRouterModelRegistry.record_video_attempt()
-        logger.log(
-            warn_level(_warned_video_catalog, type(exc).__name__),
-            "Video catalog fetch failed (/videos/models): %s — chat catalog kept, video models will not appear.",
-            exc,
+        client = OpenRouterVideoClient(
+            session,
+            base_url=valves.BASE_URL,
+            api_key=api_key,
+            logger=logger,
+            http_referer=_select_openrouter_http_referer(valves),
         )
-        return
 
-    OpenRouterModelRegistry.record_video_attempt()
+        try:
+            models = await client.list_models()
+        except (TimeoutError, aiohttp.ClientError, OSError) as exc:
+            OpenRouterModelRegistry.record_video_attempt()
+            logger.log(
+                warn_level(_warned_video_catalog, type(exc).__name__),
+                "Video catalog fetch failed (/videos/models): %s — chat catalog kept, video models will not appear.",
+                exc,
+            )
+            return
 
-    if not models:
-        logger.warning("Video catalog fetch returned 0 models; nothing to register.")
-        return
+        if not models:
+            OpenRouterModelRegistry.record_video_attempt()
+            logger.warning("Video catalog fetch returned 0 models; nothing to register.")
+            return
 
-    await _attach_declared_input_modalities(client, models, logger)
+        await _attach_declared_input_modalities(client, models, logger)
 
-    OpenRouterModelRegistry.register_video_models(models)
-    logger.info("Registered %d OpenRouter video model(s) into the catalog.", len(models))
+        OpenRouterModelRegistry.register_video_models(models)
+        OpenRouterModelRegistry.record_video_attempt()
+        logger.info("Registered %d OpenRouter video model(s) into the catalog.", len(models))
 
 
 async def _attach_declared_input_modalities(
@@ -87,7 +92,16 @@ async def _attach_declared_input_modalities(
         if found:
             model["input_modalities"] = found
 
-    await asyncio.gather(*(_one(model) for model in wanted), return_exceptions=True)
+    try:
+        async with asyncio.timeout(_VIDEO_SWEEP_BUDGET_SECONDS):
+            await asyncio.gather(*(_one(model) for model in wanted), return_exceptions=True)
+    except TimeoutError:
+        unread = sum(1 for m in wanted if not m.get("input_modalities"))
+        logger.warning(
+            "The video modality sweep ran past %ds with %d of %d model(s) still unread; "
+            "those are offered every reference control until a later refresh reads them.",
+            _VIDEO_SWEEP_BUDGET_SECONDS, unread, len(wanted),
+        )
     known = sum(1 for m in wanted if m.get("input_modalities"))
     if known < len(wanted):
         logger.log(

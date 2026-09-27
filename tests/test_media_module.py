@@ -1,6 +1,7 @@
 """Unit tests for the media package (frame extraction, thumbnails, image conv)."""
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import logging
@@ -16,6 +17,7 @@ from PIL import Image
 from open_webui_openrouter_pipe.media import (
     FrameExtractionError,
     Thumbnail,
+    VideoMetadata,
     composite_on_white,
     extract_frame,
     make_thumbnail,
@@ -211,7 +213,7 @@ class TestExtractFrame:
         )
         assert frame.requested_timestamp_seconds == 999.0
         assert frame.actual_timestamp_seconds < 999.0
-        assert frame.downgrade_note != ""
+        assert frame.downgrade_note == "timestamp_past_video_end_used_last_frame"
 
     @pytest.mark.asyncio
     async def test_at_timestamp_overshoot_raises_when_disabled(self, synthetic_mp4):

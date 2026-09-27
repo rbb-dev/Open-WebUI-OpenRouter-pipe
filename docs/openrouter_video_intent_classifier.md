@@ -91,9 +91,11 @@ The classifier supports `prior_video_at_timestamp` with `timestamp_seconds`. Exa
 - *"from the 5-second mark"*
 - *"at 0:30"*
 
-The pipe validates the requested timestamp against the actual video duration. If the requested time exceeds the video length, it gracefully downgrades to the last frame and surfaces a note in the disclosure block:
+The pipe validates the requested timestamp against how long the previous video's **picture** runs, which is the video stream's own length where the host can measure it and the container's length otherwise — a clip muxed with a longer audio bed is as long as the audio, not as long as the frames. A length the probe could not measure at all is not treated as an overshoot. When the requested time is past the end, the pipe downgrades to the frame `Reused frame position` selected and surfaces a note in the disclosure block:
 
-> ⚠️ Requested frame at 30s but the previous video is only 4s. Using last frame instead.
+> ⚠️ The requested time was past the end of the previous video; used its last frame instead.
+
+A seek that misses the last decodable frame is retried against the end of the file with a wider window (1s, then 5s, then 30s) before giving up, so a tail of up to 30s still yields a frame at up to three times the normal extraction time.
 
 ## Configuration valves (admin)
 

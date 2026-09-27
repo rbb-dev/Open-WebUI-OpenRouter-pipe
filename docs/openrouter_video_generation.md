@@ -2062,7 +2062,15 @@ Key files:
   — `OpenRouterVideoClient`, the HTTP client for `/videos/*` endpoints.
 - [`integrations/video_catalog.py`](../open_webui_openrouter_pipe/integrations/video_catalog.py)
   — fetches `/videos/models` and registers them in
-  `OpenRouterModelRegistry`.
+  `OpenRouterModelRegistry`. Each read is capped at 15s and the whole
+  modality sweep at 45s, so the number of video models never becomes the
+  time the picker takes to appear; a model whose read did not finish in
+  time is published without its input kinds for that pass, and is offered
+  every reference control until a later one succeeds. The retry clock is
+  stamped once an attempt completes — a failed or empty fetch, or a
+  successful registration — but not while the modality sweep is still
+  running, so a fetch cancelled mid-sweep neither loses the video models
+  nor suppresses the next attempt.
 - [`integrations/media_relay.py`](../open_webui_openrouter_pipe/integrations/media_relay.py)
   — puts an attached clip or sound file behind a public link so it can be
   sent as a reference: which hosts are known, which origins each may

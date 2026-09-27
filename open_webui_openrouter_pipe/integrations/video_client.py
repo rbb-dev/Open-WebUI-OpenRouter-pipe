@@ -19,6 +19,8 @@ from ..requests.debug import (
 )
 from .video_types import VideoGenerationError
 
+_VIDEO_CATALOG_TIMEOUT_SECONDS = 15
+
 _VIDEO_MIME_EXTENSIONS: dict[str, str] = {
     "video/webm": ".webm",
     "video/quicktime": ".mov",
@@ -103,7 +105,10 @@ class OpenRouterVideoClient:
         url = f"{self._base_url}/videos/models"
         headers = self._headers()
         _debug_print_request(headers, {"method": "GET", "url": url}, logger=self._logger)
-        async with self._session.get(url, headers=headers) as resp:
+        async with self._session.get(
+            url, headers=headers,
+            timeout=aiohttp.ClientTimeout(total=_VIDEO_CATALOG_TIMEOUT_SECONDS),
+        ) as resp:
             if resp.status >= 400:
                 await _debug_print_error_response(resp, logger=self._logger)
             resp.raise_for_status()
@@ -118,7 +123,10 @@ class OpenRouterVideoClient:
             return []
         url = f"{self._base_url}/models/{slug}/endpoints"
         try:
-            async with self._session.get(url, headers=self._headers()) as resp:
+            async with self._session.get(
+                url, headers=self._headers(),
+                timeout=aiohttp.ClientTimeout(total=_VIDEO_CATALOG_TIMEOUT_SECONDS),
+            ) as resp:
                 if resp.status >= 400:
                     return []
                 payload = await resp.json()

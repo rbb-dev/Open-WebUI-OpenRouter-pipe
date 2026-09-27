@@ -523,7 +523,7 @@ class TestOvershootFallback:
                 overshoot_fallback_index="first",
             ))
             assert captured["ts"] == 0.0
-            assert "first frame" in frame.downgrade_note.lower()
+            assert frame.downgrade_note == "timestamp_past_video_end_used_first_frame"
         finally:
             frame_extraction.probe_video = original_probe  # type: ignore[assignment]
             frame_extraction._extract_frame_ffmpeg = original_ffmpeg  # type: ignore[assignment]
@@ -554,7 +554,7 @@ class TestOvershootFallback:
                 fallback_to_last_on_overshoot=True,
             ))
             assert captured["ts"] > 3.5  # near the 4.0s end
-            assert "last frame" in frame.downgrade_note.lower()
+            assert frame.downgrade_note == "timestamp_past_video_end_used_last_frame"
         finally:
             frame_extraction.probe_video = original_probe  # type: ignore[assignment]
             frame_extraction._extract_frame_ffmpeg = original_ffmpeg  # type: ignore[assignment]

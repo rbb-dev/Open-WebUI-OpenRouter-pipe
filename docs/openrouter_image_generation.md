@@ -1481,6 +1481,16 @@ Roughly, in order of who-calls-who:
 pipes()
   ├─ ensure chat catalog loaded
   ├─ ensure video catalog loaded
+  │     ├─ each /videos/models and /models/<id>/endpoints read capped
+  │     │  at 15s by the pipe; the whole modality sweep capped at 45s,
+  │     │  so the number of video models never becomes the time the
+  │     │  picker takes to appear; a model whose read did not finish
+  │     │  is published without its input kinds for that pass
+  │     └─ the retry clock is stamped once an attempt completes --
+  │        a failed or empty fetch, or a successful registration --
+  │        but not while the sweep is still running, so a fetch
+  │        cancelled mid-sweep neither loses the video models nor
+  │        suppresses the next attempt
   └─ ensure_image_catalog_loaded()   <- called on every build; the master
         valve is checked INSIDE it, not at this call site
           ├─ if ENABLE_OPENROUTER_IMAGE_GENERATION is off: drop any models

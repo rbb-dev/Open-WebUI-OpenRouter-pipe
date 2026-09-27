@@ -17,14 +17,18 @@ reload can recover. Asserting the toast went out measures the channel, not the r
 from __future__ import annotations
 
 import base64
+import io
+import json
 import logging
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
 from aioresponses import CallbackResult, aioresponses
+from PIL import Image
 
 from open_webui_openrouter_pipe.core.config import Valves
 from open_webui_openrouter_pipe.integrations import video as video_module
@@ -755,3 +759,16 @@ async def test_the_suppressing_proxy_still_reports_a_live_socket_as_delivered():
 
     assert await handler._emit_notification(proxied, "a clip is going out") is True
     assert seen, "the notification never reached the socket"
+
+
+# -----------------------------------------------------------------------------
+# The disclosure block's hidden markers, through the real Pipe
+# -----------------------------------------------------------------------------
+
+_VIDEO_CATALOG_FIXTURE = Path(__file__).parent / "fixtures" / "video_models_catalog.json"
+_VIDEO_MODELS = json.loads(_VIDEO_CATALOG_FIXTURE.read_text())["data"]
+_VIDEO_MODEL_PUBLISHING_FRAMES = next(
+    model_id
+    for model_id, model in {item["id"]: item for item in _VIDEO_MODELS}.items()
+    if {"first_frame", "last_frame"} <= set(model.get("supported_frame_images") or [])
+)

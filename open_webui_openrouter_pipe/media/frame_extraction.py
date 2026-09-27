@@ -10,6 +10,7 @@ import contextlib
 import io
 import logging
 import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -19,14 +20,12 @@ from PIL import Image
 
 _MAX_FRAME_PIXELS = 25_000_000
 _FFMPEG_TIMEOUT_S = 30.0
+_PROBE_TIMEOUT_S = 10.0
+_END_SEEK_WINDOWS = ("-1", "-5", "-30")
 
 
 class FrameExtractionError(Exception):
     """Raised when a frame cannot be extracted from a video file.
-
-    ``no_frame=True`` marks failures where ffmpeg ran but produced no frame
-    (non-zero exit or empty output) — the modes a seek past the last decodable
-    frame causes, where an end-seek fallback may still succeed.
     """
 
     def __init__(self, message: str, *, no_frame: bool = False) -> None:
@@ -58,11 +57,39 @@ class ExtractedFrame:
 # Probe
 # -----------------------------------------------------------------------------
 
+def _ffprobe_stream_duration(path: Path) -> float | None:
+    binary = shutil.which("ffprobe")
+    if binary is None:
+        return None
+    try:
+        proc = subprocess.run(
+            [binary, "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=duration", "-of", "csv=p=0",
+             "-protocol_whitelist", "file", str(path)],
+            capture_output=True, text=True, timeout=_PROBE_TIMEOUT_S, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        value = float((proc.stdout or "").strip())
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
 def _probe_video_sync(path: Path) -> VideoMetadata:
     """Blocking video probe. Caller wraps in to_thread."""
+    if str(path).startswith("-"):
+        raise FrameExtractionError("refusing path starting with '-' (argv injection guard)")
     try:
         meta = iio.immeta(str(path), exclude_applied=False)  # type: ignore[no-any-return]
         duration = float(meta.get("duration", 0.0) or 0.0)
+        if duration > 0:
+            probed = _ffprobe_stream_duration(path)
+            if probed is not None:
+                duration = probed
         fps_raw = meta.get("fps") or meta.get("fps_in_av") or 0.0
         fps = float(fps_raw) if fps_raw else 24.0
         size = meta.get("size") or (0, 0)
@@ -148,65 +175,71 @@ async def _extract_frame_ffmpeg(
         # Input-seeking with -ss past the last frame returns 0 bytes, so to grab
         # the true last frame we seek a short window before EOF, scale, then
         # reverse it — frame 1 of the reversed tail is the last decodable frame.
-        seek_args = ["-sseof", "-1"]
+        seek_arg_sets = [["-sseof", window] for window in _END_SEEK_WINDOWS]
         vf = "scale='min(1920,iw)':-2,reverse"
     else:
-        seek_args = ["-ss", str(max(0.0, timestamp_seconds))]
+        seek_arg_sets = [["-ss", str(max(0.0, timestamp_seconds))]]
         vf = "scale='min(1920,iw)':-2"
-    cmd = [
-        ffmpeg_bin,
-        "-protocol_whitelist", "file",
-        *seek_args,
-        "-i", path_str,
-        "-frames:v", "1",
-        "-vf", vf,
-        "-f", "image2pipe",
-        "-vcodec", "png",
-        "-loglevel", "error",
-        "-",
-    ]
-    proc: asyncio.subprocess.Process | None = None
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+    last_no_frame: FrameExtractionError | None = None
+    for seek_args in seek_arg_sets:
+        cmd = [
+            ffmpeg_bin,
+            "-protocol_whitelist", "file",
+            *seek_args,
+            "-i", path_str,
+            "-frames:v", "1",
+            "-vf", vf,
+            "-f", "image2pipe",
+            "-vcodec", "png",
+            "-loglevel", "error",
+            "-",
+        ]
+        proc: asyncio.subprocess.Process | None = None
         try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=_FFMPEG_TIMEOUT_S,
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
-        except TimeoutError:
-            with contextlib.suppress(Exception):
-                proc.kill()
-                await proc.wait()
-            raise FrameExtractionError(
-                f"ffmpeg timed out after {_FFMPEG_TIMEOUT_S}s",
-            ) from None
-        if proc.returncode != 0:
-            raise FrameExtractionError(
-                f"ffmpeg returned {proc.returncode}: {stderr.decode('utf-8', errors='replace')[:200]}",
-                no_frame=True,
-            )
-        if not stdout:
-            raise FrameExtractionError("ffmpeg produced empty output", no_frame=True)
-        img = Image.open(io.BytesIO(stdout))
-        if img.width * img.height > _MAX_FRAME_PIXELS:
-            raise FrameExtractionError(
-                f"ffmpeg output {img.width}x{img.height} exceeds pixel cap",
-            )
-        img.load()
-        return stdout, img.width, img.height
-    except asyncio.CancelledError:
-        if proc is not None:
-            with contextlib.suppress(Exception):
-                proc.kill()
-                await proc.wait()
-        raise
-    except FrameExtractionError:
-        raise
-    except Exception as exc:
-        raise FrameExtractionError(f"ffmpeg extract failed: {exc}") from exc
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=_FFMPEG_TIMEOUT_S,
+                )
+            except TimeoutError:
+                with contextlib.suppress(Exception):
+                    proc.kill()
+                    await proc.wait()
+                raise FrameExtractionError(
+                    f"ffmpeg timed out after {_FFMPEG_TIMEOUT_S}s",
+                ) from None
+            if proc.returncode != 0:
+                raise FrameExtractionError(
+                    f"ffmpeg returned {proc.returncode}: {stderr.decode('utf-8', errors='replace')[:200]}",
+                )
+            if not stdout:
+                raise FrameExtractionError("ffmpeg produced empty output", no_frame=True)
+            img = Image.open(io.BytesIO(stdout))
+            if img.width * img.height > _MAX_FRAME_PIXELS:
+                raise FrameExtractionError(
+                    f"ffmpeg output {img.width}x{img.height} exceeds pixel cap",
+                )
+            img.load()
+            return stdout, img.width, img.height
+        except asyncio.CancelledError:
+            if proc is not None:
+                with contextlib.suppress(Exception):
+                    proc.kill()
+                    await proc.wait()
+            raise
+        except FrameExtractionError as exc:
+            if not exc.no_frame:
+                raise
+            last_no_frame = exc
+        except Exception as exc:
+            raise FrameExtractionError(f"ffmpeg extract failed: {exc}") from exc
+    if last_no_frame is not None:
+        raise last_no_frame
+    raise FrameExtractionError("ffmpeg extract failed: no seek attempted")
 
 
 async def extract_frame(
@@ -260,7 +293,7 @@ async def extract_frame(
                 use_end_seek = True
         else:
             assert timestamp_seconds is not None
-            if meta and timestamp_seconds > meta.duration_seconds:
+            if meta and meta.duration_seconds > 0 and timestamp_seconds > meta.duration_seconds:
                 if not fallback_to_last_on_overshoot:
                     raise FrameExtractionError(
                         f"timestamp {timestamp_seconds}s exceeds video duration {meta.duration_seconds}s"
@@ -273,10 +306,7 @@ async def extract_frame(
                         0.0, meta.duration_seconds - max(1.0 / meta.fps, 0.04)
                     )
                     fallback_word = "last"
-                downgrade_note = (
-                    f"Requested frame at {timestamp_seconds:.1f}s but the previous video "
-                    f"is only {meta.duration_seconds:.1f}s. Using {fallback_word} frame instead."
-                )
+                downgrade_note = f"timestamp_past_video_end_used_{fallback_word}_frame"
             else:
                 actual_ts = float(timestamp_seconds)
     else:
@@ -301,11 +331,9 @@ async def extract_frame(
             path, timestamp_seconds=actual_ts, logger=logger, from_end=use_end_seek,
         )
     except FrameExtractionError as exc:
-        # A timestamp within the reported duration can still land past the last
-        # decodable frame (the final inter-frame gap). ffmpeg then fails with
-        # either exit-0 empty output OR a non-zero exit — both marked no_frame.
-        # Fall back to the true last frame via end-seek instead of failing.
-        if use_end_seek or target == "first_frame" or not exc.no_frame:
+        if use_end_seek or target == "first_frame" or not exc.no_frame or (
+            target == "at_timestamp" and not fallback_to_last_on_overshoot
+        ):
             raise
         logger.debug(
             "ffmpeg seek to %.3fs produced no frame; falling back to last frame", actual_ts,
@@ -317,7 +345,7 @@ async def extract_frame(
         if meta is not None and meta.duration_seconds > 0:
             # Report the true last-frame timestamp, not the overshot request.
             actual_ts = max(0.0, meta.duration_seconds - max(1.0 / meta.fps, 0.04))
-        if not downgrade_note:
+        if not downgrade_note and target == "at_timestamp":
             # Coded key (not prose) so _user_facing_downgrade_message can map it.
             downgrade_note = "frame_past_eof_used_last_frame"
     return ExtractedFrame(

@@ -933,6 +933,12 @@ _DOWNGRADE_USER_MESSAGES: dict[str, str] = {
     "frame_past_eof_used_last_frame": (
         "The requested time was past the end of the previous video; used its last frame instead."
     ),
+    "timestamp_past_video_end_used_last_frame": (
+        "The requested time was past the end of the previous video; used its last frame instead."
+    ),
+    "timestamp_past_video_end_used_first_frame": (
+        "The requested time was past the end of the previous video; used its first frame instead."
+    ),
     "prior_video_download_failed": "Previous video could not be loaded.",
     "prior_video_index_unresolvable": "Referenced previous video not found.",
     "prior_video_unauthorized": "Cannot access referenced video (different user).",
