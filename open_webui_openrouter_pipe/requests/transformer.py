@@ -1114,13 +1114,11 @@ async def transform_messages_to_input(
                         "type": "input_audio",
                         "input_audio": {
                             "data": "<base64_audio_data>",
-                            "format": "mp3" | "wav"
                         }
                     }
 
                 OpenRouter Audio Requirements (per documentation):
                     - Audio must be base64-encoded (URLs NOT supported)
-                    - Supported formats: wav, mp3 only
                     - See: https://openrouter.ai/docs/guides/overview/multimodal/audio
 
                 Input Formats Handled:
@@ -1160,12 +1158,9 @@ async def transform_messages_to_input(
                     "audio/aiff": "aiff",
                     "audio/x-aiff": "aiff",
                     "audio/aac": "aac",
-                    "audio/webm": "webm",
-                    "audio/x-webm": "webm",
                 }
                 supported_formats = {
                     "mp3", "wav", "flac", "m4a", "ogg", "aiff", "aac", "pcm16", "pcm24",
-                    "webm",
                 }
 
                 def _map_format(mime: str | None) -> str:

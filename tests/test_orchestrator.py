@@ -987,6 +987,53 @@ class TestAudioFormatSniffing:
         assert len(audio) == 1, f"expected exactly one input_audio block, got {blocks}"
         return audio[0]["input_audio"]["format"]
 
+    async def _native_audio_result(self, orchestrator, pipe, mock_valves, mock_session,
+                                   monkeypatch, *, payload, allowlist, operator_allowlist=None):
+        direct_uploads = {
+            "audio": [{"id": "audio123", "format": payload.get("format")}],
+            "responses_audio_format_allowlist": allowlist,
+        }
+        if payload.get("sniff"):
+            direct_uploads["audio"][0].pop("format", None)
+        if operator_allowlist is not None:
+            direct_uploads["audio_format_allowlist"] = operator_allowlist
+        metadata = {"openrouter_pipe": {"direct_uploads": direct_uploads}}
+
+        mock_file = Mock(id="audio123")
+        monkeypatch.setattr(
+            "open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id",
+            AsyncMock(return_value=mock_file),
+        )
+        pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=payload["b64"])
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
+        pipe._streaming_handler._select_llm_endpoint_with_forced = Mock(
+            return_value=("chat_completions", False))
+        pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
+
+        return await orchestrator.process_request(
+            body={"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "listen"}],
+                  "stream": True},
+            __user__={"id": "user1"},
+            __request__=None,
+            __event_emitter__=None,
+            __event_call__=None,
+            __metadata__=metadata,
+            __tools__=None,
+            __task__=None,
+            __task_body__=None,
+            valves=mock_valves,
+            session=mock_session,
+            openwebui_model_id="openai/gpt-4o",
+            pipe_identifier="test-pipe",
+            allowlist_norm_ids={"openai/gpt-4o"},
+            enforced_norm_ids=set(),
+            catalog_norm_ids=set(),
+            features={},
+        )
+
 # -----------------------------------------------------------------------------
 # Test tools registry as list (lines 570-578)
 # -----------------------------------------------------------------------------
@@ -1819,7 +1866,6 @@ class TestFusionLiveGate:
         captured = await self._run_call_site(orchestrator, pipe, mock_valves, mock_session)
         assert engine_calls == []
         assert captured["loop_kwargs"].get("event_source") is None
-
 
 class TestImageModelHelp:
     @pytest.mark.asyncio

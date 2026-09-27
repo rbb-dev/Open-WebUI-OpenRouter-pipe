@@ -1170,9 +1170,9 @@ default applies; the second gets no control.
 | `VIDEO_NEGATIVE_PROMPT` | `str` | `""` | passthrough `negative_prompt` (or `negativePrompt` on Veo) | `"negative_prompt"` or `"negativePrompt"` in `allowed_passthrough_parameters` | 8 of 29 |
 | `VIDEO_GENERATE_AUDIO` | `Literal["model_default", "on", "off"]` | `"model_default"` | top-level `generate_audio` (boolean) | `generate_audio` present and not published as `false` | 22 of 29 |
 | `VIDEO_SEED` | `int` (`ge=0`) | `0` | top-level `seed` | `seed` present and not published as `false` | 19 of 29 |
-| `VIDEO_AUDIO_URL` | `str` | `""` | passthrough `audio` (URL) | `"audio"` allowed **and** `audio` in the model's declared input modalities | none — Wan 2.6 and 2.7 publish the parameter but declare only text and pictures |
-| `VIDEO_REFERENCE_VIDEO_URL` | `str` | `""` | passthrough `video` | `"video"` allowed **and** `video` in the model's declared input modalities | none — Wan 2.7 publishes the parameter but declares only text and pictures |
-| `VIDEO_REFERENCE_VIDEOS_JSON` | `str` (JSON array) | `""` | passthrough `videos` | `"videos"` allowed **and** `video` in the model's declared input modalities | none — Wan 2.7 publishes the parameter but declares only text and pictures |
+| `VIDEO_AUDIO_URL` | `str` | `""` | passthrough `audio` (URL) | `"audio"` allowed, **and** `audio` withheld only while the model publishes an `input_modalities` list that omits it. A model whose sweep has not been read publishes no such list and is offered every reference control, so the draw set depends on sweep state and reopens on every sweep timeout | none with the recorded sweep; Wan 2.6 and 2.7 draw it while the sweep is unread |
+| `VIDEO_REFERENCE_VIDEO_URL` | `str` | `""` | passthrough `video` | `"video"` allowed, **and** `video` withheld only while the model publishes an `input_modalities` list that omits it — sweep-state dependent as above | none with the recorded sweep; Wan 2.7 draws it while the sweep is unread |
+| `VIDEO_REFERENCE_VIDEOS_JSON` | `str` (JSON array) | `""` | passthrough `videos` | `"videos"` allowed, **and** `video` withheld only while the model publishes an `input_modalities` list that omits it — sweep-state dependent as above | none with the recorded sweep; Wan 2.7 draws it while the sweep is unread |
 | `VIDEO_REFERENCE_IMAGES_JSON` | `str` (JSON array) | `""` | passthrough `images` | `"images"` in `allowed_passthrough_parameters` | Wan 2.7 |
 | `VIDEO_LAST_IMAGE_URL` | `str` | `""` | passthrough `last_image` | `"last_image"` in `allowed_passthrough_parameters` | Wan 2.7 |
 | `VIDEO_CREATIVITY` | `Literal['', '0', '1']` | `""` | top-level `creativity` | `creativity` published as a list | FLUX Video Upscale |
@@ -2004,8 +2004,8 @@ would need a Redis lock and is a v1.1+ concern.
 
 ## Configuration valves (admin)
 
-Nineteen valves control the video subsystem. All are visible in Admin →
-Functions → OpenRouter pipe → Valves.
+Nineteen admin valves and sixteen per-model filter valves control the video subsystem. The admin ones are all visible in Admin →
+Functions → OpenRouter pipe → Valves; the per-model filter ones live on each generated video filter, in the rows that follow the core table.
 
 | Valve | Default | Range | Purpose |
 |-------|---------|-------|---------|
@@ -2027,6 +2027,7 @@ Functions → OpenRouter pipe → Valves.
 | `VIDEO_FRAME_TOTAL_MAX_BYTES` | `52_428_800` (50 MB) | 65536–134217728 | Combined frame-bytes cap across one request. |
 | `VIDEO_FRAME_IMAGE_MIME_ALLOWLIST` | `image/jpeg,image/png,image/webp` | comma-list | Allowed MIMEs for frame images. |
 | `VIDEO_OUTPUT_MIME_ALLOWLIST` | `video/mp4,video/webm` | comma-list | Allowed MIMEs for downloaded video (header first; bytes consulted only when the header is unlisted). |
+| `VIDEO_REFERENCE_ALLOWED_DOMAINS` | `""` | comma-list | Hosts a per-user reference URL may name before this pipe forwards it. Applies to the filter's own reference fields **and** to any key under the free-text `provider.options` box, on the same check over every address in the built request. Exact-or-parent host match, case-insensitive; empty means unrestricted, which is the default. Additional to the `https://`/SSRF address check, which still runs either way; takes no `!` block entries and no CIDR ranges, and (unlike `ALLOW_INSECURE_HTTP_HOSTS`) a listed parent covers its subdomains. A link the media relay published for this request is recorded as the pipe's own and goes out whatever this holds; a host address a user typed is not recorded and is not exempt. |
 | `VIDEO_AIGC_WATERMARK` | `str` | `""` | passthrough `aigc_watermark` | `"aigc_watermark"` allowed | H3, H3 Max |
 | `VIDEO_BACKGROUND` | `str` | `""` | passthrough `background` | `"background"` allowed | Avatar IV |
 | `VIDEO_CAPTION` | `str` | `""` | passthrough `caption` | `"caption"` allowed | Avatar IV |

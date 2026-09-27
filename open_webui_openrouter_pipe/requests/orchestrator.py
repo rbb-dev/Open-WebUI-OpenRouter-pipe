@@ -132,6 +132,12 @@ def _inject_image_modalities(
         )
 
 
+_NATIVE_AUDIO_FORMATS = frozenset(
+    {"mp3", "wav", "flac", "m4a", "ogg", "aiff", "aac", "pcm16", "pcm24"}
+)
+
+_UNMAPPABLE_AUDIO_FORMATS = frozenset({"webm"})
+
 _SERVER_TOOL_TYPE_OVERRIDES = {
     "chat_search_models": "openrouter:experimental__search_models",
 }
@@ -509,6 +515,9 @@ class RequestOrchestrator:
             allowlist_csv = attachments.get("responses_audio_format_allowlist")
             if isinstance(allowlist_csv, str):
                 extracted["responses_audio_format_allowlist"] = allowlist_csv
+            audio_allowlist_csv = attachments.get("audio_format_allowlist")
+            if isinstance(audio_allowlist_csv, str):
+                extracted["audio_format_allowlist"] = audio_allowlist_csv
             pdf_parser = attachments.get("pdf_parser")
             if isinstance(pdf_parser, str) and pdf_parser.strip():
                 extracted["pdf_parser"] = pdf_parser.strip()
@@ -613,6 +622,8 @@ class RequestOrchestrator:
                     return "wav"
                 if prefix.startswith(b"ID3"):
                     return "mp3"
+                if len(prefix) >= 2 and prefix[0] == 0xFF and (prefix[1] & 0xF6) == 0xF0:
+                    return "aac"
                 if len(prefix) >= 2 and prefix[0] == 0xFF and (prefix[1] & 0xE0) == 0xE0:
                     return "mp3"
                 if len(prefix) >= 12 and prefix[4:8] == b"ftyp":
@@ -658,6 +669,19 @@ class RequestOrchestrator:
             allowed_for_responses = (
                 _csv_set(allowlist_csv) if allowlist_seen else set(_DEFAULT_RESPONSES_AUDIO_FORMATS)
             )
+            allowed_for_responses = _csv_set(allowlist_csv) if allowlist_seen else {"mp3", "wav"}
+            operator_audio_key = "audio_format_allowlist"
+            operator_audio_formats = (
+                _csv_set(attachments.get(operator_audio_key, ""))
+                if operator_audio_key in attachments
+                else set()
+            )
+            operator_only_formats = {
+                fmt
+                for fmt in operator_audio_formats
+                if fmt not in _NATIVE_AUDIO_FORMATS
+                and fmt not in _UNMAPPABLE_AUDIO_FORMATS
+            }
 
             for item in attachments.get("audio", []):
                 file_id = item.get("id")
@@ -677,6 +701,22 @@ class RequestOrchestrator:
                 audio_format = (sniffed or declared_format).strip().lower()
                 if not audio_format:
                     raise ValueError("Native audio attachment missing required 'format'.")
+                if (
+                    audio_format not in _NATIVE_AUDIO_FORMATS
+                    and audio_format not in operator_only_formats
+                ):
+                    if operator_audio_key not in attachments:
+                        raise ValueError(
+                            f"Native audio attachment format {audio_format!r} is not "
+                            f"supported, and this request carries no Direct Audio Format "
+                            f"Allowlist, so the pipe cannot tell that the operator "
+                            f"allowlisted it. Re-install the Direct Uploads filter from "
+                            f"the pipe's Config tab, or use one of: "
+                            f"{', '.join(sorted(_NATIVE_AUDIO_FORMATS))}."
+                        )
+                    raise ValueError(
+                        f"Native audio attachment format {audio_format!r} is not supported."
+                    )
                 item["format"] = audio_format
                 item["responses_eligible"] = bool(audio_format in allowed_for_responses)
                 _append(
@@ -1018,7 +1058,12 @@ class RequestOrchestrator:
 
         is_direct = bool(getattr(getattr(__request__, "state", None), "direct", False))
         fusion_model = is_fusion_model(responses_body.model)
-        if fusion_model and endpoint_override == "chat_completions":
+        if (
+            bool(valves.ENABLE_OPENROUTER_FUSION)
+            and _fusion_backend_openrouter(valves)
+            and fusion_model
+            and endpoint_override == "chat_completions"
+        ):
             self.logger.warning(
                 "OpenRouter Fusion requires the /responses endpoint; overriding "
                 "endpoint_override=chat_completions to responses for model=%s",
@@ -1597,6 +1642,12 @@ class RequestOrchestrator:
                 )
             if invocation.no_usable_member and outcome_sink is not None:
                 outcome_sink["error_occurred"] = True
+            if invocation.no_usable_member and not fusion_inner:
+                await self._pipe._event_emitter_handler._emit_notification(
+                    __event_emitter__,
+                    "Every Fusion panel member failed; this run has no deliberated answer.",
+                    level="error",
+                )
             return fusion_result
 
         reasoning_retry_attempted = False

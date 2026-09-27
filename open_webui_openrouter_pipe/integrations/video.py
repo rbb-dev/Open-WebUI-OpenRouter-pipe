@@ -17,6 +17,7 @@ from datetime import UTC
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from urllib.parse import urlsplit
 
 from ..api.gateway.responses_adapter import _record_failed_call
 from ..core.config import _PIPE_METADATA_KEY, _select_openrouter_http_referer
@@ -102,6 +103,10 @@ _warned_provider_slug_guess: set[str] = set()
 
 _warned_video_provider_keys: set[str] = set()
 
+_warned_reference_scope: set[str] = set()
+
+_warned_reference_scope_entry: set[str] = set()
+
 _MAX_PASSTHROUGH_URLS = 16
 
 _OPTIONS_HOP_DEPTH = 3
@@ -161,6 +166,51 @@ def _promotable_as_frame(entry: dict[str, Any], valves: Any = None) -> bool:
     raw = getattr(valves, "VIDEO_FRAME_IMAGE_MIME_ALLOWLIST", None) if valves is not None else None
     allowed = _csv_set("image/jpeg,image/png,image/webp") if raw is None else _csv_set(raw)
     return _clean_str(entry.get("content_type")).split(";", 1)[0].lower() in allowed
+
+
+def _host_entries(raw: Any) -> tuple[frozenset[str], frozenset[str]]:
+    entries: set[str] = set()
+    unusable: set[str] = set()
+    for entry in _csv_set(raw):
+        head, sep, port = entry.rpartition(":")
+        if sep and head and port.isdigit():
+            head = head.rstrip(".")
+        else:
+            head = entry.rstrip(".")
+        if not head:
+            continue
+        if any(ch in head for ch in "!/") or "://" in head:
+            unusable.add(head)
+        entries.add(head)
+    return frozenset(entries), frozenset(unusable)
+
+
+def _host_in_scope(url: str, entries: frozenset[str]) -> bool:
+    if not entries:
+        return True
+    try:
+        host = urlsplit(url).hostname
+    except ValueError:
+        return False
+    if not host:
+        return False
+    host = host.lower().rstrip(".")
+    return any(host == entry or host.endswith("." + entry) for entry in entries)
+
+
+def _is_pipe_published(field_name: str, url: str, relayed: frozenset[str]) -> bool:
+    return field_name.startswith("input_references[") and url in relayed
+
+
+_REFERENCE_FAMILY_FIELDS = frozenset(
+    {"audio", "last_image", "video", "videos", "images", "input_references"}
+)
+
+
+def _reference_family(label: str) -> str:
+    head = label.split(".")[-1].split("[")[0].strip()
+    return head if head in _REFERENCE_FAMILY_FIELDS else ""
+
 
 @dataclass(frozen=True, slots=True)
 class _AcceptedReference:
@@ -775,6 +825,9 @@ class VideoGenerationAdapter:
                 provider_options=provider_options,
                 withheld=withheld,
                 vetted=vetted_addresses,
+                video_reference_allowed_domains=getattr(
+                    valves, "VIDEO_REFERENCE_ALLOWED_DOMAINS", ""
+                ),
             )
             global_semaphore = self._ensure_global_semaphore(valves)
             await global_semaphore.acquire()
@@ -1513,6 +1566,7 @@ class VideoGenerationAdapter:
         input_references: list[dict[str, Any]] | None = None,
         withheld: list[tuple[str, str]] | None = None,
         vetted: dict[str, bool] | None = None,
+        video_reference_allowed_domains: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": api_model_id,
@@ -1607,7 +1661,22 @@ class VideoGenerationAdapter:
             )
         if block:
             payload["provider"] = block
-        await self._validate_passthrough_urls(payload, withheld, vetted=vetted)
+        own = payload.get("input_references")
+        relayed = frozenset(
+            entry[kind]["url"]
+            for entry in (own if isinstance(own, list) else ())
+            if isinstance(entry, dict)
+            for kind in entry
+            if kind != "type"
+            and isinstance(entry[kind], dict)
+            and isinstance(entry[kind].get("url"), str)
+            and not entry[kind]["url"].startswith("data:")
+        ) & frozenset(link for link, ok in (vetted or {}).items() if ok and link)
+        await self._validate_passthrough_urls(
+            payload, withheld, vetted=vetted,
+            relayed=relayed,
+            video_reference_allowed_domains=video_reference_allowed_domains,
+        )
         return payload
 
     @staticmethod
@@ -1635,10 +1704,23 @@ class VideoGenerationAdapter:
         vetted: dict[str, bool] | None = None,
         depth: int = 0,
         deadline: float | None = None,
+        video_reference_allowed_domains: str | None = None,
+        relayed: frozenset[str] | None = None,
     ) -> None:
         root = seen is None
         if seen is None:
             seen = dict(vetted) if isinstance(vetted, dict) else {}
+        entries, unusable = _host_entries(video_reference_allowed_domains)
+        for entry in sorted(unusable):
+            self.logger.log(
+                warn_level(_warned_reference_scope_entry, f"video_reference_scope_entry:{entry}"),
+                "VIDEO_REFERENCE_ALLOWED_DOMAINS entry %r cannot match any host, so every "
+                "reference URL is refused. Write a bare host such as "
+                "media.example.com: a ! block entry, a whole URL and a CIDR range are "
+                "not accepted here.",
+                entry,
+            )
+        relayed = frozenset(relayed or ())
         if deadline is None:
             deadline = time.monotonic() + ADDRESS_CHECK_BUDGET_SECONDS
         budget = [_MAX_PASSTHROUGH_URLS] if budget is None else budget
@@ -1655,6 +1737,9 @@ class VideoGenerationAdapter:
                         nested, withheld, seen, budget,
                         depth=depth + _OPTIONS_HOP_DEPTH,
                         deadline=deadline,
+                        video_reference_allowed_domains=video_reference_allowed_domains,
+                        vetted=vetted,
+                        relayed=relayed,
                     )
         url_fields = ("audio", "last_image", "video")
         array_fields = ("videos", "images")
@@ -1682,6 +1767,22 @@ class VideoGenerationAdapter:
                 raise VideoGenerationError(
                     f"Refusing to forward unsafe URL in '{field_name}'. Use https:// or "
                     f"an allowlisted http:// destination."
+                )
+            if entries and not _is_pipe_published(field_name, url, relayed) and not _host_in_scope(url, entries):
+                self.logger.log(
+                    warn_level(
+                        _warned_reference_scope,
+                        f"video_reference_scope:{_reference_family(field_name) or 'provider_options'}",
+                    ),
+                    "Refusing to forward '%s': its host is outside the hosts this "
+                    "deployment allows. Add it to VIDEO_REFERENCE_ALLOWED_DOMAINS, or "
+                    "clear that valve.",
+                    field_name,
+                )
+                raise VideoGenerationError(
+                    f"Refusing to forward '{field_name}': its host is outside the hosts "
+                    f"this deployment allows. Add it to VIDEO_REFERENCE_ALLOWED_DOMAINS, "
+                    f"or clear that valve."
                 )
 
         for field_name in url_fields:

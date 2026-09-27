@@ -75,11 +75,11 @@ class Filter:
         )
         DIRECT_AUDIO_FORMAT_ALLOWLIST: str = Field(
             default="wav,mp3,aiff,aac,ogg,flac,m4a,pcm16,pcm24",
-            description="Comma-separated audio format allowlist (derived from filename/MIME).",
+            description="Comma-separated audio format allowlist (derived from filename/MIME). Listing a format here lets a direct audio upload through even when it is outside the nine the pipe sends natively; the request is then normalised to `mp3` before it reaches the provider. A `webm` container is refused outright, because OpenRouter documents no `webm` format on either endpoint.",
         )
         DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST: str = Field(
             default="wav,mp3",
-            description="Comma-separated audio formats eligible for /responses input_audio.format.",
+            description="Comma-separated audio formats eligible for /responses input_audio.format. It selects only among the nine formats OpenRouter documents; naming an undocumented one such as webm here is not a route back to sending it.",
         )
 
     class UserValves(BaseModel):
@@ -398,6 +398,7 @@ class Filter:
                 pipe_meta["direct_uploads"] = attachments
                 # Persist the /responses audio format allowlist into metadata so the pipe can honor it at injection time.
                 attachments["responses_audio_format_allowlist"] = self.valves.DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST
+                attachments["audio_format_allowlist"] = self.valves.DIRECT_AUDIO_FORMAT_ALLOWLIST
                 if pdf_seen and isinstance(pdf_parser, str) and pdf_parser.strip():
                     attachments["pdf_parser"] = pdf_parser.strip()
 

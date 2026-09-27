@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
+from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -117,3 +120,11 @@ async def test_distinct_image_sizes_each_add_a_permanent_latch_entry(monkeypatch
         f"one cause must arm the latch once; it armed "
         f"{len(vm._warned_dropped_video_param)} times, one per user-chosen clip size"
     )
+
+
+class _StubCatalogManager:
+    def __init__(self, mapping):
+        self._mapping = mapping
+
+    def get_cached_provider_map(self):
+        return self._mapping

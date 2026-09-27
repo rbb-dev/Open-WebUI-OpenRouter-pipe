@@ -45,6 +45,8 @@ EXPECTED_LATCHES = {
     "_warned_ruled_out_tool_use",
     "_warned_queue_backlog",
     "_warned_reference_sizes",
+    "_warned_reference_scope",
+    "_warned_reference_scope_entry",
     "_warned_responses_chunk_parse",
     "_warned_row_timestamps",
     "_warned_stale_filter_rows",

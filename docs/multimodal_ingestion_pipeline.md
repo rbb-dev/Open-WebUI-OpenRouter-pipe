@@ -108,7 +108,7 @@ OpenRouter audio inputs require base64-encoded audio, and the pipe enforces that
 - Data URLs (`data:audio/...;base64,...`) are accepted if valid and within size limits; one over `BASE64_MAX_SIZE_MB` is not sent at all, the block is dropped, the person is told in a status on their latest message, and it is logged as a size refusal rather than an encoding failure. "Valid" is enforced rather than assumed: the payload must be the base64 alphabet with RFC 2045 line wrapping and nothing else, so a payload of stray characters is refused instead of decoding to silence. The same parser serves pictures and audio, so the `;base64` marker is matched case-insensitively here too: `;BASE64,` is the same marker, spelled differently, and is accepted rather than refused as "Audio input must be base64-encoded audio data".
 - Raw base64 strings are accepted if valid, and refused by size the same way.
 
-Supported formats are normalized to `mp3` or `wav` based on MIME hints when available; unknown types default to `mp3`.
+The pipe passes a recognised audio format through unchanged, so `wav`, `mp3`, `flac`, `m4a`, `ogg`, `aiff`, `aac`, `pcm16` and `pcm24` all reach OpenRouter as themselves; anything unrecognised — including a `webm` container, which OpenRouter documents on neither endpoint — is normalized to `mp3`. Only native audio attachments sent directly are checked against `Direct responses audio format allowlist` before routing; a hand-built `input_audio` block is not.
 
 The pipe never writes audio to Open WebUI storage; it stays inline in the request it sends upstream.
 

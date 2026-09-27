@@ -99,7 +99,8 @@ def _make_chat_json_response(content: str = "OK") -> dict:
     }
 
 
-def _smart_callback(captured_payloads: list[dict], content: str = "OK"):
+def _smart_callback(captured_payloads: list[dict], content: str = "OK",
+                    captured_endpoints: list[str] | None = None):
     """Create a callback that returns JSON for non-streaming, SSE for streaming."""
     def callback(url, **kwargs):
         payload = kwargs.get("json", {})
@@ -107,6 +108,8 @@ def _smart_callback(captured_payloads: list[dict], content: str = "OK"):
 
         is_streaming = payload.get("stream", False)
         is_responses = "/responses" in str(url)
+        if captured_endpoints is not None:
+            captured_endpoints.append("responses" if is_responses else "chat_completions")
 
         if is_streaming:
             if is_responses:
@@ -172,8 +175,8 @@ def _mp3_like_base64() -> str:
 
 def _mp3_sync_base64() -> str:
     """Create base64 data that sniffs as mp3 format (sync word)."""
-    # MP3 sync word: 0xFF followed by 0xE0-0xFF (sync bits)
-    payload = b"\xff\xe0" + b"\x00" * 30
+    # MPEG-1 Layer 3 sync word: 0xFF 0xFB (layer bits 11, so not an ADTS header)
+    payload = b"\xff\xfb" + b"\x00" * 30
     return base64.b64encode(payload).decode("ascii")
 
 
@@ -1442,9 +1445,11 @@ async def test_sniff_audio_format_ogg(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_sniff_audio_format_webm(monkeypatch):
-    """Test audio format sniffing for WebM files.
+    """A sniffed webm attachment is refused before any request goes out.
 
-    Covers lines 190-191: WebM detection via EBML header.
+    OpenRouter documents 'webm' on neither endpoint, so the pipe fails the direct upload
+    the same way an unloadable PDF does. The turn therefore carries NO captured payload;
+    asserting a payload would pin the old mislabelled stream.
     """
     pipe = Pipe()
 
@@ -1470,8 +1475,10 @@ async def test_sniff_audio_format_webm(monkeypatch):
         monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
         pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_webm_like_base64())
 
+        emitted: list[Any] = []
+
         async def event_emitter(event):
-            pass
+            emitted.append(event)
 
         with aioresponses() as mock_http:
             mock_http.post(
@@ -1487,6 +1494,13 @@ async def test_sniff_audio_format_webm(monkeypatch):
             mock_http.get(
                 "https://openrouter.ai/api/v1/models",
                 payload={"data": [{"id": "openai/gpt-4o-mini", "name": "GPT-4o Mini"}]},
+                repeat=True,
+            )
+            # The unwarmed pipe primes its caches with /models?limit=1; unregistered here
+            # that ping escapes the mock and surfaces as a ClientConnectionError.
+            mock_http.get(
+                "https://openrouter.ai/api/v1/models?limit=1",
+                payload={"data": []},
                 repeat=True,
             )
 
@@ -1508,9 +1522,19 @@ async def test_sniff_audio_format_webm(monkeypatch):
                 __task_body__=None,
             )
 
-            await _consume_stream(result)
+            collected = await _consume_stream(result)
 
-        assert len(captured_payloads) >= 1
+        assert captured_payloads == [], (
+            "a webm attachment must not be sent on any endpoint: OpenRouter documents "
+            f"'webm' on neither, so declaring it is a false label; got {captured_payloads!r}")
+        turn = "".join(
+            [str(item) for item in emitted]
+            + [str(part) for part in (collected or [])]
+        ).split()
+        assert "".join(turn).find(
+            "Nativeaudioattachmentformat'webm'isnotsupported"
+        ) != -1, (
+            f"the turn must say why the upload was refused; got {''.join(turn)!r}")
 
     finally:
         await pipe.close()
@@ -1897,7 +1921,8 @@ async def test_video_upload_injection(monkeypatch):
         }
 
         captured_payloads: list[dict] = []
-        callback = _smart_callback(captured_payloads, "Response")
+        captured_endpoints: list[str] = []
+        callback = _smart_callback(captured_payloads, "Response", captured_endpoints)
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "video_1"
@@ -1911,6 +1936,13 @@ async def test_video_upload_injection(monkeypatch):
             # Video forces chat_completions endpoint
             mock_http.post(
                 "https://openrouter.ai/api/v1/chat/completions",
+                callback=callback,
+                repeat=True,
+            )
+            # /responses is registered LAST on purpose: a wrong route would otherwise
+            # raise ClientConnectionError instead of failing the endpoint assertion.
+            mock_http.post(
+                "https://openrouter.ai/api/v1/responses",
                 callback=callback,
                 repeat=True,
             )
@@ -1941,6 +1973,9 @@ async def test_video_upload_injection(monkeypatch):
             await _consume_stream(result)
 
         assert len(captured_payloads) >= 1
+        assert set(captured_endpoints) == {"chat_completions"}, (
+            "a video attachment is not legal on /responses, so every call must go to "
+            f"/chat/completions; got {captured_endpoints!r}")
 
     finally:
         await pipe.close()
@@ -2030,7 +2065,8 @@ async def test_video_infers_mime_type(monkeypatch):
         }
 
         captured_payloads: list[dict] = []
-        callback = _smart_callback(captured_payloads, "Response")
+        captured_endpoints: list[str] = []
+        callback = _smart_callback(captured_payloads, "Response", captured_endpoints)
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "video_1"
@@ -2045,6 +2081,13 @@ async def test_video_infers_mime_type(monkeypatch):
         with aioresponses() as mock_http:
             mock_http.post(
                 "https://openrouter.ai/api/v1/chat/completions",
+                callback=callback,
+                repeat=True,
+            )
+            # /responses is registered LAST on purpose: a wrong route would otherwise
+            # raise ClientConnectionError instead of failing the endpoint assertion.
+            mock_http.post(
+                "https://openrouter.ai/api/v1/responses",
                 callback=callback,
                 repeat=True,
             )
@@ -2075,6 +2118,9 @@ async def test_video_infers_mime_type(monkeypatch):
             await _consume_stream(result)
 
         assert len(captured_payloads) >= 1
+        assert set(captured_endpoints) == {"chat_completions"}, (
+            "a video attachment is not legal on /responses, so every call must go to "
+            f"/chat/completions; got {captured_endpoints!r}")
 
     finally:
         await pipe.close()
@@ -3699,7 +3745,8 @@ async def test_video_loop_skips_invalid_file_id(monkeypatch):
         }
 
         captured_payloads: list[dict] = []
-        callback = _smart_callback(captured_payloads, "Response")
+        captured_endpoints: list[str] = []
+        callback = _smart_callback(captured_payloads, "Response", captured_endpoints)
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "valid_video"
@@ -3712,6 +3759,13 @@ async def test_video_loop_skips_invalid_file_id(monkeypatch):
         with aioresponses() as mock_http:
             mock_http.post(
                 "https://openrouter.ai/api/v1/chat/completions",
+                callback=callback,
+                repeat=True,
+            )
+            # /responses is registered LAST on purpose: a wrong route would otherwise
+            # raise ClientConnectionError instead of failing the endpoint assertion.
+            mock_http.post(
+                "https://openrouter.ai/api/v1/responses",
                 callback=callback,
                 repeat=True,
             )
@@ -3742,6 +3796,9 @@ async def test_video_loop_skips_invalid_file_id(monkeypatch):
             await _consume_stream(result)
 
         assert len(captured_payloads) >= 1
+        assert set(captured_endpoints) == {"chat_completions"}, (
+            "a video attachment is not legal on /responses, so every call must go to "
+            f"/chat/completions; got {captured_endpoints!r}")
 
     finally:
         await pipe.close()

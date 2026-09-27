@@ -187,6 +187,35 @@ warning repeating after a cooldown rather than latching for the life of the work
 query string is deliberately not recorded: this gate is reached for any picture or video
 URL pasted into a chat, and those can carry credentials.
 
+### Host allowlists an operator can set for forwarded reference URLs
+
+The SSRF gate above answers whether an address is *globally routable*. It does not answer
+whether it is *this deployment's* host, so an operator who needs a tighter rule has two
+valves, and they do not work the same way:
+
+- `ALLOW_INSECURE_HTTP_HOSTS` — exact-match, `host:port` entries, gates plaintext `http://`
+  downloads. `example.com` does **not** cover `www.example.com`.
+- `VIDEO_REFERENCE_ALLOWED_DOMAINS` — parent-domain match, bare hosts, gates the per-user
+  reference links a video filter forwards to OpenRouter. `example.com` **does** cover
+  `cdn.example.com`, and does not cover `notexample.com`. It covers the filter's own
+  reference fields and the free-text `provider.options` box alike, because the same check
+  runs over every address in the built request rather than over a named field. Empty — the
+  default — means unrestricted.
+
+`VIDEO_REFERENCE_ALLOWED_DOMAINS` takes **no `!` block entries and no CIDR ranges**, unlike
+the Open WebUI host filter whose parent-domain dialect it follows. It is an *additional*
+restriction, not a replacement: the `https://`/SSRF check still runs and can refuse a link
+this list allows, and an entry here never widens the scheme policy.
+
+One link is outside its reach, and deliberately so: a reference the media relay published
+for the current request. The relay records every link it uploads in a per-request record
+and that record is passed to the check, so the pipe's own uploaded attachments are
+forwarded whatever this list holds — excluding them by host would refuse every relayed
+attachment on any deployment that sets the valve. A *host address a user typed* is not
+recorded, so it is not exempt: `https://evil.catbox.moe/x.png` typed into `provider.options`
+is refused like any other unlisted host, even though the pipe's own uploads live on that
+same public host. A caller that populates no record gets no exemption at all.
+
 ### Additional mitigations for downloads
 
 Even when a URL passes SSRF checks, downloads are constrained by:
@@ -206,6 +235,7 @@ Recommended operator action:
 - Keep SSRF protection enabled.
 - Apply outbound egress controls at the network layer (proxy allowlists, egress firewall rules).
 - HTTP is disabled by default; only enable plaintext `http://` with a narrow allowlist (`ALLOW_INSECURE_HTTP_HOSTS`) and compensating egress controls.
+- To constrain which hosts a per-user video reference link may name, set `VIDEO_REFERENCE_ALLOWED_DOMAINS` (parent-domain match, and it governs the `provider.options` route as well as the filter fields). Remember it cannot govern a link the media relay published for the request, by design.
 
 ### Debug log safety
 

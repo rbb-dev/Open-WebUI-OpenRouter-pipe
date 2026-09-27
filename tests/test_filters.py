@@ -1101,9 +1101,17 @@ def test_inlet_deduplicates_by_id():
 
 
 def test_inlet_persists_responses_audio_format_allowlist():
-    """Test inlet persists responses audio format allowlist in metadata."""
+    """Test inlet persists both audio format allowlists in metadata.
+
+    Both valves are set to non-default values: the shipped defaults happen to equal the
+    strings the test would otherwise assert, so a deleted persistence line would still
+    leave a value on both sides and the assertion would hold. The pipe reads the
+    operator allowlist as its gate's second term, so a hand-off that silently stops
+    happening looks, from the pipe's side, like an operator who never configured anything.
+    """
     filt = Filter()
     filt.valves.DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST = "wav,mp3"
+    filt.valves.DIRECT_AUDIO_FORMAT_ALLOWLIST = "wav,mp3,opus"
 
     files = [
         {
@@ -1132,6 +1140,7 @@ def test_inlet_persists_responses_audio_format_allowlist():
     # Should persist the allowlist
     direct_uploads = metadata["openrouter_pipe"]["direct_uploads"]
     assert direct_uploads["responses_audio_format_allowlist"] == "wav,mp3"
+    assert direct_uploads["audio_format_allowlist"] == "wav,mp3,opus"
 
 
 # Additional Coverage Tests

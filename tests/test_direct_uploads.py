@@ -206,6 +206,17 @@ async def test_direct_uploads_audio_with_allowlisted_format_routes_to_responses(
             f"an allowlisted audio format should reach /responses and nothing else: "
             f"responses={len(responses_called)} chat={len(chat_called)}"
         )
+        # When audio format IS in allowlist, the request must go to /responses
+        assert not chat_called, (
+            "an m4a attachment listed in the responses allowlist is legal on "
+            f"/responses, so the request must not go to /chat/completions; got "
+            f"responses={len(responses_called)} chat={len(chat_called)}")
+        assert responses_called, "the request must go to /responses"
+        audio = [b for p in responses_called for m in (p.get("input") or [])
+                 for b in (m.get("content") or [])
+                 if isinstance(b, dict)
+                 and str(b.get("type") or "") in ("input_audio", "audio_url", "audio")]
+        assert audio, f"the audio block was not forwarded at all: {responses_called!r}"
 
     finally:
         await pipe.close()
@@ -340,6 +351,16 @@ async def test_direct_uploads_audio_without_allowlisted_format_forces_chat_compl
                 messages = payload.get("messages", [])
                 # Audio should be included in the request
                 assert len(messages) >= 1, "Expected messages in chat request"
+        assert not responses_called, (
+            "an m4a attachment is not in the mp3,wav responses allowlist, so the "
+            f"request must not go to /responses; got responses={len(responses_called)} "
+            f"chat={len(chat_called)}")
+        assert chat_called, "the request must go to /chat/completions"
+        audio = [b for p in chat_called for m in (p.get("messages") or [])
+                 for b in (m.get("content") or [])
+                 if isinstance(b, dict)
+                 and str(b.get("type") or "") in ("input_audio", "audio_url", "audio")]
+        assert audio, f"the audio block was not forwarded at all: {chat_called!r}"
 
     finally:
         await pipe.close()
@@ -370,10 +391,12 @@ async def test_direct_uploads_audio_injects_audio_blocks(monkeypatch):
         }
 
         captured_payloads: list[dict] = []
+        captured_urls: list[str] = []
 
         def capture_callback(url, **kwargs):
             payload = kwargs.get("json", {})
             captured_payloads.append(payload)
+            captured_urls.append(str(url))
             is_streaming = payload.get("stream", False)
             is_responses = "/responses" in str(url)
 
@@ -456,6 +479,14 @@ async def test_direct_uploads_audio_injects_audio_blocks(monkeypatch):
 
         # Verify audio was injected into the request
         assert len(captured_payloads) >= 1, "Expected at least one API call"
+        endpoints = {
+            u.rsplit("/api/v1/", 1)[-1].rsplit("?", 1)[0]
+            for u in captured_urls
+            if "/api/v1/" in u and "models" not in u
+        }
+        assert endpoints == {"responses"}, (
+            "an mp3 attachment is in the default mp3,wav responses allowlist, so the "
+            f"request must go to /responses; got {endpoints!r}")
 
         found_audio_block = False
         for payload in captured_payloads:

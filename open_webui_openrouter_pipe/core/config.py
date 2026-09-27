@@ -955,6 +955,22 @@ class Valves(BaseModel):
             "Example: 'example.com, example.org:8080, 203.0.113.10'."
         ),
     )
+    VIDEO_REFERENCE_ALLOWED_DOMAINS: str = Field(
+        default="",
+        description=(
+            "Comma-separated host allowlist for the per-user reference links a video filter "
+            "forwards to OpenRouter, on the filter's own reference fields and on free-text "
+            "provider.options alike. An entry matches exactly or as a parent domain, "
+            "case-insensitively, so example.com covers cdn.example.com. Empty - the default - "
+            "means unrestricted. This is an additional restriction: the https:// and SSRF "
+            "address check still applies, and runs either way. It takes no '!' block entries "
+            "and no CIDR ranges, unlike the Plaintext HTTP host allowlist, which is "
+            "exact-match rather than parent-domain. It does not govern a link the media relay "
+            "published for this request: those are recorded as the pipe's own and go out "
+            "whatever this list holds, and a host address typed by a user is not recorded and "
+            "is not exempt."
+        ),
+    )
     ALLOW_UNKNOWN_SIZE_CLOUD_READS: bool = Field(
         default=False,
         description=(

@@ -135,6 +135,46 @@ _REPLAY_DROPPED_OPENING = (
 
 _OWUI_ORIGIN_SOURCES = frozenset({"owui_registry_tools", "owui_request_tools"})
 
+_FUSION_PANEL_FAILURE_REASON = (
+    "Every Fusion panel member failed; this run has no deliberated answer."
+)
+
+
+def _segment_status(
+    was_cancelled: bool,
+    error_occurred: bool,
+    fusion_no_usable_member: bool,
+    handed_back: bool,
+) -> str:
+    if was_cancelled:
+        return "cancelled"
+    if error_occurred or fusion_no_usable_member:
+        return "error"
+    if handed_back:
+        return "needs_tool"
+    return "complete"
+
+
+def _generation_status(
+    was_cancelled: bool,
+    error_occurred: bool,
+    fusion_no_usable_member: bool,
+) -> str:
+    if was_cancelled:
+        return "cancelled"
+    if error_occurred or fusion_no_usable_member:
+        return "failed"
+    return "ok"
+
+
+def _is_no_usable_member_event(event_source: Any, etype: Any, event: Any) -> bool:
+    if event_source is None:
+        return False
+    if etype != "response.output_text.done":
+        return False
+    return bool(event.get("no_usable_member"))
+
+
 # Imports from storage.persistence
 from ..storage.multimodal import _guess_image_mime_type, image_extension_for_mime
 from ..storage.owui_files import _is_channel_chat, is_temporary_chat
@@ -1481,6 +1521,7 @@ class StreamingHandler:
 
             error_occurred = False
             was_cancelled = False
+            fusion_no_usable_member = False
             loop_limit_reached = False
             ran_out = False
             last_round_had_calls = False
@@ -1722,6 +1763,10 @@ class StreamingHandler:
                                 await _emit_fusion_event(_synth)
                             await _emit_fusion_sources(event["item"].get("sources"))
                         continue
+
+                    if _is_no_usable_member_event(event_source, etype, event):
+                        fusion_no_usable_member = True
+                        event = {k: v for k, v in event.items() if k != "no_usable_member"}
 
                     if fusion_armed and fusion_state is not None and etype in ("response.created", "response.in_progress"):
                         fusion_state.record(event)
@@ -2499,6 +2544,9 @@ class StreamingHandler:
                                         _fusion_resp["elapsed_seconds"] = round(max(0.0, perf_counter() - _fstart), 1)
                             if fusion_state.record(event):
                                 await _emit_fusion_embed_once()
+                                _synth_terminal = fusion_state.synthesize_missing_analysis()
+                                if _synth_terminal is not None:
+                                    await _emit_fusion_event(_synth_terminal)
                                 await _emit_fusion_event(event)
                         note_model_activity()
                         final_response = event.get("response", {})
@@ -3350,9 +3398,14 @@ class StreamingHandler:
             surrogate_carry["assistant"] = ""
             surrogate_carry["reasoning"] = ""
 
+            if fusion_no_usable_member:
+                session_log_reason = _FUSION_PANEL_FAILURE_REASON
+
             terminal = bool(was_cancelled or error_occurred or not handed_back)
 
-            generation_status = "cancelled" if was_cancelled else ("failed" if error_occurred else "ok")
+            generation_status = _generation_status(
+                was_cancelled, error_occurred, fusion_no_usable_member
+            )
             if not handed_back_for_retry:
                 try:
                     await asyncio.shield(
@@ -3410,13 +3463,9 @@ class StreamingHandler:
                     self.logger.debug("Collected %d session log entries for request %s.", len(log_events), request_id)
                 resolved_user_id = str(user_id or metadata.get("user_id") or "")
                 resolved_session_id = str(metadata.get("session_id") or "")
-                segment_status = "complete"
-                if was_cancelled:
-                    segment_status = "cancelled"
-                elif error_occurred:
-                    segment_status = "error"
-                elif handed_back:
-                    segment_status = "needs_tool"
+                segment_status = _segment_status(
+                    was_cancelled, error_occurred, fusion_no_usable_member, handed_back
+                )
                 try:
                     await asyncio.shield(
                         self._pipe._session_log_manager.persist_segment_to_db(

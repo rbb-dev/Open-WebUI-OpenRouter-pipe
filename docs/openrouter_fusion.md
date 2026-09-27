@@ -9,13 +9,20 @@ The pipe offers two engines behind one valve (`FUSION_BACKEND`).
 the deliberation on OpenRouter's servers, where the panel's only tool is generic web search. The
 pipe's **built-in engine** (the default) runs the same flow as ordinary pipe requests, so the
 panel, the judge, and the synthesizer all work with the chatting user's entire Open WebUI
-workspace: knowledge bases, personal and workspace tools, tool servers, and the pipe's web tools —
-permission-gated per user, with every call cost-attributed. Each model streams its answer and its
+workspace: knowledge bases, personal and workspace tools, and tool servers, always, plus the
+`openrouter:*` server tools. The Web Tools filter is never auto-attached to a fusion model, but
+its valves are still the source: a member's `openrouter:*` tools come from the admin's
+`ENABLE_*` valves **and** the Web Tools filter's stored per-user toggles for the chatting user, so
+a toggle the user set in another chat governs the panel. A tool whose `ENABLE_*` valve is off is
+never sent to a member. Every call is cost-attributed. Each model streams its answer and its
 thinking into the live panel as it works. And where hosted Fusion loses the entire run to one
 dropped stream, the built-in engine marks the failed panelist and completes the run.
 
 > **Fan-out:** Fusion runs every underlying call — roughly **4–5× a single completion**, and
-> it scales with panel size. What a model charges is on OpenRouter's pricing page.
+> it scales with panel size. What a model charges is on OpenRouter's pricing page. Image
+> generation fans out to every panel member and to the synthesis call too — up to
+> `MAX_FUSION_PANEL_MODELS` (8) billed image calls on one turn — and is cost-attributed like any
+> other tool.
 
 ## The "OpenRouter Fusion" filter
 
@@ -111,10 +118,10 @@ controls, and final answer look identical on both.
 | | `openrouter` | `internal` (default) |
 |---|---|---|
 | Where the panel runs | OpenRouter's servers | Inside the pipe, as ordinary pipe model calls |
-| Panel tools | The full Open WebUI tool surface, run inside the pipe in either outer mode: knowledge bases, tool servers, and pipe server tools. Under `ask` approval a member is offered none of Open WebUI's tools |
+| Panel tools | OpenRouter web search + fetch only | The full Open WebUI tool surface, run inside the pipe in either outer mode: knowledge bases, tool servers, and the `openrouter:*` server tools. A member's `openrouter:*` tools come from the admin's `ENABLE_*` valves **and** the Web Tools filter's stored per-user toggles for the chatting user, so a per-chat toggle set on *another* chat governs the panel; a valve that is off sends no such tool. Image generation reaches every member and the synthesis call, cost-attributed like any other tool. **Known coupling, not a guarantee:** `collect_installed_web_tools_config` with a stored `{"WEB_SEARCH": false}` still returns a different tool set, so this row changes when the code half lands. Under `ask` approval a member is offered none of Open WebUI's tools |
 | Per-model dials | OpenRouter's own settings | Every pipe dial per member: ZDR/provider routing, reasoning effort, max output tokens, identity headers |
 | Cost attribution | One OpenRouter charge | Every inner call is cost-attributed to the user like a normal chat; the run's footer shows the aggregated total |
-| Failure behaviour | A dropped stream loses the whole run | One failed member degrades that card — a member that exhausts its own chat retries is a failed member, like any other failure — and the judge works from the survivors; the run completes only when no member answered at all |
+| Failure behaviour | A dropped stream loses the whole run | One failed member degrades that card — a member that exhausts its own chat retries is a failed member, like any other failure — and the judge works from the survivors; the run completes. When *every* member fails the run still returns a well-formed answer, and the session-log archive records that turn as an error. On *any* total panel failure the outer archive row reads the fixed string `Every Fusion panel member failed; this run has no deliberated answer.` — the provider status is on the inner per-member rows only only when no member answered at all |
 | Tool budget (`max_tool_calls`) | Caps web search/fetch steps | Hard per-model cap on individual tool invocations, plus a bound on tool rounds |
 
 Behaviour shared by both engines:
@@ -199,6 +206,7 @@ streaming panel deltas, the cards simply fill in at completion as before.
 - A **browser close** mid-run does not abort the deliberation: Open WebUI runs it as a detached task, so it
   finishes server-side and the full panel + answer are persisted; reopening the chat shows the finished result.
 - A mid-stream **socket drop** has no live replay; reloading restores the complete panel from the persisted state.
+- A Fusion answer cut off by a length or provider cap is a **finished** run, not an interruption: the footer, the clock and the cost render exactly as they do for a completed turn.
 
 - Forces the `/responses` endpoint (the only one that emits the granular Fusion events). A
   `FORCE_CHAT_COMPLETIONS_MODELS` match on the fusion model is overridden to `/responses` with a warning log.

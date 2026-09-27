@@ -170,14 +170,24 @@ async def run_fusion_member(
     inner_valves = build_inner_valves(invocation.valves, max_tool_calls=max_tool_calls)
     inner_metadata = _inner_metadata(invocation.metadata)
     pipe_meta = inner_metadata[_PIPE_METADATA_KEY]
-    pipe_meta.pop("server_tools", None)
-    pipe_meta.pop("stop_server_tools_when", None)
+    from .orchestrator import _IMAGE_GENERATION_TOOL_TYPE, _server_tool_type
+
+    turn_tools = pipe_meta.get("server_tools")
+    turn_stop = pipe_meta.get("stop_server_tools_when")
+    turn_has_web = isinstance(turn_tools, dict) and any(
+        _server_tool_type(k) != _IMAGE_GENERATION_TOOL_TYPE
+        for k in turn_tools
+        if isinstance(k, str)
+    )
     pipe_meta.pop("direct_uploads_warnings", None)
     if server_tools_config is not None:
         tools_cfg, stop_when = server_tools_config
-        if tools_cfg:
-            pipe_meta["server_tools"] = copy.deepcopy(tools_cfg)
-        if stop_when:
+        if tools_cfg and not turn_has_web:
+            merged = copy.deepcopy(tools_cfg)
+            if isinstance(turn_tools, dict):
+                merged.update(copy.deepcopy(turn_tools))
+            pipe_meta["server_tools"] = merged
+        if stop_when and not isinstance(turn_stop, list):
             pipe_meta["stop_server_tools_when"] = copy.deepcopy(stop_when)
     request_token = SessionLogger.request_id.set(f"fusion-inner-{uuid.uuid4().hex[:12]}")
     continued_token = CONTINUED_REPLY.set(None)
@@ -671,7 +681,7 @@ async def run_internal_fusion(
             yield {"type": "response.output_item.added", "output_index": 1,
                    "item": {"type": "message"}}
             yield {"type": "response.output_text.done", "output_index": 1,
-                   "text": failure_answer}
+                   "text": failure_answer, "no_usable_member": True}
         else:
             material = build_synthesis_material(ordered, analysis)
             synth_messages = [dict(m) for m in invocation.messages]

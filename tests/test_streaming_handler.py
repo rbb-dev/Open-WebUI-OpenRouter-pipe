@@ -36,6 +36,7 @@ import pytest
 from open_webui_openrouter_pipe import Pipe, ResponsesBody, _ToolExecutionContext
 from open_webui_openrouter_pipe.core.config import EncryptedStr
 from open_webui_openrouter_pipe.core.errors import OpenRouterAPIError, RequiredInternalFileError
+from open_webui_openrouter_pipe.core.logging_system import SessionLogger
 from open_webui_openrouter_pipe.streaming.streaming_core import (
     StreamingHandler,
     _wrap_event_emitter,
@@ -11001,19 +11002,22 @@ class TestSessionLogSegmentStatus:
             emitted.append(event)
 
         # CancelledError should propagate
-        with pytest.raises(asyncio.CancelledError):
-            await pipe._streaming_handler._run_streaming_loop(
-                body,
-                pipe.valves,
-                emitter,
-                metadata={"model": {"id": "test"}},
-                tools={},
-                session=cast(Any, object()),
-                user_id="user-123",
-            )
+        request_token = SessionLogger.request_id.set("session-log-segment-status-test")
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await pipe._streaming_handler._run_streaming_loop(
+                    body,
+                    pipe.valves,
+                    emitter,
+                    metadata={"model": {"id": "test"}},
+                    tools={},
+                    session=cast(Any, object()),
+                    user_id="user-123",
+                )
+        finally:
+            SessionLogger.request_id.reset(request_token)
 
-        if session_logs:
-            assert session_logs[-1].get("status") == "cancelled"
+        assert session_logs[-1].get("status") == "cancelled"
 
     @pytest.mark.asyncio
     async def test_session_log_error_status(self, monkeypatch, pipe_instance_async):
@@ -11038,18 +11042,21 @@ class TestSessionLogSegmentStatus:
 
         monkeypatch.setattr(pipe._session_log_manager, "persist_segment_to_db", mock_persist_session_log)
 
-        result = await pipe._streaming_handler._run_streaming_loop(
-            body,
-            pipe.valves,
-            None,
-            metadata={"model": {"id": "test"}},
-            tools={},
-            session=cast(Any, object()),
-            user_id="user-123",
-        )
+        request_token = SessionLogger.request_id.set("session-log-segment-status-test")
+        try:
+            result = await pipe._streaming_handler._run_streaming_loop(
+                body,
+                pipe.valves,
+                None,
+                metadata={"model": {"id": "test"}},
+                tools={},
+                session=cast(Any, object()),
+                user_id="user-123",
+            )
+        finally:
+            SessionLogger.request_id.reset(request_token)
 
-        if session_logs:
-            assert session_logs[-1].get("status") == "error"
+        assert session_logs[-1].get("status") == "error"
 
 
 class TestSessionLogPersistException:
