@@ -24,6 +24,7 @@ import sys
 import threading
 import time
 import traceback
+import uuid
 from collections import deque
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -555,6 +556,34 @@ class SessionLogger:
 
 # Session Log Archive Writer
 
+def _archive_temp_path(out_dir: Path, message_id: str) -> Path:
+    return out_dir / f"{message_id}.{os.getpid()}.{uuid.uuid4().hex[:8]}.zip.tmp"
+
+
+def _publish_archive(tmp_path: Path, out_path: Path, out_dir: Path) -> None:
+    with contextlib.suppress(OSError):
+        fd = os.open(tmp_path, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    try:
+        os.replace(tmp_path, out_path)
+    except OSError as exc:
+        sys.stderr.write(f"session log archive: publish {out_path} failed: {exc}\n")
+        with contextlib.suppress(Exception):
+            tmp_path.unlink(missing_ok=True)  # type: ignore[arg-type]
+        return
+
+    with contextlib.suppress(OSError):
+        dir_fd = os.open(out_dir, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+
+
 def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
     """Write a single encrypted zip archive containing session logs + metadata.
 
@@ -585,7 +614,7 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
     root = Path(base_dir).expanduser()
     out_dir = root / user_id / chat_id
     out_path = out_dir / f"{message_id}.zip"
-    tmp_path = out_dir / f"{message_id}.zip.tmp"
+    tmp_path = _archive_temp_path(out_dir, message_id)
 
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -757,9 +786,4 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
             tmp_path.unlink(missing_ok=True)  # type: ignore[arg-type]
         return
 
-    try:
-        os.replace(tmp_path, out_path)
-    except OSError as exc:
-        sys.stderr.write(f"session log archive: publish {out_path} failed: {exc}\n")
-        with contextlib.suppress(Exception):
-            tmp_path.unlink(missing_ok=True)  # type: ignore[arg-type]
+    _publish_archive(tmp_path, out_path, out_dir)

@@ -851,7 +851,7 @@ class Valves(BaseModel):
     API_KEY: EncryptedStr = Field(
         default_factory=_default_api_key,
         title="OpenRouter API key",
-        description="Your OpenRouter API key. Defaults to the OPENROUTER_API_KEY environment variable.",
+        description="Your OpenRouter API key. Defaults to the OPENROUTER_API_KEY environment variable. Clearing it removes the stored value and returns the setting to its default: the OPENROUTER_API_KEY environment value when one is set, and no key at all when one is not.",
     )
     HTTP_REFERER_OVERRIDE: str = Field(
         default="",
@@ -1270,7 +1270,7 @@ class Valves(BaseModel):
     )
     ARTIFACT_ENCRYPTION_KEY: EncryptedStr = Field(
         default_factory=_default_artifact_encryption_key,
-        description="Use at least 16 chars. Encrypt reasoning tokens (and optionally all persisted artifacts). Changing the key creates a new table; prior artifacts become inaccessible.",
+        description="Use at least 16 chars. Encrypt reasoning tokens (and optionally all persisted artifacts). Changing the key creates a new table; prior artifacts become inaccessible. Clearing it stops artifact encryption and returns the setting to its default, which is empty. Both the artifact table and the usage-history table are named from a hash of this key, so new writes after a clear go to a fresh, unencrypted pair of tables and everything already saved under the previous key is stranded there, unread.",
     )
     ENCRYPT_ALL: bool = Field(
         default=True,
@@ -1357,7 +1357,8 @@ class Valves(BaseModel):
         default=EncryptedStr(""),
         description=(
             "Password used to encrypt session log zip files (AES-encrypted zip). "
-            "Recommend using a long random passphrase and encrypting the value (requires WEBUI_SECRET_KEY)."
+            "Recommend using a long random passphrase and encrypting the value (requires WEBUI_SECRET_KEY). "
+            "Clearing it stops all archive writing: no archive is written at all while the passphrase is empty."
         ),
     )
     SESSION_LOG_RETENTION_DAYS: int = Field(

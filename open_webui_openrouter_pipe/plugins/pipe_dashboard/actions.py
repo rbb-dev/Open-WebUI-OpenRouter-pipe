@@ -228,19 +228,38 @@ async def _current_config_rev(pipe: Any) -> Any:
         return None
 
 
-async def _effective_valves_and_drops(pipe: Any) -> tuple[Any, list[str]]:
+async def _read_stored_valves(pipe_id: str) -> tuple[dict[str, Any] | None, bool]:
+    from ...core.utils import _await_if_needed
+
+    stored: Any = None
     try:
         from open_webui.models.functions import Functions
 
-        stored = await Functions.get_function_valves_by_id(getattr(pipe, "id", ""))
+        stored = await _await_if_needed(Functions.get_function_valves_by_id(pipe_id))
     except Exception:
         logger.warning(
             "pipe_dashboard: stored valve read failed; the config view is showing "
             "in-memory values instead of the persisted ones",
             exc_info=True,
         )
-        return pipe.valves, []
+        return None, False
+    return stored, True
+
+
+async def _effective_valves_and_state(
+    pipe: Any,
+) -> tuple[Any, list[str], dict[str, Any] | None, bool]:
+    stored, read_ok = await _read_stored_valves(getattr(pipe, "id", ""))
     valves_cls = type(pipe.valves)
+    if not read_ok:
+        return pipe.valves, [], None, False
+    if stored is None:
+        logger.warning(
+            "pipe_dashboard: the stored valve set could not be read, so the config view "
+            "is showing in-memory values rather than the persisted ones, and the Config "
+            "tab will not save over them"
+        )
+        return pipe.valves, [], None, False
     readable, reason = await stored_row_readable(getattr(pipe, "id", ""), stored)
     if not readable:
         logger.warning(
@@ -249,9 +268,9 @@ async def _effective_valves_and_drops(pipe: Any) -> tuple[Any, list[str]]:
             "not save over it (%s)",
             reason,
         )
-        raise _ClientMessage(reason)
+        return valves_cls(), [], stored, False
     if not stored:
-        return valves_cls(), []
+        return valves_cls(), [], {}, True
     kept, dropped = readable_stored(valves_cls, stored)
     if dropped:
         logger.warning(
@@ -259,14 +278,21 @@ async def _effective_valves_and_drops(pipe: Any) -> tuple[Any, list[str]]:
             "current schema; %s cannot be shown or saved and reads as its default",
             ", ".join(dropped),
         )
-    return valves_cls(**kept), dropped
+    return valves_cls(**kept), dropped, stored, True
+
+
+async def _effective_valves_and_drops(pipe: Any) -> tuple[Any, list[str]]:
+    valves, dropped, _stored, _read_ok = await _effective_valves_and_state(pipe)
+    return valves, dropped
 
 
 async def _effective_valves(pipe: Any) -> Any:
     return (await _effective_valves_and_drops(pipe))[0]
 
 
-def _config_snapshot(valves: Any) -> dict[str, Any]:
+def _config_snapshot(
+    valves: Any, stored: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Valve specs with current values; secret values masked to None."""
     valves_cls = type(valves)
     specs = describe_valves(valves_cls)
@@ -275,6 +301,7 @@ def _config_snapshot(valves: Any) -> dict[str, Any]:
         if spec["secret"]:
             spec["value"] = None
             spec["secret_set"] = bool(str(getattr(valves, name, "") or ""))
+            spec["secret_stored"] = bool(stored is not None and name in stored)
         else:
             spec["value"] = json_safe(getattr(valves, name, None))
     return {"valves": specs, "drift": drift(valves_cls)}
@@ -283,14 +310,14 @@ def _config_snapshot(valves: Any) -> dict[str, Any]:
 async def _saved_values(pipe: Any, names: Iterable[str]) -> tuple[dict[str, Any], list[str]]:
     wanted = set(names)
     try:
-        effective, reset = await _effective_valves_and_drops(pipe)
+        effective, reset, stored, _read_ok = await _effective_valves_and_state(pipe)
     except _ClientMessage:
         logger.warning(
             "pipe_dashboard: the store became unreadable while echoing a completed save; "
             "the write is committed, so the echo is dropped rather than reported as a failure"
         )
         return {}, []
-    snapshot = _config_snapshot(effective)
+    snapshot = _config_snapshot(effective, stored)
     return {
         spec["name"]: spec["value"]
         for spec in snapshot["valves"]
@@ -300,10 +327,11 @@ async def _saved_values(pipe: Any, names: Iterable[str]) -> tuple[dict[str, Any]
 
 @register_action("config_get", permission="read", schema=None, admin_only=True)
 async def _config_get(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
-    effective, dropped = await _effective_valves_and_drops(pipe)
-    snapshot = _config_snapshot(effective)
+    effective, dropped, stored, read_ok = await _effective_valves_and_state(pipe)
+    snapshot = _config_snapshot(effective, stored)
     snapshot["reset"] = dropped
     snapshot["rev"] = await _current_config_rev(pipe)
+    snapshot["config_unreadable"] = not read_ok
     return snapshot
 
 
@@ -323,13 +351,16 @@ async def _config_set(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
     # hands the client rev: null, which it echoes back, making `client_rev is not None`
     # False and letting the write through with no concurrency check at all.
     if current_rev is None or (client_rev is not None and client_rev != current_rev):
-        try:
-            effective = await _effective_valves(pipe)
-        except _ClientMessage as exc:
-            return {"unreadable": str(exc), "rev": current_rev}
-        stale = _config_snapshot(effective)
+        effective, _dropped, stored, conflict_read_ok = await _effective_valves_and_state(pipe)
+        if not conflict_read_ok and stored is None:
+            return {
+                "unreadable": "the stored configuration could not be read from the database",
+                "rev": current_rev,
+            }
+        stale = _config_snapshot(effective, stored)
         stale["conflict"] = True
         stale["rev"] = current_rev
+        stale["config_unreadable"] = not conflict_read_ok
         return stale
     edits = args["edits"]
     if not edits:
@@ -339,7 +370,23 @@ async def _config_set(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
     current = await Functions.get_function_valves_by_id(getattr(pipe, "id", ""))
     readable, reason = await stored_row_readable(getattr(pipe, "id", ""), current)
     if not readable or current is None:
-        return {"unreadable": reason or "the stored configuration could not be read from the database", "rev": current_rev}
+        if current is None:
+            return {
+                "unreadable": reason
+                or "the stored configuration could not be read from the database",
+                "rev": current_rev,
+            }
+        refused = _config_snapshot(pipe.valves)
+        refused["conflict"] = True
+        refused["rev"] = current_rev
+        refused["config_unreadable"] = True
+        return refused
+    _stored, stored_read_ok = await _read_stored_valves(getattr(pipe, "id", ""))
+    if not stored_read_ok:
+        return {
+            "unreadable": "the stored configuration could not be read from the database",
+            "rev": current_rev,
+        }
     to_save, dropped = merge_for_save_with_drops(type(pipe.valves), current, edits)
     result = await Functions.update_function_valves_by_id(getattr(pipe, "id", ""), to_save)
     if result is None:

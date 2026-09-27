@@ -33,6 +33,14 @@ _ST_STREAM_STAMP_COALESCE_S = 5.0
 _ST_STATUS_MAP = {"ok": "completed", "failed": "failed", "cancelled": "cancelled"}
 
 
+def _tool_counts(entry: dict[str, Any]) -> dict[str, int]:
+    return {
+        "tools_ok": int(entry.get("tools_ok") or 0),
+        "tools_failed": int(entry.get("tools_failed") or 0),
+        "tools_skipped": int(entry.get("tools_skipped") or 0),
+    }
+
+
 def _usage_numbers(usage: Any) -> dict[str, float]:
     numbers = {"tin": 0, "tout": 0, "treason": 0, "tcached": 0, "cost": 0.0, "discount": 0.0}
     if not isinstance(usage, dict):
@@ -300,6 +308,7 @@ class SessionTracker:
             done = item.get("done")
             elapsed = (done or now) - (item.get("started") or now)
             rows.append({
+                **_tool_counts(item),
                 "user": item.get("user_name") or "?",
                 "model_id": item.get("model_id") or "",
                 "model_name": item.get("model_name") or item.get("model_id") or "",
@@ -311,9 +320,6 @@ class SessionTracker:
                 "tokens_in": int(item.get("tin") or 0),
                 "tokens_cached": int(item.get("tcached") or 0),
                 "tokens_out": int(item.get("tout") or 0),
-                "tools_ok": int(item.get("tools_ok") or 0),
-                "tools_failed": int(item.get("tools_failed") or 0),
-                "tools_skipped": int(item.get("tools_skipped") or 0),
                 "cost": round(float(item.get("cost") or 0.0) + float(item.get("task_cost") or 0.0), 6),
                 "task_cost": round(float(item.get("task_cost") or 0.0), 6),
                 "worker_pid": self._pid,
@@ -340,6 +346,7 @@ class SessionTracker:
 
     def db_row(self, entry: dict[str, Any]) -> dict[str, Any]:
         """Map a finalized entry to the UsageStore row schema."""
+        counts = _tool_counts(entry)
         done = float(entry.get("done") or time.time())
         started = float(entry.get("started") or done)
         return {
@@ -358,8 +365,8 @@ class SessionTracker:
             "tokens_out": int(entry.get("tout") or 0),
             "tokens_reasoning": int(entry.get("treason") or 0),
             "tokens_cached": int(entry.get("tcached") or 0),
-            "tools_ok": int(entry.get("tools_ok") or 0),
-            "tools_failed": int(entry.get("tools_failed") or 0),
+            "tools_ok": counts["tools_ok"],
+            "tools_failed": counts["tools_failed"],
             "retries": int(entry.get("retries") or 0),
             "cost": float(entry.get("cost") or 0.0),
             "cache_savings": float(entry.get("savings") or 0.0),

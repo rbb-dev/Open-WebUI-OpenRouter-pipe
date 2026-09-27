@@ -35,7 +35,11 @@ PACKAGE = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 # 84 -> 85 with the channel-message lookup: `VideoPersistence._load_channel_message`
 # imports `open_webui.models.messages` inside a broad `except`, function-local like its
 # neighbours for the same reason, so the count is the honest one.
-_EXPECTED_OWUI_IMPORTS = (25, 85)
+# 85 -> 87: the raw-column probe that tells an undecodable stored valve row from a
+# genuinely unset one reaches the async db context, the Functions model and SQLAlchemy
+# lazily, inside the narrowest arm of the read, and a probe that cannot run is not
+# treated as evidence of corruption, so neither is hoisted to module scope.
+_EXPECTED_OWUI_IMPORTS = (25, 87)
 
 @pytest.mark.skipif(
     bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),

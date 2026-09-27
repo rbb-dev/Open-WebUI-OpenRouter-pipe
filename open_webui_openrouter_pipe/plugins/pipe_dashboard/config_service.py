@@ -152,12 +152,41 @@ def readable_stored(valves_cls: type, stored: dict[str, Any]) -> tuple[dict[str,
     return {k: v for k, v in kept.items() if k not in bad}, sorted(bad)
 
 
+def _is_clear_edit(fld: Any, value: Any, current: dict[str, Any]) -> bool:
+    return bool(is_secret(fld.annotation)) and value is None
+
+
 class _ClientMessage(RuntimeError):
     pass
 
 
 async def stored_row_readable(pipe_id: str, stored: Any) -> tuple[bool, str]:
     if stored is None:
+        return False, "the stored configuration could not be read from the database"
+    if stored == {}:
+        try:
+            from open_webui.internal.db import get_async_db_context
+            from open_webui.models.functions import Function
+            from sqlalchemy import select
+
+            async with get_async_db_context() as _db:
+                _res = await _db.execute(select(Function.valves).filter_by(id=pipe_id))
+                raw = _res.scalar_one_or_none()
+        except Exception:
+            logger.debug(
+                "pipe_dashboard: raw valve column unavailable; cannot tell an unset row "
+                "from an undecodable one",
+                exc_info=True,
+            )
+            raw = None
+        if isinstance(raw, str) and raw.strip():
+            logger.warning(
+                "pipe_dashboard: the stored configuration did not decode (a rotated "
+                "WEBUI_SECRET_KEY does this); the config view is showing defaults and "
+                "saving is refused until it is readable again"
+            )
+            return False, "the stored configuration did not decode (a rotated WEBUI_SECRET_KEY does this)"
+    if not isinstance(stored, dict):
         return False, "the stored configuration could not be read from the database"
     return True, ""
 
@@ -176,8 +205,12 @@ def merge_for_save_with_drops(
         fld = valves_cls.model_fields.get(key)
         if fld is None:
             continue
-        if is_secret(fld.annotation) and (value is None or value == ""):
-            continue
+        if is_secret(fld.annotation):
+            if _is_clear_edit(fld, value, merged):
+                merged.pop(key, None)
+                continue
+            if value == "":
+                continue
         _, nullable = _base_type(fld.annotation)
         if nullable and isinstance(value, str) and not value.strip():
             merged[key] = None

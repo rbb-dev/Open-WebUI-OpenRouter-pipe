@@ -116,6 +116,15 @@ def test_footer_legend_and_models_breakdown():
     assert "zero-data-retention" not in html  # ZDR dropped: no ZDR marker is ever rendered
     assert "tools succeeded / failed" in html
     assert "&#10003; / &#10007;" in html
+    # The skipped glyph ships in the cell, so the legend that names the other two has to
+    # name it too -- otherwise a breaker skip is a mark the operator cannot decode.
+    # A later commit folded all three into one run of glyphs named "succeeded / failed /
+    # skipped", so match on the glyph span and the third name rather than B85's original
+    # "<b>&#8856;</b> tools skipped by the breaker" wording, which that commit replaced.
+    assert "&#10003; / &#10007; / &#8856;" in html, (
+        "the footer legend names the ok and failed glyphs but not the skipped one"
+    )
+    assert "tools succeeded / failed / skipped" in html
     # Health "Models loaded" folds Text/Image/Video into one sub-line (item 7);
     # the stray middot-prefixed standalone cards are gone.
     assert "modParts" in html
@@ -154,10 +163,29 @@ def test_config_tab_overlay_affordances_and_no_dangling():
 
 
 def test_config_secret_control_reads_secret_set():
+    """The placeholder follows the value, the Default cell follows the stored truth.
+
+    The two halves of the secret row answer different questions and used to share one
+    flag, which is what let the pane contradict itself: the box said "configured — type
+    to replace" while the line above it said the stored value was about to be removed.
+    F5 gates the placeholder on the live state (`v.secret_set` and nothing staged), and
+    the Default cell keeps its own `secret_set` gate, where reporting an env-supplied key
+    as configured is correct.
+    """
     import re
 
+    from open_webui_openrouter_pipe.plugins.pipe_dashboard.config_tab_assets import CONFIG_TAB_JS
+
     html = _build_dashboard_shell("dash-v2")
-    assert re.search(r"secret_set\s*\?\s*[^:]*configured\s*—\s*type to replace", html)
+    shown = re.search(r"const shown\s*=\s*([^;]+);", CONFIG_TAB_JS)
+    assert shown, "the live-state predicate the placeholder is gated on is gone"
+    gate = shown.group(1)
+    assert "v.secret_set" in gate, f"the placeholder is gated on {gate!r}, which ignores secret_set"
+    assert "isClearStaged" in gate, (
+        f"the placeholder is gated on {gate!r}, which ignores the staged state, so it still "
+        "reads as configured while the pane says the value will be removed"
+    )
+    assert re.search(r"(?:shown|const shown)\s*\?\s*[^:]*configured\s*—\s*type to replace", CONFIG_TAB_JS)
     assert re.search(r"secret_set\s*\?\s*['\"]?«configured»", html)
     assert "not set — type to set" in html
 

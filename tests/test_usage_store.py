@@ -16,7 +16,10 @@ from sqlalchemy.pool import StaticPool
 
 pytest.importorskip("open_webui_openrouter_pipe.plugins.pipe_dashboard")
 
-from open_webui_openrouter_pipe.plugins.pipe_dashboard.usage_store import UsageStore
+from open_webui_openrouter_pipe.plugins.pipe_dashboard.usage_store import (
+    USAGE_ROW_FIELDS,
+    UsageStore,
+)
 from open_webui_openrouter_pipe.storage.persistence import ArtifactStore
 
 

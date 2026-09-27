@@ -175,7 +175,7 @@ const $=s=>CFGROOT.querySelector(s);
 const el=(t,c,h)=>{const e=document.createElement(t);if(c)e.className=c;if(h!=null)e.innerHTML=h;return e;};
 const esc=s=>(s==null?"":String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 const ICON={"Connection & Routing":"🔌","Models & Catalog":"🧠","Files & Media":"🖼️","Filters & Integrations":"🧩","Tools":"🛠️","Reasoning & Thinking":"💭","Prompt Caching":"⚡","Streaming & Performance":"📡","Reliability":"🛡️","Security":"🔒","Storage":"💾","Usage & Status":"📊","Error Messages":"⚠️","Logging":"📝","Plugins":"🔌"};
-let VALVES=[],byName={},baseline={},REV=null,lastSeenRev=null,inflightSave=false,driftCache=null;
+let VALVES=[],byName={},baseline={},REV=null,lastSeenRev=null,inflightSave=false,driftCache=null,configUnreadable=false;
 const STORE_UNREADABLE="the stored configuration could not be read from the database";
 const STORE_UNREADABLE_TEXT="Your settings are still stored and have not been changed, but the stored configuration could not be read — restore the database, then reload.";
 const edits={}; const invalid=new Set();
@@ -215,19 +215,22 @@ function fmtVal(v,val){ if(v.widget.startsWith("toggle"))return (val===true||val
 function setEdit(v,val){
   const base=baseline[v.name];
   const numEq = v.widget.startsWith("number") && norm(val)!=="" && norm(base)!=="" && Number.isFinite(+val) && Number.isFinite(+base) && (+val===+base);
-  if(v.secret){ if(norm(val).length) edits[v.name]=val; else delete edits[v.name]; }
+  if(v.secret){ if(norm(val).length) edits[v.name]=val; else if(!isClearStaged(v.name)) delete edits[v.name]; }
   else if(numEq || norm(val)===norm(base)) delete edits[v.name];
   else edits[v.name]=val;
   updateBar();
   const it=CFGROOT.querySelector(".item.sel"); if(it&&SEL===v.name) it.classList.toggle("mod",isDirty(v.name));
   if(CHANGED) buildTree();
 }
+const isClearStaged=n=>n in edits&&edits[n]===null;
+function stageClear(v){ edits[v.name]=null; updateBar(); renderDetail(v); buildTree(); }
+function encodeEdits(){ const out={}; Object.keys(edits).forEach(n=>{out[n]=edits[n]===null?null:edits[n];}); return out; }
 function updateBar(){
   const n=Object.keys(edits).length;
   $("#dirtyN").textContent=n;
   $("#savebar").classList.toggle("show",n>0);
   const bad=invalid.size>0;
-  const sv=$("#save"); sv.disabled=(n===0||bad); sv.textContent=bad?("Fix "+invalid.size+" error"+(invalid.size>1?"s":"")):("Save"+(n?" ("+n+")":""));
+  const sv=$("#save"); sv.disabled=(n===0||bad||configUnreadable); sv.textContent=bad?("Fix "+invalid.size+" error"+(invalid.size>1?"s":"")):("Save"+(n?" ("+n+")":""));
 }
 
 function matches(v){
@@ -298,9 +301,11 @@ function ctrl(v){
       +'<div class="hint">'+(b.ge!=null||b.le!=null?("Range "+(b.ge??"−∞")+" to "+(b.le??"no limit")):"No fixed range")+'</div>';
   }
   if(v.secret||v.widget.startsWith("masked")){
-    const ph=v.secret_set?"●●●●  configured — type to replace":"●●●●  not set — type to set";
-    const hint=v.secret_set?"Sensitive · a value is configured · type to replace · encrypted at rest":"Sensitive · encrypted at rest · write-only";
-    return '<div class="secretrow"><input class="txt" type="password" value="" placeholder="'+ph+'" style="min-width:320px"><button class="eye" type="button" title="Show while typing">👁</button></div><div class="hint">'+hint+'</div>';
+    const shown=v.secret_set&&!isClearStaged(v.name);
+    const ph=shown?"●●●●  configured — type to replace":"●●●●  not set — type to set";
+    const hint=v.secret_set?"Sensitive · a value is configured · type to replace"+(shown&&v.secret_stored?" · clear it to return to the default":"")+" · encrypted at rest":"Sensitive · encrypted at rest · write-only";
+    const clearBtn=(shown&&v.secret_stored)?'<button class="eye" id="cfgClear" type="button" title="Remove the stored value and return this setting to its default">Clear</button>':"";
+    return '<div class="secretrow"><input class="txt" type="password" value="" placeholder="'+ph+'" style="min-width:320px"><button class="eye" type="button" title="Show while typing">👁</button>'+clearBtn+'</div><div class="hint">'+hint+'</div>';
   }
   const long=(norm(val).length>48)||/MODELS|HOSTS|ALLOWLIST|ICON_SET|VARIANT/.test(v.name);
   if(long) return '<textarea class="tpl" style="min-height:90px" spellcheck="false">'+esc(val)+'</textarea>';
@@ -310,7 +315,7 @@ function ctrl(v){
 function pendingBlock(v){
   if(!isDirty(v.name)) return "";
   let inner;
-  if(v.secret) inner='<span class="pk">Pending:</span> a new value will be set';
+  if(v.secret) inner=isClearStaged(v.name)?'<span class="pk">Pending:</span> the stored value will be removed':'<span class="pk">Pending:</span> a new value will be set';
   else if(v.is_template){ const c=diffCount(baseline[v.name],edits[v.name]); inner='<span class="pk">Pending:</span> template modified <span class="newv">(+'+c.add+' −'+c.del+')</span> — see the Diff tab'; }
   else inner='<span class="pk">Pending:</span> <span class="oldv">'+esc(fmtVal(v,baseline[v.name]))+'</span> <span class="arrow">→</span> <span class="newv">'+esc(fmtVal(v,edits[v.name]))+'</span>';
   return '<div class="pending">'+inner+'<button class="revert" type="button">Revert</button></div>';
@@ -322,7 +327,8 @@ function renderDetail(v){
   if(v.secret)badges.push('<span class="badge sec">Secret</span>');
   if(v.per_user)badges.push('<span class="badge usr">Per-user override</span>');
   const b=v.bounds||{};
-  const meta=[['Default',v.secret?(v.secret_set?"«configured»":"«unset»"):(norm(v.default)===""?"(empty)":esc(String(v.default).slice(0,80)))],['Type',esc(v.widget)],
+  const staged=isClearStaged(v.name);
+  const meta=[['Default',v.secret?(staged?"«will be unset»":(v.secret_set?"«configured»":"«unset»")):(norm(v.default)===""?"(empty)":esc(String(v.default).slice(0,80)))],['Type',esc(v.widget)],
     (b.ge!=null||b.le!=null)?['Range',(b.ge??"−∞")+" – "+(b.le??"no limit")]:null,
     v.enum?['Options',v.enum.map(esc).join(", ")]:null].filter(Boolean);
   d.innerHTML='<div class="crumb">'+esc(v.top)+' <span style="opacity:.5">/</span> <b>'+esc(v.sub)+'</b></div>'
@@ -338,6 +344,7 @@ function renderDetail(v){
 
 function wireControl(d,v){
   const rev=d.querySelector(".revert"); if(rev)rev.onclick=()=>{delete edits[v.name];invalid.delete(v.name);updateBar();renderDetail(v);buildTree();};
+  const clr=d.querySelector("#cfgClear"); if(clr)clr.onclick=()=>{stageClear(v);};
   if(v.is_template){
     const ta=d.querySelector('.epane[data-p="edit"] textarea');
     ta.oninput=()=>{setEdit(v,ta.value);
@@ -372,7 +379,7 @@ function renderPendingInline(d,v){
   if(p){ if(html){ const t=document.createElement("div"); t.innerHTML=html; p.replaceWith(t.firstChild); wireRevert(d,v);} else p.remove(); }
   else if(html){ d.querySelector(".badges").insertAdjacentHTML("afterend",html); wireRevert(d,v); }
 }
-function wireRevert(d,v){ const r=d.querySelector(".revert"); if(r)r.onclick=()=>{delete edits[v.name];invalid.delete(v.name);updateBar();renderDetail(v);buildTree();}; }
+function wireRevert(d,v){ const r=d.querySelector(".revert"); if(r)r.onclick=()=>{delete edits[v.name];invalid.delete(v.name);updateBar();renderDetail(v);buildTree();}; const c=d.querySelector("#cfgClear"); if(c)c.onclick=()=>{stageClear(v);}; }
 function heldProblem(v,val){
   const b=v.bounds||{}; const raw=String(val==null?"":val).trim(); let bad=null;
   if(raw===""){ if(v.default!=null) bad="Required"; }
@@ -392,9 +399,10 @@ function validateNum(d,v,num){
 }
 
 function openReview(){
+  if(configUnreadable)return;
   const names=Object.keys(edits); if(!names.length)return;
   const rows=names.map(n=>{ const v=byName[n]; let body;
-    if(v.secret) body='<div class="mrv"><span class="chip">secret</span> new value will be set</div>';
+    if(v.secret) body=edits[n]===null?'<div class="mrv"><span class="chip">secret</span> the stored value will be removed</div>':'<div class="mrv"><span class="chip">secret</span> new value will be set</div>';
     else if(v.is_template){ const c=diffCount(baseline[n],edits[n]);
       body='<div class="mrv"><span class="chip">template</span> modified (+'+c.add+' −'+c.del+') <span class="expand" data-x="'+esc(n)+'">view diff</span><div class="dx" data-dx="'+esc(n)+'" style="display:none;margin-top:8px">'+diffHtml(baseline[n],edits[n])+'</div></div>';}
     else body='<div class="mrv"><span class="oldv">'+esc(fmtVal(v,baseline[n]))+'</span> <span class="arrow">→</span> <span class="newv">'+esc(fmtVal(v,edits[n]))+'</span></div>';
@@ -419,17 +427,18 @@ function refuseSave(btn, names, detail, err){
   else showConflict();
 }
 function commitSave(){
+  if(configUnreadable)return;
   const names=Object.keys(edits); if(!names.length)return;
   inflightSave=true;
-  const payload={}; names.forEach(n=>payload[n]=edits[n]);
+  const payload=encodeEdits();
   const btn=$("#mSave"); if(btn){btn.disabled=true;btn.textContent="Saving\u2026";}
   callAction("config_set",{edits:payload,rev:REV}).then(resp=>{
     const r=resp&&resp.result;
     if(!resp||resp.error||!r){ refuseSave(btn,names,(resp&&resp.detail)||null,(resp&&resp.error)?resp.error:null); return; }
     if(r.unreadable){ inflightSave=false; $("#modal").classList.remove("show"); if(btn){btn.disabled=false;btn.textContent="Save "+names.length;} showConflict(STORE_UNREADABLE_TEXT); return; }
-    if(r.conflict){ refuseSave(btn,names,null,null); return; }
+    if(r.conflict){ inflightSave=false; $("#modal").classList.remove("show"); if(btn){btn.disabled=false;btn.textContent="Save "+names.length;} if(r.config_unreadable){configUnreadable=true;showUnreadable();updateBar();return;} refuseSave(btn,names,null,null); return; }
     const vals=(r.values&&typeof r.values==="object")?r.values:{};
-    names.forEach(n=>{ const v=byName[n]; if(v&&v.secret){v.secret_set=true;} else if(v){baseline[n]=Object.prototype.hasOwnProperty.call(vals,n)?vals[n]:edits[n];} delete edits[n]; });
+    names.forEach(n=>{ const v=byName[n]; if(v&&v.secret){v.secret_set=(edits[n]===null&&v.secret_stored)?v.secret_set:edits[n]!==null;} else if(v){baseline[n]=Object.prototype.hasOwnProperty.call(vals,n)?vals[n]:edits[n];} delete edits[n]; });
     if(r.rev!=null){REV=r.rev;lastSeenRev=r.rev;}
     inflightSave=false;
     paintDriftNote($("#driftnote"),{drift:driftCache,reset:r.reset});
@@ -456,6 +465,12 @@ function showConflict(msg){
   reportHeight();
 }
 function hideConflict(){ const c=$("#conflict"); if(c){c.style.display="none";c.innerHTML="";} }
+function showUnreadable(){
+  const c=$("#conflict"); if(!c)return;
+  c.style.display="flex";
+  c.innerHTML='<span>The stored configuration could not be read, so these are not the saved values. Saving is disabled until it can be read again; the reason is in the server log.</span>';
+  reportHeight();
+}
 function renderResetNote(rs){ const rn=$("#resetnote"); if(rn)rn.textContent=rs.length?("reset to default: "+rs.join(", ")):""; }
 function paintDriftNote(dn,r){
   if(!dn)return;
@@ -465,6 +480,7 @@ function paintDriftNote(dn,r){
 }
 function applySnapshot(r){
   VALVES=r.valves||[]; if(r.rev!=null)REV=r.rev;
+  configUnreadable=!!r.config_unreadable;
   byName={}; baseline={};
   VALVES.forEach(v=>{ byName[v.name]=v; baseline[v.name]=v.value; });
   Object.keys(edits).forEach(n=>{ if(!Object.prototype.hasOwnProperty.call(baseline,n)){ delete edits[n]; invalid.delete(n); } });
@@ -474,7 +490,7 @@ function applySnapshot(r){
   updateBar();
   renderResetNote(r.reset||[]);
   driftCache=r.drift; paintDriftNote($("#driftnote"),r);
-  hideConflict(); updateBar();
+  hideConflict(); if(configUnreadable)showUnreadable(); updateBar();
   if(SEL&&byName[SEL])renderDetail(byName[SEL]); else { SEL=null; const d=$("#detail"); if(d)d.innerHTML='<div class="empty">Select a setting to view and edit it.</div>'; }
   buildTree(); reportHeight();
 }
