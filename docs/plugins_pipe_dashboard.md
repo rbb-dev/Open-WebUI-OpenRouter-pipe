@@ -214,7 +214,7 @@ The Config tab is the pipe's configuration editor. It lists every admin valve in
 
 **Secrets.** Secret valves — API keys, passwords — are write-only. Their values stay on the server and never reach the browser. The tab shows each secret as **configured** or **not set**; typing a value sets a new one.
 
-If the stored configuration cannot be read at all — the database is unreachable, say — the Config tab says so and refuses to save, rather than showing defaults over your real settings. Your settings are still stored and are not being changed. Restore the database, then reload; the tab will not overwrite what it cannot read.
+If the stored configuration cannot be read at all — the database is unreachable, say — the Config tab says so and refuses to save, rather than showing defaults over your real settings. Your settings are still stored and are not being changed. Restore the database, then reload; the tab will not overwrite what it cannot read. A stored set that cannot be decrypted — a rotated `WEBUI_SECRET_KEY` with valve encryption on — is a different fault, and it reads as an empty set, so the tab does show the factory defaults there, with nothing said. Restore the key, then reload; the settings come back.
 
 **Access.** The Config tab is for administrators end to end: reading the configuration and saving it both require the `admin` role, on top of a model grant. A write grant alone opens the tab's button but not its contents — it answers *forbidden* and the tab reports that it could not load the configuration.
 

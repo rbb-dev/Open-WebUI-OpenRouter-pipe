@@ -51,7 +51,7 @@ UPDATE_TAB_JS = """
       rate_limited: 'GitHub is rate-limiting update checks from this server.',
       offline: 'GitHub could not be reached from the server. Check its internet access or proxy, then press Check now.',
       no_matching_asset: 'The latest release does not include a bundle file for this install variant. Check the release assets on GitHub.',
-      stale_rev: 'The function changed while this tab was open. The view has been refreshed \\u2014 please try again.',
+      stale_rev: 'This view was out of date, so your change was not applied. The view has been refreshed \\u2014 please try again.',
       stale_snapshot: 'That snapshot changed since this list was loaded. The view has been refreshed \\u2014 please try again.',
       package_mode: 'This is a package/stub install. Update it by bumping the pinned version; this tab cannot modify it.',
       digest_mismatch: 'The downloaded file did not match the release checksum, so nothing was changed. Try again in a moment.',

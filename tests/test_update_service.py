@@ -14,6 +14,7 @@ import pytest
 
 pytest.importorskip("open_webui_openrouter_pipe.plugins.pipe_dashboard")
 
+from open_webui_openrouter_pipe.plugins.pipe_dashboard import actions
 from open_webui_openrouter_pipe.plugins.pipe_dashboard import update_service as us
 from tests.vetting_helpers import vetting, vetting_handler
 

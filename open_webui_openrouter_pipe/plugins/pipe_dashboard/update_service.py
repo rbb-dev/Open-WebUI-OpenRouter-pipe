@@ -842,9 +842,13 @@ class UpdateService:
         current = self._coerce_rev(getattr(row, "updated_at", None))
         wanted = self._coerce_rev(expected)
         if current is None or wanted is None or current != wanted:
-            raise UpdateError(
-                "stale_rev", f"function row changed (rev {current} != expected {wanted})"
-            )
+            if current is None:
+                reason = "the stored function revision could not be read"
+            elif wanted is None:
+                reason = "the revision the client sent could not be read as a number"
+            else:
+                reason = f"function row changed (rev {current} != expected {wanted})"
+            raise UpdateError("stale_rev", reason)
         return current
 
     def _require_idle(self) -> None:
