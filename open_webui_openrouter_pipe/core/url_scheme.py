@@ -33,6 +33,20 @@ def is_cleartext_http_url(url: Any) -> bool:
     return url_scheme(url) == "http"
 
 
+def url_site(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    try:
+        parts = urlsplit(value)
+        port = parts.port
+    except ValueError:
+        return ""
+    if not parts.scheme or not parts.netloc:
+        return ""
+    host = parts.hostname or parts.netloc.rpartition("@")[2]
+    return f"{parts.scheme.lower()}://{host}" + (f":{port}" if port else "")
+
+
 def is_http_or_https_url(url: Any) -> bool:
     return url_scheme(url) in HTTP_SCHEMES
 
@@ -46,7 +60,8 @@ def split_base64_data_url(value: Any) -> tuple[str, str] | None:
     lowered = header.lower()
     at = lowered.find(";base64")
     while at != -1:
-        end = at + len(";base64")
+        lowered_end = at + len(";base64")
+        end = len(header) - (len(lowered) - lowered_end)
         if end == len(header) or header[end] == ";":
             return header, payload
         at = lowered.find(";base64", at + 1)

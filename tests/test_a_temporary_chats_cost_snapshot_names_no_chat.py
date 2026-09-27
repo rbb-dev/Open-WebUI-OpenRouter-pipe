@@ -30,7 +30,7 @@ class _FakeRedis:
         self.writes.append((key, json.loads(payload), ex))
         return True
 
-    async def close(self) -> None:
+    async def aclose(self) -> None:
         self.closed = True
 
 

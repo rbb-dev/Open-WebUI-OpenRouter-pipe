@@ -5899,7 +5899,7 @@ async def test_maybe_dump_costs_snapshot_writes_to_redis(pipe_instance):
             self.writes.append((key, payload, ex))
             return True
 
-        async def close(self) -> None:
+        async def aclose(self) -> None:
             self.closed = True
 
     pipe._redis_enabled = True
@@ -6500,7 +6500,7 @@ class _FakeRedis:
             raise RuntimeError("ping failed")
         return True
 
-    async def close(self):
+    async def aclose(self):
         self.closed = True
 
 
@@ -6610,10 +6610,14 @@ def test_extract_feature_flags_does_not_assume_nested_by_pipe_id():
 
 import asyncio
 import logging
+import warnings
 
 import pytest
 
 from open_webui_openrouter_pipe import Pipe
+from tests.test_a_temporary_chats_cost_snapshot_names_no_chat import (
+    _FakeRedis as _CostSnapshotRedis,
+)
 
 
 @pytest.mark.asyncio
@@ -6623,10 +6627,10 @@ async def test_stop_redis_cancels_tasks_and_closes_client(pipe_instance_async) -
 
     class FakeRedis:
         def __init__(self) -> None:
-            self.close_calls = 0
+            self.aclose_calls = 0
 
-        async def close(self) -> None:
-            self.close_calls += 1
+        async def aclose(self) -> None:
+            self.aclose_calls += 1
 
     blocker = asyncio.Event()
 
@@ -6648,7 +6652,7 @@ async def test_stop_redis_cancels_tasks_and_closes_client(pipe_instance_async) -
     assert pipe._redis_flush_task is None
     assert pipe._redis_ready_task is None
     assert pipe._redis_client is None  # Pipe's own state
-    assert client.close_calls == 1
+    assert client.aclose_calls == 1
 
 
 @pytest.mark.asyncio
@@ -6657,11 +6661,15 @@ async def test_stop_redis_logs_close_failure(caplog, pipe_instance_async) -> Non
     pipe.logger = logging.getLogger("tests.redis_shutdown")
 
     class FakeRedis:
-        async def close(self) -> None:
+        async def aclose(self) -> None:
             raise RuntimeError("boom")
 
     pipe._redis_client = FakeRedis()  # Pipe's own state
     pipe._redis_enabled = True  # Pipe's own state
+    assert not hasattr(FakeRedis, "close"), (
+        "a double carrying both spellings lets a regression to close() through "
+        "untouched, which is why the doubles here were renamed rather than extended"
+    )
 
     caplog.set_level(logging.DEBUG, logger="tests.redis_shutdown")
     await pipe._stop_redis()

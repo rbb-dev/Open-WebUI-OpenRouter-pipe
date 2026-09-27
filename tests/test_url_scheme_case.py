@@ -21,8 +21,11 @@ in production satisfies the whole parametrisation.
 
 from __future__ import annotations
 
+import ast
+import base64
 import contextlib
 import logging
+import re
 
 import pytest
 from unittest.mock import AsyncMock
@@ -30,10 +33,12 @@ from yarl import URL
 
 from open_webui_openrouter_pipe import ModelFamily, Pipe
 from open_webui_openrouter_pipe.core.config import _select_openrouter_http_referer
+from open_webui_openrouter_pipe.core.errors import StatusMessages
 from open_webui_openrouter_pipe.core.url_scheme import (
     HTTP_SCHEMES,
     is_cleartext_http_url,
     is_http_or_https_url,
+    split_base64_data_url,
     url_scheme,
 )
 from open_webui_openrouter_pipe.requests.transformer import transform_messages_to_input

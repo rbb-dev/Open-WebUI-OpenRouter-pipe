@@ -32,6 +32,7 @@ from ..core.url_scheme import (
     is_http_or_https_url,
     split_base64_data_url,
     url_scheme,
+    url_site,
 )
 
 # Import utility functions
@@ -80,6 +81,7 @@ from ..storage.multimodal import (
     resolve_download_type,
 )
 from ..storage.owui_files import (
+    InlineFileTooLargeError,
     extract_internal_file_id,
     is_internal_file_url,
     is_temporary_chat,
@@ -699,6 +701,9 @@ async def transform_messages_to_input(
                 )
                 content_blocks = []
 
+            def _image_subject(source: str) -> str:
+                return url_site(source) if is_http_or_https_url(source) else _inline_media_type(source)
+
             async def _to_input_image(
                 block: dict,
                 *,
@@ -744,10 +749,11 @@ async def transform_messages_to_input(
                                 "ALLOW_INSECURE_HTTP_HOSTS to permit it",
                                 "insecure_http",
                                 severity="error",
-                                subject=url,
+                                subject=url_site(url),
                             )
 
-                    if url.startswith("data:"):
+                    if url_scheme(url) == "data":
+                        url = f"data:{url.partition(':')[2]}"
                         try:
                             split = split_base64_data_url(url)
                             if split is None:
@@ -755,7 +761,7 @@ async def transform_messages_to_input(
                                     "a data URL that is not base64-encoded, which "
                                     "OpenRouter does not accept",
                                     "unencoded_inline",
-                                    subject=url[:64],
+                                    subject=_inline_media_type(url),
                                 )
                             parsed = pipe._multimodal_handler._parse_data_url(url)
                             if not parsed:
@@ -765,7 +771,7 @@ async def transform_messages_to_input(
                                     if oversized
                                     else "not decodable as base64",
                                     "oversized_inline" if oversized else "undecodable_inline",
-                                    subject=url[:64],
+                                    subject=_inline_media_type(url),
                                 )
                         except Exception as exc:
                             pipe.logger.exception("Failed to process base64 image")
@@ -804,7 +810,7 @@ async def transform_messages_to_input(
                                         f"{len(downloaded['data'])} bytes, over the "
                                         f"{max_inline_bytes}-byte limit, so it was not sent",
                                         "oversized_remote",
-                                        subject=url,
+                                        subject=url_site(url),
                                     )
                                 if mode == "reuse" and memo_key is not None:
                                     request_memo[memo_key] = (
@@ -838,7 +844,7 @@ async def transform_messages_to_input(
                                     + base64.b64encode(downloaded["data"]).decode("ascii")
                                 )
                         except Exception as exc:
-                            pipe.logger.exception("Failed to download remote image %s", url)
+                            pipe.logger.exception("Failed to download remote image %s", url_site(url))
                             await pipe._ensure_error_formatter()._emit_error(
                                 event_emitter,
                                 f"Failed to download image: {exc}",
@@ -847,12 +853,19 @@ async def transform_messages_to_input(
                     owui_file_id = extract_internal_file_id(url) if is_internal_file_url(url) else None
 
                     if owui_file_id:
-                        inlined = await pipe._file_gateway.inline_owui_file_id(
-                            owui_file_id,
-                            chunk_size=chunk_size,
-                            max_bytes=max_inline_bytes,
-                            user=user_obj,
-                        )
+                        try:
+                            inlined = await pipe._file_gateway.inline_owui_file_id(
+                                owui_file_id,
+                                chunk_size=chunk_size,
+                                max_bytes=max_inline_bytes,
+                                user=user_obj,
+                            )
+                        except InlineFileTooLargeError:
+                            return ImageRefusal(
+                                f"larger than the {max_inline_bytes}-byte inline limit",
+                                "oversized_inline",
+                                subject=owui_file_id,
+                            )
                         if not inlined:
                             return ImageRefusal(
                                 "no longer available in Open WebUI storage",
@@ -869,7 +882,7 @@ async def transform_messages_to_input(
                             return ImageRefusal(
                                 "could not be fetched, so its type could not be established",
                                 "reuse_unfetched",
-                                subject=url[:64],
+                                subject=_image_subject(url),
                             )
                         declared = head[len("data:") :].split(";", 1)[0].strip().lower()
                         try:
@@ -899,10 +912,12 @@ async def transform_messages_to_input(
                     raise
                 except Exception:
                     pipe.logger.exception("Error in _to_input_image")
+                    _raw = block.get("image_url")
+                    _source = _raw.get("url", "") if isinstance(_raw, dict) else _raw
                     return ImageRefusal(
                         "could not be processed",
                         "processing_error",
-                        subject=str(block.get("image_url") or "")[:64],
+                        subject=_image_subject(_source if isinstance(_source, str) else ""),
                     )
 
             async def _to_input_file(block: dict) -> dict | ImageRefusal:
@@ -1022,7 +1037,7 @@ async def transform_messages_to_input(
                     )
                     return {"type": "input_file"}
 
-            async def _to_input_audio(block: dict) -> dict:
+            async def _to_input_audio(block: dict) -> dict | None:
                 """Convert Open WebUI audio blocks into Responses API format.
 
                 Handles audio content blocks, transforming various input formats into
@@ -1049,9 +1064,6 @@ async def transform_messages_to_input(
 
                 Args:
                     block: Content block from Open WebUI message
-
-                Returns:
-                    Responses API input_audio block with data and format
 
                 MIME Type to Format Mapping:
                     - audio/mpeg, audio/mp3 -> "mp3"
@@ -1104,13 +1116,23 @@ async def transform_messages_to_input(
                         },
                     }
 
+                async def _refuse_oversized_inline(estimate: int) -> None:
+                    pipe.logger.warning(
+                        "Audio payload rejected: ~%.1fMB is over the %dMB inline limit.",
+                        estimate / (1024 * 1024),
+                        pipe.valves.BASE64_MAX_SIZE_MB,
+                    )
+                    await pipe._ensure_error_formatter()._emit_error(
+                        event_emitter,
+                        f"Audio input is larger than the {max_inline_bytes}-byte inline limit and was not sent.",
+                        show_error_message=True,
+                    )
+
                 def _normalize_base64(data: str) -> str | None:
                     if not data:
                         return None
                     cleaned = "".join(data.split())
                     if not cleaned:
-                        return None
-                    if not pipe._file_gateway.validate_base64_size(cleaned):
                         return None
                     try:
                         base64.b64decode(cleaned, validate=True)
@@ -1165,7 +1187,10 @@ async def transform_messages_to_input(
                     audio_payload = block.get("input_audio") or block.get("data") or block.get("blob")
 
                     if isinstance(audio_payload, dict) and "data" in audio_payload and "format" in audio_payload:
-                        cleaned = _normalize_base64(audio_payload.get("data", ""))
+                        _data = audio_payload.get("data", "")
+                        if isinstance(_data, str) and _inline_payload_bytes(_data) > max_inline_bytes:
+                            return await _refuse_oversized_inline(_inline_payload_bytes(_data))
+                        cleaned = _normalize_base64(_data)
                         if not cleaned:
                             pipe.logger.warning("Audio payload rejected: invalid base64 data.")
                             await pipe._ensure_error_formatter()._emit_error(
@@ -1180,6 +1205,8 @@ async def transform_messages_to_input(
                     if isinstance(audio_payload, dict):
                         raw_data = audio_payload.get("data")
                         if isinstance(raw_data, str):
+                            if _inline_payload_bytes(raw_data) > max_inline_bytes:
+                                return await _refuse_oversized_inline(_inline_payload_bytes(raw_data))
                             cleaned = _normalize_base64(raw_data)
                             if not cleaned:
                                 pipe.logger.warning("Audio payload rejected: invalid base64 data.")
@@ -1205,6 +1232,9 @@ async def transform_messages_to_input(
                             )
                             return _empty_audio_block()
 
+                        if _inline_payload_bytes(sanitized) > max_inline_bytes:
+                            return await _refuse_oversized_inline(_inline_payload_bytes(sanitized))
+
                         if lowercase.startswith("data:"):
                             parsed = pipe._multimodal_handler._parse_data_url(sanitized if sanitized.startswith("data:") else f"data:{sanitized.split(':', 1)[1]}")
                             if not parsed or not parsed.get("mime_type", "").startswith("audio/"):
@@ -1214,8 +1244,6 @@ async def transform_messages_to_input(
                                     "Audio input must be base64-encoded audio data.",
                                     show_error_message=False,
                                 )
-                                return _empty_audio_block()
-                            if not pipe._file_gateway.validate_base64_size(parsed.get("b64", "")):
                                 return _empty_audio_block()
                             audio_format = _map_format(parsed.get("mime_type"))
                             return _build_audio_block(parsed.get("b64", ""), audio_format)
@@ -1325,7 +1353,7 @@ async def transform_messages_to_input(
                         )
                         return {"type": "video_url", "video_url": {"url": ""}}
 
-                    if url.startswith("data:"):
+                    if url_scheme(url) == "data":
                         if "," in url:
                             b64_data = url.split(",", 1)[1]
                             estimated_size_bytes = (len(b64_data) * 3) // 4
@@ -1613,6 +1641,11 @@ async def transform_messages_to_input(
                     done=False,
                 )
 
+            if not converted_blocks and (refused_images or refused_files):
+                converted_blocks.append({
+                    "type": "input_text",
+                    "text": f"[An attached item was not sent: it is larger than the {max_inline_bytes}-byte inline limit.]",
+                })
             openai_input.append({
                 "type": "message",
                 "role": "user",

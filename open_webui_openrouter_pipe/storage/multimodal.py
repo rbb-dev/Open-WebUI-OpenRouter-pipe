@@ -52,7 +52,12 @@ from ..core.errors import (
     _RetryWait,
 )
 from ..core.timing_logger import timed
-from ..core.url_scheme import is_http_or_https_url, split_base64_data_url
+from ..core.url_scheme import (
+    is_http_or_https_url,
+    split_base64_data_url,
+    url_scheme,
+    url_site,
+)
 from ..core.warn_latch import warn_level
 
 if TYPE_CHECKING:
@@ -719,7 +724,7 @@ class MultimodalHandler:
         if pinned is None:
             self.logger.error(
                 "Remote download blocked by security policy (SSRF or HTTP disabled by default): %s",
-                url,
+                url_site(url),
             )
             return None
         request_url, pin_headers, pin_extensions = pinned
@@ -750,13 +755,19 @@ class MultimodalHandler:
                     elapsed = time.perf_counter() - start_time
                     if attempt > 1 and elapsed > max_retry_time:
                         self.logger.warning(
-                            f"Download retry timeout exceeded for {url} after {elapsed:.1f}s"
+                            "Download retry timeout exceeded for %s after %.1fs",
+                            url_site(url),
+                            elapsed,
                         )
                         return None
 
                     if attempt > 1:
                         self.logger.info(
-                            f"Retry attempt {attempt - 1}/{max_retries} for {url} after {elapsed:.1f}s"
+                            "Retry attempt %d/%d for %s after %.1fs",
+                            attempt - 1,
+                            max_retries,
+                            url_site(url),
+                            elapsed,
                         )
 
                     async with (
@@ -790,7 +801,7 @@ class MultimodalHandler:
                                     self.logger.warning(
                                         "Remote file %s exceeds configured limit based on Content-Length header "
                                         "(%s bytes > %s bytes); aborting download.",
-                                        url,
+                                        url_site(url),
                                         content_length,
                                         max_size_bytes,
                                     )
@@ -806,8 +817,11 @@ class MultimodalHandler:
                             if projected_size > max_size_bytes:
                                 size_mb = projected_size / (1024 * 1024)
                                 self.logger.warning(
-                                    f"Remote file {url} exceeds configured limit "
-                                    f"({size_mb:.1f}MB > {effective_limit_mb}MB), aborting download."
+                                    "Remote file %s exceeds configured limit "
+                                    "(%.1fMB > %dMB), aborting download.",
+                                    url_site(url),
+                                    size_mb,
+                                    effective_limit_mb,
                                 )
                                 return None
                             payload.extend(chunk)
@@ -816,7 +830,10 @@ class MultimodalHandler:
                     if attempt > 1:
                         elapsed = time.perf_counter() - start_time
                         self.logger.info(
-                            f"Successfully downloaded {url} after {attempt} attempt(s) in {elapsed:.1f}s"
+                            "Successfully downloaded %s after %d attempt(s) in %.1fs",
+                            url_site(url),
+                            attempt,
+                            elapsed,
                         )
 
                     return {
@@ -828,7 +845,7 @@ class MultimodalHandler:
         except Exception:
             elapsed = time.perf_counter() - start_time
             self.logger.exception(
-                "Failed to download %s after %d attempt(s) in %.1fs", url, attempt, elapsed
+                "Failed to download %s after %d attempt(s) in %.1fs", url_site(url), attempt, elapsed
             )
             return None
 
@@ -1070,12 +1087,12 @@ class MultimodalHandler:
         try:
             parsed = _DialledURL(url)
         except ValueError:
-            self.logger.warning("URL cannot be parsed: %s", url)
+            self.logger.warning("URL cannot be parsed: %s", url_site(url))
             return False
         scheme = (parsed.scheme or "").lower()
         if scheme not in _FETCHABLE_SCHEMES:
             self.logger.warning(
-                "Blocked URL whose scheme is neither http nor https: %s", url
+                "Blocked URL whose scheme is neither http nor https: %s", url_site(url)
             )
             return False
         if scheme == "https":
@@ -1084,19 +1101,19 @@ class MultimodalHandler:
             self.logger.warning(
                 "Blocked insecure HTTP URL by default (HTTP disabled by default; "
                 "set ALLOW_INSECURE_HTTP and ALLOW_INSECURE_HTTP_HOSTS to allow): %s",
-                url,
+                url_site(url),
             )
             return False
         allowlist = self._parse_insecure_http_allowlist(self.valves.ALLOW_INSECURE_HTTP_HOSTS)
         if not allowlist:
             self.logger.warning(
                 "Blocked insecure HTTP URL; allowlist empty (HTTP disabled by default): %s",
-                url,
+                url_site(url),
             )
             return False
         host = (parsed.raw_host or "").lower().rstrip(".")
         if not host:
-            self.logger.warning("HTTP URL has no hostname: %s", url)
+            self.logger.warning("HTTP URL has no hostname: %s", url_site(url))
             return False
         port = parsed.explicit_port or 80
         for allowed_host, allowed_port in allowlist:
@@ -1104,7 +1121,7 @@ class MultimodalHandler:
                 return True
         self.logger.warning(
             "Blocked insecure HTTP URL (host not allowlisted): %s (host=%s, port=%s)",
-            url,
+            url_site(url),
             host,
             port,
         )
@@ -1138,11 +1155,11 @@ class MultimodalHandler:
             parsed = _DialledURL(url)
             port = parsed.port
         except ValueError:
-            self.logger.warning("URL cannot be parsed: %s", url)
+            self.logger.warning("URL cannot be parsed: %s", url_site(url))
             return None
         host = parsed.raw_host
         if not host:
-            self.logger.warning("URL has no hostname: %s", url)
+            self.logger.warning("URL has no hostname: %s", url_site(url))
             return None
         return (host, port)
 
@@ -1736,7 +1753,7 @@ class MultimodalHandler:
         if self._file_gateway is None:
             raise RuntimeError("File gateway is not configured for data URL validation")
         try:
-            if not data_url or not data_url.startswith("data:"):
+            if not data_url or url_scheme(data_url) != "data":
                 return None
 
             split = split_base64_data_url(data_url)
@@ -1744,7 +1761,7 @@ class MultimodalHandler:
                 return None
 
             # Extract and normalize MIME type
-            mime_type = split[0].replace("data:", "", 1).split(";", 1)[0].lower().strip()
+            mime_type = split[0].partition(":")[2].split(";", 1)[0].lower().strip()
             if mime_type == "image/jpg":
                 mime_type = "image/jpeg"
 

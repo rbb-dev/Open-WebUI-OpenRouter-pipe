@@ -94,6 +94,10 @@ class InlinedFile(NamedTuple):
     filename: str
 
 
+class InlineFileTooLargeError(ValueError):
+    pass
+
+
 @timed
 async def get_file_by_id(file_id: str, logger: logging.Logger) -> Any | None:
     """Fetch an OWUI file record by id; log and return None on failure."""
@@ -217,6 +221,26 @@ _UNLINKABLE_CHAT_PREFIXES = ("temporary:", "local:", "channel:")
 
 
 @lru_cache(maxsize=1)
+def _published_chat_id_values() -> tuple[tuple[str, ...], tuple[str, ...], str] | None:
+    try:
+        from open_webui.utils.chat_id import (  # pyright: ignore[reportMissingImports]
+            CHANNEL_CHAT_ID_PREFIX,
+            NON_SAVED_CHAT_ID_PREFIXES,
+            TEMPORARY_CHAT_ID_PREFIXES,
+        )
+    except ImportError:
+        return None
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "open_webui.utils.chat_id failed to import for a reason other than absence; "
+            "the features that depend on it are now disabled",
+            exc_info=True,
+        )
+        return None
+    return (NON_SAVED_CHAT_ID_PREFIXES, TEMPORARY_CHAT_ID_PREFIXES, CHANNEL_CHAT_ID_PREFIX)
+
+
+@lru_cache(maxsize=1)
 def _unlinkable_chat_prefixes() -> tuple[str, ...]:
     """Open WebUI's own list where it publishes one, the literal above otherwise.
 
@@ -235,24 +259,13 @@ def _unlinkable_chat_prefixes() -> tuple[str, ...]:
     starting with `t` reads as unlinkable; and `""` makes `startswith` true for
     everything, so nothing is linkable at all.
     """
-    try:
-        from open_webui.utils.chat_id import (  # pyright: ignore[reportMissingImports]
-            NON_SAVED_CHAT_ID_PREFIXES,
-        )
-
-        published = NON_SAVED_CHAT_ID_PREFIXES
-    except ImportError:
+    published = _published_chat_id_values()
+    if published is None:
         return _UNLINKABLE_CHAT_PREFIXES
-    except Exception:
-        logging.getLogger(__name__).warning(
-            "open_webui.utils.chat_id failed to import for a reason other than absence; "
-            "the features that depend on it are now disabled",
-            exc_info=True,
-        )
+    non_saved = published[0]
+    if isinstance(non_saved, str) or not isinstance(non_saved, Iterable):
         return _UNLINKABLE_CHAT_PREFIXES
-    if isinstance(published, str) or not isinstance(published, Iterable):
-        return _UNLINKABLE_CHAT_PREFIXES
-    upstream = tuple(p for p in published if isinstance(p, str) and p.strip())
+    upstream = tuple(p for p in non_saved if isinstance(p, str) and p.strip())
     # UNION, not replace. The local tuple is this pipe's own record of which chat ids
     # have no `chat` row -- not an approximation of upstream's list. Upstream maintains
     # theirs for their own reasons, and `local:` is named LEGACY_TEMPORARY_CHAT_ID_PREFIX
@@ -283,8 +296,22 @@ def is_linkable_chat(chat_id: Any) -> bool:
     return bool(normalized) and not normalized.startswith(_unlinkable_chat_prefixes())
 
 
+@lru_cache(maxsize=1)
 def temporary_chat_prefixes() -> tuple[str, ...]:
-    return tuple(prefix for prefix in _unlinkable_chat_prefixes() if prefix != "channel:")
+    published = _published_chat_id_values()
+    if published is None:
+        return tuple(p for p in _UNLINKABLE_CHAT_PREFIXES if p != "channel:")
+    _non_saved, temporary, channel = published
+    channel = channel.strip() if isinstance(channel, str) and channel.strip() else "channel:"
+    usable = (
+        (p for p in temporary if isinstance(p, str) and p.strip())
+        if not isinstance(temporary, str) and isinstance(temporary, Iterable)
+        else ()
+    )
+    local = tuple(
+        p for p in _UNLINKABLE_CHAT_PREFIXES if p not in ("channel:", channel)
+    )
+    return local + tuple(p for p in usable if p not in local)
 
 
 def is_temporary_chat(chat_id: Any) -> bool:
@@ -478,7 +505,7 @@ async def encode_file_path_base64(path: Path, chunk_size: int, max_bytes: int) -
                     break
                 total += len(chunk)
                 if total > max_bytes:
-                    raise ValueError("File exceeds BASE64_MAX_SIZE_MB limit")
+                    raise InlineFileTooLargeError("File exceeds BASE64_MAX_SIZE_MB limit")
                 chunk = leftover + chunk
                 whole_bytes = (len(chunk) // 3) * 3
                 if whole_bytes:
@@ -711,7 +738,7 @@ class OwuiFileGateway:
 
         def _from_bytes(raw: bytes) -> str:
             if len(raw) > max_bytes:
-                raise ValueError("File exceeds BASE64_MAX_SIZE_MB limit")
+                raise InlineFileTooLargeError("File exceeds BASE64_MAX_SIZE_MB limit")
             return base64.b64encode(raw).decode("ascii")
 
         data_field = getattr(file_obj, "data", None)
@@ -720,7 +747,7 @@ class OwuiFileGateway:
                 inline_value = data_field.get(key)
                 if isinstance(inline_value, str) and inline_value.strip():
                     if not self.validate_base64_size(inline_value):
-                        raise ValueError("Stored base64 payload exceeds configured limit")
+                        raise InlineFileTooLargeError("Stored base64 payload exceeds configured limit")
                     return inline_value.strip()
             blob_value = data_field.get("bytes")
             if isinstance(blob_value, (bytes, bytearray)):
@@ -799,6 +826,9 @@ class OwuiFileGateway:
             b64 = await self.read_file_record_base64(
                 file_obj, chunk_size, max_bytes, user=user
             )
+        except InlineFileTooLargeError as exc:
+            self.logger.warning("Failed to inline file %s: %s", normalized, exc)
+            raise
         except ValueError as exc:
             self.logger.warning("Failed to inline file %s: %s", normalized, exc)
             return None

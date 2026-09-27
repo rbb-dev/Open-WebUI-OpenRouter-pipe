@@ -28,7 +28,6 @@ from open_webui_openrouter_pipe.core.config import UserValves, Valves
 ATLAS = Path(__file__).resolve().parents[1] / "docs" / "valves_and_configuration_atlas.md"
 _ROW = re.compile(r"^\|\s*`([A-Z0-9_]+)`\s*\|")
 
-
 def _rows() -> dict[str, list[list[str]]]:
     rows: dict[str, list[list[str]]] = {}
     for line in ATLAS.read_text(encoding="utf-8").splitlines():

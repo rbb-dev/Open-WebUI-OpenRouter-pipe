@@ -647,15 +647,22 @@ class TestInlineOwuiFileId:
 
     @pytest.mark.asyncio
     async def test_returns_none_when_read_fails(self, pipe_instance_async, monkeypatch):
-        """Should return None when file read raises ValueError."""
-        file_obj = SimpleNamespace(
-            meta={"content_type": "image/png"},
-            content=b"X" * 1000
-        )
+        """A NON-SIZE read failure from the record yields None.
+
+        A size failure no longer lands here: it raises `InlineFileTooLargeError` so the
+        caller can say "too large" instead of "no longer available", and the over-limit
+        rows live in test_an_oversized_stored_picture_is_skipped_not_reported_missing.py.
+        """
+        file_obj = SimpleNamespace(meta={"content_type": "image/png"})
         monkeypatch.setattr(owui_files_module, "get_file_by_id", AsyncMock(return_value=file_obj))
+        monkeypatch.setattr(
+            pipe_instance_async._file_gateway,
+            "read_file_record_base64",
+            AsyncMock(side_effect=ValueError("the record could not be decoded")),
+        )
 
         result = await pipe_instance_async._file_gateway.inline_owui_file_id(
-            "file123", chunk_size=1024, max_bytes=10
+            "file123", chunk_size=1024, max_bytes=1024 * 1024
         )
         assert result is None
 
@@ -3437,13 +3444,20 @@ class TestImageTransformer:
         It cannot assert a status either: `_transform_single_block` hardcodes
         `event_emitter=None`, so there is nothing to observe. `test_a_data_url_that_fails
         _validation_is_dropped_and_reported` drives the real path with an emitter.
+
+        The turn is no longer left empty when every block was dropped, so `content[0]`
+        is the placeholder naming the refusal rather than nothing. What this test owns
+        is that no `input_image` block is produced, which is asserted over the whole
+        message rather than by indexing the first element.
         """
         parse_mock = Mock(side_effect=RuntimeError("boom"))
         monkeypatch.setattr(pipe_instance._multimodal_handler, "_parse_data_url", parse_mock)
         block = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
-        image_block = await _transform_single_block(pipe_instance, block, mock_user)
+        content = await _transform_single_block(pipe_instance, block, mock_user)
         parse_mock.assert_called_once()
-        assert image_block is None
+        assert content is None or content.get("type") != "input_image", (
+            f"the picture was forwarded unvalidated: {content!r}"
+        )
 
 
 # File Transformer Tests

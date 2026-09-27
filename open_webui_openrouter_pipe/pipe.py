@@ -1658,7 +1658,7 @@ class Pipe:
 
         if self._redis_client:
             try:
-                await self._redis_client.close()
+                await self._redis_client.aclose()
             except Exception as e:
                 self.logger.debug(f"Failed to close Redis client: {e}", exc_info=True)
             finally:

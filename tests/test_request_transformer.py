@@ -3670,14 +3670,17 @@ class TestAudioProcessingEdgeCasesExtended:
 
     @pytest.mark.asyncio
     async def test_audio_data_url_size_validation_fails(self, pipe_instance):
-        """Audio data URL failing size validation returns empty block (line 936-937)."""
-        # Create oversized base64
-        large_b64 = "A" * (60 * 1024 * 1024)  # ~45MB decoded
-        data_url = f"data:audio/mp3;base64,{large_b64}"
+        """An over-limit audio data URL is dropped by the real `BASE64_MAX_SIZE_MB` gate.
 
-        # Mock _validate_base64_size to return False
-        original_validate = pipe_instance._file_gateway.validate_base64_size
-        pipe_instance._file_gateway.validate_base64_size = lambda x: False
+        This row used to mock `pipe_instance._file_gateway.validate_base64_size` -- a
+        hook audio no longer routes through -- and used a 60 MB payload that was over
+        both the old hardcoded 1 MiB and the 50 MB default, so it passed by accident.
+        The gate is the transformer's `max_inline_bytes` comparison, and an over-limit
+        block is dropped from the turn entirely rather than emptied in place.
+        """
+        pipe_instance.valves.BASE64_MAX_SIZE_MB = 1
+        payload = base64.b64encode(b"\x00" * (2 * 1024 * 1024)).decode()
+        data_url = f"data:audio/mp3;base64,{payload}"
 
         messages = [
             {"role": "user", "content": [
@@ -3687,11 +3690,8 @@ class TestAudioProcessingEdgeCasesExtended:
 
         result = await transform_messages_to_input(pipe_instance, messages)
 
-        audio_block = result[0]["content"][0]
-        # Size validation failure should return empty block
-        assert audio_block["input_audio"]["data"] == ""
-
-        pipe_instance._file_gateway.validate_base64_size = original_validate
+        audio_blocks = [b for b in result[0]["content"] if b.get("type") == "input_audio"]
+        assert not audio_blocks, f"the over-limit audio block was sent: {result!r}"
 
 
 class TestVideoSSRFProtection:
@@ -4075,29 +4075,15 @@ class TestFileOuterException:
 
 
 class TestAudioBase64SizeValidation:
-    """Tests for audio base64 size validation in _normalize_base64 (line 831-832)."""
+    """The audio size gate, and where it lives.
 
-    @pytest.mark.asyncio
-    async def test_audio_base64_size_validation_in_normalize(self, pipe_instance, sample_audio_base64):
-        """Audio base64 that fails size validation in _normalize_base64 (lines 831-832)."""
-        # Mock _validate_base64_size to return False inside _normalize_base64 path
-        original_validate = pipe_instance._file_gateway.validate_base64_size
-        pipe_instance._file_gateway.validate_base64_size = lambda x: False
-
-        messages = [
-            {"role": "user", "content": [
-                {"type": "input_audio", "input_audio": {"data": sample_audio_base64, "format": "mp3"}}
-            ]}
-        ]
-
-        result = await transform_messages_to_input(pipe_instance, messages)
-
-        audio_block = result[0]["content"][0]
-        # Size validation should fail, resulting in empty data
-        assert audio_block["input_audio"]["data"] == ""
-
-        pipe_instance._file_gateway.validate_base64_size = original_validate
-
+    It used to sit inside the synchronous `_normalize_base64`, which could only answer
+    "undecodable" and logged an unlatched second warning on the way. It now sits before
+    the normaliser, at each of the three audio entry points, and an over-limit payload
+    drops its block and names the limit. The full matrix is in
+    test_an_oversized_inline_audio_is_refused_by_size_not_by_encoding.py; this node keeps
+    the seam in this suite honest about which shape it drives.
+    """
 
 class TestBlockTransformExceptionNonImage:
     """Tests for non-image block exception preserving original block (lines 1159-1160)."""

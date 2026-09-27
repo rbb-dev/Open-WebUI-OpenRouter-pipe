@@ -22,6 +22,7 @@ from open_webui_openrouter_pipe.core.config import Valves
 from open_webui_openrouter_pipe.core.errors import RequiredInternalFileError
 from open_webui_openrouter_pipe.storage import owui_files
 from open_webui_openrouter_pipe.storage.owui_files import (
+    InlineFileTooLargeError,
     InlinedFile,
     OwuiFileGateway,
     authorize_file_read,

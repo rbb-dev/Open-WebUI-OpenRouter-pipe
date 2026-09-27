@@ -871,7 +871,7 @@ class Valves(BaseModel):
         default=50,
         ge=1,
         le=500,
-        description="Maximum size in MB for base64-encoded files/images before decoding. Larger payloads will be rejected to prevent memory issues and excessive HTTP request sizes.",
+        description="Maximum size in MB for base64-encoded files, images and audio before decoding. Larger payloads will be rejected to prevent memory issues and excessive HTTP request sizes.",
     )
     IMAGE_UPLOAD_CHUNK_BYTES: int = Field(
         default=1 * 1024 * 1024,

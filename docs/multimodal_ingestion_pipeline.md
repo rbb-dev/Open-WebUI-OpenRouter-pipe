@@ -15,7 +15,7 @@ For user messages that include multimodal content, the pipe normalizes content b
 
 At a high level:
 
-- **Images** are converted to Responses-style `input_image` blocks. A `data:` URL is sent as it came, a remote image is downloaded and sent inline (or forwarded as its link when it cannot be downloaded), a picture the pipe refuses to forward is dropped and reported rather than sent, and an Open WebUI file URL is read with the requester's access and sent inline.
+- **Images** are converted to Responses-style `input_image` blocks. A `data:` URL within `BASE64_MAX_SIZE_MB` is sent as it came apart from the scheme, which is lower-cased to `data:`, and one over it is not sent, the picture being skipped and the person told in a status on their latest message; a remote image is downloaded and sent inline (or forwarded as its link when it cannot be downloaded), a picture the pipe refuses to forward is dropped and reported rather than sent, and an Open WebUI file URL is read with the requester's access and sent inline.
 - **Files** are converted to Responses-style `input_file` blocks and forwarded as they came: a `data:` URL or link in `file_data` or `file_url` goes out unchanged, and the pipe never downloads a file link. Inline data over `BASE64_MAX_SIZE_MB` is the exception: it is not sent, and the person sees "Files: skipped …" for their latest message, as with pictures. An Open WebUI file URL is read with the requester's access and sent inline.
 - **Audio** is converted to Responses-style `input_audio` blocks and must be **base64/data URL** (remote URLs are rejected).
 - **Video** is passed using Chat Completions-style `video_url` blocks (the Responses API does not provide a dedicated `input_video` block). Videos are **not** downloaded or re-hosted by the pipe; the pipe applies basic validation and SSRF checks for remote URLs.
@@ -67,7 +67,7 @@ For cloud/unknown backends, a file whose declared `meta['size']` is missing or i
 ### What is sent (important)
 
 The pipe never writes an image the person attached to Open WebUI storage: not for a saved, channel or temporary chat, and not for any request of a turn (its first answer, a Regenerate, each further model answering it, a Continue, or Open WebUI's calls back after each round of tool calls). Every request sends the image as the message carries it:
-- A **data URL** (`data:image/...;base64,...`) is checked for size and sent as it came; one that fails validation is dropped and reported, never sent unvalidated. The `;base64` marker is matched case-insensitively, as the data-URL standard requires, so `;BASE64,` is a spelling of the same thing and the URL is still forwarded with its own spelling intact. A token-free `data:` URL — the word `base64` in a payload, or a parameter that merely starts with those letters — is not base64 and is refused, in every spelling.
+- A **data URL** (`data:image/...;base64,...`) within `BASE64_MAX_SIZE_MB` is sent as it came apart from the scheme, which is lower-cased to `data:`; one over the limit is not sent, the picture is skipped and the person sees `"Images: skipped N (…)."` on their latest message. One that fails validation is dropped and reported, never sent unvalidated. The `;base64` marker is matched case-insensitively, as the data-URL standard requires, so `;BASE64,` is a spelling of the same thing and the URL is still forwarded with its own spelling intact. A token-free `data:` URL — the word `base64` in a payload, or a parameter that merely starts with those letters — is not base64 and is refused, in every spelling.
 - A **remote URL** (`https://`) is downloaded (with retries/limits/SSRF protection) and its bytes are sent upstream as a `data:` URL; one that cannot be downloaded is forwarded as its link, and one larger than `BASE64_MAX_SIZE_MB` once downloaded is not sent. Plain `http://` is disabled by default and requires explicit allowlisting.
 - An **Open WebUI file URL** (for example `/api/v1/files/...`) is streamed with the requester's access and inlined as a `data:` URL to avoid requiring OpenRouter to fetch from your Open WebUI host.
 
@@ -105,8 +105,8 @@ Every request forwards `file_data` and `file_url` as they came, except inline da
 OpenRouter audio inputs require base64-encoded audio, and the pipe enforces that:
 
 - Remote URLs (`http://` / `https://`) are rejected and replaced with an empty `input_audio` block.
-- Data URLs (`data:audio/...;base64,...`) are accepted if valid and within size limits. The same parser serves pictures and audio, so the `;base64` marker is matched case-insensitively here too: `;BASE64,` is the same marker, spelled differently, and is accepted rather than refused as "Audio input must be base64-encoded audio data".
-- Raw base64 strings are accepted if valid.
+- Data URLs (`data:audio/...;base64,...`) are accepted if valid and within size limits; one over `BASE64_MAX_SIZE_MB` is not sent at all, the block is dropped, the person is told in a status on their latest message, and it is logged as a size refusal rather than an encoding failure. The same parser serves pictures and audio, so the `;base64` marker is matched case-insensitively here too: `;BASE64,` is the same marker, spelled differently, and is accepted rather than refused as "Audio input must be base64-encoded audio data".
+- Raw base64 strings are accepted if valid, and refused by size the same way.
 
 Supported formats are normalized to `mp3` or `wav` based on MIME hints when available; unknown types default to `mp3`.
 

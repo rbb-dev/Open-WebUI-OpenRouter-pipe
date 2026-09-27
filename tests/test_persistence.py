@@ -2106,7 +2106,7 @@ async def test_redis_client_enables_a_pubsub_keepalive(pipe_instance, monkeypatc
         async def ping(self):
             return True
 
-        async def close(self) -> None:
+        async def aclose(self) -> None:
             self.closed = True
 
     def _from_url(url, **kwargs):
