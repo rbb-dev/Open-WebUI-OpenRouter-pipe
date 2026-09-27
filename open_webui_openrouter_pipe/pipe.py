@@ -3482,7 +3482,7 @@ class Pipe:
             return available_models
 
         requested = {
-            ModelFamily.base_model(sanitize_model_id(model_id.strip()))
+            ModelFamily.base_model(sanitize_model_id(model_id.strip()), self.id)
             for model_id in filter_value.split(",")
             if model_id.strip()
         }
@@ -3622,13 +3622,17 @@ class Pipe:
             original_id = model.get("original_id", "")
             if original_id:
                 model_map[original_id] = model
+            norm_id = model.get("norm_id", "")
+            if norm_id:
+                model_map.setdefault(norm_id, model)
 
         # Expand variants and presets
         expanded: list[dict[str, Any]] = list(models)
+        _seen_published_ids = {m.get("id") for m in expanded}
 
         for base_id, variant_tag, is_preset in variant_specs:
             # Find base model
-            base_model = model_map.get(base_id)
+            base_model = self._resolve_variant_base(model_map, base_id)
             if not base_model:
                 separator = "@" if is_preset else ":"
                 self.logger.log(
@@ -3644,7 +3648,8 @@ class Pipe:
             variant_model = dict(base_model)
 
             base_sanitized_id = variant_model.get("id", "")
-            variant_model["id"] = f"{base_sanitized_id}:{variant_tag}"
+            published_id = f"{base_sanitized_id}:{variant_tag}"
+            variant_model["id"] = published_id
 
 
             # Update display name with tag
@@ -3658,7 +3663,9 @@ class Pipe:
 
 
             # Add to expanded list
-            expanded.append(variant_model)
+            if published_id not in _seen_published_ids:
+                _seen_published_ids.add(published_id)
+                expanded.append(variant_model)
 
             self.logger.debug(
                 "Added %s model: %s (from %s)",
@@ -3668,6 +3675,15 @@ class Pipe:
             )
 
         return expanded
+
+    def _resolve_variant_base(
+        self,
+        model_map: dict[str, dict[str, Any]],
+        base_id: str,
+    ) -> dict[str, Any] | None:
+        return model_map.get(base_id) or model_map.get(
+            ModelFamily.base_model(sanitize_model_id(base_id), self.id)
+        )
 
     @timed
     def _expand_variants_for_enforcement(
@@ -3752,12 +3768,13 @@ class Pipe:
 
         for base_id, variant_tag, is_preset in variant_specs:
             sanitized_base = sanitize_model_id(base_id)
+            base_norm_id = ModelFamily.base_model(sanitized_base, self.id)
             base_model = (
                 catalog_by_original.get(base_id)
                 or catalog_by_sanitized.get(sanitized_base)
                 or catalog_by_sanitized.get(base_id)
+                or catalog_by_norm.get(base_norm_id)
             )
-            base_norm_id = ModelFamily.base_model(sanitized_base)
             full_norm_id = f"{base_norm_id}:{variant_tag}" if base_norm_id else ""
 
             if full_norm_id and full_norm_id in existing_norm_ids:

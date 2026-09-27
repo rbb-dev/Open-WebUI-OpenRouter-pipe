@@ -948,6 +948,9 @@ class Valves(BaseModel):
         description=(
             "Comma separated OpenRouter model IDs to expose in Open WebUI. "
             "Set to 'auto' to import every available Responses-capable model. "
+            "Each id may be written as OpenRouter's `author/model` form or as the exact id "
+            "Open WebUI shows in the model picker, which begins with this pipe's function id "
+            "followed by a dot. Both forms resolve to the same model. "
             "A restricting list that matches nothing publishes nothing and refuses every request; "
             "the one exception is a value of only commas or spaces, which is read as blank and "
             "imports the whole catalog. "

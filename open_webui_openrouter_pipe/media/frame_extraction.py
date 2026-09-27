@@ -18,6 +18,8 @@ from typing import Literal
 import imageio.v3 as iio  # type: ignore[import-untyped]
 from PIL import Image
 
+from .image_conversion import composite_on_white
+
 _MAX_FRAME_PIXELS = 25_000_000
 _FFMPEG_TIMEOUT_S = 30.0
 _PROBE_TIMEOUT_S = 10.0
@@ -119,6 +121,14 @@ async def probe_video(path: Path) -> VideoMetadata:
 # Frame extraction
 # -----------------------------------------------------------------------------
 
+def _normalise_png_mode(img: Image.Image) -> bytes:
+    if img.mode not in ("RGB", "RGBA"):
+        img = composite_on_white(img)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 def _extract_frame_imageio_sync(
     path: Path, *, frame_index: int
 ) -> tuple[bytes, int, int]:
@@ -136,11 +146,7 @@ def _extract_frame_imageio_sync(
                 f"frame too large: {w}x{h} exceeds {_MAX_FRAME_PIXELS} pixel cap",
             )
         img = Image.fromarray(arr)
-        if img.mode not in ("RGB", "RGBA"):
-            img = img.convert("RGB")
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        return buf.getvalue(), img.width, img.height
+        return _normalise_png_mode(img), img.width, img.height
     except FrameExtractionError:
         raise
     except Exception as exc:
@@ -224,6 +230,8 @@ async def _extract_frame_ffmpeg(
                     f"ffmpeg output {img.width}x{img.height} exceeds pixel cap",
                 )
             img.load()
+            if img.mode not in ("RGB", "RGBA"):
+                stdout = _normalise_png_mode(img)
             return stdout, img.width, img.height
         except asyncio.CancelledError:
             if proc is not None:

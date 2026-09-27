@@ -14,7 +14,7 @@ OpenRouter model IDs use slash-separated provider slugs like `vendor/model`. Ope
 
 - `sanitize_model_id("vendor/model")` → `vendor.model` (slash-to-dot conversion for Open WebUI display).
 - `ModelFamily.base_model(...)` → lowercase, with:
-  - pipe prefix stripped when present (`<pipe-id>.…`), and
+  - pipe prefix stripped when present (`<pipe-id>.…`) - so a valve entry may be written either as OpenRouter's `author/model` form or as the exact id Open WebUI shows in the model picker, and both forms resolve to the same model,
   - date suffixes like `-YYYY-MM-DD` **kept**.
 
 A dated snapshot is a model OpenRouter prices and serves separately, so it is its own key: a request

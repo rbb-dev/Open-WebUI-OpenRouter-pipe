@@ -64,7 +64,7 @@ class ModelFamily:
     _DYNAMIC_SPECS: ClassVar[dict[str, dict[str, Any]]] = {}
 
     @classmethod
-    def _norm(cls, model_id: str) -> str:
+    def _normalize_catalog_id(cls, model_id: str, pipe_id: str | None = None) -> str:
         m = (model_id or "").strip()
 
         suffix = ""
@@ -74,7 +74,8 @@ class ModelFamily:
         if "/" in m:
             m = m.replace("/", ".")
 
-        pipe_id = cls._PIPE_ID.get()
+        if pipe_id is None:
+            pipe_id = cls._PIPE_ID.get()
         if pipe_id:
             pref = f"{pipe_id}."
             m = m.removeprefix(pref)
@@ -86,8 +87,12 @@ class ModelFamily:
         return base
 
     @classmethod
-    def base_model(cls, model_id: str) -> str:
-        return cls._norm(model_id)
+    def _norm(cls, model_id: str, pipe_id: str | None = None) -> str:
+        return cls._normalize_catalog_id(model_id, pipe_id)
+
+    @classmethod
+    def base_model(cls, model_id: str, pipe_id: str | None = None) -> str:
+        return cls._norm(model_id, pipe_id)
 
     @classmethod
     def undated(cls, model_id: str) -> str:
@@ -389,8 +394,8 @@ class OpenRouterModelRegistry:
 
                 "context_length": full_model.get("context_length"),
                 "description": full_model.get("description"),
-                "pricing": pricing,
                 "architecture": architecture,
+                **_base_spec_fields(pricing),
             }
             if zdr_model_ids is not None:
                 specs[norm_id]["zdr_capable"] = norm_id in zdr_model_ids
@@ -720,8 +725,8 @@ class OpenRouterModelRegistry:
                 "video_model": dict(item),
                 "context_length": None,
                 "description": item.get("description"),
-                "pricing": pricing,
                 "architecture": item.get("architecture") if isinstance(item.get("architecture"), dict) else {},
+                **_base_spec_fields(pricing),
             }
             if cls._zdr_model_ids is not None:
                 new_specs[norm_id]["zdr_capable"] = norm_id in cls._zdr_model_ids
@@ -943,8 +948,8 @@ class OpenRouterModelRegistry:
                 "image_model": dict(item),
                 "context_length": item.get("context_length"),
                 "description": item.get("description"),
-                "pricing": pricing,
                 "architecture": architecture,
+                **_base_spec_fields(pricing),
             }
             if cls._zdr_model_ids is not None:
                 new_specs[norm_id]["zdr_capable"] = norm_id in cls._zdr_model_ids
@@ -1291,6 +1296,18 @@ def sum_pricing_values(node: Any) -> tuple[Decimal, int]:
     return Decimal(0), 0
 
 
+def spec_derived_flags(pricing: Any) -> dict[str, bool]:
+    total, numeric_count = sum_pricing_values(pricing)
+    return {"free": numeric_count > 0 and total == Decimal(0)}
+
+
+def _base_spec_fields(pricing: Any) -> dict[str, Any]:
+    return {
+        "pricing": pricing,
+        **spec_derived_flags(pricing),
+    }
+
+
 def is_free_model(model_norm_id: str) -> bool:
     """Check if a model has free pricing (all pricing values sum to 0).
 
@@ -1300,8 +1317,11 @@ def is_free_model(model_norm_id: str) -> bool:
     Returns:
         True if model exists and all pricing values sum to zero
     """
-    pricing = OpenRouterModelRegistry.spec(model_norm_id).get("pricing") or {}
-    total, numeric_count = sum_pricing_values(pricing)
+    spec = OpenRouterModelRegistry.spec(model_norm_id)
+    derived = spec.get("free")
+    if isinstance(derived, bool):
+        return derived
+    total, numeric_count = sum_pricing_values(spec.get("pricing") or {})
     if numeric_count <= 0:
         return False
     return total == Decimal(0)
