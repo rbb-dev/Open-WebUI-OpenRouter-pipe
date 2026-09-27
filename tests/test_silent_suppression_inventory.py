@@ -95,7 +95,9 @@ _EXPECTED: dict[str, int] = {
     # 21st: clearing the pointer to the background Web Tools repair task in `_do_close`.
     # The task has just been cancelled, so a failure here is a stale reference at worst;
     # letting it out would abort the shutdown that follows.
-    "pipe.py": 24,
+    # One more: the `shutdown()` inside `__del__`, which runs at interpreter teardown where an
+    # exception escaping has no caller to see it; the close is scheduled outside the suppression.
+    "pipe.py": 25,
     "storage/persistence.py": 3,
     # 1st: the caller-supplied fallback in `_emit_templated_error_event`. It is reached only because the
     # admin's own template already failed to render, and the generic card below it is the answer if the

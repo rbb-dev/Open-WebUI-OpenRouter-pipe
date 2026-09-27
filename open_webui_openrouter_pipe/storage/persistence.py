@@ -24,6 +24,8 @@ import os
 import random
 import re
 import secrets
+import sys
+import threading
 import time
 from collections import OrderedDict, defaultdict, deque
 from collections.abc import Callable, Iterable
@@ -196,6 +198,25 @@ def _detect_redis_config(valves: Any, logger: logging.Logger) -> tuple[str, str,
     return redis_url, websocket_manager, websocket_redis_url, candidate
 
 
+def _retained_bytes(value: Any) -> int:
+    seen: set[int] = set()
+    stack: list[Any] = [value]
+    total = 0
+    while stack:
+        node = stack.pop()
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        total += sys.getsizeof(node)
+        if isinstance(node, dict):
+            for key, item in node.items():
+                stack.append(key)
+                stack.append(item)
+        elif isinstance(node, (list, tuple, set, frozenset)):
+            stack.extend(node)
+    return total
+
+
 # ArtifactStore Class
 
 
@@ -212,6 +233,7 @@ class ReplyMemory:
         self._clock = clock
         self._replies: OrderedDict[tuple[Any, Any], tuple[float, dict[str, dict[str, Any]], int]] = OrderedDict()
         self._sweep: asyncio.TimerHandle | None = None
+        self._lock = threading.RLock()
 
     def _expire(self) -> None:
         cutoff = self._clock() - self._idle_seconds
@@ -226,12 +248,21 @@ class ReplyMemory:
         except RuntimeError:
             return
         earliest = min(touched for touched, _rows, _size in self._replies.values())
-        self._sweep = loop.call_later(max(0.0, earliest + self._idle_seconds - self._clock()), self._run_sweep)
+        self._sweep = loop.call_later(max(0.0, earliest + self._idle_seconds - self._clock()), self._run_sweep_locked)
+
+    def _run_sweep_locked(self) -> None:
+        with self._lock:
+            self._run_sweep()
 
     def _run_sweep(self) -> None:
         self._sweep = None
         self._expire()
         self._arm()
+
+    def rearm(self) -> None:
+        with self._lock:
+            self._sweep = None
+            self._arm()
 
     def _touch(self, key: tuple[Any, Any]) -> None:
         _touched, rows, size = self._replies[key]
@@ -239,6 +270,10 @@ class ReplyMemory:
         self._replies.move_to_end(key)
 
     def open(self, chat_id: Any, message_id: Any) -> None:
+        with self._lock:
+            self._open(chat_id, message_id)
+
+    def _open(self, chat_id: Any, message_id: Any) -> None:
         self._expire()
         key = (chat_id, message_id)
         if key in self._replies:
@@ -248,10 +283,18 @@ class ReplyMemory:
         self._arm()
 
     def is_open(self, chat_id: Any, message_id: Any) -> bool:
+        with self._lock:
+            return self._is_open(chat_id, message_id)
+
+    def _is_open(self, chat_id: Any, message_id: Any) -> bool:
         self._expire()
         return (chat_id, message_id) in self._replies
 
     def hold(self, rows: list[dict[str, Any]]) -> list[str]:
+        with self._lock:
+            return self._hold(rows)
+
+    def _hold(self, rows: list[dict[str, Any]]) -> list[str]:
         self._expire()
         held: list[str] = []
         for row in rows:
@@ -262,7 +305,7 @@ class ReplyMemory:
             item_id = row.setdefault("id", generate_item_id())
             _touched, kept, size = self._replies[key]
             kept[item_id] = payload
-            self._replies[key] = (self._clock(), kept, size + len(json.dumps(payload)))
+            self._replies[key] = (self._clock(), kept, size + _retained_bytes(payload))
             self._replies.move_to_end(key)
             held.append(item_id)
         for key in {(row.get("chat_id"), row.get("message_id")) for row in rows}:
@@ -275,6 +318,10 @@ class ReplyMemory:
         return [item_id for item_id in held if item_id in kept_ids]
 
     def read(self, chat_id: Any, message_id: Any, item_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            return self._read(chat_id, message_id, item_ids)
+
+    def _read(self, chat_id: Any, message_id: Any, item_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
         self._expire()
         key = (chat_id, message_id)
         if key not in self._replies:
@@ -286,9 +333,17 @@ class ReplyMemory:
         return found
 
     def release(self, chat_id: Any, message_id: Any) -> None:
+        with self._lock:
+            self._release(chat_id, message_id)
+
+    def _release(self, chat_id: Any, message_id: Any) -> None:
         self._replies.pop((chat_id, message_id), None)
 
     def holds(self, chat_id: Any) -> bool:
+        with self._lock:
+            return self._holds(chat_id)
+
+    def _holds(self, chat_id: Any) -> bool:
         self._expire()
         return any(key[0] == chat_id for key in self._replies)
 
@@ -1200,7 +1255,9 @@ class ArtifactStore:
         if not rows:
             return []
         if is_temporary_chat(rows[0].get("chat_id")):
-            return self._reply_memory.hold(rows)
+            held = await asyncio.to_thread(self._reply_memory.hold, rows)
+            self._reply_memory.rearm()
+            return held
 
         from open_webui_openrouter_pipe.core.logging_system import SessionLogger
 

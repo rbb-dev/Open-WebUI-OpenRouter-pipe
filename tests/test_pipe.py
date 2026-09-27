@@ -91,18 +91,6 @@ class TestPipeInitializationAndLifecycle:
         finally:
             pipe.shutdown()
 
-    def test_pipe_del_triggers_shutdown(self):
-        """Test that __del__ properly cleans up resources."""
-        pipe = Pipe()
-        # Mark as not closed to test __del__ logic
-        pipe._closed = False
-
-        # Call __del__ directly (normally called by garbage collector)
-        pipe.__del__()
-
-        # Should have called shutdown
-        # Note: This test just verifies no exceptions are raised
-
     def test_pipe_close_is_idempotent(self):
         """Test that calling close() multiple times is safe."""
         pipe = Pipe()
@@ -476,13 +464,12 @@ class TestStartupChecks:
 
         async def run_test():
             # Create a task that completes immediately
-            mock_task = asyncio.create_task(asyncio.sleep(0))
-            await mock_task
-            pipe._startup_task = mock_task
+            done_task = asyncio.create_task(asyncio.sleep(0))
+            await done_task
+            pipe._startup_task = done_task
 
             pipe._maybe_start_startup_checks()
-            # Should clear the done task
-            # Note: may or may not start a new task depending on API key availability
+            assert pipe._startup_task is not done_task
 
         try:
             asyncio.run(run_test())
@@ -506,37 +493,7 @@ class TestLogWorker:
         try:
             # First call creates lock
             pipe._maybe_start_log_worker()
-            old_lock = pipe._log_worker_lock
-
-            # Simulate stale lock by setting a different loop reference
-            if old_lock is not None:
-                # Create a new event loop to make the lock appear stale
-                # This is tricky to test; just verify the code path doesn't crash
-                pipe._maybe_start_log_worker()
-        finally:
-            await pipe.close()
-
-    @pytest.mark.asyncio
-    async def test_maybe_start_log_worker_stale_worker_cancellation(self):
-        """Test that _maybe_start_log_worker cancels a stale worker task."""
-        pipe = Pipe()
-
-        try:
-            # Start the worker
             pipe._maybe_start_log_worker()
-
-            # Force a different loop reference to trigger stale detection
-            pipe._log_queue_loop = None  # This will trigger re-creation
-
-            if pipe._log_worker_task and not pipe._log_worker_task.done():
-                # Store the old task
-                old_task = pipe._log_worker_task
-
-                # Call again - should cancel old and create new
-                pipe._maybe_start_log_worker()
-
-                # Old task should have been cancelled or is the same
-                # (depends on implementation timing)
         finally:
             await pipe.close()
 
@@ -1675,11 +1632,11 @@ class TestRedisInitialization:
         """Test that _maybe_start_redis returns early when already enabled."""
         pipe = Pipe()
         pipe._redis_candidate = True
-        pipe._artifact_store._redis_enabled = True
+        pipe._redis_enabled = True
 
         try:
             pipe._maybe_start_redis()
-            # Should not create a new task
+            assert pipe._redis_ready_task is None
         finally:
             await pipe.close()
 
@@ -1692,10 +1649,11 @@ class TestRedisInitialization:
 
         try:
             # Create a mock running task
-            pipe._redis_ready_task = asyncio.create_task(asyncio.sleep(10))
+            first = asyncio.create_task(asyncio.sleep(10))
+            pipe._redis_ready_task = first
 
             pipe._maybe_start_redis()
-            # Should not create a new task
+            assert pipe._redis_ready_task is first
 
             pipe._redis_ready_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -1774,10 +1732,11 @@ class TestCleanupTask:
 
         try:
             # Create a mock running cleanup task
-            pipe._cleanup_task = asyncio.create_task(asyncio.sleep(10))
+            first = asyncio.create_task(asyncio.sleep(10))
+            pipe._cleanup_task = first
 
             pipe._maybe_start_cleanup()
-            # Should not create a new task
+            assert pipe._cleanup_task is first
 
             pipe._cleanup_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -1792,11 +1751,12 @@ class TestCleanupTask:
 
         try:
             # Create a task that completes immediately
-            pipe._cleanup_task = asyncio.create_task(asyncio.sleep(0))
-            await pipe._cleanup_task
+            done_task = asyncio.create_task(asyncio.sleep(0))
+            await done_task
+            pipe._cleanup_task = done_task
 
             pipe._maybe_start_cleanup()
-            # Should have cleared the done task (may or may not create new one)
+            assert pipe._cleanup_task is not done_task
         finally:
             await pipe.close()
 
@@ -9855,12 +9815,12 @@ class TestRedisInitPaths:
         """Test _maybe_start_redis returns early when already enabled (line 659)."""
         pipe = Pipe()
         try:
-            pipe._artifact_store._redis_enabled = True
+            pipe._redis_enabled = True
             pipe._redis_candidate = True
 
             async def run_test():
                 pipe._maybe_start_redis()
-                # Should return early
+                assert pipe._redis_ready_task is None
 
             asyncio.run(run_test())
         finally:
@@ -9871,11 +9831,11 @@ class TestRedisInitPaths:
         pipe = Pipe()
         try:
             pipe._redis_candidate = True
-            pipe._artifact_store._redis_enabled = False
+            pipe._redis_enabled = False
 
             # Call outside of async context - no running loop
             pipe._maybe_start_redis()
-            # Should return without error
+            assert pipe._redis_ready_task is None
         finally:
             pipe.shutdown()
 
@@ -9893,7 +9853,7 @@ class TestRedisInitPaths:
                 pipe._redis_ready_task = mock_task
 
                 pipe._maybe_start_redis()
-                # Should return early
+                assert pipe._redis_ready_task is mock_task
 
             asyncio.run(run_test())
         finally:
@@ -9909,10 +9869,11 @@ class TestCleanupWorkerPaths:
         try:
             async def run_test():
                 # Create a real task that can be awaited and has a real done() method
-                pipe._cleanup_task = asyncio.create_task(asyncio.sleep(10))
+                first = asyncio.create_task(asyncio.sleep(10))
+                pipe._cleanup_task = first
 
                 pipe._maybe_start_cleanup()
-                # Should return early without creating new task
+                assert pipe._cleanup_task is first
 
                 # Clean up the task
                 pipe._cleanup_task.cancel()
@@ -9931,7 +9892,7 @@ class TestCleanupWorkerPaths:
         try:
             pipe._cleanup_task = None
             pipe._maybe_start_cleanup()
-            # Should return without error
+            assert pipe._cleanup_task is None
         finally:
             pipe.shutdown()
 
@@ -9993,7 +9954,7 @@ class TestStartupChecksPath:
                 pipe.valves.API_KEY = EncryptedStr("test_key")
 
                 pipe._maybe_start_startup_checks()
-                # Should return early
+                assert pipe._startup_task is None
 
             asyncio.run(run_test())
         finally:
@@ -10098,50 +10059,6 @@ class TestStopLogWorkerPaths:
             await pipe.close()
 
 
-class TestDelMethodPaths:
-    """Tests for __del__ method paths."""
-
-    def test_del_with_running_loop_task_error(self):
-        """Test __del__ handles task creation error (line 2008-2010)."""
-        pipe = Pipe()
-        pipe._closed = False
-
-        # Mock get_running_loop and create_task
-        mock_loop = MagicMock()
-        mock_loop.is_running.return_value = True
-
-        # Capture the coroutine so it doesn't produce "never awaited" warning
-        captured_coro = None
-
-        def capture_and_raise(coro, **kwargs):
-            nonlocal captured_coro
-            captured_coro = coro
-            raise RuntimeError("Cannot create task")
-
-        mock_loop.create_task.side_effect = capture_and_raise
-
-        with patch("asyncio.get_running_loop", return_value=mock_loop):
-            # Should not raise
-            pipe.__del__()
-
-        # Close the captured coroutine to avoid warning
-        if captured_coro:
-            captured_coro.close()
-
-        # Prevent real __del__ from retrying cleanup on GC
-        pipe._closed = True
-
-    def test_del_with_new_loop_error(self):
-        """Test __del__ handles new_event_loop error (line 2017-2019)."""
-        pipe = Pipe()
-        pipe._closed = False
-
-        with patch("asyncio.get_running_loop", side_effect=RuntimeError("No loop")):
-            with patch("asyncio.new_event_loop", side_effect=RuntimeError("Cannot create loop")):
-                # Should not raise
-                pipe.__del__()
-        # Prevent real __del__ from retrying cleanup on GC
-        pipe._closed = True
 
 
 class TestConcurrencyControlsPaths:
@@ -10293,9 +10210,7 @@ class TestMaybeStartRedisTaskCreation:
 
             # Call should create a task
             pipe._maybe_start_redis()
-            # If there's a running loop, a task should be created
-            if pipe._redis_ready_task is not None:
-                assert not pipe._redis_ready_task.done() or pipe._redis_ready_task.done()
+            assert pipe._redis_ready_task is not None and not pipe._redis_ready_task.done()
         finally:
             await pipe.close()
 

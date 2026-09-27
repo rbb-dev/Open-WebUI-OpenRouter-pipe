@@ -2126,7 +2126,8 @@ class Pipe:
         """Best-effort cleanup hook for garbage collection."""
         if getattr(self, "_closed", False):
             return
-        self.shutdown()
+        with contextlib.suppress(Exception):
+            self.shutdown()
         self._schedule_close()
 
     # UTILITY METHODS
