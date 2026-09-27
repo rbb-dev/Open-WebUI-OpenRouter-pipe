@@ -45,7 +45,7 @@ The drain loop:
 
 ---
 
-## 3. Queue sizing, backpressure, and deadlocks
+## 3. Queue sizing and backpressure
 
 The streaming pipeline uses two queues with valve controls:
 
@@ -54,7 +54,7 @@ The streaming pipeline uses two queues with valve controls:
 
 Defaults are `0` (unbounded) for both queues.
 
-**Warning:** Very small bounded sizes can create deadlock-style stalls in tool-heavy or persistence-heavy workloads (slow drain → event queue fills → workers block → chunk queue fills → producer blocks). The valve descriptions explicitly warn that bounded values under a few hundred can hang under load.
+**Warning:** A bounded queue applies backpressure: when it fills, the pipe stops reading from OpenRouter until the backlog clears. The chain runs the other way from what it used to — a slow drain (tool-heavy or persistence-heavy workloads) → event queue fills → workers block → chunk queue fills → producer blocks on its next put → and the source stops being read. As long as the consumer keeps draining, the cost is added latency on a slow drain, not a stalled stream: the reply still ends on its own. A consumer that stops reading entirely, such as a closed browser tab, is held by that backpressure rather than ended.
 
 Monitoring:
 - `STREAMING_CHUNK_QUEUE_WARN_SIZE` emits a backend warning (rate-limited) when the raw-chunk queue backlog is high.
@@ -223,7 +223,7 @@ Flush triggers:
 ## 7. Tuning checklist
 
 - Increase throughput (at cost of per-request CPU): raise `SSE_WORKERS_PER_REQUEST` (up to the code-enforced cap).
-- Avoid stalls under tool-heavy loads: keep `STREAMING_CHUNK_QUEUE_MAXSIZE=0` and `STREAMING_EVENT_QUEUE_MAXSIZE=0` unless you have a measured reason to bound them.
+- Bound memory or latency: keep `STREAMING_CHUNK_QUEUE_MAXSIZE=0` and `STREAMING_EVENT_QUEUE_MAXSIZE=0` unless you have a measured reason to bound them. As long as the consumer keeps draining, a bound trades a larger buffer for a slower drain, not for a stream that stops early.
 - Improve observability: set `STREAMING_EVENT_QUEUE_WARN_SIZE` low enough to signal stress early, but high enough to avoid constant warnings.
 - Reduce UI freeze during heavy reasoning: increase `STREAMING_NAGLE_MIN_FLUSH_CHARS` (2-5 for moderate reduction, 5-10 for aggressive).
 - Disable all coalescing (debugging): set `STREAMING_DELTA_CHAR_LIMIT=0` and `STREAMING_IDLE_FLUSH_MS=0` for passthrough mode.

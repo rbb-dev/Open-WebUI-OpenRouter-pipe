@@ -1043,8 +1043,12 @@ async def test_chat_completions_streaming_finish_reason_length(pipe_instance_asy
 
         await session.close()
 
-    completed = [e for e in events if e.get("type") == "response.completed"]
-    assert len(completed) == 1
+    completed = [e for e in events if e.get("type") in ("response.completed", "response.incomplete")]
+    assert len(completed) == 1, (
+        f"expected exactly one terminal event, got {[e.get('type') for e in events]}"
+    )
+    assert completed[0]["response"]["status"] == "incomplete"
+    assert completed[0]["response"]["incomplete_details"] == {"reason": "max_output_tokens"}
 
 
 @pytest.mark.asyncio
@@ -4775,3 +4779,56 @@ def test_a_usage_envelope_already_in_responses_spelling_survives(raw, expected):
         "the chat spelling is the translation source; a responses-spelling value must not "
         "overwrite a counter that was already translated"
     )
+
+
+# ============================================================================
+# H20-2 / H20-3: the terminal event this transport synthesises
+#
+# H20-2: a provider that stops with `finish_reason: "length"` had its answer
+# reported as `response.completed`. `/responses` reports the identical condition
+# as `response.incomplete`, and the streaming loop turns that into a warning
+# toast. The same condition must produce the same signal on both transports,
+# streamed and not -- and it stays a *finished* call: usage reported, no breaker
+# charge.
+#
+# H20-3: a body whose last `data:` line is terminated by a single `\n` and no
+# blank line leaves that event in `event_data_parts` when `iter_any()` ends, so
+# the turn was reported as cut off (breaker charge) or retried three times.
+# `/responses` already flushes that tail.
+#
+# Every `_sse()` helper in this file appends `\n\n`, so no existing body
+# exercises either shape. The bodies below are hand-built: t2 is
+# `b"data: " + json + b"\n"` and t3 is that minus its last byte. A helper that
+# appends the blank line would make the t2 arm pass before the fix.
+# ============================================================================
+
+
+def _terminal(pipe, sse_bytes: bytes, **kwargs):
+    """Drive the real streaming adapter over `sse_bytes` and return its events."""
+
+    async def _drive():
+        session = pipe._create_http_session(pipe.valves)
+        try:
+            with aioresponses() as mock_http:
+                mock_http.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    body=sse_bytes,
+                    headers={"Content-Type": "text/event-stream"},
+                    status=200,
+                    repeat=bool(kwargs.pop("repeat", False)),
+                )
+                events = []
+                async for event in pipe.send_openai_chat_completions_streaming_request(
+                    session,
+                    {"model": "openai/gpt-4o", "stream": True, "input": []},
+                    api_key="test-key",
+                    base_url="https://openrouter.ai/api/v1",
+                    valves=pipe.valves,
+                    **kwargs,
+                ):
+                    events.append(event)
+            return events
+        finally:
+            await session.close()
+
+    return _drive()

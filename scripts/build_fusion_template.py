@@ -620,6 +620,7 @@ def build_template(html: str) -> str:
         html,
         "      case 'response.completed':\n"
         "        if (ev.response){ endFinal();",
+        "      case 'response.incomplete':\n"
         "      case 'response.done':\n"
         "      case 'response.completed':\n"
         "        if (ev.response){ endFinal();",

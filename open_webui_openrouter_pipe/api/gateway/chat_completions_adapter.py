@@ -180,6 +180,7 @@ class ChatCompletionsAdapter:
         tool_call_added: set[int] = set()
         tool_calls_completed = False
         cut_off = False
+        truncating_reason: str | None = None
         assistant_text_parts: list[str] = []
         latest_usage: dict[str, Any] = {}
         seen_citation_urls: set[str] = set()
@@ -282,6 +283,257 @@ class ChatCompletionsAdapter:
                     out.append(clean)
             return out
 
+        def _consume_blob(data_blob: bytes):
+            nonlocal emitted_any, latest_usage, reasoning_item_id, reasoning_text_seen, \
+                reasoning_summary_text, latest_message_annotations, image_item_id, \
+                image_output_item, images_emitted, refusal_text_seen, tool_calls_completed, \
+                truncating_reason
+            try:
+                chunk_obj = json.loads(data_blob.decode("utf-8"))
+            except (RecursionError, UnicodeDecodeError, ValueError) as exc:
+                self.logger.log(
+                    warn_level(
+                        _warned_chat_chunk_parse,
+                        "chunk_parse",
+                        cooldown_s=_CHAT_CHUNK_PARSE_WARN_COOLDOWN_S,
+                    ),
+                    "Chunk parse failed; the affected event is "
+                    "discarded: %s",
+                    exc,
+                    exc_info=True,
+                )
+                return
+            emitted_any = True
+            reported_error = self._pipe._ensure_error_formatter()._extract_streaming_error_event(
+                chunk_obj, chat_payload.get("model")
+            )
+            if reported_error is not None:
+                raise reported_error
+
+            if isinstance(chunk_obj, dict) and isinstance(chunk_obj.get("usage"), dict):
+                latest_usage = dict(chunk_obj["usage"])
+
+            choices = chunk_obj.get("choices") if isinstance(chunk_obj, dict) else None
+            if not isinstance(choices, list) or not choices:
+                return
+            choice0 = choices[0] if isinstance(choices[0], dict) else {}
+            delta = choice0.get("delta") if isinstance(choice0, dict) else None
+            delta_obj = delta if isinstance(delta, dict) else {}
+
+            delta_reasoning_details = delta_obj.get("reasoning_details")
+            if isinstance(delta_reasoning_details, list) and delta_reasoning_details:
+                for entry in delta_reasoning_details:
+                    if not isinstance(entry, dict):
+                        continue
+                    _record_reasoning_detail(entry)
+                    rtype = entry.get("type")
+                    if not isinstance(rtype, str) or not rtype:
+                        continue
+                    if reasoning_item_id is None:
+                        candidate_id = entry.get("id")
+                        if isinstance(candidate_id, str) and candidate_id.strip():
+                            reasoning_item_id = candidate_id.strip()
+                        else:
+                            reasoning_item_id = f"reasoning-{generate_item_id()}"
+                        yield {
+                            "type": "response.output_item.added",
+                            "item": {
+                                "type": "reasoning",
+                                "id": reasoning_item_id,
+                                "status": "in_progress",
+                            },
+                        }
+                    if rtype == "reasoning.text":
+                        text = entry.get("text")
+                        if isinstance(text, str) and text:
+                            reasoning_text_parts.append(text)
+                            reasoning_text_seen = True
+                            yield {
+                                "type": "response.reasoning_text.delta",
+                                "item_id": reasoning_item_id,
+                                "delta": text,
+                            }
+                    elif rtype == "reasoning.summary":
+                        summary = entry.get("summary")
+                        if isinstance(summary, str) and summary.strip():
+                            reasoning_summary_text = summary.strip()
+                            yield {
+                                "type": "response.reasoning_summary_text.done",
+                                "item_id": reasoning_item_id,
+                                "text": reasoning_summary_text,
+                            }
+
+            delta_reasoning_text = None
+            for key in ("reasoning", "reasoning_content"):
+                candidate = delta_obj.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    delta_reasoning_text = candidate
+                    break
+            if delta_reasoning_text:
+                if reasoning_item_id is None:
+                    reasoning_item_id = f"reasoning-{generate_item_id()}"
+                    yield {
+                        "type": "response.output_item.added",
+                        "item": {
+                            "type": "reasoning",
+                            "id": reasoning_item_id,
+                            "status": "in_progress",
+                        },
+                    }
+                reasoning_text_parts.append(delta_reasoning_text)
+                reasoning_text_seen = True
+                yield {
+                    "type": "response.reasoning_text.delta",
+                    "item_id": reasoning_item_id,
+                    "delta": delta_reasoning_text,
+                }
+
+            annotations: list[Any] = []
+            delta_annotations = delta_obj.get("annotations")
+            if isinstance(delta_annotations, list) and delta_annotations:
+                annotations.extend(delta_annotations)
+            message_obj = choice0.get("message") if isinstance(choice0, dict) else None
+            if isinstance(message_obj, dict):
+                message_annotations = message_obj.get("annotations")
+                if isinstance(message_annotations, list) and message_annotations:
+                    annotations.extend(message_annotations)
+                    latest_message_annotations = [
+                        dict(a) for a in message_annotations if isinstance(a, dict)
+                    ]
+                message_reasoning_details = message_obj.get("reasoning_details")
+                if isinstance(message_reasoning_details, list) and message_reasoning_details:
+                    for entry in message_reasoning_details:
+                        if isinstance(entry, dict):
+                            _record_reasoning_detail(entry)
+                if not reasoning_text_seen:
+                    message_reasoning_text = None
+                    for key in ("reasoning", "reasoning_content"):
+                        candidate = message_obj.get(key)
+                        if isinstance(candidate, str) and candidate.strip():
+                            message_reasoning_text = candidate
+                            break
+                    if message_reasoning_text:
+                        if reasoning_item_id is None:
+                            reasoning_item_id = f"reasoning-{generate_item_id()}"
+                            yield {
+                                "type": "response.output_item.added",
+                                "item": {
+                                    "type": "reasoning",
+                                    "id": reasoning_item_id,
+                                    "status": "in_progress",
+                                },
+                            }
+                        reasoning_text_parts.append(message_reasoning_text)
+                        reasoning_text_seen = True
+                        yield {
+                            "type": "response.reasoning_text.delta",
+                            "item_id": reasoning_item_id,
+                            "delta": message_reasoning_text,
+                        }
+                if not refusal_text_seen:
+                    message_refusal = message_obj.get("refusal")
+                    if isinstance(message_refusal, str) and message_refusal.strip():
+                        refusal_text_parts.append(message_refusal)
+                        refusal_text_seen = True
+                message_images = message_obj.get("images")
+                if (
+                    not images_emitted
+                    and isinstance(message_images, list)
+                    and message_images
+                ):
+                    image_results: list[Any] = []
+                    for entry in message_images:
+                        if isinstance(entry, dict):
+                            image_results.append(dict(entry))
+                        elif isinstance(entry, str) and entry.strip():
+                            image_results.append(entry.strip())
+                    if image_results:
+                        if image_item_id is None:
+                            image_item_id = f"image-{generate_item_id()}"
+                        image_output_item = {
+                            "type": "image_generation_call",
+                            "id": image_item_id,
+                            "status": "completed",
+                            "result": image_results,
+                        }
+                        yield {
+                            "type": "response.output_item.added",
+                            "item": dict(image_output_item, status="in_progress"),
+                        }
+                        yield {
+                            "type": "response.output_item.done",
+                            "item": image_output_item,
+                        }
+                        images_emitted = True
+
+            if annotations:
+                for url, title, content in _parse_url_citation_annotations(annotations):
+                    if url in seen_citation_urls:
+                        continue
+                    seen_citation_urls.add(url)
+                    yield {
+                        "type": "response.output_text.annotation.added",
+                        "annotation": {"type": "url_citation", "url": url, "title": title, "content": content},
+                    }
+
+            content_delta = delta_obj.get("content")
+            if isinstance(content_delta, str) and content_delta:
+                assistant_text_parts.append(content_delta)
+                yield {"type": "response.output_text.delta", "delta": content_delta}
+
+            delta_refusal = delta_obj.get("refusal")
+            if isinstance(delta_refusal, str) and delta_refusal.strip():
+                refusal_text_parts.append(delta_refusal)
+                refusal_text_seen = True
+
+            tool_calls = delta_obj.get("tool_calls")
+            if isinstance(tool_calls, list) and tool_calls:
+                for raw_call in tool_calls:
+                    if not isinstance(raw_call, dict):
+                        continue
+                    index = raw_call.get("index")
+                    if not isinstance(index, int):
+                        index = max(tool_calls_by_index.keys(), default=-1) + 1
+                    current = tool_calls_by_index.setdefault(index, {})
+                    raw_id = raw_call.get("id")
+                    if isinstance(raw_id, str) and raw_id.strip():
+                        current["id"] = raw_id
+                    function = raw_call.get("function")
+                    if isinstance(function, dict):
+                        name = function.get("name")
+                        if isinstance(name, str) and name:
+                            current["name"] = name
+                        args_delta = function.get("arguments")
+                        if isinstance(args_delta, str) and args_delta:
+                            existing = current.get("arguments") or ""
+                            current["arguments"] = f"{existing}{args_delta}"
+
+                    if index not in tool_call_added:
+                        tool_call_added.add(index)
+                        call_id = _ensure_tool_call_id(index, current)
+                        yield {
+                            "type": "response.output_item.added",
+                            "item": {
+                                "type": "function_call",
+                                "id": call_id,
+                                "call_id": call_id,
+                                "status": "in_progress",
+                                "name": current.get("name") or "",
+                                "arguments": current.get("arguments") or "",
+                            },
+                        }
+
+            finish_reason = choice0.get("finish_reason") if isinstance(choice0, dict) else None
+            if isinstance(finish_reason, str) and finish_reason in {
+                "tool_calls",
+                "stop",
+                "length",
+                "content_filter",
+            }:
+                tool_calls_completed = True
+                if finish_reason == "length":
+                    truncating_reason = "max_output_tokens"
+
         first_chunk_received = False
         async for attempt in retryer:
             with attempt:
@@ -342,249 +594,8 @@ class ChatCompletionsAdapter:
                                     done = True
                                     timing_mark("chat_stream_done")
                                     break
-                                try:
-                                    chunk_obj = json.loads(data_blob.decode("utf-8"))
-                                except (RecursionError, UnicodeDecodeError, ValueError) as exc:
-                                    self.logger.log(
-                                        warn_level(
-                                            _warned_chat_chunk_parse,
-                                            "chunk_parse",
-                                            cooldown_s=_CHAT_CHUNK_PARSE_WARN_COOLDOWN_S,
-                                        ),
-                                        "Chunk parse failed; the affected event is "
-                                        "discarded: %s",
-                                        exc,
-                                        exc_info=True,
-                                    )
-                                    continue
-                                emitted_any = True
-                                reported_error = self._pipe._ensure_error_formatter()._extract_streaming_error_event(
-                                    chunk_obj, chat_payload.get("model")
-                                )
-                                if reported_error is not None:
-                                    raise reported_error
-
-                                if isinstance(chunk_obj, dict) and isinstance(chunk_obj.get("usage"), dict):
-                                    latest_usage = dict(chunk_obj["usage"])
-
-                                choices = chunk_obj.get("choices") if isinstance(chunk_obj, dict) else None
-                                if not isinstance(choices, list) or not choices:
-                                    continue
-                                choice0 = choices[0] if isinstance(choices[0], dict) else {}
-                                delta = choice0.get("delta") if isinstance(choice0, dict) else None
-                                delta_obj = delta if isinstance(delta, dict) else {}
-
-                                delta_reasoning_details = delta_obj.get("reasoning_details")
-                                if isinstance(delta_reasoning_details, list) and delta_reasoning_details:
-                                    for entry in delta_reasoning_details:
-                                        if not isinstance(entry, dict):
-                                            continue
-                                        _record_reasoning_detail(entry)
-                                        rtype = entry.get("type")
-                                        if not isinstance(rtype, str) or not rtype:
-                                            continue
-                                        if reasoning_item_id is None:
-                                            candidate_id = entry.get("id")
-                                            if isinstance(candidate_id, str) and candidate_id.strip():
-                                                reasoning_item_id = candidate_id.strip()
-                                            else:
-                                                reasoning_item_id = f"reasoning-{generate_item_id()}"
-                                            yield {
-                                                "type": "response.output_item.added",
-                                                "item": {
-                                                    "type": "reasoning",
-                                                    "id": reasoning_item_id,
-                                                    "status": "in_progress",
-                                                },
-                                            }
-                                        if rtype == "reasoning.text":
-                                            text = entry.get("text")
-                                            if isinstance(text, str) and text:
-                                                reasoning_text_parts.append(text)
-                                                reasoning_text_seen = True
-                                                yield {
-                                                    "type": "response.reasoning_text.delta",
-                                                    "item_id": reasoning_item_id,
-                                                    "delta": text,
-                                                }
-                                        elif rtype == "reasoning.summary":
-                                            summary = entry.get("summary")
-                                            if isinstance(summary, str) and summary.strip():
-                                                reasoning_summary_text = summary.strip()
-                                                yield {
-                                                    "type": "response.reasoning_summary_text.done",
-                                                    "item_id": reasoning_item_id,
-                                                    "text": reasoning_summary_text,
-                                                }
-
-                                delta_reasoning_text = None
-                                for key in ("reasoning", "reasoning_content"):
-                                    candidate = delta_obj.get(key)
-                                    if isinstance(candidate, str) and candidate.strip():
-                                        delta_reasoning_text = candidate
-                                        break
-                                if delta_reasoning_text:
-                                    if reasoning_item_id is None:
-                                        reasoning_item_id = f"reasoning-{generate_item_id()}"
-                                        yield {
-                                            "type": "response.output_item.added",
-                                            "item": {
-                                                "type": "reasoning",
-                                                "id": reasoning_item_id,
-                                                "status": "in_progress",
-                                            },
-                                        }
-                                    reasoning_text_parts.append(delta_reasoning_text)
-                                    reasoning_text_seen = True
-                                    yield {
-                                        "type": "response.reasoning_text.delta",
-                                        "item_id": reasoning_item_id,
-                                        "delta": delta_reasoning_text,
-                                    }
-
-                                annotations: list[Any] = []
-                                delta_annotations = delta_obj.get("annotations")
-                                if isinstance(delta_annotations, list) and delta_annotations:
-                                    annotations.extend(delta_annotations)
-                                message_obj = choice0.get("message") if isinstance(choice0, dict) else None
-                                if isinstance(message_obj, dict):
-                                    message_annotations = message_obj.get("annotations")
-                                    if isinstance(message_annotations, list) and message_annotations:
-                                        annotations.extend(message_annotations)
-                                        latest_message_annotations = [
-                                            dict(a) for a in message_annotations if isinstance(a, dict)
-                                        ]
-                                    message_reasoning_details = message_obj.get("reasoning_details")
-                                    if isinstance(message_reasoning_details, list) and message_reasoning_details:
-                                        for entry in message_reasoning_details:
-                                            if isinstance(entry, dict):
-                                                _record_reasoning_detail(entry)
-                                    if not reasoning_text_seen:
-                                        message_reasoning_text = None
-                                        for key in ("reasoning", "reasoning_content"):
-                                            candidate = message_obj.get(key)
-                                            if isinstance(candidate, str) and candidate.strip():
-                                                message_reasoning_text = candidate
-                                                break
-                                        if message_reasoning_text:
-                                            if reasoning_item_id is None:
-                                                reasoning_item_id = f"reasoning-{generate_item_id()}"
-                                                yield {
-                                                    "type": "response.output_item.added",
-                                                    "item": {
-                                                        "type": "reasoning",
-                                                        "id": reasoning_item_id,
-                                                        "status": "in_progress",
-                                                    },
-                                                }
-                                            reasoning_text_parts.append(message_reasoning_text)
-                                            reasoning_text_seen = True
-                                            yield {
-                                                "type": "response.reasoning_text.delta",
-                                                "item_id": reasoning_item_id,
-                                                "delta": message_reasoning_text,
-                                            }
-                                    if not refusal_text_seen:
-                                        message_refusal = message_obj.get("refusal")
-                                        if isinstance(message_refusal, str) and message_refusal.strip():
-                                            refusal_text_parts.append(message_refusal)
-                                            refusal_text_seen = True
-                                    message_images = message_obj.get("images")
-                                    if (
-                                        not images_emitted
-                                        and isinstance(message_images, list)
-                                        and message_images
-                                    ):
-                                        image_results: list[Any] = []
-                                        for entry in message_images:
-                                            if isinstance(entry, dict):
-                                                image_results.append(dict(entry))
-                                            elif isinstance(entry, str) and entry.strip():
-                                                image_results.append(entry.strip())
-                                        if image_results:
-                                            if image_item_id is None:
-                                                image_item_id = f"image-{generate_item_id()}"
-                                            image_output_item = {
-                                                "type": "image_generation_call",
-                                                "id": image_item_id,
-                                                "status": "completed",
-                                                "result": image_results,
-                                            }
-                                            yield {
-                                                "type": "response.output_item.added",
-                                                "item": dict(image_output_item, status="in_progress"),
-                                            }
-                                            yield {
-                                                "type": "response.output_item.done",
-                                                "item": image_output_item,
-                                            }
-                                            images_emitted = True
-
-                                if annotations:
-                                    for url, title, content in _parse_url_citation_annotations(annotations):
-                                        if url in seen_citation_urls:
-                                            continue
-                                        seen_citation_urls.add(url)
-                                        yield {
-                                            "type": "response.output_text.annotation.added",
-                                            "annotation": {"type": "url_citation", "url": url, "title": title, "content": content},
-                                        }
-
-                                content_delta = delta_obj.get("content")
-                                if isinstance(content_delta, str) and content_delta:
-                                    assistant_text_parts.append(content_delta)
-                                    yield {"type": "response.output_text.delta", "delta": content_delta}
-
-                                delta_refusal = delta_obj.get("refusal")
-                                if isinstance(delta_refusal, str) and delta_refusal.strip():
-                                    refusal_text_parts.append(delta_refusal)
-                                    refusal_text_seen = True
-
-                                tool_calls = delta_obj.get("tool_calls")
-                                if isinstance(tool_calls, list) and tool_calls:
-                                    for raw_call in tool_calls:
-                                        if not isinstance(raw_call, dict):
-                                            continue
-                                        index = raw_call.get("index")
-                                        if not isinstance(index, int):
-                                            index = max(tool_calls_by_index.keys(), default=-1) + 1
-                                        current = tool_calls_by_index.setdefault(index, {})
-                                        raw_id = raw_call.get("id")
-                                        if isinstance(raw_id, str) and raw_id.strip():
-                                            current["id"] = raw_id
-                                        function = raw_call.get("function")
-                                        if isinstance(function, dict):
-                                            name = function.get("name")
-                                            if isinstance(name, str) and name:
-                                                current["name"] = name
-                                            args_delta = function.get("arguments")
-                                            if isinstance(args_delta, str) and args_delta:
-                                                existing = current.get("arguments") or ""
-                                                current["arguments"] = f"{existing}{args_delta}"
-
-                                        if index not in tool_call_added:
-                                            tool_call_added.add(index)
-                                            call_id = _ensure_tool_call_id(index, current)
-                                            yield {
-                                                "type": "response.output_item.added",
-                                                "item": {
-                                                    "type": "function_call",
-                                                    "id": call_id,
-                                                    "call_id": call_id,
-                                                    "status": "in_progress",
-                                                    "name": current.get("name") or "",
-                                                    "arguments": current.get("arguments") or "",
-                                                },
-                                            }
-
-                                finish_reason = choice0.get("finish_reason") if isinstance(choice0, dict) else None
-                                if isinstance(finish_reason, str) and finish_reason in {
-                                    "tool_calls",
-                                    "stop",
-                                    "length",
-                                    "content_filter",
-                                }:
-                                    tool_calls_completed = True
+                                for ev in _consume_blob(data_blob):
+                                    yield ev
 
                             if stripped.startswith(b":"):
                                 continue
@@ -596,6 +607,12 @@ class ChatCompletionsAdapter:
                             del buf[:start_idx]
                         if done:
                             break
+                    if event_data_parts and not done:
+                        data_blob = b"\n".join(event_data_parts).strip()
+                        event_data_parts.clear()
+                        if data_blob and data_blob != b"[DONE]":
+                            for ev in _consume_blob(data_blob):
+                                yield ev
                     if not emitted_any:
                         raise aiohttp.ClientPayloadError("OpenRouter closed the stream before sending anything")
                     if not done and not tool_calls_completed:
@@ -682,6 +699,17 @@ class ChatCompletionsAdapter:
                 }
             )
 
+        if truncating_reason is not None:
+            yield {
+                "type": "response.completed",
+                "response": {
+                    "output": output,
+                    "usage": ChatCompletionsAdapter._chat_usage_to_responses_usage(latest_usage),
+                    "status": "incomplete",
+                    "incomplete_details": {"reason": truncating_reason},
+                },
+            }
+            return
         yield {
             "type": "response.completed",
             "response": {

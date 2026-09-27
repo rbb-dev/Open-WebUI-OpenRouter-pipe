@@ -140,8 +140,10 @@ class NonStreamingAdapter:
             )
             choices = chat_response.get("choices") if isinstance(chat_response, dict) else None
             message = None
+            finish_reason = None
             if isinstance(choices, list) and choices and isinstance(choices[0], dict):
                 message = choices[0].get("message")
+                finish_reason = choices[0].get("finish_reason")
             message_obj = message if isinstance(message, dict) else {}
 
             usage = chat_response.get("usage") if isinstance(chat_response, dict) else None
@@ -303,13 +305,16 @@ class NonStreamingAdapter:
                 output.append(image_output_item)
             output.extend(output_calls)
 
-            yield {
-                "type": "response.completed",
-                "response": {
-                    "output": output,
-                    "usage": _chat_completions_adapter()._chat_usage_to_responses_usage(latest_usage),
-                },
+            response_payload: dict[str, Any] = {
+                "output": output,
+                "usage": _chat_completions_adapter()._chat_usage_to_responses_usage(latest_usage),
             }
+            terminal_type = "response.completed"
+            if finish_reason == "length":
+                terminal_type = "response.completed"
+                response_payload["status"] = "incomplete"
+                response_payload["incomplete_details"] = {"reason": "max_output_tokens"}
+            yield {"type": terminal_type, "response": response_payload}
 
         if endpoint == "chat_completions":
             async for event in _run_chat():

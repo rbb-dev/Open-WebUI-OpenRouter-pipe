@@ -281,13 +281,7 @@ class ResponsesAdapter:
                             break
             finally:
                 for _ in range(workers):
-                    try:
-                        chunk_queue.put_nowait(chunk_sentinel)
-                    except asyncio.QueueFull:
-                        self.logger.debug(
-                            "Chunk queue full while sending sentinel; workers will be cancelled during cleanup."
-                        )
-                        break
+                    await chunk_queue.put(chunk_sentinel)
 
         worker_first_event_queued = False
 

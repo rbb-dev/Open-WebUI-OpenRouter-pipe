@@ -1295,12 +1295,12 @@ class Valves(BaseModel):
     STREAMING_CHUNK_QUEUE_MAXSIZE: int = Field(
         default=0,
         ge=0,
-        description="Maximum number of raw SSE chunks buffered before the pipe stops reading from OpenRouter until the backlog clears. 0=unbounded (cannot stall, recommended); bounded values &lt;500 risk stalls on tool-heavy loads, slow database writes, or a slow browser (a slow reader fills the decoded-event backlog, which fills the raw-chunk backlog, which stops the pipe reading from OpenRouter).",
+        description="Maximum number of raw SSE chunks buffered before the pipe stops reading from OpenRouter until the backlog clears. 0=unbounded (cannot stall, recommended); bounded values risk stalls on tool-heavy loads, slow database writes, or a slow browser (a slow reader fills the decoded-event backlog, which fills the raw-chunk backlog, which stops the pipe reading from OpenRouter), and a consumer that stops reading entirely is held by that backpressure rather than ended, with the abandoned generator released on cancellation.",
     )
     STREAMING_EVENT_QUEUE_MAXSIZE: int = Field(
         default=0,
         ge=0,
-        description="Maximum number of decoded events buffered before the rest of the pipe handles them. 0=unbounded (cannot stall, recommended); bounded values &lt;500 risk stalls on tool-heavy loads, slow database writes, or a slow browser (a slow reader fills the decoded-event backlog, which fills the raw-chunk backlog, which stops the pipe reading from OpenRouter).",
+        description="Maximum number of decoded events buffered before the rest of the pipe handles them. 0=unbounded (cannot stall, recommended); bounded values risk stalls on tool-heavy loads, slow database writes, or a slow browser (a slow reader fills the decoded-event backlog, which fills the raw-chunk backlog, which stops the pipe reading from OpenRouter). Unlike the raw-chunk buffer, a worker mid-put on this queue when the reply ends can hold the stream, so a consumer that has stopped reading can leave a reply open rather than ended.",
 
     )
     STREAMING_CHUNK_QUEUE_WARN_SIZE: int = Field(

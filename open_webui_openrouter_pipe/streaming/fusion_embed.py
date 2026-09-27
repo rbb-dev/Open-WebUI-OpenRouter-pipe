@@ -1284,6 +1284,7 @@ body{
       case 'response.fusion_call.synthesis.in_progress':     _sawSynthesis = true; synthesisStarting(ev.model); break;
       case 'response.fusion_call.synthesis.reasoning.delta': stageReasoningDelta(ev, 'synthesis'); break;
       case 'response.fusion_call.completed':            break;
+      case 'response.incomplete':
       case 'response.done':
       case 'response.completed':
         if (ev.response){ endFinal(); var _el = (ev.response.elapsed_seconds!=null) ? ev.response.elapsed_seconds : (_clockStart ? (Date.now()-_clockStart)/1000 : 0); freezeClock(_el*1000); renderFooter(ev.response.usage, ev.response.model, _el); }
@@ -1503,7 +1504,7 @@ class FusionDeliberationState:
             self.events.append(event)
             return None
 
-        if etype in ("response.completed", "response.done"):
+        if etype in ("response.completed", "response.done", "response.incomplete"):
             self.completed = True
             self.events.append(event)
             return "completed"
@@ -1562,7 +1563,7 @@ class FusionDeliberationState:
                 i
                 for i in range(len(self.events) - 1, -1, -1)
                 if isinstance(self.events[i], dict)
-                and self.events[i].get("type") in ("response.completed", "response.done")
+                and self.events[i].get("type") in ("response.completed", "response.done", "response.incomplete")
             ),
             len(self.events),
         )
