@@ -46,6 +46,7 @@ def make_thumbnail(
 
     src = Image.open(io.BytesIO(image_bytes))
     if src.width * src.height > _MAX_INPUT_PIXELS:
+        src.close()
         raise ValueError(
             f"image is too large: {src.width}x{src.height} exceeds "
             f"{_MAX_INPUT_PIXELS} pixel cap"

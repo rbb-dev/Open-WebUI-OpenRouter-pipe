@@ -505,7 +505,51 @@ def _install_open_webui_stubs() -> None:
         return sources
 
     async def _process_tool_result(request=None, tool_function_name='', tool_result='', tool_type='', direct_tool=False, metadata=None, user=None):
-        return (str(tool_result), [], [])
+        """Open WebUI 0.11.4 `utils/middleware.py::process_tool_result` (`:1052-1265`), tail only.
+
+        Transcribed from the installed function, not from its shape: the model-visible text is a
+        dict or list as pretty JSON, a list folded under `{"results": ...}`, a tuple unpacked to
+        its first element, and a bare image data URI moved into the files slot with a summary
+        text. The rendered text is what `_is_tool_result_error` reads, so a stand-in that
+        returns `str(tool_result)` classifies every tool failure as a success.
+
+        Three branches are deliberately left out, and the divergence they would create is
+        pinned by `tests/test_a_stand_in_for_an_open_webui_function_is_that_function.py`:
+
+        * `HTMLResponse` and external-tool header handling (`:1064-1165`). The installed
+          function decodes an inline body into embeds and answers with a `ui_component` result
+          dict. For a **bare** `HTMLResponse` this returns `(str(tool_result), [], [])`, which is
+          what arm D pins. The installed function also accepts the 2-tuple
+          `(HTMLResponse, result_context)` that `:1064-1067` unpacks; the tail's tuple branch is
+          **not** transcribed, so the text is `str()` of the whole tuple and the embeds stay
+          empty. Deliberate: transcribing the branch would need the `HTMLResponse` import here.
+        * the MCP list branch (`:1176-1245`), which needs `get_file_url_from_base64` and the
+          Open WebUI storage behind it.
+        * `extract_base64_images` (`:1013-1026`), which walks dicts and lists and would drag
+          that same storage import into every tool test. The flat `data:image/` branch the
+          pipe's picture path needs is two lines with no Open WebUI imports.
+        """
+        tool_result_embeds = []
+        tool_result_files = []
+        if direct_tool and isinstance(tool_result, list) and len(tool_result) == 2:
+            tool_result = tool_result[0]
+        if isinstance(tool_result, str) and tool_result.startswith("data:image/"):
+            tool_result_files.append({"type": "image", "url": tool_result})
+            tool_result = f"{tool_function_name}: Image file read successfully."
+        if isinstance(tool_result, list):
+            tool_result = {"results": tool_result}
+        if isinstance(tool_result, dict) or isinstance(tool_result, list):
+            tool_result = json.dumps(tool_result, indent=2, ensure_ascii=False)
+        if tool_result is not None and not isinstance(tool_result, str):
+            if isinstance(tool_result, tuple):
+                head = tool_result[0] if len(tool_result) > 0 else None
+                if isinstance(head, (str, int, float, bool, type(None), dict, list)):
+                    tool_result = json.dumps(head, indent=2, ensure_ascii=False) if len(tool_result) > 0 else ""
+                else:
+                    tool_result = str(tool_result)
+            else:
+                tool_result = str(tool_result)
+        return tool_result, tool_result_files, tool_result_embeds
 
     middleware_mod.apply_source_context_to_messages = _apply_source_context_to_messages
     middleware_mod.get_citation_source_from_tool_result = _get_citation_source_from_tool_result

@@ -478,6 +478,8 @@ class FilterManager:
             )
             created = await Functions.insert_new_function("", "filter", form)
             if not created:
+                created = await Functions.get_function_by_id(candidate_id)
+            if not created:
                 return None
             await Functions.update_function_by_id(candidate_id, {"is_active": True, "is_global": False, "name": desired_name, "meta": FunctionMeta(**_merged_meta(created, desired_meta))})
             self.logger.info("Installed %s: %s", log_label, candidate_id)
@@ -932,7 +934,7 @@ class FilterManager:
             import sys
             import types
 
-            module_name = f"_owui_or_webtools_inner_{abs(hash(content)) % 10**10}"
+            module_name = f"function_{function_id}"
             module = types.ModuleType(module_name)
             module.__file__ = "<installed-web-tools-filter>"
             try:
@@ -2812,6 +2814,8 @@ class Filter:
                         meta=meta_obj,
                     )
                     created_func = await Functions.insert_new_function("", "filter", form)
+                    if not created_func:
+                        created_func = await Functions.get_function_by_id(candidate_id)
                     if created_func:
                         await Functions.update_function_by_id(
                             candidate_id,
