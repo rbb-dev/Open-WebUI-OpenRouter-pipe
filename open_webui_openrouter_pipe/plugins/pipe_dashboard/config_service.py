@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 import typing
 from typing import Any
 
 import annotated_types as at
+from pydantic import ValidationError
 
 from ...core.config import EncryptedStr, _is_template_valve
 from .config_meta import CONFIG_META
+
+logger = logging.getLogger(__name__)
 
 _UNCATEGORIZED_TOP = "Uncategorized"
 _ACRONYMS = frozenset(
@@ -137,14 +141,45 @@ def drift(valves_cls: type) -> dict[str, list[str]]:
     return {"unenriched": sorted(live - mapped), "orphaned": sorted(mapped - live)}
 
 
-def merge_for_save(valves_cls: type, current: dict[str, Any], edits: dict[str, Any]) -> dict[str, Any]:
-    """Return only the custom subset (fields differing from default) to persist, validating edits over current."""
-    merged = dict(current)
+def readable_stored(valves_cls: type, stored: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    kept = {k: v for k, v in stored.items() if v is not None}
+    try:
+        valves_cls(**kept)
+    except ValidationError as exc:
+        bad = {str(err["loc"][0]) for err in exc.errors() if err.get("loc")}
+        return {k: v for k, v in kept.items() if k not in bad}, sorted(bad)
+    return kept, []
+
+
+class _ClientMessage(RuntimeError):
+    pass
+
+
+async def stored_row_readable(pipe_id: str, stored: Any) -> tuple[bool, str]:
+    if stored is None:
+        return False, "the stored configuration could not be read from the database"
+    return True, ""
+
+
+def merge_for_save_with_drops(
+    valves_cls: type, current: dict[str, Any], edits: dict[str, Any]
+) -> tuple[dict[str, Any], list[str]]:
+    stored, dropped = readable_stored(valves_cls, current)
+    if dropped:
+        logger.warning(
+            "pipe_dashboard: dropped stored valves the current schema rejects: %s",
+            ", ".join(dropped),
+        )
+    merged = dict(stored)
     for key, value in edits.items():
         fld = valves_cls.model_fields.get(key)
         if fld is None:
             continue
         if is_secret(fld.annotation) and (value is None or value == ""):
+            continue
+        _, nullable = _base_type(fld.annotation)
+        if nullable and isinstance(value, str) and not value.strip():
+            merged[key] = None
             continue
         merged[key] = value
     full = valves_cls(**merged).model_dump()
@@ -160,4 +195,8 @@ def merge_for_save(valves_cls: type, current: dict[str, Any], edits: dict[str, A
                 out[name] = full[name]
         elif full.get(name) != defaults.get(name):
             out[name] = full[name]
-    return out
+    return out, dropped
+
+
+def merge_for_save(valves_cls: type, current: dict[str, Any], edits: dict[str, Any]) -> dict[str, Any]:
+    return merge_for_save_with_drops(valves_cls, current, edits)[0]

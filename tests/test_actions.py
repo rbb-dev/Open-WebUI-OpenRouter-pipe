@@ -142,23 +142,32 @@ def test_scrub_strips_newlines_and_truncates():
 
 
 class _FakeFunctions:
-    def __init__(self, rev=1000, valves=None):
+    def __init__(self, rev=1000, valves=None, encrypted=False, encrypt=None, decrypt=None):
         self.rev = rev
         self.saved = None
         self.valves = {} if valves is None else valves
+        # An encrypted install stores ciphertext in the column and hands the caller a
+        # decoded dict. Driving that through the REAL encrypt/decrypt pair is the
+        # whole point: a fake that just hands over a token proves nothing, because a
+        # refusal keyed on the token's shape would pass it too.
+        self.encrypted = encrypted
+        self.encrypt = encrypt
+        self.decrypt = decrypt
 
     async def get_function_by_id(self, id, db=None):
         return SimpleNamespace(updated_at=self.rev)
 
     async def get_function_valves_by_id(self, id, db=None):
-        return self.valves
+        if not self.encrypted:
+            return self.valves
+        return self.decrypt(self.valves)  # type: ignore[misc]
 
     async def update_function_valves_by_id(self, id, valves, db=None):
         # Open WebUI commits the write, so the very next read returns it. A double that
         # kept serving the pre-save subset would let a handler read stale values back and
         # still look correct here.
         self.saved = valves
-        self.valves = valves
+        self.valves = valves if not self.encrypted else self.encrypt(valves)  # type: ignore[misc]
         self.rev += 1
         return SimpleNamespace(updated_at=self.rev)
 
@@ -341,6 +350,24 @@ async def test_a_save_answers_with_the_value_the_store_now_holds(fake_functions,
     assert result["values"] == {name: stored}, result
 
 
+# -- H124-1: clearing a nullable numeric box must not take the save down with it -------
+
+
+def _swept_nullable_numbers() -> list[str]:
+    """The nullable valves the Config tab shows as number boxes, swept at test time.
+
+    Swept from ``describe_valves`` rather than listed, so a fourth nullable number
+    valve fails until it is covered.
+    """
+    from open_webui_openrouter_pipe.plugins.pipe_dashboard.config_service import describe_valves
+
+    return [
+        spec["name"]
+        for spec in describe_valves(Valves)
+        if spec["nullable"] and spec["widget"].startswith("number")
+    ]
+
+
 @pytest.mark.asyncio
 async def test_a_save_never_answers_with_a_secret(monkeypatch, fake_functions):
     """A secret is write-only to the browser; echoing it back would hand it to anyone watching."""
@@ -372,12 +399,19 @@ async def test_config_set_preserves_unedited_secret(fake_functions):
 
 @pytest.mark.asyncio
 async def test_config_set_aborts_when_current_read_fails(fake_functions):
+    """A store that cannot be read holds the write, and says why.
+
+    Rewritten, not deleted: the delivery mechanism changed from a raised exception to a
+    payload, so the property -- the write is blocked -- now arrives as a value. The
+    unreadable row is built by assigning after construction, exactly as before:
+    ``_FakeFunctions(valves=None)`` normalises to ``{}``, which is a READABLE row.
+    """
     fake_functions.valves = None
     pipe = _config_pipe()
-    with pytest.raises(Exception):
-        await actions.ACTIONS["config_set"].handler(
-            pipe, _user(), {"edits": {"MODEL_ID": "x"}, "rev": 1000}
-        )
+    result = await actions.ACTIONS["config_set"].handler(
+        pipe, _user(), {"edits": {"MODEL_ID": "x"}, "rev": 1000}
+    )
+    assert result["unreadable"], result
     assert fake_functions.saved is None
 
 

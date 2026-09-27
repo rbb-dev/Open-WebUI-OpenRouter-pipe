@@ -14,7 +14,15 @@ from dataclasses import dataclass
 from typing import Any, NamedTuple
 
 from .authz import can_act, can_view
-from .config_service import describe_valves, drift, json_safe, merge_for_save
+from .config_service import (
+    _ClientMessage,
+    describe_valves,
+    drift,
+    json_safe,
+    merge_for_save_with_drops,
+    readable_stored,
+    stored_row_readable,
+)
 from .dashboard_socket import emit_config_changed
 from .update_service import UpdateError
 
@@ -130,10 +138,11 @@ async def dispatch_action(
             result = await entry.handler(pipe, user, args, request=request)
         else:
             result = await entry.handler(pipe, user, args)
-    except Exception:
+    except Exception as exc:
         logger.exception("pipe_dashboard action %s failed", name)
         _audit(user, name, "error", client_ip, args=args if write else None)
-        return 500, {"error": "action failed"}
+        text = str(exc).strip() if isinstance(exc, _ClientMessage) else exc.__class__.__name__
+        return 500, {"error": "action failed", "detail": text}
     _audit(user, name, "ok", client_ip, args=args if write else None)
     return 200, {"ok": True, "result": result}
 
@@ -197,8 +206,7 @@ async def _current_config_rev(pipe: Any) -> Any:
         return None
 
 
-async def _effective_valves(pipe: Any) -> Any:
-    """Reconstruct valves from the stored custom subset so reads reflect persisted state."""
+async def _effective_valves_and_drops(pipe: Any) -> tuple[Any, list[str]]:
     try:
         from open_webui.models.functions import Functions
 
@@ -209,19 +217,31 @@ async def _effective_valves(pipe: Any) -> Any:
             "in-memory values instead of the persisted ones",
             exc_info=True,
         )
-        return pipe.valves
+        return pipe.valves, []
     valves_cls = type(pipe.valves)
+    readable, reason = await stored_row_readable(getattr(pipe, "id", ""), stored)
+    if not readable:
+        logger.warning(
+            "pipe_dashboard: the stored valve set could not be read, so the config view "
+            "refuses to show a current state it cannot confirm and the Config tab will "
+            "not save over it (%s)",
+            reason,
+        )
+        raise _ClientMessage(reason)
     if not stored:
-        return valves_cls()
-    try:
-        return valves_cls(**{k: v for k, v in stored.items() if v is not None})
-    except Exception:
+        return valves_cls(), []
+    kept, dropped = readable_stored(valves_cls, stored)
+    if dropped:
         logger.warning(
             "pipe_dashboard: the persisted valve set does not validate against the "
-            "current schema; the config view is showing in-memory values instead",
-            exc_info=True,
+            "current schema; %s cannot be shown or saved and reads as its default",
+            ", ".join(dropped),
         )
-        return pipe.valves
+    return valves_cls(**kept), dropped
+
+
+async def _effective_valves(pipe: Any) -> Any:
+    return (await _effective_valves_and_drops(pipe))[0]
 
 
 def _config_snapshot(valves: Any) -> dict[str, Any]:
@@ -240,7 +260,15 @@ def _config_snapshot(valves: Any) -> dict[str, Any]:
 
 async def _saved_values(pipe: Any, names: Iterable[str]) -> dict[str, Any]:
     wanted = set(names)
-    snapshot = _config_snapshot(await _effective_valves(pipe))
+    try:
+        effective = await _effective_valves(pipe)
+    except _ClientMessage:
+        logger.warning(
+            "pipe_dashboard: the store became unreadable while echoing a completed save; "
+            "the write is committed, so the echo is dropped rather than reported as a failure"
+        )
+        return {}
+    snapshot = _config_snapshot(effective)
     return {
         spec["name"]: spec["value"]
         for spec in snapshot["valves"]
@@ -250,8 +278,9 @@ async def _saved_values(pipe: Any, names: Iterable[str]) -> dict[str, Any]:
 
 @register_action("config_get", permission="read", schema=None)
 async def _config_get(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
-    effective = await _effective_valves(pipe)
+    effective, dropped = await _effective_valves_and_drops(pipe)
     snapshot = _config_snapshot(effective)
+    snapshot["reset"] = dropped
     snapshot["rev"] = await _current_config_rev(pipe)
     return snapshot
 
@@ -267,7 +296,10 @@ async def _config_set(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
     # hands the client rev: null, which it echoes back, making `client_rev is not None`
     # False and letting the write through with no concurrency check at all.
     if current_rev is None or (client_rev is not None and client_rev != current_rev):
-        effective = await _effective_valves(pipe)
+        try:
+            effective = await _effective_valves(pipe)
+        except _ClientMessage as exc:
+            return {"unreadable": str(exc), "rev": current_rev}
         stale = _config_snapshot(effective)
         stale["conflict"] = True
         stale["rev"] = current_rev
@@ -278,15 +310,21 @@ async def _config_set(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
     from open_webui.models.functions import Functions
 
     current = await Functions.get_function_valves_by_id(getattr(pipe, "id", ""))
-    if current is None:
-        raise RuntimeError("could not read current config")
-    to_save = merge_for_save(type(pipe.valves), current, edits)
+    readable, reason = await stored_row_readable(getattr(pipe, "id", ""), current)
+    if not readable or current is None:
+        return {"unreadable": reason or "the stored configuration could not be read from the database", "rev": current_rev}
+    to_save, dropped = merge_for_save_with_drops(type(pipe.valves), current, edits)
     result = await Functions.update_function_valves_by_id(getattr(pipe, "id", ""), to_save)
     if result is None:
         raise RuntimeError("valve update rejected by store")
     rev = getattr(result, "updated_at", None)
     await emit_config_changed(rev)
-    return {"saved": len(edits), "rev": rev, "values": await _saved_values(pipe, edits)}
+    return {
+        "saved": len(edits),
+        "rev": rev,
+        "reset": dropped,
+        "values": await _saved_values(pipe, edits),
+    }
 
 
 def _update_service_of(pipe: Any) -> Any:

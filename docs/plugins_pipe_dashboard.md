@@ -200,11 +200,17 @@ The About tab lists the registered plugins by name, id, and version.
 
 The Config tab is the pipe's configuration editor. It lists every admin valve in a searchable, grouped tree, each with its own help text. Edit any value in place.
 
-**How a save is stored.** A save records only the valves whose values differ from their defaults. Those valves show as **Custom** on Open WebUI's native valves screen; every other valve reads as its default.
+**How a save is stored.** A save records only the valves whose values differ from their defaults. Those valves show as **Custom** on Open WebUI's native valves screen; every other valve reads as its default. Clearing a **nullable** setting's box returns it to unset, so the saved row carries no name for it. Clearing an ordinary text setting's box stores an empty value, which is not the same as its default.
 
-**Concurrent edits.** Each configuration carries a revision number. If another administrator saves while you have the tab open, the tab holds your save, loads the current values, and lets you re-apply your change on top of them.
+**When a value cannot be applied.** A save never fails for a value you did not type. If a setting stored by an earlier release is one this version no longer accepts — renamed, or a number whose allowed range has moved — it is dropped on its own, every other saved setting is kept, and nothing else on the row is affected. The Config tab counts what it dropped in its note bar, and the pipe log names each one; the next save is what removes them. What is left when a stored value is dropped is the valve's default, so re-enter the value you want before you rely on it.
+
+**Concurrent edits.** Each configuration carries a revision number. If another administrator saves while you have the tab open, the tab holds your save, loads the current values, and lets you re-apply your change on top of them. A store that cannot be read holds the save too, and the tab says so rather than writing over what it could not read.
+
+**Upgrading from an older release.** If a stored setting is one this version no longer accepts, the Config tab repairs it on your next save, as described above. That repairs the **tab**. A row that takes the pipe down at start-up — because a value the boot path validates was tightened or renamed out from under it — is a different problem, and the Config tab cannot be opened at all until the row is fixed, so correct the stored value on Open WebUI's own Functions valves screen.
 
 **Secrets.** Secret valves — API keys, passwords — are write-only. Their values stay on the server and never reach the browser. The tab shows each secret as **configured** or **not set**; typing a value sets a new one.
+
+If the stored configuration cannot be read at all — the database is unreachable, say — the Config tab says so and refuses to save, rather than showing defaults over your real settings. Your settings are still stored and are not being changed. Restore the database, then reload; the tab will not overwrite what it cannot read.
 
 **Access.** A read grant opens the tab. Saving requires a write grant.
 

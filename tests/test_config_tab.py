@@ -221,6 +221,24 @@ def test_a_cleared_non_template_string_valve_stays_cleared(name):
     assert getattr(_effective(stored), name) == ""
 
 
+# -- H124-1: clearing a nullable numeric valve is a reset, not a 500 ------------------
+
+
+def _swept_nullable_numbers() -> list[str]:
+    """Every valve the Config tab offers as a number box that also admits ``null``.
+
+    Swept from ``describe_valves`` at test time rather than listed, so a fourth nullable
+    number valve fails the guard below until it is covered. The ``number`` widget
+    conjunct keeps a nullable string valve out of a test whose subject is numeric
+    blanking.
+    """
+    return [
+        spec["name"]
+        for spec in cs.describe_valves(Valves)
+        if spec["nullable"] and spec["widget"].startswith("number")
+    ]
+
+
 def test_every_valve_the_config_tab_shows_as_a_template_is_restorable():
     """The Config tab's is_template flag and the blank-restore rule are the same predicate.
 
