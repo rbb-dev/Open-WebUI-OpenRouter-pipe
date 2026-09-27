@@ -96,10 +96,6 @@ class ReasoningConfigManager:
         return cls._refuse_off_on_mandatory_model(model_id, cfg)
 
     def _apply_reasoning_preferences(self, responses_body: ResponsesBody, valves: Pipe.Valves) -> str | None:
-        """Automatically request reasoning traces when supported and enabled."""
-        if not valves.ENABLE_REASONING:
-            return None
-
         supported = ModelFamily.supported_parameters(ModelFamily.catalog_norm_id(responses_body.model))
         supports_reasoning = "reasoning" in supported
         supports_legacy_only = "include_reasoning" in supported and not supports_reasoning

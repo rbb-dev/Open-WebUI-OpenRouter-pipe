@@ -257,11 +257,6 @@ CONFIG_META: dict[str, dict[str, str]] = {
         "group": "Plugins/General",
         "detail": "When enabled, the pipe activates its plugin system, letting its plugins intercept and transform requests, react to the model list, and change replies as they stream.\n\nWhen disabled (the default), plugins are never called at all and stay inert no matter which are present. The switch is re-read on each request, so flipping it applies to the next message with no restart. It is also the master gate for the bundled Pipe Dashboard: with this off, `Enable Pipe Dashboard` and its usage settings have no effect."
     },
-    "ENABLE_REASONING": {
-        "title": "Request reasoning traces",
-        "group": "Reasoning & Thinking/General",
-        "detail": "Whether reasoning-capable models are asked to return their step-by-step thinking alongside the answer, not just the final text.\n\nIt is on by default and applies site-wide, but each user can override it in their own Open WebUI settings, and their choice wins for their chats. Models without reasoning support are unaffected either way. `Default reasoning effort` and `Reasoning summary detail` shape what gets requested, while `Thinking display location` decides where a returned trace appears. The thinking itself is billed as output tokens, so leaving it on adds some cost on reasoning models - check OpenRouter's pricing."
-    },
     "ENABLE_REDIS_CACHE": {
         "title": "Buffer artifact writes through Redis",
         "group": "Reliability/Redis",
@@ -535,7 +530,7 @@ CONFIG_META: dict[str, dict[str, str]] = {
     "REASONING_SUMMARY_MODE": {
         "title": "Reasoning summary detail",
         "group": "Reasoning & Thinking/General",
-        "detail": "How much of a plain-language summary of its own reasoning a supported model is asked to produce.\n\nThis is the site-wide default; each user can override it in their own settings, and their choice wins. Only models that expose reasoning summaries honor it, and it shapes a trace only while reasoning is actually being requested (see `Request reasoning traces`).\n\n- `auto` - the model decides how long its summary should be.\n- `concise` - asks for a short, high-level summary.\n- `detailed` - asks for a fuller, more thorough summary.\n- `disabled` - no reasoning summary is requested at all."
+        "detail": "How much of a plain-language summary of its own reasoning a supported model is asked to produce.\n\nThis is the site-wide default; each user can override it in their own settings, and their choice wins. Only models that expose reasoning summaries honor it, and it shapes a trace only while a trace is being requested (see `Default reasoning effort`).\n\n- `auto` - the model decides how long its summary should be.\n- `concise` - asks for a short, high-level summary.\n- `detailed` - asks for a fuller, more thorough summary.\n- `disabled` - no reasoning summary is requested at all."
     },
     "REDIS_CACHE_TTL_SECONDS": {
         "title": "Artifact cache lifetime",
@@ -810,7 +805,7 @@ CONFIG_META: dict[str, dict[str, str]] = {
     "THINKING_OUTPUT_MODE": {
         "title": "Thinking display location",
         "group": "Reasoning & Thinking/General",
-        "detail": "Where a model's live thinking shows up while it works - the dedicated Open WebUI reasoning box, transient status lines, or both at once.\n\nThis is the site-wide default; each user can pick their own in Open WebUI settings, and their choice wins. It only matters for models that are actually returning a reasoning trace (see `Request reasoning traces`). Keeping thinking in the reasoning box, out of the visible answer, suits most deployments.\n\n- `open_webui` - thinking streams into the collapsible reasoning box, kept separate from the final answer.\n- `status` - thinking appears only as short-lived status lines above the reply; the reasoning box stays empty.\n- `both` - sends thinking to the reasoning box and the status line together, repeating it in two places.\n\n**Tip:** Choose `both` only when maximum visibility is worth showing the same text twice."
+        "detail": "Where a model's live thinking shows up while it works - the dedicated Open WebUI reasoning box, transient status lines, or both at once.\n\nThis is the site-wide default; each user can pick their own in Open WebUI settings, and their choice wins. It only matters for models that are actually returning a reasoning trace. Keeping thinking in the reasoning box, out of the visible answer, suits most deployments.\n\n- `open_webui` - thinking streams into the collapsible reasoning box, kept separate from the final answer.\n- `status` - thinking appears only as short-lived status lines above the reply; the reasoning box stays empty.\n- `both` - sends thinking to the reasoning box and the status line together, repeating it in two places.\n\n**Tip:** Choose `both` only when maximum visibility is worth showing the same text twice."
     },
     "TIMING_LOG_FILE": {
         "title": "Timing log file path",

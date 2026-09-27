@@ -1039,11 +1039,6 @@ class Valves(BaseModel):
         ),
     )
 
-    ENABLE_REASONING: bool = Field(
-        default=True,
-        title="Show live reasoning",
-        description="Request live reasoning traces whenever the selected model supports them.",
-    )
     THINKING_OUTPUT_MODE: Literal["open_webui", "status", "both"] = Field(
         default="open_webui",
         title="Thinking output",
@@ -2303,11 +2298,6 @@ class UserValves(BaseModel):
         default=True,
         title="Show usage details",
         description="Display tokens, time, and cost at the end of each reply; the cost appears only when it is above zero.",
-    )
-    ENABLE_REASONING: bool = Field(
-        default=True,
-        title="Show reasoning steps",
-        description="While the AI works, show its step-by-step reasoning when supported.",
     )
     THINKING_OUTPUT_MODE: Literal["open_webui", "status", "both"] = Field(
         default="open_webui",

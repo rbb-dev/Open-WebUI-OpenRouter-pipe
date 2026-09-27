@@ -241,7 +241,6 @@ Variant models respect all existing filters:
 - `:exacto` variants inherit tool-calling capability from base
 - Filter applies based on base model's capabilities
 
-**ENABLE_REASONING:**
 - A variant is sent the reasoning settings its base model is sent, a person's own reasoning effort included
 - A suffixed id the catalog lists as a model of its own (for example a `:free` model) follows its own catalog entry instead. The tags OpenRouter lists as a model in its own right are `:free` today, and `:batch` since 2026-08-09
 - A variant resolves to its base's `supported_parameters`, which is the list that decides whether a model takes a `reasoning` object or the legacy `include_reasoning` flag

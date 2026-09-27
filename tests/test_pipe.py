@@ -1402,17 +1402,17 @@ class TestMergeValves:
         pipe = Pipe()
         try:
             user_valves = pipe.UserValves.model_validate({
-                "ENABLE_REASONING": False,
+                "ENABLE_ANTHROPIC_INTERLEAVED_THINKING": False,
                 "REASONING_EFFORT": "low",
             })
 
             baseline = pipe.Valves()
-            baseline.ENABLE_REASONING = True
+            baseline.ENABLE_ANTHROPIC_INTERLEAVED_THINKING = True
             baseline.REASONING_EFFORT = "high"
 
             merged = pipe._merge_valves(baseline, user_valves)
 
-            assert merged.ENABLE_REASONING is False
+            assert merged.ENABLE_ANTHROPIC_INTERLEAVED_THINKING is False
             assert merged.REASONING_EFFORT == "low"
         finally:
             pipe.shutdown()
@@ -1433,14 +1433,14 @@ class TestMergeValves:
 
         try:
             user_valves_dict = {
-                "ENABLE_REASONING": False,
+                "ENABLE_ANTHROPIC_INTERLEAVED_THINKING": False,
                 "LOG_LEVEL": "DEBUG",  # Should be filtered out
             }
 
             result = pipe._merge_valves(pipe.valves, user_valves_dict)
 
-            # ENABLE_REASONING should be overridden
-            assert result.ENABLE_REASONING is False
+            # ENABLE_ANTHROPIC_INTERLEAVED_THINKING should be overridden
+            assert result.ENABLE_ANTHROPIC_INTERLEAVED_THINKING is False
             # LOG_LEVEL should NOT be overridden (filtered out)
             assert result.LOG_LEVEL == pipe.valves.LOG_LEVEL
         finally:
@@ -1452,13 +1452,13 @@ class TestMergeValves:
 
         try:
             user_valves_dict = {
-                "ENABLE_REASONING": "INHERIT",  # Should be ignored
+                "ENABLE_ANTHROPIC_INTERLEAVED_THINKING": "INHERIT",  # Should be ignored
             }
 
             result = pipe._merge_valves(pipe.valves, user_valves_dict)
 
             # Should use global value
-            assert result.ENABLE_REASONING == pipe.valves.ENABLE_REASONING
+            assert result.ENABLE_ANTHROPIC_INTERLEAVED_THINKING == pipe.valves.ENABLE_ANTHROPIC_INTERLEAVED_THINKING
         finally:
             pipe.shutdown()
 
@@ -4702,10 +4702,10 @@ def test_merge_valves_no_overrides_returns_global():
 def test_merge_valves_applies_user_boolean_override():
     pipe = Pipe()
     try:
-        user_valves = pipe.UserValves.model_validate({"ENABLE_REASONING": False})
+        user_valves = pipe.UserValves.model_validate({"ENABLE_ANTHROPIC_INTERLEAVED_THINKING": False})
         baseline = pipe.Valves()
         merged = pipe._merge_valves(baseline, user_valves)
-        assert merged.ENABLE_REASONING is False
+        assert merged.ENABLE_ANTHROPIC_INTERLEAVED_THINKING is False
         assert merged.LOG_LEVEL == baseline.LOG_LEVEL
     finally:
         pipe.shutdown()
@@ -6998,7 +6998,6 @@ def test_merge_valves_with_dict_user_valves():
     try:
         global_valves = pipe.valves
         user_valves = {
-            "ENABLE_REASONING": True,
             "LOG_LEVEL": "DEBUG",  # Should be filtered out
         }
 
@@ -7015,16 +7014,16 @@ def test_merge_valves_with_inherit_value():
     pipe = Pipe()
     try:
         global_valves = pipe.valves
-        original_value = global_valves.ENABLE_REASONING
+        original_value = global_valves.ENABLE_ANTHROPIC_INTERLEAVED_THINKING
 
         user_valves = {
-            "ENABLE_REASONING": "INHERIT",
+            "ENABLE_ANTHROPIC_INTERLEAVED_THINKING": "INHERIT",
         }
 
         merged = pipe._merge_valves(global_valves, user_valves)
 
         # Should keep global value when INHERIT is specified
-        assert merged.ENABLE_REASONING == original_value
+        assert merged.ENABLE_ANTHROPIC_INTERLEAVED_THINKING == original_value
     finally:
         pipe.shutdown()
 

@@ -128,7 +128,7 @@ The pipe decides how to request reasoning from the selected model's catalog entr
 - A suffixed id the catalog lists as a model of its own (for example a `:free` model) uses its own entry. The tags OpenRouter lists as a model in its own right are `:free` today, and `:batch` since 2026-08-09.
 - A preset model (`base_id@preset/slug`) gets no reasoning field of the pipe's own, so the preset's saved settings apply; a reasoning field the chat itself carries still goes out and overrides them for that request.
 
-When `ENABLE_REASONING=True`:
+The pipe decides how to request reasoning from the model's catalog entry:
 
 - If the model supports `reasoning`, the pipe populates a `reasoning` object (with defaults from valves such as `REASONING_EFFORT` and `REASONING_SUMMARY_MODE`).
 - If the model does not support `reasoning` but supports the legacy `include_reasoning`, the pipe uses that fallback.
@@ -138,7 +138,7 @@ Gemini 2.5 models:
 
 - The thinking budget (`GEMINI_THINKING_BUDGET`, scaled by the reasoning effort) is sent as OpenRouter's `reasoning.max_tokens`, with no `effort` beside it.
 - A budget of `0` sends `reasoning: {"effort": "none"}`, which switches thinking off, except on Gemini 2.5 Pro, which cannot stop thinking and thinks at its own default.
-- When nothing asks for reasoning (reasoning display off, and nothing in the chat requests it), the pipe sends only `include_reasoning: false`, to a model whose entry lists it.
+- Every Gemini 2.5 request the pipe shapes carries a `reasoning` object, so the pipe does not send this flag on its own; the one exception is the retry after a provider rejects reasoning, which resends with `include_reasoning: false` alone (see [Error handling](error_handling_and_user_experience.md)).
 
 A request that sets its own `reasoning.max_tokens` wins over the valve: the pipe forwards that number and writes no competing thinking budget, on every model family and both endpoints. A request that sets none is unaffected by this paragraph.
 

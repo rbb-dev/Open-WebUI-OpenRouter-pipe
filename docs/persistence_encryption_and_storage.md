@@ -11,7 +11,7 @@ This document explains how the pipe persists response artifacts (reasoning paylo
 During a chat, the pipe can persist structured “artifacts” so future turns can replay prior context without embedding large JSON blobs directly into the visible chat transcript.
 
 Persisted artifacts include (at least):
-- Reasoning items (when enabled and retention permits).
+- Reasoning items (as long as `PERSIST_REASONING_TOKENS` permits retention).
 - The pipe's own copy of each tool round (see [History Reconstruction & Context Replay](history_reconstruction_and_context.md),
   which lists the rounds that are stored differently or not at all):
   the call and its output, with the full arguments and result, pictures included, whatever `PERSIST_TOOL_RESULTS`
@@ -140,6 +140,8 @@ Reasoning retention controls whether replayed reasoning artifacts are deleted af
 - `disabled`: no reasoning is retained.
 - `next_reply`: reasoning is kept only until the next assistant reply finishes, then deleted.
 - `conversation`: reasoning is kept for the full chat history (until time-based cleanup removes it).
+
+`PERSIST_REASONING_TOKENS` governs what is kept and what later turns replay. A stored reasoning item is replayed on both endpoints: on `/responses` as its own top-level `input` item, and on `/chat/completions` moved onto the assistant message that carries the round as `reasoning_details` — the shape Open WebUI itself sends to a chat-completions connection.
 
 Tool-round copies do not follow this setting: they stay for the whole conversation, until time-based cleanup
 removes them. Under `next_reply` the cleanup that runs at the end of a request spares the rows of the message that
