@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from collections.abc import Callable, Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
@@ -143,6 +144,8 @@ def _apply_list_filter_ids(
 
 
 _LEGACY_RECORD_KEYS = {"web_tools_attached_id": "web_tools_filter_id"}
+
+_SYNC_RETRY_FLOOR_SECONDS = 60.0
 
 
 def _apply_single_id_filter_ids(
@@ -352,8 +355,8 @@ def media_capability_defaults(valves: Any, pipe_capabilities: dict[str, bool]) -
     return defaults
 
 
-def media_builtin_tool_defaults(capability_defaults: dict[str, Any]) -> dict[str, Any]:
-    if capability_defaults.get("file_context") is not False:
+def file_context_builtin_tool_defaults(capabilities: dict[str, Any]) -> dict[str, Any]:
+    if capabilities.get("file_context") is not False:
         return {}
     return {"files": False}
 
@@ -452,6 +455,7 @@ class ModelCatalogManager:
         # State for sync scheduling
         self._model_metadata_sync_task: asyncio.Task | None = None
         self._model_metadata_sync_key: tuple[Any, ...] | None = None
+        self._model_metadata_sync_retry_after: float = 0.0
 
         self._cached_provider_map: dict[str, dict[str, Any]] = {}
         self._provider_overlay_failed_slugs: frozenset[str] = frozenset()
@@ -708,6 +712,8 @@ class ModelCatalogManager:
         )
         if sync_key == self._model_metadata_sync_key:
             return
+        if time.monotonic() < self._model_metadata_sync_retry_after:
+            return
         if self._model_metadata_sync_task and not self._model_metadata_sync_task.done():
             return
 
@@ -722,6 +728,7 @@ class ModelCatalogManager:
         if self._task_done_callback:
             self._model_metadata_sync_task.add_done_callback(self._task_done_callback)
         self._model_metadata_sync_task.add_done_callback(self._on_model_metadata_sync_done)
+        self._model_metadata_sync_task.add_done_callback(self._model_metadata_sync_floor_cleared)
 
     def _on_model_metadata_sync_done(self, task: asyncio.Task) -> None:
         if self._model_metadata_sync_task is not task and self._model_metadata_sync_task is not None:
@@ -742,6 +749,13 @@ class ModelCatalogManager:
         except Exception:
             self.logger.exception("Model metadata sync failed and could not be logged")
         self._model_metadata_sync_key = None
+        self._model_metadata_sync_retry_after = time.monotonic() + _SYNC_RETRY_FLOOR_SECONDS
+
+    def _model_metadata_sync_floor_cleared(self, task: asyncio.Task) -> None:
+        if task.cancelled() or self._model_metadata_sync_task is not task:
+            return
+        if task.exception() is None:
+            self._model_metadata_sync_retry_after = 0.0
 
     @timed
     def _build_icon_mapping(self, frontend_data: dict[str, Any] | None) -> dict[str, str]:
@@ -1356,6 +1370,13 @@ class ModelCatalogManager:
                         "OpenRouter Video Gen filter ensure failed: %s", exc, exc_info=True
                     )
                     video_gen_filter_function_ids = {}
+            elif not valves.ENABLE_VIDEO_GENERATION:
+                try:
+                    await self._pipe._ensure_filter_manager()._retire_variant_video_filters()
+                except Exception as exc:
+                    self.logger.debug(
+                        "Retiring superseded video filters failed: %s", exc, exc_info=True
+                    )
 
             image_filter_function_ids: dict[str, list[str]] = {}
             if (
@@ -2174,13 +2195,13 @@ class ModelCatalogManager:
                     meta_dict["capabilities"] = merged_caps
                     meta_updated = True
 
-                builtin_tool_defaults = media_builtin_tool_defaults(merged_caps)
-                if builtin_tool_defaults:
+                file_context_tool_defaults = file_context_builtin_tool_defaults(merged_caps)
+                if file_context_tool_defaults:
                     existing_builtin = meta_dict.get("builtinTools")
                     merged_builtin: dict[str, Any] = (
                         dict(existing_builtin) if isinstance(existing_builtin, dict) else {}
                     )
-                    for key, value in builtin_tool_defaults.items():
+                    for key, value in file_context_tool_defaults.items():
                         merged_builtin.setdefault(key, value)
                     if merged_builtin != existing_builtin:
                         meta_dict["builtinTools"] = merged_builtin
@@ -2358,7 +2379,7 @@ class ModelCatalogManager:
                 merged_caps = _merged_capabilities(None, capabilities, capability_defaults)
                 if merged_caps:
                     meta_dict["capabilities"] = merged_caps
-                builtin_tool_defaults = media_builtin_tool_defaults(merged_caps)
+                builtin_tool_defaults = file_context_builtin_tool_defaults(merged_caps)
                 if builtin_tool_defaults:
                     meta_dict["builtinTools"] = {**builtin_tool_defaults}
             if update_images and profile_image_url:

@@ -25,7 +25,8 @@ PACKAGE = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 # that installs more than one row per sweep, and `_install_from_rows` holds the
 # extracted install body. Both are function-local for the same reason as their
 # neighbours -- `open_webui` may be absent -- so the count is the honest one.
-_EXPECTED_OWUI_IMPORTS = (25, 80)
+# 80 -> 81: the video sweep's own `Functions` lookup (`filters/filter_manager.py`), beside the image sweep's.
+_EXPECTED_OWUI_IMPORTS = (25, 81)
 
 @pytest.mark.skipif(
     bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),

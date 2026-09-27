@@ -1169,6 +1169,10 @@ class Pipe:
                     self.logger.info("Disabled OpenRouter Video Generation filter (ENABLE_VIDEO_GENERATION=False)")
             except Exception:
                 self.logger.debug("Disabling OpenRouter Video Generation filter failed", exc_info=True)
+            try:
+                await self._ensure_filter_manager()._retire_variant_video_filters()
+            except Exception as exc:
+                self.logger.debug("Retiring per-model video filters failed: %s", exc, exc_info=True)
         try:
             from open_webui.models.functions import Functions as _Funcs
             legacy = await _Funcs.get_function_by_id("openrouter_video_openrouter_video")
@@ -2000,6 +2004,8 @@ class Pipe:
         if catalog is not None:
             with contextlib.suppress(Exception):
                 catalog._model_metadata_sync_task = None
+                catalog._model_metadata_sync_key = None
+                catalog._model_metadata_sync_retry_after = 0.0
         repair = getattr(self, "_web_tools_repair_task", None)
         if repair is not None and not repair.done():
             repair.cancel()

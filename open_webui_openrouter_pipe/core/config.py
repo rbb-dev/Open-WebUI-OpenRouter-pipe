@@ -1798,7 +1798,10 @@ class Valves(BaseModel):
         default=True,
         description=(
             "Add OpenRouter's video-generation models, which render in the background, to the model list. "
-            "Video models are judged by OpenRouter's ZDR list like any other model, so a ZDR-only picker excludes them unless OpenRouter lists a ZDR endpoint for them."
+            "Video models are judged by OpenRouter's ZDR list like any other model, so a ZDR-only picker "
+            "excludes them unless OpenRouter lists a ZDR endpoint for them. "
+            "Turning this off also deactivates the per-model video filter rows it installed; they are "
+            "reactivated on the next model-list refresh only while AUTO_INSTALL_VIDEO_FILTERS is on."
         ),
     )
 

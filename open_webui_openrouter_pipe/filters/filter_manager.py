@@ -170,6 +170,14 @@ def _offered_web_tools(content: str) -> frozenset[str] | None:
                     )
     return None
 
+def _is_pipe_video_filter_row(content: Any, row_id: Any) -> bool:
+    if not isinstance(content, str) or not isinstance(row_id, str) or not row_id:
+        return False
+    if not row_id.startswith("openrouter_video_"):
+        return False
+    return _OPENROUTER_VIDEO_GEN_FILTER_MARKER in content
+
+
 _REPLACE_IMPORTS_REFUSAL = (
     "Open WebUI rewrites this source when it loads it and stores the result, so the pipe "
     "would rewrite it back on the next refresh: its unanchored replace of 'from " "utils', "
@@ -1620,6 +1628,31 @@ class FilterManager:
                 continue
             self.logger.info(
                 "Retired superseded image filter %r; each model now has its own.", row_id
+            )
+
+    async def _retire_variant_video_filters(self) -> None:
+        try:
+            from open_webui.models.functions import Functions
+
+            rows = await Functions.get_functions_by_type("filter", active_only=True)
+        except Exception as exc:
+            self.logger.debug("Could not list filters to retire old video ones: %s", exc, exc_info=True)
+            return
+
+        for row in rows or []:
+            content = getattr(row, "content", "")
+            row_id = getattr(row, "id", "")
+            if not _is_pipe_video_filter_row(content, row_id):
+                continue
+            try:
+                await Functions.update_function_by_id(row_id, {"is_active": False})
+            except Exception as exc:
+                self.logger.warning(
+                    "Could not retire video filter %r: %s", row_id, exc, exc_info=True
+                )
+                continue
+            self.logger.info(
+                "Deactivated per-model video filter %r; video generation is off.", row_id
             )
 
     async def _ensure_single_image_filter_function_id(

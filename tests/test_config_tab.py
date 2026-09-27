@@ -11,6 +11,7 @@ from open_webui_openrouter_pipe.core.config import EncryptedStr, Valves
 pytest.importorskip("open_webui_openrouter_pipe.plugins.pipe_dashboard")
 
 from open_webui_openrouter_pipe.plugins.pipe_dashboard import config_service as cs
+from typing import Any, cast
 
 _ALL_FIELDS = list(Valves.model_fields.items())
 _IDS = [name for name, _ in _ALL_FIELDS]

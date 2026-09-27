@@ -8,6 +8,7 @@ from __future__ import annotations
 import owui_stubs  # noqa: F401 - Open WebUI/sqlalchemy/tenacity stand-ins + env defaults
 
 import os
+from typing import Any
 
 import asyncio
 import base64
@@ -112,7 +113,6 @@ def sample_image_base64() -> str:
 def sample_audio_base64() -> str:
     """Return sample base64-encoded audio data."""
     return base64.b64encode(b"FAKE_AUDIO_DATA").decode("utf-8")
-
 
 
 def _maybe_install_bundled_pipe() -> None:
