@@ -92,7 +92,12 @@ _EXPECTED: dict[str, int] = {
     # admin's own template already failed to render, and the generic card below it is the answer if the
     # fallback fails too -- letting it out would replace the failure being reported with a template error.
     "streaming/event_emitter.py": 1,
-    "streaming/streaming_core.py": 1,
+    # 1st: the roster task teardown above, whose only failure mode is a second
+    # cancellation arriving while the loop is already unwinding. 2nd: awaiting that task
+    # after the hand-back has cancelled it, where the await exists to finalise it and a
+    # failure to do so changes nothing the caller can act on -- the terminal writes it
+    # feeds are all gated off this path anyway.
+    "streaming/streaming_core.py": 2,
     # 5th: the tool card emitted as each call's result is collected, the twin of the one in the loop that
     # follows. The card is what the person sees; a failure emitting it must not lose the tool result the
     # loop is in the middle of collecting, which is the model's answer.

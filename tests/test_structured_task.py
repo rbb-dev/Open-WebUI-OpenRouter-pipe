@@ -22,6 +22,7 @@ from open_webui_openrouter_pipe.structured_task import (
     consume_sse_line,
     downgrade_strict_for_provider,
     normalise_model_content,
+    read_model_response_content,
     read_task_model_response_json,
     resolve_task_model_candidates,
     safe_log_payload,

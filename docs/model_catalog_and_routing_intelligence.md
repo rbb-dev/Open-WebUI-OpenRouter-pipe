@@ -28,7 +28,7 @@ normalises dates.
 date-insensitive use it: `Models forced to chat completions`, `Models forced to responses` (a
 pattern that names a date stamp still matches only that snapshot) and the phase-capable model list.
 
-The normalized ID is used as the stable key for catalog specs and feature lookups.
+The normalized ID is used as the stable key for catalog specs and feature lookups. Routing resolves the **exact** catalogue id: a dated snapshot and its rolling id are separate rows with separate keys, and the id map is keyed by the exact form, so it is never a merge key. An id the catalogue does not list — the routing variants the pipe synthesises — falls through to reconstruction.
 
 ### 1.2 Fetching `/models` and caching results
 
@@ -38,7 +38,7 @@ The catalog is loaded via `OpenRouterModelRegistry.ensure_loaded(...)`:
 - Fetches `GET {BASE_URL}/models` and parses the JSON payload.
 - Stores:
   - a sorted list of models (for Open WebUI selectors), and
-  - a spec map keyed by normalized ID (for routing decisions).
+  - a spec map keyed by normalized ID, and an id map keyed by the exact catalogue ID (for routing decisions).
 
 Caching:
 - `MODEL_CATALOG_REFRESH_SECONDS` controls how long the cache is considered fresh (default `3600` seconds).
@@ -181,7 +181,7 @@ See: [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry
 | `ModelFamily.capabilities(model_id)` | `dict[str,bool]` | Open WebUI capability checkboxes for UI affordances. |
 | `ModelFamily.supported_parameters(model_id)` | `frozenset[str]` | Provider-supported request parameter set (used for reasoning compatibility decisions). |
 | `ModelFamily.max_completion_tokens(model_id)` | `int \| None` | Provider-advertised max completion tokens, used when `USE_MODEL_MAX_OUTPUT_TOKENS=True`. |
-| `OpenRouterModelRegistry.api_model_id(model_id)` | provider slug, reconstructed non-catalog slug, or `None` | Maps the normalized/sanitized model ID back to the provider’s original ID for outbound API calls. |
+| `OpenRouterModelRegistry.api_model_id(model_id)` | provider slug, reconstructed non-catalog slug, or `None` | Maps the normalized/sanitized model ID back to the provider’s original ID for outbound API calls. The exact catalogue row always wins over its base family; only ids the catalogue does not list fall through, and then to reconstruction. |
 
 ---
 

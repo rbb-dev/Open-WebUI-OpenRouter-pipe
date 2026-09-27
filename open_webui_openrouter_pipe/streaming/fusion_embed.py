@@ -1609,11 +1609,15 @@ class FusionDeltaBatcher:
             return self._batched(entry)
         return None
 
-    def discard_model(self, model: str) -> None:
+    def flush_model(self, model: str) -> list[dict]:
         if not isinstance(model, str):
-            return
+            return []
+        flushed = [
+            self._batched(entry) for key, entry in self._pending.items() if key[0] == model
+        ]
         for key in [k for k in self._pending if k[0] == model]:
             del self._pending[key]
+        return flushed
 
     def flush_all(self) -> list[dict]:
         flushed = [self._batched(entry) for entry in self._pending.values()]

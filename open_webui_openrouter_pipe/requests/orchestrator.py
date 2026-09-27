@@ -821,6 +821,7 @@ class RequestOrchestrator:
                     self.logger.debug("Injected provider routing from filter: %s", filter_provider)
 
         normalized_model_id = ModelFamily.base_model(responses_body.model)
+        selected_model_id = raw_model or normalized_model_id
         admin_enforce_zdr = valves.ZDR_ENFORCE
         allow_user_zdr = valves.ALLOW_USER_ZDR_OVERRIDE
         user_requests_zdr = False
@@ -1367,7 +1368,7 @@ class RequestOrchestrator:
             responses_body.tools = kept_tools or None
 
 
-        setattr(responses_body, "api_model", OpenRouterModelRegistry.api_model_id(normalized_model_id) or normalized_model_id)  # noqa: B010 - dynamic attribute not declared on ResponsesBody
+        setattr(responses_body, "api_model", OpenRouterModelRegistry.api_model_id(selected_model_id) or normalized_model_id)  # noqa: B010 - dynamic attribute not declared on ResponsesBody
 
         if _fusion_internal_divert(
             responses_body.model,

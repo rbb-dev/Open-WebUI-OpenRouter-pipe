@@ -8,6 +8,8 @@ import json
 import logging
 from typing import Any
 
+from ..core.utils import utf8_stream_decoder
+
 _logger = logging.getLogger(__name__)
 
 def normalise_model_content(value: Any) -> str:
@@ -71,19 +73,20 @@ async def read_model_response_content(response: Any) -> str:
     if hasattr(response, "body_iterator"):
         content_parts: list[str] = []
         buffer = ""
+        _utf8 = utf8_stream_decoder()
         async for chunk in response.body_iterator:
             if not chunk:
                 continue
             if isinstance(chunk, str):
-                chunk_str = chunk
+                buffer += chunk
             elif isinstance(chunk, (bytes, bytearray, memoryview)):
-                chunk_str = bytes(chunk).decode("utf-8", errors="replace")
+                buffer += _utf8.decode(bytes(chunk))
             else:
-                chunk_str = str(chunk)
-            buffer += chunk_str
+                buffer += str(chunk)
             while "\n" in buffer:
                 raw_line, buffer = buffer.split("\n", 1)
                 consume_sse_line(raw_line, content_parts)
+        buffer += _utf8.decode(b"", True)
         if buffer:
             consume_sse_line(buffer, content_parts)
         return "".join(content_parts)

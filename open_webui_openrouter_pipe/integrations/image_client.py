@@ -17,7 +17,12 @@ from ..core.config import (
 )
 from ..core.costs import chat_usage_to_responses_usage
 from ..core.errors import _build_openrouter_api_error
-from ..core.utils import IMAGE_NO_IMAGES_REASON, clamp_text, summarise_names
+from ..core.utils import (
+    IMAGE_NO_IMAGES_REASON,
+    clamp_text,
+    summarise_names,
+    utf8_stream_decoder,
+)
 from ..requests.debug import (
     _debug_print_error_response,
     _debug_print_request,
@@ -186,11 +191,13 @@ class OpenRouterImageClient:
     ) -> dict[str, Any]:
         state: dict[str, Any] = {"data": [], "usage": None, "previews": 0, "drawing": False}
         buffer = ""
+        _utf8 = utf8_stream_decoder()
         async for chunk in resp.content.iter_any():
-            buffer += chunk.decode("utf-8", errors="ignore")
+            buffer += _utf8.decode(chunk)
             while "\n" in buffer:
                 line, buffer = buffer.split("\n", 1)
                 await self._consume_stream_line(line, state, on_progress)
+        buffer += _utf8.decode(b"", True)
         await self._consume_stream_line(buffer, state, on_progress)
         if not state["data"]:
             raise ImageGenerationError(

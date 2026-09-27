@@ -360,17 +360,6 @@ def test_batcher_keys_by_model_and_kind():
     assert b.flush_all() == []
 
 
-def test_batcher_discard_model_drops_both_kinds():
-    from open_webui_openrouter_pipe.streaming.fusion_embed import FusionDeltaBatcher
-    b = FusionDeltaBatcher(max_chars=10_000, max_age=999.0)
-    b.add(_delta_ev(".delta", "a/b", "answer"), now=0.0)
-    b.add(_delta_ev(".reasoning.delta", "a/b", "think"), now=0.0)
-    b.add(_delta_ev(".delta", "c/d", "keep"), now=0.0)
-    b.discard_model("a/b")
-    flushed = b.flush_all()
-    assert [(e["model"], e["delta"]) for e in flushed] == [("c/d", "keep")]
-
-
 class TestCopyAllModelCount:
     def test_copy_all_usage_line_is_backend_conditional(self):
         from open_webui_openrouter_pipe.streaming.fusion_embed import build_fusion_embed_html, FusionDeliberationState

@@ -11,6 +11,7 @@ REASONING_STATUS_MIN_CHARS = 12
 REASONING_STATUS_IDLE_SECONDS = 0.75
 
 DEFERRED_REASONING_FLUSH = "deferred_reasoning_flush"
+FUSION_EMBED_ATTEMPTS = "fusion_embed_attempts"
 
 
 class ReasoningStatusThrottle:

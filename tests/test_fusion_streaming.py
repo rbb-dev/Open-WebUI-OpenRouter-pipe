@@ -119,16 +119,6 @@ class TestFusionPanelDeltaStreaming:
         assert completed[0].get("content") == "# Answer A"
 
     @pytest.mark.asyncio
-    async def test_pending_answer_deltas_discarded_at_completed(
-        self, monkeypatch, pipe_instance_async
-    ):
-        _result, emitted = await _run(pipe_instance_async, monkeypatch,
-                                      fusion_live_enabled=True, events=REASONING_DELTA_EVENTS)
-        answer_deltas = [e for e in self._fusion_events(emitted)
-                        if e.get("type") == "response.fusion_call.panel.delta"]
-        assert answer_deltas == []
-
-    @pytest.mark.asyncio
     async def test_orphan_reasoning_flushed_at_analysis_start(
         self, monkeypatch, pipe_instance_async
     ):

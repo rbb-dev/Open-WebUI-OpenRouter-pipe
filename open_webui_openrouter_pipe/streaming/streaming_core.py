@@ -143,7 +143,11 @@ from ..tools.citation_harvester import (
     UNCITED_TOOLS,
     harvest_tool_citations,
 )
-from .constants import DEFERRED_REASONING_FLUSH, ReasoningStatusThrottle
+from .constants import (
+    DEFERRED_REASONING_FLUSH,
+    FUSION_EMBED_ATTEMPTS,
+    ReasoningStatusThrottle,
+)
 
 # Import EventEmitter type alias
 from .event_emitter import _UNGUARDED_ATTR, EventEmitter
@@ -710,9 +714,32 @@ class StreamingHandler:
             if fusion_embed_emitted or not (fusion_armed and fusion_state is not None and event_emitter):
                 return
             fusion_embed_emitted = True
+            _prior = 0
+            if retry_handoff is not None:
+                _prior = retry_handoff.get(FUSION_EMBED_ATTEMPTS, 0)
+                retry_handoff[FUSION_EMBED_ATTEMPTS] = _prior + 1
+            _card = build_fusion_embed_html(fusion_state, _fusion_model_names())
+            _set = [_card]
+            if _prior > 0 and chat_id and message_id and Chats is not None:
+                try:
+                    _existing = await Chats.get_message_by_id_and_message_id(
+                        str(chat_id), str(message_id)
+                    )
+                    _raw = (_existing or {}).get("embeds")
+                    if isinstance(_raw, list):
+                        _set = [
+                            e for e in _raw
+                            if not (isinstance(e, str) and "<title>OpenRouter Fusion" in e)
+                        ] + [_card]
+                except Exception:
+                    self.logger.debug(
+                        "Failed to read message embeds for fusion retry merge", exc_info=True
+                    )
+                    _set = [_card]
             try:
                 await self._pipe._event_emitter_handler._emit_embeds(
-                    event_emitter, [build_fusion_embed_html(fusion_state, _fusion_model_names())]
+                    event_emitter, _set,
+                    replace=_prior > 0,
                 )
             except Exception:
                 self.logger.debug("Failed to emit fusion embed", exc_info=True)
@@ -1794,7 +1821,8 @@ class StreamingHandler:
                         if etype == "response.fusion_call.panel.completed":
                             event = fusion_state.augment_panel_completed(event)
                             if fusion_batcher is not None and isinstance(event.get("model"), str):
-                                fusion_batcher.discard_model(event["model"])
+                                for _tail in fusion_batcher.flush_model(event["model"]):
+                                    await _emit_fusion_event(_tail)
                         elif etype == "response.fusion_call.analysis.in_progress":
                             if fusion_batcher is not None:
                                 for _straggler in fusion_batcher.flush_all():
@@ -3590,7 +3618,10 @@ class StreamingHandler:
                     )
 
             if fusion_embed_task is not None and not fusion_embed_task.done():
-                fusion_embed_task.cancel()
+                if was_cancelled or handed_back_for_retry:
+                    fusion_embed_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await fusion_embed_task
 
             if (
                 fusion_armed and fusion_state is not None

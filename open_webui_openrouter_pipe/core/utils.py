@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import codecs
 import datetime
 import hashlib
 import hmac
@@ -1271,3 +1272,7 @@ def join_answer_and_card(answer: str, card: str) -> str:
     if not answer:
         return f"\n\n{card}" if CONTINUED_REPLY.get() is not None else card
     return f"{answer}\n\n{card}"
+
+
+def utf8_stream_decoder() -> codecs.IncrementalDecoder:
+    return codecs.getincrementaldecoder("utf-8")(errors="replace")

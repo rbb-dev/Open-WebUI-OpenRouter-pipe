@@ -717,3 +717,10 @@ def test_is_zdr_capable_suffixed_id_none_list_unchanged():
         assert OpenRouterModelRegistry.is_zdr_capable("openai/gpt-4o:nitro") is None
     finally:
         OpenRouterModelRegistry._zdr_model_ids = original_zdr
+
+
+# ---------------------------------------------------------------------------
+# H50-2: a rolling id and its dated snapshots are the same key
+# ---------------------------------------------------------------------------
+
+BASE_URL = "https://openrouter.ai/api/v1"

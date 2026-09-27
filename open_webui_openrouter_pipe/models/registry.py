@@ -341,7 +341,7 @@ class OpenRouterModelRegistry:
 
             raw_specs[norm_id] = dict(item)
 
-            id_map[norm_id] = original_id
+            id_map[cls._exact_norm(sanitized)] = original_id
             models.append(
                 {
                     "id": sanitized,
@@ -407,14 +407,14 @@ class OpenRouterModelRegistry:
             for n in existing_video_norms:
                 if n not in specs:
                     specs[n] = cls._specs[n]
-                if n not in id_map and n in cls._id_map:
-                    id_map[n] = cls._id_map[n]
             existing_norms_in_models = {m.get("norm_id") for m in models}
             preserved_video_models = [
                 m for m in cls._models
                 if m.get("norm_id") in existing_video_norms
                 and m.get("norm_id") not in existing_norms_in_models
             ]
+            for row in preserved_video_models:
+                id_map.setdefault(cls._exact_norm(str(row["id"])), str(row["original_id"]))
             if preserved_video_models:
                 models.extend(preserved_video_models)
                 models.sort(key=lambda m: str(m.get("name") or "").lower())
@@ -429,14 +429,14 @@ class OpenRouterModelRegistry:
             for n in existing_image_only_norms:
                 if n not in specs:
                     specs[n] = cls._specs[n]
-                if n not in id_map and n in cls._id_map:
-                    id_map[n] = cls._id_map[n]
             existing_norms_after_video = {m.get("norm_id") for m in models}
             preserved_image_models = [
                 m for m in cls._models
                 if m.get("norm_id") in existing_image_only_norms
                 and m.get("norm_id") not in existing_norms_after_video
             ]
+            for row in preserved_image_models:
+                id_map.setdefault(cls._exact_norm(str(row["id"])), str(row["original_id"]))
             if preserved_image_models:
                 models.extend(preserved_image_models)
                 models.sort(key=lambda m: str(m.get("name") or "").lower())
@@ -657,7 +657,9 @@ class OpenRouterModelRegistry:
         if old_video_norms:
             for norm_id in old_video_norms:
                 new_specs.pop(norm_id, None)
-                new_id_map.pop(norm_id, None)
+            for model in cls._models:
+                if isinstance(model, dict) and model.get("norm_id") in old_video_norms:
+                    new_id_map.pop(cls._exact_norm(str(model.get("id") or "")), None)
 
         models_by_norm: dict[str, dict[str, Any]] = {}
         for model in cls._models:
@@ -665,7 +667,7 @@ class OpenRouterModelRegistry:
                 continue
             norm = model.get("norm_id")
             if isinstance(norm, str) and norm and norm not in old_video_norms:
-                models_by_norm[norm] = dict(model)
+                models_by_norm[cls._exact_norm(str(model.get("id") or ""))] = dict(model)
 
         for item in video_models:
             if not isinstance(item, dict):
@@ -692,8 +694,8 @@ class OpenRouterModelRegistry:
             if accepts_frame_images:
                 features.update({"vision", "file_input"})
 
-            new_id_map[norm_id] = original_id
-            models_by_norm[norm_id] = {
+            new_id_map[cls._exact_norm(sanitized)] = original_id
+            models_by_norm[cls._exact_norm(sanitized)] = {
                 "id": sanitized,
                 "norm_id": norm_id,
                 "original_id": original_id,
@@ -867,7 +869,9 @@ class OpenRouterModelRegistry:
         if old_image_norms:
             for norm_id in old_image_norms:
                 new_specs.pop(norm_id, None)
-                new_id_map.pop(norm_id, None)
+            for model in cls._models:
+                if isinstance(model, dict) and model.get("norm_id") in old_image_norms:
+                    new_id_map.pop(cls._exact_norm(str(model.get("id") or "")), None)
 
         models_by_norm: dict[str, dict[str, Any]] = {}
         for model in cls._models:
@@ -875,7 +879,7 @@ class OpenRouterModelRegistry:
                 continue
             norm = model.get("norm_id")
             if isinstance(norm, str) and norm and norm not in old_image_norms:
-                models_by_norm[norm] = dict(model)
+                models_by_norm[cls._exact_norm(str(model.get("id") or ""))] = dict(model)
 
         for item in image_models:
             if not isinstance(item, dict):
@@ -889,7 +893,7 @@ class OpenRouterModelRegistry:
             if not norm_id:
                 continue
 
-            if norm_id in new_specs:
+            if norm_id in new_specs and cls._exact_norm(sanitized) in new_id_map:
                 continue
 
             arch_raw = item.get("architecture")
@@ -913,8 +917,8 @@ class OpenRouterModelRegistry:
             if accepts_image_input:
                 features.update({"vision", "file_input"})
 
-            new_id_map[norm_id] = original_id
-            models_by_norm[norm_id] = {
+            new_id_map[cls._exact_norm(sanitized)] = original_id
+            models_by_norm[cls._exact_norm(sanitized)] = {
                 "id": sanitized,
                 "norm_id": norm_id,
                 "original_id": original_id,
@@ -953,6 +957,21 @@ class OpenRouterModelRegistry:
             cls._last_image_fetch = time.time()
 
     @classmethod
+    def _exact_norm(cls, model_id: str) -> str:
+        m = (model_id or "").strip()
+
+        suffix = ""
+        if ":" in m:
+            m, suffix = m.rsplit(":", 1)
+
+        if "/" in m:
+            m = m.replace("/", ".")
+
+        if suffix:
+            return f"{m.lower()}:{suffix}"
+        return m.lower()
+
+    @classmethod
     def api_model_id(cls, model_id: str) -> str | None:
         """Map sanitized Open WebUI ids back to provider ids, preserving variant/preset suffix.
 
@@ -972,7 +991,14 @@ class OpenRouterModelRegistry:
 
         # Normalize base and lookup
         norm = ModelFamily.base_model(model_id_base)
-        provider_id = cls._id_map.get(norm)
+        provider_id = cls._id_map.get(cls._exact_norm(model_id_base))
+        if provider_id is None:
+            _pid = ModelFamily._PIPE_ID.get()
+            _bare = model_id_base.removeprefix(f"{_pid}.") if _pid else model_id_base
+            if _bare != model_id_base:
+                provider_id = cls._id_map.get(cls._exact_norm(_bare))
+        if provider_id is None:
+            provider_id = cls._id_map.get(norm)
 
         if not provider_id:
             if "/" in model_id_base:

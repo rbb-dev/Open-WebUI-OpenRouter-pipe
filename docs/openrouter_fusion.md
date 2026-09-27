@@ -165,9 +165,9 @@ it is reinstalled.
 ## Live deliberation panel
 
 Every `openrouter/fusion` chat automatically renders the deliberation — preamble intent, per-model panels, the
-judge's analysis, the final answer, and cost — as a live, theme-aware HTML panel. The panel iframe is emitted
-**once** and then updated in place: each deliberation event is pushed over Open WebUI's own socket as a custom
-`fusion:event` that the panel's same-origin socket connection consumes (no iframe reload → no flashing). The
+judge's analysis, the final answer, and cost — as a live, theme-aware HTML panel. A message carries one Fusion card,
+updated in place: each deliberation event is pushed over Open WebUI's own socket as a custom `fusion:event`
+that the panel's same-origin socket connection consumes (no iframe reload → no flashing). The
 final answer streams **into** the panel and is also written to the message as a **collapsed `<details>`** — so
 multi-turn context, copy, and regenerate read the answer natively (the panel embed is UI-only and is never sent
 back to the model), while the visible surface stays the panel.
@@ -181,7 +181,9 @@ kept in the persisted panel for every completed model (a panel still mid-answer 
 reload recovers its reasoning when it completes). The Thinking section has its own
 copy button, and **Copy all** includes each model's thinking alongside its answer. The high-volume
 token deltas themselves are never baked into the persisted embed — the full reasoning text is
-reattached to each panel's completed event instead, keeping the snapshot small. If OpenRouter stops
+reattached to each panel's completed event instead, keeping the snapshot small. Whatever a model still has
+buffered when its card completes is flushed to that card first, so the closing burst of its answer is never
+dropped. If OpenRouter stops
 streaming panel deltas, the cards simply fill in at completion as before.
 
 - The live panel requires Open WebUI's **iframe same-origin** setting (Settings → Interface → "iframe sandbox
