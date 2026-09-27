@@ -736,7 +736,7 @@ async def test_db_fetch_no_missing_ids(pipe_instance):
     store = pipe_instance._artifact_store
     store._redis_enabled = True
 
-    async def _fake_redis_fetch(_chat_id, item_ids):
+    async def _fake_redis_fetch(_chat_id, item_ids, message_id=None):
         return {item_id: {"type": "cached"} for item_id in item_ids}
 
     store._redis_fetch_rows = _fake_redis_fetch
@@ -765,7 +765,7 @@ async def test_db_fetch_breaker_open_returns_cached_not_empty(pipe_instance):
     store._redis_enabled = True
     store._emit_notification = None
 
-    async def _fake_redis_fetch(_chat_id, item_ids):
+    async def _fake_redis_fetch(_chat_id, item_ids, message_id=None):
         return {"id-1": {"type": "cached"}}
 
     store._redis_fetch_rows = _fake_redis_fetch

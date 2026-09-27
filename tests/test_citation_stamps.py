@@ -32,7 +32,10 @@ PACKAGE = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 # 83 -> 84: the video kill switch's two sweeps (`deactivate_video_gen_filters` and
 # `reactivate_video_gen_filters` in filters/filter_manager.py) each reach the Functions
 # table lazily, beside the other function-local lookups in the same module.
-_EXPECTED_OWUI_IMPORTS = (25, 84)
+# 84 -> 85 with the channel-message lookup: `VideoPersistence._load_channel_message`
+# imports `open_webui.models.messages` inside a broad `except`, function-local like its
+# neighbours for the same reason, so the count is the honest one.
+_EXPECTED_OWUI_IMPORTS = (25, 85)
 
 @pytest.mark.skipif(
     bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),

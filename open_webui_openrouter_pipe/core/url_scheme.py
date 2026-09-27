@@ -47,6 +47,15 @@ def url_site(value: Any) -> str:
     return f"{parts.scheme.lower()}://{host}" + (f":{port}" if port else "")
 
 
+def url_path(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    try:
+        return urlsplit(value).path
+    except ValueError:
+        return value
+
+
 def is_http_or_https_url(url: Any) -> bool:
     return url_scheme(url) in HTTP_SCHEMES
 

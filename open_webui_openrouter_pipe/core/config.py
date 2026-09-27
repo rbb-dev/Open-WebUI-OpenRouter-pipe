@@ -1721,7 +1721,7 @@ class Valves(BaseModel):
     )
     ENABLE_REDIS_CACHE: bool = Field(
         default=True,
-        description="Buffer artifact writes through Redis when REDIS_URL and more than one worker are detected.",
+        description="Buffer artifact writes through Redis when REDIS_URL and more than one worker are detected. It is re-read on each request, so flipping it applies to the next message with no restart. The valve is authoritative at the write in the very turn that turns it off, that turn's row goes straight to the database instead of Redis, and everything still buffered is drained to the database to completion before the Redis client is closed. It stays off until you turn it on again, and turning it back on brings it up on the next request without a restart.",
     )
     REDIS_CACHE_TTL_SECONDS: int = Field(
         default=600,
@@ -1755,7 +1755,7 @@ class Valves(BaseModel):
         default=90,
         ge=1,
         le=365,
-        description="Days an artifact is kept before cleanup. Its stored timestamp is refreshed on every read of the artifact that goes through the database store — whether that read is served from the database or from the cache — so retention runs from last access, not creation. Reads that never reach the database store do not refresh it, either because the database breaker is open or because the artifact store failed to initialise. The cache only serves reads on a deployment with the Redis artifact cache enabled. Rows a temporary chat left behind are deleted at the next cleanup, whatever their age.",
+        description="Days an artifact is kept before cleanup. Its stored timestamp is refreshed on every read of the artifact that goes through the database store — whether that read is served from the database or from the cache — so retention runs from last access, not creation. Reads that never reach the database store do not refresh it, either because the database breaker is open or because the artifact store failed to initialise. The cache only serves reads on a deployment with the Redis artifact cache enabled. Rows a temporary chat left behind are deleted at the next cleanup, whatever their age. The sweep covers the pipe's own artifacts only, not files the pipe put in Open WebUI's storage.",
     )
     ARTIFACT_CLEANUP_INTERVAL_HOURS: float = Field(
         default=1.0,

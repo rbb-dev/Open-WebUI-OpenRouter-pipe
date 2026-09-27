@@ -344,7 +344,7 @@ def test_every_declared_absence_is_actually_imported_under_a_guard() -> None:
     )
 
 
-_EXPECTED_SEAM_IMPORTS = 73
+_EXPECTED_SEAM_IMPORTS = 74
 
 
 def test_seam_checklist_covers_every_open_webui_import() -> None:

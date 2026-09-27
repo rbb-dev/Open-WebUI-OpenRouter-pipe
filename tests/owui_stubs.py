@@ -56,6 +56,8 @@ def _install_open_webui_stubs() -> None:
     models_pkg = cast(Any, _ensure_module("open_webui.models"))
     models_pkg.__path__ = []
     chats_mod = cast(Any, _ensure_module("open_webui.models.chats"))
+    messages_mod = cast(Any, _ensure_module("open_webui.models.messages"))
+    messages_mod.Messages = types.SimpleNamespace(get_message_by_id=None)
     models_mod = cast(Any, _ensure_module("open_webui.models.models"))
     files_mod = cast(Any, _ensure_module("open_webui.models.files"))
     users_mod = cast(Any, _ensure_module("open_webui.models.users"))

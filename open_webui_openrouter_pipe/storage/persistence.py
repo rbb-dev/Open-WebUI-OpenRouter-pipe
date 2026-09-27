@@ -31,7 +31,7 @@ from collections import OrderedDict, defaultdict, deque
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 # External dependencies
 from cryptography.fernet import Fernet, InvalidToken
@@ -80,7 +80,8 @@ _ENCRYPTED_PAYLOAD_VERSION = 1
 _PAYLOAD_HEADER_SIZE = 1
 
 _REDIS_FLUSH_CHANNEL = "db-flush"
-_REDIS_DELETE_MARKER_TTL_SECONDS = 3600
+
+_REDIS_DELETE_MARKER_TTL_SECONDS = 86400
 
 REPLY_MEMORY_IDLE_SECONDS = 900.0
 REPLY_MEMORY_MAX_BYTES = 64 * 1024 * 1024
@@ -220,6 +221,12 @@ def _retained_bytes(value: Any) -> int:
 # ArtifactStore Class
 
 
+def _current_user_id() -> str:
+    from open_webui_openrouter_pipe.core.logging_system import SessionLogger
+
+    return SessionLogger.user_id.get() or ""
+
+
 class ReplyMemory:
     def __init__(
         self,
@@ -227,13 +234,18 @@ class ReplyMemory:
         idle_seconds: float = REPLY_MEMORY_IDLE_SECONDS,
         max_bytes: int = REPLY_MEMORY_MAX_BYTES,
         clock: Callable[[], float] = time.monotonic,
+        user_id: Callable[[], str] | None = None,
     ) -> None:
         self._idle_seconds = idle_seconds
         self._max_bytes = max_bytes
         self._clock = clock
-        self._replies: OrderedDict[tuple[Any, Any], tuple[float, dict[str, dict[str, Any]], int]] = OrderedDict()
+        self._user_id = user_id or _current_user_id
+        self._replies: OrderedDict[tuple[Any, Any, Any], tuple[float, dict[str, dict[str, Any]], int]] = OrderedDict()
         self._sweep: asyncio.TimerHandle | None = None
         self._lock = threading.RLock()
+
+    def _key(self, chat_id: Any, message_id: Any) -> tuple[Any, Any, Any]:
+        return (self._user_id(), chat_id, message_id)
 
     def _expire(self) -> None:
         cutoff = self._clock() - self._idle_seconds
@@ -264,7 +276,7 @@ class ReplyMemory:
             self._sweep = None
             self._arm()
 
-    def _touch(self, key: tuple[Any, Any]) -> None:
+    def _touch(self, key: tuple[Any, Any, Any]) -> None:
         _touched, rows, size = self._replies[key]
         self._replies[key] = (self._clock(), rows, size)
         self._replies.move_to_end(key)
@@ -275,7 +287,7 @@ class ReplyMemory:
 
     def _open(self, chat_id: Any, message_id: Any) -> None:
         self._expire()
-        key = (chat_id, message_id)
+        key = self._key(chat_id, message_id)
         if key in self._replies:
             self._touch(key)
         else:
@@ -288,7 +300,7 @@ class ReplyMemory:
 
     def _is_open(self, chat_id: Any, message_id: Any) -> bool:
         self._expire()
-        return (chat_id, message_id) in self._replies
+        return self._key(chat_id, message_id) in self._replies
 
     def hold(self, rows: list[dict[str, Any]]) -> list[str]:
         with self._lock:
@@ -298,7 +310,7 @@ class ReplyMemory:
         self._expire()
         held: list[str] = []
         for row in rows:
-            key = (row.get("chat_id"), row.get("message_id"))
+            key = self._key(row.get("chat_id"), row.get("message_id"))
             if key not in self._replies:
                 continue
             payload = json.loads(json.dumps(row.get("payload"), default=str))
@@ -308,7 +320,7 @@ class ReplyMemory:
             self._replies[key] = (self._clock(), kept, size + _retained_bytes(payload))
             self._replies.move_to_end(key)
             held.append(item_id)
-        for key in {(row.get("chat_id"), row.get("message_id")) for row in rows}:
+        for key in {self._key(row.get("chat_id"), row.get("message_id")) for row in rows}:
             if key in self._replies and self._replies[key][2] > self._max_bytes:
                 del self._replies[key]
         while self._replies and sum(size for _touched, _rows, size in self._replies.values()) > self._max_bytes:
@@ -323,7 +335,7 @@ class ReplyMemory:
 
     def _read(self, chat_id: Any, message_id: Any, item_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
         self._expire()
-        key = (chat_id, message_id)
+        key = self._key(chat_id, message_id)
         if key not in self._replies:
             return {}
         kept = self._replies[key][1]
@@ -337,7 +349,7 @@ class ReplyMemory:
             self._release(chat_id, message_id)
 
     def _release(self, chat_id: Any, message_id: Any) -> None:
-        self._replies.pop((chat_id, message_id), None)
+        self._replies.pop(self._key(chat_id, message_id), None)
 
     def holds(self, chat_id: Any) -> bool:
         with self._lock:
@@ -345,7 +357,7 @@ class ReplyMemory:
 
     def _holds(self, chat_id: Any) -> bool:
         self._expire()
-        return any(key[0] == chat_id for key in self._replies)
+        return any(key[1] == chat_id for key in self._replies)
 
 
 class ArtifactStore:
@@ -392,8 +404,12 @@ class ArtifactStore:
         self._TOOL_CONTEXT = tool_context_var
         self._user_id_context = user_id_context_var
 
-        self._reply_memory = ReplyMemory()
-        self._api_reply_memory = ReplyMemory()
+        self._reply_memory = ReplyMemory(
+            user_id=lambda: (self._user_id_context.get() or "") if self._user_id_context else ""
+        )
+        self._api_reply_memory = ReplyMemory(
+            user_id=lambda: (self._user_id_context.get() or "") if self._user_id_context else ""
+        )
         self._initialize_encryption_state()
         self._initialize_circuit_breakers()
         self._initialize_redis_state()
@@ -462,6 +478,9 @@ class ArtifactStore:
         self._redis_pending_key = f"{self._redis_namespace}:pending"
         self._redis_cache_prefix = f"{self._redis_namespace}:artifact"
         self._redis_flush_lock_key = f"{self._redis_namespace}:flush_lock"
+        self._redis_valve_draining = False
+        self._redis_valve_off = False
+        self._redis_valve_loop: asyncio.AbstractEventLoop | None = None
 
     def _initialize_database_state(self):
         """Initialize SQLAlchemy state."""
@@ -497,6 +516,8 @@ class ArtifactStore:
             self._lz4_warning_emitted = True
         self._compression_enabled = compression_enabled
 
+        self._reconcile_redis_valve(valves)
+
         pipe_identifier = pipe_identifier or self.id
         if not pipe_identifier:
             raise RuntimeError("Pipe identifier is missing; Open WebUI did not assign an id to this manifold.")
@@ -515,6 +536,50 @@ class ArtifactStore:
             pipe_identifier=pipe_identifier,
             table_fragment=table_fragment,
         )
+
+    def _reconcile_redis_valve(self, valves: Any) -> None:
+        loop = self._resolve_valve_loop()
+        if loop is not None:
+            self._redis_valve_loop = loop
+        if bool(getattr(valves, "ENABLE_REDIS_CACHE", True)) or not self._redis_enabled:
+            return
+        if self._redis_valve_draining:
+            return
+        self._redis_valve_draining = True
+        self._redis_valve_off = True
+        owner = self._valves_owner
+        handler = getattr(owner, "_drain_redis_after_valve_off", None)
+        if not callable(handler):
+            self._redis_valve_draining = False
+            return
+        drain = cast(Any, handler)()
+        loop = self._redis_valve_loop
+        owner_loop = getattr(owner, "_redis_loop", None)
+        if (loop is None or loop.is_closed()) and owner_loop is not None and not owner_loop.is_closed():
+            loop = owner_loop
+        self._schedule_redis_valve_drain_on(loop, drain)
+
+    def _schedule_redis_valve_drain_on(
+        self, loop: asyncio.AbstractEventLoop | None, drain: Any
+    ) -> bool:
+        if loop is None or loop.is_closed():
+            drain.close()
+            self._redis_valve_draining = False
+            self.logger.warning(
+                "Redis valve turned off off-loop with no usable event loop; writes are stopped "
+                "now and the buffered rows drain on the next request-path reconcile"
+            )
+            return False
+        loop.call_soon_threadsafe(
+            functools.partial(loop.create_task, drain, name="openrouter-redis-valve-off")
+        )
+        return True
+
+    def _resolve_valve_loop(self) -> asyncio.AbstractEventLoop | None:
+        try:
+            return asyncio.get_running_loop()
+        except RuntimeError:
+            return None
 
     @staticmethod
     @timed
@@ -1493,7 +1558,7 @@ class ArtifactStore:
 
         cached: dict[str, dict] = {}
         if self._redis_enabled:
-            cached = await self._redis_fetch_rows(chat_id, item_ids)
+            cached = await self._redis_fetch_rows(chat_id, item_ids, message_id=message_id)
             cache_hit_ids = list(cached)
             missing_ids = [item_id for item_id in item_ids if item_id not in cached]
         else:
@@ -1595,16 +1660,7 @@ class ArtifactStore:
         if not ids or not self._db_executor:
             return True
         owners = await self._redis_cached_owners(refs)
-        if ids and self._redis_client:
-            try:
-                pipe = self._redis_client.pipeline()
-                for row_id in ids:
-                    pipe.setex(
-                        self._redis_deleted_key(row_id), _REDIS_DELETE_MARKER_TTL_SECONDS, keep_message_id or "1"
-                    )
-                await _await_if_needed(pipe.execute())
-            except Exception as exc:
-                self.logger.warning("Redis delete marker write failed (best-effort): %s", exc, exc_info=True)
+        await self._mark_rows_dropped(ids, keep_message_id)
 
         from open_webui_openrouter_pipe.core.logging_system import SessionLogger
 
@@ -1951,6 +2007,21 @@ class ArtifactStore:
     def _redis_active(self) -> bool:
         return bool(self._redis_enabled and self.valves.ENABLE_REDIS_CACHE)
 
+    async def _mark_rows_dropped(self, row_ids: list[str], keep_message_id: str | None = None) -> None:
+        if not (row_ids and self._redis_client):
+            return
+        try:
+            pipe = self._redis_client.pipeline()
+            for row_id in row_ids:
+                pipe.setex(
+                    self._redis_deleted_key(row_id),
+                    _REDIS_DELETE_MARKER_TTL_SECONDS,
+                    keep_message_id or "1",
+                )
+            await _await_if_needed(pipe.execute())
+        except Exception as exc:
+            self.logger.warning("Redis delete marker write failed (best-effort): %s", exc, exc_info=True)
+
     @timed
     async def _redis_cached_owners(self, refs: list[tuple[str, str]]) -> dict[str, Any]:
         if not (self._redis_enabled and self._redis_client):
@@ -2010,27 +2081,32 @@ class ArtifactStore:
             )
             return []
 
+    def _redis_admits_writes(self) -> bool:
+        return not self._redis_valve_off and bool(self._redis_enabled and self._redis_client)
+
     @timed
     async def _redis_enqueue_rows(self, rows: list[dict[str, Any]]) -> list[str]:
         """Enqueue artifacts into Redis for asynchronous DB flushing."""
         if not rows:
             return []
 
-        if not (self._redis_enabled and self._redis_client):
+        if not self._redis_admits_writes():
             return await self._db_persist_direct(rows)
+        client = self._redis_client
+        assert client is not None
 
         for row in rows:
             row.setdefault("id", generate_item_id())
 
         try:
-            pipe = self._redis_client.pipeline()
+            pipe = client.pipeline()
             for row in rows:
                 serialized = json.dumps(row, ensure_ascii=False)
                 pipe.rpush(self._redis_pending_key, serialized)
             await _await_if_needed(pipe.execute())
 
             await self._redis_cache_rows(rows)
-            await _await_if_needed(self._redis_client.publish(_REDIS_FLUSH_CHANNEL, "flush"))
+            await _await_if_needed(client.publish(_REDIS_FLUSH_CHANNEL, "flush"))
 
             self.logger.debug("Enqueued %d artifacts to Redis pending queue", len(rows))
             return [row["id"] for row in rows]
@@ -2042,10 +2118,12 @@ class ArtifactStore:
 
     @timed
     async def _redis_cache_rows(self, rows: list[dict[str, Any]], *, chat_id: str | None = None) -> None:
-        if not (self._redis_enabled and self._redis_client):
+        if not self._redis_admits_writes():
             return
+        client = self._redis_client
+        assert client is not None
         try:
-            pipe = self._redis_client.pipeline()
+            pipe = client.pipeline()
             for row in rows:
                 row_payload = row if "payload" in row else {"payload": row}
                 cache_key = self._redis_cache_key(row.get("chat_id") or chat_id, row.get("id"))
@@ -2073,6 +2151,8 @@ class ArtifactStore:
         self,
         chat_id: str | None,
         item_ids: list[str],
+        *,
+        message_id: str | None = None,
     ) -> dict[str, dict[str, Any]]:
         if not (self._redis_enabled and self._redis_client and chat_id and item_ids):
             return {}
@@ -2098,6 +2178,10 @@ class ArtifactStore:
                 row_data = json.loads(raw)
             except json.JSONDecodeError:
                 continue
+            if message_id is not None:
+                row_message_id = row_data.get("message_id") if isinstance(row_data, dict) else None
+                if row_message_id != message_id:
+                    continue
             payload = row_data.get("payload", row_data) if isinstance(row_data, dict) else row_data
             is_encrypted = False
             if isinstance(row_data, dict):

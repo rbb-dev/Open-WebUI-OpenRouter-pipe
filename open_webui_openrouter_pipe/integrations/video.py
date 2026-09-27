@@ -52,6 +52,7 @@ from ..storage.owui_files import (
     get_file_by_id,
     infer_file_mime_type,
     is_linkable_chat,
+    is_temporary_chat,
     materialize_owui_file_to_temp,
 )
 from ..storage.video_persistence import VideoPersistence
@@ -2690,6 +2691,10 @@ class VideoGenerationAdapter:
         thumb_urls: list[str] = []
         if not intent.frame_plan:
             return thumb_urls
+
+        if is_temporary_chat(chat_id):
+            intent.downgrades.append("frame_plan_dropped_temporary_chat")
+            return ["" for _entry in intent.frame_plan]
 
         for position, entry in enumerate(intent.frame_plan):
             if entry.source == "uploaded_attachment":

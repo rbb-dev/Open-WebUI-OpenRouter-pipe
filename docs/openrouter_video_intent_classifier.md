@@ -58,7 +58,7 @@ The classifier returns one of five **intents**:
 - `continue_prior_video` — temporal extension ("continue", "what happens next")
 - `ambiguous` — needs a clarifying question
 
-For every non-trivial intent, the classifier produces a `frame_plan` array (max 4 entries). Each entry says: *here's the source* (uploaded attachment / prior video first frame / prior video last frame / prior video at timestamp T), *here's the target* (first_frame / last_frame / input_reference), and *here's the index*. The pipe extracts the actual frame, uploads it as an OWUI image, and injects it into the request.
+For every non-trivial intent, the classifier produces a `frame_plan` array (max 4 entries). Each entry says: *here's the source* (uploaded attachment / prior video first frame / prior video last frame / prior video at timestamp T), *here's the target* (first_frame / last_frame / input_reference), and *here's the index*. The pipe extracts the actual frame, uploads it as an OWUI image, and injects it into the request. This happens only where the chat can hold files; in a temporary chat the plan is dropped whole and the request runs from the prompt alone.
 
 The `index` of an uploaded attachment is its position in the user's attachment list — the order they appear in the chat, counting pictures, clips and audio alike. Every attached picture is listed, whether or not the Frames dropdown claimed it as a keyframe: a turn with three pictures and `first_last` selected still reports indices 0, 1 and 2, not 0 and 2. An `index` that names a picture the dropdown did not claim is promoted into the frame slot the entry asks for.
 

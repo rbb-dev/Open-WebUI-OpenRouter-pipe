@@ -30,12 +30,13 @@ def _debug_print_request(
 
     try:
         redacted_headers = dict(headers or {})
-        if "Authorization" in redacted_headers:
-            token = redacted_headers["Authorization"]
-            redacted_headers["Authorization"] = f"{token[:10]}..." if len(token) > 10 else "***"
         forwarded = _owui_forwarded_header_names()
         for key in list(redacted_headers):
-            if key.lower() in forwarded:
+            lowered = key.lower()
+            if lowered == "authorization" or lowered.endswith("-authorization"):
+                token = redacted_headers[key]
+                redacted_headers[key] = f"{token[:10]}..." if len(token) > 10 else "***"
+            elif lowered in forwarded:
                 redacted_headers[key] = "***"
         logger.debug("OpenRouter request headers: %s", json.dumps(redacted_headers, indent=2))
         if payload is not None:

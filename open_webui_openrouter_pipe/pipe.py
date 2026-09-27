@@ -216,6 +216,8 @@ _RESTRICTION_REASON_FALLBACK = "a restriction configured for this pipe"
 
 _PERSISTED_TASK_KINDS = frozenset({"title_generation", "tags_generation", "follow_up_generation"})
 
+_VALVE_DRAIN_MAX_FLUSHES = 64
+
 
 def _task_visible_channel_emitter(
     emitter: EventEmitter | None, task: Any
@@ -590,6 +592,7 @@ class Pipe:
 
         self._redis_enabled = False
         self._redis_client = None
+        self._redis_loop: asyncio.AbstractEventLoop | None = None
         self._redis_listener_task: asyncio.Task | None = None
         self._redis_flush_task: asyncio.Task | None = None
         self._redis_ready_task: asyncio.Task | None = None
@@ -889,17 +892,43 @@ class Pipe:
         return bool(self._redis_candidate) and bool(self.valves.ENABLE_REDIS_CACHE)
 
     @timed
+    def _redis_candidate_now(self) -> bool:
+        if not self.valves.ENABLE_REDIS_CACHE:
+            return False
+        redis_url = (os.getenv("REDIS_URL") or "").strip() or self._redis_url
+        if not redis_url or aioredis is None:
+            return False
+        try:
+            multi_worker = int((os.getenv("UVICORN_WORKERS") or "1").strip() or "1") > 1
+        except ValueError:
+            multi_worker = False
+        websocket_ready = (
+            (os.getenv("WEBSOCKET_MANAGER") or "").strip().lower() == "redis"
+            and bool((os.getenv("WEBSOCKET_REDIS_URL") or "").strip())
+        )
+        return bool(multi_worker and websocket_ready)
+
+    @timed
     def _maybe_start_redis(self) -> None:
         """Initialize Redis cache if enabled."""
+        self._refresh_redis_candidate()
         if not self._redis_allowed or self._redis_enabled:
             return
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
+        self._redis_loop = loop
         if self._redis_ready_task and not self._redis_ready_task.done():
             return
         self._redis_ready_task = loop.create_task(self._init_redis_client(), name="openrouter-redis-init")
+
+    @timed
+    def _refresh_redis_candidate(self) -> None:
+        if not bool(getattr(self.valves, "ENABLE_REDIS_CACHE", True)):
+            self._redis_candidate = False
+        elif not self._redis_candidate:
+            self._redis_candidate = self._redis_candidate_now()
 
     @timed
     def _maybe_start_cleanup(self) -> None:
@@ -934,6 +963,9 @@ class Pipe:
 
     @timed
     async def _init_redis_client(self) -> None:
+        self._refresh_redis_candidate()
+        if self._redis_allowed and not self._redis_url:
+            self._redis_url = (os.getenv("REDIS_URL") or "").strip() or self._redis_url
         if not self._redis_allowed or self._redis_enabled or not self._redis_url:
             return
         if aioredis is None:
@@ -1783,6 +1815,53 @@ class Pipe:
                 OWUI_CHAT_ID.reset(await_future_token)
 
     @timed
+    async def _drain_redis_after_valve_off(self) -> None:
+        store = getattr(self, "_artifact_store", None)
+        cancelled: asyncio.CancelledError | None = None
+        try:
+            try:
+                if store is not None:
+                    await self._drain_redis_pending(store)
+            except Exception:
+                self.logger.warning(
+                    "Draining buffered artifacts to the database after the Redis valve was "
+                    "turned off failed; the client is going down anyway",
+                    exc_info=True,
+                )
+            except asyncio.CancelledError as exc:
+                cancelled = exc
+            await self._stop_redis()
+        finally:
+            self._mark_valve_drain_complete(store)
+        if cancelled is not None:
+            raise cancelled
+
+    @timed
+    async def _drain_redis_pending(self, store: Any) -> None:
+        for _ in range(_VALVE_DRAIN_MAX_FLUSHES):
+            if store._redis_client is None:
+                break
+            depth = await _await_if_needed(store._redis_client.llen(store._redis_pending_key))
+            if not depth:
+                break
+            await store._flush_redis_queue()
+            left = await _await_if_needed(store._redis_client.llen(store._redis_pending_key))
+            if left >= depth:
+                break
+        else:
+            self.logger.warning(
+                "Drained only part of the Redis pending queue before the client was "
+                "closed; %d row(s) remain buffered",
+                await _await_if_needed(store._redis_client.llen(store._redis_pending_key)),
+            )
+
+    @staticmethod
+    @timed
+    def _mark_valve_drain_complete(store: Any) -> None:
+        if store is not None:
+            store._redis_valve_draining = False
+            store._redis_valve_off = False
+
     async def _stop_redis(self) -> None:
         """Stop Redis client and cancel related tasks.
 

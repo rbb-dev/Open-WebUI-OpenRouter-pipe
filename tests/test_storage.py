@@ -1311,7 +1311,7 @@ async def test_db_fetch_caches_results_in_redis(pipe_instance):
 
     store._redis_cache_rows = _capture_cache
 
-    async def _redis_fetch_empty(*args):
+    async def _redis_fetch_empty(*args, **kwargs):
         return {}
 
     store._redis_fetch_rows = _redis_fetch_empty
@@ -2456,8 +2456,9 @@ async def test_redis_enqueue_cache_and_fetch(pipe_instance):
     class _FakeRedis:
         def __init__(self):
             self.storage = {}
+            self.deadlines = {}
             self.lists = {}
-            self.published = []
+            self.published = {}
 
         def pipeline(self):
             return _FakePipeline(self)
@@ -2475,18 +2476,33 @@ async def test_redis_enqueue_cache_and_fetch(pipe_instance):
         def llen(self, key):
             return len(self.lists.get(key, []))
 
-        def setex(self, key, _ttl, value):
+        def setex(self, key, ttl, value):
             self.storage[key] = value
+            self.deadlines[key] = _TestClock.now + ttl
             return True
+
+        def advance(self, seconds):
+            _TestClock.now += seconds
 
         def expire(self, _key, _ttl):
             return True
 
         def mget(self, keys):
-            return [self.storage.get(key) for key in keys]
+            return [self._live(key) for key in keys]
+
+        def get(self, key):
+            return self._live(key)
+
+        def _live(self, key):
+            # Redis expires a key AT its TTL, so liveness is strictly less than.
+            deadline = self.deadlines.get(key)
+            if deadline is not None and _TestClock.now >= deadline:
+                self.storage.pop(key, None)
+                self.deadlines.pop(key, None)
+            return self.storage.get(key)
 
         def publish(self, channel, message):
-            self.published.append((channel, message))
+            self.published.setdefault(channel, []).append(message)
             return 1
 
         def set(self, key, value, nx=False, ex=None):
@@ -3005,12 +3021,20 @@ async def test_a_cleanup_that_keeps_a_message_spares_its_rows_and_their_cached_c
 
 
 
+class _TestClock:
+    """The clock the TTL-honouring fakes advance. A test-only seam: nothing in the
+    package reads it, so a key's liveness is decided entirely by `advance()`."""
+
+    now: float = 0.0
+
+
 class _WriteBehindRedis:
     """In-memory Redis for the write-behind path. Its pending list, cached rows and plain keys really change, so a test
     can build rows that are queued and cached but not yet in the table."""
 
     def __init__(self):
         self.values: dict[str, Any] = {}
+        self.deadlines: dict[str, float] = {}
         self.lists: dict[str, list[str]] = {}
 
     def pipeline(self):
@@ -3026,8 +3050,8 @@ class _WriteBehindRedis:
                 commands.append(lambda: outer.lists.setdefault(key, []).insert(0, value))
                 return self
 
-            def setex(self, key, _ttl, value):
-                commands.append(lambda: outer.values.__setitem__(key, value))
+            def setex(self, key, ttl, value):
+                commands.append(lambda: outer._setex(key, ttl, value))
                 return self
 
             def execute(self):
@@ -3038,10 +3062,30 @@ class _WriteBehindRedis:
     def publish(self, _channel, _message):
         return 0
 
+    def _setex(self, key, ttl, value):
+        self.values[key] = value
+        self.deadlines[key] = _TestClock.now + ttl
+
+    def _live(self, key):
+        # Redis expires a key AT its TTL, so liveness is strictly less than.
+        deadline = self.deadlines.get(key)
+        if deadline is not None and _TestClock.now >= deadline:
+            self.values.pop(key, None)
+            self.deadlines.pop(key, None)
+        return self.values.get(key)
+
+    def advance(self, seconds):
+        _TestClock.now += seconds
+
     def mget(self, keys):
-        return [self.values.get(key) for key in keys]
+        return [self._live(key) for key in keys]
+
+    def get(self, key):
+        return self._live(key)
 
     def delete(self, *keys):
+        for key in keys:
+            self.deadlines.pop(key, None)
         return sum(self.values.pop(key, None) is not None for key in keys)
 
     def lpop(self, key):
@@ -3121,6 +3165,9 @@ async def test_rows_cleaned_up_while_waiting_to_be_written_never_stay_in_the_tab
 
         if cleanup == "before-the-flush":
             await store._delete_artifacts(refs, keep_message_id="m-writing")
+            # The cache entries the marker must outlive expire first; the marker must
+            # not, or the flush reads no marker, decides the row is live, and writes it.
+            store._redis_client.advance(601)
         else:
             write = store._db_persist_direct
 

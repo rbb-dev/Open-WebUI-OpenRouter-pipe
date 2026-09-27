@@ -16,6 +16,7 @@ import base64
 import inspect
 import io
 import logging
+import re
 import shutil
 import tempfile
 import uuid
@@ -30,7 +31,7 @@ from starlette.datastructures import Headers
 from ..core.config import _INTERNAL_FILE_ID_PATTERN
 from ..core.errors import RequiredInternalFileError
 from ..core.timing_logger import timed
-from ..core.url_scheme import is_absolute_url
+from ..core.url_scheme import is_absolute_url, url_path
 from ..core.warn_latch import warn_level
 
 try:
@@ -598,6 +599,18 @@ def is_internal_file_url(url: str) -> bool:
     if is_absolute_url(url):
         return False
     return "/api/v1/files/" in url
+
+
+_INTERNAL_FILE_PATH_RE = re.compile(r"/api/v1/files/[^/?#\s]*", re.IGNORECASE)
+_INTERNAL_FILE_SUBSTRING = "/api/v1/files/"
+
+
+def names_an_owui_file_path(url: Any) -> bool:
+    if not isinstance(url, str):
+        return False
+    if _INTERNAL_FILE_PATH_RE.search(url_path(url).casefold()) is not None:
+        return True
+    return not is_absolute_url(url) and _INTERNAL_FILE_SUBSTRING in url
 
 
 _warned_reference_sizes: set[str] = set()

@@ -1619,13 +1619,21 @@ async def test_redis_fetch_rows_decrypts_cached_payloads(pipe_instance_async):
     cached_json = json.dumps(row, ensure_ascii=False)
 
     class FakeRedis:
-        async def mget(self, keys):
-            return [cached_json]
+        def __init__(self):
+            self.store = {store._redis_cache_key("chat", "01TEST"): cached_json}
 
-    pipe._artifact_store._redis_client = FakeRedis()  # type: ignore[attr-defined]
-    pipe._artifact_store._redis_enabled = True  # type: ignore[attr-defined]
-    fetched = await pipe._artifact_store._redis_fetch_rows("chat", ["01TEST"])
+        async def mget(self, keys):
+            # Key-addressed, not a single canned value: a fake that ignores `keys`
+            # answers every query the same way, so it passes under a key change and
+            # under a key-shape change alike, and proves nothing.
+            return [self.store.get(key) for key in keys]
+
+    store = pipe._artifact_store
+    store._redis_client = FakeRedis()  # type: ignore[attr-defined]
+    store._redis_enabled = True  # type: ignore[attr-defined]
+    fetched = await store._redis_fetch_rows("chat", ["01TEST"])
     assert fetched["01TEST"]["content"] == "secret"
+    assert await store._redis_fetch_rows("chat", ["01OTHER"]) == {}
 
 
 @pytest.mark.asyncio

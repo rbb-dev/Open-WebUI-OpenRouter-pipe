@@ -1013,6 +1013,9 @@ _DOWNGRADE_USER_MESSAGES: dict[str, str] = {
     "discarded_classifier_plan_explicit_attachments_present": "Used your uploaded frame instead of an inferred one.",
     "intent_downgraded_due_to_explicit_attachments": "Used your uploaded frame instead of an inferred one.",
     "clarification_capped_max_reached": "Proceeding with best-effort interpretation.",
+    "frame_plan_dropped_temporary_chat": (
+        "This chat cannot hold files, so the previous video's frame was not used."
+    ),
 }
 
 

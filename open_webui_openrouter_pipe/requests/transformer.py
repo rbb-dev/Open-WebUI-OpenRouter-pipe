@@ -90,6 +90,7 @@ from ..storage.owui_files import (
     extract_internal_file_id,
     is_internal_file_url,
     is_temporary_chat,
+    names_an_owui_file_path,
 )
 
 # Import from persistence
@@ -1486,7 +1487,7 @@ async def transform_messages_to_input(
                         pipe.logger.warning("Video block has no URL")
                         return {"type": "video_url", "video_url": {"url": ""}}
 
-                    if is_internal_file_url(url):
+                    if names_an_owui_file_path(url):
                         raise RequiredInternalFileError(
                             "Internal video URLs cannot be forwarded to the provider.",
                             kind="video",
