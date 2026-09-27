@@ -31,7 +31,7 @@ Configure these in **Open WebUI → Admin → Functions → [OpenRouter pipe] �
   - Rejects requests for models without ZDR endpoints.
   - Routing suffixes the pipe synthesises (`:nitro`, `:floor`, `:online`) are checked against their base model: if the base has ZDR endpoints, the variant is admitted and `provider.zdr=true` guarantees only ZDR endpoints are used. A suffix OpenRouter lists as a model in its own right — `:free`, `:thinking` — is answered for **itself**, not for its base, so a listed `:free` with no ZDR endpoint is refused here rather than routed.
   - Video models are always rejected, with or without a variant suffix.
-  - `ZDR_MODELS_ONLY` matches against the suffix-stripped base id, the same rule `ZDR_ENFORCE` uses, so routing variants (`:nitro`, `:floor`, `:online`) of a ZDR-capable base are shown and allowed. It stays a catalog and request-admission filter: it never sends `provider.zdr: true`, and it fails open when the ZDR endpoint list cannot be loaded, except for video models, which have no ZDR endpoints and stay hidden.
+  - `ZDR_MODELS_ONLY` matches against the suffix-stripped base id, the same rule `ZDR_ENFORCE` uses, so routing variants (`:nitro`, `:floor`, `:online`) of a ZDR-capable base are shown and allowed. It stays a catalog and request-admission filter: it never sends `provider.zdr: true`, and it fails open when the ZDR endpoint list cannot be loaded, leaving every model - video models included - visible.
 
 - **`ALLOW_USER_ZDR_OVERRIDE`**
   - Allows users to request ZDR per chat.

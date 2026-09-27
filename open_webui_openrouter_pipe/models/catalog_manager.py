@@ -1583,7 +1583,6 @@ class ModelCatalogManager:
                     and not pipe_capabilities.get("image_output")
                     and not pipe_capabilities.get("video_generation")
                     and not _is_fusion(openrouter_id)
-                    and not _is_fusion(str(original_id or ""))
                 )
 
                 native_supported = bool(

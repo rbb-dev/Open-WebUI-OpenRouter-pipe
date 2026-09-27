@@ -90,7 +90,7 @@ Not recommended. When both are enabled on the same request, the Web Tools filter
 - `AUTO_ATTACH_WEB_TOOLS_FILTER=True`
 - `AUTO_DEFAULT_WEB_TOOLS_FILTER=False`
 
-Result: Users see **OpenRouter Web Tools** on all pipe models but must enable it per chat. Admin can set `AUTO_DEFAULT_WEB_TOOLS_FILTER=True` to pre-enable it for all models.
+Result: Users see **OpenRouter Web Tools** on every pipe model that is not an image-output, a video-generation or a Fusion model but must enable it per chat. Admin can set `AUTO_DEFAULT_WEB_TOOLS_FILTER=True` to pre-enable it for every model that gets the switch.
 
 ### Enable OpenRouter Web Tools by default
 

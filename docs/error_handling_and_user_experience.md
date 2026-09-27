@@ -88,7 +88,7 @@ Templates are Markdown strings with:
   - `{{#if some_variable}} ... {{/if}}`
 
 Rendering rules implemented by the pipe:
-- If a placeholder value is empty/missing, the entire line containing it is dropped.
+- A line is dropped when a placeholder it uses was supplied but came out empty; a name the message never supplies is left in the text verbatim, so wrap such a line in `{{#if name}}` and it is left out instead.
 - Conditional blocks render only when the referenced variable is “present”.
 
 Minimal example:
@@ -120,6 +120,8 @@ The OpenRouter error formatter supports a larger set of optional values, includi
 - `metadata_json`, `provider_raw_json`, `diagnostics`
 
 Because OpenRouter/provider responses vary, treat these fields as optional and wrap them in `{{#if ...}}` blocks.
+
+`max_output_tokens` on an error card is the provider's **advertised** ceiling, read straight from the catalog entry (`core/errors.py`). It is deliberately not the value the pipe sends when `USE_MODEL_MAX_OUTPUT_TOKENS` is on: that is the smaller of the advertised ceiling and half the model's context window. A diagnostic about a failure should report the provider's own limit, so the two numbers are meant to differ.
 
 ### When the model-limits block renders
 

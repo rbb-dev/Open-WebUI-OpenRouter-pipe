@@ -34,18 +34,32 @@ _MODEL = "openai/gpt-4o-mini"
 # top-level key -- models/registry.py. A fixture that puts it top-level loads a spec with
 # max_completion_tokens=None, so the valve-on arm would assert nothing.
 _PROVIDER_MAX = 16384
+# A second entry whose context window is under twice its advertised ceiling. The valve
+# sends min(ceiling, window // 2), so on this model the ceiling is never what goes out --
+# the existing fixture declares no context_length at all, so nothing here measured it.
+_TIGHT_MODEL = "probe/tight-window"
+_TIGHT_WINDOW = 4096
+_TIGHT_CEILING = 16384
 _CATALOG = {
     "data": [
         {
             "id": _MODEL,
             "name": "GPT-4o Mini",
             "top_provider": {"max_completion_tokens": _PROVIDER_MAX},
-        }
+        },
+        {
+            "id": _TIGHT_MODEL,
+            "name": "Tight Window",
+            "context_length": _TIGHT_WINDOW,
+            "top_provider": {"max_completion_tokens": _TIGHT_CEILING},
+        },
     ]
 }
 
 
-async def _outbound_max_output_tokens(*, valve: bool, user_limit: int | None) -> object:
+async def _outbound_max_output_tokens(
+    *, valve: bool, user_limit: int | None, model: str = _MODEL
+) -> object:
     """Drive a real request and return the max_output_tokens that left the pipe."""
     pipe = Pipe()
     captured: list[dict] = []
@@ -58,7 +72,7 @@ async def _outbound_max_output_tokens(*, valve: bool, user_limit: int | None) ->
             pass
 
         body: dict = {
-            "model": _MODEL,
+            "model": model,
             "messages": [{"role": "user", "content": "hi"}],
             "stream": True,
         }
@@ -81,7 +95,7 @@ async def _outbound_max_output_tokens(*, valve: bool, user_limit: int | None) ->
                 __request__=None,
                 __event_emitter__=_emit,
                 __event_call__=None,
-                __metadata__={"model": {"id": _MODEL}},
+                __metadata__={"model": {"id": model}},
                 __tools__=None,
                 __task__=None,
                 __task_body__=None,

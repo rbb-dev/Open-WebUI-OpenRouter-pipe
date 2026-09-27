@@ -78,7 +78,7 @@ These control auto-installation, auto-attachment, and default-on behavior for th
 | Valve | Type | Default | Purpose |
 | --- | --- | --- | --- |
 | `AUTO_INSTALL_WEB_TOOLS_FILTER` | `bool` | `True` | Automatically install/update the OpenRouter Web Tools filter function in Open WebUI. When off, the pipe neither installs nor updates it, except that a web tool switched off on the pipe is taken out of every Web Tools filter: that filter's code is replaced with the pipe's current version for the tools it still offers (hand edits in it are lost), and a warning is logged. Switching the tool back on does not add it back. |
-| `AUTO_ATTACH_WEB_TOOLS_FILTER` | `bool` | `True` | Automatically attach the OpenRouter Web Tools filter to all pipe models (so the toggle appears in the Integrations menu). |
+| `AUTO_ATTACH_WEB_TOOLS_FILTER` | `bool` | `True` | Automatically attach the OpenRouter Web Tools per-chat switch to every pipe model that is not an image-output, a video-generation or a Fusion model (so the toggle appears in the Integrations menu). |
 | `AUTO_DEFAULT_WEB_TOOLS_FILTER` | `bool` | `False` | When enabled, marks the OpenRouter Web Tools filter as a Default Filter on models (pre-enabled per chat; users can still turn it off). |
 | `AUTO_INSTALL_IMAGE_GEN_FILTER` | `bool` | `True` | Automatically install/update the OpenRouter Image Generation filter function in Open WebUI. |
 | `AUTO_ATTACH_IMAGE_GEN_FILTER` | `bool` | `True` | Automatically attach the OpenRouter Image Generation filter to all pipe models. |
@@ -296,7 +296,7 @@ See: [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry
 
 ### All server tools available (current defaults)
 
-All `ENABLE_*` gates are `True` and all `AUTO_INSTALL_*` and `AUTO_ATTACH_*` valves are `True`, while `AUTO_DEFAULT_WEB_TOOLS_FILTER` is `False`. The OpenRouter Web Tools toggle appears on every tool-capable model but starts off; users enable it per chat, and within it Web Search and Datetime are on by default while Web Fetch, Advisor, Subagent, and Model Search are opt-in.
+All `ENABLE_*` gates are `True` and all `AUTO_INSTALL_*` and `AUTO_ATTACH_*` valves are `True`, while `AUTO_DEFAULT_WEB_TOOLS_FILTER` is `False`. The OpenRouter Web Tools toggle appears on every model that is not an image-output, a video-generation or a Fusion model but starts off; users enable it per chat, and within it Web Search and Datetime are on by default while Web Fetch, Advisor, Subagent, and Model Search are opt-in.
 
 ### When a web tool is switched off
 

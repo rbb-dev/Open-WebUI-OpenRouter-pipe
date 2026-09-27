@@ -1570,7 +1570,7 @@ class ArtifactStore:
                 consecutive_failures += 1
                 self.logger.exception("Periodic flush failed (%d consecutive failures)", consecutive_failures)
                 if consecutive_failures == failure_limit:
-                    self.logger.critical("🚨 Writing buffered artifacts to the database has failed %d times in a row; the pipe is waiting longer between attempts and will resume when writes succeed (new writes go straight to the database meanwhile).", failure_limit)
+                    self.logger.critical("🚨 Writing buffered artifacts to the database has failed %d times in a row; the pipe is waiting longer between attempts and will resume when writes succeed.", failure_limit)
 
             if consecutive_failures:
                 delay = min(10 * (2 ** min(consecutive_failures - 1, 5)), 300)

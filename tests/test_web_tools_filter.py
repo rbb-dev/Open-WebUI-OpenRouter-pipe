@@ -412,3 +412,12 @@ def _store(functions, row_id, source, *, name="My web tools", is_active=True, is
 
 def _warnings(caplog) -> list[str]:
     return [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+"""Who receives the filter, read off the predicate rather than off a spec sheet.
+
+The last row is the one that carries the sentence: a model publishing neither `tools` nor
+`tool_choice` still receives the filter, because no code path consults tool capability for
+this attach. The image and video rows are tool-capable, so neither can tell a tool gate
+from a media gate.
+"""

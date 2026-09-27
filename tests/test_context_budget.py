@@ -24,6 +24,7 @@ from open_webui_openrouter_pipe.core.context_budget import (
     build_live_tool_omission_stub,
     build_replayed_tool_omission_stub,
     compute_prompt_limit_tokens,
+    default_output_reservation,
     estimate_serialized_chars,
     is_tool_omission_stub,
 )

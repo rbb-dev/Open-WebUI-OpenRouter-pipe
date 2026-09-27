@@ -10,6 +10,8 @@ import hashlib
 import json
 import logging
 import os
+import pathlib
+import re
 import sys
 import types
 from collections import deque

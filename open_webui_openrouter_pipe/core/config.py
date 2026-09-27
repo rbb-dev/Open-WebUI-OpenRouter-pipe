@@ -963,7 +963,7 @@ class Valves(BaseModel):
         description=(
             "When enabled, hide models that are not ZDR-capable (based on OpenRouter's /endpoints/zdr list). "
             "A hidden model is also refused if requested directly. It never sends provider.zdr=true -- "
-            "use Enforce ZDR routing for that -- and filtering is skipped if the ZDR list cannot be loaded, except video models, which have no ZDR endpoints and stay hidden."
+            "use Enforce ZDR routing for that -- and filtering is skipped if the ZDR list cannot be loaded, so every model stays visible, video models included."
         ),
     )
     ZDR_ENFORCE: bool = Field(
@@ -1586,7 +1586,7 @@ class Valves(BaseModel):
         default=5,
         ge=1,
         le=50,
-        description="Log a critical alert after this many consecutive failures writing the buffered artifacts to the database. Buffering is not disabled: the pipe waits longer between attempts and keeps retrying, resuming when writes succeed (new writes fall back to direct DB meanwhile).",
+        description="Log a critical alert after this many consecutive failures writing the buffered artifacts to the database. Buffering is not disabled: the pipe waits longer between attempts and keeps retrying, resuming when writes succeed. New writes keep queueing meanwhile and only bypass Redis if the enqueue itself fails.",
     )
     COSTS_REDIS_DUMP: bool = Field(
         default=False,
@@ -1618,7 +1618,7 @@ class Valves(BaseModel):
     )
     USE_MODEL_MAX_OUTPUT_TOKENS: bool = Field(
         default=False,
-        description="When enabled, and the request does not already set a limit, fill in the provider's advertised max_output_tokens. Disable to send no limit of the pipe's own. A routing variant such as base:nitro resolves through its base's catalog row, so it inherits the base's ceiling. This valve controls the automatic value, not yours: A `max_tokens` of 1 or above is forwarded unchanged. OpenRouter documents the parameter as 1 or above and Open WebUI's slider reaches -2, so a value below 1 is sent as no cap -- which means the automatic ceiling applies if this valve is on.",
+        description="When enabled, and the request does not already set a limit, fill in an output allowance: the smaller of the model's advertised max_output_tokens and half its context window, or the advertised value alone when no context window is known. Models advertising neither are left unset. Disable to send no limit of the pipe's own. A routing variant such as base:nitro resolves through its base's catalog row, so it inherits the base's ceiling. This valve controls the automatic value, not yours: A `max_tokens` of 1 or above is forwarded unchanged. OpenRouter documents the parameter as 1 or above and Open WebUI's slider reaches -2, so a value below 1 is sent as no cap -- which means the automatic ceiling applies if this valve is on.",
     )
     SHOW_FINAL_USAGE_STATUS: bool = Field(
         default=True,
@@ -1748,7 +1748,7 @@ class Valves(BaseModel):
         default=True,
         description=(
             "Add OpenRouter's video-generation models, which render in the background, to the model list. "
-            "Video models are never treated as ZDR-capable."
+            "Video models are judged by OpenRouter's ZDR list like any other model, so a ZDR-only picker excludes them unless OpenRouter lists a ZDR endpoint for them."
         ),
     )
 
@@ -1760,11 +1760,11 @@ class Valves(BaseModel):
     )
     AUTO_ATTACH_WEB_TOOLS_FILTER: bool = Field(
         default=True,
-        description="Automatically attach the OpenRouter Web Tools filter to all pipe models (so the toggle appears in the Integrations menu). Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. This relies on the ownership record the pipe writes when it attaches, so a model already carrying the panel has nothing recorded until the pipe next attaches it; run one sync with the valve on, after the panel is detached, and only then does turning this off detach it.",
+        description="Automatically attach the OpenRouter Web Tools per-chat switch to every pipe model that is not an image-output, a video-generation or a Fusion model (so the toggle appears in the Integrations menu). Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. This relies on the ownership record the pipe writes when it attaches, so a model already carrying the panel has nothing recorded until the pipe next attaches it; run one sync with the valve on, after the panel is detached, and only then does turning this off detach it.",
     )
     AUTO_DEFAULT_WEB_TOOLS_FILTER: bool = Field(
         default=False,
-        description="When enabled, marks the OpenRouter Web Tools filter as a Default Filter on all pipe models (pre-enabled per chat; users can still turn it off).",
+        description="When enabled, marks the OpenRouter Web Tools filter as a Default Filter on every pipe model that is not an image-output, a video-generation or a Fusion model (pre-enabled per chat; users can still turn it off).",
     )
 
     AUTO_INSTALL_IMAGE_GEN_FILTER: bool = Field(
