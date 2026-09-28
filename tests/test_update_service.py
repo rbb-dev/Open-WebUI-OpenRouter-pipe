@@ -131,6 +131,9 @@ class _FakeFunctions:
         self.row.updated_at += 1
         return self.row
 
+    async def delete_function_by_id(self, fid, db=None):
+        return True
+
 
 @pytest.fixture()
 def fake_functions(monkeypatch):

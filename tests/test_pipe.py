@@ -4184,6 +4184,15 @@ def _install_functions_module(functions: list[_Func]) -> Iterator[types.ModuleTy
         @classmethod
         async def update_function_by_id(cls, func_id, payload):
             cls.updated.append((func_id, payload))
+            for func in cls._functions:
+                if func.id == func_id:
+                    return func
+            return SimpleNamespace(id=func_id, is_active=True, is_global=False)
+
+        @classmethod
+        async def delete_function_by_id(cls, func_id, db=None):
+            cls.updated.append((func_id, {"deleted": True}))
+            return True
 
     setattr(functions_mod, "FunctionMeta", FunctionMeta)
     setattr(functions_mod, "FunctionForm", FunctionForm)
@@ -7398,6 +7407,7 @@ class TestFilterAutoInstall:
             mock_Functions.get_function_by_id = AsyncMock(return_value=None)
             mock_Functions.insert_new_function = AsyncMock(return_value=Mock(id="openrouter_direct_uploads"))
             mock_Functions.update_function_by_id = AsyncMock(return_value=None)
+            mock_Functions.delete_function_by_id = AsyncMock(return_value=True)
             mock_functions_mod.Functions = mock_Functions
             mock_functions_mod.FunctionForm = Mock
             mock_functions_mod.FunctionMeta = Mock(return_value={})

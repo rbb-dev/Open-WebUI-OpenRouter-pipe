@@ -1212,6 +1212,12 @@ Panels are installed and refreshed on their own while
 actually offered in this workspace. A model whose panel fails to install does
 not hold up the others.
 
+A panel is keyed to the model's Open WebUI id, so a model that starts or stops
+publishing text output keeps its panel and its saved settings. A panel left
+behind by an earlier release under a second id is switched off; which of the
+two keeps running, and the settings you see, are the ones on the panel that is
+currently switched on.
+
 A refresh that cannot install the panels at all — a locked or dropped database,
 most often — changes nothing on any model: every panel already attached stays
 attached, and the next model catalog fetch tries again. The same holds for the Fusion panel,

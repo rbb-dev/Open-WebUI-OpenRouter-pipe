@@ -58,6 +58,7 @@ EXPECTED_LATCHES = {
     "_warned_user_valves",
     "_warned_video_catalog",
     "_warned_video_provider_keys",
+    "_warned_write_refusals",
 }
 
 # `OrderedDict()` is a fourth admitted shape, not a fourth kind of latch: the

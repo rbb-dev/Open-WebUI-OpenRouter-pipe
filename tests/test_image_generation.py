@@ -2969,6 +2969,10 @@ async def test_retirement_touches_only_the_rows_the_previous_design_left():
                 deactivated.append(row_id)
             return True
 
+        @staticmethod
+        async def delete_function_by_id(row_id):
+            return True
+
     module = ModuleType("open_webui.models.functions")
     module.Functions = _Functions  # type: ignore[attr-defined]
     saved = sys.modules.get("open_webui.models.functions")
@@ -3294,6 +3298,10 @@ async def test_the_refresh_retires_superseded_filters_whether_or_not_it_installs
         async def update_function_by_id(row_id, payload):
             if payload.get("is_active") is False:
                 deactivated.append(row_id)
+            return True
+
+        @staticmethod
+        async def delete_function_by_id(row_id):
             return True
 
     module = ModuleType("open_webui.models.functions")
@@ -4355,6 +4363,10 @@ async def test_an_unparseable_image_gen_filter_is_refused_rather_than_installed(
             installed.append(updates)
             return None
 
+        @staticmethod
+        async def delete_function_by_id(function_id):
+            return True
+
     monkeypatch.setattr(functions_module, "Functions", _Table)
     monkeypatch.setattr(
         image_filter_renderer,
@@ -4445,6 +4457,10 @@ async def test_a_contract_that_shrank_to_nothing_overwrites_the_filter_it_left_b
             for key, value in dict(updates).items():
                 setattr(row, key, value)
             return row
+
+        @staticmethod
+        async def delete_function_by_id(function_id):
+            return rows.pop(function_id, None) is not None
 
     monkeypatch.setattr(functions_module, "Functions", _Table)
     pipe = MagicMock()

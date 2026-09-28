@@ -83,6 +83,7 @@ _PROVIDER_NAME_ALLOWLIST_RE = re.compile(r"[^A-Za-z0-9 \-_.]")
 _PROVIDER_NAME_COLLAPSE_RE = re.compile(r"[ _]{2,}")
 
 _warned_stale_filter_rows: set[str] = set()
+_warned_write_refusals: dict[str, float] = {}
 
 _PIPE_OFF_META_KEY = "openrouter_pipe:switched_off_by_pipe"
 _PIPE_INSTALLED_META_KEY = "openrouter_pipe:installed_by"
@@ -128,7 +129,35 @@ def switched_off_meta(row: Any) -> dict[str, Any]:
 
 
 def _stored_source(row: Any) -> str:
-    return (getattr(row, "content", "") or "").strip() + "\n"
+    content = getattr(row, "content", "")
+    if not isinstance(content, str):
+        return "\n"
+    return content.strip() + "\n"
+
+
+_REFUSED_FILTER_WRITES: set[str] = set()
+
+
+async def _write_function(Functions, function_id, updates, what, logger) -> bool:
+    try:
+        landed = await Functions.update_function_by_id(function_id, updates) is not None
+    except Exception:  # noqa: BLE001 - a database driver's own error type is not enumerable here
+        landed = False
+    if not landed:
+        _REFUSED_FILTER_WRITES.add(str(function_id))
+        logger.log(
+            warn_level(_warned_write_refusals, f"refused:{function_id}", cooldown_s=3600),
+            "Open WebUI refused the write to %s while %s; it will be retried on the next pass.",
+            function_id,
+            what,
+        )
+    return landed
+
+
+def a_filter_write_was_refused(family_id: str = "") -> bool:
+    if not family_id:
+        return bool(_REFUSED_FILTER_WRITES)
+    return any(fid.startswith(family_id) for fid in _REFUSED_FILTER_WRITES)
 
 
 def _row_needs_update(row: Any, desired_name: str, desired_meta: dict[str, Any]) -> bool:
@@ -209,6 +238,57 @@ def _is_pipe_video_filter_row(content: Any, row_id: Any) -> bool:
     if not row_id.startswith("openrouter_video_"):
         return False
     return _OPENROUTER_VIDEO_GEN_FILTER_MARKER in content
+
+
+def _stored_image_model_id(content: str) -> str | None:
+    import ast
+
+    for line in (content or "").splitlines():
+        name, sep, rhs = line.partition("=")
+        if sep and name.strip() == "IMAGE_FILTER_MODEL_ID":
+            try:
+                value = ast.literal_eval(rhs.strip())
+            except (ValueError, SyntaxError):
+                return None
+            return value if isinstance(value, str) else None
+    return None
+
+
+def _row_is_off_identity(content: str, row_id: str) -> bool:
+    from .image_filter_renderer import sanitize_image_filter_id
+
+    if not isinstance(row_id, str) or not row_id.startswith("openrouter_image_filter_"):
+        return False
+    stored = _stored_image_model_id(content)
+    return stored is not None and sanitize_image_filter_id(stored) != row_id
+
+
+def _image_model_panel_id(content: str) -> str | None:
+    from .image_filter_renderer import sanitize_image_filter_id
+
+    stored = _stored_image_model_id(content)
+    return sanitize_image_filter_id(stored) if stored is not None else None
+
+
+def _on_identity_active_sibling_exists(rows: list[Any], row_id: Any, row_content: str) -> bool:
+    model_panel_id = _image_model_panel_id(row_content) if isinstance(row_content, str) else None
+    if model_panel_id is None:
+        return False
+    for row in rows or []:
+        content = getattr(row, "content", "")
+        other_id = getattr(row, "id", "")
+        if not isinstance(content, str) or not other_id or other_id == row_id:
+            continue
+        if "IMAGE_FILTER_MODEL_ID" not in content:
+            continue
+        if not bool(getattr(row, "is_active", False)):
+            continue
+        if _row_is_off_identity(content, other_id):
+            continue
+        if _image_model_panel_id(content) != model_panel_id:
+            continue
+        return True
+    return False
 
 
 _AUTO_INSTALL_FAMILY_MARKERS: tuple[tuple[str, str], ...] = (
@@ -606,6 +686,10 @@ class FilterManager:
                 existing = await Functions.get_function_by_id(candidate_id)
                 if existing is None:
                     break
+                if matches_candidate(_stored_source(existing)):
+                    if getattr(existing, "is_active", False):
+                        return str(getattr(existing, "id", "") or "")
+                    return None
                 suffix += 1
                 candidate_id = f"{preferred_id}_{suffix}"
                 if suffix > 50:
@@ -639,7 +723,22 @@ class FilterManager:
             if not created:
                 self._write_not_installed = True
                 return None
-            await Functions.update_function_by_id(candidate_id, {"is_active": True, "is_global": False, "name": desired_name, "meta": FunctionMeta(**_merged_meta(created, desired_meta))})
+            if not await _write_function(
+                Functions,
+                candidate_id,
+                {"is_active": True, "is_global": False, "name": desired_name, "meta": FunctionMeta(**_merged_meta(created, desired_meta))},
+                f"activating the newly installed {log_label}",
+                self.logger,
+            ):
+                self._write_not_installed = True
+                removed = await Functions.delete_function_by_id(candidate_id)
+                if not removed:
+                    self.logger.warning(
+                        "Open WebUI refused to remove the inert %s %r this pass created; it stays "
+                        "switched off and the next pass re-activates it.",
+                        log_label, candidate_id,
+                    )
+                return None
             self.logger.info("Installed %s: %s", log_label, candidate_id)
             return candidate_id
 
@@ -663,8 +762,8 @@ class FilterManager:
                 )
             if existing_content != desired_source:
                 self._validate_before_write(desired_source, log_label)
-                self.logger.info("Updating %s: %s", log_label, function_id)
-                await Functions.update_function_by_id(
+                if await _write_function(
+                    Functions,
                     function_id,
                     {
                         "content": desired_source,
@@ -674,11 +773,15 @@ class FilterManager:
                         "is_active": switch_on,
                         "is_global": False,
                     },
-                )
+                    f"updating the stored source of the installed {log_label}",
+                    self.logger,
+                ):
+                    self.logger.info("Updating %s: %s", log_label, function_id)
             else:
                 needs_write = _row_needs_update(chosen, desired_name, desired_meta)
                 if needs_write:
-                    await Functions.update_function_by_id(
+                    await _write_function(
+                        Functions,
                         function_id,
                         {
                             "name": desired_name,
@@ -687,6 +790,8 @@ class FilterManager:
                             "is_active": switch_on,
                             "is_global": False,
                         },
+                        f"refreshing the stored settings of the installed {log_label}",
+                        self.logger,
                     )
         elif existing_content != desired_source:
             self.logger.log(
@@ -1746,6 +1851,7 @@ class FilterManager:
         from ..models.registry import (
             ModelFamily,
             OpenRouterModelRegistry,
+            sanitize_model_id,
             uses_dedicated_image_api,
         )
 
@@ -1778,6 +1884,7 @@ class FilterManager:
                 endpoint_record = OpenRouterModelRegistry.image_endpoint(model_id)
             if not isinstance(image_model, dict):
                 image_model = dict(model)
+            image_model = {**image_model, "id": sanitize_model_id(canonical_id)}
 
             self._write_not_installed = False
             try:
@@ -1838,13 +1945,17 @@ class FilterManager:
             if _OPENROUTER_IMAGE_FILTER_MARKER not in content:
                 continue
             if "IMAGE_FILTER_MODEL_ID" in content:
-                continue
-            try:
-                await Functions.update_function_by_id(row_id, {"is_active": False})
-            except Exception as exc:
-                self.logger.warning(
-                    "Could not retire superseded image filter %r: %s", row_id, exc, exc_info=True
-                )
+                if not _row_is_off_identity(content, row_id):
+                    continue
+                if not _on_identity_active_sibling_exists(rows, row_id, content):
+                    continue
+            if not await _write_function(
+                Functions,
+                row_id,
+                {"is_active": False},
+                "retiring a superseded image filter",
+                self.logger,
+            ):
                 continue
             self.logger.info(
                 "Retired superseded image filter %r; each model now has its own.", row_id
@@ -1897,13 +2008,14 @@ class FilterManager:
         # invisible soft hyphen was enough -- and a filter that cannot be re-identified is
         # installed again under a new suffix on every catalog refresh.
         model_id_token = f"IMAGE_FILTER_MODEL_ID = {spec.model_id!r}"
+        legacy_id_token = f"IMAGE_FILTER_MODEL_ID = {model_id!r}"
 
         def _matches(content: str) -> bool:
             if not isinstance(content, str) or not content:
                 return False
             if _OPENROUTER_IMAGE_FILTER_MARKER not in content:
                 return False
-            if model_id_token not in content:
+            if model_id_token not in content and legacy_id_token not in content:
                 return False
             return "class Filter" in content
 
@@ -1932,6 +2044,7 @@ class FilterManager:
             auto_install_valve="AUTO_INSTALL_IMAGE_FILTERS",
             log_label=f"OpenRouter image filter for {spec.model_id}",
             matches_candidate=_matches,
+            prefer_id=spec.function_id,
             rows=rows,
         )
 
@@ -3052,6 +3165,7 @@ class Filter:
 
         created = 0
         updated = 0
+        writes_ok = True
         undeliverable: list[str] = []
         for slug, visibility in model_visibility.items():
             model_info = provider_map.get(slug, {})
@@ -3133,7 +3247,8 @@ class Filter:
                         existing_id,
                     )
                 if existing_content != desired_source:
-                    await Functions.update_function_by_id(
+                    if await _write_function(
+                        Functions,
                         existing_id,
                         {
                             "content": desired_source,
@@ -3141,18 +3256,26 @@ class Filter:
                             "meta": _merged_meta(existing, desired_meta, off_by_pipe=False),
                             "is_active": switch_on,
                         },
-                    )
-                    updated += 1
-                    self.logger.info("Updated provider routing filter: %s", existing_id)
+                        f"updating the stored source of the provider routing filter for {slug}",
+                        self.logger,
+                    ):
+                        updated += 1
+                        self.logger.info("Updated provider routing filter: %s", existing_id)
+                    else:
+                        writes_ok = False
                 else:
                     # Just ensure it's active
-                    await Functions.update_function_by_id(
+                    if not await _write_function(
+                        Functions,
                         existing_id,
                         {
                             "is_active": switch_on,
                             "meta": _merged_meta(existing, {}, off_by_pipe=False),
                         },
-                    )
+                        f"re-asserting the provider routing filter for {slug}",
+                        self.logger,
+                    ):
+                        writes_ok = False
                 # Track for attachment
                 if existing_id:
                     slug_to_filter_id[slug] = existing_id
@@ -3163,6 +3286,9 @@ class Filter:
                 while True:
                     existing_func = await Functions.get_function_by_id(candidate_id)
                     if existing_func is None:
+                        break
+                    own_marker = f"{_PROVIDER_ROUTING_FILTER_MARKER_PREFIX}{slug}:"
+                    if own_marker in _stored_source(existing_func):
                         break
                     suffix += 1
                     candidate_id = f"{filter_id}_{suffix}"
@@ -3182,24 +3308,43 @@ class Filter:
                     if not created_func:
                         created_func = await Functions.get_function_by_id(candidate_id)
                     if created_func:
-                        await Functions.update_function_by_id(
+                        if await _write_function(
+                            Functions,
                             candidate_id,
                             {"is_active": True, "is_global": False, "meta": FunctionMeta(**_merged_meta(created_func, desired_meta))},
-                        )
-                        created += 1
-                        self.logger.info("Created provider routing filter: %s", candidate_id)
-                        # Track for attachment
-                        slug_to_filter_id[slug] = candidate_id
+                            "activating the new provider routing filter",
+                            self.logger,
+                        ):
+                            created += 1
+                            self.logger.info("Created provider routing filter: %s", candidate_id)
+                            # Track for attachment
+                            slug_to_filter_id[slug] = candidate_id
+                        else:
+                            writes_ok = False
+                            removed = await Functions.delete_function_by_id(candidate_id)
+                            if not removed:
+                                self.logger.warning(
+                                    "Open WebUI refused to remove the inert provider routing "
+                                    "filter %r; it stays switched off and the next pass "
+                                    "re-activates it.",
+                                    candidate_id,
+                                )
 
         disabled = 0
         for orphan in orphan_filters:
             orphan_id = getattr(orphan, "id", "")
             if orphan_id and _row_owner(orphan) in ("", pipe_identifier):
-                await Functions.update_function_by_id(
-                    orphan_id, {"is_active": False, "meta": switched_off_meta(orphan)}
-                )
-                disabled += 1
-                self.logger.warning("Disabled duplicate provider routing filter: %s", orphan_id)
+                if await _write_function(
+                    Functions,
+                    orphan_id,
+                    {"is_active": False, "meta": switched_off_meta(orphan)},
+                    "disabling a duplicate provider routing filter",
+                    self.logger,
+                ):
+                    disabled += 1
+                    self.logger.warning("Disabled duplicate provider routing filter: %s", orphan_id)
+                else:
+                    writes_ok = False
 
         for slug, existing in existing_filters.items():
             if slug in undeliverable or slug not in all_models:
@@ -3219,9 +3364,17 @@ class Filter:
                             "is_active": False,
                             "meta": _merged_meta(existing, {}, off_by_pipe=False),
                         }
-                    await Functions.update_function_by_id(existing_id, deactivation)
-                    disabled += 1
-                    self.logger.info("Disabled provider routing filter: %s", existing_id)
+                    if await _write_function(
+                        Functions,
+                        existing_id,
+                        deactivation,
+                        "disabling a provider routing filter the routing valves no longer publish",
+                        self.logger,
+                    ):
+                        disabled += 1
+                        self.logger.info("Disabled provider routing filter: %s", existing_id)
+                    else:
+                        writes_ok = False
 
         if created or updated or disabled:
             self.logger.info(
@@ -3229,8 +3382,9 @@ class Filter:
                 created, updated, disabled, len(all_models),
             )
 
-        self._provider_routing_state_hash = current_hash
-        self.logger.debug("Provider routing state hash updated: %s", current_hash[:8])
+        if writes_ok:
+            self._provider_routing_state_hash = current_hash
+            self.logger.debug("Provider routing state hash updated: %s", current_hash[:8])
 
         self.logger.info(
             "Returning %d provider routing filter mappings for attachment: %r",

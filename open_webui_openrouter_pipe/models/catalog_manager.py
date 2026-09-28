@@ -39,9 +39,11 @@ except Exception:
     ModelForm = None  # type: ignore
 
 from ..core.config import (
+    _DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID,
     _OPENROUTER_FRONTEND_MODELS_URL,
     _OPENROUTER_MODEL_ENDPOINTS_URL_TEMPLATE,
     _OPENROUTER_SITE_URL,
+    _OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID,
     _PIPE_METADATA_KEY,
     _PROVIDER_ROUTING_MAX_PROVIDERS,
     _PROVIDER_ROUTING_OVERLAY_MAX_MODELS,
@@ -1594,6 +1596,12 @@ class ModelCatalogManager:
                 )
 
             semaphore = asyncio.Semaphore(10)
+            from ..filters.filter_manager import (
+                _REFUSED_FILTER_WRITES,
+                a_filter_write_was_refused,
+            )
+
+            _REFUSED_FILTER_WRITES.clear()
             web_valves = self._pipe.valves
             web_tools_filter_function_id: str | None = None
             if (
@@ -1712,10 +1720,18 @@ class ModelCatalogManager:
 
             if valves.AUTO_ATTACH_WEB_TOOLS_FILTER and not every_web_tool_is_off(valves):
                 if not web_tools_filter_function_id:
-                    self.logger.warning(
-                        "AUTO_ATTACH_WEB_TOOLS_FILTER is enabled but the OpenRouter Web Tools filter is not installed. "
-                        "Enable AUTO_INSTALL_WEB_TOOLS_FILTER (or install the filter manually) to show the Web Tools toggle in the UI."
-                    )
+                    if a_filter_write_was_refused(_OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID):
+                        self.logger.warning(
+                            "AUTO_ATTACH_WEB_TOOLS_FILTER is enabled but the OpenRouter Web Tools filter is "
+                            "not installed: Open WebUI refused the write that installs it. The install valve is "
+                            "already doing its job, so this is a database fault rather than a setting to change; "
+                            "the pipe retries on every model-list build."
+                        )
+                    else:
+                        self.logger.warning(
+                            "AUTO_ATTACH_WEB_TOOLS_FILTER is enabled but the OpenRouter Web Tools filter is not installed. "
+                            "Enable AUTO_INSTALL_WEB_TOOLS_FILTER (or install the filter manually) to show the Web Tools toggle in the UI."
+                        )
                 else:
                     self.logger.info(
                         "Auto-attaching OpenRouter Web Tools filter '%s' to %d model(s).",
@@ -1725,10 +1741,18 @@ class ModelCatalogManager:
 
             if valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER:
                 if not direct_uploads_filter_function_id:
-                    self.logger.warning(
-                        "AUTO_ATTACH_DIRECT_UPLOADS_FILTER is enabled but the OpenRouter Direct Uploads filter is not installed. "
-                        "Enable AUTO_INSTALL_DIRECT_UPLOADS_FILTER (or install the filter manually) to show the toggle in the UI."
-                    )
+                    if a_filter_write_was_refused(_DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID):
+                        self.logger.warning(
+                            "AUTO_ATTACH_DIRECT_UPLOADS_FILTER is enabled but the OpenRouter Direct Uploads filter is "
+                            "not installed: Open WebUI refused the write that installs it. The install valve is "
+                            "already doing its job, so this is a database fault rather than a setting to change; "
+                            "the pipe retries on every model-list build."
+                        )
+                    else:
+                        self.logger.warning(
+                            "AUTO_ATTACH_DIRECT_UPLOADS_FILTER is enabled but the OpenRouter Direct Uploads filter is not installed. "
+                            "Enable AUTO_INSTALL_DIRECT_UPLOADS_FILTER (or install the filter manually) to show the toggle in the UI."
+                        )
                 else:
                     supported_models = 0
                     for model in models:

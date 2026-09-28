@@ -219,6 +219,10 @@ def _install_open_webui_stubs() -> None:
         async def update_function_by_id(id, updated, db=None):
             return None
 
+        @staticmethod
+        async def delete_function_by_id(id, db=None):
+            return True
+
     functions_mod = cast(Any, _ensure_module("open_webui.models.functions"))
     functions_mod.Functions = _Functions
     functions_mod.FunctionForm = _FunctionForm

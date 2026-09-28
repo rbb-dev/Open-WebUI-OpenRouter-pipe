@@ -2029,6 +2029,10 @@ class _FakeFunctionsTable:
             setattr(obj, key, value)
         return obj
 
+    @classmethod
+    async def delete_function_by_id(cls, function_id):
+        return cls.store.pop(function_id, None) is not None
+
 
 class TestProviderRoutingEndToEndOverlay:
     """Valve-listed model absent from the frontend map still gets a full filter."""
@@ -2531,6 +2535,10 @@ async def test_the_fusion_filter_install_is_wired_to_its_own_marker_valve_and_id
             for key, value in dict(updates).items():
                 setattr(row, key, value)
             return row
+
+        @staticmethod
+        async def delete_function_by_id(function_id):
+            return rows.pop(function_id, None) is not None
 
     monkeypatch.setattr(functions_module, "Functions", _Table)
     pipe = MagicMock()
