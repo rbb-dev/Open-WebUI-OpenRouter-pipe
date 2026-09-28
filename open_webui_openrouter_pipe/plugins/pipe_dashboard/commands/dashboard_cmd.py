@@ -1501,7 +1501,7 @@ def _build_dashboard_shell(dash_id: str) -> str:
       h += gc('Write pool backlog', (db.pool_pending || 0) + ' pending / ' + (db.pool_workers || 0) + ' workers');
       var lvl = (db.breakers_tripped || 0) > 0 ? 'err' : 'ok';
       h += gc('DB breakers', badge((db.breakers_tripped || 0) + ' tripped', lvl) +
-        ' <span style="color:var(--text-faint);font-size:11px;">' + esc(String(db.breakers_tracked || 0)) + ' seen</span>', true);
+        ' <span style="color:var(--text-faint);font-size:11px;">' + esc(String(db.breakers_tracked || 0)) + ' in window</span>', true);
       h += '</div>';
       $(ID + '-db-panel').innerHTML = h;
       hideLoad('system');

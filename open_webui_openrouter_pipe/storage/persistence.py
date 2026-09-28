@@ -465,13 +465,10 @@ class ArtifactStore:
 
     def _initialize_circuit_breakers(self):
         """Initialize circuit breaker tracking."""
-        breaker_threshold = self.valves.BREAKER_MAX_FAILURES
+        breaker_threshold = max(1, int(self.valves.BREAKER_MAX_FAILURES))
         self._breaker_threshold = breaker_threshold
         self._breaker_window_seconds = self.valves.BREAKER_WINDOW_SECONDS
-        self._db_breaker_maxlen = breaker_threshold
-        self._db_breakers: dict[str, deque[float]] = defaultdict(
-            lambda: deque(maxlen=breaker_threshold)
-        )
+        self._db_breakers: dict[str, deque[float]] = defaultdict(deque)
 
     def configure_breaker(self, threshold: int, window_seconds: int) -> None:
         """Update circuit breaker thresholds.
@@ -480,15 +477,8 @@ class ArtifactStore:
             threshold: Maximum failures before breaker opens
             window_seconds: Time window for failure counting
         """
-        self._breaker_threshold = threshold
+        self._breaker_threshold = max(1, int(threshold))
         self._breaker_window_seconds = window_seconds
-        maxlen = threshold
-        if maxlen != self._db_breaker_maxlen:
-            self._db_breaker_maxlen = maxlen
-            self._db_breakers = defaultdict(
-                lambda: deque(maxlen=maxlen),
-                {user_id: deque(window, maxlen=maxlen) for user_id, window in self._db_breakers.items()},
-            )
 
     def _initialize_redis_state(self):
         """Initialize Redis caching state."""
@@ -2318,10 +2308,14 @@ class ArtifactStore:
     def _db_breaker_allows(self, user_id: str) -> bool:
         if not user_id:
             return True
-        window = self._db_breakers[user_id]
+        window = self._db_breakers.get(user_id)
+        if window is None:
+            return True
         now = time.time()
         while window and now - window[0] > self._breaker_window_seconds:
             window.popleft()
+        if not window:
+            self._db_breakers.pop(user_id, None)
         return len(window) < self._breaker_threshold
 
     def _record_db_failure(self, user_id: str) -> None:
@@ -2329,8 +2323,8 @@ class ArtifactStore:
             self._db_breakers[user_id].append(time.time())
 
     def _reset_db_failure(self, user_id: str) -> None:
-        if user_id and user_id in self._db_breakers:
-            self._db_breakers[user_id].clear()
+        if user_id:
+            self._db_breakers.pop(user_id, None)
 
     # 7. LIFECYCLE MANAGEMENT
 

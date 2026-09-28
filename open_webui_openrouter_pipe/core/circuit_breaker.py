@@ -41,17 +41,15 @@ class CircuitBreaker:
     _AUTH_FAILURE_LOCK = threading.Lock()
 
     def __init__(self, *, threshold: int, window_seconds: float):
-        self._threshold = threshold
+        self._threshold = max(1, int(threshold))
         self._window_seconds = window_seconds
 
         # Per-user request failure tracking
-        self._breaker_records: dict[str, deque[float]] = defaultdict(
-            lambda: deque(maxlen=threshold)
-        )
+        self._breaker_records: dict[str, deque[float]] = defaultdict(deque)
 
         # Per-user per-tool-type failure tracking
         self._tool_breakers: dict[str, dict[tuple[str, str], deque[float]]] = defaultdict(
-            lambda: defaultdict(lambda: deque(maxlen=threshold))
+            lambda: defaultdict(deque)
         )
 
     @property
@@ -61,24 +59,7 @@ class CircuitBreaker:
 
     @threshold.setter
     def threshold(self, value: int) -> None:
-        new_threshold = max(1, int(value))
-        self._threshold = new_threshold
-
-        breaker_records: dict[str, deque[float]] = {}
-        for user_id, window in self._breaker_records.items():
-            breaker_records[user_id] = deque(window, maxlen=new_threshold)
-        self._breaker_records = defaultdict(lambda: deque(maxlen=new_threshold), breaker_records)
-
-        tool_breakers: dict[str, dict[tuple[str, str], deque[float]]] = {}
-        for user_id, tool_windows in self._tool_breakers.items():
-            tool_breakers[user_id] = defaultdict(
-                lambda: deque(maxlen=new_threshold),
-                {tool_key: deque(window, maxlen=new_threshold) for tool_key, window in tool_windows.items()},
-            )
-        self._tool_breakers = defaultdict(
-            lambda: defaultdict(lambda: deque(maxlen=new_threshold)),
-            tool_breakers,
-        )
+        self._threshold = max(1, int(value))
 
     @property
     def window_seconds(self) -> float:

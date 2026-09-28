@@ -25,7 +25,7 @@ from unittest.mock import patch
 
 import pytest
 
-from open_webui_openrouter_pipe.core.circuit_breaker import CircuitBreaker
+from open_webui_openrouter_pipe.core.circuit_breaker import CircuitBreaker, counted_tool_failures
 
 
 class TestCircuitBreakerThresholdProperty:

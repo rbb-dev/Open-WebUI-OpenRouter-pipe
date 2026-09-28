@@ -289,9 +289,10 @@ def _collect_db_stats(pipe: Pipe) -> dict[str, Any]:
             threshold = int(getattr(store, "_breaker_threshold", 0) or 0)
             window = float(getattr(store, "_breaker_window_seconds", 0.0) or 0.0)
             cutoff = time.time() - window if window else 0
-            breakers = len(records)
             for dq in records.values():
                 recent = sum(1 for ts in dq if ts > cutoff) if cutoff else len(dq)
+                if recent > 0:
+                    breakers += 1
                 if threshold and recent >= threshold:
                     tripped += 1
         except (AttributeError, TypeError, ValueError, RuntimeError):
