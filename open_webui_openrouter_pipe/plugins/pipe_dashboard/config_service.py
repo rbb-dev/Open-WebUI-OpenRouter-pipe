@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import logging
+import os
 import typing
 from typing import Any
 
 import annotated_types as at
+from cryptography.fernet import Fernet, InvalidToken
 from pydantic import ValidationError
 
 from ...core.config import EncryptedStr, _is_template_valve, _valve_schema
@@ -160,32 +164,53 @@ class _ClientMessage(RuntimeError):
     pass
 
 
+async def _raw_valve_column(pipe_id: str) -> Any:
+    try:
+        from open_webui.internal.db import get_async_db_context
+        from open_webui.models.functions import Function
+        from sqlalchemy import select
+
+        async with get_async_db_context() as db:
+            result = await db.execute(select(Function.valves).filter_by(id=pipe_id))
+            return result.scalar_one_or_none()
+    except Exception:
+        logger.debug(
+            "pipe_dashboard: raw valve column unavailable; cannot tell an unset row "
+            "from one this server cannot decrypt",
+            exc_info=True,
+        )
+        return None
+
+
+def _raw_column_decodes(raw: Any) -> bool:
+    if not isinstance(raw, str) or not raw.strip():
+        return True
+    secret = os.getenv("WEBUI_SECRET_KEY")
+    if not secret:
+        return True
+    key = secret.encode()
+    if len(secret) != 44:
+        key = base64.urlsafe_b64encode(hashlib.sha256(key).digest())
+    try:
+        Fernet(key).decrypt(raw.encode())
+    except (InvalidToken, ValueError, TypeError):
+        logger.warning(
+            "pipe_dashboard: the stored configuration did not decode under the current "
+            "WEBUI_SECRET_KEY (a rotated key does this); the Config tab will refuse to "
+            "show or write it rather than serve factory defaults over it"
+        )
+        return False
+    return True
+
+
 async def stored_row_readable(pipe_id: str, stored: Any) -> tuple[bool, str]:
     if stored is None:
         return False, "the stored configuration could not be read from the database"
-    if stored == {}:
-        try:
-            from open_webui.internal.db import get_async_db_context
-            from open_webui.models.functions import Function
-            from sqlalchemy import select
-
-            async with get_async_db_context() as _db:
-                _res = await _db.execute(select(Function.valves).filter_by(id=pipe_id))
-                raw = _res.scalar_one_or_none()
-        except Exception:
-            logger.debug(
-                "pipe_dashboard: raw valve column unavailable; cannot tell an unset row "
-                "from an undecodable one",
-                exc_info=True,
-            )
-            raw = None
-        if isinstance(raw, str) and raw.strip():
-            logger.warning(
-                "pipe_dashboard: the stored configuration did not decode (a rotated "
-                "WEBUI_SECRET_KEY does this); the config view is showing defaults and "
-                "saving is refused until it is readable again"
-            )
-            return False, "the stored configuration did not decode (a rotated WEBUI_SECRET_KEY does this)"
+    if stored == {} and not _raw_column_decodes(await _raw_valve_column(pipe_id)):
+        return False, (
+            "the stored configuration could not be read from the database: it is "
+            "encrypted with a different WEBUI_SECRET_KEY"
+        )
     if not isinstance(stored, dict):
         return False, "the stored configuration could not be read from the database"
     return True, ""

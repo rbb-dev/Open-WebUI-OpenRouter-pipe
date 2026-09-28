@@ -178,6 +178,10 @@ const ICON={"Connection & Routing":"🔌","Models & Catalog":"🧠","Files & Med
 let VALVES=[],byName={},baseline={},REV=null,lastSeenRev=null,inflightSave=false,driftCache=null,configUnreadable=false;
 const STORE_UNREADABLE="the stored configuration could not be read from the database";
 const STORE_UNREADABLE_TEXT="Your settings are still stored and have not been changed, but the stored configuration could not be read — restore the database, then reload.";
+const STORE_UNREADABLE_KEY="the stored configuration could not be read from the database: it is encrypted with a different WEBUI_SECRET_KEY";
+const STORE_UNREADABLE_KEY_TEXT="Your settings are still stored and have not been changed, but they are encrypted with a different WEBUI_SECRET_KEY — restore the key, then reload, and they will appear again.";
+function storeUnreadableText(d){if(typeof d!=="string")return "";if(d.indexOf(STORE_UNREADABLE_KEY)===0)return STORE_UNREADABLE_KEY_TEXT;if(d===STORE_UNREADABLE)return STORE_UNREADABLE_TEXT;return "";}
+function storeTextOr(t,d){const s=storeUnreadableText(d);return s||t;}
 const edits={}; const invalid=new Set();
 let SEL=null, Q="", CHANGED=false;
 const openG={};
@@ -423,6 +427,7 @@ function refuseSave(btn, names, detail, err){
   $("#modal").classList.remove("show");
   if(btn){btn.disabled=false;btn.textContent="Save "+names.length;}
   if(detail===STORE_UNREADABLE) showConflict(STORE_UNREADABLE_TEXT);
+  else if(typeof detail==="string"&&detail.indexOf(STORE_UNREADABLE_KEY)===0) showConflict(STORE_UNREADABLE_KEY_TEXT);
   else if(err) toast("Save failed: nothing was saved — "+(detail||err));
   else showConflict();
 }
@@ -435,7 +440,7 @@ function commitSave(){
   callAction("config_set",{edits:payload,rev:REV}).then(resp=>{
     const r=resp&&resp.result;
     if(!resp||resp.error||!r){ refuseSave(btn,names,(resp&&resp.detail)||null,(resp&&resp.error)?resp.error:null); return; }
-    if(r.unreadable){ inflightSave=false; $("#modal").classList.remove("show"); if(btn){btn.disabled=false;btn.textContent="Save "+names.length;} showConflict(STORE_UNREADABLE_TEXT); return; }
+    if(r.unreadable){ inflightSave=false; $("#modal").classList.remove("show"); if(btn){btn.disabled=false;btn.textContent="Save "+names.length;} showConflict(storeUnreadableText(r.unreadable)); return; }
     if(r.conflict){ inflightSave=false; $("#modal").classList.remove("show"); if(btn){btn.disabled=false;btn.textContent="Save "+names.length;} if(r.config_unreadable){configUnreadable=true;showUnreadable();updateBar();return;} refuseSave(btn,names,null,null); return; }
     const vals=(r.values&&typeof r.values==="object")?r.values:{};
     names.forEach(n=>{ const v=byName[n]; if(v&&v.secret){v.secret_set=(edits[n]===null&&v.secret_stored)?v.secret_set:edits[n]!==null;} else if(v){baseline[n]=Object.prototype.hasOwnProperty.call(vals,n)?vals[n]:edits[n];} delete edits[n]; });
@@ -498,7 +503,7 @@ function loadConfig(){
   const tree=$("#tree"); if(tree)tree.innerHTML='<div class="empty" style="margin-top:60px">Loading configuration\u2026</div>';
   callAction("config_get",{}).then(resp=>{
     const r=resp&&resp.result;
-    if(!resp||resp.error||!r){ hideConflict(); if(resp&&resp.detail){ showConflict(STORE_UNREADABLE_TEXT); if(tree)tree.innerHTML='<div class="empty" style="margin-top:60px">Could not load configuration: '+esc(resp.detail)+'</div>'; return; } if(tree)tree.innerHTML='<div class="empty" style="margin-top:60px">Could not load configuration'+(resp&&resp.error?": "+esc(resp.error):"")+'</div>'; return; }
+    if(!resp||resp.error||!r){ hideConflict(); if(resp&&resp.detail){ showConflict(storeTextOr("Could not load configuration: "+esc(resp.detail), resp.detail)); if(tree)tree.innerHTML='<div class="empty" style="margin-top:60px">Could not load configuration: '+esc(resp.detail)+'</div>'; return; } if(tree)tree.innerHTML='<div class="empty" style="margin-top:60px">Could not load configuration'+(resp&&resp.error?": "+esc(resp.error):"")+'</div>'; return; }
     applySnapshot(r);
   }).catch(()=>{ if(tree)tree.innerHTML='<div class="empty" style="margin-top:60px">Could not load configuration.</div>'; });
 }
@@ -507,7 +512,7 @@ function quietReload(){
   const ts=tree?tree.scrollTop:0, ds=det?det.scrollTop:0;
   callAction("config_get",{}).then(resp=>{
     const r=resp&&resp.result;
-    if(!resp||resp.error||!r){ if(resp&&resp.detail){ showConflict(STORE_UNREADABLE_TEXT); return; } return; }
+    if(!resp||resp.error||!r){ if(resp&&resp.detail){ showConflict(storeTextOr("Could not load configuration: "+esc(resp.detail), resp.detail)); return; } return; }
     applySnapshot(r);
     const t2=$("#tree"), d2=$("#detail"); if(t2)t2.scrollTop=ts; if(d2)d2.scrollTop=ds;
   }).catch(()=>{});

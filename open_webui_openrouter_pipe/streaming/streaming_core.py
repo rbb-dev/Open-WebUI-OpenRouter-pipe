@@ -462,6 +462,15 @@ class StreamingHandler:
             origin_source = cfg.get("origin_source")
             return origin_source is None or origin_source in _OWUI_ORIGIN_SOURCES
 
+        def _is_owui_builtin_tool(exposed_name: str) -> bool:
+            cfg = tool_registry.get(exposed_name)
+            if not isinstance(cfg, dict):
+                return False
+            return cfg.get("type") == "builtin" and str(cfg.get("tool_id") or "").startswith("builtin:")
+
+        def _cites_as_owui_builtin(exposed_name: str, origin_name: str) -> bool:
+            return origin_name in BUILTIN_CITATION_TOOLS and _is_owui_builtin_tool(exposed_name)
+
         tool_call_item_ids: dict[str, str] = {}
         streamed_tool_call_args: dict[str, str] = {}
         streamed_tool_call_name_sent: set[str] = set()
@@ -3239,13 +3248,12 @@ class StreamingHandler:
                             tool_name = _origin_tool_name((call.get("name") or "").strip())
                             if output.get("status") != "completed" or tool_name in UNCITED_TOOLS:
                                 continue
+                            exposed_name = (call.get("name") or "").strip()
+                            if not _cites_as_owui_builtin(exposed_name, tool_name):
+                                continue
                             try:
                                 tool_result = output.get("output") or ""
-                                if (
-                                    tool_name in BUILTIN_CITATION_TOOLS
-                                    and _is_owui_origin_tool((call.get("name") or "").strip())
-                                    and get_citation_source_from_tool_result is not None
-                                ):
+                                if get_citation_source_from_tool_result is not None:
                                     tool_params = _safe_json_loads(call.get("arguments") or "{}")
                                     citations = get_citation_source_from_tool_result(
                                         tool_name=tool_name,

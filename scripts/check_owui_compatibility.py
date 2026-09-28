@@ -2,8 +2,10 @@
 """Check OpenWebUI compatibility for pipeline tool backend parity.
 
 This script verifies that the required functions and patterns from OpenWebUI
-are available and have the expected signatures. Run this in CI to detect
-breaking changes in OpenWebUI that could affect the pipeline.
+are available and have the expected signatures. Run it by hand to detect
+breaking changes in OpenWebUI that could affect the pipeline. Nothing runs it
+for you: neither `scripts/gate.sh` nor CI invokes it, so a green suite says
+nothing about it and it has to be run deliberately.
 
 Exit codes:
     0 - All checks passed

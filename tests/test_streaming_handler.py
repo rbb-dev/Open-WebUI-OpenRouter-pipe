@@ -28,6 +28,7 @@ import asyncio
 import base64
 import json
 import re
+from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -40,6 +41,9 @@ from open_webui_openrouter_pipe.core.logging_system import SessionLogger
 from open_webui_openrouter_pipe.streaming.streaming_core import (
     StreamingHandler,
     _wrap_event_emitter,
+)
+from tests.test_the_citation_gate_marker_still_matches_open_webui import (
+    _owui_builtin_tool_id_prefix,
 )
 
 
@@ -245,6 +249,16 @@ class TestEndpointSelection:
             pipe.logger.setLevel(logging.DEBUG)
             result = pipe._streaming_handler._select_llm_endpoint("openai/gpt-4o", valves=valves)
             assert result == "chat_completions"
+
+
+# Open WebUI's own five citing tools, and the registry entry each one carries: a `type` of
+# `builtin` with a `builtin:`-prefixed `tool_id`, which is what a user custom tool never has
+# (`open_webui/utils/tools.py` builds the one; a custom tool gets a uuid and no `type`).
+# Citation routing requires both halves, so a fixture that means to model a real builtin
+# has to carry both, or it is modelling a private tool that happens to share the name.
+_OWUI_BUILTIN_NAMES = frozenset(
+    {"fetch_url", "view_file", "view_knowledge_file", "query_knowledge_files", "query_chat_files"}
+)
 
 
 # The two ways a failure reaches the fallback decision: as OpenRouter's own rejection, and as any other exception.
@@ -12506,7 +12520,8 @@ class TestToolCitationHarvesting:
 
     async def _run_tool_round(
         self, pipe, monkeypatch, *, tool_name, tool_output, arguments="{}",
-        exposed_to_origin=None, extra_tool=None, valve_overrides=None,
+        exposed_to_origin=None, extra_tool=None, valve_overrides=None, chat=None,
+        sent=None, owui_builtin=False,
     ):
         body = ResponsesBody(model="test/model", input=[], stream=True)
         updates: dict[str, Any] = {"TOOL_EXECUTION_MODE": "Pipeline"}
@@ -12516,17 +12531,35 @@ class TestToolCitationHarvesting:
         async def mock_tool(**kwargs):
             return "unused"
 
-        tool_registry = {tool_name: {"callable": mock_tool, "spec": {"name": tool_name}}}
+        entry: dict[str, Any] = {"callable": mock_tool, "spec": {"name": tool_name}}
+        if owui_builtin or tool_name in _OWUI_BUILTIN_NAMES:
+            entry["type"] = "builtin"
+            entry["tool_id"] = f"{_owui_builtin_tool_id_prefix()}{tool_name}"
+        else:
+            # A tool Open WebUI sent that is not one of its five citing builtins -- an MCP
+            # tool, a user custom tool, an openapi tool server entry. It passes the origin
+            # half on its own, so the NAME half is what has to reject it.
+            entry["origin_source"] = "owui_registry_tools"
+        tool_registry = {tool_name: entry}
         if extra_tool:
             for key, cfg in dict(extra_tool).items():
                 tool_registry[key] = dict(cfg, callable=mock_tool)
-        metadata: dict[str, Any] = {"model": {"id": "test"}}
+        metadata: dict[str, Any] = dict(chat or {"model": {"id": "test"}})
         if exposed_to_origin:
             metadata["_pipe_exposed_to_origin"] = dict(exposed_to_origin)
-        monkeypatch.setattr(
-            Pipe, "send_openrouter_streaming_request",
-            self._cycling_stream(self._events_for_call(tool_name, arguments)),
-        )
+
+        events = self._events_for_call(tool_name, arguments) + [
+            {"type": "response.completed", "response": {"output": [], "usage": {}}},
+        ]
+        cycling = self._cycling_stream(events)
+
+        async def send(self_, session, request_body, **kwargs):
+            if sent is not None:
+                sent.append(json.dumps(request_body, default=str))
+            async for event in cycling(self_, session, request_body, **kwargs):
+                yield event
+
+        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", send)
 
         async def mock_execute(calls, registry):
             return [{"type": "function_call_output", "call_id": "call-1", "output": tool_output, "status": "completed"}]
@@ -12556,7 +12589,8 @@ class TestToolCitationHarvesting:
         async def builtin_callable(**_kwargs):
             return "unused"
 
-        owui_registry = {name: {"callable": builtin_callable, "spec": {"name": name, "description": "owui", "parameters": {}}}}
+        owui_registry = {name: {"callable": builtin_callable, "spec": {"name": name, "description": "owui", "parameters": {}},
+                                "type": "builtin", "tool_id": f"{_owui_builtin_tool_id_prefix()}{name}"}}
         direct_registry = None
         if collide:
             async def sibling_callable(**_kwargs):
@@ -12604,18 +12638,34 @@ class TestToolCitationHarvesting:
 
     @pytest.mark.asyncio
     async def test_mcp_labeled_result_urls_become_citations(self, monkeypatch, pipe_instance_async):
+        """An MCP tool's labelled result leaks most easily: the page chooses the text the
+        harvester parses, and whatever the tool returned rides out in the chip's `document`.
+        The gate has to stop the RESULT reaching either path, not merely the chip it would
+        have produced, so this asserts on both spies as well as on the empty chip list."""
+        import open_webui_openrouter_pipe.streaming.streaming_core as sc
+
         text = (
             "Title: First\nURL: https://one.example/a\nPublished: x\nAuthor: y\nHighlights:\nalpha"
             "\n\n---\n\n"
             "Title: Second\nURL: https://two.example/b\nPublished: x\nAuthor: y\nHighlights:\nbeta"
         )
+        harvested: list[str] = []
+        monkeypatch.setattr(
+            sc, "harvest_tool_citations",
+            lambda result: (harvested.append(result), [])[1],
+        )
+        asked = self._spy_on_owui_extractor(monkeypatch)
         emitted = await self._run_tool_round(
             pipe_instance_async, monkeypatch, tool_name="AI_search", tool_output=text,
+            owui_builtin=True,
         )
-        citations = self._citation_events(emitted)
-        urls = [c[0] for c in citations]
-        assert "https://one.example/a" in urls
-        assert "https://two.example/b" in urls
+        assert self._citation_events(emitted) == [], (
+            "an MCP tool's result was published as a source chip"
+        )
+        assert asked == [], f"an MCP tool was routed to Open WebUI's extractor: {asked!r}"
+        assert harvested == [], (
+            f"an MCP tool's result reached the harvester: {harvested!r}"
+        )
 
     @pytest.mark.asyncio
     async def test_no_url_tool_result_emits_no_citation_chip(self, monkeypatch, pipe_instance_async):
@@ -12650,6 +12700,22 @@ class TestToolCitationHarvesting:
 
     @pytest.mark.asyncio
     async def test_duplicate_urls_across_tool_outputs_deduped(self, monkeypatch, pipe_instance_async):
+        """Dedup still has to hold on the surviving path, so this now drives a real builtin
+        with Open WebUI's extractor stubbed out, which leaves the pipe's own harvester as the
+        producer. The harvester's ARGUMENT is recorded directly rather than inferred from the
+        chip: a hardcoded return at the call site would then have to pass this as well."""
+        import open_webui_openrouter_pipe.streaming.streaming_core as sc
+
+        monkeypatch.setattr(sc, "get_citation_source_from_tool_result", None)
+        seen: list[str] = []
+        real_harvest = sc.harvest_tool_citations
+
+        def spy_harvest(result):
+            seen.append(result)
+            return real_harvest(result)
+
+        monkeypatch.setattr(sc, "harvest_tool_citations", spy_harvest)
+
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
         valves = pipe.valves.model_copy(update={"TOOL_EXECUTION_MODE": "Pipeline"})
@@ -12657,16 +12723,18 @@ class TestToolCitationHarvesting:
         async def mock_tool(**kwargs):
             return "unused"
 
-        tool_registry = {"AI_fetch": {"callable": mock_tool, "spec": {"name": "AI_fetch"}}}
+        tool_registry = {"fetch_url": {"callable": mock_tool, "spec": {"name": "fetch_url"},
+                                       "type": "builtin",
+                                       "tool_id": f"{_owui_builtin_tool_id_prefix()}fetch_url"}}
         events = [
             {
                 "type": "response.completed",
                 "response": {
                     "output": [
                         {"type": "function_call", "call_id": "call-1", "id": "call-1",
-                         "name": "AI_fetch", "arguments": "{}"},
+                         "name": "fetch_url", "arguments": "{}"},
                         {"type": "function_call", "call_id": "call-2", "id": "call-2",
-                         "name": "AI_fetch", "arguments": "{}"},
+                         "name": "fetch_url", "arguments": "{}"},
                     ],
                     "usage": {},
                 },
@@ -12701,34 +12769,10 @@ class TestToolCitationHarvesting:
             (e.get("data") or {}).get("metadata", [{}])[0].get("source")
             for e in emitted if e.get("type") in ("source", "citation")
         ]
-        assert chip_urls.count("https://same.example/page") == 1
-
-class TestToolCitationRoutingComplement:
-
-    @pytest.mark.asyncio
-    async def test_non_builtin_name_routes_to_harvester_not_owui(self, monkeypatch, pipe_instance_async):
-        import open_webui_openrouter_pipe.streaming.streaming_core as sc
-
-        owui_calls = {"count": 0}
-        harvester_calls = {"count": 0}
-
-        def spy_owui(**kwargs):
-            owui_calls["count"] += 1
-            return []
-
-        def spy_harvester(result):
-            harvester_calls["count"] += 1
-            return []
-
-        monkeypatch.setattr(sc, "get_citation_source_from_tool_result", spy_owui)
-        monkeypatch.setattr(sc, "harvest_tool_citations", spy_harvester)
-        harness = TestToolCitationHarvesting()
-        await harness._run_tool_round(
-            pipe_instance_async, monkeypatch, tool_name="AI_search", tool_output='{"ok": true}',
+        assert seen == [fetch_text, fetch_text], (
+            f"the harvester was handed {seen!r}, not one call per tool output"
         )
-        assert owui_calls["count"] == 0
-        assert harvester_calls["count"] == 1
-
+        assert chip_urls.count("https://same.example/page") == 1
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("first_flush_fails", [False, True])

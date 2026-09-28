@@ -119,7 +119,6 @@ from .api.gateway.responses_adapter import _drop_backlog_latch
 from .core.circuit_breaker import CircuitBreaker
 from .core.config import (
     _OPENROUTER_CATEGORIES,
-    _OPENROUTER_REFERER,
     _OPENROUTER_TITLE,
     _PIPE_RUNTIME_ID,
     OWUI_CHAT_ID,
@@ -3002,6 +3001,7 @@ class Pipe:
                 cache_seconds=valves.MODEL_CATALOG_REFRESH_SECONDS,
                 logger=self.logger,
                 valves=valves,
+                http_referer=_select_openrouter_http_referer(valves),
             )
             from .integrations.image_catalog import ensure_image_catalog_loaded
             from .integrations.video_catalog import ensure_video_catalog_loaded
@@ -3772,7 +3772,7 @@ class Pipe:
             "Authorization": f"Bearer {api_key}",
             "X-OpenRouter-Title": _OPENROUTER_TITLE,
             "X-OpenRouter-Categories": _OPENROUTER_CATEGORIES,
-            "HTTP-Referer": _OPENROUTER_REFERER,
+            "HTTP-Referer": _select_openrouter_http_referer(self.valves),
         }
         async for attempt in AsyncRetrying(
             stop=stop_after_attempt(3),
