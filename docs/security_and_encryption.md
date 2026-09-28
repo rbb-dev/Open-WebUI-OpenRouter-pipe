@@ -251,12 +251,16 @@ Recommended operator action:
 
 ### Log safety
 
-`_redact_payload_blobs()` runs over every request payload the pipe records, at any log level. It reduces two kinds of value:
+`_redact_payload_blobs()` runs over every request payload the pipe records, and over the body of every error response it records, at any log level. It reduces two kinds of value:
 
 - **Large base64 blobs** — a `data:` URL's payload, or a bare blob under a key such as `b64_json`, is truncated to a marker with its length. This prevents multi-megabyte log entries.
 - **Media links** — any value under a media-URL key (`image_url`, `file_url`, `video_url`, `url`, `file_data`) is reduced to scheme, host and port by `loggable_link()`. The path and query are dropped, so a presigned or signed CDN link cannot be recovered from a log. This holds for a link whose netloc does not parse and for a `data:` URL with no comma as well as for a well-formed `https://` one: a value that cannot be described at all is replaced by `[REDACTED]` rather than echoed.
 
 The ERROR path is covered too. A refusal's log subject is the link the pipe declined, so subjects are built with `loggable_link()` rather than the raw URL. This means turning DEBUG on shows you every media field as `scheme://host:port` rather than the full URL — the pipe is telling you which host it was about to contact, not the signed path it was given. It holds for both remote downloaders, the buffered and the streaming one, at every log site that names the link; a third downloader inherits the same rule.
+
+So is the error-response body, and the WARNING a rejection raises. A provider's moderation echo quotes the person's own attachment back at them, so a body the pipe read back from a 4xx or a 5xx is parsed, redacted, and then rewritten string by string: every `data:` URL in it becomes `data:<media type> [redacted]` with no prefix of the payload left behind. The same rewrite is applied where a rejection is reported — the provider's message in the WARNING, the streaming producer's report of the same rejection, and the traceback that record carries. `str(exc)`, `raw_body`, and the error card's `{raw_body}` and `{flagged_excerpt}` are left byte-identical on purpose: those are what the person is shown, and the card is where the diagnosis lives. The scrub is applied where the record is written, not to the value that is returned, so a caller reading the body back gets the wire text.
+
+This is deliberately stronger than Open WebUI, which caps an error body at `error_body[:1000]` — a length cap, not a scrub, and it has no redaction helper at all. The pipe's log and Open WebUI's will therefore disagree about the same rejected request: the pipe shows `data:image/png [redacted]` where Open WebUI keeps a thousand characters of the same body. That divergence is intended.
 
 A `data:` URL contributes only its media type (for example `data:image/png`); the bytes after it never reach a log, including when the URL carries no comma and its payload is the remainder of the string.
 

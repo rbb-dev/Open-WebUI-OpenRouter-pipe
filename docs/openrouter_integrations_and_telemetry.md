@@ -67,6 +67,7 @@ Before sending requests to OpenRouter, the pipe filters request bodies to the al
 | `route` | Routing strategy, forwarded to OpenRouter. |
 | `debug` | OpenRouter debug options, forwarded. |
 | `thinking_config` | Gemini-family native thinking configuration; the pipe builds it for Gemini models. |
+| `web_search_options` | Native web-search options (e.g. `search_context_size`). Forwarded on `/responses`; removed on **both** endpoints when `disable_native_websearch` is set. |
 
 Operational note:
 - The pipe always constructs a canonical "Responses-style" request first, then converts it to a Chat Completions payload only when needed (forced endpoint selection or automatic fallback).
@@ -228,7 +229,7 @@ Open WebUI can attach per-model custom parameters (model settings → `custom_pa
 - Pipe behavior (when truthy):
   - Removes `tools` entries with `{"type": "openrouter:web_search"}`.
   - Removes legacy `plugins` entries with `{"id": "web"}`.
-  - Removes `web_search_options` when present (OpenRouter `/chat/completions`).
+  - Removes `web_search_options` when present.
   - Holds on the internal-Fusion panel, judge and final member calls too.
 
 This is useful when OpenRouter Web Tools is enabled by default (via the model’s Default Filters / `AUTO_DEFAULT_WEB_TOOLS_FILTER`) but you want to block provider-native web search on selected models.

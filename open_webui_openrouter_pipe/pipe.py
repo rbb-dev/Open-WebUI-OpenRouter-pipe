@@ -2198,22 +2198,32 @@ class Pipe:
                     "Skipping await for request worker bound to a different event loop during close()."
                 )
             self._queue_worker_task = None
+        self._abandon_request_queue()
+
+    def _abandon_request_queue(self) -> None:
         queue = self._request_queue
         self._request_queue = None
-        if queue is not None:
-            while True:
-                try:
-                    abandoned = queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
-                if not abandoned.future.done():
-                    with contextlib.suppress(RuntimeError):
-                        abandoned.future.cancel()
-                state = getattr(abandoned, "counter_state", None)
-                if state is not None and not state.get("tail"):
-                    Pipe._release_stream_counter(abandoned.pipe, state)
-                with contextlib.suppress(ValueError):
-                    queue.task_done()
+        if queue is None:
+            return
+        drained = 0
+        while True:
+            try:
+                abandoned = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            drained += 1
+            if drained > Pipe._QUEUE_MAXSIZE:
+                break
+            if not abandoned.future.done():
+                with contextlib.suppress(RuntimeError):
+                    abandoned.future.set_exception(
+                        RuntimeError("Request queue was replaced before this request ran.")
+                    )
+            state = getattr(abandoned, "counter_state", None)
+            if state is not None and state.get("owned"):
+                Pipe._release_stream_counter(abandoned.pipe, state)
+            with contextlib.suppress(ValueError):
+                queue.task_done()
 
     @timed
     async def _stop_log_worker(self) -> None:
@@ -2474,7 +2484,7 @@ class Pipe:
                         "Dropping stale request worker bound to a different event loop during setup."
                     )
                     self._queue_worker_task = None
-                    self._request_queue = None
+                    self._abandon_request_queue()
 
             if self._request_queue is not None:
                 try:
@@ -2485,7 +2495,7 @@ class Pipe:
                     self.logger.debug(
                         "Dropping stale request queue bound to a different event loop during setup."
                     )
-                    self._request_queue = None
+                    self._abandon_request_queue()
                     self._queue_worker_task = None
 
             if self._request_queue is None:
@@ -2691,6 +2701,7 @@ class Pipe:
         reached_openrouter = False
         completed = False
         deferred_result: Any = None
+        permit_handed_to_manager = False
         try:
             stream_emitter = (
                 self._event_emitter_handler._make_middleware_stream_emitter(job, stream_queue)
@@ -2719,6 +2730,7 @@ class Pipe:
                 except Exception:
                     self.logger.debug("Plugin on_emitter_wrap dispatch failed", exc_info=True)
 
+            permit_handed_to_manager = True
             async with self._acquire_semaphore(semaphore, job.request_id, held=semaphore_held):
                 session = await self._shared_request_session(job.valves)
                 tokens = self._apply_logging_context(job)
@@ -2841,6 +2853,9 @@ class Pipe:
             if not job.future.done():
                 job.future.set_exception(exc)
         finally:
+            if semaphore_held and not permit_handed_to_manager:
+                with contextlib.suppress(Exception):
+                    semaphore.release()
             try:
                 _drop_backlog_latch(job.request_id)
                 if stream_queue is not None:

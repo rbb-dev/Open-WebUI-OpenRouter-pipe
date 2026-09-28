@@ -35,7 +35,11 @@ from ...core.errors import (
 )
 from ...core.logging_system import SessionLogger
 from ...core.timing_logger import timed, timing_mark
-from ...core.utils import _apply_retry_after_metadata, http_timeout
+from ...core.utils import (
+    _apply_retry_after_metadata,
+    _data_url_log_subject,
+    http_timeout,
+)
 from ...core.warn_latch import warn_level
 from ...integrations.anthropic import _maybe_apply_responses_toplevel_cache_control
 from ...requests.debug import (
@@ -495,7 +499,7 @@ class ResponsesAdapter:
                                     self._pipe._note_auth_failure()
                                     self.logger.warning(
                                         "Producer encountered auth error while streaming from OpenRouter: %s",
-                                        producer_exc,
+                                        _data_url_log_subject(str(producer_exc)),
                                     )
                                 else:
                                     self.logger.exception(
@@ -721,7 +725,7 @@ class ResponsesAdapter:
                     self.logger.error(
                         "SSE %s task failed during cleanup: %s",
                         task_name,
-                        result,
+                        _data_url_log_subject(str(result)),
                         exc_info=result,
                     )
 

@@ -454,6 +454,7 @@ ALLOWED_OPENROUTER_FIELDS = {
     "route",
     "debug",
     "thinking_config",
+    "web_search_options",
 }
 
 ALLOWED_OPENROUTER_CHAT_FIELDS = {

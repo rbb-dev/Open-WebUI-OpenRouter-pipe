@@ -536,45 +536,39 @@ class SessionLogManager:
     @timed
     def start_workers(self) -> None:
         """Start session log writer + cleanup threads if not already running."""
-        if self._worker_thread and self._worker_thread.is_alive():
-            return
-        if self._cleanup_thread and self._cleanup_thread.is_alive():
-            return
         if self._queue is None:
             self._queue = queue.Queue(maxsize=500)
-        if self._stop_event is None or (
-            self._stop_event.is_set()
-            and not any(t is not None and t.is_alive() for t in (self._worker_thread, self._cleanup_thread))
+        writer_live = bool(self._worker_thread and self._worker_thread.is_alive())
+        cleanup_live = bool(self._cleanup_thread and self._cleanup_thread.is_alive())
+        if not (writer_live and cleanup_live) and (
+            self._stop_event is None or self._stop_event.is_set()
         ):
             self._stop_event = threading.Event()
 
         mgr_ref = weakref.ref(self)
-        self._worker_thread = threading.Thread(
-            target=_writer_loop,
-            args=(mgr_ref, self._stop_event, self._queue),
-            name="openrouter-session-log-writer",
-            daemon=True,
-        )
-        self._worker_thread.start()
-
-        self._cleanup_thread = threading.Thread(
-            target=_cleanup_loop,
-            args=(mgr_ref, self._stop_event),
-            name="openrouter-session-log-cleanup",
-            daemon=True,
-        )
-        self._cleanup_thread.start()
+        if not writer_live:
+            self._worker_thread = threading.Thread(
+                target=_writer_loop,
+                args=(mgr_ref, self._stop_event, self._queue),
+                name="openrouter-session-log-writer",
+                daemon=True,
+            )
+            self._worker_thread.start()
+        if not cleanup_live:
+            self._cleanup_thread = threading.Thread(
+                target=_cleanup_loop,
+                args=(mgr_ref, self._stop_event),
+                name="openrouter-session-log-cleanup",
+                daemon=True,
+            )
+            self._cleanup_thread.start()
 
     @timed
     def start_assembler_worker(self) -> None:
         """Start the DB-backed session log assembler thread (multi-worker safe)."""
         if self._assembler_thread and self._assembler_thread.is_alive():
             return
-        if self._stop_event is None or (
-            self._stop_event.is_set()
-            and not any(t is not None and t.is_alive() for t in
-                        (self._worker_thread, self._cleanup_thread, self._assembler_thread))
-        ):
+        if self._stop_event is None or self._stop_event.is_set():
             self._stop_event = threading.Event()
 
         self._assembler_thread = threading.Thread(

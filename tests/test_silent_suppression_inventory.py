@@ -150,7 +150,12 @@ _EXPECTED: dict[str, int] = {
     # then calls the private `_release_waiter()`; if that call is missing or raises, the
     # raised limit is already in place and waiting requests take the new slots at the next
     # connection release, so the only consequence is a later wake, not a lost resize.
-    "pipe.py": 33,
+    # 34th (B223, H784-1): the release of the worker's own permit in `_execute_pipe_job`
+    # when the job died before the `async with _acquire_semaphore(...)` took it over. A
+    # semaphore that raises on `release()` -- a loop-bound one whose loop is gone -- must
+    # not replace the failure that is already unwinding the request; the permit is
+    # already accounted for either way.
+    "pipe.py": 34,
     "storage/persistence.py": 3,
     # 1st: the caller-supplied fallback in `_emit_templated_error_event`. It is reached only because the
     # admin's own template already failed to render, and the generic card below it is the answer if the

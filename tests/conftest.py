@@ -577,9 +577,12 @@ def _reset_model_registry():
 def _isolate_webui_secret_key(monkeypatch):
     """Keep WEBUI_SECRET_KEY unset by default so the SEND_CACHE_SESSION_ID cache pin is
     deterministic regardless of ambient env or test order; tests that exercise the pin set
-    it explicitly via monkeypatch.setenv.
+    it explicitly via monkeypatch.setenv. WEBUI_JWT_SECRET_KEY goes with it: it is a live
+    fallback for Open WebUI's own key derivation, not a historical name, so an ambient one
+    decides every reader that does not look at the primary name at all.
     """
     monkeypatch.delenv("WEBUI_SECRET_KEY", raising=False)
+    monkeypatch.delenv("WEBUI_JWT_SECRET_KEY", raising=False)
 
 
 _LOOPBACK = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}

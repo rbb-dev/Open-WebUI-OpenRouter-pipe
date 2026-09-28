@@ -26,7 +26,12 @@ if TYPE_CHECKING:
 from ..storage.owui_files import is_channel_chat
 from .config import OWUI_CHAT_ID
 from .errors import _resolve_error_model_context, is_sign_in_failure
-from .utils import _pretty_json, _resolve_retry_after_seconds, join_answer_and_card
+from .utils import (
+    _data_url_log_subject,
+    _pretty_json,
+    _resolve_retry_after_seconds,
+    join_answer_and_card,
+)
 
 # Simple fallback template used when no valve template is available.
 # The canonical DEFAULT_OPENROUTER_ERROR_TEMPLATE lives in core/config.py.
@@ -410,7 +415,9 @@ class ErrorFormatter:
         retry_after_hint = _resolve_retry_after_seconds(exc.metadata)
         if retry_after_hint is not None and context_defaults.get("retry_after_seconds") is None:
             context_defaults["retry_after_seconds"] = retry_after_hint
-        self.logger.warning("[%s] OpenRouter rejected the request: %s", error_id, exc)
+        self.logger.warning(
+            "[%s] OpenRouter rejected the request: %s", error_id, _data_url_log_subject(str(exc))
+        )
         model_display, diagnostics, metrics = _resolve_error_model_context(
             exc,
             normalized_model_id=normalized_model_id,

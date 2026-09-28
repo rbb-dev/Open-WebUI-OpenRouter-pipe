@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
-from .utils import _sanitize_path_component
+from .utils import _data_url_log_subject, _sanitize_path_component
 from .warn_latch import warn_level
 
 try:
@@ -101,7 +101,7 @@ _RECORD_SHAPE_RE = re.compile(
 
 def _deform_exception_text(text: str) -> str:
     shaped = [
-        f" {line}" if _RECORD_SHAPE_RE.match(line) else _neutralise_log_text(line)
+        f" {line}" if _RECORD_SHAPE_RE.match(line) else _data_url_log_subject(_neutralise_log_text(line))
         for line in text.splitlines()
     ]
     return "\n".join(shaped)
@@ -109,7 +109,7 @@ def _deform_exception_text(text: str) -> str:
 
 def _deforms_exception_text(text: str) -> bool:
     return any(
-        _RECORD_SHAPE_RE.match(line) or _neutralise_log_text(line) != line
+        _RECORD_SHAPE_RE.match(line) or _data_url_log_subject(_neutralise_log_text(line)) != line
         for line in text.splitlines()
     )
 

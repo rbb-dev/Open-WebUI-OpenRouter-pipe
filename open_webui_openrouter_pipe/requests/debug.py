@@ -62,6 +62,25 @@ def _debug_print_response(payload: Any, *, logger: logging.Logger) -> None:
         logger.debug("OpenRouter response debug logging failed", exc_info=True)
 
 
+def _scrubbed_error_body(text: str) -> Any:
+    from ..core.utils import _data_url_log_subject, _redact_payload_blobs
+
+    def _subjects(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {k: _subjects(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_subjects(v) for v in value]
+        if isinstance(value, str):
+            return _data_url_log_subject(value)
+        return value
+
+    try:
+        parsed = json.loads(text)
+    except (ValueError, RecursionError):
+        return _data_url_log_subject(_redact_payload_blobs(text))
+    return _subjects(_redact_payload_blobs(parsed))
+
+
 async def _debug_print_error_response(resp: Any, *, logger: logging.Logger) -> str:
     """Log the response payload and return the response body for debugging.
 
@@ -92,9 +111,9 @@ async def _debug_print_error_response(resp: Any, *, logger: logging.Logger) -> s
             "status": getattr(resp, "status", None),
             "reason": getattr(resp, "reason", None),
             "url": str(getattr(resp, "url", "")),
-            "body": text,
+            "body": _scrubbed_error_body(text),
         }
-        logger.debug("OpenRouter error response: %s", json.dumps(payload, indent=2))
+        logger.debug("OpenRouter error response: %s", json.dumps(payload, indent=2, ensure_ascii=False))
         return text
     except Exception:
         logger.debug("OpenRouter error response debug logging failed", exc_info=True)

@@ -546,6 +546,8 @@ class StreamingHandler:
         reasoning_stream_buffers: dict[str, str] = {}
         reasoning_stream_completed: set[str] = set()
         reasoning_display: dict[str, dict[str, Any]] = {}
+        round_saw_function_call = 0
+        deferred_reasoning_keys: dict[str, int] = {}
         ordinal_by_url: dict[str, int] = {}
         emitted_citations: list[dict] = []
         citation_excerpt_max = 1000
@@ -1077,6 +1079,7 @@ class StreamingHandler:
                     "output_index": call_index,
                     "item": call_item,
                 })
+                await _flush_deferred_reasoning_items(len(emitted_tool_call_items))
                 return effective_id
 
             async def _emit_tool_result(
@@ -1359,6 +1362,32 @@ class StreamingHandler:
                 for reasoning_key in list(reasoning_display):
                     await _emit_reasoning_item(reasoning_key)
 
+            def _defer_reasoning_keys_after_a_call(completed: Any) -> None:
+                if not isinstance(completed, dict):
+                    return
+                calls_before = 0
+                for entry in completed.get("output") or []:
+                    if not isinstance(entry, dict):
+                        continue
+                    if entry.get("type") == "function_call":
+                        calls_before += 1
+                    elif entry.get("type") == "reasoning" and calls_before:
+                        entry_id = entry.get("id")
+                        if isinstance(entry_id, str) and entry_id:
+                            due = round_saw_function_call + calls_before
+                            deferred_reasoning_keys[entry_id] = min(
+                                due, deferred_reasoning_keys.get(entry_id, due)
+                            )
+
+            async def _flush_deferred_reasoning_items(upto_calls: int) -> None:
+                if not deferred_reasoning_keys:
+                    return
+                for reasoning_key, calls_before in list(deferred_reasoning_keys.items()):
+                    if calls_before > upto_calls:
+                        continue
+                    del deferred_reasoning_keys[reasoning_key]
+                    await _emit_reasoning_item(reasoning_key)
+
             async def _flush_trailing_reasoning() -> None:
                 if event_emitter is None or not thinking_box_enabled:
                     return
@@ -1594,9 +1623,7 @@ class StreamingHandler:
 
                 if loop_index > 0:
                     retry_barrier_crossed = True
-                    _close_open_reasoning_windows()
-                    for reasoning_key in list(reasoning_display):
-                        await _emit_reasoning_item(reasoning_key)
+                    await _close_and_emit_reasoning_items()
                     active_reasoning_item_id = None
                     reasoning_stream_buffers.pop("__reasoning__", None)
                     reasoning_stream_completed.discard("__reasoning__")
@@ -2148,6 +2175,7 @@ class StreamingHandler:
 
                         elif item_type == "function_call":
                             should_persist = False
+                            round_saw_function_call += 1
                             if item.get("name"):
                                 reasoning_anchor_state["stream_calls"] += len(
                                     split_tool_argument_objects(
@@ -2536,7 +2564,11 @@ class StreamingHandler:
                                 note_generation_activity()
                                 await _maybe_emit_reasoning_status(append)
                                 await _maybe_emit_reasoning_status("", force=True)
-                            await _emit_reasoning_item(key)
+                            if emitter_supplied and round_saw_function_call:
+                                _reasoning_display_state(key)
+                                deferred_reasoning_keys.setdefault(key, round_saw_function_call)
+                            else:
+                                await _emit_reasoning_item(key)
 
                         if title:
                             desc = title if not content else f"{title}\n{content}"
@@ -2568,7 +2600,12 @@ class StreamingHandler:
 
                     if etype in ("response.completed", "response.done", "response.incomplete"):
                         if reasoning_display:
-                            await _close_and_emit_reasoning_items()
+                            _close_open_reasoning_windows()
+                            _defer_reasoning_keys_after_a_call(event.get("response"))
+                            for reasoning_key in list(reasoning_display):
+                                if reasoning_key in deferred_reasoning_keys:
+                                    continue
+                                await _emit_reasoning_item(reasoning_key)
                         if fusion_armed and fusion_batcher is not None:
                             for _straggler in fusion_batcher.flush_all():
                                 await _emit_fusion_event(_straggler)
@@ -3567,7 +3604,7 @@ class StreamingHandler:
                             task=None,
                         )
                     )
-                except Exception:
+                except (asyncio.CancelledError, Exception):
                     self.logger.debug("generation-complete dispatch failed", exc_info=True)
 
             if (not error_occurred) and (not was_cancelled) and (not handed_back):
@@ -3598,7 +3635,7 @@ class StreamingHandler:
                                 },
                             }
                         )
-                    except Exception:
+                    except (asyncio.CancelledError, Exception):
                         self.logger.exception("Failed to emit final status in finally")
 
             resolved_chat_id = str(metadata.get("chat_id") or "")
@@ -3631,7 +3668,7 @@ class StreamingHandler:
                             pipe_identifier=pipe_identifier,
                         )
                     )
-                except Exception:
+                except (asyncio.CancelledError, Exception):
                     self.logger.debug(
                         "Failed to persist session log segment (chat_id=%s message_id=%s request_id=%s terminal=%s)",
                         resolved_chat_id,

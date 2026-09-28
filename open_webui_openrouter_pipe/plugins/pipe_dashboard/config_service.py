@@ -199,7 +199,7 @@ async def _raw_valve_column(pipe_id: str) -> Any:
 def _raw_column_decodes(raw: Any) -> bool:
     if not isinstance(raw, str) or not raw.strip():
         return True
-    secret = os.getenv("WEBUI_SECRET_KEY")
+    secret = os.getenv("WEBUI_SECRET_KEY", os.getenv("WEBUI_JWT_SECRET_KEY", ""))
     if not secret:
         return True
     key = secret.encode()

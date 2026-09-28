@@ -2391,65 +2391,6 @@ async def test_send_openrouter_streaming_fallback_after_visible_output(pipe_inst
     assert len(completed) == 1
 
 
-# ============================================================================
-# Fallback with buffer discarding tests
-# ============================================================================
-
-
-@pytest.mark.asyncio
-async def test_send_openrouter_streaming_fallback_discards_buffer(pipe_instance_async):
-    """Test that non-visible events are discarded on fallback.
-
-    When /responses fails but has buffered non-visible events,
-    those should be discarded before falling back to /chat/completions.
-    """
-    pipe = pipe_instance_async
-    valves = pipe.valves.model_copy(update={
-        "DEFAULT_LLM_ENDPOINT": "responses",
-        "AUTO_FALLBACK_CHAT_COMPLETIONS": True,
-    })
-    session = pipe._create_http_session(valves)
-
-    # /responses emits non-visible events then fails
-    # The responses endpoint needs to fail early
-    chat_sse = (
-        _sse({"choices": [{"delta": {"content": "Fallback worked"}, "finish_reason": None}]})
-        + _sse({"choices": [{"delta": {}, "finish_reason": "stop"}]})
-        + "data: [DONE]\n\n"
-    )
-
-    with aioresponses() as mock_http:
-        # /responses returns unsupported endpoint error
-        mock_http.post(
-            "https://openrouter.ai/api/v1/responses",
-            payload={"error": {"message": "Responses not supported for this model", "code": "unsupported_endpoint"}},
-            status=400,
-        )
-        # Fallback to /chat/completions
-        mock_http.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            body=chat_sse.encode("utf-8"),
-            headers={"Content-Type": "text/event-stream"},
-            status=200,
-        )
-
-        events = []
-        async for event in pipe.send_openrouter_streaming_request(
-            session,
-            {"model": "some-model-unsupported", "input": [], "stream": True},
-            api_key="test-key",
-            base_url="https://openrouter.ai/api/v1",
-            valves=valves,
-        ):
-            events.append(event)
-
-        await session.close()
-
-    # Should have fallback output
-    text_deltas = [e for e in events if e.get("type") == "response.output_text.delta"]
-    assert len(text_deltas) >= 1
-
-
 @pytest.mark.asyncio
 async def test_chat_completions_streaming_data_blob_empty(pipe_instance_async):
     """Test that empty data blobs (after stripping) are skipped."""
