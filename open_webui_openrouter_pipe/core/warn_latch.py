@@ -49,3 +49,10 @@ def warn_level(
         return logging.DEBUG
     latch.add(cause)
     return logging.WARNING
+
+
+_shared_latches: dict[str, set[str]] = {}
+
+
+def shared_latch(name: str) -> set[str]:
+    return _shared_latches.setdefault(name, set())

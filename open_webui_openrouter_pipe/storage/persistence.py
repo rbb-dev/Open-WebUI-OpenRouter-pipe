@@ -267,8 +267,12 @@ class ReplyMemory:
 
     def _expire(self) -> None:
         cutoff = self._clock() - self._idle_seconds
-        for key in [key for key, (touched, _rows, _size) in self._replies.items() if touched < cutoff]:
-            del self._replies[key]
+        replies = self._replies
+        while replies:
+            key, (touched, _rows, _size) = next(iter(replies.items()))
+            if touched >= cutoff:
+                return
+            replies.pop(key, None)
 
     def _arm(self) -> None:
         if self._sweep is not None or not self._replies:
@@ -1170,6 +1174,13 @@ class ArtifactStore:
             row["payload"] = stored_payload
             row["is_encrypted"] = is_encrypted
 
+    async def _seal_rows(self, rows: list[dict[str, Any]]) -> None:
+        if self._db_executor is None:
+            self._prepare_rows_for_storage(rows)
+            return
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(self._db_executor, self._prepare_rows_for_storage, rows)
+
     def _reply_memory_for(self, chat_id: Any) -> ReplyMemory:
         return self._api_reply_memory if not chat_id else self._reply_memory
 
@@ -1424,7 +1435,7 @@ class ArtifactStore:
             return []
 
         try:
-            self._prepare_rows_for_storage(rows)
+            await self._seal_rows(rows)
             if self._redis_active():
                 queued = await self._redis_enqueue_rows(rows)
                 self._reset_db_failure(user_id)
@@ -1682,7 +1693,7 @@ class ArtifactStore:
                     }
                     for item_id, payload in fetched.items()
                 ]
-                self._prepare_rows_for_storage(cache_rows)
+                await self._seal_rows(cache_rows)
                 await self._redis_cache_rows(cache_rows, chat_id=chat_id)
             if user_id:
                 self._reset_db_failure(user_id)

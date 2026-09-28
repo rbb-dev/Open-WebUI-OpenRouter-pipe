@@ -120,6 +120,8 @@ with timing_scope("expensive_operation"):
 timing_mark("first_chunk_received")
 ```
 
+All three record only when timing is enabled *at call entry*, and only when a request id is bound. A body that enables timing mid-flight gets no `enter`/`exit` for itself, and a function whose worker was started on an empty context records nothing at all — which frames a worker inherits decide what its jobs record, so a background loop started inside a request must be given its own context if its work is to be attributed anywhere.
+
 Key functions already instrumented:
 
 - `StreamingHandler._run_streaming_loop` — the main streaming loop

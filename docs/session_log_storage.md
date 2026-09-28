@@ -214,7 +214,7 @@ Each line is a single JSON object:
 - `perf_ts` (float): High-resolution monotonic counter (`time.perf_counter()`) for precise elapsed-time calculations.
 - `event` (string): One of `enter`, `exit`, or `mark`.
 - `label` (string): Function or scope name (for example `streaming.streaming_core.StreamingHandler._run_streaming_loop`).
-- `request_id` (string): The pipe's per-request correlation id; present on every event.
+- `request_id` (string): The pipe's per-request correlation id. Present on every event that belongs to a request; the pipe's process-lifetime background workers — the request dispatcher, the log worker and the artifact-cleanup sweep — are started on an empty context and are deliberately not attributed to any request, so their frames do not appear. The one-shot startup warmup does carry the id of the request that started it.
 - `elapsed_ms` (float, optional): Elapsed time in milliseconds (only present on `exit` events).
 
 Example output:
@@ -233,6 +233,10 @@ Enable timing when diagnosing performance issues:
 - **Slow response times**: Identify which functions take the most time.
 - **Unexpected delays**: Find gaps between function exits and entries.
 - **Optimization verification**: Measure before/after improvements.
+
+### The in-memory copy
+
+Alongside the file the logger keeps an in-memory copy of each request's events, so a running request can be read without parsing the file. That copy is a duplicate of a durable record and is released as soon as the request's job completes — the file is what persists, and only the file. `MAX_TIMING_REQUESTS` is the backstop for requests that end abnormally and never reach the release, not the normal retention path.
 
 ### Adding timing to new functions (for developers)
 

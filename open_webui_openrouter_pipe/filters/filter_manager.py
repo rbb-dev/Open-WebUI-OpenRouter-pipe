@@ -2131,6 +2131,8 @@ except Exception:  # noqa: BLE001 - open_webui.env does filesystem work on impor
 
 OWUI_OPENROUTER_PIPE_MARKER = "__MARKER__"
 
+_UNMAPPABLE_AUDIO_FORMATS = frozenset({"webm"})
+
 
 class DirectUploadError(Exception):
     """Rejects a direct upload; Open WebUI shows the message to the user verbatim."""
@@ -2185,7 +2187,7 @@ __KEEP_WHAT_STILL_FITS__
         )
         DIRECT_AUDIO_FORMAT_ALLOWLIST: str = Field(
             default="wav,mp3,aiff,aac,ogg,flac,m4a,pcm16,pcm24",
-            description="Comma-separated audio format allowlist (derived from filename/MIME). Listing a format here lets a direct audio upload through even when it is outside the nine the pipe sends natively; the request is then normalised to `mp3` before it reaches the provider. A `webm` container is refused outright, because OpenRouter documents no `webm` format on either endpoint.",
+            description="Comma-separated audio format allowlist (derived from filename/MIME). Listing a format here lets a direct audio upload through even when it is outside the nine the pipe sends natively; the request is then normalised to `mp3` before it reaches the provider. A `webm` container is not diverted and stays on Open WebUI's path, because OpenRouter documents no `webm` format on either endpoint.",
         )
         DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST: str = Field(
             default="wav,mp3",
@@ -2419,6 +2421,10 @@ __KEEP_WHAT_STILL_FITS__
                     retained.append(item)
                     continue
                 audio_format = self._infer_audio_format(name, content_type)
+                if audio_format in _UNMAPPABLE_AUDIO_FORMATS:
+                    warnings.append("Direct audio 'webm' is not sent directly: OpenRouter documents no 'webm' format, so the file stays on Open WebUI.")
+                    retained.append(item)
+                    continue
                 if not audio_format or (audio_formats_allowed and audio_format not in audio_formats_allowed):
                     retained.append(item)
                     continue

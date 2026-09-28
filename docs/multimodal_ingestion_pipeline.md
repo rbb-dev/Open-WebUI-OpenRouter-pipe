@@ -109,8 +109,14 @@ An image the pipe **reuses** from an earlier turn is inlined as a `data:` URL to
 
 ### Limits and selection
 - `MAX_INPUT_IMAGES_PER_REQUEST` caps how many images one of the person's messages forwards, counting a picture reused from earlier in the conversation. Pictures a tool returns are never cut by this limit. Whenever a tool round's result reaches the model, all of its pictures go with it. A picture the pipe refuses is not sent, and the person is told, as for one they attached: the refusal is reported on the turn whose round carries the picture, which for a tool's pictures is the round being answered, not the person's next question.
-- `IMAGE_INPUT_SELECTION` controls whether the pipe can fall back to the most recent image already in the conversation - the model's or the user's - when the current user turn has no attachments.
+- `IMAGE_INPUT_SELECTION` controls whether the pipe can fall back to the most recent image already in the conversation - the model's or the user's - when the current user turn has no attachments. It governs every picture this pipe re-sends, including one the model itself wrote into an earlier reply: see below.
 - `IMAGE_REUSE_MAX_TURNS` bounds how long that image stays available, so a long text conversation stops resending a picture nobody is discussing.
+
+### A picture the model wrote into a reply
+
+A generated picture reaches the person's chat as a Markdown image in the assistant's text, and a `data:` URL is what that link holds for a chat with nowhere to store a file. On the next turn the stored message is replayed, and the Markdown used to go to the provider exactly as written - so the whole picture travelled as prose inside an `output_text` block, at prose price, to a model that could have had it as pixels. On a vision model with a following question it travelled twice, once as that prose and once as the typed `input_image` the reuse window builds.
+
+The URL is now lifted out of the replayed text and sent only as a picture. The sentence keeps its Markdown link with a stable placeholder in place of the URL, so it still reads as an image having been produced, and the stored message is not touched: the person's chat still holds the original `data:` URL and still renders the picture. Only what goes to the provider changes. Under `user_turn_only` the lift does not run at all and the picture is sent to nobody, as the valve says it should be; under `user_then_assistant` it is re-sent by the reuse window on the same terms as any other earlier picture, including `IMAGE_REUSE_MAX_TURNS`.
 
 ---
 

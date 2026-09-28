@@ -1182,6 +1182,8 @@ class UpdateService:
         "PIPE_DASHBOARD_UPDATE_AUTO_DELAY_HOURS",
         "PIPE_DASHBOARD_UPDATE_REPO",
         "PIPE_DASHBOARD_UPDATE_SNAPSHOT_KEEP",
+        "PIPE_DASHBOARD_USAGE_COLLECT",
+        "PIPE_DASHBOARD_USAGE_RETENTION_DAYS",
     )
 
     async def _row_valves(self) -> dict[str, Any]:

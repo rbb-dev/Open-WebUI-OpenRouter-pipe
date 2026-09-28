@@ -27,7 +27,10 @@ from open_webui_openrouter_pipe.core.context_budget import (
     default_output_reservation,
     estimate_serialized_chars,
     is_tool_omission_stub,
+    _PICTURE_TOKENS,
+    _output_picture_chars,
 )
+from open_webui_openrouter_pipe.core.utils import picture_output
 from open_webui_openrouter_pipe.models.registry import ModelFamily
 
 
@@ -442,7 +445,19 @@ def test_a_tool_result_is_budgeted_for_what_ships_not_for_its_ui_attachments(
     The rows vary which key carries the weight and at which limit, so no constant
     satisfies them, and each compares a laden output against a bare one holding
     everything else equal -- the assertion is on the budget's arithmetic, not on whether
-    the keys reach the wire, which the sanitiser already guarantees downstream.
+    the keys reach the wire.
+
+    That last point is a convention, not a structure, and it is worth saying so here
+    because this docstring is where a reader looks to find out. `files` and `embeds`
+    reach no provider because every production dispatch originates downstream of
+    `process_request`'s single `_sanitize_request_input` call -- the streaming loop, the
+    non-streaming loop that delegates to it, the task adapter, and each fusion member,
+    which recurses through `process_request` and re-sanitizes. A caller that reached an
+    HTTP adapter by any other route would bypass the strip entirely, and the budget's
+    arithmetic below would then be charging for a body that ships. That is why the shape
+    on the wire is pinned structurally, by
+    `tests/test_no_thing_a_tool_hangs_off_its_output_reaches_the_wire.py`, rather than
+    left resting on this sentence.
     """
     ModelFamily.set_dynamic_specs(
         {"test.model": {"full_model": {"max_prompt_tokens": limit_tokens},

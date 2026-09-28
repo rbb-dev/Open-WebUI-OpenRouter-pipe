@@ -36,7 +36,7 @@ from .fusion_defaults import (
     DEFAULT_FUSION_PANEL_SYSTEM_PROMPT,
     DEFAULT_FUSION_SYNTHESIS_SYSTEM_PROMPT,
 )
-from .url_scheme import is_http_or_https_url
+from .url_scheme import is_http_or_https_url, split_base64_data_url, url_scheme
 from .valve_salvage import (
     _STALE_VALVES_WARN_EVERY_S,  # noqa: F401
     _VALVE_SCHEMA_CACHE,  # noqa: F401
@@ -163,6 +163,22 @@ def markdown_image_destinations(text: str) -> list[str]:
         for destination in [(match.group("angled") or match.group("bare") or "").strip()]
         if destination
     ]
+
+
+_ENTRY_DATA_URL_KEYS = ("url", "content", "data")
+
+
+def entry_data_url(entry: Any) -> str:
+    if not isinstance(entry, dict):
+        return ""
+    for key in _ENTRY_DATA_URL_KEYS:
+        value = entry.get(key)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        candidate = value.strip()
+        if url_scheme(candidate) == "data" and split_base64_data_url(candidate):
+            return candidate
+    return ""
 
 
 # ULID generation constants
@@ -1543,7 +1559,9 @@ class Valves(BaseModel):
         default=False,
         description=(
             "When True, record how long each internal step of a request takes. "
-            "Writes to TIMING_LOG_FILE path directly (not session archives). "
+            "Writes to TIMING_LOG_FILE path directly (not session archives); the per-request "
+            "in-memory copy of those events is released when the request's job completes, so "
+            "only the file output persists. "
             "Useful for performance profiling and debugging latency issues."
         ),
     )
@@ -1783,7 +1801,7 @@ class Valves(BaseModel):
         ge=1,
         le=50,
         description=(
-            "Number of failures one user may accumulate before their requests are refused, a failing tool is skipped, or their database reads and writes are skipped; raise it for fewer trips in noisy environments. A request failure is a failed chat call to OpenRouter (an error reply; a connection that cannot be opened, drops or times out; an error reported inside a response; or a stream that stops before its final event). A request counts once however many attempts it took: a 429, a 5xx, a 408 that names the provider-timeout kind, or that failure reported inside a response before anything has been shown is retried first, up to TRANSIENT_RETRY_MAX_ATTEMPTS extra tries, and the request is a single failure whichever attempt gave up on it. A generation on a picture-only image model or a video model that fails after it was sent to OpenRouter is also a request failure, counted once. Request and database failures count within BREAKER_WINDOW_SECONDS. Raising or lowering the setting mid-session re-reads the failures already recorded: it does not discard them, and a lowered setting applies from the next request without evicting anything. Request failures clear when a request ends without an error (for a picture-only image model or a video model, only once its result is delivered; for an internal Fusion run, only if a panel model answered); a request the user stops clears no request failures. Housekeeping tasks such as title generation neither count nor clear; Open WebUI's merge-responses task counts but never clears. Database failures also clear when a database operation succeeds. The request breaker never refuses a request whose last message is a tool result, or is Open WebUI's own message that comes right after a tool result and hands the model a tool's images; a question or picture the user sends is refused like any other request. Each tool counts its failures in a row: errors it raises, per-call timeouts, running calls cut off by TOOL_BATCH_TIMEOUT_SECONDS, and calls whose tool server cannot be reached or answers with an HTTP error status; an ask_user timeout and a call to an MCP tool whose session has closed do not count. A SystemExit, KeyboardInterrupt or GeneratorExit from a tool is shown as failed but is not a failure of that tool: it signals the process rather than the tool, and it never adds to the count or clears it. An error the tool reports in a result it returns normally is shown as failed but neither adds to the count nor clears it."
+            "Number of failures one user may accumulate before their requests are refused, a failing tool is skipped, or their database reads and writes are skipped; raise it for fewer trips in noisy environments. A request failure is a failed chat call to OpenRouter (an error reply; a connection that cannot be opened, drops or times out; an error reported inside a response; or a stream that stops before its final event). A request counts once however many attempts it took: a 429, a 5xx, a 408 that names the provider-timeout kind, or that failure reported inside a response before anything has been shown is retried first, up to TRANSIENT_RETRY_MAX_ATTEMPTS extra tries, and the request is a single failure whichever attempt gave up on it. A generation on a picture-only image model or a video model that fails after it was sent to OpenRouter is also a request failure, counted once. Request and database failures count within BREAKER_WINDOW_SECONDS. Raising or lowering the setting mid-session re-reads the failures already recorded: it does not discard them, and a lowered setting applies from the next request without evicting anything. Request failures clear when a request ends without an error (for a picture-only image model or a video model, only once its result is delivered; for an internal Fusion run, only if a panel model answered); a request the user stops clears no request failures. Housekeeping tasks such as title generation neither count nor clear; Open WebUI's merge-responses task counts but never clears. Database failures also clear when a database operation succeeds. The request breaker never refuses a request whose last message is a tool result, or is Open WebUI's own message that comes right after a tool result and hands the model a tool's images; a question or picture the user sends is refused like any other request. Each tool counts its failures in a row: errors it raises, per-call timeouts, running calls cut off by TOOL_BATCH_TIMEOUT_SECONDS, and calls whose tool server cannot be reached or answers with an HTTP error status; an ask_user timeout and a call to an MCP tool whose session has closed do not count. A SystemExit, KeyboardInterrupt or GeneratorExit from a tool is shown as failed but is not a failure of that tool: it signals the process rather than the tool, and it never adds to the count or clears it. An error the tool reports in a result it returns normally is shown as failed but neither adds to the count nor clears it, whether the judgement is made by Open WebUI's own classifier or by the pipe's copy of it."
         ),
     )
     BREAKER_WINDOW_SECONDS: int = Field(
@@ -1939,7 +1957,7 @@ class Valves(BaseModel):
         description=(
             "Controls which images are forwarded to the provider. "
             "'user_turn_only' restricts inputs to the images supplied with the current user message. "
-            "'user_then_assistant' falls back to the most recent image already in the conversation, from either side, when the user did not attach any; a tool round ends the window for pictures from before it, so nothing older is reused after one whether or not it returned a picture. A round that asked you a question is not a media round and does not end the window, and neither does a picture the model shows you in its own reply to a round."
+            "'user_then_assistant' falls back to the most recent image already in the conversation, from either side, when the user did not attach any; a tool round ends the window for pictures from before it, so nothing older is reused after one whether or not it returned a picture. A round that asked you a question is not a media round and does not end the window, and neither does a picture the model shows you in its own reply to a round. It also governs a picture the model wrote into an earlier reply: that picture is re-sent as a picture rather than as the base64 text it sits in, and 'user_turn_only' sends it to nobody."
         ),
     )
     IMAGE_REUSE_MAX_TURNS: int = Field(

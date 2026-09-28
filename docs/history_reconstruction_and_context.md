@@ -229,7 +229,9 @@ only through the card Open WebUI keeps for it in the browser, and none with card
   The exemption is also **per round**, not per call id: a model may reuse one `call_id` across two rounds, and on the
   replay path the exempt round is the one whose own stored call is the built-in, while the other round on that same
   id is withheld. Because each output is paired with its own call, a tool round that shares an id with a built-in
-  round still counts as a tool round for the picture-reuse window, and so still closes it. The stored rows are left
+  round still counts as a tool round for the picture-reuse window, and so still closes it. It also does not apply
+  inside an internal Fusion step, where the built-in is not offered to the model at all and a round it names is
+  withheld like any other. The stored rows are left
   alone, so turning the setting back on hands the full results over again.
 - An image returned by a tool comes back as a separate message right after the round's results ("Here are the
   images from the tool results above"): Open WebUI builds it from its own record, and the pipe builds the same

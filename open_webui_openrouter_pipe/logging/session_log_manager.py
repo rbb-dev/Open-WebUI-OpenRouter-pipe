@@ -1723,6 +1723,9 @@ class SessionLogManager:
             return
         with self._lock:
             dirs = set(self._dirs)
+        configured = str(getattr(self.valves, "SESSION_LOG_DIR", "") or "").strip()
+        if configured:
+            dirs.add(configured)
         if not dirs:
             return
         retention_days = int(self.valves.SESSION_LOG_RETENTION_DAYS)

@@ -314,9 +314,32 @@ async def run_usage_query(plugin: Any, pipe: Any, args: dict[str, Any]) -> dict[
     tz_offset_min = int(args.get("tz_offset_min") or 0)
     tz_offset_min = max(-900, min(900, round(tz_offset_min / 15) * 15))
 
-    valves = plugin.ctx.valves
-    collect_on = bool(getattr(valves, "PIPE_DASHBOARD_USAGE_COLLECT", False))
-    retention_days = int(getattr(valves, "PIPE_DASHBOARD_USAGE_RETENTION_DAYS", 30) or 30)
+    from .actions import _update_service_of
+
+    svc = _update_service_of(pipe)
+    if svc is None:
+        valves = plugin.ctx.valves
+        collect_on = bool(getattr(valves, "PIPE_DASHBOARD_USAGE_COLLECT", False))
+        retention_days = int(getattr(valves, "PIPE_DASHBOARD_USAGE_RETENTION_DAYS", 30) or 30)
+    else:
+        try:
+            row, stored_read_ok = await svc._row_valves_checked()
+            if not stored_read_ok:
+                logger.warning(
+                    "pipe_dashboard: the persisted usage valves are unreadable; the Usage tab "
+                    "is reporting their defaults rather than the in-memory copy, which would "
+                    "let a failed read override an operator's disable"
+                )
+        except Exception:
+            logger.warning(
+                "pipe_dashboard: cannot read the persisted usage valves; the Usage tab "
+                "is reporting their defaults rather than the in-memory copy, which would "
+                "let a failed read override an operator's disable",
+                exc_info=True,
+            )
+            row, stored_read_ok = {}, False
+        collect_on = bool(row.get("PIPE_DASHBOARD_USAGE_COLLECT", False)) if stored_read_ok else False
+        retention_days = int(row.get("PIPE_DASHBOARD_USAGE_RETENTION_DAYS", 30) or 30) if stored_read_ok else 30
     base_meta = {"collect_on": collect_on, "retention_days": retention_days, "range": range_key}
 
     if range_key not in USAGE_RANGES:

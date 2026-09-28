@@ -2002,10 +2002,14 @@ class TestSessionLogAssembler:
 class TestCleanupSessionLogArchives:
     """Tests for session log archive cleanup."""
 
-    def test_cleanup_session_log_archives_no_dirs(self):
+    def test_cleanup_session_log_archives_no_dirs(self, tmp_path):
         """Test that _cleanup_session_log_archives handles no directories."""
         pipe = Pipe()
         pipe._session_log_manager._dirs = set()
+        # The sweep covers the configured directory as well as the write-time set, so a
+        # default relative SESSION_LOG_DIR would point it at the process's own working
+        # directory. Pointed at an empty tree, this arm is what it says it is.
+        pipe.valves.SESSION_LOG_DIR = str(tmp_path)
 
         try:
             pipe._session_log_manager.cleanup_archives()
@@ -2013,10 +2017,11 @@ class TestCleanupSessionLogArchives:
         finally:
             pipe.shutdown()
 
-    def test_cleanup_session_log_archives_nonexistent_dir(self):
+    def test_cleanup_session_log_archives_nonexistent_dir(self, tmp_path):
         """Test that _cleanup_session_log_archives handles nonexistent directory."""
         pipe = Pipe()
         pipe._session_log_manager._dirs = {"/nonexistent/path/that/does/not/exist"}
+        pipe.valves.SESSION_LOG_DIR = str(tmp_path)
         pipe.valves.SESSION_LOG_RETENTION_DAYS = 7
 
         try:

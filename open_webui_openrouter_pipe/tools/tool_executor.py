@@ -9,6 +9,8 @@ This module handles:
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import contextlib
 import json
 import logging
@@ -18,7 +20,9 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from ..core.config import entry_data_url
 from ..core.timing_logger import timed, timing_mark
+from ..core.url_scheme import split_base64_data_url
 from ..core.utils import (
     TOOL_CALL_STATUSES,
     parse_tool_arguments,
@@ -28,6 +32,7 @@ from ..core.warn_latch import warn_level
 
 _OWUI_RESULT_WARN_COOLDOWN_S = 300.0
 _OWUI_RESULT_WARN_CAP = 256
+from ..storage.owui_files import is_linkable_chat
 from ..storage.persistence import generate_item_id
 from .tool_schema import _strictify_schema
 
@@ -228,6 +233,24 @@ def is_builtin_ask_user(tool_cfg: Any) -> bool:
         and tool_cfg.get("type") == "builtin"
         and tool_cfg.get("tool_id") == "builtin:ask_user"
     )
+
+
+_DATA_ENTRY_EXTENSIONS = {
+    "application/pdf": ".pdf",
+    "text/csv": ".csv",
+    "text/plain": ".txt",
+    "text/markdown": ".md",
+    "application/json": ".json",
+    "application/zip": ".zip",
+    "text/html": ".html",
+    "application/xml": ".xml",
+    "text/xml": ".xml",
+}
+
+
+def _entry_file_name(mime_type: str) -> str:
+    normalised = (mime_type or "").split(";")[0].strip().lower()
+    return "tool_result" + _DATA_ENTRY_EXTENSIONS.get(normalised, ".bin")
 
 
 def _idle_allowance(
@@ -879,11 +902,81 @@ class ToolExecutor:
             url = entry.get("url") if isinstance(entry, dict) else None
             if isinstance(entry, dict) and entry.get("type") == "image" and isinstance(url, str) and url.startswith("data:"):
                 pictures.append(await self._stored_picture_safe(url, context))
-            else:
-                shown.append(entry)
-                if isinstance(entry, dict) and entry.get("type") == "image" and isinstance(url, str) and url:
-                    pictures.append(url)
+                continue
+            if isinstance(entry, dict) and entry_data_url(entry):
+                filed = await self._stored_data_entry_safe(entry, context)
+                if isinstance(filed, str):
+                    pictures.append(filed)
+                elif filed is not None:
+                    shown.append(filed)
+                continue
+            shown.append(entry)
+            if isinstance(entry, dict) and entry.get("type") == "image" and isinstance(url, str) and url:
+                pictures.append(url)
         return pictures, shown
+
+    async def _stored_data_entry_safe(
+        self, entry: dict[str, Any], context: _ToolExecutionContext
+    ) -> dict[str, Any] | None:
+        url = entry_data_url(entry)
+        if not url:
+            return None
+        metadata = context.metadata or {}
+        if not is_linkable_chat(metadata.get("chat_id")):
+            return None
+        parsed = split_base64_data_url(url)
+        if parsed is None:
+            return None
+        header, payload = parsed
+        mime_type = header.partition(";")[0].strip().removeprefix("data:").strip()
+        if not mime_type:
+            mime_type = "application/octet-stream"
+        if not self._pipe._file_gateway.validate_base64_size(payload):
+            return None
+        try:
+            raw = base64.b64decode(payload, validate=True)
+        except (binascii.Error, ValueError):
+            return None
+        stored = await self._upload_data_entry_safe(raw, mime_type, context)
+        if not isinstance(stored, str) or not stored or stored.startswith("data:"):
+            return None
+        return {"type": "file", "url": stored, "name": _entry_file_name(mime_type)}
+
+    async def _upload_data_entry_safe(
+        self, raw: bytes, mime_type: str, context: _ToolExecutionContext
+    ) -> str | None:
+        gateway = self._pipe._file_gateway
+        try:
+            user_obj = await _resolved_user_obj(context)
+        except Exception:
+            self.logger.debug(
+                "Could not resolve a user for a tool's data entry; it is not filed",
+                exc_info=True,
+            )
+            return None
+        request, user = await gateway.resolve_storage_context(context.request, user_obj)
+        if not request or not user:
+            return None
+        metadata = context.metadata or {}
+        chat_id = metadata.get("chat_id")
+        message_id = metadata.get("message_id")
+        try:
+            return await gateway.upload_to_owui_storage(
+                request=request,
+                user=user,
+                file_data=raw,
+                filename=_entry_file_name(mime_type),
+                mime_type=mime_type,
+                chat_id=chat_id if isinstance(chat_id, str) else None,
+                message_id=message_id if isinstance(message_id, str) else None,
+                owui_user_id=context.user_id,
+            )
+        except Exception:
+            self.logger.debug(
+                "Could not store a tool's data entry; it is dropped rather than inlined",
+                exc_info=True,
+            )
+            return None
 
     async def _stored_picture_safe(self, url: str, context: _ToolExecutionContext) -> str:
         if _owui_store_tool_result_image is None:

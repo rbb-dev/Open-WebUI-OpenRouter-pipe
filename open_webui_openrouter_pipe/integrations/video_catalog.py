@@ -63,6 +63,7 @@ async def ensure_video_catalog_loaded(
             if OpenRouterModelRegistry.last_video_fetch() > 0:
                 OpenRouterModelRegistry.register_video_models([])
                 OpenRouterModelRegistry.reset_video_fetch_timestamp()
+                OpenRouterModelRegistry.reset_video_attempt()
                 logger.info("Video catalog cleared: ENABLE_VIDEO_GENERATION is False.")
             else:
                 logger.debug("Video catalog skipped: ENABLE_VIDEO_GENERATION is False.")

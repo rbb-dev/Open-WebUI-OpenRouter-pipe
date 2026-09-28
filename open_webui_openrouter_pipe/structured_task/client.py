@@ -13,6 +13,7 @@ from ..core.utils import utf8_stream_decoder
 _logger = logging.getLogger(__name__)
 
 _TASK_RESPONSE_MAX_BYTES = 256 * 1024
+_DEFAULT_MAX_HOLD_BYTES = 4 * _TASK_RESPONSE_MAX_BYTES
 
 
 def _content_part_text(item: Any) -> str | None:
@@ -85,13 +86,16 @@ def consume_sse_line(raw_line: str, content_parts: list[str]) -> None:
             content_parts.append(piece)
 
 
-async def read_model_response_content(response: Any) -> str:
+async def read_model_response_content(
+    response: Any, max_hold_bytes: int | None = _DEFAULT_MAX_HOLD_BYTES
+) -> str:
     """Normalise streaming or non-streaming chat-completion responses to text.
 
     Handles `StreamingResponse` (SSE) and dict-shaped responses uniformly.
     """
     if hasattr(response, "body_iterator"):
         content_parts: list[str] = []
+        held = 0
         buffer = ""
         _utf8 = utf8_stream_decoder()
         async for chunk in response.body_iterator:
@@ -103,9 +107,15 @@ async def read_model_response_content(response: Any) -> str:
                 buffer += _utf8.decode(bytes(chunk))
             else:
                 buffer += str(chunk)
+            held = len(buffer) + sum(len(part) for part in content_parts)
+            if max_hold_bytes is not None and held > max_hold_bytes:
+                raise TaskModelFault("task_model_response_too_large", f"{held}")
             while "\n" in buffer:
                 raw_line, buffer = buffer.split("\n", 1)
                 consume_sse_line(raw_line, content_parts)
+                held = len(buffer) + sum(len(part) for part in content_parts)
+                if max_hold_bytes is not None and held > max_hold_bytes:
+                    raise TaskModelFault("task_model_response_too_large", f"{held}")
         buffer += _utf8.decode(b"", True)
         if buffer:
             consume_sse_line(buffer, content_parts)

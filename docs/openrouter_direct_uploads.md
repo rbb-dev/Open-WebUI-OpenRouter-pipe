@@ -60,6 +60,7 @@ When the filter is enabled and a user turns on one or more modality valves:
   - Uploads not allowlisted (example: `.docx`, `.xlsx` when your allowlist is only PDF/text)
   - Knowledge-base style uploads marked `legacy: true`
   - Anything missing an Open WebUI file `id`
+  - Audio in a `webm` container, which OpenRouter documents on neither endpoint, so it stays on the normal Open WebUI path whatever the allowlists say
 
 Fail-open is intentional: unsupported types should continue to behave like “normal Open WebUI” (RAG/Knowledge) rather than breaking chat uploads.
 
@@ -232,7 +233,7 @@ These are configured on the **OpenRouter Direct Uploads** filter function (Admin
 | `DIRECT_FILE_MIME_ALLOWLIST` | `application/pdf,text/plain,text/markdown,application/json,text/csv` | Comma-separated MIME allowlist for diverted direct generic files. Non-allowlisted types are fail-open (left on normal OWUI RAG/Knowledge path). |
 | `DIRECT_AUDIO_MIME_ALLOWLIST` | `audio/*` | Comma-separated MIME allowlist for diverted direct audio files. |
 | `DIRECT_VIDEO_MIME_ALLOWLIST` | `video/mp4,video/mpeg,video/quicktime,video/webm` | Comma-separated MIME allowlist for diverted direct video files. |
-| `DIRECT_AUDIO_FORMAT_ALLOWLIST` | `wav,mp3,aiff,aac,ogg,flac,m4a,pcm16,pcm24` | Comma-separated audio format allowlist (derived from filename/MIME). Listing a format lets a direct audio upload through even when it is outside the nine the pipe sends natively; the request is then normalised to `mp3`. A `webm` container is refused outright. |
+| `DIRECT_AUDIO_FORMAT_ALLOWLIST` | `wav,mp3,aiff,aac,ogg,flac,m4a,pcm16,pcm24` | Comma-separated audio format allowlist (derived from filename/MIME). Listing a format lets a direct audio upload through even when it is outside the nine the pipe sends natively; the request is then normalised to `mp3`. A `webm` container is not diverted and stays on Open WebUI's path. |
 | `DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST` | `wav,mp3` | Comma-separated audio formats eligible for `/responses` `input_audio.format`. |
 
 A stored value from an older version of the pipe that no longer fits its field falls back to that field's default rather than failing the request, and every other stored value on the same row is kept.
@@ -300,11 +301,12 @@ If direct uploads are enabled but the selected model does not support a required
 - The upload stays on the normal Open WebUI path (RAG/Knowledge), and
 - The pipe emits a warning notification that direct uploads were not applied for those attachments.
 
-Fail-open covers a missing capability and a missing `size` alike, so the check’s ordering is documented behaviour. The four paths on which an attachment is handed back instead of measured are:
+Fail-open covers a missing capability and a missing `size` alike, so the check’s ordering is documented behaviour. The five paths on which an attachment is handed back instead of measured are:
 - **valve off** — the modality’s `DIRECT_*` user valve is off,
 - **modality unsupported by the model**,
 - **MIME not allowlisted** for that modality, and
-- **audio only** — the audio format could not be inferred from the name or content type.
+- **audio only** — the audio format could not be inferred from the name or content type, and
+- **audio `webm`** — the container is one OpenRouter documents on neither endpoint, so it is not diverted even when the allowlist names it.
 
 ### Debug logging (useful strings)
 

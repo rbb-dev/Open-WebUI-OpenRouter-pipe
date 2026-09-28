@@ -9,6 +9,8 @@ Open-WebUI-mode tool hand-back) still loses them, and that must keep warning.
 
 from __future__ import annotations
 
+import base64
+import json
 import logging
 from typing import Any, cast
 

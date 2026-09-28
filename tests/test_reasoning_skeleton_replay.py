@@ -68,7 +68,7 @@ async def _stage_a(pipe, monkeypatch, valves, rounds, *, stream=True, emitter=No
                    real_row_builder=False, real_store=False,
                    chat_id: str = "c1", tool_name: str = "lookup", stop_in_round: int | None = None,
                    rows: dict[str, dict[str, Any]] | None = None, tool_result: Any = RESULT_CANARY,
-                   continues_after_marker: bool = False):
+                   continues_after_marker: bool = False, builtin_ask_user: bool = False):
     """Run one turn. Each round is ("calls", [call ids]), which reasons, writes and calls; ("quiet-calls", [call ids]),
     which writes and calls without reasoning; ("silent-calls", [call ids]), which only calls; ("silent-search-then-calls",
     [call ids]) and ("think-silent-search-then-calls", [call ids]), which have OpenRouter run a web search and then call,
@@ -84,7 +84,8 @@ async def _stage_a(pipe, monkeypatch, valves, rounds, *, stream=True, emitter=No
     the store's own writer, which holds a temporary chat's reply in memory. ``stop_in_round``
     cancels the turn as Stop does, when that round's model call starts; pass ``rows`` to see what was stored by then.
     Rows are copied when they are written, as the database stores them: a change made to an item afterwards is not in
-    its row.
+    its row. ``builtin_ask_user`` registers the round's tool as Open WebUI's real builtin ``ask_user`` rather than a
+    user's tool of the same name, which is the shape that earns the privacy exemption.
 
     Returns the content the loop produced, the rows it persisted (ulid -> payload) and the events it emitted.
     """
@@ -208,6 +209,9 @@ async def _stage_a(pipe, monkeypatch, valves, rounds, *, stream=True, emitter=No
     body._continues_after_marker = continues_after_marker
     registry = {"lookup": {"type": "function", "callable": lookup,
                            "spec": {"name": "lookup", "parameters": {"type": "object", "properties": {}}}}}
+    if builtin_ask_user:
+        registry[tool_name] = {"type": "builtin", "tool_id": "builtin:ask_user",
+                               "spec": {"name": tool_name, "parameters": {"type": "object", "properties": {}}}}
     handler = pipe._streaming_handler
     context = token = None
     if real_executor:

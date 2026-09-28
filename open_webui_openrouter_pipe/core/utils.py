@@ -38,8 +38,11 @@ from .config import (
     ULID_LENGTH,
 )
 from .url_scheme import loggable_link, split_base64_data_url
+from .warn_latch import shared_latch, warn_level
 
 logger = logging.getLogger(__name__)
+
+_OWUI_CLASSIFIER_IMPORT_LATCH: set[str] = shared_latch("owui_classifier_import")
 
 try:
     from open_webui.utils.middleware import (
@@ -54,6 +57,13 @@ except Exception:
         exc_info=True,
     )
     _owui_is_tool_result_error = None  # type: ignore
+
+if _owui_is_tool_result_error is None:
+    logger.log(
+        warn_level(_OWUI_CLASSIFIER_IMPORT_LATCH, "tool_classifier_import"),
+        "open_webui.utils.middleware is unavailable, so the pipe is using its own copy "
+        "of the tool-result classifier",
+    )
 
 _T = TypeVar("_T")
 
@@ -167,18 +177,55 @@ def unretained_tool_result(failed: bool) -> str:
     return UNRETAINED_FAILED_TOOL_RESULT if failed else UNRETAINED_TOOL_RESULT
 
 
+def _own_is_tool_result_error(value: Any) -> bool:
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text.startswith(("error:", "exception:", "traceback", "http error!")):
+            return True
+
+    parsed = value
+    while isinstance(parsed, str):
+        try:
+            parsed = json.loads(parsed)
+        except (TypeError, ValueError):
+            break
+
+    if not isinstance(parsed, dict):
+        return False
+
+    error = parsed.get("error")
+    if isinstance(error, str):
+        has_error = bool(error.strip())
+    else:
+        has_error = isinstance(error, (dict, list)) and bool(error)
+    if has_error:
+        return True
+
+    status = parsed.get("status")
+    if isinstance(status, str) and status.strip().lower() in {"error", "failed"}:
+        return True
+
+    if parsed.get("success") is False or parsed.get("ok") is False:
+        message = parsed.get("message")
+        return has_error or (
+            bool(message.strip()) if isinstance(message, str) else isinstance(message, (dict, list)) and bool(message)
+        )
+
+    return False
+
+
 def _tool_result_failed(text: str, status: Any = None) -> bool:
     if isinstance(status, str) and status and status != "completed":
         return True
     if text == unretained_tool_result(True):
         return True
     if _owui_is_tool_result_error is None:
-        return text.lstrip().lower().startswith("error:")
+        return _own_is_tool_result_error(text)
     try:
         return bool(_owui_is_tool_result_error(text))
     except Exception:
         logger.debug("Open WebUI could not classify a tool result", exc_info=True)
-        return text.lstrip().lower().startswith("error:")
+        return _own_is_tool_result_error(text)
 
 
 def is_picture_output(output: Any) -> bool:

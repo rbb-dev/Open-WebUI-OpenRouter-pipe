@@ -1,7 +1,6 @@
 """Video frame extraction at first / last / arbitrary timestamp.
 
 PIL+imageio first; ffmpeg subprocess as fallback for codecs imageio can't handle.
-Async-wrapped via run_in_threadpool to avoid event-loop stalls on blocking IO.
 """
 from __future__ import annotations
 

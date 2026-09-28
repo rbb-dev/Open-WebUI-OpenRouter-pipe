@@ -534,6 +534,10 @@ class PipeDashboardPlugin(PluginBase):
 
     def _retention_days(self) -> int:
         try:
+            get_pipe = getattr(self, "_get_pipe", None)
+            pipe = get_pipe() if get_pipe else None
+            if pipe is not None:
+                return int(getattr(pipe.valves, "PIPE_DASHBOARD_USAGE_RETENTION_DAYS", 30))
             return int(getattr(self.ctx.valves, "PIPE_DASHBOARD_USAGE_RETENTION_DAYS", 30))
         except (AttributeError, TypeError, ValueError):
             return 30

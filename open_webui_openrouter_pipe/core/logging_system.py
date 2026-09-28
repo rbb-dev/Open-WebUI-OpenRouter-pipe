@@ -82,16 +82,13 @@ def _safe_message(record: logging.LogRecord) -> str:
     return object.__repr__(msg)
 
 
+_LOG_TEXT_NEUTRALISER = str.maketrans(
+    {code: " " for code in (*range(0x20), 0x7F, 0x85, 0x2028, 0x2029)}
+)
+
+
 def _neutralise_log_text(value: str) -> str:
-    out: list[str] = []
-    append = out.append
-    for char in value:
-        code = ord(char)
-        if code < 0x20 or code == 0x7F or code in (0x85, 0x2028, 0x2029):
-            append(" ")
-        else:
-            append(char)
-    return "".join(out)
+    return value.translate(_LOG_TEXT_NEUTRALISER)
 
 
 # SessionLogger Class

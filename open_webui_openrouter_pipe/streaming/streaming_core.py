@@ -789,7 +789,7 @@ class StreamingHandler:
                     for key in ("url", "image_url", "imageUrl", "content_url"):
                         candidate = entry.get(key)
                         if isinstance(candidate, str) and candidate.strip():
-                            return candidate.strip()
+                            return await _materialize_image_from_str(candidate.strip())
                         if isinstance(candidate, dict):
                             nested = await _materialize_image_entry(candidate)
                             if nested:

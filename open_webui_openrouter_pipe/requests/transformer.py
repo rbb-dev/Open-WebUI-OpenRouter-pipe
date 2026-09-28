@@ -414,6 +414,7 @@ def _reinterleave_reasoning_by_anchor(
 
 _PIPE_STORAGE_KEY = "_anchor_from_pipe_storage"
 _TRANSPORT_ONLY_KEYS = (_PIPE_STORAGE_KEY, PIPE_ONLY_TOOL_ROUND_KEY, TOOL_ROUND_SKELETON_KEY)
+_LIFTED_TEXT_IMAGE_PLACEHOLDER = "image"
 
 
 def _from_pipe_storage(item: dict[str, Any]) -> dict[str, Any]:
@@ -2005,6 +2006,18 @@ async def transform_messages_to_input(
 
         appended_text_chunks: list[dict[str, Any]] = []
 
+        def _lift_text_borne_pictures(text: str) -> str:
+            if selection_mode != "user_then_assistant":
+                return text
+            lifted = [
+                url
+                for url in markdown_image_destinations(text)
+                if is_inline_data_url(url) and split_base64_data_url(url)
+            ]
+            for url in lifted:
+                text = text.replace(url, _LIFTED_TEXT_IMAGE_PLACEHOLDER)
+            return text
+
         def _append_assistant_text_chunks(
             text: str,
             appended: list[dict[str, Any]] = appended_text_chunks,
@@ -2013,7 +2026,7 @@ async def transform_messages_to_input(
         ) -> None:
             chunk_items: list[dict[str, Any]] = []
             for phase_chunk in split_text_by_phase_markers(text):
-                cleaned_text = phase_chunk["text"].strip()
+                cleaned_text = _lift_text_borne_pictures(phase_chunk["text"]).strip()
                 if not cleaned_text:
                     continue
                 item_out: dict[str, Any] = {

@@ -17,6 +17,7 @@ from .url_scheme import url_scheme
 from .utils import (
     TOOL_CALL_STATUSES,
     _coerce_positive_int,
+    is_picture_output,
     tool_output_text_and_pictures,
 )
 
@@ -25,6 +26,7 @@ logger = logging.getLogger(__name__)
 _FALLBACK_PROMPT_LIMIT_TOKENS = 128_000
 _CHARS_PER_TOKEN_HEURISTIC = 4
 _PICTURE_TOKENS = 1_700
+_PICTURE_FLOOR_CHARS = _PICTURE_TOKENS * _CHARS_PER_TOKEN_HEURISTIC
 _MAX_DEFAULT_OUTPUT_SHARE_DIVISOR = 2
 _MIN_MEASURED_INPUT_TOKENS = 1_000
 _MIN_MEASURED_CHARS_PER_TOKEN = 0.25
@@ -424,6 +426,13 @@ def _budget_shape(
     return value
 
 
+def _baseline_picture_output(output: Any) -> list[dict[str, Any]]:
+    if not is_picture_output(output):
+        return []
+    _text, pictures = tool_output_text_and_pictures(output)
+    return [{"type": "input_image", "image_url": url} for url in pictures]
+
+
 def _baseline_without_tool_outputs(items: Any) -> Any:
     if not isinstance(items, list):
         return items
@@ -446,10 +455,11 @@ def _baseline_without_tool_outputs(items: Any) -> Any:
             else:
                 baseline.append(item)
         elif isinstance(item, dict) and item.get("type") == "function_call_output":
+            output = item.get("output")
             shaped: dict[str, Any] = {
                 "type": "function_call_output",
                 "call_id": item.get("call_id"),
-                "output": "",
+                "output": _baseline_picture_output(output) if is_picture_output(output) else "",
             }
             status = item.get("status")
             if status in TOOL_CALL_STATUSES:
@@ -466,7 +476,7 @@ def _output_text_of(item: Any) -> str:
 
 def _output_picture_chars(item: Any) -> int:
     pictures = tool_output_text_and_pictures(item.get("output") if isinstance(item, dict) else None)[1]
-    return len(pictures) * _PICTURE_TOKENS * _CHARS_PER_TOKEN_HEURISTIC
+    return len(pictures) * _PICTURE_FLOOR_CHARS
 
 
 def _wire_chars(text: str) -> int:

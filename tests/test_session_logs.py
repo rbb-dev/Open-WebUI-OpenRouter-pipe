@@ -386,6 +386,7 @@ class TestSessionLogArchiveEdgeCases:
         os.utime(new_path, (new_timestamp, new_timestamp))
 
         pipe._session_log_manager._dirs = {str(tmp_path)}
+        pipe.valves.SESSION_LOG_DIR = str(tmp_path)
         pipe.valves.SESSION_LOG_RETENTION_DAYS = valves.SESSION_LOG_RETENTION_DAYS
         pipe._session_log_manager.cleanup_archives()
 
@@ -434,6 +435,7 @@ class TestSessionLogArchiveEdgeCases:
         old_timestamp = fixed_now - 2 * 86400
         os.utime(archive_path, (old_timestamp, old_timestamp))
         pipe._session_log_manager._dirs = {str(tmp_path)}
+        pipe.valves.SESSION_LOG_DIR = str(tmp_path)
         pipe.valves.SESSION_LOG_RETENTION_DAYS = 1
         monkeypatch.setattr(pipe_module.time, "time", lambda: fixed_now)
         pipe._session_log_manager.cleanup_archives()

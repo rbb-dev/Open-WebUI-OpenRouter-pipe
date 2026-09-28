@@ -33,6 +33,7 @@ from open_webui_openrouter_pipe.core.context_budget import (
     is_tool_omission_stub,
 )
 from open_webui_openrouter_pipe.models.registry import ModelFamily
+from open_webui_openrouter_pipe.pipe import Pipe
 from open_webui_openrouter_pipe.storage import owui_files
 from open_webui_openrouter_pipe.storage.owui_files import (
     index_referenced_file_payloads,

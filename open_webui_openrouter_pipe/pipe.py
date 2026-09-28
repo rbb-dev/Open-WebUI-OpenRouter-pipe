@@ -107,6 +107,7 @@ except ImportError:
 
 # Timing instrumentation
 from .core.timing_logger import (
+    _timing_request_id,
     clear_timing_context,
     clear_timing_events,
     timed,
@@ -2312,10 +2313,6 @@ class Pipe:
         if repair is not None and not repair.done():
             repair.cancel()
             extra_tasks.append(repair)
-        repair = getattr(self, "_web_tools_repair_task", None)
-        if repair is not None and not repair.done():
-            repair.cancel()
-            extra_tasks.append(repair)
         with contextlib.suppress(Exception):
             self._web_tools_repair_task = None
 
@@ -2483,9 +2480,12 @@ class Pipe:
                 self.logger.debug("Created request queue (maxsize=%s)", self._QUEUE_MAXSIZE)
 
             if self._queue_worker_task is None or self._queue_worker_task.done():
+                worker_ctx = contextvars.copy_context()
+                worker_ctx.run(_timing_request_id.set, None)
                 self._queue_worker_task = current_loop.create_task(
                     Pipe._request_worker_loop(self._request_queue),
                     name="openrouter-pipe-dispatch",
+                    context=worker_ctx,
                 )
                 self.logger.debug("Started request queue worker")
 
@@ -2627,15 +2627,22 @@ class Pipe:
                     semaphore.release()
                     queue.task_done()
                     continue
-                task = asyncio.create_task(job.pipe._execute_pipe_job(job, semaphore_held=True))
+                from .core.timing_logger import clear_timing_context as _clear_job_tc
+                from .core.timing_logger import set_timing_context as _set_job_tc
+                _set_job_tc(job.request_id, bool(job.valves.ENABLE_TIMING_LOG))
+                try:
+                    task = asyncio.create_task(job.pipe._execute_pipe_job(job, semaphore_held=True))
+                finally:
+                    _clear_job_tc()
 
                 active = type(job.pipe)._active_jobs
                 active.add(task)
 
-                @timed
-                def _mark_done(_task: asyncio.Task, q=queue, _active: set = active) -> None:
+                def _mark_done(_task: asyncio.Task, q=queue, _active: set = active,
+                               _rid: str = job.request_id) -> None:
                     _active.discard(_task)
                     q.task_done()
+                    clear_timing_events(_rid)
 
                 task.add_done_callback(_mark_done)
 

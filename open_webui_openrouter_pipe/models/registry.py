@@ -837,6 +837,10 @@ class OpenRouterModelRegistry:
         cls._last_video_attempt = time.time()
 
     @classmethod
+    def reset_video_attempt(cls) -> None:
+        cls._last_video_attempt = 0.0
+
+    @classmethod
     def reset_video_fetch_timestamp(cls) -> None:
         cls._last_video_fetch = 0.0
 
@@ -1085,6 +1089,10 @@ class OpenRouterModelRegistry:
     def record_image_attempt(cls) -> None:
         """Stamp `_last_image_attempt` with the current time."""
         cls._last_image_attempt = time.time()
+
+    @classmethod
+    def reset_image_attempt(cls) -> None:
+        cls._last_image_attempt = 0.0
 
     @classmethod
     def reset_image_fetch_timestamp(cls) -> None:

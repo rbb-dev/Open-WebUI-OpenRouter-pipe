@@ -1662,3 +1662,9 @@ def test_direct_uploads_filter_bypasses_owui_file_context_via_metadata_files():
 
 
 from open_webui_openrouter_pipe.filters import FilterManager as _FilterManager
+
+
+def _webm_like_base64() -> str:
+    """Create base64 data that sniffs as WebM format (EBML header)."""
+    payload = b"\x1A\x45\xDF\xA3" + b"\x00" * 28
+    return base64.b64encode(payload).decode("ascii")

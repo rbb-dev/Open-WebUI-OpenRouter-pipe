@@ -73,6 +73,22 @@ EXPECTED_LATCHES = {
 # below read `only in expected: ['_warned_task_failure']` and nobody traced it
 # back to the regex. Excluding the shape would reintroduce exactly the drift
 # this file exists to prevent.
+#
+# `_shared_latches` in `core/warn_latch.py` is the other shape the regex does not
+# match, and it is a deliberate exclusion rather than an oversight. It is a registry
+# of *named* latches, not a latch: `core/utils.py` holds one entry in it
+# (`owui_classifier_import`) so that the warning about an absent
+# `open_webui.utils.middleware` survives a hot reload instead of repeating on every
+# one. Two things make it unlike the entries above. The `_warned` prefix keys
+# conftest's autouse sweep, and this name deliberately has no such prefix: the point
+# of the registry is that it *outlives* the module that registered into it, which is
+# exactly the lifetime the per-test reset exists to break. And it is written at
+# import time rather than from a call site, so there is no per-test trip that a
+# stale entry could disarm -- the only test that reads it
+# (`test_a_refused_import_is_reported_once_as_a_warning_and_then_as_a_debug` in
+# `tests/test_a_stand_in_for_an_open_webui_function_is_that_function.py`) pops and
+# restores the registry itself. Clearing it between tests would make the
+# hot-reload case unobservable.
 _LATCH_RE = re.compile(
     r"^(_warned[A-Za-z0-9_]*)\s*(?::[^=]+)?=\s*(?:set\(\)|dict\(\)|OrderedDict\(\)|\{\}|\[\])",
     re.M,
