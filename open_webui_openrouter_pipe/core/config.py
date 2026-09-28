@@ -1547,7 +1547,8 @@ class Valves(BaseModel):
             "exposure is why the default is long. Each pass takes the oldest stranded bundles first and seals a "
             "bundle only if the sealed write succeeds, keeping the segments for a retry otherwise."
             "The incomplete marker is written at most once per archive: a pass that finds the turn still stale leaves the single marker "
-            "in place rather than adding another, and a pass that finds the turn complete retires it."
+            "in place rather than adding another, and a pass that finds the turn complete retires it. "
+            "**Warning:** Values under `300` seconds (five minutes) are raised to `300` at runtime."
         ),
     )
     SESSION_LOG_LOCK_STALE_SECONDS: int = Field(
@@ -1801,7 +1802,7 @@ class Valves(BaseModel):
         ge=1,
         le=50,
         description=(
-            "Number of failures one user may accumulate before their requests are refused, a failing tool is skipped, or their database reads and writes are skipped; raise it for fewer trips in noisy environments. A request failure is a failed chat call to OpenRouter (an error reply; a connection that cannot be opened, drops or times out; an error reported inside a response; or a stream that stops before its final event). A request counts once however many attempts it took: a 429, a 5xx, a 408 that names the provider-timeout kind, or that failure reported inside a response before anything has been shown is retried first, up to TRANSIENT_RETRY_MAX_ATTEMPTS extra tries, and the request is a single failure whichever attempt gave up on it. A generation on a picture-only image model or a video model that fails after it was sent to OpenRouter is also a request failure, counted once. Request and database failures count within BREAKER_WINDOW_SECONDS. Raising or lowering the setting mid-session re-reads the failures already recorded: it does not discard them, and a lowered setting applies from the next request without evicting anything. Request failures clear when a request ends without an error (for a picture-only image model or a video model, only once its result is delivered; for an internal Fusion run, only if a panel model answered); a request the user stops clears no request failures. Housekeeping tasks such as title generation neither count nor clear; Open WebUI's merge-responses task counts but never clears. Database failures also clear when a database operation succeeds. The request breaker never refuses a request whose last message is a tool result, or is Open WebUI's own message that comes right after a tool result and hands the model a tool's images; a question or picture the user sends is refused like any other request. Each tool counts its failures in a row: errors it raises, per-call timeouts, running calls cut off by TOOL_BATCH_TIMEOUT_SECONDS, and calls whose tool server cannot be reached or answers with an HTTP error status; an ask_user timeout and a call to an MCP tool whose session has closed do not count. A SystemExit, KeyboardInterrupt or GeneratorExit from a tool is shown as failed but is not a failure of that tool: it signals the process rather than the tool, and it never adds to the count or clears it. An error the tool reports in a result it returns normally is shown as failed but neither adds to the count nor clears it, whether the judgement is made by Open WebUI's own classifier or by the pipe's copy of it."
+            "Number of failures one user may accumulate before their requests are refused, a failing tool is skipped, or their database reads and writes are skipped; raise it for fewer trips in noisy environments. A request failure is a failed chat call to OpenRouter (an error reply; a connection that cannot be opened, drops or times out; an error reported inside a response; or a stream that stops before its final event). A request counts once however many attempts it took: a 429, a 5xx, a 408 that names the provider-timeout kind, or that failure reported inside a response before anything has been shown is retried first, up to TRANSIENT_RETRY_MAX_ATTEMPTS extra tries, and the request is a single failure whichever attempt gave up on it. A generation on a picture-only image model or a video model that fails after it was sent to OpenRouter is also a request failure, counted once. Request and database failures count within BREAKER_WINDOW_SECONDS. Raising or lowering the setting mid-session re-reads the failures already recorded: it does not discard them, and a lowered setting applies from the next request without evicting anything. Request failures clear when a request ends without an error (for a picture-only image model or a video model, only once its result is delivered; for an internal Fusion run, only if a panel model answered); a request the user stops clears no request failures. Housekeeping tasks such as title generation neither count nor clear; Open WebUI's merge-responses task counts but never clears. Database failures also clear when a database operation succeeds. The request breaker never refuses a request whose last message is a tool result, or is Open WebUI's own message that comes right after a tool result and hands the model a tool's images; a question or picture the user sends is refused like any other request. Each tool counts its failures in a row: errors it raises, per-call timeouts, running calls cut off by TOOL_BATCH_TIMEOUT_SECONDS, and calls whose tool server cannot be reached or answers with an HTTP error status; an ask_user timeout and a call to an MCP tool whose session has closed do not count. The count belongs to the tool the call resolved to, so a name the model padded with surrounding whitespace is the same tool and spends the same budget. A SystemExit, KeyboardInterrupt or GeneratorExit from a tool is shown as failed but is not a failure of that tool: it signals the process rather than the tool, and it never adds to the count or clears it. An error the tool reports in a result it returns normally is shown as failed but neither adds to the count nor clears it, whether the judgement is made by Open WebUI's own classifier or by the pipe's copy of it."
         ),
     )
     BREAKER_WINDOW_SECONDS: int = Field(
@@ -1876,7 +1877,7 @@ class Valves(BaseModel):
         default=5,
         ge=1,
         le=50,
-        description="Log a critical alert after this many consecutive failures writing the buffered artifacts to the database. Buffering is not disabled: the pipe waits longer between attempts and keeps retrying, resuming when writes succeed. New writes keep queueing meanwhile and only bypass Redis if the enqueue itself fails.",
+        description="Log a critical alert after this many consecutive failures writing the buffered artifacts to the database. Buffering is not disabled: the pipe waits longer between attempts and keeps retrying, resuming when writes succeed. New writes keep queueing meanwhile and only bypass Redis if the enqueue itself fails. A flush interrupted by a cancellation (worker shutdown, hot reload, valve flip) also puts its uncommitted batch back on the queue rather than dropping it.",
     )
     COSTS_REDIS_DUMP: bool = Field(
         default=False,
@@ -2315,8 +2316,11 @@ class Valves(BaseModel):
         default=False,
         description=(
             "Include attached pictures as well. They do not need it: a picture travels inside "
-            "the request already and never leaves this server. Turn it on only if large "
-            "reference images are being refused for size."
+            "the request already and never leaves this server. The per-picture cap in "
+            "`Maximum single frame size` holds whichever way the picture travels, and an "
+            "oversize one is left out of the request with a note in the chat naming it. What "
+            "this adds on top is the host's own `Largest attachment to upload` ceiling, so a "
+            "picture is the one reference kind you can hand over as a link."
         ),
     )
     TELL_USERS_ABOUT_THE_FILE_HOST: bool = Field(

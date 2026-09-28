@@ -192,7 +192,11 @@ from .storage.owui_files import OwuiFileGateway
 from .storage.persistence import ArtifactStore
 from .streaming.event_emitter import EventEmitter, EventEmitterHandler
 from .streaming.streaming_core import StreamingHandler, _wrap_event_emitter
-from .tools.tool_executor import _QueuedToolCall, _ToolExecutionContext
+from .tools.tool_executor import (
+    _QueuedToolCall,
+    _ToolExecutionContext,
+    resolved_tool_name,
+)
 
 if TYPE_CHECKING:
     from .api.gateway.chat_completions_adapter import ChatCompletionsAdapter
@@ -3633,7 +3637,7 @@ class Pipe:
                     breaker.record_tool_failure(
                         context.user_id,
                         (item.tool_cfg.get("type") or "function").lower(),
-                        str(item.call.get("name") or ""),
+                        resolved_tool_name(item.call),
                     )
                 payload = self._ensure_tool_executor()._build_tool_output(item.call, message, status="failed")
                 resolved_status = "failed"
@@ -3658,7 +3662,7 @@ class Pipe:
         breaker.record_tool_failure(
             context.user_id,
             (item.tool_cfg.get("type") or "function").lower(),
-            str(item.call.get("name") or ""),
+            resolved_tool_name(item.call),
         )
 
     def _finished_tool_output(
@@ -3716,7 +3720,7 @@ class Pipe:
     ) -> tuple[str, str, list[dict[str, Any]], list[str], list[str]]:
         """Invoke a single tool call with circuit breaker protection."""
         tool_type = (item.tool_cfg.get("type") or "function").lower()
-        gate_name = str(item.call.get("name") or "")
+        gate_name = resolved_tool_name(item.call)
         if self._ensure_tool_executor()._ask_user_window(item.tool_cfg, item.args) is not None:
             return await self._run_tool_unless_breaker_open(item, context, tool_type, gate_name)
         async with context.per_request_semaphore:
@@ -3775,7 +3779,7 @@ class Pipe:
         breaker_key = (
             breaker_name
             if breaker_name is not None
-            else str(item.call.get("name") or "")
+            else resolved_tool_name(item.call)
         )
         timing_mark(f"tool_run:{tool_name}:start")
 

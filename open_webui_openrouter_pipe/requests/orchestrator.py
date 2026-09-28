@@ -1529,9 +1529,14 @@ class RequestOrchestrator:
                 # back to reading the contract directly -- one request, on an explicit
                 # user action, not on every message.
                 endpoint_record = OpenRouterModelRegistry.image_endpoint(api_model_id)
-                if endpoint_record is None and ":" in api_model_id:
-                    base_api_model_id = api_model_id.rsplit(":", 1)[0]
-                    endpoint_record = OpenRouterModelRegistry.image_endpoint(base_api_model_id)
+                if endpoint_record is None:
+                    for separator in ("@", ":"):
+                        if separator in api_model_id:
+                            endpoint_record = OpenRouterModelRegistry.image_endpoint(
+                                api_model_id.rsplit(separator, 1)[0]
+                            )
+                            if endpoint_record is not None:
+                                break
                 if endpoint_record is None and valves.ENABLE_OPENROUTER_IMAGE_GENERATION:
                     adapter = self._pipe._ensure_image_generation_adapter()
                     endpoint_record = await adapter._published_records(

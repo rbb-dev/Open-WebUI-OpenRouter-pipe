@@ -7,6 +7,7 @@ import concurrent.futures
 import contextlib
 import logging
 import os
+import pathlib
 import sys
 import time
 import types
@@ -170,6 +171,12 @@ from open_webui_openrouter_pipe.plugins.pipe_dashboard.dashboard_socket import (
 )
 
 _REAL_SLEEP = asyncio.sleep
+
+_PID = os.getpid()
+_FOREIGN_PIDS = (_PID + 1_000_003, _PID + 1_000_033)
+_FOREIGN_PIDS_C = (_PID + 2_000_003, _PID + 2_000_033)
+_A, _B = _FOREIGN_PIDS
+_C, _D = _FOREIGN_PIDS_C
 
 
 def _install_socket_stub(monkeypatch, **attrs):
@@ -735,11 +742,11 @@ class TestBuildEmitPayload:
     async def test_redis_aggregation_with_self_inclusion(self):
         import os
         pipe = _make_mock_pipe()
-        client = _redis_with_slices([_compact_slice(11111, active=2), _compact_slice(22222, active=3)])
+        client = _redis_with_slices([_compact_slice(_C, active=2), _compact_slice(_D, active=3)])
         payload = await _build_emit_payload(pipe, client, "ns", "wk", 1, {})
         assert payload["worker_count"] == 3
         pids = {w["pid"] for w in payload["workers"]}
-        assert {11111, 22222, os.getpid()} == pids
+        assert {_C, _D, os.getpid()} == pids
         assert payload["concurrency"]["active_requests"] == 2 + 3 + 5
         client.set.assert_awaited()
 
@@ -770,10 +777,10 @@ class TestBuildEmitPayload:
 
         client.scan_iter = scan_boom
         cached = [
-            {"pid": 111, "uptime_s": 50.0,
+            {"pid": _A, "uptime_s": 50.0,
              "concurrency": {"active_requests": 1, "max_requests": 50, "active_tools": 0, "max_tools": 10},
              "queues": {}, "rate_limits": {}, "sessions": {"in_flight": 0}},
-            {"pid": 222, "uptime_s": 60.0,
+            {"pid": _B, "uptime_s": 60.0,
              "concurrency": {"active_requests": 2, "max_requests": 50, "active_tools": 0, "max_tools": 10},
              "queues": {}, "rate_limits": {}, "sessions": {"in_flight": 0}},
         ]
@@ -782,7 +789,7 @@ class TestBuildEmitPayload:
         assert payload["degraded"] is True
         assert payload["worker_count"] == 3
         pids = {w["pid"] for w in payload["workers"]}
-        assert {111, 222}.issubset(pids)
+        assert {_A, _B}.issubset(pids)
 
         agg_state = {"workers": list(cached), "misses": 2, "set_at": time.monotonic()}
         payload = await _build_emit_payload(pipe, client, "ns", "wk", 2, {}, agg_state)

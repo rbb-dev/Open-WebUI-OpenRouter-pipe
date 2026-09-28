@@ -95,6 +95,9 @@ _REDIS_FLUSH_CHANNEL = "db-flush"
 
 _REDIS_DELETE_MARKER_TTL_SECONDS = 86400
 
+_CANCEL_REQUEUE_POLL_SECONDS = 0.05
+_CANCEL_REQUEUE_POLL_ATTEMPTS = 40
+
 _UNREADABLE_ARTIFACT_TABLE_KEY = "\x00artifact-key-unreadable"
 
 REPLY_MEMORY_IDLE_SECONDS = 900.0
@@ -1958,114 +1961,118 @@ class ArtifactStore:
             self._note_flush_ready()
 
             entries_by_row: list[tuple[str, dict[str, Any]]] = []
-            malformed = 0
-            batch_size = self.valves.DB_BATCH_SIZE
-            while len(entries_by_row) < batch_size:
-                data = await _await_if_needed(self._redis_client.lpop(self._redis_pending_key))
-                if data is None:
-                    break
-                entry: str | None = None
-                if isinstance(data, str):
-                    entry = data
-                elif isinstance(data, bytes):
-                    entry = data.decode("utf-8", errors="replace")
-                else:
-                    self.logger.warning(
-                        "Unexpected Redis queue payload type '%s'; skipping entry.",
-                        type(data).__name__,
-                    )
-                    malformed += 1
-                    continue
-                try:
-                    parsed = json.loads(entry)
-                except json.JSONDecodeError as exc:
-                    self.logger.warning("Malformed JSON in pending queue, discarding: %s", exc)
-                    malformed += 1
-                    continue
-                if not isinstance(parsed, dict):
-                    self.logger.warning("Pending queue entry must be an object; discarding malformed payload.")
-                    malformed += 1
-                    continue
-                entries_by_row.append((entry, parsed))
-            if malformed:
-                self.logger.warning("Discarded %d malformed artifact(s) from Redis pending queue.", malformed)
-            if not entries_by_row:
-                return
-
-            rows = [row for _entry, row in entries_by_row]
-            self.logger.debug("Flushing %d artifact(s) from Redis pending queue to DB (table: %s)", len(rows), self._artifact_table_name or "unknown")
             committed: set[str] = set()
-            failure = ""
             try:
-                committed = {
-                    identifier
-                    for identifier in await self._db_persist_direct(rows)
-                    if isinstance(identifier, str) and identifier
-                }
-            except Exception as exc:
-                failure = f"{type(exc).__name__}: {exc}"
-                self.logger.exception("❌ DB flush failed! %d artifacts could not be persisted", len(rows))
-            if committed:
-                committed_rows = [row for row in rows if row.get("id") in committed]
-                dropped = await self._drop_rows_deleted_while_queued(committed_rows)
-                if dropped and self._redis_client:
-                    dropped_ids = set(dropped)
-                    keys = [
-                        key
-                        for key in (
-                            self._redis_cache_key(row.get("chat_id"), row.get("id"))
-                            for row in committed_rows if row.get("id") in dropped_ids
+                malformed = 0
+                batch_size = self.valves.DB_BATCH_SIZE
+                while len(entries_by_row) < batch_size:
+                    data = await _await_if_needed(self._redis_client.lpop(self._redis_pending_key))
+                    if data is None:
+                        break
+                    entry: str | None = None
+                    if isinstance(data, str):
+                        entry = data
+                    elif isinstance(data, bytes):
+                        entry = data.decode("utf-8", errors="replace")
+                    else:
+                        self.logger.warning(
+                            "Unexpected Redis queue payload type '%s'; skipping entry.",
+                            type(data).__name__,
                         )
-                        if key
-                    ]
-                    if keys:
-                        try:
-                            await _await_if_needed(self._redis_client.delete(*keys))
-                        except Exception as exc:
-                            self.logger.warning(
-                                "Redis cache invalidation of dropped rows failed (best-effort): %s",
-                                exc, exc_info=True,
-                            )
+                        malformed += 1
+                        continue
+                    try:
+                        parsed = json.loads(entry)
+                    except json.JSONDecodeError as exc:
+                        self.logger.warning("Malformed JSON in pending queue, discarding: %s", exc)
+                        malformed += 1
+                        continue
+                    if not isinstance(parsed, dict):
+                        self.logger.warning("Pending queue entry must be an object; discarding malformed payload.")
+                        malformed += 1
+                        continue
+                    entries_by_row.append((entry, parsed))
+                if malformed:
+                    self.logger.warning("Discarded %d malformed artifact(s) from Redis pending queue.", malformed)
+                if not entries_by_row:
+                    return
 
-            unrecoverable = [row for _entry, row in entries_by_row if row.get("payload") is None]
-            uncommitted = [
-                entry
-                for entry, row in entries_by_row
-                if row.get("payload") is not None and row.get("id") not in committed
-            ]
-            if unrecoverable:
-                self.logger.error(
-                    "Discarded %d artifact(s) with no payload that can never be persisted (ids=%s). "
-                    "Markers referencing them are permanently dangling.",
-                    len(unrecoverable),
-                    sorted(str(row.get("id")) for row in unrecoverable),
-                )
-            if uncommitted:
-                if not failure:
-                    self.logger.error(
-                        "DB flush reported no error but committed only %d of %d artifact(s); "
-                        "returning %d to the pending queue.",
-                        len(committed),
-                        len(rows),
-                        len(uncommitted),
-                    )
+                rows = [row for _entry, row in entries_by_row]
+                self.logger.debug("Flushing %d artifact(s) from Redis pending queue to DB (table: %s)", len(rows), self._artifact_table_name or "unknown")
+                failure = ""
                 try:
-                    await self._redis_requeue_entries(uncommitted)
-                    self.logger.debug(
-                        "Re-queued %d artifact(s) after an incomplete flush (reason=%s)",
-                        len(uncommitted),
-                        failure or "uncommitted",
+                    committed = {
+                        identifier
+                        for identifier in await self._db_persist_direct(rows)
+                        if isinstance(identifier, str) and identifier
+                    }
+                except Exception as exc:
+                    failure = f"{type(exc).__name__}: {exc}"
+                    self.logger.exception("❌ DB flush failed! %d artifacts could not be persisted", len(rows))
+                if committed:
+                    committed_rows = [row for row in rows if row.get("id") in committed]
+                    dropped = await self._drop_rows_deleted_while_queued(committed_rows)
+                    if dropped and self._redis_client:
+                        dropped_ids = set(dropped)
+                        keys = [
+                            key
+                            for key in (
+                                self._redis_cache_key(row.get("chat_id"), row.get("id"))
+                                for row in committed_rows if row.get("id") in dropped_ids
+                            )
+                            if key
+                        ]
+                        if keys:
+                            try:
+                                await _await_if_needed(self._redis_client.delete(*keys))
+                            except Exception as exc:
+                                self.logger.warning(
+                                    "Redis cache invalidation of dropped rows failed (best-effort): %s",
+                                    exc, exc_info=True,
+                                )
+
+                unrecoverable = [row for _entry, row in entries_by_row if row.get("payload") is None]
+                uncommitted = [
+                    entry
+                    for entry, row in entries_by_row
+                    if row.get("payload") is not None and row.get("id") not in committed
+                ]
+                if unrecoverable:
+                    self.logger.error(
+                        "Discarded %d artifact(s) with no payload that can never be persisted (ids=%s). "
+                        "Markers referencing them are permanently dangling.",
+                        len(unrecoverable),
+                        sorted(str(row.get("id")) for row in unrecoverable),
                     )
-                except Exception as requeue_exc:  # pragma: no cover - defensive
-                    self.logger.critical(
-                        "ARTIFACT LOSS: %d artifact(s) left the pending queue, were not committed, "
-                        "and could not be re-queued: %s",
-                        len(uncommitted),
-                        requeue_exc,
-                        exc_info=True,
-                    )
-            elif not failure:
-                self.logger.debug("✅ Successfully flushed %d artifacts to DB", len(rows))
+                if uncommitted:
+                    if not failure:
+                        self.logger.error(
+                            "DB flush reported no error but committed only %d of %d artifact(s); "
+                            "returning %d to the pending queue.",
+                            len(committed),
+                            len(rows),
+                            len(uncommitted),
+                        )
+                    try:
+                        await self._redis_requeue_entries(uncommitted)
+                        self.logger.debug(
+                            "Re-queued %d artifact(s) after an incomplete flush (reason=%s)",
+                            len(uncommitted),
+                            failure or "uncommitted",
+                        )
+                    except Exception as requeue_exc:  # pragma: no cover - defensive
+                        self.logger.critical(
+                            "ARTIFACT LOSS: %d artifact(s) left the pending queue, were not committed, "
+                            "and could not be re-queued: %s",
+                            len(uncommitted),
+                            requeue_exc,
+                            exc_info=True,
+                        )
+                elif not failure:
+                    self.logger.debug("✅ Successfully flushed %d artifacts to DB", len(rows))
+            except asyncio.CancelledError:
+                await self._return_popped_entries_on_cancel(entries_by_row, committed)
+                raise
         finally:
             if lock_acquired and self._redis_client:
                 release_script = (
@@ -2244,6 +2251,51 @@ class ArtifactStore:
         for payload in reversed(entries):
             pipe.lpush(self._redis_pending_key, payload)
         await _await_if_needed(pipe.execute())
+
+    async def _push_entries_back(self, entries: list[str]) -> None:
+        try:
+            await self._redis_requeue_entries(entries)
+        except Exception as exc:
+            self.logger.critical(
+                "ARTIFACT LOSS: %d artifact(s) left the pending queue and could not be re-queued: %s",
+                len(entries),
+                exc,
+                exc_info=True,
+            )
+
+    async def _return_popped_entries_on_cancel(
+        self,
+        entries_by_row: list[tuple[str, dict[str, Any]]],
+        committed: set[str],
+    ) -> None:
+        entries = [
+            entry
+            for entry, row in entries_by_row
+            if row.get("payload") is not None and row.get("id") not in committed
+        ]
+        if not entries:
+            return
+        task = asyncio.ensure_future(self._push_entries_back(entries))
+        for _ in range(_CANCEL_REQUEUE_POLL_ATTEMPTS):
+            if task.done():
+                break
+            try:
+                await asyncio.sleep(_CANCEL_REQUEUE_POLL_SECONDS)
+            except asyncio.CancelledError:
+                continue
+        if task.done() and not task.cancelled():
+            exc = task.exception()
+            if exc is not None:
+                self.logger.critical(
+                    "ARTIFACT LOSS: %d artifact(s) left the pending queue and could not be re-queued: %s",
+                    len(entries),
+                    exc,
+                )
+            return
+        self.logger.critical(
+            "ARTIFACT LOSS: %d artifact(s) left the pending queue and their re-queue did not finish before the worker went away",
+            len(entries),
+        )
 
     @timed
     async def _redis_fetch_rows(

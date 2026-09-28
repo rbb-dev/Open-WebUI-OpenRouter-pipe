@@ -156,6 +156,12 @@ except Exception:
 
 _ASK_USER_GRACE_SECONDS = 15.0
 
+
+def resolved_tool_name(call: dict[str, Any]) -> str:
+    raw_name = call.get("name")
+    return raw_name.strip() if isinstance(raw_name, str) else ""
+
+
 @dataclass(slots=True)
 class _QueuedToolCall:
     """Stores a pending tool call plus execution metadata for worker pools."""
@@ -539,8 +545,7 @@ class ToolExecutor:
 
         try:
             for index, call in enumerate(calls):
-                raw_name = call.get("name")
-                tool_name = raw_name.strip() if isinstance(raw_name, str) else ""
+                tool_name = resolved_tool_name(call)
                 tool_cfg = tools.get(tool_name)
                 if ask_user_refusal and self._is_builtin_ask_user(tool_cfg):
                     await _refuse(index, call, ask_user_refusal)
@@ -572,7 +577,7 @@ class ToolExecutor:
                 tool_type = (tool_cfg.get("type") or "function").lower()
                 breaker = self._tool_breaker(context)
                 if breaker is not None and not breaker.tool_allows(
-                    context.user_id, tool_type, str(call.get("name") or "")
+                    context.user_id, tool_type, tool_name
                 ):
                     await self._notify_tool_breaker(context, tool_type, call.get("name"))
                     await _append_and_notify(index, call, self._build_tool_output(

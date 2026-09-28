@@ -94,6 +94,7 @@ async def ensure_image_catalog_loaded(
                 OpenRouterModelRegistry.register_image_models([])
                 OpenRouterModelRegistry.reset_image_fetch_timestamp()
                 OpenRouterModelRegistry.reset_image_attempt()
+                OpenRouterModelRegistry.clear_image_contract_attempt()
                 logger.info("Image catalog cleared: ENABLE_OPENROUTER_IMAGE_GENERATION is False.")
             else:
                 logger.debug(

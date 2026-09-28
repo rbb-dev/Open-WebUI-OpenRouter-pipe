@@ -17,6 +17,7 @@ import math
 import re
 import time
 import unicodedata
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -27,8 +28,8 @@ from ..core.utils import (
     _safe_marker_body,
     _serialize_kind_marker,
 )
-from ..core.warn_latch import warn_level
 from ..requests.fusion_engine import latest_user_text
+from ..storage.owui_files import is_temporary_chat
 from ..structured_task import (
     build_response_format,
     call_with_candidates,
@@ -61,7 +62,32 @@ INTENT_CLARIFICATION = "intent_clarification"
 VIDEO_JOB_MARKER = "videojob"
 VIDEO_MODEL_MARKER = "videomodel"
 
-_warned_no_task_model: set[str] = set()
+_NO_TASK_MODEL_LATCH_WINDOW = 300
+
+_NO_TASK_MODEL_NO_CHAT_KEY = "__no_chat_id__"
+
+_warned_no_task_model: OrderedDict[str, None] = OrderedDict()
+
+
+def _no_task_model_latch_key(chat_id: Any) -> str:
+    if not isinstance(chat_id, str) or not chat_id:
+        return _NO_TASK_MODEL_NO_CHAT_KEY
+    if is_temporary_chat(chat_id):
+        return ""
+    return chat_id
+
+
+def _no_task_model_warn_level(chat_id: Any) -> int:
+    key = _no_task_model_latch_key(chat_id)
+    if not key:
+        return logging.WARNING
+    if key in _warned_no_task_model:
+        return logging.DEBUG
+    _warned_no_task_model[key] = None
+    _warned_no_task_model.move_to_end(key)
+    while len(_warned_no_task_model) > _NO_TASK_MODEL_LATCH_WINDOW:
+        _warned_no_task_model.popitem(last=False)
+    return logging.WARNING
 
 
 def resolve_intent_user_setting(
@@ -852,7 +878,7 @@ async def resolve_intent(
         )
         if not candidates:
             logger.log(
-                warn_level(_warned_no_task_model, chat_id or "no-chat"),
+                _no_task_model_warn_level(chat_id),
                 "video_intent: Open WebUI reported no usable task model under "
                 "task.model.default / task.model.external; the classifier is skipped "
                 "and this turn degrades open",
@@ -931,10 +957,13 @@ def _video_intent_repair_turns(previous_output: str) -> list[dict[str, Any]]:
         {
             "role": "user",
             "content": (
-                "That reply could not be parsed: it was not a single JSON object "
+                "That reply was not usable: it was not a single JSON object "
                 "matching the schema. Reply again with ONLY one JSON object "
                 "matching the schema, per the Output rules. No prose, no markdown, "
-                "no fences."
+                "no fences. If this turn cannot be classified, answer with the "
+                'schema-valid fallback the Output rules document: intent '
+                '"text_to_video", an empty frame_plan, and the user\'s own text as '
+                "the prompt, rather than declining in prose."
             ),
         },
     ]

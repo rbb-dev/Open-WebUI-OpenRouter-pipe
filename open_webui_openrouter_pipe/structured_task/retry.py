@@ -19,6 +19,7 @@ from .logging import _fault_code, safe_log_payload
 _TASK_MODEL_FAULT_PREFIX = "task_model_"
 _REPAIR_OUTPUT_CHARS = 200
 _REPAIR_TEMPERATURE = 0.2
+_NO_CHOICES_MARKER = "[the model returned no choices]"
 _CORRECTABLE_FAULTS = frozenset(
     {
         "task_model_invalid_json",
@@ -46,8 +47,13 @@ def _response_text(response: Any) -> str:
         choices = response.get("choices")
         if isinstance(choices, list) and choices and isinstance(choices[0], dict):
             message = choices[0].get("message")
-            if isinstance(message, dict) and isinstance(message.get("content"), str):
-                return message["content"]
+            if isinstance(message, dict):
+                refusal = message.get("refusal")
+                if isinstance(refusal, str) and refusal.strip():
+                    return refusal
+                content = message.get("content")
+                if isinstance(content, str) and content:
+                    return content
         output = response.get("output")
         if isinstance(output, list):
             parts = [
@@ -59,7 +65,21 @@ def _response_text(response: Any) -> str:
             ]
             if parts:
                 return "\n".join(p for p in parts if p)
+        if not isinstance(choices, list) or not choices:
+            return _no_choices_reason(response)
     return ""
+
+
+def _no_choices_reason(response: Any) -> str:
+    error = response.get("error") if isinstance(response, dict) else None
+    if isinstance(error, dict):
+        message = error.get("message")
+        if isinstance(message, str) and message.strip():
+            return message
+        code = error.get("code")
+        if code not in (None, ""):
+            return f"error code {code}"
+    return _NO_CHOICES_MARKER
 
 
 def _sanitised_excerpt(text: str) -> str:

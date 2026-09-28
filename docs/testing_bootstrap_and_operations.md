@@ -73,6 +73,12 @@ PYTHONPATH=. .venv/bin/pytest tests/test_multimodal_inputs.py -q
 PYTHONPATH=. .venv/bin/pytest tests -q
 ```
 
+When a test fakes a *dashboard worker other than this one*, derive that worker's pid
+from `os.getpid()` (offset it, e.g. `os.getpid() + 1_000_003`), never a literal such as
+`111`. A literal can collide with a real pytest worker's own pid, which suppresses the
+self-append in the publisher and turns a green suite red on a loaded machine rather than
+on a change.
+
 ### Test suite map (high level)
 
 The suite is organized by subsystem. Common entry points:
