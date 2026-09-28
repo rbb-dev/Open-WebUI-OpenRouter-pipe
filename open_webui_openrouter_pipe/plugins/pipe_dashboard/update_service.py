@@ -1111,15 +1111,6 @@ class UpdateService:
         Callers that gate an action on an operator's stored setting must deny on the
         third -- falling back to an in-memory True would let an operator's disable be
         overridden by the very failure that hid it.
-
-        `None` is one unreadable signal: Open WebUI's `get_function_valves_by_id` catches
-        Exception itself and returns None. But `{}` is NOT reliably "no stored override"
-        -- `decrypt_valves` also returns `{}` on InvalidToken, i.e. on a failed decrypt,
-        which is exactly the unreadable case. So an operator who set the update valve off
-        and then rotated WEBUI_SECRET_KEY got `{}`, a `stored_read_ok` of True, and the
-        in-memory default of True back: the disable silently reversed by the very failure
-        that hid it. The raw column tells the two apart -- ciphertext present but nothing
-        decoded is unreadable; column empty is genuinely unset.
         """
         valves = self._valves()
         merged: dict[str, Any] = {key: getattr(valves, key, None) for key in self._UPDATE_VALVE_KEYS}
@@ -1168,12 +1159,24 @@ class UpdateService:
                 )
                 raw = None
             if isinstance(raw, str) and raw.strip():
-                logger.warning(
-                    "update: the stored valve blob did not decode (a rotated "
-                    "WEBUI_SECRET_KEY does this); update actions that require a "
-                    "confirmed setting will be refused"
-                )
-                stored_read_ok = False
+                _secret = os.getenv("WEBUI_SECRET_KEY", os.getenv("WEBUI_JWT_SECRET_KEY", ""))
+                if _secret:
+                    try:
+                        import base64
+                        import hashlib
+
+                        from cryptography.fernet import Fernet
+                        _key = _secret.encode()
+                        if len(_secret) != 44:
+                            _key = base64.urlsafe_b64encode(hashlib.sha256(_key).digest())
+                        Fernet(_key).decrypt(raw.encode())
+                    except Exception:  # noqa: BLE001 - any failure to decode is the answer
+                        logger.warning(
+                            "update: the stored valve blob did not decode (a rotated "
+                            "WEBUI_SECRET_KEY does this); update actions that require a "
+                            "confirmed setting will be refused"
+                        )
+                        stored_read_ok = False
         if stored is None:
             stored_read_ok = False
         if isinstance(stored, dict):

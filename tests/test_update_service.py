@@ -8,7 +8,9 @@ import importlib.metadata
 import sys
 import time
 import types
+from functools import partial
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -2690,18 +2692,80 @@ async def test_auto_tick_skips_when_the_persisted_valves_are_unreadable(auto, ca
     )
 
 
+def _mint(payload, secret):
+    """A real Fernet token, the way Open WebUI's `_fernet()` writes one.
+
+    Fresh per call and never a literal: Fernet's IV and timestamp differ every run, so
+    a hardcoded token is both a stale fixture and a mutation that can survive it.
+    Mirrors `.external/open-webui/backend/open_webui/utils/valves.py:15-20` -- a
+    44-character secret is used verbatim, anything else is sha256'd and urlsafe-b64'd.
+    """
+    import base64
+    import hashlib as _hashlib
+    import json as _json
+
+    from cryptography.fernet import Fernet
+
+    key = secret.encode()
+    if len(secret) != 44:
+        key = base64.urlsafe_b64encode(_hashlib.sha256(key).digest())
+    return Fernet(key).encrypt(_json.dumps(payload).encode()).decode()
+
+
+_SECRET_28 = "unit-test-key-for-encryption"
+_SECRET_44 = "A" * 43 + "="
+_SECRET_ROTATED = "a-different-key-for-encryption"
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("raw_column", "decoded", "expected_ok"),
+    ("raw_column", "decoded", "expected_ok", "secret", "jwt_secret"),
     [
-        (None, {}, True),
-        ({}, {}, True),
-        ("gAAAAAB_ciphertext", {}, False),
-        ("gAAAAAB_ciphertext", {"PIPE_DASHBOARD_UPDATE_ENABLE": False}, True),
+        (None, {}, True, None, None),
+        ({}, {}, True, None, None),
+        ("gAAAAAB_ciphertext", {}, False, _SECRET_28, None),
+        (
+            "gAAAAAB_ciphertext",
+            {"PIPE_DASHBOARD_UPDATE_ENABLE": False},
+            True,
+            _SECRET_28,
+            None,
+        ),
+        (partial(_mint, {}, _SECRET_28), {}, True, _SECRET_28, None),
+        (partial(_mint, {}, _SECRET_44), {}, True, _SECRET_44, None),
+        (
+            partial(_mint, {"PIPE_DASHBOARD_UPDATE_ENABLE": False}, _SECRET_28),
+            {"PIPE_DASHBOARD_UPDATE_ENABLE": False},
+            True,
+            _SECRET_28,
+            None,
+        ),
+        (partial(_mint, {}, _SECRET_ROTATED), {}, False, _SECRET_28, None),
+        ("not-a-fernet-token", {}, False, _SECRET_28, None),
+        (partial(_mint, {}, _SECRET_28), {}, True, None, None),
+        ({}, {}, True, _SECRET_28, None),
+        (partial(_mint, {}, _SECRET_28), {}, True, None, _SECRET_28),
+        (partial(_mint, {}, _SECRET_ROTATED), {}, False, None, _SECRET_28),
     ],
-    ids=["fresh-install", "unencrypted-empty", "rotated-key", "healthy-encrypted-install"],
+    ids=[
+        "fresh-install",
+        "unencrypted-empty",
+        "rotated-key",
+        "healthy-encrypted-install-decoded",
+        "encrypted-save-with-no-edits-28char-secret",
+        "encrypted-save-with-no-edits-44char-secret",
+        "encrypted-row-carrying-a-disable",
+        "encrypted-row-under-a-different-key",
+        "non-ciphertext-garbage",
+        "encrypted-save-with-no-edits-no-secret-configured",
+        "dict-column-with-a-secret-present",
+        "jwt-secret-only-healthy",
+        "jwt-secret-only-rotated",
+    ],
 )
-async def test_an_undecodable_valve_blob_is_not_read_as_no_override(monkeypatch, caplog, raw_column, decoded, expected_ok):
+async def test_an_undecodable_valve_blob_is_not_read_as_no_override(
+    monkeypatch, caplog, raw_column, decoded, expected_ok, secret, jwt_secret
+):
     """`{}` from decrypt_valves means two different things, and only one is safe.
 
     Open WebUI's `decrypt_valves` returns `{}` on InvalidToken -- a FAILED decrypt --
@@ -2719,13 +2783,40 @@ async def test_an_undecodable_valve_blob_is_not_read_as_no_override(monkeypatch,
     round-trips through json.loads; ENABLE_VALVE_ENCRYPTION defaults to False, so a
     default install stores the valve dict itself and an empty form writes `{}`. Without
     this arm, `raw is not None` satisfies both other arms while denying the update
-    surface on every unencrypted install.
+    surface on every unencrypted install. It carries a secret on purpose: the `isinstance`
+    guard on the raw column is the only thing keeping a dict column from being refused
+    wholesale on an encrypted host, and without a key present the body is never reached.
+
+    Every arm declares the secret it is to be judged under, because the predicate reads
+    the environment and an arm with no key exercises a different branch than an arm
+    with one. The autouse fixture unsets `WEBUI_SECRET_KEY` only, so an ambient
+    `WEBUI_JWT_SECRET_KEY` would otherwise leak into every arm; both are cleared here
+    and set per arm. `WEBUI_JWT_SECRET_KEY` is a live fallback, not a historical name:
+    `open_webui/env.py:762-765` falls back to it and `utils/valves.py` keys off
+    whichever name won, so a host that sets only that one is supported and must be
+    judged by the same rule.
+
+    With no secret at all the pipe has no key to test against, so it reports the row
+    readable. That is recorded, not endorsed: closing it would mean re-deriving a key
+    from the empty string, and `sha256(b"")` is a *valid* Fernet key, so the decrypt
+    would fail on every blob healthy included and the update surface would be denied
+    wholesale on an unkeyed host.
     """
     import contextlib
     import sys
     import types
 
     from open_webui_openrouter_pipe.plugins.pipe_dashboard.update_service import UpdateService
+
+    if callable(raw_column):
+        raw_column = raw_column()
+    monkeypatch.delenv("WEBUI_JWT_SECRET_KEY", raising=False)
+    if secret is not None:
+        monkeypatch.setenv("WEBUI_SECRET_KEY", secret)
+    else:
+        monkeypatch.delenv("WEBUI_SECRET_KEY", raising=False)
+    if jwt_secret is not None:
+        monkeypatch.setenv("WEBUI_JWT_SECRET_KEY", jwt_secret)
 
     class _Result:
         def scalar_one_or_none(self):

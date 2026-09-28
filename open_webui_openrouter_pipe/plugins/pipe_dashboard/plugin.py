@@ -143,7 +143,9 @@ class PipeDashboardPlugin(PluginBase):
                 "Show the dashboard's Update tab and allow its actions (check, apply, restore, "
                 "delete snapshot). Off: the tab reports disabled and every update action fails "
                 "closed, including auto-update. The tab also refuses when the stored valve set "
-                "cannot be read, and says so rather than reporting an admin disable."
+                "cannot be read at all — the database is unreachable, or the stored set will "
+                "not decrypt under the server's `WEBUI_SECRET_KEY` — and says so rather than "
+                "reporting an admin disable."
             ),
         )),
         "PIPE_DASHBOARD_UPDATE_SNAPSHOT_KEEP": (int, Field(

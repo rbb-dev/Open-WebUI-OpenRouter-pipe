@@ -194,6 +194,13 @@ Apply, restore, and snapshot-delete additionally require the acting account to h
 role, as do the two configuration actions behind the Config tab; package/stub installs show a pin-bump
 note instead of an Update button.
 
+Every action in this tab — check, apply, restore, snapshot-delete, and the auto-tick — is also
+refused when the server cannot read the *stored* valve set at all. That includes a database
+that is unreachable at that moment, and a stored set that will not decrypt under the server's
+current `WEBUI_SECRET_KEY` (a rotated key with valve encryption on does this). This differs from
+the Config tab's behaviour on a rotated key, described below under [Editing configuration](#editing-configuration):
+the two tabs genuinely differ, and this one refuses rather than showing defaults.
+
 ### About
 
 The About tab lists the registered plugins by name, id, and version.

@@ -1125,6 +1125,11 @@ class OpenRouterModelRegistry:
             provider_id = cls._id_map.get(norm)
 
         if not provider_id:
+            _pid = ModelFamily._PIPE_ID.get()
+            if _pid and model_id_base.startswith(f"{_pid}."):
+                _rest = model_id_base[len(_pid) + 1:]
+                if _rest and "." in _rest and not _rest.startswith(f"{_pid}."):
+                    model_id_base = _rest
             if "/" in model_id_base:
                 api_base = model_id_base
             elif "." in model_id_base:
