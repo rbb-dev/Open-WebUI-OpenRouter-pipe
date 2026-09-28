@@ -1392,9 +1392,12 @@ class Pipe:
         )
 
     async def _guarded_web_tools_repair(self) -> bool:
-        if await self._keep_web_tools_filters_in_step():
-            self._web_tools_repair_started = time.monotonic()
-        return True
+        try:
+            ok = await self._keep_web_tools_filters_in_step()
+        except Exception:  # noqa: BLE001 - an unfinished pass must not arm the cooldown
+            return False
+        self._web_tools_repair_started = time.monotonic()
+        return ok
 
     async def _keep_web_tools_filters_in_step(self) -> bool:
         ok = True
@@ -1413,7 +1416,8 @@ class Pipe:
                 level = warn_level(_warned_pipes_maintenance, f"web_tools:{type(exc).__name__}")
                 self.logger.log(level, "AUTO_INSTALL_WEB_TOOLS_FILTER failed: %s", exc, exc_info=True)
         try:
-            await self._ensure_filter_manager().repair_web_tools_filters()
+            if not await self._ensure_filter_manager().repair_web_tools_filters():
+                ok = False
         except Exception as exc:
             ok = False
             level = warn_level(_warned_pipes_maintenance, f"web_tools_repair:{type(exc).__name__}")

@@ -15,6 +15,7 @@ import base64
 import binascii
 import json
 import logging
+import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
@@ -84,6 +85,8 @@ from ..models.registry import ModelFamily, supports_phase_model
 # Import from storage
 from ..storage.multimodal import (
     _SNIFF_PREFIX_BYTES,
+    ADDRESS_CHECK_BUDGET_SECONDS,
+    ADDRESS_CHECK_SECONDS,
     _sniff_evidence,
     resolve_download_type,
 )
@@ -594,9 +597,23 @@ def _note_memo_use(
 
 
 async def _memo_hit_is_still_permitted(
-    pipe: Pipe, memo_key: Any, url: str
+    pipe: Pipe,
+    memo_key: Any,
+    url: str,
+    seen: dict[str, bool | None] | None = None,
+    deadline: float | None = None,
 ) -> bool:
-    if await pipe._multimodal_handler._is_safe_url(url) is False:
+    if seen is not None and url in seen:
+        permitted = seen[url]
+    else:
+        if deadline is None:
+            deadline = time.monotonic() + ADDRESS_CHECK_BUDGET_SECONDS
+        permitted = await pipe._multimodal_handler._is_safe_url(
+            url, seconds=min(ADDRESS_CHECK_SECONDS, deadline - time.monotonic()),
+        )
+        if seen is not None:
+            seen[url] = permitted
+    if permitted is False:
         _reuse_download_memo.pop(memo_key, None)
         return False
     return True
@@ -786,6 +803,8 @@ async def transform_messages_to_input(
     person_images_this_turn = False
     temporary_chat = is_temporary_chat(chat_id)
     request_memo: dict[tuple[str, str], tuple[bytes, str]] = {}
+    address_verdicts: dict[str, bool | None] = {}
+    address_deadline = time.monotonic() + ADDRESS_CHECK_BUDGET_SECONDS
     tool_name_at, issuer_at = _tool_names_by_position(messages)
 
     def _withheld(turn_index: int | None) -> bool:
@@ -1064,7 +1083,9 @@ async def transform_messages_to_input(
                             mode=mode, temporary_chat=temporary_chat,
                         )
                         if remembered is not None and not await (
-                            _memo_hit_is_still_permitted(pipe, memo_key, url)
+                            _memo_hit_is_still_permitted(
+                                pipe, memo_key, url, address_verdicts, address_deadline
+                            )
                         ):
                             remembered = None
                         try:

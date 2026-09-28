@@ -2062,7 +2062,7 @@ class Valves(BaseModel):
     )
     AUTO_DEFAULT_WEB_TOOLS_FILTER: bool = Field(
         default=False,
-        description="When enabled, marks the OpenRouter Web Tools filter as a Default Filter on every pipe model that is not an image-output, a video-generation or a Fusion model (pre-enabled per chat; users can still turn it off). Turning it off removes the already-seeded default from models on the next sync, and so does switching every Web Tool off. A default an installer hiccup left in place is not one of them: a blank filter id is a lookup that failed, not a decision to release, so a seeded default survives it, and with the valve on it is never looked for.",
+        description="When enabled, marks the OpenRouter Web Tools filter as a Default Filter on every pipe model that is not an image-output, a video-generation or a Fusion model (pre-enabled per chat; users can still turn it off). Turning it off removes the already-seeded default from models on the next sync, and so does switching every Web Tool off, and turning it back on reclaims a default the operator re-ticked in between, so the next turn-off still removes it. A default seeded under an id the panel no longer has is released too, even after the panel has been reinstalled under a new id, and a default seeded by a build older than the durable seed record, whose row carries only the attach record, is left in place and the admin removes it in the model editor. A default an installer hiccup left in place is not one of them: a blank filter id is a lookup that failed, not a decision to release, so a seeded default survives it, and with the valve on it is never looked for.",
     )
 
     AUTO_INSTALL_IMAGE_GEN_FILTER: bool = Field(

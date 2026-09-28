@@ -530,6 +530,50 @@ def _apply_server_tools_metadata(
     return superseded
 
 
+def _block_key(block: dict[str, Any]) -> Any:
+    kind = block.get("type")
+    inner = block.get(kind) if isinstance(kind, str) else None
+    if not isinstance(inner, dict):
+        return None
+    if kind == "file":
+        return (
+            "file",
+            inner.get("file_id"),
+            inner.get("filename"),
+        )
+    if kind == "input_audio":
+        data = inner.get("data")
+        if not isinstance(data, (str, bytes)):
+            return None
+        return (
+            "input_audio",
+            inner.get("format"),
+            len(data),
+            hash(data),
+        )
+    if kind == "video_url":
+        url = inner.get("url")
+        if not isinstance(url, (str, bytes)):
+            return None
+        return (
+            "video_url",
+            len(url),
+            hash(url),
+        )
+    return json.dumps(block, sort_keys=True)
+
+
+def _pre_present_keys(content_blocks: list[Any]) -> set[Any]:
+    keys: set[Any] = set()
+    for block in content_blocks:
+        if not isinstance(block, dict):
+            continue
+        key = _block_key(block)
+        if key is not None:
+            keys.add(key)
+    return keys
+
+
 class RequestOrchestrator:
     """Orchestrates the processing of transformed OpenRouter requests."""
 
@@ -676,13 +720,13 @@ class RequestOrchestrator:
             else:
                 raise ValueError("Direct uploads require a supported message content type.")
 
-            pre_present = {json.dumps(block, sort_keys=True) for block in content_blocks}
+            pre_present = _pre_present_keys(content_blocks)
             appended: set[tuple[str, str]] = set()
 
             def _append(key: tuple[str, str], block: dict[str, Any]) -> None:
                 if key in appended:
                     return
-                if json.dumps(block, sort_keys=True) in pre_present:
+                if _block_key(block) in pre_present:
                     return
                 appended.add(key)
                 content_blocks.append(block)

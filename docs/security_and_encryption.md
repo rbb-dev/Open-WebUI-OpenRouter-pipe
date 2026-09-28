@@ -186,8 +186,10 @@ then let the HTTP client resolve the name again:
   permission, and on a re-use it costs neither the entry nor a re-fetch: the
   picture the pipe already holds is served, and the re-check runs again on the
   next turn. Nothing has to be refused for the re-check to be paid for:
-  a request that reuses `MAX_INPUT_IMAGES_PER_REQUEST` pictures pays one blocking
-  resolution per reused picture, one after another (5 by default, 20 at the ceiling).
+  a request pays one blocking resolution per **distinct** URL it reuses this turn, each
+  one inside the same request-wide address-check budget, so a picture cited twice in one
+  reply is checked once and a turn carrying many pictures is bounded by that
+  `ADDRESS_CHECK_BUDGET_SECONDS` (20.0) rather than by a lookup per picture.
 
 ### What a blocked address is recorded as
 

@@ -156,10 +156,12 @@ def _stored_source(row: Any) -> str:
 _REFUSED_FILTER_WRITES: set[str] = set()
 
 
-async def _write_function(Functions, function_id, updates, what, logger) -> bool:
+async def _write_function(Functions, function_id, updates, what, logger, raised=None) -> bool:
     try:
         landed = await Functions.update_function_by_id(function_id, updates) is not None
-    except Exception:  # noqa: BLE001 - a database driver's own error type is not enumerable here
+    except Exception as exc:  # noqa: BLE001 - a database driver's own error type is not enumerable here
+        if raised is not None:
+            raised.append(exc)
         landed = False
     if not landed:
         _REFUSED_FILTER_WRITES.add(str(function_id))
@@ -210,6 +212,14 @@ def _is_web_tools_filter(content: Any) -> bool:
 
 def _is_filter_carrying(content: Any, marker: str) -> bool:
     return isinstance(content, str) and marker in content and "class Filter" in content
+
+
+def _no_search_suffix(switched_off) -> str:
+    return (
+        " Chats using it get no web search at all until you do."
+        if "WEB_SEARCH" in switched_off
+        else ""
+    )
 
 
 def _is_video_gen_filter(content: Any) -> bool:
@@ -1322,41 +1332,68 @@ class FilterManager:
             prefer_id=_OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID,
         )
 
-    async def repair_web_tools_filters(self) -> None:
+    async def repair_web_tools_filters(self) -> bool:
         switched_off = {toggle for switch, toggle, _ in WEB_TOOL_SWITCHES if not getattr(self.valves, switch)}
         if not switched_off:
-            return
+            return True
         try:
             from open_webui.models.functions import Functions  # type: ignore
         except ImportError:
-            return
+            return True
         except Exception:
             self.logger.warning(
                 "open_webui.models.functions failed to import for a reason other than absence; "
                 "the Web Tools filters cannot be repaired",
                 exc_info=True,
             )
-            return
+            return False
 
         try:
             found = await Functions.get_functions_by_type("filter", active_only=True)
         except Exception:
             self.logger.warning("Could not list the installed Web Tools filters", exc_info=True)
-            return
+            return False
         rows = [row for row in found if _is_web_tools_filter(getattr(row, "content", ""))]
 
+        complete = True
         if every_web_tool_is_off(self.valves):
             for row in rows:
                 if getattr(row, "is_active", False):
-                    try:
-                        await Functions.update_function_by_id(
-                            str(getattr(row, "id", "") or ""),
-                            {"is_active": False, "meta": switched_off_meta(row)},
+                    row_id = getattr(row, "id", "")
+                    raised: list[Exception] = []
+                    landed = await _write_function(
+                        Functions,
+                        str(row_id or ""),
+                        {"is_active": False, "meta": switched_off_meta(row)},
+                        "every OpenRouter Web Tools tool being disabled",
+                        self.logger,
+                        raised,
+                    )
+                    if raised:
+                        self.logger.log(
+                            warn_level(_warned_stale_filter_rows, f"web_tools_deactivate_raised:{row_id}"),
+                            "OpenRouter Web Tools filter %r could not be switched off with every web tool "
+                            "disabled, so it is still on: switch it off by hand, or let the repair try again.%s",
+                            row_id,
+                            _no_search_suffix(switched_off),
+                            exc_info=raised[0],
                         )
-                        self.logger.info("Disabled OpenRouter Web Tools filter %r (all tools disabled)", row.id)
-                    except Exception:
-                        self.logger.debug("Disabling Web Tools filter %s failed", row.id, exc_info=True)
-            return
+                        complete = False
+                        continue
+                    if not landed:
+                        self.logger.log(
+                            warn_level(_warned_stale_filter_rows, f"web_tools_deactivate_refused:{row_id}"),
+                            "OpenRouter Web refused the write that switches OpenRouter Web Tools filter %r "
+                            "off while every web tool is disabled, so it is still on and still offering %s: switch "
+                            "it off by hand, or let the repair try again.%s",
+                            row_id,
+                            ", ".join(sorted(switched_off)),
+                            _no_search_suffix(switched_off),
+                        )
+                        complete = False
+                        continue
+                    self.logger.info("Disabled OpenRouter Web Tools filter %r (all tools disabled)", row.id)
+            return complete
 
         for row in rows:
             offered = _offered_web_tools(getattr(row, "content", ""))
@@ -1368,11 +1405,7 @@ class FilterManager:
                     "code could not be read, so it is left exactly as it is: update it or remove it.%s",
                     row_id,
                     ", ".join(sorted(switched_off)),
-                    (
-                        " Chats using it get no web search at all until you do."
-                        if "WEB_SEARCH" in switched_off
-                        else ""
-                    ),
+                    _no_search_suffix(switched_off),
                 )
                 continue
             dropped = offered & switched_off
@@ -1381,10 +1414,37 @@ class FilterManager:
             source = self.render_openrouter_web_tools_filter_source(
                 **{kwarg: (toggle in offered and toggle not in dropped) for _, toggle, kwarg in WEB_TOOL_SWITCHES}
             ).strip() + "\n"
-            try:
-                await Functions.update_function_by_id(row_id, {"content": source})
-            except Exception:
-                self.logger.debug("Rewriting Web Tools filter %s failed", row_id, exc_info=True)
+            raised = []
+            landed = await _write_function(
+                Functions,
+                row_id,
+                {"content": source},
+                "taking a switched-off web tool out of the installed filter",
+                self.logger,
+                raised,
+            )
+            if raised:
+                self.logger.log(
+                    warn_level(_warned_stale_filter_rows, f"web_tools_rewrite_raised:{row_id}"),
+                    "OpenRouter Web Tools filter %r still offers %s, which this pipe has switched off, and its "
+                    "code could not be replaced, so it is left exactly as it is: update it or remove it.%s",
+                    row_id,
+                    ", ".join(sorted(dropped)),
+                    _no_search_suffix(switched_off),
+                    exc_info=raised[0],
+                )
+                complete = False
+                continue
+            if not landed:
+                self.logger.log(
+                    warn_level(_warned_stale_filter_rows, f"web_tools_rewrite_refused:{row_id}"),
+                    "OpenRouter Web Tools filter %r still offers %s, which this pipe has switched off. Its code "
+                    "could not be replaced, so it is left exactly as it is: update it or remove it.%s",
+                    row_id,
+                    ", ".join(sorted(dropped)),
+                    _no_search_suffix(switched_off),
+                )
+                complete = False
                 continue
             self.logger.warning(
                 "OpenRouter Web Tools filter %r still offered %s, which this pipe has switched off. Its code was "
@@ -1395,6 +1455,7 @@ class FilterManager:
                 ", ".join(sorted(dropped)),
                 ", ".join(sorted(offered - dropped)) or "none",
             )
+        return complete
 
     async def deactivate_video_gen_filters(self) -> None:
         if self.valves.ENABLE_VIDEO_GENERATION:

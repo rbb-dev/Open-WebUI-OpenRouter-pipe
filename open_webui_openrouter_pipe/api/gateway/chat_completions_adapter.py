@@ -81,6 +81,13 @@ def _refusal_split(answer: str, refusal: str) -> tuple[str | None, str]:
     return f"\n\n{refusal}", f"{answer}\n\n{refusal}"
 
 
+def _append_text_field(item: dict, key: str, value: str) -> None:
+    text = item[key] if type(item.get(key)) is str else ""
+    item[key] = ""
+    text += value
+    item[key] = text
+
+
 def _build_output_items(
     *,
     assistant_text: str,
@@ -316,7 +323,7 @@ class ChatCompletionsAdapter:
                 prev_text = merged.get("text")
                 next_text = detail.get("text")
                 if isinstance(prev_text, str) and isinstance(next_text, str):
-                    merged["text"] = f"{prev_text}{next_text}"
+                    _append_text_field(merged, "text", next_text)
                 elif isinstance(next_text, str):
                     merged["text"] = next_text
                 next_signature = detail.get("signature")
@@ -333,7 +340,7 @@ class ChatCompletionsAdapter:
                 prev_data = merged.get("data")
                 next_data = detail.get("data")
                 if isinstance(prev_data, str) and isinstance(next_data, str):
-                    merged["data"] = f"{prev_data}{next_data}"
+                    _append_text_field(merged, "data", next_data)
                 elif isinstance(next_data, str):
                     merged["data"] = next_data
             for k, v in detail.items():
@@ -614,8 +621,7 @@ class ChatCompletionsAdapter:
                             current["name"] = name
                         args_delta = function.get("arguments")
                         if isinstance(args_delta, str) and args_delta:
-                            existing = current.get("arguments") or ""
-                            current["arguments"] = f"{existing}{args_delta}"
+                            _append_text_field(current, "arguments", args_delta)
 
                     if index not in tool_call_added:
                         tool_call_added.add(index)

@@ -58,7 +58,7 @@ Two per-model custom parameters (set in Open WebUI model Advanced Parameters) co
 | `disable_web_tools_auto_attach` | Prevents auto-attaching the Web Tools filter to this model. The toggle will not appear in the Integrations menu for this model. As a consequence, default-on seeding is also skipped, and any default the pipe had already seeded for this model is left alone. |
 | `disable_web_tools_default_on` | Prevents auto-enabling the Web Tools filter by default for this model. The toggle appears but starts off on the next sync; users can still enable it per chat. A default the pipe had already seeded for this model is released on that same sync, and comes back on its own if the parameter is later removed. |
 
-These parameters are respected even when the global `AUTO_ATTACH_WEB_TOOLS_FILTER` and `AUTO_DEFAULT_WEB_TOOLS_FILTER` pipe valves are enabled: `disable_web_tools_default_on` releases a default the pipe seeded for that model on the next sync, and neither of them detaches a panel the pipe attached.
+These parameters are respected even when the global `AUTO_ATTACH_WEB_TOOLS_FILTER` and `AUTO_DEFAULT_WEB_TOOLS_FILTER` pipe valves are enabled: `disable_web_tools_default_on` releases a default the pipe seeded for that model on the next sync, and neither of them detaches a panel the pipe attached. A default seeded under an id the panel no longer resolves is released on that same sync, including after the panel has been reinstalled under a new id, and turning the valve back on reclaims a default re-ticked in between so the next turn-off still removes it.
 
 ---
 
@@ -90,7 +90,7 @@ Not recommended. When both are enabled on the same request, the Web Tools filter
 - `AUTO_ATTACH_WEB_TOOLS_FILTER=True`
 - `AUTO_DEFAULT_WEB_TOOLS_FILTER=False`
 
-Result: Users see **OpenRouter Web Tools** on every pipe model that is not an image-output, a video-generation or a Fusion model but must enable it per chat. Admin can set `AUTO_DEFAULT_WEB_TOOLS_FILTER=True` to pre-enable it for every model that gets the switch, and turning it off again removes that pre-enablement from the models it was applied to on the next sync. A model that is later excluded with `disable_web_tools_default_on`, or whose panel is detached by `AUTO_ATTACH_WEB_TOOLS_FILTER=False`, loses the default the pipe seeded for it on the next sync rather than keeping it default-on against a panel that no longer runs.
+Result: Users see **OpenRouter Web Tools** on every pipe model that is not an image-output, a video-generation or a Fusion model but must enable it per chat. Admin can set `AUTO_DEFAULT_WEB_TOOLS_FILTER=True` to pre-enable it for every model that gets the switch, and turning it off again removes that pre-enablement from the models it was applied to on the next sync, in either direction: a default re-ticked by an operator is reclaimed when the valve goes back on, so the next turn-off removes it again. A model that is later excluded with `disable_web_tools_default_on`, or whose panel is detached by `AUTO_ATTACH_WEB_TOOLS_FILTER=False`, loses the default the pipe seeded for it on the next sync rather than keeping it default-on against a panel that no longer runs.
 
 ### Enable OpenRouter Web Tools by default
 

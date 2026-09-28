@@ -348,6 +348,33 @@ def _web_tools_owned(
     return bool(pipe_meta.get("web_tools_default_seeded")) or bool(previous_id_str)
 
 
+def _web_tools_seeded_entry(pipe_meta: dict, fid: str) -> bool:
+    return isinstance(pipe_meta.get("web_tools_seeded_id"), str) and pipe_meta["web_tools_seeded_id"] == fid
+
+
+def _release_stale_seed(
+    pipe_meta: dict,
+    default_ids: list[str],
+    *,
+    previous_id_str: str,
+    owned_id_str: str,
+    owned_id: str | None,
+    filter_function_id: str | None,
+    seeded_key: str,
+) -> tuple[list[str], bool]:
+    if not (
+        previous_id_str
+        and _web_tools_seeded_entry(pipe_meta, previous_id_str)
+        and previous_id_str in default_ids
+    ):
+        return default_ids, False
+    remaining = [fid for fid in default_ids if fid != previous_id_str]
+    pipe_meta[seeded_key] = False
+    if filter_function_id and pipe_meta.get("web_tools_filter_id") == previous_id_str:
+        pipe_meta["web_tools_filter_id"] = owned_id
+    return remaining, True
+
+
 def _apply_single_id_filter_ids(
     meta_dict: dict,
     *,
@@ -2529,7 +2556,13 @@ class ModelCatalogManager:
             seeded_by_pipe = bool(pipe_meta.get(seeded_key, False))
             release = set(detached or ())
             blank_id_release = bool(
-                id_from_record and not filter_function_id and not auto_default_filter
+                id_from_record
+                and not filter_function_id
+                and not auto_default_filter
+                and (
+                    seeded_by_pipe
+                    or pipe_meta.get("web_tools_seeded_id") == owned_id_str
+                )
             )
             if owned_id_str and (
                 blank_id_release
@@ -2545,6 +2578,19 @@ class ModelCatalogManager:
                 )
             ):
                 release.add(owned_id_str)
+            if previous_id_str and previous_id_str != owned_id_str and not auto_default_filter:
+                stale_ids, released = _release_stale_seed(
+                    pipe_meta,
+                    default_ids,
+                    previous_id_str=previous_id_str,
+                    owned_id_str=owned_id_str,
+                    owned_id=owned_id,
+                    filter_function_id=filter_function_id,
+                    seeded_key=seeded_key,
+                )
+                if released:
+                    default_ids = stale_ids
+                    changed = True
             kept = [fid for fid in default_ids if fid not in release or fid != owned_id_str]
             if len(kept) != len(default_ids):
                 default_ids = kept
@@ -2561,7 +2607,7 @@ class ModelCatalogManager:
                     if fid in (attach_detached or set())
                     and (
                         bool(pipe_meta.get(seeded_key, False))
-                        or previous_id_str == fid
+                        or _web_tools_seeded_entry(pipe_meta, fid)
                     )
                 ]
                 if superseded:
@@ -2592,8 +2638,15 @@ class ModelCatalogManager:
                 if not seeded_by_pipe:
                     default_ids.append(owned_id)
                     pipe_meta[seeded_key] = True
+                    pipe_meta["web_tools_seeded_id"] = owned_id
                     changed = True
-            elif not seeded_by_pipe:
+            elif (
+                pipe_meta.get("web_tools_seeded_id") == owned_id
+                and not seeded_by_pipe
+            ):
+                pipe_meta[seeded_key] = True
+                changed = True
+            elif not seeded_by_pipe and pipe_meta.get(seeded_key) is not False:
                 pipe_meta[seeded_key] = False
                 changed = True
 
