@@ -291,20 +291,37 @@ async def test_the_set_the_encoder_fills_in_is_the_one_the_record_is_built_from(
 
 
 @pytest.mark.parametrize(
-    ("host", "retention"), [("litterbox", "12h"), ("catbox", "1h")]
+    ("host", "retention", "mixed"),
+    [
+        ("litterbox", "12h", False),
+        ("catbox", "1h", False),
+        ("litterbox", "1h", True),
+    ],
+    ids=["litterbox-12h", "catbox-1h", "mixed-turn"],
 )
-def test_the_record_survives_a_job_that_is_resumed_in_a_later_request(host, retention):
+def test_the_record_survives_a_job_that_is_resumed_in_a_later_request(host, retention, mixed):
     """A resumed job rebuilds its message from what was persisted, and replaces it.
 
     Recovering only the intent block dropped the relay record on every resume, which is
     exactly the long-running job most likely to be resumed. Two hosts and two
     retentions, so recovering a hardcoded sentence cannot pass.
+
+    The third row is the mixed turn: its record is now more than one line INSIDE the
+    single marker pair, and `_RELAY_BLOCK_REGION_RE` is a non-greedy `.*?` with DOTALL
+    between the two markers. That reasoning is only a reading of a regex, so the row
+    proves the whole body comes back rather than the first line of it.
     """
+    mixed = bool(mixed)
     valves = _valves(MEDIA_FILE_HOST=host, MEDIA_FILE_HOST_RETENTION=retention)
     pipe = MagicMock()
     pipe.logger = logging.getLogger("relay-disclosure")
     adapter = VideoGenerationAdapter(pipe=pipe, logger=pipe.logger)
-    record = adapter._file_host_record(valves, {("video", host)})
+    relayed = (
+        {("video", "litterbox"), ("audio", "catbox")}
+        if mixed
+        else {("video", host)}
+    )
+    record = adapter._file_host_record(valves, relayed)
     persisted = record + "\n" + adapter._build_pending_content(job_id="j1", model_id="m")
 
     recovered = adapter._recover_the_file_host_record(persisted)

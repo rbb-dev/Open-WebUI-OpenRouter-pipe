@@ -1032,6 +1032,7 @@ _INPUT_KIND_WORDS = {
     "image": "an image",
     "audio": "an audio track",
     "video": "a video clip",
+    "file": "a document",
 }
 
 
@@ -1051,7 +1052,7 @@ def _format_accepted_inputs(model: dict[str, Any]) -> str:
         return "not published"
     known = [_INPUT_KIND_WORDS[kind] for kind in _INPUT_KIND_WORDS if kind in kinds]
     extra = sorted(kind for kind in kinds if kind not in _INPUT_KIND_WORDS)
-    words = known + extra
+    words = known + [f"`{kind}`" for kind in extra]
     if not words:
         return "not published"
     if len(words) == 1:

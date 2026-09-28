@@ -167,3 +167,12 @@ def test_imageio_and_ffmpeg_present_in_bundles():
             f"`{name}` missing from `_render_header_compressed` "
             f"compressed-bundle requirements line."
         )
+
+
+# --- the Open WebUI version a bundle declares it needs ------------------------------------------------------
+
+# Open WebUI reads `required_open_webui_version` out of the header and REFUSES an install that does not meet it
+# ("Open WebUI version (vX) is lower than required version (vY)"). So a bundle that understates it disables
+# that refusal: an install too old for the pipe is accepted and fails at runtime instead of being turned away.
+# The bundler carried its own copy of the number and drifted from the stub when the floor was raised.
+STUB = ROOT / "open_webui_openrouter_pipe.py"

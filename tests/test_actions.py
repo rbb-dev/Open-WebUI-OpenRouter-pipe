@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -23,10 +24,12 @@ def _user(uid="u1", role="user"):
 def _reset():
     saved = dict(actions.ACTIONS)
     actions._rate_state.clear()
+    actions._config_write_locks.clear()
     yield
     actions.ACTIONS.clear()
     actions.ACTIONS.update(saved)
     actions._rate_state.clear()
+    actions._config_write_locks.clear()
 
 
 @pytest.mark.asyncio

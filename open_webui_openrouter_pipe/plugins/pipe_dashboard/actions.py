@@ -7,6 +7,7 @@ audited; write outcomes include args + client_ip.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping
@@ -31,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 _PD_ACTION_MIN_INTERVAL = 1.0
 _rate_state: dict[tuple[str, str], float] = {}
+_config_write_locks: dict[tuple[str, int], asyncio.Lock] = {}
 
 
 class _OptionalKey(NamedTuple):
@@ -405,11 +407,27 @@ async def _config_get(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
 @register_action(
     "config_set",
     permission="write",
-    schema={"edits": dict, "rev": optional((int, type(None)))},
+    schema={"edits": dict, "rev": optional((int, str, type(None)))},
     admin_only=True,
 )
 async def _config_set(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
     """Merge edits into the stored custom subset (not the live model) and persist; rev-guarded."""
+    async with _config_write_lock(getattr(pipe, "id", "")):
+        result, committed = await _persist_config_edit(pipe, user, args)
+    if committed:
+        result["values"], result["post_reset"] = await _saved_values(pipe, args["edits"])
+    return result
+
+
+def _config_write_lock(pipe_id: str) -> asyncio.Lock:
+    key = (pipe_id, id(asyncio.get_running_loop()))
+    lock = _config_write_locks.get(key)
+    if lock is None:
+        lock = _config_write_locks[key] = asyncio.Lock()
+    return lock
+
+
+async def _persist_config_edit(pipe: Any, user: Any, args: Any) -> tuple[dict[str, Any], bool]:
     current_rev = await _current_config_rev(pipe)
     client_rev = args.get("rev")
     # An unreadable revision is a conflict on its own, independent of what the caller
@@ -423,15 +441,15 @@ async def _config_set(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
             return {
                 "unreadable": "the stored configuration could not be read from the database",
                 "rev": current_rev,
-            }
+            }, False
         stale = _config_snapshot(effective, stored)
         stale["conflict"] = True
         stale["rev"] = current_rev
         stale["config_unreadable"] = not conflict_read_ok
-        return stale
+        return stale, False
     edits = args["edits"]
     if not edits:
-        return {"saved": 0, "rev": current_rev}
+        return {"saved": 0, "rev": current_rev}, False
     from open_webui.models.functions import Functions
 
     current = await Functions.get_function_valves_by_id(getattr(pipe, "id", ""))
@@ -442,32 +460,34 @@ async def _config_set(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
                 "unreadable": reason
                 or "the stored configuration could not be read from the database",
                 "rev": current_rev,
-            }
+            }, False
         refused = _config_snapshot(pipe.valves)
         refused["conflict"] = True
         refused["rev"] = current_rev
         refused["config_unreadable"] = True
-        return refused
+        return refused, False
     _stored, stored_read_ok = await _read_stored_valves(getattr(pipe, "id", ""))
     if not stored_read_ok:
         return {
             "unreadable": "the stored configuration could not be read from the database",
             "rev": current_rev,
-        }
-    to_save, dropped = merge_for_save_with_drops(type(pipe.valves), current, edits)
+        }, False
+    to_save, dropped, not_saved, cleared = merge_for_save_with_drops(
+        type(pipe.valves), current, edits
+    )
     result = await Functions.update_function_valves_by_id(getattr(pipe, "id", ""), to_save)
     if result is None:
         raise RuntimeError("valve update rejected by store")
     rev = getattr(result, "updated_at", None)
     await emit_config_changed(rev)
-    values, post_reset = await _saved_values(pipe, edits)
     return {
-        "saved": len(edits),
+        "saved": len(edits) - len(not_saved - cleared),
+        "not_saved": sorted(not_saved - cleared),
         "rev": rev,
         "reset": dropped,
-        "post_reset": post_reset,
-        "values": values,
-    }
+        "post_reset": [],
+        "values": {},
+    }, True
 
 
 def _update_service_of(pipe: Any) -> Any:

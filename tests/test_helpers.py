@@ -639,11 +639,13 @@ class TestMergeUsageStats:
         assert result["completion_tokens"] == 75
 
     def test_nested_merge(self):
-        """Nested dict merge."""
-        total = {"usage": {"tokens": 100}}
-        new = {"usage": {"tokens": 50}}
+        """A `*_tokens_details` map sums its numbers; any other nested map last-wins."""
+        total = {"input_tokens_details": {"cached_tokens": 100, "audio_tokens": 0}}
+        new = {"input_tokens_details": {"cached_tokens": 50, "text_tokens": 7}}
         result = merge_usage_stats(total, new)
-        assert result["usage"]["tokens"] == 150
+        assert result["input_tokens_details"]["cached_tokens"] == 150
+        assert result["input_tokens_details"]["audio_tokens"] == 0
+        assert result["input_tokens_details"]["text_tokens"] == 7
 
     def test_new_keys(self):
         """New keys are added."""
@@ -653,11 +655,17 @@ class TestMergeUsageStats:
         assert result == {"a": 1, "b": 2}
 
     def test_none_value_preserves_existing(self):
-        """None value preserves existing value."""
-        total = {"key": 10}
-        new = {"key": None}
+        """`None` keeps the existing value on a SUMMABLE key only.
+
+        On any other key the incoming value wins, `None` included: the contract is
+        "every other key takes the incoming value", and a `None` is a value. The old
+        "None preserves" rule now holds for summable keys alone.
+        """
+        total = {"input_tokens": 10, "server_tool_use": True}
+        new = {"input_tokens": None, "server_tool_use": None}
         result = merge_usage_stats(total, new)
-        assert result["key"] == 10
+        assert result["input_tokens"] == 10
+        assert result["server_tool_use"] is None
 
     def test_non_numeric_overwrites(self):
         """Non-numeric non-None values overwrite."""
@@ -1484,10 +1492,12 @@ async def test_wrap_event_emitter_controls_events(pipe_instance_async):
 
 
 def test_merge_usage_stats_and_wrap_code_block():
-    total = {"a": 1, "nested": {"x": 1}}
-    merged = ow.merge_usage_stats(total, {"a": 2, "nested": {"x": 1, "y": 2}})
-    assert merged["a"] == 3
-    assert merged["nested"]["y"] == 2
+    total = {"input_tokens": 1, "input_tokens_details": {"x": 1}}
+    merged = ow.merge_usage_stats(
+        total, {"input_tokens": 2, "input_tokens_details": {"x": 1, "y": 2}}
+    )
+    assert merged["input_tokens"] == 3
+    assert merged["input_tokens_details"]["y"] == 2
     block = ow.wrap_code_block("print('x')", "python")
     assert block.startswith("```python")
 

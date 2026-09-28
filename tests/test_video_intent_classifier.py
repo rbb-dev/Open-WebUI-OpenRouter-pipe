@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from types import SimpleNamespace
 from typing import Any, cast
@@ -575,10 +576,6 @@ class TestDisclosureBlock:
         assert "/api/v1/files/B/content" in out
 
 
-# -----------------------------------------------------------------------------
-# render_clarification_message
-# -----------------------------------------------------------------------------
-
 class TestClarificationMessage:
     def test_no_clarification_returns_empty(self):
         r = VideoIntentResult(
@@ -617,7 +614,9 @@ class TestClarificationMessage:
         msg = render_clarification_message(r)
         assert "What style?" in msg
         assert "1." not in msg  # no numbered list
-
+        assert "Reply with" not in msg, (
+            f"an open-ended question got a numbered footer anyway: {msg}"
+        )
 
 # -----------------------------------------------------------------------------
 # What the classifier is told the user said

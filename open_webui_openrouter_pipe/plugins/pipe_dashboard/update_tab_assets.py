@@ -56,6 +56,8 @@ UPDATE_TAB_JS = """
       package_mode: 'This is a package/stub install. Update it by bumping the pinned version; this tab cannot modify it.',
       digest_mismatch: 'The downloaded file did not match the release checksum, so nothing was changed. Try again in a moment.',
       validation_failed: 'The downloaded bundle failed validation, so nothing was changed.',
+      storage_unavailable: 'The pipe\\'s snapshot storage could not be reached, so nothing was changed. The server log names the storage error; restore the database or the upload directory and try again.',
+      write_failed: 'The database refused the write, so the freshly loaded code was rolled back and the previous version remains active.',
       incompatible_owui: 'This release needs a newer Open WebUI than this server runs. Upgrade Open WebUI first.',
       update_in_progress: 'Another update is already running. Wait for it to finish, then press Check now.',
       disabled: 'Updates are switched off by the "Enable the Update tab" valve.',
@@ -249,7 +251,9 @@ UPDATE_TAB_JS = """
       }
 
       var snaps = d.snapshots || [];
-      if (!snaps.length) {
+      if (d.snapshot_storage_error) {
+        updEl('upd-snapshots').innerHTML = esc(String(d.snapshot_storage_error));
+      } else if (!snaps.length) {
         updEl('upd-snapshots').innerHTML = 'No snapshots yet.';
       } else {
         var rows = '';

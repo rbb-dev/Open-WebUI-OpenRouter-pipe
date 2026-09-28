@@ -125,7 +125,7 @@ When `ENABLE_SSRF_PROTECTION=True` (default):
 - The pipe fetches an address only when it is provably globally routable. Everything else is refused, rather than only the ranges someone remembered to list: loopback, RFC1918, link-local, multicast, reserved and unspecified are refused, and so are carrier-grade NAT (`100.64.0.0/10`, which is also Tailscale's default range), IPv6 site-local (`fec0::/10`) and any address that is simply not marked as globally routable. A future range added to the registries is refused the day it is registered rather than the day someone updates a list here.
 - IPv6 forms that carry an IPv4 address inside them are judged on the addresses they carry: `::ffff:`-mapped, 6to4 (`2002::/16`), Teredo (`2001::/32`) and the NAT64 well-known prefix (`64:ff9b::/96`). `2002:7f00:1::` is 6to4 for `127.0.0.1` and is refused for that reason; `2002:808:808::` carries a public address and is allowed. A form that carries more than one address is allowed only when EVERY address it carries would be allowed on its own: a Teredo address encodes the tunnel server as well as the client, both chosen by whoever wrote the address, so `2001:0:7f00:1::f7f7:f7f7` — server `127.0.0.1`, client `8.8.8.8` — is refused for the server.
 - Downloads that fail SSRF checks are rejected and logged; the pipe proceeds without crashing the request.
-- Address resolution runs on its own bounded thread pool, so a hostile or dead host — one whose nameserver never answers — cannot consume the threads serving media, thumbnails, file reads or Open WebUI's own endpoints. The pool is shared only with other address checks, so a stall is bounded there; a check that is stalled, or queued behind other checks, is refused rather than delayed.
+- Address resolution runs on its own bounded thread pool, so a hostile or dead host — one whose nameserver never answers — cannot consume the threads serving media, thumbnails, file reads or Open WebUI's own endpoints. The pool is shared only with other address checks, so a stall is bounded there; a check that is stalled, or queued behind other checks, reaches no verdict rather than being delayed. A download or a generation with no verdict still sends nothing, so that half is a refusal; a picture the pipe already holds is served, because there the entry is being asked whether those bytes are still permitted and an answer that never arrived is not a denial.
 
 When `ENABLE_SSRF_PROTECTION=False`:
 - The pipe may attempt to fetch internal URLs reachable from your Open WebUI environment. Only disable SSRF protection with a clear threat model and compensating controls.
@@ -180,8 +180,10 @@ then let the HTTP client resolve the name again:
   costs one address resolution and no download; a URL the check then refuses is fetched
   once more through the already-gated path, which runs its own address check, so a
   refusal pays two resolutions. A resolution that does not finish inside the
-  address-check budget counts as a refusal, so a slow nameserver costs a re-fetch
-  rather than a permission. Nothing has to be refused for the re-check to be paid for:
+  address-check budget reaches no verdict, so a slow nameserver never buys a
+  permission, and on a re-use it costs neither the entry nor a re-fetch: the
+  picture the pipe already holds is served, and the re-check runs again on the
+  next turn. Nothing has to be refused for the re-check to be paid for:
   a request that reuses `MAX_INPUT_IMAGES_PER_REQUEST` pictures pays one blocking
   resolution per reused picture, one after another (5 by default, 20 at the ceiling).
 

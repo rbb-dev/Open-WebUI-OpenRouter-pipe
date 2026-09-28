@@ -1029,7 +1029,7 @@ class Valves(BaseModel):
     )
     ENABLE_SSRF_PROTECTION: bool = Field(
         default=True,
-        description="Enable SSRF (Server-Side Request Forgery) protection for remote URL downloads. When enabled, a remote address is fetched only if it is provably globally routable, so loopback, 10.x/172.16.x/192.168.x, link-local, carrier-grade NAT (100.64.0.0/10 -- also Tailscale's default range) and IPv6 site-local are all refused, as is any range the registries do not mark as globally routable. IPv6 addresses that wrap an IPv4 one (::ffff:, 6to4, Teredo, NAT64) are judged on the address they carry. A refused address is not sent either: the person sees `Images: skipped N (could not be fetched, so it was not sent).` A public `https://` link the pipe merely failed to download is still forwarded for the provider to fetch. A failed download costs one further address check, so an unreachable resolver can add up to two `ADDRESS_CHECK_SECONDS` per picture, sequentially. The address checks run on a dedicated bounded thread pool, so a stalled resolver is bounded there rather than queued behind everything else the process does; a check that cannot start inside its own budget is refused, exactly like any other failed check. HTTP is disabled by default; see ALLOW_INSECURE_HTTP_* for explicit opt-in.",
+        description="Enable SSRF (Server-Side Request Forgery) protection for remote URL downloads. When enabled, a remote address is fetched only if it is provably globally routable, so loopback, 10.x/172.16.x/192.168.x, link-local, carrier-grade NAT (100.64.0.0/10 -- also Tailscale's default range) and IPv6 site-local are all refused, as is any range the registries do not mark as globally routable. IPv6 addresses that wrap an IPv4 one (::ffff:, 6to4, Teredo, NAT64) are judged on the address they carry. A refused address is not sent either: the person sees `Images: skipped N (could not be fetched, so it was not sent).` A public `https://` link the pipe merely failed to download is still forwarded for the provider to fetch. A failed download costs one further address check, so an unreachable resolver can add up to two `ADDRESS_CHECK_SECONDS` per picture, sequentially. The address checks run on a dedicated bounded thread pool, so a stalled resolver is bounded there rather than queued behind everything else the process does; a check that cannot start inside its own budget reaches no verdict at all: on a download or generation path that still sends no bytes, while a stalled re-check of a picture the pipe already holds no longer drops the stored copy. The pool's width follows `MAX_CONCURRENT_REQUESTS` and is re-made when that valve changes, in both directions. HTTP is disabled by default; see ALLOW_INSECURE_HTTP_* for explicit opt-in.",
     )
     ALLOW_INSECURE_HTTP: bool = Field(
         default=False,
@@ -1089,7 +1089,11 @@ class Valves(BaseModel):
     MODEL_CATALOG_REFRESH_SECONDS: int = Field(
         default=60 * 60,
         ge=60,
-        description="How long to cache the OpenRouter model catalog (in seconds) before refreshing.",
+        description=(
+            "How long to cache the OpenRouter model catalog (in seconds) before refreshing. "
+            "The refresh backoff after a failed fetch is tracked per OpenRouter account, so "
+            "one account's outage never holds up another account's catalog read."
+        ),
     )
     NEW_MODEL_ACCESS_CONTROL: Literal["public", "admins"] = Field(
         default="admins",
@@ -1255,8 +1259,9 @@ class Valves(BaseModel):
             "model allows it; a model that always reasons gets the lightest level its catalog entry lists other than "
             "`none` instead, and no level at all when it lists no other level. On such a model the pipe keeps asking "
             "regardless, and in a chat it says so in a status line naming the model; a background task shows nothing. "
-            "A request that carries its own reasoning.max_tokens is forwarded as it stands, so this default does not "
-            "apply to it. Use 'xhigh' when maximum depth is desired (only on supporting models)."
+            "A request that carries its own reasoning.max_tokens overrides this default, except while this setting "
+            "is 'none': there a per-chat thinking budget is ignored, because 'none' switches reasoning off on every "
+            "path. Use 'xhigh' when maximum depth is desired (only on supporting models)."
         ),
     )
     REASONING_SUMMARY_MODE: Literal["auto", "concise", "detailed", "disabled"] = Field(
@@ -1274,8 +1279,8 @@ class Valves(BaseModel):
             "scaled by reasoning effort (minimal -> smaller, xhigh -> larger). When 0, thinking is switched off, "
             "except on Gemini 2.5 Pro, which cannot stop thinking; on such a model the pipe keeps asking regardless, "
             "and in a chat it says so in a status line naming the model (a background task shows nothing). "
-            "A request that carries its own reasoning.max_tokens is forwarded as it stands, so this budget does not "
-            "apply to it. A request that carries its own output limit has the budget reduced to fit inside it, the "
+            "A request that carries its own reasoning.max_tokens overrides this budget, except while reasoning is "
+            "switched off; there a per-chat thinking budget is ignored. A request that carries its own output limit has the budget reduced to fit inside it, the "
             "limit itself is never changed, and when the limit leaves no room the pipe asks for no bounded budget and "
             "the model decides."
         ),

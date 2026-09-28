@@ -443,14 +443,16 @@ function commitSave(){
     if(r.unreadable){ inflightSave=false; $("#modal").classList.remove("show"); if(btn){btn.disabled=false;btn.textContent="Save "+names.length;} showConflict(storeUnreadableText(r.unreadable)); return; }
     if(r.conflict){ inflightSave=false; $("#modal").classList.remove("show"); if(btn){btn.disabled=false;btn.textContent="Save "+names.length;} if(r.config_unreadable){configUnreadable=true;showUnreadable();updateBar();return;} refuseSave(btn,names,null,null); return; }
     const vals=(r.values&&typeof r.values==="object")?r.values:{};
-    names.forEach(n=>{ const v=byName[n]; if(v&&v.secret){v.secret_set=(edits[n]===null&&v.secret_stored)?v.secret_set:edits[n]!==null;} else if(v){baseline[n]=Object.prototype.hasOwnProperty.call(vals,n)?vals[n]:edits[n];} delete edits[n]; });
+    const notSaved=Array.isArray(r.not_saved)?r.not_saved:[];
+    names.forEach(n=>{ const v=byName[n]; if(v&&v.secret){v.secret_set=(edits[n]===null&&v.secret_stored)?v.secret_set:(edits[n]!==null&&notSaved.indexOf(n)<0);} else if(v){baseline[n]=Object.prototype.hasOwnProperty.call(vals,n)?vals[n]:edits[n];} delete edits[n]; });
     if(r.rev!=null){REV=r.rev;lastSeenRev=r.rev;}
     inflightSave=false;
     paintDriftNote($("#driftnote"),{drift:driftCache,reset:r.reset});
     renderResetNote(r.post_reset||[]);
     invalid.clear(); $("#modal").classList.remove("show"); updateBar();
     if(SEL&&byName[SEL])renderDetail(byName[SEL]); buildTree();
-    toast("Saved "+names.length+" setting"+(names.length>1?"s":"")); reportHeight();
+    const savedN=(typeof r.saved==="number")?r.saved:names.length;
+    toast("Saved "+savedN+" setting"+(savedN>1?"s":"")); reportHeight();
   }).catch(()=>{ inflightSave=false; if(btn){btn.disabled=false;btn.textContent="Save "+names.length;} toast("Save failed"); });
 }
 function toast(msg){ const t=$("#toast"); t.textContent=msg; t.classList.add("show"); clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove("show"),2600); }

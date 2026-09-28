@@ -1070,7 +1070,7 @@ async def test_snapshot_insert_none_cleans_blob_and_aborts(svc, fake_functions, 
     fake_storage.insert_none = True
     with pytest.raises(us.UpdateError) as exc:
         await svc.snapshot_current("admin", "u1")
-    assert exc.value.code == "validation_failed"
+    assert exc.value.code == "storage_unavailable"
     assert any(op[0] == "del_blob" for op in fake_storage.order)
     assert fake_storage.rows == {}
 
@@ -1085,7 +1085,7 @@ async def test_snapshot_insert_error_cleans_blob_and_chains_cause(
     monkeypatch.setattr(fake_storage.Files, "insert_new_file", staticmethod(_boom))
     with pytest.raises(us.UpdateError) as exc:
         await svc.snapshot_current("admin", "u1")
-    assert exc.value.code == "validation_failed"
+    assert exc.value.code == "storage_unavailable"
     assert "db exploded" in exc.value.message
     assert isinstance(exc.value.__cause__, RuntimeError)
     assert any(op[0] == "del_blob" for op in fake_storage.order)
@@ -1124,7 +1124,7 @@ async def test_rotation_insert_failure_frees_both_blobs(svc, fake_functions, fak
     fake_storage.insert_none = True
     with pytest.raises(us.UpdateError) as exc:
         await svc.snapshot_current("admin", "u1")
-    assert exc.value.code == "validation_failed"
+    assert exc.value.code == "storage_unavailable"
     assert any(op == ("del_blob", oldest_path) for op in fake_storage.order)
     new_blob = next(p for (op, p) in fake_storage.order if op == "upload")
     assert any(op == ("del_blob", new_blob) for op in fake_storage.order)
@@ -1216,7 +1216,10 @@ async def test_reload_success_passes_replace_imports_content(svc, fake_functions
 
     monkeypatch.setattr(owp, "load_function_module_by_id", _load)
     monkeypatch.setattr(owp, "replace_imports", lambda c: c + "\n# normalized")
-    instance, frontmatter, content = await svc._reload_via_loader(GOOD_HEADER)
+    # Four values since H656-2: the fourth is the restore callable the refusal arm
+    # needs. The content assertion below is the part that must stay.
+    instance, frontmatter, content, restore = await svc._reload_via_loader(GOOD_HEADER)
+    assert callable(restore)
     assert received["content"] == GOOD_HEADER + "\n# normalized"
     assert content == GOOD_HEADER + "\n# normalized"
     assert frontmatter == {"version": "2.7.0"}
@@ -1479,7 +1482,7 @@ async def test_snapshot_delete_row_refusal_is_typed_and_keeps_blob(svc, wired):
     wired.storage.fail_row_delete = True
     with pytest.raises(us.UpdateError) as exc:
         await svc.snapshot_delete({"file_id": _slot_id(0), "sha256": "s"})
-    assert exc.value.code == "validation_failed"
+    assert exc.value.code == "storage_unavailable"
     assert _slot_id(0) in wired.storage.rows
     assert not any(op[0] == "del_blob" for op in wired.storage.order)
 
@@ -2062,7 +2065,7 @@ async def test_snapshot_orphan_blob_cleaned_on_insert_failure(svc, fake_function
     fake_storage.Files.insert_new_file = _boom
     with pytest.raises(us.UpdateError) as exc:
         await svc.snapshot_current("admin", "u1")
-    assert exc.value.code == "validation_failed"
+    assert exc.value.code == "storage_unavailable"
     assert "insert failed" in exc.value.message
     assert any(p.startswith("/store/") for p in fake_storage.deleted)
     assert fake_storage.rows == {}
@@ -2172,9 +2175,19 @@ async def test_commit_content_write_refusal_fails_update(svc, wired):
     rev = wired.functions.row.updated_at
     with pytest.raises(us.UpdateError) as exc:
         await svc.apply({"rev": rev}, actor="admin", actor_id="u1", request=req)
-    assert exc.value.code == "validation_failed"
+    # `write_failed`, not `validation_failed`: the content passed every check the
+    # loader and the store apply to it, and the store refused the row. The two are
+    # separate codes because they need different operator responses.
+    assert exc.value.code == "write_failed"
     assert "database rejected" in exc.value.message
-    assert not hasattr(req.app.state, "FUNCTIONS")
+    # The old assertion here was `assert not hasattr(req.app.state, "FUNCTIONS")`. It
+    # held only because the cache writes sat AFTER the raise, so it could not see the
+    # defect from either side of the fix; what the property wants is the identity of
+    # the cached entry, which
+    # `test_a_refused_content_write_replaces_the_cached_instance` now asserts. This
+    # fixture's loader never touches `sys.modules`, so there is no pre-attempt module
+    # to revive and the entry stays absent rather than being seeded.
+    assert PID not in getattr(req.app.state, "FUNCTIONS", {})
     await _wait_for(lambda: not svc._commit_inflight)
     assert svc._commit_inflight is False
 

@@ -1180,7 +1180,9 @@ def render_clarification_message(intent: VideoIntentResult) -> str:
         for i, opt in enumerate(intent.clarification.options, start=1):
             lines.append(f"{i}. **{opt}**")
         lines.append("")
-        lines.append("_Reply with `1`, `2`, or rephrase._")
+        count = len(intent.clarification.options)
+        choices = ", ".join(f"`{n}`" for n in range(1, count + 1))
+        lines.append(f"_Reply with {choices}, or rephrase._")
     lines.append("")
     lines.append(_serialize_kind_marker(INTENT_BLOCK_END, "1"))
     return "\n".join(lines) + "\n"

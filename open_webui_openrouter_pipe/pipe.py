@@ -39,7 +39,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast, no_type_check
 import aiohttp
 from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter, ValidationError
 from tenacity import (
     AsyncRetrying,
     retry_if_exception_type,
@@ -134,6 +134,14 @@ from .core.config import (
     _select_openrouter_http_referer,
     parse_user_valves,
 )
+
+_MERGEABLE_USER_VALVE_FIELDS = frozenset(
+    name for name in UserValves.model_fields if name in Valves.model_fields
+)
+
+_VALVE_FIELD_ADAPTERS = {
+    name: TypeAdapter(field.annotation) for name, field in Valves.model_fields.items()
+}
 
 # Import error handling
 from .core.error_formatter import ErrorFormatter, _admission_error_response
@@ -2991,9 +2999,14 @@ class Pipe:
             __metadata__ = {}
 
         if valves is None:
+            if user_valves is None:
+                read_user_valves, read_rejected = await self._read_user_valves(__user__)
+                user_valves = read_user_valves
+                rejected_user_valves = sorted(
+                    set(rejected_user_valves or ()) | set(read_rejected or ())
+                )
             valves = self._merge_valves(
-                self.valves,
-                parse_user_valves(__user__.get("valves"), model=self.UserValves)[0],
+                self.valves, user_valves, rejected=rejected_user_valves
             )
         if session is None:
             raise RuntimeError("HTTP session is required for _handle_pipe_call")
@@ -4581,14 +4594,15 @@ class Pipe:
             overrides = {
                 key: value
                 for key, value in user_valves.items()
-                if value is not None and str(value).lower() != "inherit"
+                if value is not None
+                and not (isinstance(value, str) and value.strip().lower() == "inherit")
             }
 
         for name in rejected or ():
             if name in overrides:
                 continue
             field = self.UserValves.model_fields.get(name)
-            if field is None or not hasattr(global_valves, name):
+            if field is None or name not in _MERGEABLE_USER_VALVE_FIELDS:
                 continue
             overrides[name] = field.default
 
@@ -4597,23 +4611,29 @@ class Pipe:
 
         mapped: dict[str, Any] = {}
         for key, value in overrides.items():
-            target_key = key
-            if not hasattr(global_valves, target_key):
-                if key == "next_reply":
-                    target_key = "PERSIST_REASONING_TOKENS"
-                elif (
-                    key == "PERSIST_REASONING_TOKENS"
-                    and not hasattr(global_valves, key)
-                ) or not hasattr(global_valves, target_key):
-                    continue
-            mapped[target_key] = value
+            target_key = "PERSIST_REASONING_TOKENS" if key == "next_reply" else key
+            if target_key in _MERGEABLE_USER_VALVE_FIELDS:
+                mapped[target_key] = value
 
         if not mapped:
             return global_valves
 
-        mapped.pop("LOG_LEVEL", None)
-
-        return global_valves.model_copy(update=mapped)
+        validated: dict[str, Any] = {}
+        for key, value in mapped.items():
+            adapter = _VALVE_FIELD_ADAPTERS.get(key)
+            if adapter is None:
+                continue
+            try:
+                validated[key] = adapter.validate_python(value)
+            except ValidationError:
+                self.logger.log(
+                    warn_level(_warned_user_valves, f"merge_{key}"),
+                    "User valve %s could not be applied; the administrator's value is used",
+                    key,
+                )
+        if not validated:
+            return global_valves
+        return global_valves.model_copy(update=validated)
 
 
 try:

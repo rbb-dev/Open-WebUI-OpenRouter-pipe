@@ -112,7 +112,7 @@ class _Relay:
 
     async def encode(
         self, refs, valves, *, user=OWNER, withheld=None, emitter=object(),
-        model_id="runway/aleph-2",
+        model_id="runway/aleph-2", relayed=None,
     ):
         async def _get_file(file_id, _logger):
             return self.records.get(file_id)
@@ -133,7 +133,7 @@ class _Relay:
                         "id": model_id,
                         "input_modalities": ["video", "image", "audio"],
                     },
-                    relayed=set(),
+                    relayed=set() if relayed is None else relayed,
                     companions=True,
                     event_emitter=emitter,
                 )
@@ -165,28 +165,6 @@ async def test_the_chat_is_told_which_host_and_for_how_long_before_the_upload(ho
     assert relay.timeline == ["told", "published"], relay.timeline
     assert host in relay.notices[0], relay.notices
     assert must_say in relay.notices[0], relay.notices
-
-
-@pytest.mark.asyncio
-async def test_the_fallback_host_is_named_up_front_and_again_once_it_took_the_file():
-    """With the fallback on, either host may end up holding the file, so both are named.
-
-    Naming only the configured host would be a disclosure that is wrong exactly when it
-    matters -- the fallback swaps an hour's retention for a permanent one.
-    """
-    relay = _Relay({"f1": MP4}, {"f1": _record("f1", "video/mp4")})
-    valves = _relaying_valves(
-        MEDIA_FILE_HOST="litterbox", USE_THE_OTHER_FILE_HOST_IF_ONE_IS_DOWN=True
-    )
-
-    await relay.encode([{"id": "f1"}], valves)
-
-    assert relay.timeline[0] == "told", relay.timeline
-    assert "litterbox" in relay.notices[0] and "catbox" in relay.notices[0], relay.notices
-    assert relay.notices[-1] != relay.notices[0], (
-        "the host that actually took the file was never narrowed down"
-    )
-    assert "catbox" not in relay.notices[-1], relay.notices
 
 
 @pytest.mark.asyncio

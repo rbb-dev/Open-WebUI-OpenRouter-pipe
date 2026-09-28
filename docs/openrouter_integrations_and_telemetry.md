@@ -446,6 +446,28 @@ The valve exists on both `Valves` and `UserValves`, and the merge overrides only
 
 This is intended as user-visible telemetry and operator troubleshooting signal (not as an authoritative billing record).
 
+### Which usage keys sum, and which do not
+A turn that costs several upstream calls -- the tool loop, or a Fusion panel -- has several `usage` payloads, and they are merged into the one block the turn reports. The merge is an **allow-list**, mirroring Open WebUI's `merge_usage`: only per-token and per-cost quantities are added together, and every other key takes the incoming value.
+
+Summed:
+
+| Keys | Why |
+| --- | --- |
+| `input_tokens`, `output_tokens`, `total_tokens` | Per-token quantities. |
+| `cost`, `total_cost`, `input_cost`, `output_cost`, `prompt_cost`, `completion_cost` | Per-call money quantities. |
+| `prompt_tokens`, `completion_tokens` | The OpenRouter spellings of the first two, summed on their own account. |
+| `input_tokens_details`, `output_tokens_details`, `prompt_tokens_details`, `completion_tokens_details` | The `*_tokens_details` maps are merged key by key and their numbers added -- this is what makes `cached_tokens` and `reasoning_tokens` cumulative. |
+| `cache_discount` | A per-response money quantity, not a rate. The pipe reads it from the *merged* accumulator, so dropping it would under-report the Usage tab's `cache_savings` card by construction. |
+| `turn_count`, `function_call_count` | Written once per generation before the merge; summing them gives the turn's generation and tool-call counts. |
+
+Last-wins (the incoming value replaces the accumulated one):
+
+- `cache_discount_pct` and every other rate or percentage. Adding three generations of a 20 % discount to get 60 % is meaningless.
+- `server_tool_use_details` and `cost_details`. Both are **per-request** figures, not per-token. The OpenRouter schema's "do not sum the two" applies *within* one such block, not across generations, and neither is a per-token quantity, so the whole map is replaced -- the same rule Open WebUI applies. **On a Fusion panel this makes the reported figure the last member's, not the panel total** (`cost_details.upstream_inference_cost` over a five-member panel goes from a total to the fifth member's value). No reader in this repository or in Open WebUI's backend consumes either key, but the reduction is a decision rather than an oversight. Only these two keys change: the panel's `input_tokens` is still the full sum.
+- Any other key, including flags such as `stream`. A `bool` is never added: three generations of `stream: true` stay `true` and not `3`.
+
+A payload carrying **both** `input_tokens` and `prompt_tokens` gets both summed, so the quantity is counted twice in the block. Through the pipe's own request path the two spellings never coexist -- `core/costs.py` builds a fresh dict and copies one -- but `merge_usage_stats` is public API with no shape restriction, so a caller passing a raw chat-completions `usage` block sees it. This is unchanged from earlier releases and is pinned by a test rather than accidental.
+
 ---
 
 ## 7. Optional telemetry export: cost snapshots to Redis

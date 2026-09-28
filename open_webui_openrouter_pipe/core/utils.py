@@ -1044,6 +1044,76 @@ def _extract_feature_flags(__metadata__: dict[str, Any]) -> dict[str, Any]:
     return dict(raw_features) if isinstance(raw_features, dict) else {}
 
 
+_USAGE_SUMMABLE_KEYS = frozenset(
+    {
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "cost",
+        "total_cost",
+        "input_cost",
+        "output_cost",
+        "prompt_cost",
+        "completion_cost",
+        "prompt_tokens",
+        "completion_tokens",
+        "cache_discount",
+        "turn_count",
+        "function_call_count",
+    }
+)
+
+_USAGE_DETAIL_KEYS = frozenset(
+    {
+        "prompt_tokens_details",
+        "completion_tokens_details",
+        "input_tokens_details",
+        "output_tokens_details",
+    }
+)
+
+
+def _is_numeric_usage_value(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _merge_usage_map(total, new) -> None:
+    for k, v in new.items():
+        if isinstance(v, dict):
+            target = total.get(k)
+            if not isinstance(target, dict):
+                target = {}
+                total[k] = target
+            _merge_usage_map(target, v)
+            continue
+        if _is_numeric_usage_value(v):
+            previous = total.get(k)
+            total[k] = (previous if _is_numeric_usage_value(previous) else 0) + v
+        else:
+            total[k] = v
+
+
+def _merge_usage_into(total, new) -> None:
+    for k, v in new.items():
+        if k in _USAGE_DETAIL_KEYS:
+            if isinstance(v, dict):
+                target = total.get(k)
+                if not isinstance(target, dict):
+                    target = {}
+                    total[k] = target
+                _merge_usage_map(target, v)
+            else:
+                total[k] = v
+            continue
+        if k in _USAGE_SUMMABLE_KEYS and _is_numeric_usage_value(v):
+            previous = total.get(k)
+            total[k] = (previous if _is_numeric_usage_value(previous) else 0) + v
+            continue
+        if v is None and _is_numeric_usage_value(total.get(k)) and k in _USAGE_SUMMABLE_KEYS:
+            continue
+        total[k] = v
+
+
 def merge_usage_stats(total, new):
     """Recursively merge nested usage statistics.
 
@@ -1057,13 +1127,7 @@ def merge_usage_stats(total, new):
     Returns:
         dict: The updated accumulator dictionary (`total`).
     """
-    for k, v in new.items():
-        if isinstance(v, dict):
-            total[k] = merge_usage_stats(total.get(k, {}), v)
-        elif isinstance(v, (int, float)):
-            total[k] = total.get(k, 0) + v
-        else:
-            total[k] = v if v is not None else total.get(k, 0)
+    _merge_usage_into(total, new)
     return total
 
 

@@ -17,6 +17,8 @@ import logging
 import os
 import sys
 import time
+from collections.abc import Callable
+from types import SimpleNamespace
 from typing import Any
 
 from ...core.utils import _await_if_needed
@@ -56,7 +58,15 @@ _ASSET_NAMES = {
 _REPO_RE_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.\-]+$"
 
 _TRANSIENT_CODES = frozenset(
-    {"offline", "rate_limited", "repo_not_found", "bad_repo_valve", "stale_rev", "update_in_progress"}
+    {
+        "offline",
+        "rate_limited",
+        "repo_not_found",
+        "bad_repo_valve",
+        "stale_rev",
+        "update_in_progress",
+        "storage_unavailable",
+    }
 )
 
 
@@ -66,6 +76,32 @@ class UpdateError(Exception):
         self.code = code
         self.message = message or code
         self.reset: str = ""
+
+
+def _storage_unavailable(message: str) -> UpdateError:
+    return UpdateError("storage_unavailable", message)
+
+
+def _storage_unavailable_from(exc: Exception, message: str) -> UpdateError:
+    return _storage_unavailable(f"{message} [{type(exc).__name__}]: {exc}")
+
+
+def _restorer(before: dict[str, Any], before_meta_path: list[Any]) -> Callable[[], None]:
+    def _restore() -> None:
+        _restore_module_state(before, before_meta_path)
+
+    return _restore
+
+
+def _restore_module_state(
+    before: dict[str, Any], before_meta_path: list[Any]
+) -> None:
+    for key, value in before.items():
+        if sys.modules.get(key) is not value:
+            sys.modules[key] = value
+    for key in [k for k in sys.modules if k not in before]:
+        del sys.modules[key]
+    sys.meta_path[:] = before_meta_path
 
 
 def _now() -> float:
@@ -451,11 +487,16 @@ class UpdateService:
                 delay_h = int(valves.get("PIPE_DASHBOARD_UPDATE_AUTO_DELAY_HOURS", 168) or 0)
                 eligible_at = published_ts + delay_h * 3600.0
 
+        snapshot_storage_error = None
         try:
             records = await self._snapshot_records()
-        except Exception:
+        except Exception as exc:
             logger.warning("update: snapshot slot read failed", exc_info=True)
             records = []
+            snapshot_storage_error = (
+                "the snapshot store could not be read, so this list is empty for a "
+                f"reason other than there being no snapshots: {exc}"
+            )
 
         auto_success = None
         for rec in reversed(records):
@@ -493,6 +534,7 @@ class UpdateService:
             "update_available": update_available,
             "no_matching_asset": no_matching_asset,
             "snapshots": await self._payload_from(records),
+            "snapshot_storage_error": snapshot_storage_error,
             "checked_at": float(memo.get("at", 0.0)) if memo else None,
             "cached": cached,
             "last_check_error": dict(self._last_error) if self._last_error else None,
@@ -575,27 +617,27 @@ class UpdateService:
         return frontmatter
 
 
-    async def _reload_via_loader(self, content: str) -> tuple[Any, dict, str]:
+    async def _reload_via_loader(self, content: str) -> tuple[Any, dict, str, Callable[[], None]]:
         import open_webui.utils.plugin as owp
 
         pipe_id = self._pipe().id
         content = owp.replace_imports(content)
-        module_name = f"function_{pipe_id}"
-        old_module = sys.modules.get(module_name)
+        before = {k: sys.modules[k] for k in sys.modules}
+        before_meta_path = list(sys.meta_path)
         try:
             instance, _ftype, frontmatter = await owp.load_function_module_by_id(
                 pipe_id, content=content
             )
         except Exception as exc:
-            if old_module is not None:
-                sys.modules[module_name] = old_module
+            _restore_module_state(before, before_meta_path)
             try:
                 await self._functions().update_function_by_id(pipe_id, {"is_active": True})
             except Exception:
                 logger.warning("update: is_active repair failed", exc_info=True)
             raise UpdateError("exec_failed", str(exc)) from exc
-        return instance, dict(frontmatter or {}), content
-
+        return instance, dict(frontmatter or {}), content, _restorer(
+            before, before_meta_path
+        )
 
     def _slot_ids(self) -> list[str]:
         pid = self._pipe().id
@@ -700,7 +742,7 @@ class UpdateService:
         try:
             rows = await self._slot_rows()
         except Exception as exc:
-            raise UpdateError("validation_failed", f"snapshot storage is unavailable: {exc}") from exc
+            raise _storage_unavailable_from(exc, "snapshot storage is unavailable") from exc
         records = self._records_from(rows)
 
         for rec in records:
@@ -712,7 +754,7 @@ class UpdateService:
         free = [i for i, sid in enumerate(ids) if sid not in taken]
         storage = _snapshot_storage()
         if storage is None:
-            raise UpdateError("validation_failed", "Open WebUI storage is unavailable")
+            raise _storage_unavailable("Open WebUI storage is unavailable")
 
         rotation: dict[str, Any] | None = None
         if free:
@@ -734,7 +776,7 @@ class UpdateService:
                 storage.upload_file, io.BytesIO(data), filename, {}
             )
         except Exception as exc:
-            raise UpdateError("validation_failed", f"snapshot upload failed: {exc}") from exc
+            raise _storage_unavailable_from(exc, "snapshot upload failed") from exc
 
         deferred_blob: Any = None
         if rotation is not None:
@@ -742,12 +784,10 @@ class UpdateService:
                 rotated = await _files_model().delete_file_by_id(rotation["file_id"])
             except Exception as exc:
                 await self._delete_blob_path(storage, path)
-                raise UpdateError(
-                    "validation_failed", f"snapshot slot rotation failed: {exc}"
-                ) from exc
+                raise _storage_unavailable_from(exc, "snapshot slot rotation failed") from exc
             if not rotated:
                 await self._delete_blob_path(storage, path)
-                raise UpdateError("validation_failed", "snapshot slot rotation was refused")
+                raise _storage_unavailable("snapshot slot rotation was refused")
             deferred_blob = rotation.get("path")
             records = [r for r in records if r["file_id"] != rotation["file_id"]]
 
@@ -789,12 +829,10 @@ class UpdateService:
             )
         except Exception as exc:
             await _cleanup_failed_insert()
-            raise UpdateError(
-                "validation_failed", f"snapshot record insert failed: {exc}"
-            ) from exc
+            raise _storage_unavailable_from(exc, "snapshot record insert failed") from exc
         if record is None or not getattr(record, "id", None):
             await _cleanup_failed_insert()
-            raise UpdateError("validation_failed", "snapshot record insert was rejected")
+            raise _storage_unavailable("snapshot record insert was rejected")
 
         keep = int(getattr(self._valves(), "PIPE_DASHBOARD_UPDATE_SNAPSHOT_KEEP", 3) or 3)
         survivors = records + [
@@ -820,7 +858,7 @@ class UpdateService:
         try:
             local_path = await _materialize_snapshot(record)
         except Exception as exc:
-            raise UpdateError("validation_failed", f"snapshot could not be read: {exc}") from exc
+            raise _storage_unavailable_from(exc, "snapshot could not be read") from exc
         try:
             return await asyncio.to_thread(Path(local_path).read_bytes)
         finally:
@@ -896,14 +934,15 @@ class UpdateService:
         self, content: str, rev: int, request: Any, actor: str, from_version: str
     ) -> dict[str, Any]:
         await self._rev_guard(rev)
-        instance, frontmatter, final = await self._reload_via_loader(content)
+        instance, frontmatter, final, restore = await self._reload_via_loader(content)
         await self._rev_guard(rev)
         pipe_id = self._pipe().id
         functions = self._functions()
         written = await functions.update_function_by_id(pipe_id, {"content": final})
         if written is None:
+            await self._refused_write_repair(request, pipe_id, restore)
             raise UpdateError(
-                "validation_failed",
+                "write_failed",
                 "the database rejected the function-row write; the previous version remains active",
             )
         merged = await functions.update_function_metadata_by_id(pipe_id, {"manifest": frontmatter})
@@ -925,6 +964,63 @@ class UpdateService:
             hashlib.sha256(final.encode("utf-8")).hexdigest()[:12],
         )
         return {"ok": True, "from_version": from_version, "to_version": to_version}
+
+    async def _refused_write_repair(
+        self, request: Any, pipe_id: str, restore: Callable[[], None]
+    ) -> None:
+        try:
+            restore()
+            old_module = sys.modules.get(f"function_{pipe_id}")
+            if old_module is None:
+                logger.warning(
+                    "update: refused write left no prior module to revive on this worker"
+                )
+                return
+            revived = old_module.Pipe()
+            valves = await self._pre_attempt_valves()
+            row = await self._pre_attempt_row()
+            if valves is not None:
+                revived.valves = valves
+            self._repair_function_cache(request, pipe_id, revived, row)
+        except Exception:
+            logger.warning("update: refused-write rollback failed", exc_info=True)
+
+    async def _pre_attempt_valves(self) -> Any | None:
+        try:
+            return await self._functions().get_function_valves_by_id(self._pipe().id)
+        except Exception:
+            logger.warning("update: pre-attempt valve read failed", exc_info=True)
+            return None
+
+    async def _pre_attempt_row(self) -> Any:
+        try:
+            return await self._functions().get_function_by_id(self._pipe().id)
+        except Exception:
+            logger.warning("update: pre-attempt row read failed", exc_info=True)
+            return None
+
+    def _repair_function_cache(
+        self, request: Any, pipe_id: str, revived: Any, row: Any
+    ) -> None:
+        if request is None:
+            from .http_routes import get_owui_app
+
+            app = get_owui_app()
+            if app is None:
+                logger.warning(
+                    "update: Open WebUI app is unavailable; repaired the registry only"
+                )
+                return
+            request = SimpleNamespace(app=app, state=app.state)
+        state = request.app.state
+        functions_cache = getattr(state, "FUNCTIONS", None)
+        contents_cache = getattr(state, "FUNCTION_CONTENTS", None)
+        if functions_cache is None or contents_cache is None:
+            return
+        if pipe_id not in functions_cache:
+            return
+        functions_cache[pipe_id] = revived
+        contents_cache[pipe_id] = getattr(row, "content", None) or ""
 
     async def _shielded_commit(
         self,
@@ -1027,9 +1123,7 @@ class UpdateService:
                 try:
                     records = await self._snapshot_records()
                 except Exception as exc:
-                    raise UpdateError(
-                        "validation_failed", f"snapshot storage is unavailable: {exc}"
-                    ) from exc
+                    raise _storage_unavailable_from(exc, "snapshot storage is unavailable") from exc
                 entry = next((r for r in records if r["file_id"] == file_id), None)
                 if entry is None:
                     raise UpdateError("not_found", f"{file_id} is not a known snapshot")
@@ -1065,9 +1159,7 @@ class UpdateService:
                 try:
                     records = await self._snapshot_records()
                 except Exception as exc:
-                    raise UpdateError(
-                        "validation_failed", f"snapshot storage is unavailable: {exc}"
-                    ) from exc
+                    raise _storage_unavailable_from(exc, "snapshot storage is unavailable") from exc
                 entry = next((r for r in records if r["file_id"] == file_id), None)
                 if entry is None:
                     raise UpdateError("not_found", f"{file_id} is not a known snapshot")
@@ -1077,9 +1169,7 @@ class UpdateService:
                         "snapshot changed since the list was loaded; refresh and retry",
                     )
                 if not await self._delete_record(entry, _snapshot_storage()):
-                    raise UpdateError(
-                        "validation_failed", "snapshot delete failed; refresh and try again"
-                    )
+                    raise _storage_unavailable("snapshot delete failed; refresh and try again")
                 remaining = [r for r in records if r["file_id"] != file_id]
                 return {"ok": True, "snapshots": await self._payload_from(remaining)}
             finally:

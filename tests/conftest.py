@@ -551,6 +551,7 @@ def _reset_model_registry():
     reg._zdr_model_ids = None
     reg._zdr_rosters = {}
     reg._zdr_attempted_key = None
+    reg._zdr_settle = {}
     reg._last_fetch = 0.0
     reg._last_video_fetch = 0.0
     reg._last_video_attempt = 0.0

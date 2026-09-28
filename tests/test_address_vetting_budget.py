@@ -3,7 +3,8 @@
 Three properties, one file:
 
   * a single address check finishes inside a wall-clock budget, and a budget that
-    expires means "unsafe" -- exactly what a failed resolution means;
+    expires reports no verdict at all -- which is not the same answer a failed
+    resolution gives;
   * the deployment-wide video slot is not held while those checks run; and
   * the depth bound the refusal message advertises is the bound that actually applies,
     on both walkers rather than on the one that happens to run second.
@@ -78,7 +79,10 @@ async def test_a_stalled_lookup_gives_up_inside_the_budget_it_was_given(budget):
     finally:
         released.set()
 
-    assert verdict is False, "a check that never finished was reported as safe"
+    assert verdict is None, (
+        "a check that never finished was reported as a decision at all: it reached "
+        "no verdict, which is neither safe nor refused"
+    )
     assert budget <= elapsed < budget + 1.0, (
         f"a {budget}s budget took {elapsed:.2f}s"
     )

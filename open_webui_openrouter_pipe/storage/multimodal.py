@@ -158,6 +158,11 @@ def _pipe_pool(
     if pool is None:
         pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix=prefix)
         setattr(handler, attr, pool)
+        return pool
+    if getattr(pool, "_max_workers", None) != workers:
+        pool.shutdown(wait=False)
+        pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix=prefix)
+        setattr(handler, attr, pool)
     return pool
 
 
@@ -1091,22 +1096,7 @@ class MultimodalHandler:
             )
             return None
 
-    async def _is_safe_url(self, url: str, *, seconds: float = ADDRESS_CHECK_SECONDS) -> bool:
-        """Whether this address may be fetched, decided inside a wall-clock budget.
-
-        Args:
-            url: URL to validate
-            seconds: how long the check may take before the address counts as unsafe
-
-        Returns:
-            True if URL is safe (not targeting private networks) and allowed by HTTP policy
-
-        The host is chosen by whoever wrote the request, so the nameserver it points at
-        decides how long ``getaddrinfo`` blocks -- and callers run this while holding a
-        deployment-wide slot. A budget that expires is a check that did not pass, so it
-        answers False exactly as a failed resolution does. The worker thread cannot be
-        interrupted and runs to completion; the budget frees the caller, not the thread.
-        """
+    async def _is_safe_url(self, url: str, *, seconds: float = ADDRESS_CHECK_SECONDS) -> bool | None:
         try:
             resolved = await asyncio.wait_for(
                 _run_address(self, self._request_ips_blocking, url),
@@ -1114,10 +1104,10 @@ class MultimodalHandler:
             )
         except TimeoutError:
             self.logger.warning(
-                "Address check for %s did not finish within %.1fs; treating it as unsafe",
+                "Address check for %s did not finish within %.1fs; no verdict was reached",
                 loggable_link(url), seconds,
             )
-            return False
+            return None
         return resolved is not None
 
     def _parse_insecure_http_allowlist(self, raw: str) -> set[tuple[str, int | None]]:

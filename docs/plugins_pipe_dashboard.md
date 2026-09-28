@@ -154,7 +154,14 @@ builds — forks inherit the release workflow, so assets, digests, and the chang
   version), snapshots the current code, exec-validates the new bundle through Open WebUI's own
   loader, and only then writes the function row — and verifies the database accepted the write,
   failing the update loudly instead of reporting a success that did not persist. A load failure
-  surfaces the real error in the tab and the pipe keeps serving the old code. The installing worker pauses briefly (up to ~90s); other
+  surfaces the real error in the tab and the pipe keeps serving the old code, and a **refused write of the
+  newly loaded code** is the same: the freshly loaded bundle is un-installed from the running process
+  (every `sys.modules` key and `sys.meta_path` entry the loader touched is put back to its pre-attempt
+  state, including the keys the compressed bundle deletes), the serving instance is rebuilt from the
+  restored module, and the function cache is repointed at it — so "the previous version remains active"
+  is literally true and the next chat is served, on both the one-click and the automatic path. This is
+  reported as `write_failed`, separately from a validation failure, because the code passed every check
+  and the store refused the row. The installing worker pauses briefly (up to ~90s); other
   workers pick the new version up on their next request. After a successful update, reload the
   dashboard to load the matching UI.
 - **Previous versions** — the retained snapshots (`PIPE_DASHBOARD_UPDATE_SNAPSHOT_KEEP`) with
@@ -219,7 +226,7 @@ The Config tab is the pipe's configuration editor. It lists every admin valve in
 
 **Upgrading from an older release.** If a stored setting is one this version no longer accepts, the Config tab repairs it on your next save, as described above. That repairs the **tab**. A row that takes the pipe down at start-up — because a value the boot path validates was tightened or renamed out from under it — is a different problem, and the Config tab cannot be opened at all until the row is fixed, so correct the stored value on Open WebUI's own Functions valves screen.
 
-**Secrets.** Secret valves — API keys, passwords — are write-only. Their values stay on the server and never reach the browser. The tab shows each secret as **configured** or **not set**; typing a value sets a new one. A secret the pipe has stored can also be **cleared**, which removes the stored value and returns the setting to its default; the clear is reviewed like any other change before it is saved. A secret that is only coming from the environment has nothing stored to remove, so no Clear control is offered for it.
+**Secrets.** Secret valves — API keys, passwords — are write-only. Their values stay on the server and never reach the browser. The tab shows each secret as **configured** or **not set**; typing a value sets a new one. A secret the pipe has stored can also be **cleared**, which removes the stored value and returns the setting to its default; the clear is reviewed like any other change before it is saved. A secret that is only coming from the environment has nothing stored to remove, so no Clear control is offered for it. Typing a value that happens to be the same as the environment's is still a save: the stored value is byte-identical to the default, and it is written like any other edit. Leaving a secret out of a save does not change it; a blank secret box changes nothing either.
 
 If the stored configuration cannot be read at all — the database is unreachable, say — the Config tab says so and refuses to save, rather than showing defaults over your real settings. Your settings are still stored and are not being changed. Restore the database, then reload; the tab will not overwrite what it cannot read. A stored set that cannot be decrypted — a rotated `WEBUI_SECRET_KEY` with valve encryption on — is a different fault, and it decodes to an empty set just as a genuinely unset row does. The pipe reads the raw stored column to tell the two apart, so this case is reported the same way rather than shown as factory defaults: nothing is written over it, and the log names the likely cause. Restore the key, then reload; the settings come back.
 

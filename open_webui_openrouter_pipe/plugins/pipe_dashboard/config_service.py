@@ -232,13 +232,15 @@ async def stored_row_readable(pipe_id: str, stored: Any) -> tuple[bool, str]:
 
 def merge_for_save_with_drops(
     valves_cls: type, current: dict[str, Any], edits: dict[str, Any]
-) -> tuple[dict[str, Any], list[str]]:
+) -> tuple[dict[str, Any], list[str], set[str], set[str]]:
     stored, dropped = readable_stored(valves_cls, current)
     if dropped:
         logger.warning(
             "pipe_dashboard: dropped stored valves the current schema rejects: %s",
             ", ".join(dropped),
         )
+    named = {k for k, v in edits.items() if v is not None and v != ""}
+    cleared: set[str] = set()
     merged = dict(stored)
     for key, value in edits.items():
         fld = valves_cls.model_fields.get(key)
@@ -247,12 +249,14 @@ def merge_for_save_with_drops(
         if is_secret(fld.annotation):
             if _is_clear_edit(fld, value, merged):
                 merged.pop(key, None)
+                cleared.add(key)
                 continue
             if value == "":
                 continue
         _, nullable = _base_type(fld.annotation)
-        if nullable and isinstance(value, str) and not value.strip():
-            merged[key] = None
+        if nullable and (value is None or (isinstance(value, str) and not value.strip())):
+            merged.pop(key, None)
+            cleared.add(key)
             continue
         _valve_schema(valves_cls)(**{key: value})
         merged[key] = value
@@ -267,11 +271,12 @@ def merge_for_save_with_drops(
             plain = EncryptedStr.decrypt(stored_value)
             default_plain = EncryptedStr.decrypt(str(defaults.get(name) or ""))
             unreadable_encrypted = EncryptedStr.is_unreadable(stored_value)
-            if unreadable_encrypted or (plain and plain != default_plain):
+            if unreadable_encrypted or (plain and (name in named or plain != default_plain)):
                 out[name] = full[name]
         elif full.get(name) != defaults.get(name):
             out[name] = full[name]
-    return out, dropped
+    not_saved = {k for k in edits if k not in out and k not in cleared}
+    return out, dropped, not_saved, cleared
 
 
 def merge_for_save(valves_cls: type, current: dict[str, Any], edits: dict[str, Any]) -> dict[str, Any]:

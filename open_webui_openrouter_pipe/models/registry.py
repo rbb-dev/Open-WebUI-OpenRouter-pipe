@@ -310,6 +310,7 @@ class OpenRouterModelRegistry:
         default=None,
     )
     _zdr_attempted_key: ClassVar[str | None] = None
+    _zdr_settle: ClassVar[dict[str, tuple[int, float]]] = {}
     _last_fetch: float = 0.0
     _lock: asyncio.Lock = asyncio.Lock()
     _lock_guard: ClassVar[threading.Lock] = threading.Lock()
@@ -333,10 +334,28 @@ class OpenRouterModelRegistry:
         )
 
     @classmethod
+    def _credential_settle(cls, api_key: str) -> tuple[int, float] | None:
+        return cls._zdr_settle.get(_fingerprint(api_key))
+
+    @classmethod
     def _settled_until(cls, api_key: str, cache_seconds: int) -> float:
+        entry = cls._credential_settle(api_key)
+        if entry is not None:
+            tries, clock = entry
+            return 0.0 if tries < 2 else clock
         if not cls._key_changed(api_key):
             return cls._next_refresh_after or (cls._last_fetch + cache_seconds)
         return 0.0
+
+    @classmethod
+    def _record_settle(cls, api_key: str) -> None:
+        prior = cls._credential_settle(api_key)
+        cls._zdr_settle[_fingerprint(api_key)] = (
+            (prior[0] if prior else 0) + 1, cls._next_refresh_after)
+
+    @classmethod
+    def _clear_settle(cls, api_key: str) -> None:
+        cls._zdr_settle.pop(_fingerprint(api_key), None)
 
     @classmethod
     def _zdr_roster_for(cls, api_key: str) -> set[str] | None:
@@ -436,6 +455,7 @@ class OpenRouterModelRegistry:
             except Exception as exc:
                 cls._zdr_attempted_key = prior_attempt
                 cls._record_refresh_failure(exc, cache_seconds)
+                cls._record_settle(api_key)
                 if not cls._models:
                     raise
                 if rotating:
@@ -447,6 +467,7 @@ class OpenRouterModelRegistry:
                     exc_info=True,
                 )
                 return
+            cls._clear_settle(api_key)
             cls._record_refresh_success(cache_seconds)
 
     @classmethod

@@ -279,6 +279,13 @@ The pipe's request orchestrator:
 3. The tools array is sent alongside any Open WebUI registry tools or Direct Tool Server tools.
 4. If the chat asked for a web tool whose gate is now off, it schedules a background repair of the Web Tools filters, so the filter stops offering a switched-off tool without waiting for the next model-list refresh. The repair runs at most once every five minutes, and a repair that failed does not consume that window, so a transient error is retried on the next request rather than waiting one out.
 
+### How web-tool counts are reported
+A server tool that runs inside a model call is counted in that call's `usage` block, under `server_tool_use_details` (for example `{"web_search": {"executed": 2}}`). When a turn makes several upstream calls -- the tool loop, or a Fusion panel where each member can run its own web tool -- those blocks are merged into one, and `server_tool_use_details` is **not** one of the keys that are added up: the last call's figure replaces the accumulated one.
+
+This is deliberate. The OpenRouter schema's "do not sum the two" applies *within* one block, not across generations, and the reason for last-wins across generations is that the block is a per-request figure rather than a per-token one -- the same reason Open WebUI's own merge treats it that way. Token and cost keys (`input_tokens`, `output_tokens`, `cost`, and the `*_tokens_details` maps) are still summed, so the turn's token and cost totals are the whole turn's.
+
+The practical consequence is scoped to Fusion: on a panel, `server_tool_use_details.web_search.executed` reports the **last member to finish**, not the panel total. Nothing in this repository or in Open WebUI's backend reads that key, so the figure is not displayed anywhere today; `docs/openrouter_integrations_and_telemetry.md` lists every key that sums and every key that does not.
+
 ---
 
 ## Migration from old OpenRouter Search filter

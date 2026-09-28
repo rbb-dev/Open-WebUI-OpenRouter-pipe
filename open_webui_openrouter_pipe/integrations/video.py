@@ -2306,9 +2306,7 @@ class VideoGenerationAdapter:
         if not families:
             return set()
         planned = {
-            (family, host)
-            for family in families
-            for host in self._relay_hosts(valves)
+            (family, self._relay_hosts(valves)[0]) for family in families
         }
         said, cause = await self._emit_file_host_notice(valves, planned, event_emitter)
         if not said:
@@ -2343,6 +2341,15 @@ class VideoGenerationAdapter:
         return sorted({used for _family, used in relayed})
 
     @staticmethod
+    def _relay_groups(
+        relayed: set[tuple[str, str]]
+    ) -> list[tuple[str, set[tuple[str, str]]]]:
+        grouped: dict[str, set[tuple[str, str]]] = {}
+        for family, host in relayed:
+            grouped.setdefault(host, set()).add((family, host))
+        return [(host, grouped[host]) for host in sorted(grouped)]
+
+    @staticmethod
     def _relay_kinds_named(relayed: set[tuple[str, str]]) -> list[str]:
         kinds = {"video": "clip", "audio": "sound file", "image": "picture"}
         return sorted({kinds.get(family, family) for family, _used in relayed})
@@ -2357,13 +2364,8 @@ class VideoGenerationAdapter:
         )
 
     @staticmethod
-    def _relay_retention_words(
-        valves: Any, hosts: list[str], *, plural: bool = False
-    ) -> str:
-        host = hosts[0] if hosts else str(getattr(valves, "MEDIA_FILE_HOST", "litterbox"))
-        if any(host_keeps_forever(used) for used in hosts) or (
-            not hosts and host_keeps_forever(host)
-        ):
+    def _relay_retention_words(valves: Any, host: str, *, plural: bool = False) -> str:
+        if host_keeps_forever(host):
             if plural:
                 return (
                     "and stay there for good, because the uploads carry no account and "
@@ -2381,13 +2383,18 @@ class VideoGenerationAdapter:
     @classmethod
     def _file_host_notice(cls, valves: Any, relayed: set[tuple[str, str]]) -> str:
         template = str(getattr(valves, "FILE_HOST_NOTICE", "") or "")
-        hosts = cls._relay_hosts_named(relayed)
-        host = hosts[0] if hosts else str(getattr(valves, "MEDIA_FILE_HOST", "litterbox"))
+        groups = cls._relay_groups(relayed)
+        if not groups:
+            host = str(getattr(valves, "MEDIA_FILE_HOST", "litterbox"))
+            groups = [(host, {(family, host) for family, _used in relayed})]
         try:
-            return template.format(
-                kind=cls._relay_kinds_spoken(relayed),
-                host=" and ".join(hosts) or host,
-                retention=cls._relay_retention_words(valves, hosts),
+            return " ".join(
+                template.format(
+                    kind=cls._relay_kinds_spoken(pairs),
+                    host=host,
+                    retention=cls._relay_retention_words(valves, host),
+                )
+                for host, pairs in groups
             )
         except (KeyError, IndexError, ValueError):
             return template
@@ -2405,14 +2412,17 @@ class VideoGenerationAdapter:
     def _file_host_record(cls, valves: Any, relayed: set[tuple[str, str]]) -> str:
         if not relayed:
             return ""
-        hosts = cls._relay_hosts_named(relayed)
-        many = len(cls._relay_kinds_named(relayed)) > 1
-        said = _FILE_HOST_RECORD.format(
-            kind=cls._relay_kinds_spoken(relayed),
-            was=("were" if many else "was"),
-            it=("them" if many else "it"),
-            host=" and ".join(hosts),
-            retention=cls._relay_retention_words(valves, hosts, plural=many),
+        said = "".join(
+            _FILE_HOST_RECORD.format(
+                kind=cls._relay_kinds_spoken(pairs),
+                was=("were" if len(cls._relay_kinds_named(pairs)) > 1 else "was"),
+                it=("them" if len(cls._relay_kinds_named(pairs)) > 1 else "it"),
+                host=host,
+                retention=cls._relay_retention_words(
+                    valves, host, plural=len(cls._relay_kinds_named(pairs)) > 1
+                ),
+            )
+            for host, pairs in cls._relay_groups(relayed)
         )
         return (
             f"{_serialize_kind_marker(RELAY_BLOCK_START, '1')}\n"

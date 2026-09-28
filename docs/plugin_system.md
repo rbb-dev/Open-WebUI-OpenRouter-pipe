@@ -366,6 +366,8 @@ async def on_request(self, body, user, metadata, event_emitter, task, **kwargs):
     theme = getattr(user_valves, "USER_MY_PLUGIN_THEME", "auto") if user_valves else "auto"
 ```
 
+A plugin's own per-user field is **not** merged into the `Valves` a hook receives. The pipe merges only the names that are on both the base `UserValves` and the base `Valves`, so a field a plugin contributes to *both* `plugin_valves` and `plugin_user_valves` is not among them and the user's choice for it is dropped at the merge, silently. Read it from `user["valves"]` as shown above, which is where the user's value is. Prefix your fields anyway: the prefix is defence-in-depth, not the only guard.
+
 ### Field Type → UI Control Mapping
 
 OWUI renders controls based on Pydantic JSON Schema output:
@@ -381,7 +383,7 @@ OWUI renders controls based on Pydantic JSON Schema output:
 
 ### Naming Convention
 
-Prefix all field names with your plugin ID to avoid collisions:
+Prefix all field names with your plugin ID. Two plugins claiming the same name are auto-renamed; a plugin claiming a name the pipe's own `Valves` already uses is renamed too, so the collision is visible in the admin's UI rather than handing a user the pipe's field:
 
 ```
 COUNTER_ENABLE         ✓  (prefixed with COUNTER_)

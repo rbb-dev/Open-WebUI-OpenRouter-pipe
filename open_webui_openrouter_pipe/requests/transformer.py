@@ -595,7 +595,7 @@ def _note_memo_use(
 async def _memo_hit_is_still_permitted(
     pipe: Pipe, memo_key: Any, url: str
 ) -> bool:
-    if not await pipe._multimodal_handler._is_safe_url(url):
+    if await pipe._multimodal_handler._is_safe_url(url) is False:
         _reuse_download_memo.pop(memo_key, None)
         return False
     return True

@@ -1453,8 +1453,14 @@ class TestMergeValves:
 
                 result = pipe._merge_valves(pipe.valves, user_valves_dict)
 
-                # Should map next_reply to PERSIST_REASONING_TOKENS
-                assert result.PERSIST_REASONING_TOKENS is True
+                # The alias names a string member, not a switch: a bool is not one of
+                # the field's three declared modes, so the global must survive.
+                assert result.PERSIST_REASONING_TOKENS in (
+                    "disabled",
+                    "next_reply",
+                    "conversation",
+                )
+                assert result.PERSIST_REASONING_TOKENS == pipe.valves.PERSIST_REASONING_TOKENS
         finally:
             pipe.shutdown()
 
@@ -4602,11 +4608,21 @@ def test_merge_valves_applies_user_boolean_override():
 
 
 def test_merge_valves_honors_reasoning_retention_alias():
+    """The alias is dict-shaped, so the arm is built on a dict.
+
+    `next_reply` is not a `UserValves` field, so it can never appear in
+    `model_fields_set` and the model branch cannot reach the alias at all -- the
+    dict branch is the only one that can. The global is `disabled`, not the field
+    default `conversation`, so "the merge did nothing" cannot be mistaken for
+    "the alias landed"; and the merge must return a new object, not the global
+    itself, for the same reason.
+    """
     pipe = Pipe()
     try:
-        user_valves = pipe.UserValves.model_validate({"next_reply": "conversation"})
-        merged = pipe._merge_valves(pipe.Valves(), user_valves)
+        admin = pipe.Valves(PERSIST_REASONING_TOKENS="disabled")
+        merged = pipe._merge_valves(admin, {"next_reply": "conversation"})
         assert merged.PERSIST_REASONING_TOKENS == "conversation"
+        assert merged is not admin
     finally:
         pipe.shutdown()
 
@@ -7005,7 +7021,12 @@ def test_merge_valves_with_next_reply_alias():
 
         merged = pipe._merge_valves(global_valves, user_valves)
 
-        assert merged.PERSIST_REASONING_TOKENS is True
+        assert merged.PERSIST_REASONING_TOKENS in (
+            "disabled",
+            "next_reply",
+            "conversation",
+        )
+        assert merged.PERSIST_REASONING_TOKENS == global_valves.PERSIST_REASONING_TOKENS
     finally:
         pipe.shutdown()
 
