@@ -560,6 +560,7 @@ class Pipe:
         self._video_message_locks_dict_lock: asyncio.Lock = asyncio.Lock()
         self._video_user_locks_dict_lock: asyncio.Lock = asyncio.Lock()
         self._video_user_locks: dict[str, asyncio.Lock] = {}
+        self._video_user_lock_refs: dict[str, int] = {}
         self._video_user_active_counts: dict[str, int] = {}
         self._video_user_active_jobs: dict[str, set[str]] = {}
         self._video_message_locks: dict[tuple[str, str], asyncio.Lock] = {}

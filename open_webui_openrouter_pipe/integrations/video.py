@@ -569,6 +569,7 @@ class VideoGenerationAdapter:
         global_semaphore: asyncio.Semaphore | None = None
         global_slot_acquired = False
         user_slot_acquired = False
+        user_slot_lock: asyncio.Lock | None = None
         lifecycle_transferred = False
         submitted = False
         job_id = ""
@@ -590,7 +591,7 @@ class VideoGenerationAdapter:
                 return persisted
             resume_job_id = self._extract_video_job_marker(persisted)
             if resume_job_id:
-                user_slot_acquired = await self._try_acquire_user_slot(user_id, valves)
+                user_slot_acquired, user_slot_lock = await self._try_acquire_user_slot(user_id, valves)
                 if not user_slot_acquired:
                     content = self._build_failure_content(
                         job_id=resume_job_id,
@@ -607,7 +608,7 @@ class VideoGenerationAdapter:
                 await global_semaphore.acquire()
                 global_slot_acquired = True
                 job_id = resume_job_id
-                await self._add_user_active_job(user_id, job_id)
+                await self._add_user_active_job(user_id, job_id, user_slot_lock)
                 await self._emit_status(event_emitter, "Resuming video generation job...", done=False, progress=5)
                 resumed_disclosure = self._recover_the_file_host_record(persisted)
                 resumed_disclosure += self._recover_the_withheld_record(persisted)
@@ -817,7 +818,7 @@ class VideoGenerationAdapter:
                     intent_result = None
                     disclosure_block = ""
 
-            user_slot_acquired = await self._try_acquire_user_slot(user_id, valves)
+            user_slot_acquired, user_slot_lock = await self._try_acquire_user_slot(user_id, valves)
             if not user_slot_acquired:
                 content = self._build_failure_content(
                     job_id="",
@@ -903,7 +904,7 @@ class VideoGenerationAdapter:
             job_id = self._extract_job_id(accepted)
             if not job_id:
                 raise VideoGenerationError("OpenRouter accepted the request without returning a video job id.")
-            await self._add_user_active_job(user_id, job_id)
+            await self._add_user_active_job(user_id, job_id, user_slot_lock)
             if (
                 event_emitter is not None
                 and isinstance(chat_id, str)
@@ -1543,6 +1544,19 @@ class VideoGenerationAdapter:
             else:
                 self._pipe._video_message_lock_refs[key] = refs
 
+    async def _release_user_lock(self, user_id: str, lock: asyncio.Lock) -> None:
+        async with self._pipe._video_user_locks_dict_lock:
+            refs = self._pipe._video_user_lock_refs.get(user_id, 0) - 1
+            if refs <= 0:
+                self._pipe._video_user_lock_refs.pop(user_id, None)
+                if (
+                    self._pipe._video_user_locks.get(user_id) is lock
+                    and not lock.locked()
+                ):
+                    self._pipe._video_user_locks.pop(user_id, None)
+            else:
+                self._pipe._video_user_lock_refs[user_id] = refs
+
     def _ensure_global_semaphore(self, valves: Any) -> asyncio.Semaphore:
         limit = int(valves.MAX_CONCURRENT_VIDEO_GENS)
         cls = type(self._pipe)
@@ -1568,26 +1582,35 @@ class VideoGenerationAdapter:
         cls._video_global_limit = limit
         return cls._video_global_semaphore
 
-    async def _try_acquire_user_slot(self, user_id: str, valves: Any) -> bool:
+    async def _try_acquire_user_slot(self, user_id: str, valves: Any) -> tuple[bool, asyncio.Lock]:
         limit = int(valves.MAX_CONCURRENT_VIDEO_GENS_PER_USER)
         async with self._pipe._video_user_locks_dict_lock:
             lock = self._pipe._video_user_locks.get(user_id)
             if lock is None:
                 lock = asyncio.Lock()
                 self._pipe._video_user_locks[user_id] = lock
+            self._pipe._video_user_lock_refs[user_id] = self._pipe._video_user_lock_refs.get(user_id, 0) + 1
+        refused = False
         async with lock:
             current = int(self._pipe._video_user_active_counts.get(user_id, 0))
             if current >= limit:
-                return False
-            self._pipe._video_user_active_counts[user_id] = current + 1
-            return True
+                refused = True
+            else:
+                self._pipe._video_user_active_counts[user_id] = current + 1
+        if refused:
+            await asyncio.shield(self._release_user_lock(user_id, lock))
+            return False, lock
+        return True, lock
 
-    async def _add_user_active_job(self, user_id: str, job_id: str) -> None:
-        async with self._pipe._video_user_locks_dict_lock:
-            lock = self._pipe._video_user_locks.get(user_id)
-            if lock is None:
-                lock = asyncio.Lock()
-                self._pipe._video_user_locks[user_id] = lock
+    async def _add_user_active_job(
+        self, user_id: str, job_id: str, lock: asyncio.Lock | None = None
+    ) -> None:
+        if lock is None:
+            async with self._pipe._video_user_locks_dict_lock:
+                lock = self._pipe._video_user_locks.get(user_id)
+                if lock is None:
+                    lock = asyncio.Lock()
+                    self._pipe._video_user_locks[user_id] = lock
         async with lock:
             if job_id:
                 self._pipe._video_user_active_jobs.setdefault(user_id, set()).add(job_id)
@@ -1595,20 +1618,24 @@ class VideoGenerationAdapter:
     async def _release_user_slot(self, user_id: str, job_id: str = "") -> None:
         async with self._pipe._video_user_locks_dict_lock:
             lock = self._pipe._video_user_locks.get(user_id)
-        if lock is None:
-            return
-        async with lock:
-            if job_id:
-                jobs = self._pipe._video_user_active_jobs.get(user_id)
-                if jobs is not None:
-                    jobs.discard(job_id)
-                    if not jobs:
-                        self._pipe._video_user_active_jobs.pop(user_id, None)
-            current = int(self._pipe._video_user_active_counts.get(user_id, 0))
-            if current <= 1:
-                self._pipe._video_user_active_counts.pop(user_id, None)
-            else:
-                self._pipe._video_user_active_counts[user_id] = current - 1
+            if lock is None:
+                lock = asyncio.Lock()
+                self._pipe._video_user_locks[user_id] = lock
+        try:
+            async with lock:
+                if job_id:
+                    jobs = self._pipe._video_user_active_jobs.get(user_id)
+                    if jobs is not None:
+                        jobs.discard(job_id)
+                        if not jobs:
+                            self._pipe._video_user_active_jobs.pop(user_id, None)
+                current = int(self._pipe._video_user_active_counts.get(user_id, 0))
+                if current <= 1:
+                    self._pipe._video_user_active_counts.pop(user_id, None)
+                else:
+                    self._pipe._video_user_active_counts[user_id] = current - 1
+        finally:
+            await asyncio.shield(self._release_user_lock(user_id, lock))
 
     async def _build_payload(
         self,
