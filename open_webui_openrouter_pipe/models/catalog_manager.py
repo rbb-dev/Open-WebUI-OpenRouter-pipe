@@ -177,6 +177,64 @@ async def _stored_profile_images(
     return stored
 
 
+def _detach_record(
+    pipe_meta: dict, record_key: str, keep_legacy: tuple[str, ...]
+) -> bool:
+    changed = record_key in pipe_meta
+    pipe_meta.pop(record_key, None)
+    for legacy_key in keep_legacy:
+        if legacy_key in pipe_meta:
+            pipe_meta.pop(legacy_key, None)
+            changed = True
+    return changed
+
+
+def _record_ownership(
+    meta_dict: dict,
+    *,
+    record_key: str,
+    owned: str | list[str] | None,
+    attaching: bool,
+    keep_legacy: tuple[str, ...] = (),
+) -> bool:
+    pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
+    if attaching:
+        pipe_meta = _ensure_pipe_meta(meta_dict)
+        pipe_meta[record_key] = owned
+        meta_dict[_PIPE_METADATA_KEY] = pipe_meta
+        return False
+    if not isinstance(pipe_meta, dict):
+        return False
+    return _detach_record(pipe_meta, record_key, keep_legacy)
+
+
+def _write_settled_filter_ids(
+    meta_dict: dict,
+    normalized: list[str],
+    *,
+    wanted: set[str],
+    attaching: bool,
+    offered: list[str],
+    record_key: str,
+    owned: str | list[str] | None,
+    keep_legacy: tuple[str, ...] = (),
+) -> bool:
+    if attaching:
+        for fid in offered:
+            if fid not in normalized:
+                normalized.append(fid)
+    normalized = [fid for fid in normalized if fid in wanted]
+    meta_dict["filterIds"] = _dedupe_preserve_order(normalized)
+    _record_ownership(
+        meta_dict,
+        record_key=record_key,
+        owned=owned,
+        attaching=attaching,
+        keep_legacy=keep_legacy,
+    )
+    return True
+
+
 def _apply_list_filter_ids(
     meta_dict: dict,
     *,
@@ -206,18 +264,27 @@ def _apply_list_filter_ids(
         if not attaching or prev_fid not in current_set:
             wanted.discard(prev_fid)
     if wanted == had:
+        if not attaching and _record_ownership(
+            meta_dict, record_key=prune_key, owned=None, attaching=False
+        ):
+            return True
+        if attaching and previous_ids and previous_ids != list(filter_function_ids):
+            _record_ownership(
+                meta_dict,
+                record_key=prune_key,
+                owned=list(filter_function_ids),
+                attaching=True,
+            )
+            return True
         return False
-    if attaching:
-        for fid in filter_function_ids:
-            if fid not in normalized:
-                normalized.append(fid)
-    normalized = [fid for fid in normalized if fid in wanted]
-    meta_dict["filterIds"] = _dedupe_preserve_order(normalized)
-    if attaching or not filter_supported:
-        pipe_meta = _ensure_pipe_meta(meta_dict)
-        pipe_meta[prune_key] = list(filter_function_ids)
-        meta_dict[_PIPE_METADATA_KEY] = pipe_meta
-    return True
+    return _write_settled_filter_ids(
+        meta_dict, normalized,
+        wanted=wanted,
+        attaching=attaching,
+        offered=filter_function_ids,
+        record_key=prune_key,
+        owned=list(filter_function_ids),
+    )
 
 
 _LEGACY_RECORD_KEYS = {"web_tools_attached_id": "web_tools_filter_id"}
@@ -273,17 +340,29 @@ def _apply_single_id_filter_ids(
         wanted.add(offered_id)
     elif not supported:
         wanted.discard(offered_id)
+    legacy_key = _LEGACY_RECORD_KEYS.get(record_key)
+    keep_legacy = (legacy_key,) if legacy_key else ()
     if wanted == had:
+        if not attaching and _record_ownership(
+            meta_dict, record_key=record_key, owned=None, attaching=False,
+            keep_legacy=keep_legacy,
+        ):
+            return True
+        if attaching and owned_id and owned_id != offered_id:
+            _record_ownership(
+                meta_dict, record_key=record_key, owned=offered_id, attaching=True
+            )
+            return True
         return False
-    if attaching and offered_id not in normalized:
-        normalized.append(offered_id)
-    normalized = [fid for fid in normalized if fid in wanted]
-    meta_dict["filterIds"] = _dedupe_preserve_order(normalized)
-    if attaching:
-        pipe_meta = _ensure_pipe_meta(meta_dict)
-        pipe_meta[record_key] = offered_id
-        meta_dict[_PIPE_METADATA_KEY] = pipe_meta
-    return True
+    return _write_settled_filter_ids(
+        meta_dict, normalized,
+        wanted=wanted,
+        attaching=attaching,
+        offered=[offered_id] if attaching else [],
+        record_key=record_key,
+        owned=offered_id,
+        keep_legacy=() if attaching else keep_legacy,
+    )
 
 
 def _detached_by_this_pass(

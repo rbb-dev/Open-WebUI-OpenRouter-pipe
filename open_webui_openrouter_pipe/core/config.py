@@ -2070,6 +2070,11 @@ class Valves(BaseModel):
             "in the chat controls when that model is selected. Turn this off to install "
             "the panels but leave attaching them to you; turning it off also detaches the "
             "panels the pipe attached, while a panel an admin attached by hand is left alone."
+            " Detaching is this valve's doing and the model's loss of image support, not a "
+            "panel whose install failed once: a model whose image panel could not be "
+            "written keeps the panel it already carries and the default it already had, "
+            "and takes them off at the next refresh that installs it, or at the next one "
+            "that finds it no longer offers images."
         ),
     )
     AUTO_DEFAULT_IMAGE_FILTERS: bool = Field(
