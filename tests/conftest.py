@@ -539,12 +539,18 @@ def _reset_model_registry():
     The registry uses class-level attributes for catalog caching. Without this reset,
     tests that run earlier can pollute the catalog state, causing later tests that
     mock HTTP responses to fail because the mock is never hit (cache is still valid).
+
+    The lock reset is bookkeeping like every other line here, not a repair: each lock is
+    rebound at its point of use onto the running loop, so a fresh one per test is not
+    what keeps the loaders usable across a session that runs more than one loop.
     """
     reg = OpenRouterModelRegistry
     reg._models = []
     reg._specs = {}
     reg._id_map = {}
     reg._zdr_model_ids = None
+    reg._zdr_rosters = {}
+    reg._zdr_attempted_key = None
     reg._last_fetch = 0.0
     reg._last_video_fetch = 0.0
     reg._last_video_attempt = 0.0
@@ -562,10 +568,6 @@ def _reset_model_registry():
     reg._last_error = None
     reg._last_error_time = 0.0
     ModelFamily.set_dynamic_specs(None)
-    from open_webui_openrouter_pipe.integrations import image_catalog, video_catalog
-
-    video_catalog._VIDEO_CATALOG_LOCK = asyncio.Lock()
-    image_catalog._image_catalog_lock = asyncio.Lock()
     yield
 
 

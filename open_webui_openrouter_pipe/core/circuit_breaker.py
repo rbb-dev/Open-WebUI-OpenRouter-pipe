@@ -52,6 +52,24 @@ class CircuitBreaker:
             lambda: defaultdict(deque)
         )
 
+        self._sweep_after: float = 0.0
+
+    def _sweep_expired(self, now: float) -> None:
+        if now < self._sweep_after:
+            return
+        self._sweep_after = now + self._window_seconds
+        window = self._window_seconds
+        for key, failures in list(self._breaker_records.items()):
+            if not failures or now - failures[-1] > window:
+                self._breaker_records.pop(key, None)
+        for user_id, tools in list(self._tool_breakers.items()):
+            for tool_key in list(tools.keys()):
+                failures = tools[tool_key]
+                if not failures or now - failures[-1] > window:
+                    tools.pop(tool_key, None)
+            if not tools:
+                self._tool_breakers.pop(user_id, None)
+
     @property
     def threshold(self) -> int:
         """Get the failure threshold."""
@@ -69,6 +87,7 @@ class CircuitBreaker:
     @window_seconds.setter
     def window_seconds(self, value: float) -> None:
         self._window_seconds = max(0.1, float(value))
+        self._sweep_after = min(self._sweep_after, time.time() + self._window_seconds)
 
     # --------------------------------------------------------------------------
     # Request Circuit Breaker (per-user)
@@ -110,7 +129,9 @@ class CircuitBreaker:
         """
         if not user_id:
             return
-        self._breaker_records[user_id].append(time.time())
+        now = time.time()
+        self._breaker_records[user_id].append(now)
+        self._sweep_expired(now)
 
     def reset(self, user_id: str) -> None:
         """Clear all failure records for a user, allowing requests again.
@@ -159,7 +180,9 @@ class CircuitBreaker:
         """
         if not user_id or not tool_type:
             return
-        self._tool_breakers[user_id][(tool_type, tool_name)].append(time.time())
+        now = time.time()
+        self._tool_breakers[user_id][(tool_type, tool_name)].append(now)
+        self._sweep_expired(now)
 
     def reset_tool(self, user_id: str, tool_type: str, tool_name: str = "") -> None:
         """Clear failure records for a specific tool type.

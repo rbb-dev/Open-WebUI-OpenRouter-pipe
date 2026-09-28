@@ -485,6 +485,8 @@ class Pipe:
         self._close_done: concurrent.futures.Future | None = None
         self._active_pipes_calls: int = 0
         self._hand_back_counts: Counter[tuple[Any, Any]] = Counter()
+        self._hand_back_seen: dict[Any, float] = {}
+        self._hand_back_swept_at: float = 0.0
         self._HAND_BACK_MAX_KEYS = 64
 
         if os.environ.get("OWUI_PIPE_TEST_MODE") == "1":
@@ -1367,6 +1369,20 @@ class Pipe:
     @timed
     async def pipes(self):
         """Return the list of models exposed to Open WebUI."""
+        _pipe_id_token = ModelFamily._PIPE_ID.set(self.id)
+        try:
+            _api_key, _api_key_error = self._resolve_openrouter_api_key(self.valves)
+        except Exception:  # noqa: BLE001 - the fault is the body's to degrade open
+            _api_key, _api_key_error = None, None
+        _zdr_key_token = OpenRouterModelRegistry.arm_zdr_key(_api_key if not _api_key_error else None)
+        try:
+            return await self._pipes()
+        finally:
+            OpenRouterModelRegistry._ZDR_KEY.reset(_zdr_key_token)
+            ModelFamily._PIPE_ID.reset(_pipe_id_token)
+
+    @timed
+    async def _pipes(self):
         self._refresh_process_log_level()
         self._maybe_start_startup_checks()
         self._maybe_start_redis()
@@ -2625,6 +2641,18 @@ class Pipe:
                 tokens = self._apply_logging_context(job)
                 tokens.append(
                     (ModelFamily._PIPE_ID, ModelFamily._PIPE_ID.set(self.id))
+                )
+                try:
+                    _job_key, _job_key_error = self._resolve_openrouter_api_key(job.valves)
+                except Exception:  # noqa: BLE001 - the request path degrades open the same way
+                    _job_key, _job_key_error = None, None
+                tokens.append(
+                    (
+                        OpenRouterModelRegistry._ZDR_KEY,
+                        OpenRouterModelRegistry.arm_zdr_key(
+                            _job_key if not _job_key_error else None
+                        ),
+                    )
                 )
                 tokens.append((CONTINUED_REPLY, CONTINUED_REPLY.set(job.continued_reply)))
                 tokens.append((OWUI_REQUEST, OWUI_REQUEST.set(job.request)))

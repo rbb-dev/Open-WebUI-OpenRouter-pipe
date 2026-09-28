@@ -153,7 +153,14 @@ def readable_stored(valves_cls: type, stored: dict[str, Any]) -> tuple[dict[str,
         bad = {str(err["loc"][0]) for err in exc.errors() if err.get("loc")}
         return {k: v for k, v in kept.items() if k not in bad}, sorted(bad)
     bad = {k for k in kept if k not in built.model_fields_set}
+    bad = {k for k in bad if not _is_blanked_nullable(valves_cls, k, kept.get(k))}
     return {k: v for k, v in kept.items() if k not in bad}, sorted(bad)
+
+
+def _is_blanked_nullable(valves_cls: type, name: str, value: Any) -> bool:
+    from ...core.valve_salvage import _admits_none
+
+    return _admits_none(valves_cls, name) and isinstance(value, str) and not value.strip()
 
 
 def _is_clear_edit(fld: Any, value: Any, current: dict[str, Any]) -> bool:

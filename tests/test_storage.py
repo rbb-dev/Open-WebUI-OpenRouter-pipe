@@ -2697,7 +2697,7 @@ async def test_await_if_needed_handles_sync_and_async() -> None:
 def test_decode_payload_bytes_invalid_flag_and_json(pipe_instance) -> None:
     store = pipe_instance._artifact_store
     with pytest.raises(ValueError):
-        store._decode_payload_bytes(bytes([9]) + b"{}")
+        store._decode_payload_bytes(bytes([2]) + b"{}")
     with pytest.raises(ValueError):
         store._decode_payload_bytes(bytes([0]) + b"not-json")
 

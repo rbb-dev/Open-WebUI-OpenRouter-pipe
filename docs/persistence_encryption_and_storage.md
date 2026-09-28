@@ -82,7 +82,7 @@ Persisted rows include:
 - `id` (the ULID)
 - Open WebUI identifiers such as `chat_id` and `message_id`
 - `item_type`
-- `payload` (plaintext JSON, or an encrypted wrapper when encryption is enabled)
+- `payload` (plaintext JSON, or an encrypted wrapper when encryption is enabled; the wrapper carries the ciphertext and a version field, and the compression flag is inside the ciphertext, not in the column)
 - `created_at` (UTC timestamp used for retention; refreshed on every read, database or cache)
 
 ---
@@ -98,7 +98,7 @@ Artifact encryption is controlled by these system valves:
 ### When encryption is active
 - If `ARTIFACT_ENCRYPTION_KEY` is set (non-empty), the pipe encrypts payloads before persistence.
 - When encrypted, the stored `payload` becomes a wrapper containing ciphertext (plus a version field).
-- If compression is enabled and effective, the pipe compresses the JSON payload before encryption and stores a small header indicating whether the stored bytes were compressed.
+- If compression is enabled and effective, the pipe compresses the JSON payload before encryption; the plaintext then begins with a one-byte flag saying whether the bytes after it are compressed. The flag lives inside the encrypted plaintext, not in the `payload` column. A payload written before the flag existed still decodes: a first byte of `0` or `1` is a flag, a JSON lead byte (`{`, `[`, space, tab, CR, LF) means the whole body is headerless, and any other first byte is refused as an unknown flag.
 
 ### When encryption is not active
 - If `ARTIFACT_ENCRYPTION_KEY` is empty/unset, payloads are stored as normal JSON objects and `is_encrypted=False`.

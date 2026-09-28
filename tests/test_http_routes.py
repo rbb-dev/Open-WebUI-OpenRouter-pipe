@@ -13,7 +13,13 @@ from fastapi import HTTPException
 
 pytest.importorskip("open_webui_openrouter_pipe.plugins.pipe_dashboard")
 
+from open_webui_openrouter_pipe.core.config import Valves
 from open_webui_openrouter_pipe.plugins.pipe_dashboard import http_routes
+
+
+def _on_valves() -> Any:
+    """A pipe whose master plugin switch reads on: the route 404s without it."""
+    return SimpleNamespace(id="openrouter", valves=Valves(ENABLE_PLUGIN_SYSTEM=True))
 
 
 def _install_auth_stub(monkeypatch, *, decode=lambda t: {"id": "u1"}, valid=True,
@@ -109,7 +115,7 @@ def test_route_binds_body_200_not_422(monkeypatch):
 
     monkeypatch.setattr(http_routes, "bearer_user", AsyncMock(return_value=SimpleNamespace(id="u1", role="user")))
     monkeypatch.setattr(http_routes, "_live_dispatch", lambda: AsyncMock(return_value=(200, {"ok": True, "result": {"x": 1}})))
-    http_routes.set_pipe_getter(lambda: SimpleNamespace(id="p"))
+    http_routes.set_pipe_getter(lambda: SimpleNamespace(id="p", valves=Valves(ENABLE_PLUGIN_SYSTEM=True)))
     http_routes._coarse_state.clear()
 
     app = FastAPI()
@@ -133,7 +139,7 @@ def test_route_forbidden_flows_through(monkeypatch):
 
     monkeypatch.setattr(http_routes, "bearer_user", AsyncMock(return_value=SimpleNamespace(id="u2", role="user")))
     monkeypatch.setattr(http_routes, "_live_dispatch", lambda: AsyncMock(return_value=(403, {"error": "forbidden"})))
-    http_routes.set_pipe_getter(lambda: SimpleNamespace(id="p"))
+    http_routes.set_pipe_getter(lambda: SimpleNamespace(id="p", valves=Valves(ENABLE_PLUGIN_SYSTEM=True)))
     http_routes._coarse_state.clear()
 
     app = FastAPI()
@@ -166,7 +172,7 @@ def test_registered_route_resolves_real_config_get(monkeypatch):
     monkeypatch.setattr(http_routes, "_fresh_dispatch", None)
     monkeypatch.setattr(http_routes, "_reconcile_retry_until", 0.0)
     monkeypatch.setattr(actions, "_current_config_rev", AsyncMock(return_value=1000))
-    http_routes.set_pipe_getter(lambda: SimpleNamespace(id="openrouter", valves=Valves()))
+    http_routes.set_pipe_getter(lambda: SimpleNamespace(id="openrouter", valves=Valves(ENABLE_PLUGIN_SYSTEM=True)))
     http_routes._registered_paths.clear()
     actions._rate_state.clear()
 
@@ -195,7 +201,9 @@ def test_route_self_heals_unknown_action(monkeypatch):
         return 200, {"ok": True, "result": {"healed": name}}
 
     fresh_pipe = SimpleNamespace(id="openrouter", marker="fresh")
-    serving_pipe = SimpleNamespace(id="openrouter", marker="serving")
+    serving_pipe = SimpleNamespace(
+        id="openrouter", marker="serving", valves=Valves(ENABLE_PLUGIN_SYSTEM=True)
+    )
     app = FastAPI()
     monkeypatch.setattr(http_routes, "get_owui_app", lambda: app)
     monkeypatch.setattr(http_routes, "bearer_user",
@@ -236,7 +244,7 @@ def test_route_reconcile_requires_can_view(monkeypatch):
     monkeypatch.setattr(http_routes, "_resolve_fresh", resolve)
     monkeypatch.setattr(http_routes, "_fresh_dispatch", None)
     monkeypatch.setattr(http_routes, "_reconcile_retry_until", 0.0)
-    http_routes.set_pipe_getter(lambda: SimpleNamespace(id="openrouter"))
+    http_routes.set_pipe_getter(_on_valves)
     http_routes._registered_paths.clear()
     actions._rate_state.clear()
 

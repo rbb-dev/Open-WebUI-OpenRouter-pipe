@@ -293,7 +293,10 @@ rather than generating from the system text alone.
 
 Where every provider that could serve a request publishes native streaming, the
 request asks for the streamed form and each preview is reported as a status
-line; a model streaming a text-based format instead of preview pictures — SVG —
+line, provided the request asks for one image and carries no input reference;
+the carve-out fires only when `n` is a non-boolean `int` greater than 1, so a
+quoted `n` such as `"2"` is not a count to the pipe and does not suppress
+previews. A model streaming a text-based format instead of preview pictures — SVG —
 is reported once as `Drawing the image…`. No recorded contract publishes both,
 so today only the six OpenAI image endpoints stream at all and they send
 previews. Either way the answer is the same finished-image markdown.

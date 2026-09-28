@@ -78,6 +78,7 @@ from ..tools.tool_registry import (
     open_webui_runs_the_calls,
 )
 from .fusion_engine import (
+    _UNSET,
     FusionInnerInvocation,
     asks_for_help,
     latest_user_text,
@@ -97,6 +98,53 @@ from ..models.registry import uses_dedicated_image_api
 def _is_api_caller(metadata: dict[str, Any] | None) -> bool:
     meta = metadata or {}
     return not (bool(meta.get("chat_id")) and bool(meta.get("message_id")))
+
+
+async def _resolve_user_model(
+    user_id: str, carried: Any, logger: logging.Logger
+) -> tuple[Any, bool]:
+    if carried is not _UNSET:
+        return carried, True
+    row: Any = None
+    resolved = False
+    if user_id:
+        row = await get_user_by_id(user_id, logger)
+        resolved = True
+        if row is None:
+            logger.warning(
+                "User %s did not resolve; uploads in this request will be stored "
+                "under the fallback account",
+                user_id,
+            )
+    return row, resolved
+
+
+async def _read_attachment(
+    attachment_bytes: dict[Any, Any],
+    modality: str,
+    file_id: str,
+    user_id: str,
+    *,
+    gateway: Any,
+    logger: Any,
+    chunk_size: int,
+    max_bytes: int,
+    user_model: Any,
+) -> tuple[str, Any]:
+    memo_key = (modality, file_id, user_id)
+    if memo_key in attachment_bytes:
+        return attachment_bytes[memo_key]
+    label = f"Native {modality} attachment"
+    file_obj = await get_file_by_id(file_id, logger)
+    if not file_obj:
+        raise ValueError(f"{label} '{file_id}' could not be loaded.")
+    b64 = await gateway.read_file_record_base64(
+        file_obj, chunk_size, max_bytes, user=user_model
+    )
+    if not b64:
+        raise ValueError(f"{label} '{file_id}' could not be encoded.")
+    attachment_bytes[memo_key] = (b64, file_obj)
+    return b64, file_obj
 
 
 def _provider_error_response(
@@ -539,9 +587,15 @@ class RequestOrchestrator:
         outcome_sink: dict[str, Any] | None = None,
         user_valves: Any = None,
         rejected_user_valves: list[str] | None = None,
-        resolved_user_model: Any = None,
+        resolved_user_model: Any = _UNSET,
         resolved_user_done: bool = False,
+        attachment_bytes: dict[str, Any] | None = None,
     ) -> AsyncGenerator[str, None] | dict[str, Any] | str | StreamingResponse | None:
+        user_id = user_id or str(__user__.get("id") or __metadata__.get("user_id") or "")
+        user_model, user_model_resolved = await _resolve_user_model(
+            user_id, resolved_user_model, self.logger
+        )
+        attachment_bytes = attachment_bytes if attachment_bytes is not None else {}
         def _extract_direct_uploads(metadata: dict[str, Any]) -> dict[str, Any]:
             pipe_meta = metadata.get(_PIPE_METADATA_KEY)
             if not isinstance(pipe_meta, dict):
@@ -726,14 +780,11 @@ class RequestOrchestrator:
                 file_id = item.get("id")
                 if not isinstance(file_id, str) or not file_id:
                     continue
-                file_obj = await get_file_by_id(file_id, self._pipe.logger)
-                if not file_obj:
-                    raise ValueError(f"Native audio attachment '{file_id}' could not be loaded.")
-                b64 = await self._pipe._file_gateway.read_file_record_base64(
-                    file_obj, chunk_size, max_bytes, user=user_model
+                b64, _audio_record = await _read_attachment(
+                    attachment_bytes, "audio", file_id, user_id,
+                    gateway=self._pipe._file_gateway, logger=self._pipe.logger,
+                    chunk_size=chunk_size, max_bytes=max_bytes, user_model=user_model,
                 )
-                if not b64:
-                    raise ValueError(f"Native audio attachment '{file_id}' could not be encoded.")
                 declared = item.get("format")
                 declared_format = declared.strip().lower() if isinstance(declared, str) else ""
                 sniffed = _sniff_audio_format(_decode_base64_prefix(b64))
@@ -770,14 +821,11 @@ class RequestOrchestrator:
                 file_id = item.get("id")
                 if not isinstance(file_id, str) or not file_id:
                     continue
-                file_obj = await get_file_by_id(file_id, self._pipe.logger)
-                if not file_obj:
-                    raise ValueError(f"Native video attachment '{file_id}' could not be loaded.")
-                b64 = await self._pipe._file_gateway.read_file_record_base64(
-                    file_obj, chunk_size, max_bytes, user=user_model
+                b64, file_obj = await _read_attachment(
+                    attachment_bytes, "video", file_id, user_id,
+                    gateway=self._pipe._file_gateway, logger=self._pipe.logger,
+                    chunk_size=chunk_size, max_bytes=max_bytes, user_model=user_model,
                 )
-                if not b64:
-                    raise ValueError(f"Native video attachment '{file_id}' could not be encoded.")
                 mime = item.get("content_type")
                 if not isinstance(mime, str) or not mime.strip():
                     mime = infer_file_mime_type(file_obj)
@@ -792,18 +840,6 @@ class RequestOrchestrator:
 
             last_user_msg["content"] = content_blocks
 
-        user_id = user_id or str(__user__.get("id") or __metadata__.get("user_id") or "")
-        user_model = resolved_user_model
-        user_model_resolved = resolved_user_done
-        if user_id and not user_model_resolved:
-            user_model = await get_user_by_id(user_id, self.logger)
-            user_model_resolved = True
-        if user_id and user_model is None:
-            self.logger.warning(
-                "User %s did not resolve; uploads in this request will be stored "
-                "under the fallback account",
-                user_id,
-            )
         chat_id = (__metadata__ or {}).get("chat_id")
         chat_id = chat_id.strip() if isinstance(chat_id, str) else ""
         task_name = TaskModelAdapter._task_name(__task__) if __task__ else ""
@@ -1706,6 +1742,7 @@ class RequestOrchestrator:
                 user_id=user_id,
                 user_model=user_model,
                 user_model_resolved=user_model_resolved,
+                attachment_bytes=attachment_bytes,
                 disable_native_websearch=(
                     getattr(responses_body, "disable_native_websearch", None)
                     if getattr(responses_body, "disable_native_websearch", None) is not None

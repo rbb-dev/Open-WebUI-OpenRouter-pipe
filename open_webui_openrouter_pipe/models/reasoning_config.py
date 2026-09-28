@@ -28,6 +28,10 @@ _NO_EFFORT = "none"
 _GEMINI_ANSWER_RESERVE_TOKENS = 64
 
 
+def _normalised_effort(cfg: dict[str, Any]) -> str:
+    return str(cfg.get("effort") or "").strip().lower()
+
+
 class ReasoningConfigManager:
     """Manages reasoning model configuration and retry logic.
 
@@ -61,7 +65,7 @@ class ReasoningConfigManager:
         if cfg.get("enabled") is False or cfg.get("exclude") is True:
             return True
         effort = cfg.get("effort")
-        return isinstance(effort, str) and effort.strip().lower() == _NO_EFFORT
+        return isinstance(effort, str) and _normalised_effort(cfg) == _NO_EFFORT
 
     @classmethod
     def _refuse_off_on_mandatory_model(
@@ -82,18 +86,6 @@ class ReasoningConfigManager:
         if lowest:
             repaired["effort"] = lowest
         return repaired, True
-
-    @classmethod
-    def _refuse_off_flag_on_mandatory_model(
-        cls,
-        model_id: str,
-        cfg: dict[str, Any],
-    ) -> tuple[dict[str, Any], bool]:
-        if cfg.get("enabled") is not False and cfg.get("exclude") is not True:
-            return cfg, False
-        if not cls._model_requires_reasoning(model_id):
-            return cfg, False
-        return cls._refuse_off_on_mandatory_model(model_id, cfg)
 
     def _apply_reasoning_preferences(self, responses_body: ResponsesBody, valves: Pipe.Valves) -> str | None:
         supported = ModelFamily.catalog_supported_parameters(responses_body.model)
@@ -116,7 +108,7 @@ class ReasoningConfigManager:
             if requested_summary and "summary" not in cfg:
                 cfg["summary"] = requested_summary
             cfg.setdefault("enabled", True)
-            cfg, refused = self._refuse_off_flag_on_mandatory_model(responses_body.model, cfg)
+            cfg, refused = self._refuse_off_on_mandatory_model(responses_body.model, cfg)
             responses_body.reasoning = cfg or None
             self._set_include_reasoning(responses_body, None)
         elif supports_legacy_only:
@@ -144,13 +136,13 @@ class ReasoningConfigManager:
             )
             cfg = dict(cfg) if cfg else {}
             cfg["effort"] = target_effort
-            if (cfg.get("effort") or "").strip().lower() != _NO_EFFORT or self._model_requires_reasoning(
+            if _normalised_effort(cfg) != _NO_EFFORT or self._model_requires_reasoning(
                 responses_body.model
             ):
                 cfg.setdefault("enabled", True)
             else:
                 cfg.pop("enabled", None)
-            cfg, refused = self._refuse_off_flag_on_mandatory_model(responses_body.model, cfg)
+            cfg, refused = self._refuse_off_on_mandatory_model(responses_body.model, cfg)
             responses_body.reasoning = cfg
             self._set_include_reasoning(responses_body, None)
         elif supports_legacy_only:
@@ -204,7 +196,7 @@ class ReasoningConfigManager:
             responses_body.reasoning = off
             self._set_include_reasoning(responses_body, None)
             return responses_body.model if refused else None
-        effort = str(cfg.get("effort") or "").strip().lower() or valves.REASONING_EFFORT
+        effort = _normalised_effort(cfg) or valves.REASONING_EFFORT
         budget = _map_effort_to_gemini_budget(effort, valves.GEMINI_THINKING_BUDGET)
         if not budget:
             return None
@@ -224,7 +216,7 @@ class ReasoningConfigManager:
 
     def _fit_effort_none_to_model(self, responses_body: ResponsesBody, *, settings_applied: bool) -> None:
         cfg = responses_body.reasoning
-        if not isinstance(cfg, dict) or str(cfg.get("effort") or "").strip().lower() != "none":
+        if not isinstance(cfg, dict) or _normalised_effort(cfg) != "none":
             return
         row = ModelFamily.reasoning_contract(responses_body.model)
         if row.get("mandatory") is True:
@@ -265,7 +257,7 @@ class ReasoningConfigManager:
         # priority, then fall back to the valve default.
         effort = ""
         if isinstance(responses_body.reasoning, dict):
-            effort = str(responses_body.reasoning.get("effort") or "").strip().lower()
+            effort = _normalised_effort(responses_body.reasoning)
         if not effort:
             effort = (valves.REASONING_EFFORT or "").strip().lower()
 

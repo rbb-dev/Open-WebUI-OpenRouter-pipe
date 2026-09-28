@@ -22,14 +22,21 @@ def _encrypted_type() -> Any:
     return EncryptedStr
 
 
-def is_secret_field(cls: type, name: str) -> bool:
+def _field_annotation(cls: type, name: str) -> Any:
     field = cls.model_fields.get(name)
-    if field is None:
-        return False
-    annotation = field.annotation
-    if annotation is _encrypted_type():
+    return None if field is None else field.annotation
+
+
+def is_secret_field(cls: type, name: str) -> bool:
+    annotation = _field_annotation(cls, name)
+    secret = _encrypted_type()
+    if annotation is secret:
         return True
-    return any(arg is _encrypted_type() for arg in typing.get_args(annotation))
+    return any(arg is secret for arg in typing.get_args(annotation))
+
+
+def _admits_none(cls: type, name: str) -> bool:
+    return type(None) in typing.get_args(_field_annotation(cls, name))
 
 
 def _secret_as_str(value: Any) -> str:
@@ -59,6 +66,7 @@ def drop_unvalidatable(cls: type, values: Any) -> Any:
         return values
     kept = dict(values)
     unread: list[tuple[str, str]] = []
+    blanked: set[str] = set()
     for _ in range(len(kept) + 2):
         try:
             _valve_schema(cls)(**kept)
@@ -91,6 +99,9 @@ def drop_unvalidatable(cls: type, values: Any) -> Any:
             if not bad:
                 break
             for name in bad:
+                blank = _admits_none(cls, name) and isinstance(kept.get(name), str) and not kept[name].strip()
+                if blank:
+                    blanked.add(name)
                 kept.pop(name, None)
     for name, note in unread:
         logger.log(
@@ -101,7 +112,7 @@ def drop_unvalidatable(cls: type, values: Any) -> Any:
         )
     if len(kept) != len(values):
         stored = values
-        for name in sorted(set(values) - set(kept) - {n for n, _ in unread}):
+        for name in sorted(set(values) - set(kept) - {n for n, _ in unread} - blanked):
             default = cls.model_fields[name].get_default(call_default_factory=True)
             shown = "<redacted>" if is_secret_field(cls, name) else stored[name]
             logger.log(

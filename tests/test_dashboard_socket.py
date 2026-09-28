@@ -127,7 +127,7 @@ class TestPipeDashboardSub:
         _install_socket_stub(
             monkeypatch, sio=mock_sio, get_user_id_from_session_pool=lambda sid: None,
         )
-        dashboard_socket._get_pipe = lambda: object()
+        dashboard_socket._get_pipe = _plugin_on_pipe
         await _pipe_dashboard_sub("sid-anon")
         mock_sio.enter_room.assert_not_awaited()
         assert dashboard_socket._resync is False
@@ -144,7 +144,7 @@ class TestPipeDashboardSub:
         )
         monkeypatch.setattr(dashboard_socket,"resolve_user", AsyncMock(return_value=object()))
         monkeypatch.setattr(dashboard_socket,"can_view", AsyncMock(return_value=False))
-        dashboard_socket._get_pipe = lambda: object()
+        dashboard_socket._get_pipe = _plugin_on_pipe
         await _pipe_dashboard_sub("sid-denied")
         mock_sio.enter_room.assert_not_awaited()
         mock_sio.emit.assert_awaited_once_with(dashboard_socket.DENIED_EVENT, {}, room="sid-denied")
@@ -163,7 +163,7 @@ class TestPipeDashboardSub:
         fake_resolve_user = AsyncMock(return_value=object())
         monkeypatch.setattr(dashboard_socket, "resolve_user", fake_resolve_user)
         monkeypatch.setattr(dashboard_socket,"can_view", AsyncMock(return_value=True))
-        dashboard_socket._get_pipe = lambda: object()
+        dashboard_socket._get_pipe = _plugin_on_pipe
         await _pipe_dashboard_sub("sid-authed")
         mock_sio.enter_room.assert_awaited_once_with("sid-authed", VIEWERS_ROOM)
         assert dashboard_socket._resync is True
@@ -183,9 +183,16 @@ class TestPipeDashboardSub:
         )
         monkeypatch.setattr(dashboard_socket,"resolve_user", AsyncMock(return_value=object()))
         monkeypatch.setattr(dashboard_socket,"can_view", AsyncMock(return_value=True))
-        dashboard_socket._get_pipe = lambda: object()
+        dashboard_socket._get_pipe = _plugin_on_pipe
         await _pipe_dashboard_sub("sid-err")
         assert dashboard_socket._resync is False
+
+def _plugin_on_pipe():
+    return types.SimpleNamespace(
+        id="test-pipe",
+        valves=types.SimpleNamespace(ENABLE_PLUGIN_SYSTEM=True),
+    )
+
 
 class TestReauthorizeLocalViewers:
     @pytest.mark.asyncio
@@ -201,7 +208,7 @@ class TestReauthorizeLocalViewers:
         )
         monkeypatch.setattr(dashboard_socket,"resolve_user", AsyncMock(return_value=object()))
         monkeypatch.setattr(dashboard_socket,"can_view", AsyncMock(return_value=False))
-        dashboard_socket._get_pipe = lambda: object()
+        dashboard_socket._get_pipe = _plugin_on_pipe
         await dashboard_socket.reauthorize_local_viewers()
         mock_sio.leave_room.assert_awaited_once_with("s1", VIEWERS_ROOM)
         mock_sio.emit.assert_awaited_once_with(dashboard_socket.DENIED_EVENT, {}, room="s1")
@@ -220,7 +227,7 @@ class TestReauthorizeLocalViewers:
         fake_resolve_user = AsyncMock(return_value=object())
         monkeypatch.setattr(dashboard_socket, "resolve_user", fake_resolve_user)
         monkeypatch.setattr(dashboard_socket,"can_view", AsyncMock(return_value=True))
-        dashboard_socket._get_pipe = lambda: object()
+        dashboard_socket._get_pipe = _plugin_on_pipe
         with caplog.at_level(logging.WARNING, logger=dashboard_socket.__name__):
             await dashboard_socket.reauthorize_local_viewers()
         mock_sio.leave_room.assert_not_awaited()
@@ -247,7 +254,7 @@ class TestReauthorizeLocalViewers:
         )
         monkeypatch.setattr(dashboard_socket, "resolve_user", AsyncMock(return_value=object()))
         monkeypatch.setattr(dashboard_socket, "can_view", AsyncMock(return_value=False))
-        dashboard_socket._get_pipe = lambda: object()
+        dashboard_socket._get_pipe = _plugin_on_pipe
         with caplog.at_level(logging.WARNING, logger=dashboard_socket.__name__):
             await dashboard_socket.reauthorize_local_viewers()
         warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
@@ -366,7 +373,7 @@ class TestViewerIdentityOutlivesTheSessionPool:
                              get_user_id_from_session_pool=lambda sid: "user-1")
         monkeypatch.setattr(dashboard_socket, "resolve_user", AsyncMock(return_value=object()))
         monkeypatch.setattr(dashboard_socket, "can_view", AsyncMock(return_value=True))
-        dashboard_socket._get_pipe = lambda: object()
+        dashboard_socket._get_pipe = _plugin_on_pipe
         await _pipe_dashboard_sub("sid-authed")
         mock_sio.save_session.assert_awaited_once_with(
             "sid-authed", {authz.VIEWER_ID_KEY: "user-1"})
@@ -382,7 +389,7 @@ class TestViewerIdentityOutlivesTheSessionPool:
                              get_user_id_from_session_pool=lambda sid: "user-1")
         monkeypatch.setattr(dashboard_socket, "resolve_user", AsyncMock(return_value=object()))
         monkeypatch.setattr(dashboard_socket, "can_view", AsyncMock(return_value=False))
-        dashboard_socket._get_pipe = lambda: object()
+        dashboard_socket._get_pipe = _plugin_on_pipe
         await _pipe_dashboard_sub("sid-denied")
         mock_sio.save_session.assert_not_awaited()
 
@@ -440,6 +447,7 @@ class TestSocketHelpers:
         mock_sio = Mock()
         mock_sio.emit = AsyncMock()
         _install_socket_stub(monkeypatch, sio=mock_sio)
+        dashboard_socket._get_pipe = _plugin_on_pipe
         ok = await dashboard_socket.emit_dashboard({"tick": 0})
         assert ok is True
         mock_sio.emit.assert_awaited_once_with(
@@ -459,6 +467,7 @@ class TestSocketHelpers:
         import logging as _logging
 
         _install_socket_stub(monkeypatch)
+        dashboard_socket._get_pipe = _plugin_on_pipe
         with caplog.at_level(_logging.WARNING, logger=dashboard_socket.__name__):
             assert await dashboard_socket.emit_dashboard({"tick": 0}) is False
             assert await dashboard_socket.emit_dashboard({"tick": 1}) is False

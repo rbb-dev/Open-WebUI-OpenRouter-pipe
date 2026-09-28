@@ -84,6 +84,7 @@ from ..core.config import (
 # Payload compression flags
 _PAYLOAD_FLAG_PLAIN = 0
 _PAYLOAD_FLAG_LZ4 = 1
+_JSON_LEAD_BYTES = frozenset({0x7B, 0x5B, 0x20, 0x09, 0x0A, 0x0D})
 
 # Encryption version
 _ENCRYPTED_PAYLOAD_VERSION = 1
@@ -1062,7 +1063,11 @@ class ArtifactStore:
             body = payload_bytes[_PAYLOAD_HEADER_SIZE:]
             if flag == _PAYLOAD_FLAG_LZ4:
                 body = self._lz4_decompress(body)
-            elif flag != _PAYLOAD_FLAG_PLAIN:
+            elif flag == _PAYLOAD_FLAG_PLAIN:
+                pass
+            elif flag in _JSON_LEAD_BYTES:
+                body = payload_bytes
+            else:
                 raise ValueError(f"Invalid artifact payload flag: {flag}")
         try:
             return json.loads(body.decode("utf-8"))
@@ -2206,9 +2211,13 @@ class ArtifactStore:
             return {}
         keys: list[str] = []
         id_lookup: list[str] = []
+        seen_ids: set[str] = set()
         for item_id in item_ids:
+            if item_id in seen_ids:
+                continue
             cache_key = self._redis_cache_key(chat_id, item_id)
             if cache_key:
+                seen_ids.add(item_id)
                 keys.append(cache_key)
                 id_lookup.append(item_id)
         if not keys:
@@ -2219,6 +2228,8 @@ class ArtifactStore:
             self.logger.warning("Redis read failed, falling back to DB: %s", exc, exc_info=True)
             return {}
         cached: dict[str, dict[str, Any]] = {}
+        encrypted_rows: list[tuple[str, Any]] = []
+        decrypted: dict[str, dict[str, Any]] = {}
         for item_id, raw in zip(id_lookup, values):
             if not raw:
                 continue
@@ -2242,14 +2253,28 @@ class ArtifactStore:
                     ciphertext = payload.get("ciphertext", "") or ""
                 elif isinstance(row_data, dict) and isinstance(row_data.get("payload"), dict):
                     ciphertext = row_data["payload"].get("ciphertext", "") or ""
-                try:
-                    payload = self._decrypt_payload(ciphertext)
-                except Exception as exc:
-                    self.logger.warning("Failed to decrypt cached artifact %s: %s", item_id, exc, exc_info=True)
-                    continue
+                encrypted_rows.append((item_id, ciphertext))
+                payload = None
+            if isinstance(payload, dict):
+                cached[item_id] = payload
+        if encrypted_rows:
+            decrypted = await asyncio.to_thread(self._decrypt_many, encrypted_rows)
+        for item_id, payload in decrypted.items():
             if isinstance(payload, dict):
                 cached[item_id] = payload
         return cached
+
+    def _decrypt_many(
+        self,
+        pairs: list[tuple[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        decrypted: dict[str, dict[str, Any]] = {}
+        for item_id, ciphertext in pairs:
+            try:
+                decrypted[item_id] = self._decrypt_payload(ciphertext)
+            except Exception as exc:
+                self.logger.warning("Failed to decrypt cached artifact %s: %s", item_id, exc, exc_info=True)
+        return decrypted
 
 
     @timed

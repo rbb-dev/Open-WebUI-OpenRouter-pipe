@@ -15,9 +15,12 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
+import hashlib
 import logging
 import re
+import threading
 import time
+import weakref
 from contextvars import ContextVar
 from decimal import Decimal, InvalidOperation
 from typing import Any, ClassVar
@@ -60,6 +63,9 @@ PHASE_SUPPORTED_MODELS: tuple[str, ...] = (
 
 # ModelFamily Class
 
+_NO_PIPE_ID = object()
+
+
 class ModelFamily:
     """
     One place for base capabilities + alias mapping (with effort defaults).
@@ -73,7 +79,11 @@ class ModelFamily:
     _DYNAMIC_SPECS: ClassVar[dict[str, dict[str, Any]]] = {}
 
     @classmethod
-    def _normalize_catalog_id(cls, model_id: str, pipe_id: str | None = None) -> str:
+    def _normalize_catalog_id(
+        cls,
+        model_id: str,
+        pipe_id: str | None | object = None,
+    ) -> str:
         m = (model_id or "").strip()
 
         suffix = ""
@@ -83,7 +93,9 @@ class ModelFamily:
         if "/" in m:
             m = m.replace("/", ".")
 
-        if pipe_id is None:
+        if pipe_id is _NO_PIPE_ID:
+            pipe_id = None
+        elif pipe_id is None:
             pipe_id = cls._PIPE_ID.get()
         if pipe_id:
             pref = f"{pipe_id}."
@@ -96,11 +108,11 @@ class ModelFamily:
         return base
 
     @classmethod
-    def _norm(cls, model_id: str, pipe_id: str | None = None) -> str:
+    def _norm(cls, model_id: str, pipe_id: str | None | object = None) -> str:
         return cls._normalize_catalog_id(model_id, pipe_id)
 
     @classmethod
-    def base_model(cls, model_id: str, pipe_id: str | None = None) -> str:
+    def base_model(cls, model_id: str, pipe_id: str | None | object = None) -> str:
         return cls._norm(model_id, pipe_id)
 
     @classmethod
@@ -169,7 +181,7 @@ class ModelFamily:
     @classmethod
     def _lookup_spec(cls, model_id: str) -> dict[str, Any]:
         """Return the stored spec for ``model_id`` or an empty dict."""
-        norm = cls.base_model(model_id)
+        norm = cls.base_model(model_id, _NO_PIPE_ID)
         return cls._DYNAMIC_SPECS.get(cls._resolve_spec_key(norm, cls._DYNAMIC_SPECS)) or {}
 
     @classmethod
@@ -206,6 +218,10 @@ class ModelFamily:
         full = spec.get("full_model") if isinstance(spec, dict) else None
         name = full.get("name") if isinstance(full, dict) else None
         return name if isinstance(name, str) and name else None
+
+
+def _catalog_norm(model_id: str) -> str:
+    return ModelFamily.base_model(sanitize_model_id(model_id), _NO_PIPE_ID)
 
 
 _PHASE_SUPPORTED_MODELS_BASE = frozenset(
@@ -246,6 +262,10 @@ def is_image_output_architecture(architecture: Any) -> bool:
     return not (architecture.get("tokenizer") == "Router" and "text" in modalities)
 
 
+def _fingerprint(api_key: str) -> str:
+    return hashlib.sha256(api_key.encode()).hexdigest()[:32]
+
+
 def _catalog_timeout(valves: Any) -> aiohttp.ClientTimeout:
     from ..core.utils import _DEFAULT_VALVES, http_timeout
 
@@ -284,12 +304,89 @@ class OpenRouterModelRegistry:
     _specs: ClassVar[dict[str, dict[str, Any]]] = {}
     _id_map: ClassVar[dict[str, str]] = {}
     _zdr_model_ids: set[str] | None = None
+    _zdr_rosters: ClassVar[dict[str, set[str]]] = {}
+    _ZDR_KEY: ContextVar[str | None] = ContextVar(
+        "owui_zdr_key_ctx",
+        default=None,
+    )
+    _zdr_attempted_key: ClassVar[str | None] = None
     _last_fetch: float = 0.0
     _lock: asyncio.Lock = asyncio.Lock()
+    _lock_guard: ClassVar[threading.Lock] = threading.Lock()
+    _locks: ClassVar[weakref.WeakKeyDictionary[Any, asyncio.Lock]] = (
+        weakref.WeakKeyDictionary()
+    )
     _next_refresh_after: float = 0.0
     _consecutive_failures: int = 0
     _last_error: str | None = None
     _last_error_time: float = 0.0
+
+    @classmethod
+    def _key_changed(cls, api_key: str) -> bool:
+        return cls._zdr_attempted_key is not None and cls._zdr_attempted_key != _fingerprint(
+            api_key
+        )
+
+    @classmethod
+    def _settled_until(cls, api_key: str, cache_seconds: int) -> float:
+        if not cls._key_changed(api_key):
+            return cls._next_refresh_after or (cls._last_fetch + cache_seconds)
+        return 0.0
+
+    @classmethod
+    def _zdr_roster_for(cls, api_key: str) -> set[str] | None:
+        stored = cls._zdr_rosters.get(_fingerprint(api_key))
+        return set(stored) if stored is not None else None
+
+    @classmethod
+    def arm_zdr_key(cls, api_key: str | None) -> Any:
+        if not api_key:
+            return cls._ZDR_KEY.set(None)
+        return cls._ZDR_KEY.set(_fingerprint(api_key))
+
+    @classmethod
+    def _roster_in_force(cls) -> set[str] | None:
+        fp = cls._ZDR_KEY.get()
+        if fp is None:
+            return cls._zdr_model_ids
+        stored = cls._zdr_rosters.get(fp)
+        return set(stored) if stored is not None else None
+
+    @classmethod
+    def _stamp_zdr_capable(
+        cls,
+        spec: dict[str, Any],
+        norm_id: str,
+        roster: set[str] | None,
+        specs: dict[str, dict[str, Any]],
+    ) -> None:
+        if roster is None:
+            spec.pop("zdr_capable", None)
+            return
+        spec["zdr_capable"] = any(
+            key in roster for key in cls._zdr_candidate_keys(norm_id, specs)
+        )
+
+    @classmethod
+    def _adopt_roster_for(cls, api_key: str) -> None:
+        cls._zdr_model_ids = cls._zdr_roster_for(api_key)
+
+    @classmethod
+    def _catalog_lock(cls) -> asyncio.Lock:
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            return cls._lock
+        existing = cls._locks.get(running)
+        if existing is not None:
+            return existing
+        with cls._lock_guard:
+            existing = cls._locks.get(running)
+            if existing is None:
+                existing = asyncio.Lock()
+                cls._locks[running] = existing
+                cls._lock = existing
+        return existing
 
     @classmethod
     @timed
@@ -308,16 +405,20 @@ class OpenRouterModelRegistry:
         if not api_key:
             raise ValueError("OpenRouter API key is required.")
 
+        cls._ZDR_KEY.set(_fingerprint(api_key))
         now = time.time()
-        next_refresh = cls._next_refresh_after or (cls._last_fetch + cache_seconds)
-        if cls._specs and now < next_refresh:
+        if cls._specs and now < cls._settled_until(api_key, cache_seconds):
+            cls._adopt_roster_for(api_key)
             return
 
-        async with cls._lock:
+        async with cls._catalog_lock():
             now = time.time()
-            next_refresh = cls._next_refresh_after or (cls._last_fetch + cache_seconds)
-            if cls._specs and now < next_refresh:
+            if cls._specs and now < cls._settled_until(api_key, cache_seconds):
+                cls._adopt_roster_for(api_key)
                 return
+            rotating = cls._key_changed(api_key)
+            prior_attempt = cls._zdr_attempted_key
+            cls._zdr_attempted_key = _fingerprint(api_key)
             try:
                 await cls._refresh(
                     session,
@@ -328,9 +429,12 @@ class OpenRouterModelRegistry:
                     valves=valves,
                 )
             except Exception as exc:
+                cls._zdr_attempted_key = prior_attempt
                 cls._record_refresh_failure(exc, cache_seconds)
                 if not cls._models:
                     raise
+                if rotating:
+                    cls._zdr_model_ids = None
                 logger.warning(
                     "OpenRouter catalog refresh failed (%s). Serving %d cached model(s).",
                     exc,
@@ -375,7 +479,8 @@ class OpenRouterModelRegistry:
             raise
 
         data = payload.get("data") or []
-        zdr_model_ids: set[str] | None = cls._zdr_model_ids
+        zdr_model_ids: set[str] | None = cls._zdr_roster_for(api_key)
+        zdr_read_ok = False
         try:
             zdr_model_ids = await cls._fetch_zdr_model_ids(
                 session,
@@ -385,6 +490,7 @@ class OpenRouterModelRegistry:
                 http_referer=http_referer,
                 timeout=_catalog_read_timeout,
             )
+            zdr_read_ok = True
         except Exception as exc:
             logger.warning(
                 "Failed to load OpenRouter ZDR endpoint list: %s", exc, exc_info=True
@@ -399,7 +505,7 @@ class OpenRouterModelRegistry:
                 continue
 
             sanitized = sanitize_model_id(original_id)
-            norm_id = ModelFamily.base_model(sanitized)
+            norm_id = _catalog_norm(original_id)
 
             raw_specs[norm_id] = dict(item)
 
@@ -454,8 +560,6 @@ class OpenRouterModelRegistry:
                 "architecture": architecture,
                 **_base_spec_fields(pricing),
             }
-            if zdr_model_ids is not None:
-                specs[norm_id]["zdr_capable"] = norm_id in zdr_model_ids
 
         models.sort(key=lambda m: str(m.get("name") or "").lower())
         if not models:
@@ -504,12 +608,16 @@ class OpenRouterModelRegistry:
                 models.extend(preserved_image_models)
                 models.sort(key=lambda m: str(m.get("name") or "").lower())
 
+        for norm_id, spec in specs.items():
+            cls._stamp_zdr_capable(spec, norm_id, zdr_model_ids, specs)
+
         cls._models = models
         cls._specs = specs
         cls._id_map = id_map
-        cls._zdr_model_ids = zdr_model_ids
+        if zdr_read_ok:
+            cls._zdr_rosters[_fingerprint(api_key)] = set(zdr_model_ids or ())
+        cls._zdr_model_ids = cls._zdr_roster_for(api_key)
         cls._chat_catalog_norms = chat_catalog_norms
-
         ModelFamily.set_dynamic_specs(specs)
 
     @classmethod
@@ -748,7 +856,7 @@ class OpenRouterModelRegistry:
                 continue
             original_id = original_id.strip()
             sanitized = sanitize_model_id(original_id)
-            norm_id = ModelFamily.base_model(sanitized)
+            norm_id = _catalog_norm(original_id)
             if not norm_id:
                 continue
 
@@ -825,8 +933,9 @@ class OpenRouterModelRegistry:
                 "architecture": architecture,
                 **_base_spec_fields(prior.get("pricing") or pricing, spec={"video_model": item}),
             }
-            if cls._zdr_model_ids is not None:
-                new_specs[norm_id]["zdr_capable"] = norm_id in cls._zdr_model_ids
+            cls._stamp_zdr_capable(
+                new_specs[norm_id], norm_id, cls._roster_in_force(), new_specs
+            )
 
         cls._specs = new_specs
         cls._id_map = new_id_map
@@ -1023,7 +1132,7 @@ class OpenRouterModelRegistry:
                 continue
             original_id = original_id.strip()
             sanitized = sanitize_model_id(original_id)
-            norm_id = ModelFamily.base_model(sanitized)
+            norm_id = _catalog_norm(original_id)
             if not norm_id:
                 continue
 
@@ -1081,8 +1190,9 @@ class OpenRouterModelRegistry:
                 "architecture": architecture,
                 **_base_spec_fields(pricing),
             }
-            if cls._zdr_model_ids is not None:
-                new_specs[norm_id]["zdr_capable"] = norm_id in cls._zdr_model_ids
+            cls._stamp_zdr_capable(
+                new_specs[norm_id], norm_id, cls._roster_in_force(), new_specs
+            )
 
         cls._specs = new_specs
         cls._id_map = new_id_map
@@ -1172,9 +1282,10 @@ class OpenRouterModelRegistry:
     @classmethod
     def zdr_model_ids(cls) -> set[str] | None:
         """Return cached ZDR-capable model ids (or None if unavailable)."""
-        if cls._zdr_model_ids is None:
+        in_force = cls._roster_in_force()
+        if in_force is None:
             return None
-        return set(cls._zdr_model_ids)
+        return set(in_force)
 
     @classmethod
     def zdr_list_available(cls) -> bool:
@@ -1184,7 +1295,7 @@ class OpenRouterModelRegistry:
         for the same condition. Callers that only need to know whether filtering can run
         used to build a full `set()` copy of the list and test it for None.
         """
-        return cls._zdr_model_ids is not None
+        return cls._roster_in_force() is not None
 
     @classmethod
     def _zdr_candidate_keys(cls, norm: str, specs: dict[str, dict[str, Any]]) -> list[str]:
@@ -1228,9 +1339,10 @@ class OpenRouterModelRegistry:
         # fallback is for the ids the catalog does NOT know: the routing variants the
         # pipe itself synthesises (`:nitro`, `:floor`, `:online`), whose endpoints ARE
         # the base model's.
-        if cls._zdr_model_ids is None:
+        in_force = cls._roster_in_force()
+        if in_force is None:
             return None
-        return any(key in cls._zdr_model_ids for key in cls._zdr_candidate_keys(norm, cls._specs))
+        return any(key in in_force for key in cls._zdr_candidate_keys(norm, cls._specs))
 
     @classmethod
     @timed
@@ -1271,8 +1383,7 @@ class OpenRouterModelRegistry:
             model_id = item.get("model_id") or item.get("id")
             if not model_id:
                 continue
-            sanitized = sanitize_model_id(model_id)
-            norm = ModelFamily.base_model(sanitized)
+            norm = _catalog_norm(model_id)
             if norm:
                 model_ids.add(norm)
         return model_ids

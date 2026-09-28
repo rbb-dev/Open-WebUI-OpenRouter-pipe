@@ -2809,157 +2809,169 @@ class VideoGenerationAdapter:
             intent.downgrades.append("frame_plan_dropped_temporary_chat")
             return ["" for _entry in intent.frame_plan]
 
-        for position, entry in enumerate(intent.frame_plan):
-            if entry.source == "uploaded_attachment":
-                thumb_urls.append("")
-                continue
-            if not entry.source.startswith("prior_video_"):
-                thumb_urls.append("")
-                continue
-
-            try:
-                file_id = await self._resolve_prior_video_file_id(
-                    entry, intent=intent, user_obj=user_obj,
-                )
-                if not file_id:
-                    intent.downgrades.append(
-                        f"prior_video_index_{entry.source_index}_unresolvable_at_{position}"
-                    )
+        materialised: dict[str, Path] = {}
+        try:
+            for position, entry in enumerate(intent.frame_plan):
+                if entry.source == "uploaded_attachment":
                     thumb_urls.append("")
                     continue
-
-                tmp_path = await self._resolve_owui_file_path(
-                    file_id=file_id, request=request, user_obj=user_obj,
-                )
-                if tmp_path is None:
-                    intent.downgrades.append(
-                        f"prior_video_download_failed_idx_{entry.source_index}_at_{position}"
-                    )
+                if not entry.source.startswith("prior_video_"):
                     thumb_urls.append("")
                     continue
 
                 try:
-                    if entry.source == "prior_video_first_frame":
-                        target = "first_frame"
-                        ts = None
-                    elif entry.source == "prior_video_last_frame":
-                        target = "last_frame"
-                        ts = None
-                    else:
-                        target = "at_timestamp"
-                        ts = entry.timestamp_seconds
-
-                    frame = await extract_frame(
-                        tmp_path, target=target, timestamp_seconds=ts,
-                        fallback_to_last_on_overshoot=True,
-                        reused_frame_index=reused_frame_index,
-                        logger=self.logger,
+                    file_id = await self._resolve_prior_video_file_id(
+                        entry, intent=intent, user_obj=user_obj,
                     )
-                    if frame.downgrade_note:
-                        intent.downgrades.append(frame.downgrade_note)
-                except FrameExtractionError as exc:
-                    if (
-                        entry.source == "prior_video_first_frame"
-                        and getattr(exc, "pixel_cap", False)
-                    ):
-                        try:
-                            frame = await extract_frame(
-                                tmp_path, target="at_timestamp", timestamp_seconds=0.0,
-                                fallback_to_last_on_overshoot=True,
-                                reused_frame_index="last",
-                                logger=self.logger,
-                            )
-                        except FrameExtractionError:
-                            raise exc
-                        if frame.downgrade_note:
-                            intent.downgrades.append(frame.downgrade_note)
-                    else:
-                        self.logger.warning(
-                            "frame extraction failed for entry %s: %s",
-                            entry.source_index, exc,
-                        )
+                    if not file_id:
                         intent.downgrades.append(
-                            f"frame_extract_failed_idx_{entry.source_index}_at_{position}"
+                            f"prior_video_index_{entry.source_index}_unresolvable_at_{position}"
                         )
                         thumb_urls.append("")
                         continue
-                finally:
-                    tmp_path.unlink(missing_ok=True)
 
-                frame_file_id = await self._pipe._file_gateway.upload_to_owui_storage(
-                    request=request,
-                    user=user_obj,
-                    file_data=frame.image_bytes,
-                    filename=f"intent-frame-{entry.source}-{entry.source_index}.png",
-                    mime_type="image/png",
-                    chat_id=chat_id or None,
-                    message_id=message_id or None,
-                )
-                if not frame_file_id:
-                    intent.downgrades.append(
-                        f"frame_upload_failed_idx_{entry.source_index}_at_{position}"
-                    )
-                    thumb_urls.append("")
-                    continue
+                    tmp_path = materialised.get(file_id)
+                    if tmp_path is None:
+                        tmp_path = await self._resolve_owui_file_path(
+                            file_id=file_id, request=request, user_obj=user_obj,
+                        )
+                        if tmp_path is not None:
+                            materialised[file_id] = tmp_path
+                    if tmp_path is None:
+                        intent.downgrades.append(
+                            f"prior_video_download_failed_idx_{entry.source_index}_at_{position}"
+                        )
+                        thumb_urls.append("")
+                        continue
 
-                intent.frames_extracted += 1
+                    try:
+                        if entry.source == "prior_video_first_frame":
+                            target = "first_frame"
+                            ts = None
+                        elif entry.source == "prior_video_last_frame":
+                            target = "last_frame"
+                            ts = None
+                        else:
+                            target = "at_timestamp"
+                            ts = entry.timestamp_seconds
 
-                if entry.target in ("first_frame", "last_frame"):
-                    extracted = getattr(frame, "resolved_target", entry.target)
-                    if extracted not in ("first_frame", "last_frame"):
-                        extracted = entry.target
-                    fi_list = video_meta.setdefault("frame_images", [])
-                    if isinstance(fi_list, list):
-                        fi_list.append({
-                            "id": frame_file_id,
-                            "frame_type": extracted,
-                            "name": f"intent-frame-{extracted}.png",
-                            "content_type": "image/png",
-                        })
-                elif entry.target == "input_reference":
-                    ir_list = video_meta.setdefault(_reference_write_key(video_meta), [])
-                    if isinstance(ir_list, list):
-                        ir_list.append({
-                            "id": frame_file_id,
-                            "name": "intent-frame-input_reference.png",
-                            "content_type": "image/png",
-                        })
+                        frame = await extract_frame(
+                            tmp_path, target=target, timestamp_seconds=ts,
+                            fallback_to_last_on_overshoot=True,
+                            reused_frame_index=reused_frame_index,
+                            logger=self.logger,
+                        )
+                        if frame.downgrade_note:
+                            intent.downgrades.append(frame.downgrade_note)
+                    except FrameExtractionError as exc:
+                        if (
+                            entry.source == "prior_video_first_frame"
+                            and getattr(exc, "pixel_cap", False)
+                        ):
+                            try:
+                                frame = await extract_frame(
+                                    tmp_path, target="at_timestamp", timestamp_seconds=0.0,
+                                    fallback_to_last_on_overshoot=True,
+                                    reused_frame_index="last",
+                                    logger=self.logger,
+                                )
+                            except FrameExtractionError:
+                                raise exc
+                            if frame.downgrade_note:
+                                intent.downgrades.append(frame.downgrade_note)
+                        else:
+                            self.logger.warning(
+                                "frame extraction failed for entry %s: %s",
+                                entry.source_index, exc,
+                            )
+                            intent.downgrades.append(
+                                f"frame_extract_failed_idx_{entry.source_index}_at_{position}"
+                            )
+                            thumb_urls.append("")
+                            continue
 
-                try:
-                    thumb = await asyncio.to_thread(make_thumbnail, frame.image_bytes)
-                    thumb_file_id = await self._pipe._file_gateway.upload_to_owui_storage(
+                    frame_file_id = await self._pipe._file_gateway.upload_to_owui_storage(
                         request=request,
                         user=user_obj,
-                        file_data=thumb.image_bytes,
-                        filename=f"intent-thumb-{entry.source}-{entry.source_index}.jpg",
-                        mime_type="image/jpeg",
+                        file_data=frame.image_bytes,
+                        filename=f"intent-frame-{entry.source}-{entry.source_index}.png",
+                        mime_type="image/png",
                         chat_id=chat_id or None,
                         message_id=message_id or None,
                     )
-                    if thumb_file_id:
-                        thumb_urls.append(f"/api/v1/files/{thumb_file_id}/content")
-                    else:
+                    if not frame_file_id:
                         intent.downgrades.append(
-                            f"thumbnail_upload_failed_idx_{entry.source_index}_at_{position}"
+                            f"frame_upload_failed_idx_{entry.source_index}_at_{position}"
                         )
                         thumb_urls.append("")
+                        continue
+
+                    intent.frames_extracted += 1
+
+                    if entry.target in ("first_frame", "last_frame"):
+                        extracted = getattr(frame, "resolved_target", entry.target)
+                        if extracted not in ("first_frame", "last_frame"):
+                            extracted = entry.target
+                        fi_list = video_meta.setdefault("frame_images", [])
+                        if isinstance(fi_list, list):
+                            fi_list.append({
+                                "id": frame_file_id,
+                                "frame_type": extracted,
+                                "name": f"intent-frame-{extracted}.png",
+                                "content_type": "image/png",
+                            })
+                    elif entry.target == "input_reference":
+                        ir_list = video_meta.setdefault(_reference_write_key(video_meta), [])
+                        if isinstance(ir_list, list):
+                            ir_list.append({
+                                "id": frame_file_id,
+                                "name": "intent-frame-input_reference.png",
+                                "content_type": "image/png",
+                            })
+
+                    try:
+                        thumb = await asyncio.to_thread(make_thumbnail, frame.image_bytes)
+                        thumb_file_id = await self._pipe._file_gateway.upload_to_owui_storage(
+                            request=request,
+                            user=user_obj,
+                            file_data=thumb.image_bytes,
+                            filename=f"intent-thumb-{entry.source}-{entry.source_index}.jpg",
+                            mime_type="image/jpeg",
+                            chat_id=chat_id or None,
+                            message_id=message_id or None,
+                        )
+                        if thumb_file_id:
+                            thumb_urls.append(f"/api/v1/files/{thumb_file_id}/content")
+                        else:
+                            intent.downgrades.append(
+                                f"thumbnail_upload_failed_idx_{entry.source_index}_at_{position}"
+                            )
+                            thumb_urls.append("")
+                    except Exception as exc:
+                        self.logger.warning(
+                            "thumbnail generation failed for entry %s: %s",
+                            entry.source_index, exc, exc_info=True,
+                        )
+                        intent.downgrades.append(
+                            f"thumbnail_generation_failed_idx_{entry.source_index}_at_{position}"
+                        )
+                        thumb_urls.append("")
+                except asyncio.CancelledError:
+                    raise
                 except Exception as exc:
                     self.logger.warning(
-                        "thumbnail generation failed for entry %s: %s",
-                        entry.source_index, exc, exc_info=True,
+                        "_materialise_frame_plan entry failed (degrade-open): %s", exc, exc_info=True
                     )
-                    intent.downgrades.append(
-                        f"thumbnail_generation_failed_idx_{entry.source_index}_at_{position}"
-                    )
+                    intent.downgrades.append("materialise_failed")
                     thumb_urls.append("")
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                self.logger.warning(
-                    "_materialise_frame_plan entry failed (degrade-open): %s", exc, exc_info=True
-                )
-                intent.downgrades.append("materialise_failed")
-                thumb_urls.append("")
+        finally:
+            for path in materialised.values():
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError as exc:
+                    self.logger.warning(
+                        "prior-video temp unlink failed for %s: %s", path, exc,
+                    )
 
         return thumb_urls
 

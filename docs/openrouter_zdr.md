@@ -55,7 +55,7 @@ When `ALLOW_USER_ZDR_OVERRIDE` is enabled (and `ZDR_ENFORCE` is disabled), users
 
 ## When the ZDR list is stale, and what that means for enforcement
 
-One rule governs both ways a read can fail: **a read that did not succeed carries the last read that did.** A `500`/`429` on `/models`, or an outage of `/endpoints/zdr`, leaves the previous endpoint list in force.
+One rule governs both ways a read can fail: **a read that did not succeed carries the last read that did.** A `500`/`429` on `/models`, or an outage of `/endpoints/zdr`, leaves the previous endpoint list in force. That carry-forward is **per credential**: the pipe keeps one last-good list per OpenRouter account, so a different account sees no list rather than another's, and is refused while `ZDR_ENFORCE` is on until its own read succeeds. A `/models` failure is the same case.
 
 This **knowingly reverses** an earlier deliberate choice (commit `1f75dc1`, 2026-05-03) that wiped the list on failure and failed closed. The reason it was reversed: the wipe was invisible and much wider than it looked. `ensure_loaded` already serves the cached catalogue across a failed refresh, so nothing appeared broken — yet with `ZDR_ENFORCE` on, *every* chat was refused with a "restricted" card, including a model that had been answering for hours; a task silently returned its default; a Fusion run came back with every member failed for a reason no member mentioned. With `ZDR_MODELS_ONLY` on, filtering switched off and non-ZDR models became requestable again. Because `_refresh` returns normally on a ZDR-only outage, this recurred on **every** refresh, indefinitely, with no backoff.
 
@@ -68,8 +68,8 @@ The security argument does not rest on the list's freshness, and that is what ma
 ### The limits, stated plainly
 
 - A model that **genuinely lost** its ZDR endpoints is noticed only once a read succeeds. The carry-forward can lag reality by at most one cache interval; the "bounded carry-over" and "staleness deadline" alternatives were both considered and rejected (the first is inert — a retired model cannot be requested; the second re-creates the very outage being removed).
-- The image and video catalogue writers read the same kept list, so a media model can also carry a ZDR verdict from a list that is no longer current. This was a conscious choice for one rule over two.
-- `spec["zdr_capable"]` and `is_zdr_capable()` agree for every model in the **current** roster. For a model the latest `/models` read dropped, the spec key is simply absent while the method still answers from the carried list. Nothing in the pipe reads the key, so this is bookkeeping rather than behaviour — but it is why the two are not claimed to agree in every state.
+- The image and video catalogue writers read the same kept list, so a media model can also carry a ZDR verdict from a list that is no longer current. This was a conscious choice for one rule over two. A spec that a refresh *preserves* (a media model no longer in `/models`) has its `zdr_capable` key re-stamped **from that carried roster** rather than carried over from the previous spec, so the key and the gate still answer alike; a refresh with no roster in force at all leaves the key absent for every spec, because a failed read does not mean "not zero-retention".
+- `spec["zdr_capable"]` and `is_zdr_capable()` do not disagree in any state. They are reconciled from the same authority on every refresh: the spec key is stamped from the gate's own candidate-key set, so a `~`-prefixed `-latest` alias row — the shape the default Fusion panels are made of — is stamped the way the gate answers it, not by plain membership.
 
 ### If you are reading a note that says the list is cleared on failure
 

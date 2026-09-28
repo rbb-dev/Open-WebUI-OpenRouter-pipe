@@ -114,6 +114,9 @@ class FusionCollector:
                     })
 
 
+_UNSET: Any = object()
+
+
 @dataclass(slots=True)
 class FusionInnerInvocation:
     orchestrator: Any
@@ -138,10 +141,11 @@ class FusionInnerInvocation:
     # could leave one panel member routing with ZDR and another without it, in one turn.
     user_valves: Any = None
     rejected_user_valves: list = field(default_factory=list)
+    user_model: Any = _UNSET
+    user_model_resolved: bool = False
+    attachment_bytes: dict = field(default_factory=dict)
     no_usable_member: bool = False
     tool_breaker: Any = None
-    user_model: Any = None
-    user_model_resolved: bool = False
 
 
 async def run_fusion_member(
@@ -266,6 +270,7 @@ async def run_fusion_member(
             rejected_user_valves=list(invocation.rejected_user_valves),
             resolved_user_model=invocation.user_model,
             resolved_user_done=invocation.user_model_resolved,
+            attachment_bytes=invocation.attachment_bytes,
         )
         content = result if isinstance(result, str) else ""
         if captured_files:

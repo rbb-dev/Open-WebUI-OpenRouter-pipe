@@ -36,6 +36,8 @@ _warned_import_sites: set[str] = set()
 
 
 def _socket_dashboard_enabled(pipe: Any) -> bool:
+    if not bool(getattr(getattr(pipe, "valves", None), "ENABLE_PLUGIN_SYSTEM", False)):
+        return False
     valves = getattr(pipe, "valves", None)
     if valves is None or not hasattr(valves, "PIPE_DASHBOARD_ENABLE"):
         return True

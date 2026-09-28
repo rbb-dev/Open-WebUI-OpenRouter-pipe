@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
+import weakref
 from typing import Any
 
 import aiohttp
@@ -20,6 +22,26 @@ _MODALITY_FETCH_CONCURRENCY = 6
 _VIDEO_SWEEP_BUDGET_SECONDS = 45
 
 _VIDEO_CATALOG_LOCK = asyncio.Lock()
+_video_catalog_lock_guard = threading.Lock()
+_video_catalog_locks: weakref.WeakKeyDictionary[Any, asyncio.Lock] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _current_video_catalog_lock() -> asyncio.Lock:
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        return _VIDEO_CATALOG_LOCK
+    existing = _video_catalog_locks.get(running)
+    if existing is not None:
+        return existing
+    with _video_catalog_lock_guard:
+        existing = _video_catalog_locks.get(running)
+        if existing is None:
+            existing = asyncio.Lock()
+            _video_catalog_locks[running] = existing
+    return existing
 
 
 async def ensure_video_catalog_loaded(
@@ -36,7 +58,7 @@ async def ensure_video_catalog_loaded(
         if last_attempt and (time.time() - last_attempt) < cache_seconds:
             return
 
-    async with _VIDEO_CATALOG_LOCK:
+    async with _current_video_catalog_lock():
         if not getattr(valves, "ENABLE_VIDEO_GENERATION", False):
             if OpenRouterModelRegistry.last_video_fetch() > 0:
                 OpenRouterModelRegistry.register_video_models([])

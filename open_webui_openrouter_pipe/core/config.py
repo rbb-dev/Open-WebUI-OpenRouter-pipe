@@ -1124,7 +1124,7 @@ class Valves(BaseModel):
             "A hidden model is also refused if requested directly. It never sends provider.zdr=true -- "
             "use Enforce ZDR routing for that. Filtering is skipped only if the ZDR list has never been read; "
             "if a later read fails, the last list read successfully stays in force and filtering carries on from it. "
-            "Video models are filtered like any other model."
+            "Video models are filtered like any other model. The list is per credential: the pipe re-reads whenever the credential that produced the list in force is not the credential in hand, so a different account sees no list rather than another's, and is refused while Enforce ZDR routing is on until its own read succeeds."
         ),
     )
     ZDR_ENFORCE: bool = Field(
@@ -1135,7 +1135,7 @@ class Valves(BaseModel):
             "does not have any ZDR endpoints. Requests are refused outright only if the ZDR list has never been read; "
             "if a later read fails, the last list read successfully stays in force, so an outage does not lock out a model "
             "that was answering a moment ago -- and every request still carries provider.zdr=true, which is what makes "
-            "OpenRouter hold it to a no-retention endpoint."
+            "OpenRouter hold it to a no-retention endpoint. The list is per credential: the pipe re-reads whenever the credential that produced the list in force is not the credential in hand, so a different account sees no list rather than another's, and is refused while Enforce ZDR routing is on until its own read succeeds."
         ),
     )
     ALLOW_USER_ZDR_OVERRIDE: bool = Field(
@@ -1143,7 +1143,7 @@ class Valves(BaseModel):
         title="Allow user ZDR override",
         description=(
             "When enabled, users can toggle 'Request ZDR' per chat. "
-            "If Enforce ZDR routing is enabled, user overrides are ignored."
+            "If Enforce ZDR routing is enabled, user overrides are ignored. The list is per credential: the pipe re-reads whenever the credential that produced the list in force is not the credential in hand, so a different account sees no list rather than another's, and is refused while Enforce ZDR routing is on until its own read succeeds."
         ),
     )
     VARIANT_MODELS: str = Field(

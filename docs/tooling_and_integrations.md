@@ -89,7 +89,7 @@ Tool *schemas* are assembled by the tool registry builder and attached to the ou
    - Direct tools are only advertised when `__event_call__` is available; without an active Socket.IO session there is no safe execution path, so the pipe skips them.
 
 3. **Extra tools** (`extra_tools`)
-   - A caller-provided list of already OpenAI-format tool specs is offered as they arrive: in Pipeline mode an extra tool is offered only when a tool of that name can run it; a spec whose name several resolved Open WebUI tools share is left out, as on the request route (non-dict entries are ignored).
+   - A caller-provided list of already OpenAI-format tool specs is offered as they arrive: in Pipeline mode an extra tool is offered only when a tool of that name can run it; a spec whose name several registry entries share is left out, as on the request route (non-dict entries are ignored).
 
 ### Duplicates and collisions
 

@@ -239,43 +239,46 @@ def _build_collision_safe_tool_specs_and_registry(
         entry for entry in builtin_registry.values() if isinstance(entry, dict)
     ]
 
+    def _indexed_name(entry: dict[str, Any]) -> str | None:
+        _spec = entry.get("spec")
+        if not isinstance(_spec, dict):
+            return None
+        _name = _spec.get("name")
+        return _name if isinstance(_name, str) else None
+
+    _builtin_index: dict[str, dict[str, Any]] = {}
+    for _e in builtin_entries:
+        _name = _indexed_name(_e)
+        if _name is not None:
+            _builtin_index.setdefault(_name, _e)
+    _owui_index: dict[str, dict[str, Any]] = {}
+    _owui_name_counts: dict[str, int] = {}
+    for _, _e in owui_entries:
+        _name = _indexed_name(_e)
+        if _name is not None:
+            _owui_index.setdefault(_name, _e)
+            _owui_name_counts[_name] = _owui_name_counts.get(_name, 0) + 1
+    _direct_index: dict[str, dict[str, Any]] = {}
+    for _e in direct_entries:
+        _name = _indexed_name(_e)
+        if _name is not None:
+            _direct_index.setdefault(_name, _e)
+
     def _pick_executor(name: str, *, prefer: str | None = None) -> dict[str, Any] | None:
-        if prefer == "builtin":
-            for e in builtin_entries:
-                spec = e.get("spec")
-                if isinstance(spec, dict) and spec.get("name") == name:
-                    return e
-        if prefer == "owui":
-            for _, e in owui_entries:
-                spec = e.get("spec")
-                if isinstance(spec, dict) and spec.get("name") == name:
-                    return e
-        if prefer == "direct":
-            for e in direct_entries:
-                spec = e.get("spec")
-                if isinstance(spec, dict) and spec.get("name") == name:
-                    return e
-        # Default preference order for request/extra tools.
-        for e in builtin_entries:
-            spec = e.get("spec")
-            if isinstance(spec, dict) and spec.get("name") == name:
-                return e
-        for _, e in owui_entries:
-            spec = e.get("spec")
-            if isinstance(spec, dict) and spec.get("name") == name:
-                return e
-        for e in direct_entries:
-            spec = e.get("spec")
-            if isinstance(spec, dict) and spec.get("name") == name:
-                return e
-        return None
+        if prefer == "builtin" and name in _builtin_index:
+            return _builtin_index[name]
+        if prefer == "owui" and name in _owui_index:
+            return _owui_index[name]
+        if prefer == "direct" and name in _direct_index:
+            return _direct_index[name]
+        if name in _builtin_index:
+            return _builtin_index[name]
+        if name in _owui_index:
+            return _owui_index[name]
+        return _direct_index.get(name)
 
     def _registry_tools_named(name: str) -> int:
-        return sum(
-            1
-            for _, entry in owui_entries
-            if isinstance(entry.get("spec"), dict) and entry["spec"].get("name") == name
-        )
+        return _owui_name_counts.get(name, 0)
 
     candidates: list[dict[str, Any]] = []
     resolved_request_names: set[str] = set()

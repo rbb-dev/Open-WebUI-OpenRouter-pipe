@@ -17,6 +17,7 @@ test that goes red on a reword and still cannot see a broken latch.
 from __future__ import annotations
 
 import logging
+import types
 
 import pytest
 
@@ -116,6 +117,16 @@ class TestDashboardSocketImportGuards:
 
         monkeypatch.setattr(builtins, "__import__", _blocking_import)
         dashboard_socket._warned_import_sites.clear()
+        # These seams gate on the master switch before they reach the import, so a pipe
+        # carrying it is what lets the driver get as far as the seam under test.
+        monkeypatch.setattr(
+            dashboard_socket,
+            "_get_pipe",
+            lambda: types.SimpleNamespace(
+                id="test-pipe",
+                valves=types.SimpleNamespace(ENABLE_PLUGIN_SYSTEM=True),
+            ),
+        )
 
         try:
             with caplog.at_level(logging.WARNING, logger=dashboard_socket.logger.name):

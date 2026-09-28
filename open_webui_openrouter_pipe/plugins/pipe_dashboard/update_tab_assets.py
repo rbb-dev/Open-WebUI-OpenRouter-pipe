@@ -59,6 +59,7 @@ UPDATE_TAB_JS = """
       incompatible_owui: 'This release needs a newer Open WebUI than this server runs. Upgrade Open WebUI first.',
       update_in_progress: 'Another update is already running. Wait for it to finish, then press Check now.',
       disabled: 'Updates are switched off by the "Enable the Update tab" valve.',
+      plugin_system_off: 'The plugin system is switched off, so no Pipe Dashboard action can run. Turn "Enable plugin system" back on in the Config tab.',
       valve_unreadable: 'The stored update settings could not be read, so every stored setting has fallen back to its default and every update action is refused until the server can read it again. A rotated WEBUI_SECRET_KEY with valve encryption on does this; the server log has the warning.',
       bad_repo_valve: 'The update repo valve is not a valid owner/repo value. Fix it in the Config tab.',
       repo_not_found: 'GitHub has no such repo or no releases for it. Check the update repo valve.',

@@ -1554,13 +1554,6 @@ def test_strictify_schema_helpers():
     assert deduped == [{"type": "function", "name": "a", "data": 2}]
 
 
-def test_decode_payload_bytes_rejects_headerless_ciphertext(pipe_instance):
-    pipe = pipe_instance
-    legacy_bytes = b'{"type":"reasoning"}'
-    with pytest.raises(ValueError, match="Invalid artifact payload flag"):
-        pipe._artifact_store._decode_payload_bytes(legacy_bytes)
-
-
 def _build_encryption_ready_pipe(pipe: ow.Pipe) -> ow.Pipe:
     pipe._artifact_store._encryption_key = "a" * 32  # type: ignore[attr-defined]
     pipe._artifact_store._encrypt_all = True  # type: ignore[attr-defined]

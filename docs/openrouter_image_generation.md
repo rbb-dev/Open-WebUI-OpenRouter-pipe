@@ -79,7 +79,10 @@ will be removed from the dropdown immediately.
 7. The chat shows the generated image inline (typically 5–30 seconds).
    The image renders as a normal image attachment that you can right-
    click to download, copy, or open full-size. On models whose providers
-   render in passes, the status line reports each preview as it arrives.
+   render in passes, the status line reports each preview as it arrives —
+   for a request that asks for one image and carries no input reference
+   (see [Previews, not partial results](#previews-not-partial-results) for
+   the two cases that suppress it).
 
 ### Model-specific help in chat
 
@@ -1476,7 +1479,11 @@ refused rather than sent.
 Some companies render an image in passes and publish that they can send
 it as it goes. Where every company that could serve the request does,
 the request asks for that form and each preview is reported on the
-status line. A model that draws in text rather than pixels — SVG —
+status line — provided the request asks for one image and carries no
+input reference; see [Previews, not partial
+results](#previews-not-partial-results) for what suppresses it
+otherwise. A `n` sent as a quoted number (`"2"`) is not a count to the
+pipe and does not suppress previews. A model that draws in text rather than pixels — SVG —
 streams that text instead of preview pictures, and that is reported once
 as `Drawing the image…`. No model published today does both: the only
 endpoints offering the streamed form are OpenAI's, and they send preview
@@ -1789,7 +1796,13 @@ with a picture as well as text.
   `supports_streaming: true` on their endpoint record. Where every
   endpoint that could serve the request publishes it, the pipe asks for
   the streamed form and reports each preview as a status line, so the
-  chat shows movement instead of a spinner. A model that streams a
+  chat shows movement instead of a spinner — provided the request asks
+  for one image and carries no input reference. The carve-out fires only
+  when `n` is a non-boolean `int` greater than 1, so `n` absent, `1`, a
+  value that is not an `int` at all, or an `int` of 0 or less all stream;
+  a `n` sent as a quoted number such as `"2"` is not a count to the pipe
+  and does not suppress previews. A request that carries an input
+  reference does not stream either, whatever `n` says. A model that streams a
   text-based format instead of preview pictures — SVG — sends text
   chunks, which OpenRouter's images API documents as its own event; the
   pipe reports that once as "Drawing the image…". No recorded contract

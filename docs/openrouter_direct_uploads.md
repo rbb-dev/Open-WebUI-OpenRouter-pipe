@@ -142,10 +142,10 @@ To make Direct Uploads behave consistently, the companion filter therefore:
   - Diverted uploads are forwarded to OpenRouter as direct inputs by the pipe (see next sections).
   - Any non-diverted uploads (unsupported type, allowlist mismatch, user valve off, etc.) remain on the normal OWUI path and may still be processed by File Context when enabled.
 
-### 2) Pipe injection (main chat request only)
+### 2) Pipe injection (the outer request and every internal-Fusion stage)
 
 The pipe reads those references and:
-- Loads bytes from Open WebUI storage by file `id`
+- Loads bytes from Open WebUI storage by file `id` — once per turn, and reuses those bytes for every stage: the outer request, each internal-Fusion panel member, the judge, the judge's repair pass and the synthesis. The format sniffing and the Direct Audio Format Allowlist check are *not* memoised: they run on every stage.
 - Injects the attachment(s) into the **last user message** in the outgoing request
 
 For safety/portability, OpenRouter never receives an internal Open WebUI URL. Any internal `/api/v1/files/<id>/content` reference is inlined to a `data:<mime>;base64,...` payload before sending upstream.

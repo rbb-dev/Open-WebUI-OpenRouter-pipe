@@ -543,6 +543,7 @@ class StreamingHandler:
         unhandled_citation_notified = False
         chat_id = metadata.get("chat_id")
         message_id = metadata.get("message_id")
+        reply_key = (chat_id, message_id)
         offered_function_names = {
             str(t.get("name"))
             for t in (body.tools or [])
@@ -2842,7 +2843,15 @@ class StreamingHandler:
                     )
                 )
                 if hand_back and chat_id and message_id and not metadata.get("task"):
-                    reply_key = (chat_id, message_id)
+                    hand_back_seen = self._pipe._hand_back_seen
+                    now_seen = time.monotonic()
+                    hand_back_seen[reply_key] = now_seen
+                    if now_seen >= self._pipe._hand_back_swept_at:
+                        self._pipe._hand_back_swept_at = now_seen + 3600.0
+                        for stale_key, stale_at in list(hand_back_seen.items()):
+                            if now_seen - stale_at > 3600.0:
+                                hand_back_seen.pop(stale_key, None)
+                                self._pipe._hand_back_counts.pop(stale_key, None)
                     counts = self._pipe._hand_back_counts
                     max_keys = max(
                         self._pipe._HAND_BACK_MAX_KEYS,
@@ -2855,6 +2864,13 @@ class StreamingHandler:
                                 break
                         else:
                             counts.pop(next(iter(counts)), None)
+                    while len(hand_back_seen) > max_keys:
+                        for orphan in list(hand_back_seen):
+                            if orphan != reply_key and orphan not in counts:
+                                hand_back_seen.pop(orphan, None)
+                                break
+                        else:
+                            break
                     spent = counts[reply_key] = min(
                         counts.get(reply_key, 0) + 1, valves.MAX_FUNCTION_CALL_LOOPS + 1
                     )
@@ -3696,7 +3712,9 @@ class StreamingHandler:
                 and not error_occurred
                 and not was_cancelled
             ):
-                self._pipe._hand_back_counts.pop((chat_id, message_id), None)
+                _finished_key = (chat_id, message_id)
+                self._pipe._hand_back_counts.pop(_finished_key, None)
+                self._pipe._hand_back_seen.pop(_finished_key, None)
 
             reply_over = bool(
                 terminal and not handed_back_for_retry and message_id and is_temporary_chat(chat_id)

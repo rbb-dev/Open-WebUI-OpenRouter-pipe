@@ -9,7 +9,9 @@ already live in the chat catalog).
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
+import weakref
 from typing import Any
 
 import aiohttp
@@ -22,6 +24,26 @@ from .image_client import OpenRouterImageClient
 _warned_image_catalog: set[str] = set()
 
 _image_catalog_lock = asyncio.Lock()
+_image_catalog_lock_guard = threading.Lock()
+_image_catalog_locks: weakref.WeakKeyDictionary[Any, asyncio.Lock] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _current_image_catalog_lock() -> asyncio.Lock:
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        return _image_catalog_lock
+    existing = _image_catalog_locks.get(running)
+    if existing is not None:
+        return existing
+    with _image_catalog_lock_guard:
+        existing = _image_catalog_locks.get(running)
+        if existing is None:
+            existing = asyncio.Lock()
+            _image_catalog_locks[running] = existing
+    return existing
 
 _SWEEP_BUDGET_SECONDS = 45
 """How long the whole published-contract sweep may take.
@@ -66,7 +88,7 @@ async def ensure_image_catalog_loaded(
         if not stale_models and not stale_contracts:
             return
 
-    async with _image_catalog_lock:
+    async with _current_image_catalog_lock():
         if not getattr(valves, "ENABLE_OPENROUTER_IMAGE_GENERATION", False):
             if OpenRouterModelRegistry.last_image_fetch() > 0:
                 OpenRouterModelRegistry.register_image_models([])

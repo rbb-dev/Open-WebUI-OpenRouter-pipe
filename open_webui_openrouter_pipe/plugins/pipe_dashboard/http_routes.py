@@ -32,6 +32,9 @@ _registration_lock = threading.Lock()
 _PD_COARSE_MIN_INTERVAL = 0.25
 _coarse_state: dict[str, float] = {}
 
+_off_audit_state: dict[str, float] = {}
+_PD_OFF_AUDIT_EVERY_S = 300.0
+
 _PD_RECONCILE_BACKOFF_S = 5.0
 
 _routes_get_pipe: Any = None
@@ -50,6 +53,23 @@ def clear_routes_pipe_getter(instance: Any, name: str) -> None:
     current = _routes_get_pipe
     if current is None or current == getattr(instance, name, None):
         _routes_get_pipe = None
+
+
+def _plugins_enabled(pipe: Any) -> bool:
+    return bool(getattr(getattr(pipe, "valves", None), "ENABLE_PLUGIN_SYSTEM", False))
+
+
+def _audit_off(user: Any, action: str, client_ip: Any) -> None:
+    from ...core.warn_latch import warn_level
+    from .actions import _scrub
+    from .actions import logger as _actions_logger
+
+    uid = str(getattr(user, "id", None) or "-")
+    _actions_logger.log(
+        warn_level(_off_audit_state, f"{uid}|plugin_system_off", cooldown_s=_PD_OFF_AUDIT_EVERY_S),
+        "pipe_dashboard action user=%s action=%s outcome=plugin_system_off ip=%s args=-",
+        _scrub(uid), _scrub(action), _scrub(client_ip),
+    )
 
 
 def clear_fresh_dispatch(pipe: Any) -> None:
@@ -214,10 +234,13 @@ async def _action_route(
     from fastapi.responses import JSONResponse
 
     user = await bearer_user(request)
+    pipe = _routes_get_pipe() if _routes_get_pipe else None
+    if not _plugins_enabled(pipe):
+        _audit_off(user, body.action, _client_ip(request))
+        return JSONResponse({"error": "plugin_system_off"}, status_code=404)
     if _coarse_rate_limited(user.id):
         _audit(user, body.action, "coarse_rate_limited", _client_ip(request))
         raise HTTPException(status_code=429)
-    pipe = _routes_get_pipe() if _routes_get_pipe else None
     fid = getattr(pipe, "id", None) if pipe is not None else None
     if body.action not in ACTIONS and pipe is not None and fid:
         dispatch, pipe = await _current_dispatch(request, user, pipe, fid, body.action)
