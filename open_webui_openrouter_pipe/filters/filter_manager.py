@@ -193,6 +193,35 @@ _REPLACE_IMPORTS_REFUSAL = (
 )
 
 
+class _FilterEnumerationUnavailable(RuntimeError):
+    pass
+
+
+def _is_install_enumeration_failure(exc: BaseException) -> bool:
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        if isinstance(current, _FilterEnumerationUnavailable):
+            return True
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _newest_marked_row(rows, marker, *, prefer_id=None, tie_break_id=False):
+    candidates = [row for row in rows or [] if marker in (getattr(row, "content", "") or "")]
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda row: (
+            bool(getattr(row, "is_active", False)),
+            bool(prefer_id is not None and getattr(row, "id", None) == prefer_id),
+            int(getattr(row, "updated_at", 0) or 0),
+        ) + ((str(getattr(row, "id", "") or ""),) if tie_break_id else ()),
+    )
+
+
 class FilterManager:
     """Manages OWUI filter functions for the OpenRouter pipe.
 
@@ -201,6 +230,10 @@ class FilterManager:
     """
 
     _provider_routing_state_hash: str = ""
+
+    _unresolved_image_filter_ids: frozenset[str] = frozenset()
+    _unresolved_fusion_filter_id: bool = False
+    _write_not_installed: bool = False
 
     def __init__(
         self,
@@ -218,11 +251,21 @@ class FilterManager:
         self._pipe = pipe
         self._valves = valves
         self.logger = logger
+        self._unresolved_image_filter_ids = frozenset()
+        self._unresolved_fusion_filter_id = False
 
     @property
     def valves(self) -> Any:
         live = getattr(self._pipe, "valves", None)
         return self._valves if live is None else live
+
+    @property
+    def unresolved_image_filter_ids(self) -> frozenset[str]:
+        return self._unresolved_image_filter_ids
+
+    @property
+    def unresolved_fusion_filter_id(self) -> bool:
+        return self._unresolved_fusion_filter_id
 
 
     @staticmethod
@@ -426,6 +469,7 @@ class FilterManager:
         primary_marker: str | None = None,
         prefer_id: str | None = None,
         rows: list[Any] | None = None,
+        tie_break_id: bool = False,
     ) -> str | None:
         """Generic filter install/update lifecycle shared by all filter types.
 
@@ -454,19 +498,20 @@ class FilterManager:
         if rows is None:
             try:
                 filters = await Functions.get_functions_by_type("filter", active_only=False)
-            except Exception:
+            except Exception as exc:
                 self.logger.warning(
                     "Cannot enumerate OWUI filter functions; %s will not be installed or updated",
                     log_label,
                     exc_info=True,
                 )
-                return None
+                raise _FilterEnumerationUnavailable(str(exc)) from exc
         else:
             filters = rows
 
         return await self._install_from_rows(
             filters, desired_source, desired_name, desired_meta, preferred_id,
             auto_install_valve, log_label, matches_candidate, primary_marker, prefer_id,
+            tie_break_id,
         )
 
     def _validate_before_write(self, desired_source: str, log_label: str) -> None:
@@ -486,23 +531,24 @@ class FilterManager:
         matches_candidate: Callable[[str], bool],
         primary_marker: str | None,
         prefer_id: str | None = None,
+        tie_break_id: bool = False,
     ) -> str | None:
         from open_webui.models.functions import Functions  # type: ignore
 
         candidates = [f for f in filters if matches_candidate(getattr(f, "content", ""))]
         chosen = None
         if candidates:
+            effective_marker = ""
             if primary_marker:
                 marked = [f for f in candidates if primary_marker in (getattr(f, "content", "") or "")]
                 if marked:
                     candidates = marked
-            chosen = max(
+                    effective_marker = primary_marker
+            chosen = _newest_marked_row(
                 candidates,
-                key=lambda f: (
-                    bool(getattr(f, "is_active", False)),
-                    prefer_id is not None and getattr(f, "id", None) == prefer_id,
-                    int(getattr(f, "updated_at", 0) or 0),
-                ),
+                effective_marker,
+                prefer_id=prefer_id,
+                tie_break_id=tie_break_id,
             )
             if len(candidates) > 1:
                 self.logger.warning(
@@ -553,6 +599,7 @@ class FilterManager:
             if not created:
                 created = await Functions.get_function_by_id(candidate_id)
             if not created:
+                self._write_not_installed = True
                 return None
             await Functions.update_function_by_id(candidate_id, {"is_active": True, "is_global": False, "name": desired_name, "meta": FunctionMeta(**_merged_meta(created, desired_meta))})
             self.logger.info("Installed %s: %s", log_label, candidate_id)
@@ -560,7 +607,9 @@ class FilterManager:
 
         function_id = str(getattr(chosen, "id", "") or "").strip()
         if not function_id:
-            return None
+            raise _FilterEnumerationUnavailable(
+                f"the chosen {log_label} row carries no id, so no row can be maintained"
+            )
 
         existing_content = _stored_source(chosen)
         if getattr(self.valves, auto_install_valve, False):
@@ -1250,12 +1299,15 @@ class FilterManager:
             render_openrouter_fusion_filter_source,
         )
 
+        self._unresolved_fusion_filter_id = False
+        self._write_not_installed = False
+
         def _matches(content: str) -> bool:
             if not isinstance(content, str) or not content:
                 return False
             return _OPENROUTER_FUSION_FILTER_MARKER in content and "class Filter" in content
 
-        return await self._ensure_filter_installed(
+        function_id = await self._ensure_filter_installed(
             desired_source=render_openrouter_fusion_filter_source(
                 marker=_OPENROUTER_FUSION_FILTER_MARKER,
             ).strip() + "\n",
@@ -1279,6 +1331,9 @@ class FilterManager:
             matches_candidate=_matches,
             primary_marker=_OPENROUTER_FUSION_FILTER_MARKER,
         )
+        if not function_id and self._write_not_installed:
+            self._unresolved_fusion_filter_id = True
+        return function_id
 
     # OPENROUTER IMAGE GENERATION FILTER
 
@@ -1383,6 +1438,7 @@ class FilterManager:
             log_label="OpenRouter Image Generation filter",
             matches_candidate=_matches,
             primary_marker=_OPENROUTER_IMAGE_GEN_FILTER_MARKER,
+            tie_break_id=True,
         )
 
     async def image_gen_filter_selected_model(self) -> str | None:
@@ -1400,14 +1456,8 @@ class FilterManager:
 
         try:
             rows = await Functions.get_functions_by_type("filter", active_only=False)
-            chosen = next(
-                (
-                    row
-                    for row in rows or []
-                    if _OPENROUTER_IMAGE_GEN_FILTER_MARKER
-                    in (getattr(row, "content", "") or "")
-                ),
-                None,
+            chosen = _newest_marked_row(
+                rows, _OPENROUTER_IMAGE_GEN_FILTER_MARKER, tie_break_id=True
             )
             if chosen is None:
                 return ""
@@ -1586,13 +1636,13 @@ class FilterManager:
             return None
         try:
             return list(await Functions.get_functions_by_type("filter", active_only=False))
-        except Exception:
+        except Exception as exc:
             self.logger.warning(
                 "Cannot enumerate OWUI filter functions; the filters that depend on it "
                 "will not be installed or updated",
                 exc_info=True,
             )
-            return None
+            raise _FilterEnumerationUnavailable(str(exc)) from exc
 
     @timed
     async def ensure_openrouter_image_filter_function_ids(
@@ -1615,6 +1665,8 @@ class FilterManager:
         if rows is None:
             return {}
 
+        self._unresolved_image_filter_ids = frozenset()
+        unresolved: set[str] = set()
         installed: dict[str, list[str]] = {}
         for model in models:
             model_id = model.get("id")
@@ -1639,6 +1691,7 @@ class FilterManager:
             if not isinstance(image_model, dict):
                 image_model = dict(model)
 
+            self._write_not_installed = False
             try:
                 function_id = await self._ensure_single_image_filter_function_id(
                     model_id=canonical_id,
@@ -1652,6 +1705,8 @@ class FilterManager:
                 # else. The catch is deliberately broad: the install path reaches Open
                 # WebUI's database, whose driver errors are not in any tuple this module
                 # could enumerate, and one of them must not skip every remaining model.
+                if _is_install_enumeration_failure(exc):
+                    raise
                 self.logger.warning(
                     "Image filter install failed for %r: %s", canonical_id, exc, exc_info=True
                 )
@@ -1661,7 +1716,12 @@ class FilterManager:
                 installed[model_id] = [function_id]
                 if isinstance(original_id, str) and original_id.strip() and original_id != model_id:
                     installed[original_id] = [function_id]
+            elif self._write_not_installed:
+                unresolved.add(model_id)
+                if isinstance(original_id, str) and original_id.strip() and original_id != model_id:
+                    unresolved.add(original_id)
 
+        self._unresolved_image_filter_ids = frozenset(unresolved)
         await self._retire_variant_image_filters()
         return installed
 

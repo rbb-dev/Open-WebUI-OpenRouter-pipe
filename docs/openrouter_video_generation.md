@@ -2116,7 +2116,8 @@ a fresh job.
 ### "Multiple OpenRouter Video Generation filter candidates found"
 
 Log warning. Indicates two or more filter rows match the marker for the
-same model. The pipe uses the most recently updated one. Manually
+same model. The pipe uses the active, most recently updated one, which is
+also the row the "Multiple ... candidates found" warning names. Manually
 delete duplicates from Admin → Functions if you want to clean up.
 
 ### Chat reload after disconnect shows duplicate video

@@ -35,9 +35,47 @@ _get_pipe: Any = None
 _warned_import_sites: set[str] = set()
 
 
+def _socket_dashboard_enabled(pipe: Any) -> bool:
+    valves = getattr(pipe, "valves", None)
+    if valves is None or not hasattr(valves, "PIPE_DASHBOARD_ENABLE"):
+        return True
+    return bool(valves.PIPE_DASHBOARD_ENABLE)
+
+
+def _current_pipe() -> Any:
+    return _get_pipe() if _get_pipe else None
+
+
+async def _evict(sio: Any, sid: str, reason: str) -> None:
+    logger.warning("pipe_dashboard: evicting viewer sid=%s (%s)", sid, reason)
+    try:
+        await sio.leave_room(sid, VIEWERS_ROOM)
+        await sio.emit(DENIED_EVENT, {}, room=sid)
+    except Exception:
+        logger.warning("pipe_dashboard viewer eviction failed for sid=%s", sid, exc_info=True)
+
+
+async def _evict_every_viewer() -> None:
+    try:
+        from open_webui.socket.main import get_session_ids_from_room, sio
+    except Exception:  # noqa: BLE001
+        return
+    for sid in list(get_session_ids_from_room(VIEWERS_ROOM) or []):
+        await _evict(sio, sid, "dashboard disabled")
+
+
 async def _pipe_dashboard_sub(sid: str, _data: Any = None) -> None:
     global _resync
-    pipe = _get_pipe() if _get_pipe else None
+    pipe = _current_pipe()
+    if not _socket_dashboard_enabled(pipe):
+        logger.warning("pipe_dashboard: viewer sid=%s refused (dashboard disabled)", sid)
+        try:
+            from open_webui.socket.main import sio
+
+            await sio.emit(DENIED_EVENT, {}, room=sid)
+        except Exception:
+            logger.debug("pipe_dashboard disabled-notice emit failed for sid=%s", sid, exc_info=True)
+        return
     uid = await resolve_socket_user_id(sid)
     user = await resolve_user(uid)
     if not await can_view(user, pipe):
@@ -105,11 +143,13 @@ class _ValveEventSink:
     async def handle_event(self, app: Any, event: Any, request: Any = None) -> None:
         if getattr(event, "event", None) != "function.valves_updated":
             return
-        pipe = _get_pipe() if _get_pipe else None
+        pipe = _current_pipe()
         pipe_id = getattr(pipe, "id", None)
         subject = getattr(event, "subject", None)
         if not pipe_id or not isinstance(subject, dict) or subject.get("id") != pipe_id:
             return
+        if not _socket_dashboard_enabled(pipe):
+            await _evict_every_viewer()
         try:
             task = asyncio.create_task(_emit_config_rev(pipe_id))
             _pending_emits.add(task)
@@ -201,6 +241,8 @@ def local_viewer_sids() -> list[str]:
 
 
 async def emit_dashboard(payload: dict[str, Any]) -> bool:
+    if not _socket_dashboard_enabled(_current_pipe()):
+        return False
     try:
         from open_webui.socket.main import sio
     except Exception:
@@ -220,7 +262,7 @@ async def emit_dashboard(payload: dict[str, Any]) -> bool:
 
 
 async def reauthorize_local_viewers() -> None:
-    pipe = _get_pipe() if _get_pipe else None
+    pipe = _current_pipe()
     try:
         from open_webui.socket.main import get_session_ids_from_room, sio
     except Exception:
@@ -231,15 +273,14 @@ async def reauthorize_local_viewers() -> None:
             exc_info=True,
         )
         return
+    enabled = _socket_dashboard_enabled(pipe)
     for sid in list(get_session_ids_from_room(VIEWERS_ROOM) or []):
+        if not enabled:
+            await _evict(sio, sid, "dashboard disabled")
+            continue
         user = await resolve_user(await resolve_socket_user_id(sid))
         if not await can_view(user, pipe):
-            logger.warning("pipe_dashboard: evicting viewer sid=%s (authorization no longer holds)", sid)
-            try:
-                await sio.leave_room(sid, VIEWERS_ROOM)
-                await sio.emit(DENIED_EVENT, {}, room=sid)
-            except Exception:
-                logger.warning("pipe_dashboard viewer eviction failed for sid=%s", sid, exc_info=True)
+            await _evict(sio, sid, "authorization no longer holds")
 
 
 register_socket_handler()

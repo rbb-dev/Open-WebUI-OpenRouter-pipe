@@ -12,6 +12,7 @@ Coverage:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import re
 import sys
@@ -475,58 +476,6 @@ def test_register_image_models_full_fixture_exact_pure_image_count():
         f"registered but not image-only: {sorted(set(image_only_specs) - expected)}\n"
         f"image-only but not registered: {sorted(expected - set(image_only_specs))}"
     )
-
-
-# =============================================================================
-# Filter inlet RUNTIME behaviour — exec the rendered filter and run inlet()
-# =============================================================================
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# =============================================================================
-# ensure_openrouter_image_filter_function_ids — installer behaviour
-# =============================================================================
-
-
-
-
-
-
-
-
-
-
 
 
 # =============================================================================

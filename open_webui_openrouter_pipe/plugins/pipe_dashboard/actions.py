@@ -104,29 +104,93 @@ def _scrub(value: Any, limit: int = 200) -> str:
     return str(value).replace("\r", " ").replace("\n", " ")[:limit]
 
 
-def _redacted_args(pipe: Any, args: Any) -> Any:
+def _secret_fields(pipe: Any) -> Mapping[str, Any]:
+    fields = getattr(type(getattr(pipe, "valves", None)), "model_fields", None)
+    if not fields:
+        try:
+            from ...pipe import Pipe
+
+            fields = Pipe.Valves.model_fields
+        except Exception:  # noqa: BLE001
+            return {}
+    return fields
+
+
+def _is_secret_key(key: Any, fields: Mapping[str, Any]) -> bool:
+    field = fields.get(key) if isinstance(key, str) else None
+    return field is not None and is_secret(field.annotation)
+
+
+def _is_valve_key(key: Any, fields: Mapping[str, Any]) -> bool:
+    return isinstance(key, str) and key in fields
+
+
+def _protocol_keys(entry: ActionEntry | None) -> frozenset[str]:
+    if entry is not None and entry.schema:
+        return frozenset(entry.schema)
+    keys: set[str] = set()
+    for candidate in ACTIONS.values():
+        if candidate.schema:
+            keys |= set(candidate.schema)
+    return frozenset(keys)
+
+
+def _marker(value: Any) -> str:
+    if isinstance(value, (list, tuple)):
+        return "<redacted list>"
+    if isinstance(value, Mapping):
+        return "<redacted dict>"
+    return f"<redacted {type(value).__name__}>"
+
+
+def _mask(
+    key: Any,
+    value: Any,
+    fields: Mapping[str, Any],
+    protocol: frozenset[str],
+    depth: int = 0,
+) -> Any:
+    if _is_secret_key(key, fields):
+        return "<redacted>"
+    vouched = _is_valve_key(key, fields) or (isinstance(key, str) and key in protocol)
+    if isinstance(value, (Mapping, list, tuple, set, frozenset)):
+        if depth >= 32:
+            return value
+        if not vouched:
+            return _marker(value)
+        if isinstance(value, Mapping):
+            return {k: _mask(k, v, fields, protocol, depth + 1) for k, v in value.items()}
+        return [_marker(v) for v in value]
+    if vouched:
+        return value
+    return _marker(value)
+
+
+def _redacted_args(pipe: Any, args: Any, entry: ActionEntry | None = None) -> Any:
     if not isinstance(args, dict):
         return args
-    edits = args.get("edits")
-    if not isinstance(edits, dict):
+    fields = _secret_fields(pipe)
+    if not fields:
         return args
-    fields = getattr(type(getattr(pipe, "valves", None)), "model_fields", {})
-    if not any(is_secret(fields[k].annotation) for k in edits if k in fields):
-        return args
-    return {**args, "edits": {
-        k: ("<redacted>" if k in fields and is_secret(fields[k].annotation) else v)
-        for k, v in edits.items()
-    }}
+    protocol = _protocol_keys(entry)
+    return {k: _mask(k, v, fields, protocol) for k, v in args.items()}
 
 
 def _audit(user: Any, name: str, outcome: str, client_ip: Any, args: Any = None) -> None:
     uid = getattr(user, "id", None)
-    level = logger.debug if outcome == "ok" else logger.warning
+    level = logger.debug if outcome in ("ok", "disabled") else logger.warning
     level(
         "pipe_dashboard action user=%s action=%s outcome=%s ip=%s args=%s",
         _scrub(uid), _scrub(name), outcome, _scrub(client_ip),
         _scrub(args) if args is not None else "-",
     )
+
+
+def _dashboard_enabled(pipe: Any) -> bool:
+    valves = getattr(pipe, "valves", None)
+    if valves is None or not hasattr(valves, "PIPE_DASHBOARD_ENABLE"):
+        return True
+    return bool(valves.PIPE_DASHBOARD_ENABLE)
 
 
 async def dispatch_action(
@@ -154,18 +218,21 @@ async def dispatch_action(
     if entry.needs_request and request is None:
         _audit(user, name, "bad_args", client_ip)
         return 400, {"error": "request unavailable"}
+    if not _dashboard_enabled(pipe):
+        _audit(user, name, "disabled", client_ip)
+        return 404, {"error": "unknown action"}
     write = entry.permission == "write"
     try:
         if entry.needs_request:
             result = await entry.handler(pipe, user, args, request=request)
         else:
             result = await entry.handler(pipe, user, args)
-    except Exception as exc:
-        logger.exception("pipe_dashboard action %s failed", name)
-        _audit(user, name, "error", client_ip, args=_redacted_args(pipe, args) if write else None)
-        text = str(exc).strip() if isinstance(exc, _ClientMessage) else exc.__class__.__name__
-        return 500, {"error": "action failed", "detail": text}
-    _audit(user, name, "ok", client_ip, args=_redacted_args(pipe, args) if write else None)
+    except Exception as exc:  # noqa: BLE001
+        cause = str(exc).strip() if isinstance(exc, _ClientMessage) else type(exc).__name__
+        logger.warning("pipe_dashboard action %s failed: %s", name, cause)
+        _audit(user, name, "error", client_ip, args=_redacted_args(pipe, args, entry) if write else None)
+        return 500, {"error": "action failed", "detail": cause}
+    _audit(user, name, "ok", client_ip, args=_redacted_args(pipe, args, entry) if write else None)
     return 200, {"ok": True, "result": result}
 
 
@@ -463,13 +530,12 @@ async def _update_check(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
     permission="write",
     schema={"rev": (int, str), "compressed": optional(bool)},
     needs_request=True,
+    admin_only=True,
 )
 async def _update_apply(pipe: Any, user: Any, args: Any, request: Any = None) -> dict[str, Any]:
     enabled, reason = await _update_enabled(pipe)
     if not enabled:
         return {"error": reason}
-    if getattr(user, "role", None) != "admin":
-        return {"error": "forbidden"}
     svc = _update_service_of(pipe)
     if svc is None:
         return {"error": "unavailable", "message": "update service not initialized"}
@@ -484,13 +550,12 @@ async def _update_apply(pipe: Any, user: Any, args: Any, request: Any = None) ->
     permission="write",
     schema={"file_id": str, "rev": (int, str)},
     needs_request=True,
+    admin_only=True,
 )
 async def _update_restore(pipe: Any, user: Any, args: Any, request: Any = None) -> dict[str, Any]:
     enabled, reason = await _update_enabled(pipe)
     if not enabled:
         return {"error": reason}
-    if getattr(user, "role", None) != "admin":
-        return {"error": "forbidden"}
     svc = _update_service_of(pipe)
     if svc is None:
         return {"error": "unavailable", "message": "update service not initialized"}
@@ -504,13 +569,12 @@ async def _update_restore(pipe: Any, user: Any, args: Any, request: Any = None) 
     "update_snapshot_delete",
     permission="write",
     schema={"file_id": str, "sha256": str},
+    admin_only=True,
 )
 async def _update_snapshot_delete(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
     enabled, reason = await _update_enabled(pipe)
     if not enabled:
         return {"error": reason}
-    if getattr(user, "role", None) != "admin":
-        return {"error": "forbidden"}
     svc = _update_service_of(pipe)
     if svc is None:
         return {"error": "unavailable", "message": "update service not initialized"}

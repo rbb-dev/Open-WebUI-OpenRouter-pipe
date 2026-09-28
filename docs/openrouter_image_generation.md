@@ -1206,6 +1206,13 @@ Panels are installed and refreshed on their own while
 actually offered in this workspace. A model whose panel fails to install does
 not hold up the others.
 
+A refresh that cannot install the panels at all — a locked or dropped database,
+most often — changes nothing on any model: every panel already attached stays
+attached, and the next model catalog fetch tries again. The same holds for the Fusion panel,
+which is installed by the same pass. A log line names it when it happens:
+`OpenRouter Image filter ensure failed` or `OpenRouter Fusion filter ensure
+failed`.
+
 While that valve is **off**, an already-installed panel is left exactly as it
 is. If a newer release changes what that panel should offer, the change is not
 delivered and a warning is written to the pipe's log naming the panel; turn the
@@ -1405,8 +1412,23 @@ completed since install. Check:
 
 - `AUTO_INSTALL_IMAGE_FILTERS=True` and `AUTO_ATTACH_IMAGE_FILTERS=True`.
 - Admin → Functions has an entry named after that model.
+- The pipe's log has no `OpenRouter Image filter ensure failed` or
+  `OpenRouter Fusion filter ensure failed` line. Either line means the
+  installer could not run for that whole refresh — usually a locked or
+  dropped database — and it left every model exactly as it was rather than
+  detaching anything. A restart re-runs the installer; the next model catalog
+  fetch retries on its own.
 - Restart the pipe to force a fresh `pipes()` cycle, or toggle
   `AUTO_ATTACH_IMAGE_FILTERS` off → save → on → save.
+
+### Two `openrouter_image_gen` entries in Admin → Functions
+
+A duplicate — `openrouter_image_gen` and `openrouter_image_gen_1` — is
+surfaced by a `Multiple ... candidates found` warning in the pipe's log. The
+pipe uses the **active, most recently updated** of the two, and it reads the
+selected model from that same row, so a duplicate left behind by an older
+version does not change which model is drawn. Delete the one you do not want
+from Admin → Functions; the pipe will keep the other one up to date.
 
 ### A setting I expected is not in the model's panel
 

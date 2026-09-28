@@ -83,6 +83,8 @@ _REDIS_FLUSH_CHANNEL = "db-flush"
 
 _REDIS_DELETE_MARKER_TTL_SECONDS = 86400
 
+_UNREADABLE_ARTIFACT_TABLE_KEY = "\x00artifact-key-unreadable"
+
 REPLY_MEMORY_IDLE_SECONDS = 900.0
 REPLY_MEMORY_MAX_BYTES = 64 * 1024 * 1024
 
@@ -425,8 +427,13 @@ class ArtifactStore:
         """Initialize encryption and compression state."""
         from open_webui_openrouter_pipe.core.config import EncryptedStr
 
-        decrypted_encryption_key = EncryptedStr.decrypt(self.valves.ARTIFACT_ENCRYPTION_KEY)
-        self._encryption_key: str = (decrypted_encryption_key or "").strip()
+        self._artifact_key_warning_emitted = False
+        self._artifact_key_unreadable = False
+        self._table_key = ""
+        self._apply_artifact_encryption_key(
+            EncryptedStr.read(self.valves.ARTIFACT_ENCRYPTION_KEY),
+            self.valves.ARTIFACT_ENCRYPTION_KEY,
+        )
         self._encrypt_all: bool = bool(self.valves.ENCRYPT_ALL)
         self._compression_min_bytes: int = self.valves.MIN_COMPRESS_BYTES
         self._compression_enabled: bool = bool(
@@ -434,6 +441,27 @@ class ArtifactStore:
         )
         self._fernet: Fernet | None = None
         self._lz4_warning_emitted = False
+
+    def _apply_artifact_encryption_key(self, plaintext: str | None, stored: Any) -> None:
+        self._encryption_key: str = (plaintext or "").strip()
+        unreadable = bool(str(stored or "").strip()) and not self._encryption_key
+        if unreadable != self._artifact_key_unreadable:
+            self._artifact_key_warning_emitted = False
+        self._artifact_key_unreadable = unreadable
+        self._table_key = _UNREADABLE_ARTIFACT_TABLE_KEY if unreadable else self._encryption_key
+
+    def _artifact_writes_blocked(self, rows: list[dict[str, Any]]) -> bool:
+        if not self._artifact_key_unreadable:
+            return False
+        if not self._artifact_key_warning_emitted:
+            self.logger.warning(
+                "ARTIFACT_ENCRYPTION_KEY is set but cannot be decrypted with the current "
+                "WEBUI_SECRET_KEY; dropping %d artifact row(s) rather than storing them "
+                "unencrypted. Re-enter ARTIFACT_ENCRYPTION_KEY to resume storing artifacts.",
+                len(rows),
+            )
+            self._artifact_key_warning_emitted = True
+        return True
 
     def _initialize_circuit_breakers(self):
         """Initialize circuit breaker tracking."""
@@ -501,11 +529,11 @@ class ArtifactStore:
         """Configure encryption/compression + ensure the backing table exists."""
         from open_webui_openrouter_pipe.core.config import EncryptedStr
 
-        decrypted_encryption_key = EncryptedStr.decrypt(valves.ARTIFACT_ENCRYPTION_KEY)
-        encryption_key = (decrypted_encryption_key or "").strip()
+        plaintext = EncryptedStr.read(valves.ARTIFACT_ENCRYPTION_KEY)
+        encryption_key = (plaintext or "").strip()
         if encryption_key != self._encryption_key:
             self._fernet = None
-        self._encryption_key = encryption_key
+        self._apply_artifact_encryption_key(plaintext, valves.ARTIFACT_ENCRYPTION_KEY)
         self._encrypt_all = valves.ENCRYPT_ALL
         self._compression_min_bytes = valves.MIN_COMPRESS_BYTES
 
@@ -522,7 +550,7 @@ class ArtifactStore:
         if not pipe_identifier:
             raise RuntimeError("Pipe identifier is missing; Open WebUI did not assign an id to this manifold.")
         table_fragment = _sanitize_table_fragment(pipe_identifier)
-        desired_signature = (table_fragment, self._encryption_key)
+        desired_signature = (table_fragment, self._table_key)
         if (
             self._artifact_store_signature == desired_signature
             and self._item_model is not None
@@ -776,7 +804,7 @@ class ArtifactStore:
         self._session_factory = session_factory
         self._item_model = item_model
         self._artifact_table_name = table_name
-        self._artifact_store_signature = (table_fragment, self._encryption_key)
+        self._artifact_store_signature = (table_fragment, self._table_key)
         if not table_exists:
             self.logger.info("Artifact table ready: %s (key hash: %s). Changing ARTIFACT_ENCRYPTION_KEY creates a new table; old artifacts become inaccessible.", table_name, suffix.rsplit("_", 1)[-1])
         if self._db_executor is None:
@@ -826,7 +854,7 @@ class ArtifactStore:
         if not identifier:
             raise RuntimeError("Pipe identifier is required to derive the table suffix.")
         fragment = table_fragment or _sanitize_table_fragment(identifier)
-        hash_source = f"{self._encryption_key}{identifier}".encode("utf-8", "ignore")
+        hash_source = f"{self._table_key}{identifier}".encode("utf-8", "ignore")
         key_hash = hashlib.sha256(hash_source).hexdigest()
         return f"{fragment}_{key_hash[:8]}"
 
@@ -1350,6 +1378,9 @@ class ArtifactStore:
         for row in rows:
             row.setdefault("id", generate_item_id())
 
+        if self._artifact_writes_blocked(rows):
+            return []
+
         try:
             self._prepare_rows_for_storage(rows)
             if self._redis_active():
@@ -1391,6 +1422,8 @@ class ArtifactStore:
 
     async def _db_persist_direct(self, rows: list[dict[str, Any]], user_id: str = "") -> list[str]:
         if not rows:
+            return []
+        if self._artifact_writes_blocked(rows):
             return []
         if not self._db_executor or not self._item_model or not self._session_factory:
             raise ArtifactStoreUnavailable(
@@ -1854,6 +1887,10 @@ class ArtifactStore:
                 except Exception:
                     self.logger.debug("Artifact store re-init during flush failed", exc_info=True)
             if not self._artifact_store_ready():
+                self._note_flush_blocked()
+                return
+            if self._artifact_key_unreadable:
+                self._artifact_writes_blocked([])
                 self._note_flush_blocked()
                 return
             self._note_flush_ready()

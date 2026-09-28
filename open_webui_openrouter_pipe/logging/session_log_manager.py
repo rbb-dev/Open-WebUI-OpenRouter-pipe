@@ -497,12 +497,12 @@ class SessionLogManager:
             )
             return None
 
-        decrypted = EncryptedStr.decrypt(valves.SESSION_LOG_ZIP_PASSWORD)
+        decrypted = EncryptedStr.read(valves.SESSION_LOG_ZIP_PASSWORD)
         password = (decrypted or "").strip()
         if not password:
             self._warn_once(
                 "password",
-                "Session log storage is enabled but SESSION_LOG_ZIP_PASSWORD is not configured; skipping persistence.",
+                "Session log storage is enabled but SESSION_LOG_ZIP_PASSWORD is not configured or cannot be decrypted with the current WEBUI_SECRET_KEY; skipping persistence.",
             )
             return None
 
@@ -580,12 +580,12 @@ class SessionLogManager:
             )
             return
 
-        decrypted = EncryptedStr.decrypt(valves.SESSION_LOG_ZIP_PASSWORD)
+        decrypted = EncryptedStr.read(valves.SESSION_LOG_ZIP_PASSWORD)
         password = (decrypted or "").strip()
         if not password:
             self._warn_once(
                 "password",
-                "Session log storage is enabled but SESSION_LOG_ZIP_PASSWORD is not configured; skipping persistence.",
+                "Session log storage is enabled but SESSION_LOG_ZIP_PASSWORD is not configured or cannot be decrypted with the current WEBUI_SECRET_KEY; skipping persistence.",
             )
             return
 
@@ -748,6 +748,15 @@ class SessionLogManager:
             self.start_workers()
             self.start_assembler_worker()
             persisted = await self._artifact_store._db_persist([row]) if self._artifact_store else []
+            if not persisted and getattr(self._artifact_store, "_artifact_key_unreadable", False):
+                self.logger.debug(
+                    "Session log segment not staged (artifact storage refusing writes): "
+                    "chat_id=%s message_id=%s request_id=%s",
+                    chat_id,
+                    message_id,
+                    request_id,
+                )
+                return
             if not persisted:
                 # Survivability guarantee: if DB staging isn't available (or breaker blocks writes),
                 # fall back to direct zip persistence so operators still get logs.

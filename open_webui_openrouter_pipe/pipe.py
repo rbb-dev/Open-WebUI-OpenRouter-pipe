@@ -1223,7 +1223,11 @@ class Pipe:
         return self._plugin_registry
 
     async def _deactivate_switched_off_filters(self) -> None:
-        from .filters.filter_manager import switched_off_meta
+        from .filters.filter_manager import (
+            _OPENROUTER_IMAGE_GEN_FILTER_MARKER,
+            _newest_marked_row,
+            switched_off_meta,
+        )
 
         all_web_tools_disabled = every_web_tool_is_off(self.valves)
         if all_web_tools_disabled:
@@ -1251,10 +1255,13 @@ class Pipe:
         if not self.valves.ENABLE_IMAGE_GENERATION:
             try:
                 from open_webui.models.functions import Functions as _Funcs
-                ig = await _Funcs.get_function_by_id("openrouter_image_gen")
+                _rows = await _Funcs.get_functions_by_type("filter", active_only=False)
+                _picked = _newest_marked_row(_rows, _OPENROUTER_IMAGE_GEN_FILTER_MARKER, tie_break_id=True)
+                _rid = str(getattr(_picked, "id", "") or "") or "openrouter_image_gen"
+                ig = await _Funcs.get_function_by_id(_rid)
                 if ig and getattr(ig, "is_active", False):
                     await _Funcs.update_function_by_id(
-                        "openrouter_image_gen", {"is_active": False, "meta": switched_off_meta(ig)}
+                        _rid, {"is_active": False, "meta": switched_off_meta(ig)}
                     )
                     self.logger.info("Disabled OpenRouter Image Generation filter (ENABLE_IMAGE_GENERATION=False)")
             except Exception:

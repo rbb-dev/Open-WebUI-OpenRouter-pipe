@@ -39,7 +39,12 @@ PACKAGE = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 # genuinely unset one reaches the async db context, the Functions model and SQLAlchemy
 # lazily, inside the narrowest arm of the read, and a probe that cannot run is not
 # treated as evidence of corruption, so neither is hoisted to module scope.
-_EXPECTED_OWUI_IMPORTS = (25, 87)
+# 87 -> 89: the valve-off paths in `dashboard_socket.py` each reach
+# `open_webui.socket.main` on a path of their own -- `_evict_every_viewer` takes the
+# socket and the room-membership lookup, and the valve-off arm of `_pipe_dashboard_sub`
+# emits its own denied notice -- both function-local inside a broad guard, beside the
+# other socket lookups in the same module.
+_EXPECTED_OWUI_IMPORTS = (25, 89)
 
 @pytest.mark.skipif(
     bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),

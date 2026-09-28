@@ -2210,25 +2210,24 @@ class TestFilterFunctions:
 
     @pytest.mark.asyncio
     async def test_ensure_web_tools_filter_function_id_no_functions_module(self):
-        """Test that ensure_openrouter_web_tools_filter_function_id returns None when Functions module is unavailable."""
+        """Without a Functions module the install cannot name a row, and it answers None."""
         pipe = Pipe()
 
         try:
-            # Without the Functions module, should return None
+            # An absent open_webui answers None; a present one installs and names the row.
+            # Either way the installer never raises here, which is the contract being kept.
             result = await pipe._ensure_filter_manager().ensure_openrouter_web_tools_filter_function_id()
-            # Result depends on whether open_webui is installed
             assert result is None or isinstance(result, str)
         finally:
             pipe.shutdown()
 
     @pytest.mark.asyncio
     async def test_ensure_direct_uploads_filter_function_id_no_functions_module(self):
-        """Test that ensure_direct_uploads_filter_function_id returns None when Functions unavailable."""
+        """Without a Functions module the install cannot name a row, and it answers None."""
         pipe = Pipe()
 
         try:
             result = await pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
-            # Result depends on whether open_webui is installed
             assert result is None or isinstance(result, str)
         finally:
             pipe.shutdown()
@@ -9359,7 +9358,7 @@ class TestFilterAutoInstallationPaths:
 
     @pytest.mark.asyncio
     async def test_web_tools_filter_get_functions_exception(self):
-        """Test ensure_openrouter_web_tools_filter_function_id handles exception in get_functions."""
+        """A raise from the enumeration read must surface, not read as "no row to maintain"."""
         pipe = Pipe()
         try:
             mock_functions_class = MagicMock()
@@ -9369,8 +9368,8 @@ class TestFilterAutoInstallationPaths:
             mock_module.Functions = mock_functions_class
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
-                result = await pipe._ensure_filter_manager().ensure_openrouter_web_tools_filter_function_id()
-                assert result is None
+                with pytest.raises(RuntimeError, match="DB error"):
+                    await pipe._ensure_filter_manager().ensure_openrouter_web_tools_filter_function_id()
         finally:
             pipe.shutdown()
 
@@ -9460,8 +9459,16 @@ class TestFilterAutoInstallationPaths:
             pipe.shutdown()
 
     @pytest.mark.asyncio
-    async def test_web_tools_filter_insert_fails(self):
-        """Test when insert_new_function returns None."""
+    async def test_web_tools_filter_insert_fails(self, caplog):
+        """A write that did not land is reported, not raised, and reported once.
+
+        `insert_new_function` returns `None` when Open WebUI refuses the row -- it
+        swallows the collision rather than raising -- and the re-read finds nothing
+        either. That is the lost-race shape, and the race fix owns it: the installer
+        answers `None` so the caller is told the filter is not installed, and the pass
+        that asked says so once, by name, in one log line. Raising here would turn a
+        lost race into a whole-pass failure that a retry cannot fix.
+        """
         pipe = Pipe()
         try:
             mock_functions_class = MagicMock()
@@ -9477,13 +9484,65 @@ class TestFilterAutoInstallationPaths:
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 pipe.valves.AUTO_INSTALL_WEB_TOOLS_FILTER = True
                 result = await pipe._ensure_filter_manager().ensure_openrouter_web_tools_filter_function_id()
-                assert result is None
+                assert result is None, (
+                    f"a write that stored nothing must not claim an id; got {result!r}"
+                )
+
+                manager = pipe._ensure_catalog_manager()
+                manager._fetch_frontend_model_catalog = AsyncMock(return_value=None)
+                filters = pipe._ensure_filter_manager()
+                filters.ensure_openrouter_image_gen_filter_function_id = AsyncMock(return_value=None)
+                filters.ensure_openrouter_video_gen_filter_function_ids = AsyncMock(return_value={})
+                filters.ensure_openrouter_image_filter_function_ids = AsyncMock(return_value={})
+                filters.ensure_openrouter_fusion_filter_function_id = AsyncMock(return_value=None)
+                filters._retire_variant_image_filters = AsyncMock(return_value=None)
+
+                pipe.valves.UPDATE_MODEL_CAPABILITIES = False
+                pipe.valves.UPDATE_MODEL_IMAGES = False
+                pipe.valves.UPDATE_MODEL_DESCRIPTIONS = False
+                pipe.valves.AUTO_DEFAULT_WEB_TOOLS_FILTER = False
+                pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER = False
+                pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = False
+                pipe.valves.AUTO_INSTALL_IMAGE_GEN_FILTER = False
+                pipe.valves.AUTO_ATTACH_IMAGE_GEN_FILTER = False
+                pipe.valves.AUTO_INSTALL_VIDEO_FILTERS = False
+                pipe.valves.AUTO_ATTACH_VIDEO_FILTERS = False
+                pipe.valves.AUTO_DEFAULT_VIDEO_FILTERS = False
+                pipe.valves.ENABLE_OPENROUTER_IMAGE_GENERATION = False
+                pipe.valves.ENABLE_OPENROUTER_FUSION = False
+                pipe.valves.AUTO_INSTALL_IMAGE_FILTERS = False
+                pipe.valves.AUTO_ATTACH_IMAGE_FILTERS = False
+                pipe.valves.AUTO_DEFAULT_IMAGE_FILTERS = False
+                pipe.valves.AUTO_DEFAULT_FUSION_FILTER = False
+                pipe.valves.AUTO_ATTACH_FUSION_FILTER = False
+                pipe.valves.AUTO_INSTALL_FUSION_FILTER = False
+                pipe.valves.AUTO_DEFAULT_PROVIDER_ROUTING_FILTERS = False
+                pipe.valves.ADMIN_PROVIDER_ROUTING_MODELS = ""
+                pipe.valves.USER_PROVIDER_ROUTING_MODELS = ""
+
+                with caplog.at_level(logging.WARNING):
+                    await manager._sync_model_metadata_to_owui(
+                        [{"id": "acme/painter", "original_id": "acme/painter", "name": "Painter"}],
+                        pipe_identifier="test_pipe",
+                    )
+
+            reported = [
+                m for m in caplog.messages
+                if "Web Tools filter is not installed" in m
+            ]
+            assert reported == reported[:1], (
+                f"the failed install was reported {len(reported)} times, not once: {reported}"
+            )
+            assert len(reported) == 1, (
+                f"the installer stored nothing and said so {len(reported)} times, "
+                f"expected exactly one report: {reported}"
+            )
         finally:
             pipe.shutdown()
 
     @pytest.mark.asyncio
     async def test_web_tools_filter_empty_function_id(self):
-        """Test returning None when chosen filter has empty id."""
+        """A chosen row with no id is unreadable, so it is a failure and not an empty answer."""
         pipe = Pipe()
         try:
             from open_webui_openrouter_pipe.core.config import _OPENROUTER_WEB_TOOLS_FILTER_MARKER
@@ -9501,8 +9560,8 @@ class TestFilterAutoInstallationPaths:
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 pipe.valves.AUTO_INSTALL_WEB_TOOLS_FILTER = False
-                result = await pipe._ensure_filter_manager().ensure_openrouter_web_tools_filter_function_id()
-                assert result is None
+                with pytest.raises(RuntimeError, match="carries no id"):
+                    await pipe._ensure_filter_manager().ensure_openrouter_web_tools_filter_function_id()
         finally:
             pipe.shutdown()
 
@@ -9542,7 +9601,7 @@ class TestDirectUploadsFilterPaths:
 
     @pytest.mark.asyncio
     async def test_direct_uploads_filter_get_functions_exception(self):
-        """Test exception in get_functions_by_type (line 1533-1534)."""
+        """A raise from the enumeration read must surface, not read as "no row to maintain"."""
         pipe = Pipe()
         try:
             mock_functions_class = MagicMock()
@@ -9552,8 +9611,8 @@ class TestDirectUploadsFilterPaths:
             mock_module.Functions = mock_functions_class
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
-                result = await pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
-                assert result is None
+                with pytest.raises(RuntimeError, match="DB error"):
+                    await pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
         finally:
             pipe.shutdown()
 
@@ -9634,8 +9693,13 @@ class TestDirectUploadsFilterPaths:
             pipe.shutdown()
 
     @pytest.mark.asyncio
-    async def test_direct_uploads_filter_insert_fails(self):
-        """Test insert_new_function returns None (line 1579-1580)."""
+    async def test_direct_uploads_filter_insert_fails(self, caplog):
+        """A write that did not land is reported, not raised, and reported once.
+
+        The same site as the web-tools case and the same contract: Open WebUI returns
+        `None` rather than raising, so the installer answers `None` and the pass that
+        asked says once, by name, that the filter is not installed.
+        """
         pipe = Pipe()
         try:
             mock_functions_class = MagicMock()
@@ -9651,13 +9715,63 @@ class TestDirectUploadsFilterPaths:
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = True
                 result = await pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
-                assert result is None
+                assert result is None, (
+                    f"a write that stored nothing must not claim an id; got {result!r}"
+                )
+
+                manager = pipe._ensure_catalog_manager()
+                manager._fetch_frontend_model_catalog = AsyncMock(return_value=None)
+                filters = pipe._ensure_filter_manager()
+                filters.ensure_openrouter_web_tools_filter_function_id = AsyncMock(return_value=None)
+                filters.ensure_openrouter_image_gen_filter_function_id = AsyncMock(return_value=None)
+                filters.ensure_openrouter_video_gen_filter_function_ids = AsyncMock(return_value={})
+                filters.ensure_openrouter_image_filter_function_ids = AsyncMock(return_value={})
+                filters.ensure_openrouter_fusion_filter_function_id = AsyncMock(return_value=None)
+                filters._retire_variant_image_filters = AsyncMock(return_value=None)
+
+                pipe.valves.UPDATE_MODEL_CAPABILITIES = False
+                pipe.valves.UPDATE_MODEL_IMAGES = False
+                pipe.valves.UPDATE_MODEL_DESCRIPTIONS = False
+                pipe.valves.AUTO_DEFAULT_WEB_TOOLS_FILTER = False
+                pipe.valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER = True
+                pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = False
+                pipe.valves.AUTO_INSTALL_IMAGE_GEN_FILTER = False
+                pipe.valves.AUTO_ATTACH_IMAGE_GEN_FILTER = False
+                pipe.valves.AUTO_INSTALL_VIDEO_FILTERS = False
+                pipe.valves.AUTO_ATTACH_VIDEO_FILTERS = False
+                pipe.valves.AUTO_DEFAULT_VIDEO_FILTERS = False
+                pipe.valves.ENABLE_OPENROUTER_IMAGE_GENERATION = False
+                pipe.valves.ENABLE_OPENROUTER_FUSION = False
+                pipe.valves.AUTO_INSTALL_IMAGE_FILTERS = False
+                pipe.valves.AUTO_ATTACH_IMAGE_FILTERS = False
+                pipe.valves.AUTO_DEFAULT_IMAGE_FILTERS = False
+                pipe.valves.AUTO_DEFAULT_FUSION_FILTER = False
+                pipe.valves.AUTO_ATTACH_FUSION_FILTER = False
+                pipe.valves.AUTO_INSTALL_FUSION_FILTER = False
+                pipe.valves.AUTO_DEFAULT_PROVIDER_ROUTING_FILTERS = False
+                pipe.valves.ADMIN_PROVIDER_ROUTING_MODELS = ""
+                pipe.valves.USER_PROVIDER_ROUTING_MODELS = ""
+
+                with caplog.at_level(logging.WARNING):
+                    await manager._sync_model_metadata_to_owui(
+                        [{"id": "acme/painter", "original_id": "acme/painter", "name": "Painter"}],
+                        pipe_identifier="test_pipe",
+                    )
+
+            reported = [
+                m for m in caplog.messages
+                if "Direct Uploads filter is not installed" in m
+            ]
+            assert len(reported) == 1, (
+                f"the installer stored nothing and said so {len(reported)} times, "
+                f"expected exactly one report: {reported}"
+            )
         finally:
             pipe.shutdown()
 
     @pytest.mark.asyncio
     async def test_direct_uploads_filter_empty_function_id(self):
-        """Test empty function id (line 1594-1595)."""
+        """A chosen row with no id is unreadable, so it is a failure and not an empty answer."""
         pipe = Pipe()
         try:
             from open_webui_openrouter_pipe.core.config import _DIRECT_UPLOADS_FILTER_MARKER
@@ -9675,8 +9789,8 @@ class TestDirectUploadsFilterPaths:
 
             with patch.dict("sys.modules", {"open_webui.models.functions": mock_module}):
                 pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = False
-                result = await pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
-                assert result is None
+                with pytest.raises(RuntimeError, match="carries no id"):
+                    await pipe._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
         finally:
             pipe.shutdown()
 

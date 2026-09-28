@@ -4617,6 +4617,39 @@ async def test_the_selected_model_is_read_from_the_installed_function(
     assert await manager.image_gen_filter_selected_model() == stored
 
 
+# The read site and the write site are ~800 lines apart in the same file and had opposite
+# policies for a duplicate row: the writer took the newest, the reader took whichever came
+# first. Open WebUI's `get_functions_by_type` is `select(Function).filter_by(type=...)` with
+# no ORDER BY, so "first" is driver order, not a contract.
+
+from open_webui_openrouter_pipe.core.config import (
+    _DIRECT_UPLOADS_FILTER_MARKER as _DIRECT_UPLOADS_MARKER,
+)
+from open_webui_openrouter_pipe.core.config import (
+    _OPENROUTER_FUSION_FILTER_MARKER as _FUSION_MARKER,
+)
+from open_webui_openrouter_pipe.core.config import (
+    _OPENROUTER_IMAGE_FILTER_MARKER as _IMAGE_MARKER,
+)
+from open_webui_openrouter_pipe.core.config import (
+    _OPENROUTER_IMAGE_GEN_FILTER_MARKER as _IMAGE_GEN_MARKER,
+)
+from open_webui_openrouter_pipe.core.config import (
+    _OPENROUTER_VIDEO_GEN_FILTER_MARKER as _VIDEO_MARKER,
+)
+from open_webui_openrouter_pipe.core.config import (
+    _OPENROUTER_WEB_TOOLS_FILTER_MARKER as _WEB_TOOLS_MARKER,
+)
+
+def _manager():
+    from unittest.mock import MagicMock
+
+    from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+
+    pipe = MagicMock()
+    return FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
+
+
 def test_the_sync_s_gate_is_a_strict_subset_of_the_scheduler_s():
     """Discovered over every single-valve-on world, not asserted term by term.
 

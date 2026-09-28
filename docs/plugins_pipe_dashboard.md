@@ -26,7 +26,7 @@ Three admin valves control the feature. They appear in Open WebUI's Settings onc
 
 | Valve | Type | Default | What it does |
 |-------|------|---------|--------------|
-| `PIPE_DASHBOARD_ENABLE` | bool | `False` | Shows or hides the Pipe Dashboard model in the model selector. |
+| `PIPE_DASHBOARD_ENABLE` | bool | `False` | Shows or hides the Pipe Dashboard model in the model selector, and closes the console behind it: with it off the action route answers 404, new dashboard subscriptions are refused, and viewers already watching are dropped so the live feed stops. Read live, so a toggle takes effect without a restart. |
 | `PIPE_DASHBOARD_USAGE_COLLECT` | bool | `False` | Records one usage entry per completed request (user, model, tokens, tools, cost) to power the Usage tab. Read live: turning it on starts recording without a restart. |
 | `PIPE_DASHBOARD_USAGE_RETENTION_DAYS` | int | `30` | How long usage records are kept. A background purge removes older records. Read live. |
 

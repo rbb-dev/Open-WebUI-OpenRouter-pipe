@@ -629,7 +629,7 @@ These appear in the merged Valves UI when `ENABLE_PLUGIN_SYSTEM` is on; full con
 
 | Valve | Type | Default | Description |
 |-------|------|---------|-------------|
-| `PIPE_DASHBOARD_ENABLE` | `bool` | `False` | Show/hide the Pipe Dashboard virtual model in the model selector. |
+| `PIPE_DASHBOARD_ENABLE` | `bool` | `False` | Show/hide the Pipe Dashboard virtual model in the model selector, and close the console behind it: with it off the action route answers 404, new dashboard subscriptions are refused, and viewers already watching are dropped so the live feed stops. Read live at the route, the subscription and the emit, so a toggle takes effect without a restart. |
 | `PIPE_DASHBOARD_USAGE_COLLECT` | `bool` | `False` | Persist one usage record per completed request (user, model, tokens, tools, cost) to a dedicated `dashboard_` table powering the dashboard's Usage tab. Read live at record time. |
 | `PIPE_DASHBOARD_USAGE_RETENTION_DAYS` | `int` (1–365) | `30` | Retention for collected usage records; a jittered, lock-guarded purge task deletes older rows. Read live inside the purge loop. |
 | `PIPE_DASHBOARD_UPDATE_ENABLE` | `bool` | `True` | Enables the dashboard's Update tab and its actions (check, apply, restore, delete snapshot). Off: the tab reports disabled and every update action — including auto-update — fails closed server-side. The tab can refuse for a second reason: when the *stored* valve set cannot be read (a rotated `WEBUI_SECRET_KEY` with valve encryption on does this) it says so rather than reporting an admin disable, and every stored setting has fallen back to its default until the server can read the row again. |

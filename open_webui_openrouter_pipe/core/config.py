@@ -11,6 +11,7 @@ This module contains all configuration schemas, constants, and valve definitions
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import logging
 import os
@@ -602,6 +603,8 @@ DEFAULT_STREAM_INTERRUPTED_TEMPLATE = (
 
 # EncryptedStr and Helper Functions
 
+_FERNET_MIN_BODY = 73
+
 class EncryptedStr(str):
     """String wrapper that automatically encrypts/decrypts valve values."""
 
@@ -665,6 +668,30 @@ class EncryptedStr(str):
         except (ValueError, UnicodeDecodeError) as e:
             logger.warning(f"Failed to decrypt value: {type(e).__name__}: {e}")
             return value
+
+    @classmethod
+    def _is_ciphertext(cls, value: str) -> bool:
+        body = value[len(cls._ENCRYPTION_PREFIX) :]
+        if not re.fullmatch(r"[A-Za-z0-9_-]+={0,2}", body):
+            return False
+        try:
+            raw = base64.urlsafe_b64decode(body)
+        except (binascii.Error, ValueError):
+            return False
+        return len(raw) >= _FERNET_MIN_BODY and raw[0] == 0x80 and (len(raw) - 57) % 16 == 0
+
+    @classmethod
+    def read(cls, value: str) -> str | None:
+        if not value:
+            return None
+        if not value.startswith(cls._ENCRYPTION_PREFIX):
+            return value
+        if cls._get_encryption_key() is None:
+            return None
+        out = cls.decrypt(value)
+        if out == value and cls._is_ciphertext(value):
+            return None
+        return out
 
     @classmethod
     def __get_pydantic_core_schema__(
@@ -1274,7 +1301,7 @@ class Valves(BaseModel):
     )
     ENCRYPT_ALL: bool = Field(
         default=True,
-        description="Encrypt every persisted artifact when ARTIFACT_ENCRYPTION_KEY is set. When False, only reasoning tokens are encrypted.",
+        description="Encrypt every persisted artifact when ARTIFACT_ENCRYPTION_KEY is set. When False, only reasoning tokens are encrypted. If ARTIFACT_ENCRYPTION_KEY is set but cannot be decrypted after a WEBUI_SECRET_KEY rotation, the pipe stops writing artifacts rather than storing them in the clear.",
     )
     ENABLE_LZ4_COMPRESSION: bool = Field(
         default=True,
@@ -1358,7 +1385,9 @@ class Valves(BaseModel):
         description=(
             "Password used to encrypt session log zip files (AES-encrypted zip). "
             "Recommend using a long random passphrase and encrypting the value (requires WEBUI_SECRET_KEY). "
-            "Clearing it stops all archive writing: no archive is written at all while the passphrase is empty."
+            "Clearing it stops all archive writing: no archive is written at all while the passphrase is empty. "
+            "Rotating WEBUI_SECRET_KEY makes the stored value unreadable, and archives are then "
+            "skipped rather than written under the wrong passphrase."
         ),
     )
     SESSION_LOG_RETENTION_DAYS: int = Field(
@@ -1974,7 +2003,9 @@ class Valves(BaseModel):
             "Provider options, Reference images and Reference image links. If a model's "
             "settings list cannot be read on a refresh, it keeps the settings from the "
             "last successful read; a model never read gets no panel at all rather than a "
-            "guessed set."
+            "guessed set. If a whole refresh cannot install the panels or the Fusion "
+            "panel at all, every model keeps the panels it already had and the pass is "
+            "tried again at the next catalog fetch."
             + _ADMIN_OFF_STAYS_OFF
         ),
     )

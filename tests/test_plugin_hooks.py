@@ -154,7 +154,7 @@ def test_tool_context_carries_request_id():
 
 
 def test_table_suffix_matches_artifact_formula():
-    host: Any = SimpleNamespace(_encryption_key="k-secret", id="open_webui_openrouter_pipe")
+    host: Any = SimpleNamespace(_table_key="k-secret", id="open_webui_openrouter_pipe")
     suffix = ArtifactStore.table_suffix(host)
     key_hash = hashlib.sha256("k-secretopen_webui_openrouter_pipe".encode("utf-8", "ignore")).hexdigest()
     expected = f"{_sanitize_table_fragment('open_webui_openrouter_pipe')}_{key_hash[:8]}"
@@ -163,7 +163,7 @@ def test_table_suffix_matches_artifact_formula():
 
 
 def test_table_suffix_requires_identifier():
-    host: Any = SimpleNamespace(_encryption_key="", id="")
+    host: Any = SimpleNamespace(_table_key="", id="")
     with pytest.raises(RuntimeError):
         ArtifactStore.table_suffix(host)
 

@@ -45,6 +45,8 @@ The pipe defines an `EncryptedStr` wrapper used by sensitive valves such as:
 - If `WEBUI_SECRET_KEY` is **set**, `EncryptedStr.encrypt()` can store values prefixed with `encrypted:` and `EncryptedStr.decrypt()` returns the plaintext at runtime.
 - If `WEBUI_SECRET_KEY` is **not set**, `EncryptedStr` behaves like a normal string: values remain plaintext and `decrypt()` returns the original value.
 
+At 44 characters the two sides still derive different keys, and the divergence is harmless: the pipe's key is always the SHA-256-derived one, while Open WebUI uses a 44-character secret verbatim for its own valve column. Open WebUI encrypts the whole valves dict as one blob and decrypts it itself before the pipe sees a value, so the column's own ciphertext can never arrive as a field value. (The pipe only inspects that column to tell an unset configuration from an undecodable one; it never decrypts it.) A secret field's *value* inside that blob is the pipe's own `EncryptedStr` ciphertext, which is why the two derivations can differ harmlessly.
+
 Recommended operator action:
 - Set a strong `WEBUI_SECRET_KEY` in production deployments where valves may contain secrets.
 
@@ -59,8 +61,8 @@ export WEBUI_SECRET_KEY="$(openssl rand -base64 32)"
 **Warning:** If a secret valve value is stored with the `encrypted:` prefix but `WEBUI_SECRET_KEY` is missing, `EncryptedStr.decrypt()` strips the `encrypted:` prefix and returns the raw (still-encrypted) ciphertext; if `WEBUI_SECRET_KEY` is set but does not match the key used when the value was stored, `decrypt()` returns the original `encrypted:...` string unchanged. In either case the plaintext is not recovered, which can cause:
 
 - Provider authentication failures (if `API_KEY` cannot be recovered).
-- A different artifact storage table namespace (if `ARTIFACT_ENCRYPTION_KEY` cannot be recovered), making previously persisted artifacts appear “missing” until the correct `WEBUI_SECRET_KEY` is restored.
-- Session log archives being written with an unintended zip password (if `SESSION_LOG_ZIP_PASSWORD` cannot be recovered), complicating incident response.
+- Artifact storage stopping (if `ARTIFACT_ENCRYPTION_KEY` cannot be recovered). The pipe warns once and drops what it would have written, so no artifact content is stored in the clear, and no new artifact content is stored until the correct `WEBUI_SECRET_KEY` is restored. The coordination lock rows the pipe needs to keep assembling (and the dashboard purge locks) are still written, and they carry no content. Artifacts written under the previous secret stay unreadable until it is.
+- Session log archives being skipped (if `SESSION_LOG_ZIP_PASSWORD` cannot be recovered), which keeps them from being written under an unintended zip password.
 
 ---
 

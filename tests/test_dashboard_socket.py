@@ -24,6 +24,7 @@ from open_webui_openrouter_pipe.plugins.pipe_dashboard.dashboard_publisher impor
 from open_webui_openrouter_pipe.plugins.pipe_dashboard.dashboard_socket import (
     CONFIG_EVENT,
     DASHBOARD_EVENT,
+    DENIED_EVENT,
     SUB_EVENT,
     VIEWERS_ROOM,
     _pipe_dashboard_sub,
@@ -186,7 +187,6 @@ class TestPipeDashboardSub:
         await _pipe_dashboard_sub("sid-err")
         assert dashboard_socket._resync is False
 
-
 class TestReauthorizeLocalViewers:
     @pytest.mark.asyncio
     async def test_evicts_ungranted(self, monkeypatch):
@@ -252,7 +252,6 @@ class TestReauthorizeLocalViewers:
             await dashboard_socket.reauthorize_local_viewers()
         warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
         assert any("evicting viewer" in m and "s1" in m for m in warnings), warnings
-
 
 class TestViewerIdentityOutlivesTheSessionPool:
     """The identity a viewer is judged by must outlive OWUI's heartbeat bookkeeping.

@@ -1456,19 +1456,23 @@ class ModelCatalogManager:
                     )
 
             image_filter_function_ids: dict[str, list[str]] = {}
+            image_filter_ids_known = True
+            image_filter_ids_unresolved: frozenset[str] = frozenset()
             if (
                 (valves.AUTO_INSTALL_IMAGE_FILTERS or valves.AUTO_ATTACH_IMAGE_FILTERS)
                 and valves.ENABLE_OPENROUTER_IMAGE_GENERATION
             ):
+                _image_filter_manager = self._pipe._ensure_filter_manager()
                 try:
                     image_filter_function_ids = (
-                        await self._pipe._ensure_filter_manager().ensure_openrouter_image_filter_function_ids(models)
+                        await _image_filter_manager.ensure_openrouter_image_filter_function_ids(models)
                     )
                 except Exception as exc:
                     self.logger.warning(
                         "OpenRouter Image filter ensure failed: %s", exc, exc_info=True
                     )
-                    image_filter_function_ids = {}
+                    image_filter_ids_known = False
+                image_filter_ids_unresolved = _image_filter_manager.unresolved_image_filter_ids
             else:
                 # Retirement is not installation: it deactivates rows a previous design
                 # left behind. It has to run with the valves off too, because that is
@@ -1483,18 +1487,22 @@ class ModelCatalogManager:
                     )
 
             fusion_filter_function_id: str | None = None
+            fusion_ids_known = True
             if valves.ENABLE_OPENROUTER_FUSION and (
                 valves.AUTO_INSTALL_FUSION_FILTER or valves.AUTO_ATTACH_FUSION_FILTER
             ):
+                _fusion_filter_manager = self._pipe._ensure_filter_manager()
                 try:
                     fusion_filter_function_id = (
-                        await self._pipe._ensure_filter_manager().ensure_openrouter_fusion_filter_function_id()
+                        await _fusion_filter_manager.ensure_openrouter_fusion_filter_function_id()
                     )
                 except Exception as exc:
                     self.logger.warning(
                         "OpenRouter Fusion filter ensure failed: %s", exc, exc_info=True
                     )
-                    fusion_filter_function_id = None
+                    fusion_ids_known = False
+                if _fusion_filter_manager.unresolved_fusion_filter_id:
+                    fusion_ids_known = False
 
             direct_uploads_filter_function_id: str | None = None
             if (
@@ -1763,6 +1771,10 @@ class ModelCatalogManager:
                 )
 
                 image_filter_ids_for_model: list[str] = []
+                image_ids_unresolved = (
+                    openrouter_id in image_filter_ids_unresolved
+                    or str(original_id or "") in image_filter_ids_unresolved
+                )
                 if pipe_capabilities.get("image_output"):
                     image_filter_ids_for_model = list(
                         image_filter_function_ids.get(openrouter_id)
@@ -1847,6 +1859,8 @@ class ModelCatalogManager:
                                 auto_attach_image_filter
                                 and valves.AUTO_DEFAULT_IMAGE_FILTERS
                             ),
+                            image_filter_ids_known=image_filter_ids_known,
+                            image_ids_unresolved=image_ids_unresolved,
                             fusion_filter_function_ids=fusion_filter_ids_for_model,
                             fusion_filter_supported=bool(fusion_filter_ids_for_model),
                             auto_attach_fusion_filter=auto_attach_fusion,
@@ -1854,6 +1868,7 @@ class ModelCatalogManager:
                                 auto_attach_fusion
                                 and valves.AUTO_DEFAULT_FUSION_FILTER
                             ),
+                            fusion_ids_known=fusion_ids_known,
                             provider_routing_filter_id=pr_filter_id,
                             auto_default_provider_routing_filter=bool(
                                 valves.AUTO_DEFAULT_PROVIDER_ROUTING_FILTERS
@@ -2007,10 +2022,13 @@ class ModelCatalogManager:
         image_filter_supported: bool = False,
         auto_attach_image_filter: bool = False,
         auto_default_image_filter: bool = False,
+        image_filter_ids_known: bool = True,
+        image_ids_unresolved: bool = False,
         fusion_filter_function_ids: list[str] | None = None,
         fusion_filter_supported: bool = False,
         auto_attach_fusion_filter: bool = False,
         auto_default_fusion_filter: bool = False,
+        fusion_ids_known: bool = True,
         provider_routing_filter_id: str | None = None,
         auto_default_provider_routing_filter: bool = False,
         valid_openrouter_filter_ids: frozenset[str] = frozenset(),
@@ -2493,7 +2511,11 @@ class ModelCatalogManager:
             ):
                 meta_updated = True
 
-            image_hands_off = "image_filter_ids" in hands_off
+            image_hands_off = (
+                "image_filter_ids" in hands_off
+                or not image_filter_ids_known
+                or image_ids_unresolved
+            )
             image_ids_now = image_filter_function_ids if (
                 image_filter_supported and auto_attach_image_filter
             ) else []
@@ -2523,7 +2545,7 @@ class ModelCatalogManager:
             ):
                 meta_updated = True
 
-            fusion_hands_off = "fusion_filter_ids" in hands_off
+            fusion_hands_off = "fusion_filter_ids" in hands_off or not fusion_ids_known
             fusion_ids_now = fusion_filter_function_ids if (
                 fusion_filter_supported and auto_attach_fusion_filter
             ) else []
@@ -2648,12 +2670,18 @@ class ModelCatalogManager:
                 filter_function_ids=image_filter_function_ids,
                 auto_default=auto_default_image_filter,
             )
+            image_hands_off = (
+                "image_filter_ids" in hands_off
+                or not image_filter_ids_known
+                or image_ids_unresolved
+            )
             _apply_list_filter_ids(
                 meta_dict,
                 filter_function_ids=image_filter_function_ids,
                 filter_supported=image_filter_supported,
                 auto_attach=auto_attach_image_filter,
                 prune_key="image_filter_ids",
+                hands_off=image_hands_off,
             )
             _apply_list_default_filter_ids(
                 meta_dict,
@@ -2661,6 +2689,7 @@ class ModelCatalogManager:
                 filter_function_ids=image_filter_function_ids,
                 filter_supported=image_filter_supported,
                 auto_default=auto_default_image_filter,
+                hands_off=image_hands_off,
             )
             fusion_detached = _detached_with_default_off(
                 meta_dict,
@@ -2668,12 +2697,14 @@ class ModelCatalogManager:
                 filter_function_ids=fusion_filter_function_ids,
                 auto_default=auto_default_fusion_filter,
             )
+            fusion_hands_off = "fusion_filter_ids" in hands_off or not fusion_ids_known
             _apply_list_filter_ids(
                 meta_dict,
                 filter_function_ids=fusion_filter_function_ids,
                 filter_supported=fusion_filter_supported,
                 auto_attach=auto_attach_fusion_filter,
                 prune_key="fusion_filter_ids",
+                hands_off=fusion_hands_off,
             )
             _apply_list_default_filter_ids(
                 meta_dict,
@@ -2681,6 +2712,7 @@ class ModelCatalogManager:
                 filter_function_ids=fusion_filter_function_ids,
                 filter_supported=fusion_filter_supported,
                 auto_default=auto_default_fusion_filter,
+                hands_off=fusion_hands_off,
             )
             pr_detached = _detached_with_default_off(
                 meta_dict,

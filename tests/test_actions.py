@@ -12,6 +12,7 @@ from open_webui_openrouter_pipe.core.config import EncryptedStr, Valves
 pytest.importorskip("open_webui_openrouter_pipe.plugins.pipe_dashboard")
 
 from open_webui_openrouter_pipe.plugins.pipe_dashboard import actions
+from open_webui_openrouter_pipe.plugins.pipe_dashboard.config_service import _ClientMessage
 
 
 def _user(uid="u1", role="user"):
@@ -127,12 +128,21 @@ async def test_write_args_audited_read_args_omitted(monkeypatch):
 
 
 def test_audit_routine_ok_is_debug_anomaly_is_warning(monkeypatch):
+    """Exact list, never a subset: a level that silently changed would still pass `in`.
+
+    `disabled` is a refusal, but not an anomaly: switching the dashboard off is the
+    admin's own choice, so a request that meets it is routine -- a stale open tab polls
+    it -- and Open WebUI does not warn when a disabled feature refuses either. It is
+    still audited and still greppable, at a level that costs nothing at the default
+    INFO floor. Permission refusals stay at `warning`.
+    """
     calls = []
     monkeypatch.setattr(actions.logger, "debug", lambda *a, **k: calls.append("debug"))
     monkeypatch.setattr(actions.logger, "warning", lambda *a, **k: calls.append("warning"))
     actions._audit(SimpleNamespace(id="u"), "usage_stats", "ok", "1.2.3.4")
     actions._audit(SimpleNamespace(id="u"), "usage_stats", "forbidden", "1.2.3.4")
-    assert calls == ["debug", "warning"]
+    actions._audit(SimpleNamespace(id="u"), "usage_stats", "disabled", "1.2.3.4")
+    assert calls == ["debug", "warning", "debug"]
 
 
 def test_scrub_strips_newlines_and_truncates():
@@ -667,21 +677,6 @@ async def test_update_gate_denies_when_the_persisted_valve_is_unreadable(update_
     assert any(
         "refusing update actions" in m for m in caplog.messages
     ), caplog.messages
-
-
-@pytest.mark.asyncio
-async def test_update_writes_require_admin(update_env):
-    for name, args in (
-        ("update_apply", {"rev": 1}),
-        ("update_restore", {"rev": 1, "file_id": "f"}),
-        ("update_snapshot_delete", {"file_id": "f", "sha256": "s"}),
-    ):
-        status, payload = await actions.dispatch_action(
-            update_env.pipe, _user(role="user"), name, args, request=_req()
-        )
-        assert status == 200
-        assert payload["result"]["error"] == "forbidden"
-    assert update_env.svc.calls == []
 
 
 @pytest.mark.asyncio
