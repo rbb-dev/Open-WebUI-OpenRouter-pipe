@@ -332,6 +332,15 @@ def _unconverted_block_reason(block: dict[str, Any]) -> str | None:
     return None
 
 
+def _oversized_inline_refusal(
+    limit_bytes: int, cause: str, subject: str
+) -> ImageRefusal:
+    return ImageRefusal(
+        f"larger than the {limit_bytes}-byte inline limit", cause,
+        severity="error", subject=subject,
+    )
+
+
 def _is_text_ordinal_upper_bound(
     msg_items: list[dict[str, Any]],
     ordinal: int,
@@ -1511,7 +1520,7 @@ async def transform_messages_to_input(
                 def _refuse_audio(why: str, cause: str) -> ImageRefusal:
                     return ImageRefusal(why, cause, subject="audio")
 
-                async def _refuse_oversized_inline(estimate: int) -> None:
+                async def _refuse_oversized_inline(estimate: int) -> ImageRefusal:
                     pipe.logger.warning(
                         "Audio payload rejected: ~%.1fMB is over the %dMB inline limit.",
                         estimate / (1024 * 1024),
@@ -1522,11 +1531,24 @@ async def transform_messages_to_input(
                         f"Audio input is larger than the {max_inline_bytes}-byte inline limit and was not sent.",
                         show_error_message=True,
                     )
+                    return _oversized_inline_refusal(
+                        max_inline_bytes, "oversized_inline_audio",
+                        "an attached audio clip",
+                    )
 
-                def _normalize_base64(data: str) -> str | None:
+                async def _normalize_base64(data: str) -> str | None:
                     if not data:
                         return None
-                    cleaned = "".join(data.split())
+                    stripped = data.strip()
+                    if stripped.lower().startswith("data:"):
+                        parsed = await asyncio.to_thread(
+                            pipe._multimodal_handler._parse_data_url, stripped
+                        )
+                        if not parsed:
+                            return None
+                        cleaned = "".join(str(parsed.get("b64") or "").split())
+                    else:
+                        cleaned = "".join(stripped.split())
                     if not cleaned:
                         return None
                     if not _is_well_formed_base64(cleaned):
@@ -1583,7 +1605,7 @@ async def transform_messages_to_input(
                         _data = audio_payload.get("data", "")
                         if isinstance(_data, str) and _inline_payload_bytes(_data) > max_inline_bytes:
                             return await _refuse_oversized_inline(_inline_payload_bytes(_data))
-                        cleaned = _normalize_base64(_data)
+                        cleaned = await _normalize_base64(_data)
                         if not cleaned:
                             pipe.logger.warning("Audio payload rejected: invalid base64 data.")
                             return _refuse_audio(
@@ -1598,7 +1620,7 @@ async def transform_messages_to_input(
                         if isinstance(raw_data, str):
                             if _inline_payload_bytes(raw_data) > max_inline_bytes:
                                 return await _refuse_oversized_inline(_inline_payload_bytes(raw_data))
-                            cleaned = _normalize_base64(raw_data)
+                            cleaned = await _normalize_base64(raw_data)
                             if not cleaned:
                                 pipe.logger.warning("Audio payload rejected: invalid base64 data.")
                                 return _refuse_audio(
@@ -1640,7 +1662,7 @@ async def transform_messages_to_input(
                                 )
                             return _build_audio_block(audio_b64, audio_format)
 
-                        cleaned = _normalize_base64(sanitized)
+                        cleaned = await _normalize_base64(sanitized)
                         if not cleaned:
                             pipe.logger.warning("Audio payload rejected: invalid base64 data.")
                             return _refuse_audio(
@@ -1760,7 +1782,10 @@ async def transform_messages_to_input(
                                 f"Video too large (~{estimated_size_mb:.1f}MB, max: {video_max_size_mb}MB)",
                                 show_error_message=True
                             )
-                            return {"type": "video_url", "video_url": {"url": ""}}
+                            return _oversized_inline_refusal(
+                                max_size_bytes, "oversized_inline_video",
+                                "an attached video clip",
+                            )
 
                         await pipe._event_emitter_handler._emit_status(
                             event_emitter,
@@ -1827,10 +1852,12 @@ async def transform_messages_to_input(
             dropped_images = 0
             refused_images: list[str] = []
             refused_files: list[str] = []
+            carded_files: list[str] = []
             encountered_user_images = False
             reusable_image_blocks: list[dict[str, Any]] = []
             vision_warning_sent = False
             latest_user_message = role == "user" and idx in current_turn_people
+            is_last_current_turn_person = bool(current_turn_people) and idx == current_turn_people[-1]
             include_user_images = (
                 ((latest_user_message and vision_supported) or tool_images) and image_limit > 0
             )
@@ -1903,6 +1930,8 @@ async def transform_messages_to_input(
                                 result.reason,
                             )
                             refused_files.append(result.reason)
+                            if result.severity == "error":
+                                carded_files.append(result.reason)
                             continue
                         if result.severity == "fatal":
                             raise RequiredInternalFileError(
@@ -1931,7 +1960,7 @@ async def transform_messages_to_input(
                         encountered_user_images = True
                         continue
                     if result is None:
-                        if is_image_block and idx == current_turn_people[-1]:
+                        if is_image_block and is_last_current_turn_person:
                             encountered_user_images = True
                         continue
                     if isinstance(result, dict):
@@ -1960,7 +1989,7 @@ async def transform_messages_to_input(
 
             if (
                 latest_user_message
-                and idx == current_turn_people[-1]
+                and is_last_current_turn_person
                 and not person_images_this_turn
                 and selection_mode == "user_then_assistant"
                 and include_user_images
@@ -2031,9 +2060,14 @@ async def transform_messages_to_input(
                     f"dropped {dropped_images} over the limit of {image_limit}"
                 )
             notices = ["Images: " + "; ".join(image_notices) + "."] if image_notices else []
-            if refused_files:
-                notices.append(f"Files: skipped {len(refused_files)} ({'; '.join(refused_files)}).")
-            if notices and (latest_user_message or (tool_images and idx == last_tool_handoff_index) or refused_files):
+            status_files = [r for r in refused_files if r not in carded_files]
+            if status_files:
+                notices.append(f"Files: skipped {len(status_files)} ({'; '.join(status_files)}).")
+            if notices and (
+                latest_user_message
+                or (tool_images and idx == last_tool_handoff_index)
+                or status_files
+            ):
                 await pipe._event_emitter_handler._emit_status(
                     event_emitter,
                     " ".join(notices),

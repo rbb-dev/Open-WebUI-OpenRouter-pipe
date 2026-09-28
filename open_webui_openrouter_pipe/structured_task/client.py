@@ -173,6 +173,11 @@ async def read_task_model_response_json(response: Any) -> dict[str, Any]:
         for item in output_items:
             if not isinstance(item, dict):
                 continue
+            if item.get("type") != "message":
+                continue
+            refusal = item.get("refusal")
+            if isinstance(refusal, str) and refusal.strip():
+                raise TaskModelFault("task_model_refusal")
             content_list = item.get("content")
             if not isinstance(content_list, list):
                 continue

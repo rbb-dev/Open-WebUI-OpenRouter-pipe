@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import logging
 import time
 from types import SimpleNamespace
 from typing import Any
@@ -16,6 +17,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from open_webui_openrouter_pipe.structured_task.client import TaskModelFault
+from open_webui_openrouter_pipe.structured_task.retry import _response_text
 from open_webui_openrouter_pipe.structured_task import (
     build_response_format,
     call_with_candidates,
@@ -192,6 +195,14 @@ class TestConsumeSseLine:
 
 
 class TestReadTaskModelResponseJson:
+    @staticmethod
+    def _message_item(text: str) -> dict[str, Any]:
+        return {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": text}],
+        }
+
     @pytest.mark.asyncio
     async def test_parses_dict_choice_message_content(self):
         response = {

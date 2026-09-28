@@ -21,6 +21,7 @@ When you configure provider routing for a model, the pipe:
 3. **Installs the filter** in Open WebUI's Functions database
 4. **Attaches the filter** to the model so it appears in the Integrations menu, enabled by default in new chats (`AUTO_DEFAULT_PROVIDER_ROUTING_FILTERS`, on by default) so saved preferences apply without a per-chat toggle
 5. **Detaches on clearing** — emptying both valve lists switches that model's filter row off (`is_active: False`, not deleted) on the next model-list refresh, and removes the filter from the model's own `filterIds` and `defaultFilterIds` on the next metadata sync, so a model you took out of routing stops enforcing it
+6. **Keeps each row current** — on every model-list refresh the pipe compares each routing filter's stored source against freshly rendered source, so an edit made in Workspace ▸ Functions is reverted on the next pass
 
 **Limit.** The two halves above have different clocks, and the second is the one that can wait: the filter row is switched off on the next model-list refresh, while the model's own `filterIds` and `defaultFilterIds` entries are removed on the next metadata sync. So a model whose metadata sync is switched off — `UPDATE_MODEL_CAPABILITIES`, `UPDATE_MODEL_IMAGES` and `UPDATE_MODEL_DESCRIPTIONS` all off, with no other sync valve on — keeps its stale `filterIds` and `defaultFilterIds` until a sync valve comes back on. The filter row itself is inactive, so the chat path is unaffected; only the Integrations menu entry lingers until the next sync. Separately, a startup sweep clears any remaining `openrouter_*` id from every model's `filterIds` when no `openrouter_*` filter row survives at all — the all-gone case it previously skipped — so a model left by a transient install failure does not keep a dangling name forever.
 
@@ -259,8 +260,11 @@ Filters are regenerated when:
 - Provider catalog refreshes (new providers added/removed)
 - Valve lists change (models added/removed from routing)
 - The pipe is upgraded (the generated source carries the pipe version, so a version that changes the template regenerates it)
+- A row's own stored source was edited in Workspace ▸ Functions
 
-The pipe uses a **state hash** to avoid unnecessary database writes when nothing has changed. That hash covers every renderer input, including the pipe version.
+The pipe uses a **state hash** to avoid unnecessary database writes when nothing has changed. That hash covers the renderer inputs only — including the pipe version — not the rows themselves, so the hash is not what decides whether an edited row is repaired. Each row's stored source is compared against freshly rendered source on every pass instead, and a row whose source no longer matches is rewritten. A pass with nothing to repair writes nothing.
+
+Ownership is by the marker: the pipe keeps the code of a row it owns current, so a hand edit to that code is reverted on the next model-list refresh. Customise provider routing through the valve settings and the per-model panel, not by editing the generated Python.
 
 When regeneration changes the dropdown options, previously saved selections that no longer
 exist in the new option list are healed instead of breaking the filter. A stored `ORDER`
@@ -289,6 +293,10 @@ Note that the entry may still be visible in the model's filter list while it is 
 Open WebUI applies only the active entries, so a listed-but-inactive provider routing entry
 does nothing until it is switched on again.
 
+A row the pipe could not switch on is named in the log with its id, is not attached while it
+is off, and is retried on the next catalog refresh. The retry stops once it succeeds, so a
+row you switch off by hand afterwards stays off.
+
 ### Two installed copies
 
 Each generated filter records the id of the pipe that wrote it, in an `OWUI_PIPE_OWNER`
@@ -296,6 +304,12 @@ assignment beside the marker in its source. A copy only writes a row it owns, so
 installed copies each manage the models in their own valve lists and neither rewrites,
 disables, or re-enables the other's entries. A model missing from a copy's list is
 missing because that copy's admin does not use it, not because the filter was retired.
+
+Ownership also decides what happens to a hand edit. A row a copy owns is kept current: an
+edit to its stored source is reverted on the next model-list refresh, because the row is
+regenerated rather than left to drift. Customise provider routing through the valve
+settings and the per-model panel; an edit to the generated Python is not how a preference
+is set and does not survive the next refresh.
 
 Rows created before the stamp existed carry none, and the first copy to find one claims
 it; a row with no owner is therefore never left unmanaged. The attach mapping is

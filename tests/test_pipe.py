@@ -4144,16 +4144,24 @@ def _install_functions_module(functions: list[_Func]) -> Iterator[types.ModuleTy
             return None
 
         @classmethod
-        async def insert_new_function(cls, *_args, **_kwargs):
-            return True
+        async def insert_new_function(cls, _user_id, _type, form, db=None):
+            row = _Func(id=form.id, content=form.content)
+            for key, value in vars(form).items():
+                if key not in ("id", "content"):
+                    setattr(row, key, value)
+            cls._functions.append(row)
+            return row
 
         @classmethod
-        async def update_function_by_id(cls, func_id, payload):
-            cls.updated.append((func_id, payload))
-            for func in cls._functions:
-                if func.id == func_id:
-                    return func
-            return SimpleNamespace(id=func_id, is_active=True, is_global=False)
+        async def update_function_by_id(cls, func_id, payload, db=None):
+            row = await cls.get_function_by_id(func_id)
+            if row is None:
+                return None
+            cls.updated.append((func_id, dict(payload)))
+            for key, value in dict(payload).items():
+                setattr(row, key, value)
+            row.updated_at += 1
+            return row
 
         @classmethod
         async def delete_function_by_id(cls, func_id, db=None):

@@ -834,7 +834,9 @@ def _is_template_valve(name: Any) -> bool:
 
 _ADMIN_OFF_STAYS_OFF = (
     " A filter you switch off yourself in Open WebUI's Functions list stays off: the "
-    "pipe keeps its code up to date but never switches it back on."
+    "pipe keeps its code up to date but never switches it back on. The one exception is "
+    "a write Open WebUI itself refused, which the pipe retries until it lands; once it "
+    "lands the retry stops, so a filter you switch off after that stays off."
 )
 _PIPE_OFF_COMES_BACK = (
     " One this version switched off itself comes back on its own when you enable the "
@@ -843,7 +845,8 @@ _PIPE_OFF_COMES_BACK = (
 _ROUTING_ADMIN_OFF_STAYS_OFF = (
     " A filter you switch off yourself in Open WebUI's Functions list stays off: the "
     "pipe keeps its code up to date but never switches it back on, or when the model "
-    "is listed again."
+    "is listed again. A write Open WebUI itself refused is the one thing the pipe does "
+    "retry, and only until it lands."
 )
 
 
@@ -1191,6 +1194,8 @@ class Valves(BaseModel):
             "a `base_id@preset/slug` entry gets none of the pipe's own, so the preset's saved ones apply, "
             "though a reasoning effort the chat itself sets still goes out and overrides them for that request. "
             "Supported tags: free, thinking, online, nitro, exacto, extended. "
+            "A variant of an image model is the same model, so the image settings panel "
+            "covers the variant too. "
             "The full model ID with ':variant' suffix is sent to OpenRouter for specialized routing."
         ),
     )
@@ -2093,7 +2098,8 @@ class Valves(BaseModel):
         description=(
             "Install and keep up to date one settings panel per image model, built from "
             "the settings that model tells OpenRouter it accepts -- so nobody is shown an "
-            "aspect ratio their model rejects. Alongside those, every panel carries "
+            "aspect ratio their model rejects. A routing variant or preset of an image "
+            "model is the same model, so its panel covers the variant too. Alongside those, every panel carries "
             "Output size: a size tier typed there is checked against the tiers that model "
             "publishes, or against 512, 1K, 2K and 4K where it publishes none, and a tier "
             "the model does not list is dropped before the request goes out, while exact "

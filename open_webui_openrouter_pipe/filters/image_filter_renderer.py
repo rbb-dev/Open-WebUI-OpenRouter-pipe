@@ -40,6 +40,19 @@ from ..models.registry import sanitize_model_id
 from .video_filter_renderer import _SEED_MEANING
 
 
+def normalise_image_filter_model_id(raw: str) -> str:
+    return ".".join(
+        part.lstrip("~")
+        for part in str(raw or "").strip().replace("/", ".").casefold().split(".")
+    )
+
+
+def normalise_image_filter_variant_ids(variant_ids: Any) -> tuple[str, ...]:
+    if not variant_ids:
+        return ()
+    return tuple(sorted({normalise_image_filter_model_id(v) for v in variant_ids if v}))
+
+
 def sanitize_image_filter_id(model_id: str) -> str:
     """Derive one model's filter id, on the same terms as the video sibling.
 
@@ -108,6 +121,7 @@ class ImageModelFilterSpec:
     number, so the control is a number with no published bounds.
     """
     passthrough: tuple[str, ...] = ()
+    variant_ids: tuple[str, ...] = ()
 
     @property
     def passthrough_unaddressable(self) -> bool:
@@ -318,6 +332,7 @@ def build_image_model_filter_spec(
     endpoint_record: dict | list[dict] | None = None,
     *,
     dedicated_image_api: bool,
+    variant_ids: tuple[str, ...] = (),
 ) -> ImageModelFilterSpec:
     """Turn one model's published contract into the knobs its filter should render.
 
@@ -368,6 +383,7 @@ def build_image_model_filter_spec(
         ranges=tuple(ranges),
         supported=tuple(supported_names),
         passthrough=passthrough,
+        variant_ids=normalise_image_filter_variant_ids(variant_ids),
     )
 
 
@@ -864,6 +880,7 @@ OWUI_OPENROUTER_PIPE_MARKER = {spec.marker!r}
 OPENROUTER_PIPE_VERSION = {__version__!r}
 IMAGE_FILTER_MODEL_ID = {spec.model_id!r}
 IMAGE_FILTER_MODEL_DOTTED = {spec.dotted_id!r}
+IMAGE_FILTER_VARIANT_IDS = {spec.variant_ids!r}
 PIPE_METADATA_KEY = {_PIPE_METADATA_KEY!r}
 
 
@@ -883,6 +900,9 @@ def _matches_model(raw: str) -> bool:
     )
     return normalised == IMAGE_FILTER_MODEL_DOTTED or normalised.endswith(
         "." + IMAGE_FILTER_MODEL_DOTTED
+    ) or any(
+        normalised == variant or normalised.endswith("." + variant)
+        for variant in IMAGE_FILTER_VARIANT_IDS
     )
 
 

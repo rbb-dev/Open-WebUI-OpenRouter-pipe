@@ -51,6 +51,8 @@ The pipe extracts housekeeping task output text from:
 - `output[].type == "message"` items containing `content[].type == "output_text"`, concatenated with newlines.
 - Fallback: a top-level `output_text` string (some providers return a collapsed field).
 
+The `type == "message"` filter is an allow-list, so a `reasoning` item -- or any other item type, or an item with no type at all -- contributes nothing however its content parts are typed. A `message` item carrying a non-blank `refusal` raises `task_model_refusal` on every arm, `output` and `choices` alike, so a refused task model is never used as a classifier result. The refusal text itself is never carried in the fault.
+
 If the provider returns no usable text, the pipe does not raise. The failure is routed through `_task_refusal_result`: a kind Open WebUI persists (`title_generation`, `tags_generation`, `follow_up_generation`) gets a contextual card naming the task, the model, the attempt count, the error class and the error id; every other kind gets `""`, because Open WebUI hands that return value straight to a consumer that displays it. A warning toast carrying the same card is emitted on the one channel that is still open -- once per chat-or-user and model within the notification window.
 
 ### How many requests a failing task makes

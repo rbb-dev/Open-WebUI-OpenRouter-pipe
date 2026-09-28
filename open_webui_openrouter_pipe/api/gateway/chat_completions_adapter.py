@@ -88,6 +88,23 @@ def _append_text_field(item: dict, key: str, value: str) -> None:
     item[key] = text
 
 
+def _chat_message_text(message: Any) -> str:
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        fragments: list[str] = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                text_val = part.get("text")
+                if isinstance(text_val, str):
+                    fragments.append(text_val)
+        return "".join(fragments)
+    return ""
+
+
 def _build_output_items(
     *,
     assistant_text: str,
@@ -244,6 +261,7 @@ class ChatCompletionsAdapter:
         images_emitted = False
         provider_refusal_parts: list[str] = []
         refusal_text_seen = False
+        assistant_text_seen = False
 
         @timed
         def _ensure_tool_call_id(index: int, current: dict[str, Any]) -> str:
@@ -387,7 +405,7 @@ class ChatCompletionsAdapter:
             nonlocal emitted_any, received_any, latest_usage, reasoning_item_id, reasoning_text_seen, \
                 reasoning_summary_text, latest_message_annotations, image_item_id, \
                 image_output_item, images_emitted, refusal_text_seen, tool_calls_completed, \
-                truncating_reason, delivered_any, saw_choice_chunk
+                truncating_reason, delivered_any, saw_choice_chunk, assistant_text_seen
             try:
                 chunk_obj = json.loads(data_blob.decode("utf-8"))
             except (RecursionError, UnicodeDecodeError, ValueError) as exc:
@@ -545,6 +563,13 @@ class ChatCompletionsAdapter:
                         delivered_any = True
                         provider_refusal_parts.append(message_refusal)
                         refusal_text_seen = True
+                if not assistant_text_seen:
+                    message_text = _chat_message_text(message_obj)
+                    if message_text:
+                        assistant_text_parts.append(message_text)
+                        assistant_text_seen = True
+                        delivered_any = True
+                        yield {"type": "response.output_text.delta", "delta": message_text}
                 message_images = message_obj.get("images")
                 if (
                     not images_emitted
@@ -592,6 +617,7 @@ class ChatCompletionsAdapter:
             content_delta = delta_obj.get("content")
             if isinstance(content_delta, str) and content_delta:
                 assistant_text_parts.append(content_delta)
+                assistant_text_seen = True
                 delivered_any = True
                 yield {"type": "response.output_text.delta", "delta": content_delta}
 

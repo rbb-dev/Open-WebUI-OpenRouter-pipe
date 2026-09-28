@@ -59,7 +59,7 @@ def _response_text(response: Any) -> str:
             parts = [
                 str(part.get("text") or "")
                 for item in output
-                if isinstance(item, dict)
+                if isinstance(item, dict) and item.get("type") == "message"
                 for part in (item.get("content") or [])
                 if isinstance(part, dict) and part.get("type") == "output_text"
             ]

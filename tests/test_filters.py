@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import inspect
+import json
 import os
 from types import ModuleType, SimpleNamespace
 from typing import Any, cast
@@ -2025,7 +2026,12 @@ class _FakeFunctionsTable:
         obj = cls.store.get(function_id)
         if obj is None:
             return None
-        for key, value in dict(updates).items():
+        payload = dict(updates)
+        try:
+            json.dumps(payload)
+        except TypeError:
+            return None
+        for key, value in payload.items():
             setattr(obj, key, value)
         return obj
 

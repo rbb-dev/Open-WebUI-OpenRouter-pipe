@@ -1865,6 +1865,7 @@ class FilterManager:
         image_model: dict[str, Any] | None = None,
         endpoint_record: list[dict[str, Any]] | dict[str, Any] | None = None,
         dedicated_image_api: bool,
+        variant_ids: tuple[str, ...] = (),
     ) -> str:
         from .image_filter_renderer import (
             build_image_model_filter_spec,
@@ -1877,6 +1878,7 @@ class FilterManager:
                 image_model,
                 endpoint_record,
                 dedicated_image_api=dedicated_image_api,
+                variant_ids=variant_ids,
             )
         )
 
@@ -1975,6 +1977,20 @@ class FilterManager:
         self._unresolved_image_filter_ids = frozenset()
         unresolved: set[str] = set()
         installed: dict[str, list[str]] = {}
+
+        variant_ids_by_canonical: dict[str, set[str]] = {}
+        for model in models:
+            model_id = model.get("id")
+            if not isinstance(model_id, str) or not model_id.strip():
+                continue
+            model_id = model_id.strip()
+            original_id = model.get("original_id")
+            canonical_id = (
+                original_id if isinstance(original_id, str) and original_id.strip() else model_id
+            )
+            if sanitize_model_id(model_id) != sanitize_model_id(canonical_id):
+                variant_ids_by_canonical.setdefault(canonical_id, set()).add(model_id)
+
         for model in models:
             model_id = model.get("id")
             if not isinstance(model_id, str) or not model_id.strip():
@@ -2007,6 +2023,7 @@ class FilterManager:
                     endpoint_record=endpoint_record,
                     dedicated_image_api=uses_dedicated_image_api(spec),
                     rows=rows,
+                    variant_ids=tuple(sorted(variant_ids_by_canonical.get(canonical_id, ()))),
                 )
             except Exception as exc:
                 # One model's install failure costs that model its filter and nothing
@@ -2114,11 +2131,16 @@ class FilterManager:
         endpoint_record: list[dict[str, Any]] | dict[str, Any] | None,
         dedicated_image_api: bool,
         rows: list[Any] | None = None,
+        variant_ids: tuple[str, ...] = (),
     ) -> str | None:
         from .image_filter_renderer import build_image_model_filter_spec
 
         spec = build_image_model_filter_spec(
-            model_id, image_model, endpoint_record, dedicated_image_api=dedicated_image_api
+            model_id,
+            image_model,
+            endpoint_record,
+            dedicated_image_api=dedicated_image_api,
+            variant_ids=variant_ids,
         )
         if not spec.contract_read:
             return None
@@ -2144,6 +2166,7 @@ class FilterManager:
             image_model=image_model,
             endpoint_record=endpoint_record,
             dedicated_image_api=dedicated_image_api,
+            variant_ids=variant_ids,
         ).strip() + "\n"
         return await self._ensure_filter_installed(
             desired_source=desired_source,
@@ -2679,6 +2702,47 @@ __KEEP_WHAT_STILL_FITS__
 
         data = f"{admin_sorted}|{user_sorted}|{provider_data}|{transports}|{__version__}"
         return hashlib.md5(data.encode()).hexdigest()
+
+    def _routing_drift(
+        self,
+        all_models: set[str],
+        existing_filters: dict[str, Any],
+        undeliverable_slugs: set[str],
+        provider_map: dict[str, dict[str, list[str]]],
+        model_visibility: dict[str, str],
+        pipe_identifier: str,
+    ) -> tuple[set[str], set[str]]:
+        content_drifted: set[str] = set()
+        deliverable_off: set[str] = set()
+        for slug in all_models:
+            existing = existing_filters.get(slug)
+            if existing is None or slug in undeliverable_slugs:
+                continue
+            if _row_owner(existing) not in ("", pipe_identifier):
+                continue
+            if not getattr(existing, "is_active", False):
+                deliverable_off.add(slug)
+            model_info = provider_map.get(slug) or {}
+            transport = self.model_transport(slug)
+            if not self._routing_controls(transport) or not model_info.get("providers"):
+                continue
+            raw_prov_names = model_info.get("provider_names", {})
+            prov_names: dict[str, str] = raw_prov_names if isinstance(raw_prov_names, dict) else {}
+            raw_short_name = model_info.get("short_name", "")
+            short_name: str = raw_short_name if isinstance(raw_short_name, str) else ""
+            desired_source = self._render_provider_routing_filter_source(
+                slug,
+                list(model_info.get("providers") or []),
+                list(model_info.get("quantizations") or []),
+                model_visibility.get(slug, "user"),
+                short_name=short_name,
+                provider_names=prov_names,
+                transport=transport,
+                owner=pipe_identifier,
+            ).strip() + "\n"
+            if desired_source != _stored_source(existing):
+                content_drifted.add(slug)
+        return content_drifted, deliverable_off
 
     @staticmethod
     def model_transport(model_slug: str) -> str:
@@ -3292,7 +3356,31 @@ class Filter:
             if slug not in all_models and getattr(existing, "is_active", False)
         }
 
-        if hash_unchanged and not missing_filters and not stale_active and not orphaned_active:
+        content_drifted: set[str] = set()
+        deliverable_off: set[str] = set()
+        if hash_unchanged:
+            content_drifted, deliverable_off = self._routing_drift(
+                all_models,
+                existing_filters,
+                undeliverable_slugs,
+                provider_map,
+                model_visibility,
+                pipe_identifier,
+            )
+            for slug in sorted(deliverable_off):
+                existing_id = getattr(existing_filters.get(slug), "id", "")
+                self.logger.log(
+                    warn_level(_warned_stale_filter_rows, f"admin_off:{existing_id}"),
+                    "Provider routing filter %r is switched off in Open WebUI; the pipe "
+                    "keeps its code up to date and leaves it off. Switch it on in "
+                    "Workspace > Functions to get it back.",
+                    existing_id,
+                )
+
+        if (
+            hash_unchanged and not content_drifted
+            and not missing_filters and not stale_active and not orphaned_active
+        ):
             for slug in all_models:
                 if slug in undeliverable_slugs:
                     continue

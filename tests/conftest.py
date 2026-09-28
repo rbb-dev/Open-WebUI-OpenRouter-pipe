@@ -12,6 +12,7 @@ from typing import Any
 
 import asyncio
 import base64
+import json
 import sys
 from pathlib import Path
 from types import ModuleType
