@@ -174,13 +174,25 @@ class ModelFamily:
         cls._DYNAMIC_SPECS = specs or {}
 
     @classmethod
+    def _strip_known_suffixes(cls, norm: str) -> list[str]:
+        candidates = [norm]
+        base, _, _tag = norm.rpartition(":")
+        if base:
+            candidates.append(base)
+            if cls._DATE_RE.search(base):
+                candidates.append(cls._DATE_RE.sub("", base))
+        undated = cls.undated(norm)
+        if undated not in candidates:
+            candidates.append(undated)
+        return candidates
+
+    @classmethod
     def _resolve_spec_key(cls, norm: str, specs: dict[str, dict[str, Any]]) -> str:
-        if norm in specs:
-            return norm
-        base, _, _ = norm.rpartition(":")
-        if not base:
-            return norm
-        return base
+        candidates = cls._strip_known_suffixes(norm)
+        for candidate in candidates:
+            if candidate in specs:
+                return candidate
+        return candidates[1] if len(candidates) > 1 else norm
 
     @classmethod
     def _lookup_spec(cls, model_id: str) -> dict[str, Any]:
@@ -199,6 +211,10 @@ class ModelFamily:
     @classmethod
     def catalog_spec(cls, model_id: str) -> dict[str, Any]:
         return cls._DYNAMIC_SPECS.get(cls.catalog_norm_id(model_id)) or {}
+
+    @classmethod
+    def supports_verbosity(cls, model_id: str) -> bool:
+        return _supports_verbosity(cls.base_model(model_id, _NO_PIPE_ID))
 
     @classmethod
     def catalog_supported_parameters(cls, model_id: str) -> frozenset[str]:
@@ -1466,6 +1482,14 @@ _CLAUDE_REASONING_RE = re.compile(r"~?anthropic[./]claude-(opus|sonnet)-")
 def _is_claude_reasoning_model(normalized_model_id: str) -> bool:
     """Return True for Claude Opus/Sonnet models that support verbosity mapping."""
     return bool(_CLAUDE_REASONING_RE.match((normalized_model_id or "").lower()))
+
+
+def _supports_verbosity(normalized_model_id: str) -> bool:
+    normalized = normalized_model_id or ""
+    if not _is_claude_reasoning_model(normalized):
+        return False
+    supported = ModelFamily.catalog_supported_parameters(normalized)
+    return not supported or "verbosity" in supported
 
 
 # Gemini Reasoning Helpers

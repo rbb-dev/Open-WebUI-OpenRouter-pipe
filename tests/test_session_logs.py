@@ -1154,6 +1154,41 @@ class TestResolveMessageId:
         key = resolve_message_id(metadata)
         assert set(key.split(".")) == {"c-1", "title_generation"}
 
+    # -- the head budget -----------------------------------------------------------------
+    #
+    # The composed key is `<head>.<task>` and never exceeds 64 characters, so the head
+    # is `63 - len(qualifier)` and falls to nothing as the qualifier grows. At 63 the
+    # bound is zero and every message collapses onto `".<qualifier>"`; from 55 down it
+    # is too short to separate two real ids either. The qualifier is therefore clamped
+    # so the head always keeps its reservation.
+    #
+    # The floor is derived, not chosen. Open WebUI generates message ids as
+    # `str(uuid4())` (routers/chats.py:788,1749): 36 characters carrying 32 uniformly
+    # distributed hex digits, so two real ids share no prefix by construction and differ
+    # somewhere in the head. A head of h characters collides with probability 16**-h;
+    # requiring that to be no worse than the id's own birthday scale, 2**-64, gives
+    # h >= 16. Sixteen hex characters is exactly 64 bits, and the whole key is 64
+    # characters, so there is nothing beyond it to reserve.
+    #
+    # The pair below differs at the second character -- inside any floor at or above 2,
+    # and inside the derived one -- which is the position two uniform hex strings are
+    # most likely to be distinguished at. A floor of 0 fails it (an empty head makes
+    # every key the same), a floor of 1 passes this sweep and fails the emptiness
+    # assertion, and a floor of 8 passes both and is still short of the derivation.
+
+    _LONG_QUALIFIER_LENGTHS = [1, 15, 30, 54, 55, 62, 63, 64, 80, 200]
+
+    def _head_key_pair(self, qualifier_length):
+        from open_webui_openrouter_pipe.logging.session_log_manager import resolve_message_id
+
+        qualifier = "t" * qualifier_length
+        first = "3f2a9c7e1b4d6805-0000-4000-8000-000000000000"
+        second = "3f5b1d9a0e37ca14-0000-4000-8000-000000000000"
+        return (
+            resolve_message_id({"message_id": first, "task": qualifier}),
+            resolve_message_id({"message_id": second, "task": qualifier}),
+        )
+
 # ===== Assembler failure paths on a real sqlite artifact table (B7-1 / B7-3) =====
 
 import datetime as _dt

@@ -15,9 +15,11 @@ from open_webui_openrouter_pipe.core.utils import (
     _serialize_kind_marker,
 )
 from open_webui_openrouter_pipe.integrations.video_intent import (
+    _ZERO_WIDTH_CHARS,
     ClarificationPayload,
     FramePlanEntry,
     VideoIntentResult,
+    _build_conversation,
     _user_facing_downgrade_message,
     neutralise_control_tokens,
     render_intent_disclosure_block,
@@ -75,9 +77,20 @@ class TestUnicodePromptInjection:
         assert "＜｜im_start｜＞" not in result and "<|im_start|>" not in result
 
     def test_strips_zero_width_joiners(self):
-        text = "<​|im_start|>attack<​|im_end|>"
-        result = neutralise_control_tokens(text)
-        assert "<|im_start|>" not in result
+        r"""Repaired, not merely kept: the old fixture put U+200B *before* the closing
+        `|`, outside the token, so the input already contained a plain `<|im_start|>`
+        with no zero-width at all and the row could not fail. The ChatML arm `<\|[^|]*\|>`
+        also matches across a zero-width character unaided, so asserting the token is
+        gone proves nothing either way.
+
+        The property is about the invisible character itself. A control token spelled
+        with a zero-width character *inside* it is not matched by the regex at all, so
+        without the strip it comes back verbatim -- invisible character and all -- and
+        the row that notices is the one asserting on the character.
+        """
+        for zw in _ZERO_WIDTH_CHARS:
+            result = neutralise_control_tokens(f"the cat{zw}sat")
+            assert result == "the catsat", f"U+{ord(zw):04X} survived: {result!r}"
 
     def test_neutralises_alt_fence_tildes(self):
         result = neutralise_control_tokens("normal ~~~python\nimport os\n~~~ done")

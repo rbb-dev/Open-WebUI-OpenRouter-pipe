@@ -10,14 +10,17 @@ Two properties:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
 
 from open_webui_openrouter_pipe.integrations.media_relay import (
     _ENDPOINTS,
+    MediaRelayError,
     _extract_url,
     _served_by,
+    relay_to_public_url,
 )
 from open_webui_openrouter_pipe.integrations.provider_options import (
     MAX_LABEL,

@@ -64,6 +64,10 @@ The `index` of an uploaded attachment is its position in the user's attachment l
 
 The `attachments` array in the classifier's payload is that list: one entry per attachment the turn carries, each with `index` (its position, 0-based and gap-free), `kind` (`image` / `video` / `other`), `mime_type`, `id`, `name` and `size`, ordered by `index`. A picture the Frames dropdown claimed as a keyframe and a picture it demoted to a reference both appear once, each at the position the user attached it, and neither is listed twice because it occupies both channels. What the pipe does not send is the bytes and not the role the picture plays downstream — the classifier is told *what* the user attached, and it is the classifier's `frame_plan` that says what to do with it. Under `frame_mode="none"` the array is empty by design: the dropdown sends the pictures nowhere, so there is nothing for the classifier to refer to.
 
+### What reaches the task model
+
+Everything in the classifier's payload comes from the conversation, so it is untrusted input and is treated as such on every classifier turn. Two checks run before the task model sees a message. Control tokens (`<|im_start|>`, `[SYSTEM]`, triple-backtick fences) and the invisible characters a control token can be spelled with are neutralised out of the user's text, the pipe's standing instructions and every conversation row. And a `<video>` body in a past assistant message counts as a prior video only when it is exactly a relative Open WebUI file URL; a local path, a foreign `https://` link, a traversal or a malformed file id is not one, so it cannot steer the classifier toward continuing a video the user never asked it to continue.
+
 ### What a temporary chat keeps of the classifier's own state
 
 A temporary chat (`temporary:` / `local:` id — see `temporary_chat_prefixes()`, which resolves from Open WebUI's own published constants) gets the same inference as any other chat and keeps none of it. Three structures would otherwise hold something, and the rule is that a temporary chat reaches none of them:

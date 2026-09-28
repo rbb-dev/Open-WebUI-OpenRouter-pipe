@@ -27,6 +27,7 @@ import sys
 import threading
 import time
 import traceback
+import typing
 import uuid
 import weakref
 from collections import Counter
@@ -264,6 +265,14 @@ def _valve_label(model: Any, field_name: str) -> str:
     field = fields.get(field_name) if isinstance(fields, dict) else None
     title = getattr(field, "title", None)
     return title if isinstance(title, str) and title else ""
+
+
+def _value_fits_field(field: Any, value: Any) -> bool:
+    if field is None:
+        return True
+    if typing.get_origin(field.annotation) is not typing.Literal:
+        return True
+    return value in typing.get_args(field.annotation)
 
 
 class _LifecycleRegistry:
@@ -4645,6 +4654,8 @@ class Pipe:
             target_key = "PERSIST_REASONING_TOKENS" if key == "next_reply" else key
             if target_key in _MERGEABLE_USER_VALVE_FIELDS:
                 mapped[target_key] = value
+                if not _value_fits_field(self.Valves.model_fields.get(target_key), value):
+                    del mapped[target_key]
 
         if not mapped:
             return global_valves

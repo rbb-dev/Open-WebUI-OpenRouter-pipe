@@ -945,7 +945,7 @@ class MultimodalHandler:
         if pinned is None:
             self.logger.error(
                 "Remote streaming download blocked by security policy (SSRF or HTTP disabled by default): %s",
-                url,
+                loggable_link(url),
             )
             return None
         request_url, pin_headers, pin_extensions = pinned
@@ -1092,7 +1092,7 @@ class MultimodalHandler:
             elapsed = time.perf_counter() - start_time
             self.logger.exception(
                 "Failed streaming download of %s after %d attempt(s) in %.1fs",
-                url,
+                loggable_link(url),
                 attempt,
                 elapsed,
             )

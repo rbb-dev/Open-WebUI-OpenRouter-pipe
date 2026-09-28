@@ -317,6 +317,10 @@ def _split_archive_key(message_id: str) -> tuple[str, str]:
     return message_id, ""
 
 
+_MAX_KEY_CHARS = 64
+_MIN_HEAD_CHARS = 16
+
+
 def resolve_message_id(metadata: Any) -> str:
     if not isinstance(metadata, dict):
         return ""
@@ -328,9 +332,9 @@ def resolve_message_id(metadata: Any) -> str:
         if not resolved:
             return ""
         qualifier = str(task)
-        if len(qualifier) >= 63:
-            qualifier = qualifier[:63]
-        return f"{resolved[: 64 - len(qualifier) - 1]}.{qualifier}"
+        if len(qualifier) > _MAX_KEY_CHARS - _MIN_HEAD_CHARS - 1:
+            qualifier = qualifier[: _MAX_KEY_CHARS - _MIN_HEAD_CHARS - 1]
+        return f"{resolved[: _MAX_KEY_CHARS - len(qualifier) - 1]}.{qualifier}"
     except Exception:
         logger.debug("resolve_message_id failed to parse metadata", exc_info=True)
     return ""

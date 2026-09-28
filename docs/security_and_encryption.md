@@ -155,7 +155,9 @@ then let the HTTP client resolve the name again:
   reach GitHub through that proxy the self-update check will fail to connect and the
   Updates tab is the only other place that is reported.
 - Picture and video downloads take a different path: they do not follow redirects at
-  all, and they pin the validated address into the request.
+  all, and they pin the validated address into the request. The buffered and the
+  streaming downloader run the same gate, so a verdict against one is a verdict
+  against both.
 - The three transport fetches do follow redirects, up to a small fixed number of hops.
   Every hop is validated the same way as the first, covering both the release metadata
   and the release asset in the self-update flow. A redirect to a private or internal
@@ -252,7 +254,7 @@ Recommended operator action:
 - **Large base64 blobs** — a `data:` URL's payload, or a bare blob under a key such as `b64_json`, is truncated to a marker with its length. This prevents multi-megabyte log entries.
 - **Media links** — any value under a media-URL key (`image_url`, `file_url`, `video_url`, `url`, `file_data`) is reduced to scheme, host and port by `loggable_link()`. The path and query are dropped, so a presigned or signed CDN link cannot be recovered from a log. This holds for a link whose netloc does not parse and for a `data:` URL with no comma as well as for a well-formed `https://` one: a value that cannot be described at all is replaced by `[REDACTED]` rather than echoed.
 
-The ERROR path is covered too. A refusal's log subject is the link the pipe declined, so subjects are built with `loggable_link()` rather than the raw URL. This means turning DEBUG on shows you every media field as `scheme://host:port` rather than the full URL — the pipe is telling you which host it was about to contact, not the signed path it was given.
+The ERROR path is covered too. A refusal's log subject is the link the pipe declined, so subjects are built with `loggable_link()` rather than the raw URL. This means turning DEBUG on shows you every media field as `scheme://host:port` rather than the full URL — the pipe is telling you which host it was about to contact, not the signed path it was given. It holds for both remote downloaders, the buffered and the streaming one, at every log site that names the link; a third downloader inherits the same rule.
 
 A `data:` URL contributes only its media type (for example `data:image/png`); the bytes after it never reach a log, including when the URL carries no comma and its payload is the remainder of the string.
 

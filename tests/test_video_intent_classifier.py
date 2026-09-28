@@ -7,7 +7,7 @@ import logging
 import re
 import time
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -131,6 +131,20 @@ class TestStripIntentBlocks:
 # collect_prior_videos_from_messages
 # -----------------------------------------------------------------------------
 
+def _adapter():
+    """A real adapter, so the row drives the real method on a real object.
+
+    The second guard is an unbound call in the design's sketch, which a stub
+    argument would turn into a `TypeError` about `self` rather than an assertion
+    about file ids.
+    """
+    import logging as _logging
+
+    from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
+
+    return VideoGenerationAdapter(pipe=MagicMock(), logger=_logging.getLogger(__name__))
+
+
 class TestCollectPriorVideos:
     def test_extracts_from_videojob_marker(self):
         messages = [
@@ -188,6 +202,60 @@ class TestCollectPriorVideos:
         assert collect_prior_videos_from_messages([]) == []
         assert collect_prior_videos_from_messages(None) == []  # type: ignore[arg-type]
 
+    # ------------------------------------------------- the S11 shape check ----
+    #
+    # A `<video>` body is a prior video only when it is exactly a relative OWUI file
+    # URL. Anything else -- a Windows path, a foreign https link, a traversal, a
+    # dotted or over-long id -- is not one, however it is written.
+    #
+    # Every row below carries a real videojob marker in the assistant message. The
+    # marker is not decoration: pairing is what supplies the job id, so without it a
+    # row can pass merely because pairing failed, and a broken shape check would be
+    # invisible behind it.
+    #
+    # The three CONTROL rows are mandatory and are not here for tidiness. The shipped
+    # regex makes `/content` optional, so a control set of only the `/content` form
+    # would be satisfied by a hardcoded `startswith("/api/v1/files/") and
+    # endswith("/content")` -- a check that refuses every real file id the pipe
+    # writes, and passes. Only the bare-id control (`/api/v1/files/GOOD`) and the
+    # charset control (Crockford base32 with `-` and `_`, which Open WebUI's own
+    # `_stable_crockford_id` produces) catch it.
+    #
+    # Nothing here asserts exfiltration, and the read path is not what is at stake:
+    # `_resolve_prior_video_file_id` re-derives the id after `/api/v1/files/` and
+    # re-validates it with its own fullmatch, so a hostile body reaches neither the
+    # task model nor frame extraction. What is pinned is the confusion half -- a
+    # string a hostile message put in the chat does not become a prior video the
+    # classifier is steered to continue.
+
+    _HOSTILE_BODIES: ClassVar[list[str]] = [
+        "C:\\Users\\bob\\secret.mp4",
+        "https://files.catbox.moe/x.mp4",
+        "https://owui.example.com/api/v1/files/abc/content",
+        "/api/v1/files/../etc/passwd",
+        "/api/v1/files/abc/content?x=1",
+        "/api/v1/files/abc.def/content",
+        "/api/v1/files/" + "a" * 200,
+        "file:///etc/passwd",
+        "//evil.example/x",
+        "<script>x</script>",
+        "/etc/passwd",
+    ]
+
+    _CONTROL_BODIES: ClassVar[list[str]] = [
+        "/api/v1/files/deadbeef-9_X/content",
+        "/api/v1/files/GOOD",
+    ]
+
+    @staticmethod
+    def _conversation(body: str) -> list[dict[str, Any]]:
+        return [
+            {"role": "user", "content": "make it red"},
+            {"role": "assistant", "content": (
+                "[openrouter:v1:videojob:job-1]: #\n"
+                f"<video>{body}</video>"
+            )},
+        ]
 
 # -----------------------------------------------------------------------------
 # collect_attachments_from_video_meta

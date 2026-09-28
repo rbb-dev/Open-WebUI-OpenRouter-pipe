@@ -2261,7 +2261,8 @@ Key files:
   answer with, how long each keeps a file, the size ceiling, and the
   retries. A 200 carrying a link the chosen host does not serve is not an
   answer, and whatever the host did say is quoted inertly rather than
-  rendered into the chat as markdown.
+  rendered into the chat as markdown, under a bound of 120 characters so a
+  multi-kilobyte bot wall or error page cannot take over the message.
 - [`integrations/video_intent.py`](../open_webui_openrouter_pipe/integrations/video_intent.py)
   and [`integrations/video_intent_prompts.py`](../open_webui_openrouter_pipe/integrations/video_intent_prompts.py)
   — work out what the turn is asking for before a job is submitted; see

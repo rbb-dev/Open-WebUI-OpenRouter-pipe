@@ -252,6 +252,8 @@ class ReasoningConfigManager:
         normalized = ModelFamily.base_model(responses_body.model)
         if not _is_claude_reasoning_model(normalized):
             return
+        if not ModelFamily.supports_verbosity(normalized):
+            return
 
         # Determine effective effort: request-level reasoning.effort takes
         # priority, then fall back to the valve default.

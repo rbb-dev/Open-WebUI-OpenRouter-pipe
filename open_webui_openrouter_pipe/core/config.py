@@ -2444,7 +2444,8 @@ class Valves(BaseModel):
         description=(
             "When a requested moment in a prior video runs past the end the pipe can "
             "measure, which frame - 'first' or 'last' - is substituted for it. It also "
-            "decides the frame when the seek to an in-range moment comes back empty. "
+            "decides the frame when the seek to an in-range moment comes back empty, "
+            "and the frame the pixel cap makes the pipe substitute for a refused one. "
             "A request that names a first or last frame directly gets that frame. "
             "'last' matches 'continue this scene' intent. On a model that accepts only a "
             "first frame the pipe has no choice and uses the first one, whatever moment "

@@ -1441,26 +1441,27 @@ class TestMergeValves:
             pipe.shutdown()
 
     def test_merge_valves_next_reply_mapping(self):
-        """Test that _merge_valves maps next_reply to PERSIST_REASONING_TOKENS."""
+        """Test that _merge_valves maps next_reply to PERSIST_REASONING_TOKENS.
+
+        `True` is not a member of the field's `Literal`, so it is a value the field
+        could never be constructed with, and the merge now leaves the administrator's
+        alone. The mapping itself is unchanged, and the next line pins it with a
+        member that does exist.
+        """
         pipe = Pipe()
 
         try:
             # Check if PERSIST_REASONING_TOKENS exists on global valves
             if hasattr(pipe.valves, "PERSIST_REASONING_TOKENS"):
-                user_valves_dict = {
-                    "next_reply": True,
-                }
-
-                result = pipe._merge_valves(pipe.valves, user_valves_dict)
-
-                # The alias names a string member, not a switch: a bool is not one of
-                # the field's three declared modes, so the global must survive.
-                assert result.PERSIST_REASONING_TOKENS in (
-                    "disabled",
-                    "next_reply",
-                    "conversation",
+                out_of_domain = pipe._merge_valves(
+                    pipe.valves, {"next_reply": True},
                 )
-                assert result.PERSIST_REASONING_TOKENS == pipe.valves.PERSIST_REASONING_TOKENS
+                assert out_of_domain.PERSIST_REASONING_TOKENS == pipe.valves.PERSIST_REASONING_TOKENS
+
+                in_domain = pipe._merge_valves(
+                    pipe.valves, {"next_reply": "next_reply"},
+                )
+                assert in_domain.PERSIST_REASONING_TOKENS == "next_reply"
         finally:
             pipe.shutdown()
 
@@ -4912,10 +4913,15 @@ def test_apply_gemini_thinking_config_budget_zero_disables_thinking():
 
 
 def test_apply_anthropic_verbosity_xhigh_claude_opus():
-    """xhigh effort on Claude Opus sets verbosity: 'max'."""
+    """xhigh effort on Claude Opus sets verbosity: 'max'.
+
+    The fixture lists `verbosity` because the real 4.6 Opus row does, and the gate
+    reads the catalogue row rather than the model name. A fixture that omitted it
+    would be asserting that a value the model does not declare is sent.
+    """
     pipe = Pipe()
     ModelFamily.set_dynamic_specs({
-        "anthropic.claude-opus-4-6": {"supported_parameters": ["reasoning"]},
+        "anthropic.claude-opus-4-6": {"supported_parameters": ["reasoning", "verbosity"]},
     })
     try:
         valves = pipe.Valves(REASONING_EFFORT="xhigh")
@@ -4928,14 +4934,20 @@ def test_apply_anthropic_verbosity_xhigh_claude_opus():
 
 
 def test_apply_anthropic_verbosity_xhigh_claude_sonnet():
-    """xhigh effort on Claude Sonnet sets verbosity: 'max'."""
+    """xhigh effort on Claude Sonnet sets verbosity: 'max'.
+
+    4.6, because 4.6 lists `verbosity` and 4.5 does not: the family name is not what
+    the gate reads. The 4.5 row, which the same regex matches and which does not list
+    the parameter, is the arm in
+    `test_verbosity_reaches_the_provider_on_both_endpoints.py::test_h_a_claude_row_that_does_not_list_verbosity_is_never_sent_max`.
+    """
     pipe = Pipe()
     ModelFamily.set_dynamic_specs({
-        "anthropic.claude-sonnet-4.5": {"supported_parameters": ["reasoning"]},
+        "anthropic.claude-sonnet-4.6": {"supported_parameters": ["reasoning", "verbosity"]},
     })
     try:
         valves = pipe.Valves(REASONING_EFFORT="xhigh")
-        body = ResponsesBody(model="anthropic/claude-sonnet-4.5", input=[])
+        body = ResponsesBody(model="anthropic/claude-sonnet-4.6", input=[])
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences(body, valves)
         pipe._ensure_reasoning_config_manager()._apply_anthropic_verbosity(body, valves)
         assert body.verbosity == "max"
@@ -4993,10 +5005,14 @@ def test_apply_anthropic_verbosity_user_set_not_overridden():
 
 
 def test_apply_anthropic_verbosity_request_level_effort():
-    """Request-level reasoning.effort takes priority over valve for verbosity mapping."""
+    """Request-level reasoning.effort takes priority over valve for verbosity mapping.
+
+    The fixture lists `verbosity`, as the real 4.6 Opus row does, so the assertion is
+    about which effort is read rather than about whether the gate permits the value.
+    """
     pipe = Pipe()
     ModelFamily.set_dynamic_specs({
-        "anthropic.claude-opus-4-6": {"supported_parameters": ["reasoning"]},
+        "anthropic.claude-opus-4-6": {"supported_parameters": ["reasoning", "verbosity"]},
     })
     try:
         # Valve says "high" but request says "xhigh" — should set verbosity
@@ -7015,23 +7031,22 @@ def test_merge_valves_with_inherit_value():
 
 
 def test_merge_valves_with_next_reply_alias():
-    """Test that _merge_valves handles next_reply alias for PERSIST_REASONING_TOKENS."""
+    """Test that _merge_valves handles next_reply alias for PERSIST_REASONING_TOKENS.
+
+    `True` is outside the field's `Literal` and is left to the administrator; the
+    mapping is pinned with a member of that `Literal` instead.
+    """
     pipe = Pipe()
     try:
         global_valves = pipe.valves
 
-        user_valves = {
-            "next_reply": True,
-        }
+        merged = pipe._merge_valves(global_valves, {"next_reply": "disabled"})
 
-        merged = pipe._merge_valves(global_valves, user_valves)
+        assert merged.PERSIST_REASONING_TOKENS == "disabled"
 
-        assert merged.PERSIST_REASONING_TOKENS in (
-            "disabled",
-            "next_reply",
-            "conversation",
-        )
-        assert merged.PERSIST_REASONING_TOKENS == global_valves.PERSIST_REASONING_TOKENS
+        out_of_domain = pipe._merge_valves(global_valves, {"next_reply": True})
+
+        assert out_of_domain.PERSIST_REASONING_TOKENS == global_valves.PERSIST_REASONING_TOKENS
     finally:
         pipe.shutdown()
 

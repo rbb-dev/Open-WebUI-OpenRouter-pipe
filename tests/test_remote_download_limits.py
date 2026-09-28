@@ -14,7 +14,8 @@ decision the function made, not the presence of a comparison in the source.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+import logging
+from typing import Any, Self
 
 import httpx
 

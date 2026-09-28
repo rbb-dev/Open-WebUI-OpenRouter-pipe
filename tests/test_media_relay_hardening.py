@@ -27,6 +27,7 @@ from open_webui_openrouter_pipe.core.config import Valves
 from open_webui_openrouter_pipe.integrations import video as video_module
 from open_webui_openrouter_pipe.integrations.media_relay import (
     _ENDPOINTS,
+    _HOST_REPLY_LIMIT,
     MediaRelayError,
     _as_the_host_put_it,
     _extract_url,

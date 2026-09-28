@@ -2912,7 +2912,7 @@ class VideoGenerationAdapter:
                                 frame = await extract_frame(
                                     tmp_path, target="at_timestamp", timestamp_seconds=0.0,
                                     fallback_to_last_on_overshoot=True,
-                                    reused_frame_index="last",
+                                    reused_frame_index=reused_frame_index,
                                     logger=self.logger,
                                 )
                             except FrameExtractionError:
