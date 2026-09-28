@@ -1787,10 +1787,9 @@ class ModelCatalogManager:
                     raw_caps = model.get("capabilities")
                     if isinstance(raw_caps, dict):
                         capabilities = dict(raw_caps)
-                        if ( not pipe_capabilities.get("video_generation") 
-                            and not pipe_capabilities.get("image_output")
-                        ):
-                            capabilities["web_search"] = True
+                        if "web_search" in raw_caps:
+                            capability_defaults["web_search"] = bool(raw_caps["web_search"])
+                        capabilities.pop("web_search", None)
 
                 description = None
                 if valves.UPDATE_MODEL_DESCRIPTIONS:
@@ -2002,6 +2001,7 @@ class ModelCatalogManager:
                             openrouter_pipe_capabilities=pipe_capabilities,
                             description=description,
                             update_descriptions=valves.UPDATE_MODEL_DESCRIPTIONS,
+                            new_model_access_control=valves.NEW_MODEL_ACCESS_CONTROL,
                         )
                     except Exception as exc:
                         sync_failures.append(openwebui_model_id)
@@ -2161,6 +2161,7 @@ class ModelCatalogManager:
         description: str | None = None,
         image_source_url: str | None = None,
         update_descriptions: bool = False,
+        new_model_access_control: str,
     ):
         """Safely update existing model or insert new overlay with metadata, never touching owner."""
         from open_webui.models.models import ModelForm, ModelMeta, ModelParams, Models
@@ -2878,7 +2879,7 @@ class ModelCatalogManager:
             meta_obj = ModelMeta(**meta_dict)
             params_obj = _params_without_tag_scanning(ModelParams, None)
 
-            access_mode = self._pipe.valves.NEW_MODEL_ACCESS_CONTROL
+            access_mode = new_model_access_control
             access_payload = self._default_new_model_access_payload(
                 access_mode=access_mode,
                 supports_access_control=supports_access_control,

@@ -568,6 +568,15 @@ class TestOvershootFallback:
 
 # -----------------------------------------------------------------------------
 # task-model adapter returns plain str
+#
+# None of the arms below is the arm production reaches. The single production
+# caller, `integrations/video_intent.py`, pins `stream: False`, so Open WebUI hands
+# back a parsed dict and the live path into the 256 KiB cap is
+# `choices[].message.content` -- as a JSON string, or as a dict, both of which this
+# file does not drive. That coverage lives in
+# `tests/test_a_task_model_reply_is_capped_on_every_shape.py`; the oversize test here
+# is kept because the arm is real and reachable by any future streaming caller, but
+# it is not the headline coverage of the cap.
 # -----------------------------------------------------------------------------
 
 class TestPlainStringResponse:

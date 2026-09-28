@@ -23,6 +23,7 @@ import pathlib
 import sys
 import types
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -848,6 +849,7 @@ async def test_update_or_insert_empty_model_id_returns_early(pipe_instance_async
             None,
             False,
             False,
+            new_model_access_control="admins",
         )
         mock_models.get_model_by_id.assert_not_called()
 
@@ -858,6 +860,7 @@ async def test_update_or_insert_empty_model_id_returns_early(pipe_instance_async
             None,
             False,
             False,
+            new_model_access_control="admins",
         )
         mock_models.get_model_by_id.assert_not_called()
 
@@ -883,6 +886,7 @@ async def test_update_or_insert_uses_model_id_as_name_fallback(pipe_instance_asy
             None,
             True,
             False,
+            new_model_access_control="admins",
         )
 
     update_mock.assert_called_once()
@@ -911,6 +915,7 @@ async def test_update_or_insert_new_model_with_capabilities(pipe_instance_async)
             "data:image/png;base64,ABC",
             True,
             True,
+            new_model_access_control="admins",
         )
 
     insert_mock.assert_called_once()
@@ -939,6 +944,7 @@ async def test_update_or_insert_new_model_skips_when_no_metadata(pipe_instance_a
             None,
             False,
             False,
+            new_model_access_control="admins",
         )
 
     insert_mock.assert_not_called()
@@ -966,6 +972,7 @@ async def test_update_or_insert_new_model_access_control_admins(pipe_instance_as
             None,
             True,
             False,
+            new_model_access_control="admins",
         )
 
     insert_mock.assert_called_once()
@@ -995,6 +1002,7 @@ async def test_update_or_insert_new_model_access_control_public(pipe_instance_as
             None,
             True,
             False,
+            new_model_access_control="public",
         )
 
     insert_mock.assert_called_once()
@@ -1026,6 +1034,7 @@ async def test_update_or_insert_new_model_invalid_access_control_defaults_privat
             None,
             True,
             False,
+            new_model_access_control="invalid_value",
         )
 
     insert_mock.assert_called_once()
@@ -1058,6 +1067,7 @@ async def test_update_existing_model_merges_capabilities(pipe_instance_async) ->
             None,
             True,
             False,
+            new_model_access_control="admins",
         )
 
     update_mock.assert_called_once()
@@ -1090,6 +1100,7 @@ async def test_update_existing_model_no_changes_skips_update(pipe_instance_async
             None,
             True,
             False,
+            new_model_access_control="admins",
         )
 
     update_mock.assert_not_called()
@@ -1119,6 +1130,7 @@ async def test_a_row_missing_the_scanner_verdict_is_updated_even_with_current_me
          patch("open_webui.models.models.Models.update_model_by_id", new=update_mock):
         await pipe._ensure_catalog_manager()._update_or_insert_model_with_metadata(
             model_id, "GPT-4o", {"vision": True}, None, True, False,
+            new_model_access_control="admins",
         )
 
     update_mock.assert_called_once()
@@ -1154,6 +1166,7 @@ async def test_update_existing_model_updates_profile_image(pipe_instance_async) 
             "data:image/png;base64,NEW",
             False,
             True,
+            new_model_access_control="admins",
         )
 
     update_mock.assert_called_once()
@@ -1185,6 +1198,7 @@ async def test_update_existing_model_updates_openrouter_pipe_capabilities(pipe_i
             False,
             False,
             openrouter_pipe_capabilities={"file_input": True, "vision": True},
+            new_model_access_control="admins",
         )
 
     update_mock.assert_called_once()
@@ -1225,6 +1239,7 @@ async def test_update_existing_model_filter_id_migration(pipe_instance_async) ->
             filter_function_id="new_openrouter_web_tools",
             filter_supported=True,
             auto_attach_filter=True,
+            new_model_access_control="admins",
         )
 
     update_mock.assert_called_once()
@@ -1263,6 +1278,7 @@ async def test_update_existing_model_filter_removal_when_unsupported(pipe_instan
             filter_function_id="openrouter_web_tools",
             filter_supported=False,
             auto_attach_filter=True,
+            new_model_access_control="admins",
         )
 
     update_mock.assert_called_once()
@@ -1303,6 +1319,7 @@ async def test_update_existing_model_direct_uploads_filter_with_previous_id(pipe
             direct_uploads_filter_function_id="new_direct_uploads",
             direct_uploads_filter_supported=True,
             auto_attach_direct_uploads_filter=True,
+            new_model_access_control="admins",
         )
 
     update_mock.assert_called_once()
@@ -1349,6 +1366,7 @@ async def test_update_existing_model_default_filter_migration(pipe_instance_asyn
             filter_supported=True,
             auto_attach_filter=True,
             auto_default_filter=True,
+            new_model_access_control="admins",
         )
 
     update_mock.assert_called_once()
@@ -1384,6 +1402,7 @@ async def test_update_existing_model_default_filter_not_attached_skips(pipe_inst
             filter_supported=False,
             auto_attach_filter=False,
             auto_default_filter=True,
+            new_model_access_control="admins",
         )
 
     update_mock.assert_not_called()
@@ -1417,6 +1436,7 @@ async def test_insert_new_model_with_filters(pipe_instance_async) -> None:
             direct_uploads_filter_function_id="openrouter_direct_uploads",
             direct_uploads_filter_supported=True,
             auto_attach_direct_uploads_filter=True,
+            new_model_access_control="admins",
         )
 
     insert_mock.assert_called_once()
@@ -1452,6 +1472,7 @@ async def test_video_filter_auto_default_on_insert(pipe_instance_async) -> None:
             video_gen_filter_supported=True,
             auto_attach_video_gen_filter=True,
             auto_default_video_gen_filter=True,
+            new_model_access_control="admins",
         )
 
     insert_mock.assert_called_once()
@@ -1494,6 +1515,7 @@ async def test_video_filter_default_reasserted_on_update(pipe_instance_async) ->
             video_gen_filter_supported=True,
             auto_attach_video_gen_filter=True,
             auto_default_video_gen_filter=True,
+            new_model_access_control="admins",
         )
 
     update_mock.assert_called_once()
@@ -1527,6 +1549,7 @@ async def test_video_filter_default_skipped_when_valve_off(pipe_instance_async) 
             video_gen_filter_supported=True,
             auto_attach_video_gen_filter=True,
             auto_default_video_gen_filter=False,
+            new_model_access_control="admins",
         )
 
     insert_mock.assert_called_once()
@@ -1564,6 +1587,7 @@ async def test_normalize_filter_ids_handles_non_list(pipe_instance_async) -> Non
             filter_function_id="openrouter_web_tools",
             filter_supported=True,
             auto_attach_filter=True,
+            new_model_access_control="admins",
         )
 
     update_mock.assert_called_once()
@@ -1600,6 +1624,7 @@ async def test_normalize_filter_ids_filters_non_strings(pipe_instance_async) -> 
             filter_function_id="openrouter_web_tools",
             filter_supported=True,
             auto_attach_filter=True,
+            new_model_access_control="admins",
         )
 
     update_mock.assert_called_once()
@@ -1638,6 +1663,7 @@ async def test_dedupe_preserves_order(pipe_instance_async) -> None:
             filter_function_id="openrouter_web_tools",
             filter_supported=True,
             auto_attach_filter=True,
+            new_model_access_control="admins",
         )
 
     update_mock.assert_called_once()
@@ -1677,6 +1703,7 @@ async def test_existing_model_null_meta_handled(pipe_instance_async) -> None:
             None,
             True,
             False,
+            new_model_access_control="admins",
         )
 
     update_mock.assert_called_once()
@@ -1830,6 +1857,7 @@ async def test_update_existing_model_with_description(pipe_instance_async) -> No
             False,
             description="New description",
             update_descriptions=True,
+            new_model_access_control="admins",
         )
 
     update_mock.assert_called_once()
@@ -1859,6 +1887,7 @@ async def test_update_existing_model_description_no_change_skips_update(pipe_ins
             False,
             description="Same description",
             update_descriptions=True,
+            new_model_access_control="admins",
         )
 
     update_mock.assert_not_called()
@@ -1887,6 +1916,7 @@ async def test_insert_new_model_with_description(pipe_instance_async) -> None:
             False,
             description="Model description",
             update_descriptions=True,
+            new_model_access_control="admins",
         )
 
     insert_mock.assert_called_once()
@@ -1917,6 +1947,7 @@ async def test_insert_new_model_with_openrouter_pipe_capabilities(pipe_instance_
             False,
             False,
             openrouter_pipe_capabilities={"vision": True, "file_input": True},
+            new_model_access_control="admins",
         )
 
     insert_mock.assert_called_once()
@@ -1961,6 +1992,7 @@ async def test_update_existing_model_with_existing_params(pipe_instance_async) -
             None,
             True,
             False,
+            new_model_access_control="admins",
         )
 
     update_mock.assert_called_once()
@@ -1994,6 +2026,7 @@ async def test_update_existing_model_same_image_skips_update(pipe_instance_async
             "data:image/png;base64,SAME",
             False,
             True,
+            new_model_access_control="admins",
         )
 
     update_mock.assert_not_called()
@@ -2027,6 +2060,7 @@ async def test_update_existing_model_preserves_openrouter_pipe_meta(pipe_instanc
             False,
             False,
             openrouter_pipe_capabilities={"vision": True},
+            new_model_access_control="admins",
         )
 
     update_mock.assert_called_once()
@@ -2067,6 +2101,7 @@ async def test_existing_model_with_none_params_handled(pipe_instance_async) -> N
             None,
             True,
             False,
+            new_model_access_control="admins",
         )
 
     update_mock.assert_called_once()
@@ -2221,7 +2256,7 @@ async def test_sync_model_metadata_prefixes_pipe_id_and_prefers_icon_mapping(pip
             "id": "openai.gpt-4o",
             "name": "GPT-4o",
             "original_id": "openai/gpt-4o",
-            "capabilities": {"vision": True},
+            "capabilities": {"vision": True, "web_search": True},
         }
     ]
 
@@ -2253,7 +2288,15 @@ async def test_sync_model_metadata_prefixes_pipe_id_and_prefers_icon_mapping(pip
     args = pipe._catalog_manager._update_or_insert_model_with_metadata.call_args[0]
     assert args[0] == "open_webui_openrouter_pipe.openai.gpt-4o"
     assert args[1] == "GPT-4o"
-    assert args[2] == {"vision": True, "web_search": True}
+    call_kwargs = pipe._catalog_manager._update_or_insert_model_with_metadata.call_args.kwargs
+    assert args[2] == {"vision": True}, (
+        "web_search must leave the value channel entirely, so a value an admin set by hand "
+        f"survives every later sync. the value channel carried {args[2]!r}"
+    )
+    assert call_kwargs["capability_defaults"] == {"web_search": True}, (
+        "the provider's own verdict belongs on the default channel, which fills the box "
+        f"only where the model has none. got {call_kwargs['capability_defaults']!r}"
+    )
     assert args[3].startswith("data:image/")
 
 @pytest.mark.asyncio
@@ -2296,7 +2339,16 @@ async def test_sync_model_metadata_sets_web_search_from_frontend(pipe_instance_a
     pipe._catalog_manager._update_or_insert_model_with_metadata.assert_called_once()
     args = pipe._catalog_manager._update_or_insert_model_with_metadata.call_args[0]
     assert args[0] == "open_webui_openrouter_pipe.x-ai.grok-4"
-    assert args[2] == {"web_search": True}
+    call_kwargs = pipe._catalog_manager._update_or_insert_model_with_metadata.call_args.kwargs
+    assert args[2] == {}, (
+        "the value channel the sync hands the writer must carry no web_search at all. the "
+        f"frontend signal is not consulted, so the verdict comes from the row's own "
+        f"capabilities and can only reach the row as a default. got {args[2]!r}"
+    )
+    assert call_kwargs["capability_defaults"]["web_search"] is False, (
+        "a model the provider prices against search is published as unable to search, on "
+        f"the default channel. got {call_kwargs['capability_defaults']!r}"
+    )
     assert args[3] is None
     assert args[4] is True
     assert args[5] is False
@@ -2658,6 +2710,7 @@ async def test_disable_model_metadata_sync_skips_all_updates(pipe_instance_async
             direct_uploads_filter_function_id="openrouter_direct_uploads",
             direct_uploads_filter_supported=True,
             auto_attach_direct_uploads_filter=True,
+            new_model_access_control="admins",
         )
 
     assert update_mock.call_count == 0
@@ -2689,6 +2742,7 @@ async def test_disable_capability_updates_preserves_existing_caps(pipe_instance_
             filter_supported=True,
             auto_attach_filter=True,
             auto_default_filter=False,
+            new_model_access_control="admins",
         )
 
     assert update_mock.call_count == 1
@@ -2720,6 +2774,7 @@ async def test_disable_image_updates_skips_profile_image_changes(pipe_instance_a
             profile_image_url="data:image/png;base64,BBBB",
             update_capabilities=False,
             update_images=True,
+            new_model_access_control="admins",
         )
 
     assert update_mock.call_count == 0
@@ -2750,6 +2805,7 @@ async def test_disable_direct_uploads_auto_attach_skips_filter_ids(pipe_instance
             direct_uploads_filter_function_id="openrouter_direct_uploads",
             direct_uploads_filter_supported=True,
             auto_attach_direct_uploads_filter=True,
+            new_model_access_control="admins",
         )
 
     assert update_mock.call_count == 0
@@ -2775,6 +2831,7 @@ async def test_description_updates_when_enabled(pipe_instance_async) -> None:
             update_images=False,
             description="Example description",
             update_descriptions=True,
+            new_model_access_control="admins",
         )
 
     assert update_mock.call_count == 1
@@ -2807,6 +2864,7 @@ async def test_disable_description_updates_prevents_overwrites(pipe_instance_asy
             update_images=False,
             description="New description",
             update_descriptions=True,
+            new_model_access_control="admins",
         )
 
     assert update_mock.call_count == 0
@@ -2836,6 +2894,7 @@ async def test_disable_description_updates_namespaced_in_openrouter_pipe_params(
             update_images=False,
             description="New description",
             update_descriptions=True,
+            new_model_access_control="admins",
         )
 
     assert update_mock.call_count == 0
@@ -2865,6 +2924,7 @@ async def test_disable_description_updates_in_custom_params(pipe_instance_async)
             update_images=False,
             description="New description",
             update_descriptions=True,
+            new_model_access_control="admins",
         )
 
     assert update_mock.call_count == 0
@@ -2989,6 +3049,7 @@ async def test_prune_stale_openrouter_filter_removes_nonexistent_id(pipe_instanc
                 "openrouter_direct_uploads",
                 "openrouter_provider_openai_gpt_4o",
             }),
+            new_model_access_control="admins",
         )
 
     update_mock.assert_called_once()
@@ -3035,6 +3096,7 @@ async def test_prune_stale_preserves_non_openrouter_filter_ids(pipe_instance_asy
                 "openrouter_web_tools",
                 "openrouter_direct_uploads",
             }),
+            new_model_access_control="admins",
         )
 
     update_mock.assert_called_once()
@@ -3074,6 +3136,7 @@ async def test_prune_stale_empty_valid_set_skips_pruning(pipe_instance_async) ->
             False,
             False,
             valid_openrouter_filter_ids=frozenset(),
+            new_model_access_control="admins",
         )
 
     update_mock.assert_not_called()
@@ -3102,6 +3165,7 @@ async def test_prune_stale_no_filter_ids_is_noop(pipe_instance_async) -> None:
             True,
             False,
             valid_openrouter_filter_ids=frozenset({"openrouter_web_tools"}),
+            new_model_access_control="admins",
         )
 
     update_mock.assert_not_called()
@@ -3140,6 +3204,7 @@ async def test_prune_stale_all_valid_no_update(pipe_instance_async) -> None:
                 "openrouter_direct_uploads",
                 "openrouter_provider_openai_gpt_4o",
             }),
+            new_model_access_control="admins",
         )
 
     update_mock.assert_not_called()
@@ -3183,6 +3248,7 @@ async def test_prune_stale_preserves_order_of_remaining_ids(pipe_instance_async)
                 "openrouter_web_tools",
                 "openrouter_direct_uploads",
             }),
+            new_model_access_control="admins",
         )
 
     update_mock.assert_called_once()
@@ -3225,6 +3291,7 @@ async def test_prune_stale_triggers_update_even_when_nothing_else_changed(pipe_i
             True,
             False,
             valid_openrouter_filter_ids=frozenset({"openrouter_web_tools"}),
+            new_model_access_control="admins",
         )
 
     update_mock.assert_called_once()
@@ -3267,6 +3334,7 @@ async def test_prune_stale_provider_routing_filter_kept_when_valid(pipe_instance
                 "openrouter_direct_uploads",
                 "openrouter_provider_openai_gpt_4_1",
             }),
+            new_model_access_control="admins",
         )
 
     update_mock.assert_not_called()

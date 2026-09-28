@@ -376,10 +376,10 @@ What it syncs (best-effort):
   - Other images are converted to PNG (requires `Pillow`).
 - `meta.description`: writes the model’s user-facing description from OpenRouter’s `/models` catalog when present.
 - `meta.capabilities`: writes the Open WebUI capability checkboxes (for example `vision`, `file_upload`, `web_search`, `image_generation`).
-  - Web search is **augmented** using OpenRouter’s public frontend catalog signals (in addition to `/models` pricing), so models like `x-ai/grok-4` and `openai/gpt-4o` can correctly show `web_search` even when `pricing.web_search` is `0`.
+  - The `web_search` checkbox mirrors the model’s published `web_search` pricing, and is filled in only where the model has no setting of its own yet, so a value you set by hand is kept on every later refresh.
 
 Data sources / egress:
-- Fetches `https://openrouter.ai/api/frontend/v1/catalog/models` (no auth) to discover icons and frontend-only capability signals.
+- Fetches `https://openrouter.ai/api/frontend/v1/catalog/models` (no auth) to discover icons and descriptions.
 - When provider routing valves list models, fetches `https://openrouter.ai/api/v1/models/{author}/{slug}/endpoints` (no auth) for each listed model to build the full provider list for the routing filter dropdowns.
 - Downloads each icon URL (absolute or relative to `https://openrouter.ai`) and may fall back to a maker page OpenGraph image (`https://openrouter.ai/<maker>`).
 
@@ -387,7 +387,7 @@ Controls:
 - `UPDATE_MODEL_IMAGES` (default `True`): enable/disable profile image sync.
 - `UPDATE_MODEL_DESCRIPTIONS` (default `False`): enable/disable model description sync.
 - `UPDATE_MODEL_CAPABILITIES` (default `True`): enable/disable capability checkbox sync.
-- `NEW_MODEL_ACCESS_CONTROL` (default `admins`): sets the access grants applied when the pipe **inserts** a new OpenRouter model overlay into Open WebUI (existing access grants are preserved on update). Use `admins` to create no access grants (private), which relies on Open WebUI's `BYPASS_ADMIN_ACCESS_CONTROL` for admin access.
+- `NEW_MODEL_ACCESS_CONTROL` (default `admins`): sets the access grants applied when the pipe **inserts** a new OpenRouter model overlay into Open WebUI (existing access grants are preserved on update). One pass uses one value for all of its rows, and it is read once per pass, so a pass already running when you save the valve finishes under the value it started with. Use `admins` to create no access grants (private), which relies on Open WebUI's `BYPASS_ADMIN_ACCESS_CONTROL` for admin access.
 Per-model opt-outs:
 - `disable_model_metadata_sync`: disables all metadata sync for the model.
 - `disable_image_updates`, `disable_description_updates`, `disable_capability_updates`: disable specific metadata fields for the model.

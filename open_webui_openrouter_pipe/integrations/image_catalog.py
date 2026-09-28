@@ -59,7 +59,9 @@ async def ensure_image_catalog_loaded(
         stale_models = not last_attempt or (time.time() - last_attempt) >= cache_seconds
         contract_attempt = OpenRouterModelRegistry.last_image_contract_attempt()
         stale_contracts = wants_filters and (
-            not contract_attempt or (time.time() - contract_attempt) >= cache_seconds
+            OpenRouterModelRegistry.image_contract_retry_pending()
+            or not contract_attempt
+            or (time.time() - contract_attempt) >= cache_seconds
         )
         if not stale_models and not stale_contracts:
             return
@@ -80,7 +82,9 @@ async def ensure_image_catalog_loaded(
         stale_models = not last_attempt or (time.time() - last_attempt) >= cache_seconds
         contract_attempt = OpenRouterModelRegistry.last_image_contract_attempt()
         stale_contracts = wants_filters and (
-            not contract_attempt or (time.time() - contract_attempt) >= cache_seconds
+            OpenRouterModelRegistry.image_contract_retry_pending()
+            or not contract_attempt
+            or (time.time() - contract_attempt) >= cache_seconds
         )
         if not stale_models and not stale_contracts:
             return
@@ -91,6 +95,7 @@ async def ensure_image_catalog_loaded(
             api_key=api_key,
             logger=logger,
             wants_filters=wants_filters,
+            cache_seconds=cache_seconds,
         )
 
 
@@ -101,6 +106,7 @@ async def _refresh_image_catalog(
     api_key: str,
     logger: Any,
     wants_filters: bool,
+    cache_seconds: int,
 ) -> None:
     client = _build_catalog_client(
         OpenRouterImageClient,
@@ -109,6 +115,8 @@ async def _refresh_image_catalog(
         api_key=api_key,
         logger=logger,
     )
+
+    OpenRouterModelRegistry.clear_image_contract_retry()
 
     try:
         models = await client.list_models()
@@ -124,19 +132,21 @@ async def _refresh_image_catalog(
         return
 
     if not models:
+        OpenRouterModelRegistry.register_image_models([])
         OpenRouterModelRegistry.record_image_attempt()
         if wants_filters:
             OpenRouterModelRegistry.record_image_contract_attempt()
-        logger.warning("Image catalog fetch returned 0 models; nothing to register.")
+        logger.warning("Image catalog fetch returned 0 models; image-only models retired.")
         return
 
     # One contract read per model, so only pay for them when something consumes them.
     # The consumer is the per-model filter install, which runs under the same two valves
     # that `catalog_manager` checks before calling it.
     endpoint_records: dict[str, list[dict[str, Any]]] = {}
+    abandoned: frozenset[str] = frozenset()
     if wants_filters:
         OpenRouterModelRegistry.record_image_contract_attempt()
-        endpoint_records = await _fetch_endpoint_records(client, models, logger)
+        endpoint_records, abandoned = await _fetch_endpoint_records(client, models, logger)
         OpenRouterModelRegistry.set_image_endpoints(
             endpoint_records,
             known_ids={
@@ -145,6 +155,9 @@ async def _refresh_image_catalog(
                 if isinstance(model, dict) and str(model.get("id") or "").strip()
             },
         )
+        if abandoned:
+            OpenRouterModelRegistry.clear_image_contract_attempt()
+            OpenRouterModelRegistry.mark_image_contract_retry(cache_seconds)
     OpenRouterModelRegistry.register_image_models(models)
     # Stamped only once the models are registered. Stamping earlier meant a cancellation
     # mid-sweep left the models unregistered AND the retry suppressed for a whole TTL
@@ -163,7 +176,7 @@ async def _fetch_endpoint_records(
     models: list[dict[str, Any]],
     logger: Any,
     concurrency: int = 8,
-) -> dict[str, list[dict[str, Any]]]:
+) -> tuple[dict[str, list[dict[str, Any]]], frozenset[str]]:
     """Read every published knob contract for each model, keyed by model id.
 
     A model served by more than one provider publishes one record per provider, and they
@@ -181,11 +194,12 @@ async def _fetch_endpoint_records(
         if isinstance(model, dict) and str(model.get("id") or "").strip()
     ]
     if not ids:
-        return {}
+        return {}, frozenset()
 
     records: dict[str, list[dict[str, Any]]] = {}
     gate = asyncio.Semaphore(max(1, concurrency))
     failures: list[str] = []
+    completed: set[str] = set()
 
     async def _one(model_id: str) -> None:
         async with gate:
@@ -196,6 +210,7 @@ async def _fetch_endpoint_records(
                 # exception is swallowed by the gather below, so the model would vanish
                 # from both the records and the failures with no diagnostic at all.
                 offered = [item for item in published if isinstance(item, dict)]
+                completed.add(model_id)
             except Exception as exc:
                 # Broad on purpose: a model absent from the result must always be in
                 # `failures`, so it is always named in the log. A tuple of enumerated
@@ -215,13 +230,15 @@ async def _fetch_endpoint_records(
     # Bounded as a whole, not only per read. This runs inside the call that builds Open
     # WebUI's model list, and one read per model at this concurrency would otherwise put
     # the catalogue's size into the time a user waits for the picker.
+    abandoned: frozenset[str] = frozenset()
     try:
         async with asyncio.timeout(_SWEEP_BUDGET_SECONDS):
             await asyncio.gather(
                 *(_one(model_id) for model_id in ids), return_exceptions=True
             )
     except TimeoutError:
-        unread = [model_id for model_id in ids if model_id not in records]
+        abandoned = frozenset(mid for mid in ids if mid not in completed)
+        unread = list(abandoned)
         for model_id in unread:
             if model_id not in failures:
                 failures.append(model_id)
@@ -244,4 +261,4 @@ async def _fetch_endpoint_records(
             len(ids),
             ", ".join(sorted(failures)[:5]),
         )
-    return records
+    return records, abandoned

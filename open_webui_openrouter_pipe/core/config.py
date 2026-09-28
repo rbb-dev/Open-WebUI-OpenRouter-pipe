@@ -1009,7 +1009,7 @@ class Valves(BaseModel):
     )
     ALLOW_INSECURE_HTTP: bool = Field(
         default=False,
-        description="Allow plaintext HTTP remote URLs when explicitly enabled. HTTP is disabled by default; only enable with a narrow allowlist in ALLOW_INSECURE_HTTP_HOSTS.",
+        description="Allow plaintext HTTP remote URLs when explicitly enabled. HTTP is disabled by default; only enable with a narrow allowlist in ALLOW_INSECURE_HTTP_HOSTS. A refused picture is reported once, as an 'Images: skipped N (...)' status naming both valves, and a turn whose only content was that picture is sent as a placeholder naming the reason.",
     )
     ALLOW_INSECURE_HTTP_HOSTS: str = Field(
         default="",

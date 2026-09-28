@@ -190,6 +190,12 @@ is refused, and on the turn it is answered it is handed to the model in the orde
 answer is produced before any queued call has run. A round stored with tool cards on is written as the calls are answered, so a
 Continue replays a refused call's answer ahead of the results that were still running. A call the model sends malformed is answered as Open WebUI's own tool loop answers it on the same route and is kept like any other call; several argument objects sent back to back become one call each.
 
+A call can also be kept in this copy and still be withheld from one request: when the replay budget is applied to that
+turn, the result is replaced in `input` with a model-visible stub, and the tools whose results were replaced are named to
+the person in a warning notification — once per call id, on every path that applies the budget except the task-model
+adapter, which never sees the tool round. The copy above is untouched, so a later turn that fits still replays the full
+result.
+
 The copy carries the call's arguments and its full result, pictures included, whatever `PERSIST_TOOL_RESULTS`
 says, as a shown card does in the message Open WebUI saves; that setting decides what later turns receive, not
 whether the round is stored (see below). A call that

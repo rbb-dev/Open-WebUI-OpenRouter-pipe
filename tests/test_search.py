@@ -47,6 +47,7 @@ async def test_auto_default_web_tools_seeds_default_filter_once(pipe_instance):
             filter_supported=True,
             auto_attach_filter=True,
             auto_default_filter=True,
+            new_model_access_control="admins",
         )
 
     assert update_mock.call_count == 1
@@ -90,6 +91,7 @@ async def test_auto_default_web_tools_respects_operator_disabling_default(pipe_i
             filter_supported=True,
             auto_attach_filter=True,
             auto_default_filter=True,
+            new_model_access_control="admins",
         )
 
     # No metadata should be re-written: operator choice is respected.
@@ -122,6 +124,7 @@ async def test_disable_web_tools_auto_attach_prevents_filter_and_default_updates
             filter_supported=True,
             auto_attach_filter=True,
             auto_default_filter=True,
+            new_model_access_control="admins",
         )
 
     assert update_mock.call_count == 0

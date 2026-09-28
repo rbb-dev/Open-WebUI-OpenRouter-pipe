@@ -52,6 +52,7 @@ if TYPE_CHECKING:
     from ...pipe import Pipe
 
 _RESPONSES_CHUNK_PARSE_WARN_COOLDOWN_S = 30.0
+_RESPONSES_SSE_DONE_SENTINEL = b"[DONE]"
 _warned_responses_chunk_parse: dict[str, float] = {}
 _warned_queue_backlog: dict[str, float] = {}
 
@@ -391,7 +392,7 @@ class ResponsesAdapter:
                                                     event_data_parts.clear()
                                                     if not data_blob:
                                                         continue
-                                                    if data_blob == b"[DONE]":
+                                                    if data_blob == _RESPONSES_SSE_DONE_SENTINEL:
                                                         stream_complete = True
                                                         timing_mark("responses_stream_done")
                                                         break
@@ -409,7 +410,26 @@ class ResponsesAdapter:
                                             if stripped.startswith(b":"):
                                                 continue
                                             if stripped.startswith(b"data:"):
-                                                event_data_parts.append(bytes(stripped[5:].lstrip()))
+                                                payload = bytes(stripped[5:].lstrip())
+                                                if payload == _RESPONSES_SSE_DONE_SENTINEL:
+                                                    if event_data_parts:
+                                                        data_blob = b"\n".join(event_data_parts).strip()
+                                                        event_data_parts.clear()
+                                                        if data_blob and data_blob != _RESPONSES_SSE_DONE_SENTINEL:
+                                                            if not first_event_queued:
+                                                                first_event_queued = True
+                                                                timing_mark("producer_first_event_queued")
+                                                            queued_any = True
+                                                            if not delivered_any:
+                                                                _probe_inband(data_blob)
+                                                            if _visible(data_blob):
+                                                                await _emit(data_blob)
+                                                            else:
+                                                                held.append(data_blob)
+                                                    stream_complete = True
+                                                    timing_mark("responses_stream_done")
+                                                    break
+                                                event_data_parts.append(payload)
                                                 continue
                                         if stream_complete:
                                             break
@@ -424,12 +444,12 @@ class ResponsesAdapter:
                                     data_blob = event_data_parts[0].strip()
                                     trailing = [p.strip() for p in event_data_parts[1:]]
                                     event_data_parts.clear()
-                                    if data_blob == b"[DONE]":
+                                    if data_blob == _RESPONSES_SSE_DONE_SENTINEL:
                                         stream_complete = True
                                         timing_mark("responses_stream_done")
                                     else:
                                         for blob in (data_blob, *trailing):
-                                            if not blob or blob == b"[DONE]":
+                                            if not blob or blob == _RESPONSES_SSE_DONE_SENTINEL:
                                                 continue
                                             try:
                                                 json.loads(blob.decode("utf-8"))
@@ -501,7 +521,7 @@ class ResponsesAdapter:
                     try:
                         if seq is None:
                             break
-                        if data == b"[DONE]":
+                        if data == _RESPONSES_SSE_DONE_SENTINEL:
                             await event_queue.put((seq, None))
                             continue
                         try:

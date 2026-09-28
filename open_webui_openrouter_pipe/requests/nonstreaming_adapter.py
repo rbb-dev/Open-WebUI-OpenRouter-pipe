@@ -308,10 +308,12 @@ class NonStreamingAdapter:
                     )
 
             assistant_text = _extract_chat_message_text(message_obj)
-            if not assistant_text:
-                refusal_text = message_obj.get("refusal")
-                if isinstance(refusal_text, str) and refusal_text.strip():
-                    assistant_text = refusal_text
+            refusal_text = message_obj.get("refusal")
+            if isinstance(refusal_text, str) and refusal_text.strip():
+                refusal_text = refusal_text.strip()
+                assistant_text = (
+                    f"{assistant_text}\n\n{refusal_text}" if assistant_text else refusal_text
+                )
             if assistant_text:
                 yield {"type": "response.output_text.delta", "delta": assistant_text}
 

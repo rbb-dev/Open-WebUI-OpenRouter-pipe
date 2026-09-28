@@ -60,6 +60,7 @@ For each model, the registry stores the full catalog entry (`full_model`) and de
   - `image_gen_tool` (based on output modalities)
 - `capabilities`: a dictionary of Open WebUI “capability checkboxes” used for UI affordances (for example `vision`, `file_upload`, `web_search`, `image_generation`), plus always-on UI toggles (`code_interpreter`, `citations`, `status_updates`, `usage`).
 - When enabled, the pipe can also sync these capability checkboxes into Open WebUI model metadata (`meta.capabilities`) so the UI reflects OpenRouter’s catalog.
+- `web_search` is seeded from the model’s published `web_search` pricing and is never overwritten once you have set it, so a model OpenRouter does not price for search can still get Open WebUI’s native search by a manual tick. This applies to rows the pipe writes; a row synced by an earlier version keeps whatever `web_search` value it already has until an admin edits it.
 - `max_completion_tokens`: taken from the model’s `top_provider.max_completion_tokens` field when present.
 
 The derived specs are shared with `ModelFamily` via `ModelFamily.set_dynamic_specs(...)`, so the rest of the pipe can use `ModelFamily.supports(...)`, `ModelFamily.capabilities(...)`, and `ModelFamily.supported_parameters(...)` without depending directly on the registry.
@@ -83,7 +84,7 @@ Behavior:
   - `meta.profile_image_url` (model icon as a PNG data URL), stamped with the source URL the icon was downloaded from so an unchanged source is not downloaded again, which keeps a hand-picked icon on that row until its source URL changes — a change to the image at the same URL is therefore not picked up — and
   - `meta.description` (model description text).
   This behavior is controlled by `UPDATE_MODEL_CAPABILITIES`, `UPDATE_MODEL_IMAGES`, and `UPDATE_MODEL_DESCRIPTIONS`. A sync that fails or is cancelled is retried on the next model-list refresh and its exception is logged at ERROR, so a stale sync is distinguishable from a healthy one. See: [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry.md).
-  - New model access control defaults are set **on insert only**: `NEW_MODEL_ACCESS_CONTROL` determines whether newly inserted OpenRouter overlays are public (wildcard read grant) or private (no access grants), with the `admins` option relying on Open WebUI's `BYPASS_ADMIN_ACCESS_CONTROL` for admin access.
+  - New model access control defaults are set **on insert only, and read once per pass**: `NEW_MODEL_ACCESS_CONTROL` determines whether newly inserted OpenRouter overlays are public (wildcard read grant) or private (no access grants), with the `admins` option relying on Open WebUI's `BYPASS_ADMIN_ACCESS_CONTROL` for admin access. A pass already running when you save the valve finishes under the value it started with, so every row it writes carries the same policy.
 
 ---
 

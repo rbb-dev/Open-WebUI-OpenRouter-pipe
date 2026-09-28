@@ -1835,8 +1835,7 @@ async def transform_messages_to_input(
                                 f"An attached image was {result.reason}.",
                                 show_error_message=True,
                             )
-                        else:
-                            refused_images.append(result.reason)
+                        refused_images.append(result.reason)
                         encountered_user_images = True
                         continue
                     if result is None:

@@ -2297,7 +2297,14 @@ Key files:
   name and capability flags alongside the video controls — but its tool-calling
   parameters are the video row's own, so `TOOL_CALLING_FILTER` does not apply to
   it and such a model is invisible to a tool-calling filter. A model only in the
-  video catalog registers with the video row's own values.
+  video catalog registers with the video row's own values. A sweep that
+  completes with none calls `register_video_models([])`, which retires every
+  model the video catalog itself registered, so a provider withdrawal leaves
+  the picker; a model the chat `/models` catalog also publishes is spared by
+  that chat provenance, not by being unowned, and is retired only when
+  `/models` stops listing it. A fetch that raised retires nothing. What is
+  honoured is the model list, not the Open WebUI model row, which the
+  model-editor flow retires.
 - [`models/catalog_manager.py`](../open_webui_openrouter_pipe/models/catalog_manager.py)
   — metadata sync that attaches and defaults filters.
 - [`core/config.py`](../open_webui_openrouter_pipe/core/config.py)

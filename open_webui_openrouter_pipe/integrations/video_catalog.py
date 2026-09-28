@@ -70,8 +70,9 @@ async def ensure_video_catalog_loaded(
             return
 
         if not models:
+            OpenRouterModelRegistry.register_video_models([])
             OpenRouterModelRegistry.record_video_attempt()
-            logger.warning("Video catalog fetch returned 0 models; nothing to register.")
+            logger.warning("Video catalog fetch returned 0 models; video models retired.")
             return
 
         await _attach_declared_input_modalities(client, models, logger)

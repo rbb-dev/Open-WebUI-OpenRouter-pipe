@@ -12,6 +12,8 @@ from ..core.utils import utf8_stream_decoder
 
 _logger = logging.getLogger(__name__)
 
+_TASK_RESPONSE_MAX_BYTES = 256 * 1024
+
 def _content_part_text(item: Any) -> str | None:
     if not isinstance(item, dict):
         return str(item)
@@ -62,6 +64,8 @@ def consume_sse_line(raw_line: str, content_parts: list[str]) -> None:
         data = json.loads(payload)
     except json.JSONDecodeError:
         _logger.debug("Structured-task chunk parse failed", exc_info=True)
+        return
+    if not isinstance(data, dict):
         return
     for choice in data.get("choices", []):
         delta = choice.get("delta") or choice.get("message")
@@ -125,7 +129,7 @@ async def read_task_model_response_json(response: Any) -> dict[str, Any]:
         content = await read_model_response_content(response)
         if not content:
             raise RuntimeError("task_model_empty_response")
-        if len(content) > 256 * 1024:
+        if len(content) > _TASK_RESPONSE_MAX_BYTES:
             raise RuntimeError(f"task_model_response_too_large: {len(content)}")
         try:
             return json.loads(content)
@@ -136,7 +140,7 @@ async def read_task_model_response_json(response: Any) -> dict[str, Any]:
         text = response.strip()
         if not text:
             raise RuntimeError("task_model_empty_response")
-        if len(text) > 256 * 1024:
+        if len(text) > _TASK_RESPONSE_MAX_BYTES:
             raise RuntimeError(f"task_model_response_too_large: {len(text)}")
         try:
             return json.loads(text)
@@ -160,6 +164,8 @@ async def read_task_model_response_json(response: Any) -> dict[str, Any]:
                     text_parts.append(str(content.get("text") or ""))
         if text_parts:
             joined = "\n".join(p for p in text_parts if p).strip()
+            if len(joined) > _TASK_RESPONSE_MAX_BYTES:
+                raise RuntimeError(f"task_model_response_too_large: {len(joined)}")
             if joined:
                 try:
                     return json.loads(joined)
@@ -186,10 +192,18 @@ async def read_task_model_response_json(response: Any) -> dict[str, Any]:
     if isinstance(content_value, list):
         content_value = normalise_model_content(content_value)
     if isinstance(content_value, dict):
+        try:
+            measured = len(json.dumps(content_value, ensure_ascii=False, default=str))
+        except (ValueError, RecursionError):
+            measured = _TASK_RESPONSE_MAX_BYTES + 1
+        if measured > _TASK_RESPONSE_MAX_BYTES:
+            raise RuntimeError(f"task_model_response_too_large: {measured}")
         return content_value
     if isinstance(content_value, str):
         if not content_value.strip():
             raise RuntimeError("task_model_empty_response")
+        if len(content_value) > _TASK_RESPONSE_MAX_BYTES:
+            raise RuntimeError(f"task_model_response_too_large: {len(content_value)}")
         try:
             return json.loads(content_value)
         except json.JSONDecodeError as exc:

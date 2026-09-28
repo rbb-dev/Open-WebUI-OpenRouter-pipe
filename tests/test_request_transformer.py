@@ -4371,6 +4371,20 @@ class TestImageReuseRegister:
         assert any(phrase in json.dumps(e) for e in surfaced), (
             f"the {cause} refusal never mentioned {phrase!r}, so the user cannot act on it"
         )
+        if banner:
+            # A security refusal disclosed as an error card is also counted in the
+            # turn's own image tally, so a picture the model never saw is counted
+            # where the user reads the count. The card is the load-bearing
+            # disclosure; the status repeats the reason because the tally names it.
+            # What must hold is that the card is there, and that the refusal is counted.
+            assert any(phrase in json.dumps(e) for e in errors), (
+                "the actionable valve names reached only the status line, which the next "
+                "status hides behind a click"
+            )
+            assert any("Images: skipped" in json.dumps(e) for e in statuses), (
+                "a security refusal no longer appears in the turn's own image tally, so "
+                "a picture the model never saw is missing from the count the user reads"
+            )
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("user_uploads_last", [False, True])

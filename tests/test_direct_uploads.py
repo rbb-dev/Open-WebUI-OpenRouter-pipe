@@ -1147,6 +1147,7 @@ async def test_auto_attach_direct_uploads_filter_and_persist_capabilities(pipe_i
             direct_uploads_filter_supported=True,
             auto_attach_direct_uploads_filter=True,
             openrouter_pipe_capabilities=pipe_caps,
+            new_model_access_control="admins",
         )
 
     assert update_mock.call_count == 1
@@ -1192,6 +1193,7 @@ async def test_auto_attach_removes_direct_uploads_filter_when_unsupported(pipe_i
             direct_uploads_filter_supported=False,
             auto_attach_direct_uploads_filter=True,
             openrouter_pipe_capabilities={"file_input": False, "audio_input": False, "video_input": False, "vision": False},
+            new_model_access_control="admins",
         )
 
     assert update_mock.call_count == 1

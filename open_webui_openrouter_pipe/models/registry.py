@@ -449,6 +449,7 @@ class OpenRouterModelRegistry:
         if not models:
             raise RuntimeError("OpenRouter returned an empty model catalog.")
 
+        chat_catalog_norms = frozenset(specs)
         existing_video_norms = {
             n for n, s in cls._specs.items()
             if "video_generation" in (s.get("features") or set())
@@ -495,6 +496,7 @@ class OpenRouterModelRegistry:
         cls._specs = specs
         cls._id_map = id_map
         cls._zdr_model_ids = zdr_model_ids
+        cls._chat_catalog_norms = chat_catalog_norms
 
         ModelFamily.set_dynamic_specs(specs)
 
@@ -658,6 +660,7 @@ class OpenRouterModelRegistry:
 
     _last_video_fetch: float = 0.0
     _last_video_attempt: float = 0.0
+    _video_catalog_norms: frozenset[str] = frozenset()
 
     @classmethod
     def last_video_fetch(cls) -> float:
@@ -700,11 +703,15 @@ class OpenRouterModelRegistry:
         new_id_map = dict(cls._id_map)
         chat_specs = _chat_merge_base(cls._specs)
 
-        old_video_norms = {
-            norm_id
-            for norm_id, spec in new_specs.items()
-            if "video_generation" in set(spec.get("features") or set())
-        }
+        old_video_norms = (
+            set(cls._video_catalog_norms) - set(cls._chat_catalog_norms)
+            if isinstance(video_models, list) and not video_models
+            else {
+                norm_id
+                for norm_id, spec in new_specs.items()
+                if "video_generation" in set(spec.get("features") or set())
+            }
+        )
         if old_video_norms:
             for norm_id in old_video_norms:
                 new_specs.pop(norm_id, None)
@@ -720,6 +727,7 @@ class OpenRouterModelRegistry:
             if isinstance(norm, str) and norm and norm not in old_video_norms:
                 models_by_norm[cls._exact_norm(str(model.get("id") or ""))] = dict(model)
 
+        owned_video_norms: set[str] = set()
         for item in video_models:
             if not isinstance(item, dict):
                 continue
@@ -792,6 +800,7 @@ class OpenRouterModelRegistry:
                 "original_id": original_id,
                 "name": item.get("name") or original_id,
             }
+            owned_video_norms.add(norm_id)
             new_specs[norm_id] = {
                 "features": features,
                 "capabilities": capabilities,
@@ -810,6 +819,7 @@ class OpenRouterModelRegistry:
         cls._specs = new_specs
         cls._id_map = new_id_map
         cls._models = sorted(models_by_norm.values(), key=lambda m: str(m.get("name") or "").lower())
+        cls._video_catalog_norms = frozenset(owned_video_norms)
         ModelFamily.set_dynamic_specs(cls._specs)
         if video_models:
             cls._last_video_fetch = time.time()
@@ -824,10 +834,13 @@ class OpenRouterModelRegistry:
 
     _last_image_fetch: float = 0.0
     _last_image_attempt: float = 0.0
+    _image_catalog_norms: frozenset[str] = frozenset()
+    _chat_catalog_norms: frozenset[str] = frozenset()
     _image_endpoints: ClassVar[dict[str, list[dict[str, Any]]]] = {}
     _image_endpoint_alias: ClassVar[dict[str, list[dict[str, Any]]]] = {}
     _image_endpoint_alias_of: ClassVar[dict[str, list[dict[str, Any]]] | None] = None
     _last_image_contract_attempt: float = 0.0
+    _image_contract_retry_after: float = 0.0
 
     @classmethod
     def last_image_contract_attempt(cls) -> float:
@@ -843,6 +856,22 @@ class OpenRouterModelRegistry:
     @classmethod
     def record_image_contract_attempt(cls) -> None:
         cls._last_image_contract_attempt = time.time()
+
+    @classmethod
+    def clear_image_contract_attempt(cls) -> None:
+        cls._last_image_contract_attempt = 0.0
+
+    @classmethod
+    def mark_image_contract_retry(cls, cache_seconds: int) -> None:
+        cls._image_contract_retry_after = time.time() + cache_seconds
+
+    @classmethod
+    def image_contract_retry_pending(cls) -> bool:
+        return time.time() < cls._image_contract_retry_after
+
+    @classmethod
+    def clear_image_contract_retry(cls) -> None:
+        cls._image_contract_retry_after = 0.0
 
     @classmethod
     def set_image_endpoints(
@@ -943,17 +972,21 @@ class OpenRouterModelRegistry:
         new_specs = dict(cls._specs)
         new_id_map = dict(cls._id_map)
 
-        old_image_norms = {
-            norm_id
-            for norm_id, spec in new_specs.items()
-            if (
-                "image_output" in set(spec.get("features") or set())
-                and "video_generation" not in set(spec.get("features") or set())
-                and "text" not in (
-                    (spec.get("architecture") or {}).get("output_modalities") or []
+        old_image_norms = (
+            set(cls._image_catalog_norms) - set(cls._chat_catalog_norms)
+            if isinstance(image_models, list) and not image_models
+            else {
+                norm_id
+                for norm_id, spec in new_specs.items()
+                if (
+                    "image_output" in set(spec.get("features") or set())
+                    and "video_generation" not in set(spec.get("features") or set())
+                    and "text" not in (
+                        (spec.get("architecture") or {}).get("output_modalities") or []
+                    )
                 )
-            )
-        }
+            }
+        )
         if old_image_norms:
             for norm_id in old_image_norms:
                 new_specs.pop(norm_id, None)
@@ -969,6 +1002,7 @@ class OpenRouterModelRegistry:
             if isinstance(norm, str) and norm and norm not in old_image_norms:
                 models_by_norm[cls._exact_norm(str(model.get("id") or ""))] = dict(model)
 
+        owned_image_norms: set[str] = set()
         for item in image_models:
             if not isinstance(item, dict):
                 continue
@@ -1005,6 +1039,7 @@ class OpenRouterModelRegistry:
             if accepts_image_input:
                 features.update({"vision", "file_input"})
 
+            owned_image_norms.add(norm_id)
             new_id_map[cls._exact_norm(sanitized)] = original_id
             models_by_norm[cls._exact_norm(sanitized)] = {
                 "id": sanitized,
@@ -1040,6 +1075,7 @@ class OpenRouterModelRegistry:
         cls._specs = new_specs
         cls._id_map = new_id_map
         cls._models = sorted(models_by_norm.values(), key=lambda m: str(m.get("name") or "").lower())
+        cls._image_catalog_norms = frozenset(owned_image_norms)
         ModelFamily.set_dynamic_specs(cls._specs)
         if image_models:
             cls._last_image_fetch = time.time()

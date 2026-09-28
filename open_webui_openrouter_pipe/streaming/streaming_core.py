@@ -128,11 +128,6 @@ from ..requests.sanitizer import (
     budget_model_id,
 )
 
-_REPLAY_DROPPED_OPENING = (
-    "Earlier tool results no longer fit this model's context, so the model "
-    "did not receive:"
-)
-
 _OWUI_ORIGIN_SOURCES = frozenset({"owui_registry_tools", "owui_request_tools"})
 
 _FUSION_PANEL_FAILURE_REASON = (
@@ -186,6 +181,7 @@ from ..tools.citation_harvester import (
 )
 from ..tools.tool_registry import open_webui_runs_the_calls
 from .constants import (
+    _REPLAY_DROPPED_OPENING,
     DEFERRED_REASONING_FLUSH,
     FUSION_EMBED_ATTEMPTS,
     ReasoningStatusThrottle,

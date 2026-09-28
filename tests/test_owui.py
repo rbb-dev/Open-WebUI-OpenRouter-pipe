@@ -295,6 +295,7 @@ async def test_claim_pipe_model_metadata_sync_merges_existing_capabilities(monke
                 update_capabilities=True,
                 update_images=False,
                 capability_defaults={"builtin_tools": True, "status_updates": True},
+                new_model_access_control="admins",
             )
 
             # Confirm merge: existing `builtin_tools`/`file_context` were preserved.

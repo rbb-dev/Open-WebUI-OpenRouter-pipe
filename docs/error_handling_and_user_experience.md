@@ -20,6 +20,18 @@ There are two main error rendering paths, and a third that does not render at al
 2. **Generic templated errors** (timeouts/connectivity/internal failures handled by `_emit_templated_error`).
 3. **API callers with no chat**, where there is nowhere to write a card: a provider rejection is returned as an HTTP error instead. Gated on a truthy `chat_id` **and** `message_id` — Open WebUI's own idiom for "is there a chat to write this into" (`main.py:1703`, `utils/middleware.py:3286`) — with `stream: false`, and never on an Anthropic Messages path (`main.py:2054-2063` re-wraps the response for the Anthropic converter, which has no error branch). The gate is a negative test on the request path, not a check for `/api/chat/completions`, so it also fires on Open WebUI's task routes. See [API callers with no chat](#c-api-callers-with-no-chat-http-error-instead-of-a-card).
 
+### What is not an error, but is still said out loud
+
+A request can succeed and still be degraded: the replay budget replaces a tool result with a model-visible stub, and
+the model then answers without ever having seen that result. Nothing raised, nothing logged as an error, and nothing
+rendered as a card — but the answer the person reads was built without input they expected it to have, so the pipe
+emits a warning notification naming the tools whose results were withheld, once per call id, on both the streaming and
+the non-streaming path, and on the orchestrator leg and the tool-round leg alike. Two neighbouring conditions are kept
+apart: a budget that could not trim far enough (`futile`) has its own notice and its own wording, because it is the
+opposite outcome — trimming that succeeded versus trimming that failed — and neither text is folded into the other. The
+task-model adapter path stays silent by design, because the classifier it runs never sees the tool round. See
+[Tooling & Integrations](tooling_and_integrations.md).
+
 ### Where a card lands: saved chat or channel
 
 A card is delivered differently depending on whether the chat id is a `channel:` id. The

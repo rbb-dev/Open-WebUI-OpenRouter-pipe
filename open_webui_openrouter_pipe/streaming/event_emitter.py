@@ -102,6 +102,20 @@ def openai_chat_chunk_message_template(
 _UNGUARDED_ATTR = "_openrouter_unguarded_emitter"
 
 
+def middleware_message_delta(
+    already_on_the_queue: str, delta: Any, content: Any
+) -> tuple[str | None, str]:
+    if isinstance(delta, str) and delta:
+        if isinstance(content, str) and content.startswith(already_on_the_queue):
+            return delta, content
+        return delta, already_on_the_queue + delta
+    if isinstance(content, str) and content:
+        if content.startswith(already_on_the_queue):
+            return content[len(already_on_the_queue):], content
+        return content, content
+    return None, already_on_the_queue
+
+
 def unguarded_emitter(emitter: EventEmitter) -> EventEmitter:
     """The emitter as handed to the pipe, before the wrapper that swallows its errors.
 
@@ -687,10 +701,10 @@ class EventEmitterHandler:
         if not model_id:
             model_id = str(job.body.get("model") or "pipe")
 
-        assistant_sent = ""
+        answer_already_on_the_queue = ""
 
         async def _emit(event: dict[str, Any]) -> bool | None:
-            nonlocal assistant_sent
+            nonlocal answer_already_on_the_queue
             if not isinstance(event, dict):
                 return
 
@@ -703,20 +717,9 @@ class EventEmitterHandler:
                 return
 
             if etype == "chat:message":
-                delta = data.get("delta")
-                content = data.get("content")
-                delta_text: str | None = None
-
-                if isinstance(delta, str) and delta:
-                    delta_text = delta
-                    if isinstance(content, str) and content.startswith(assistant_sent):
-                        assistant_sent = content
-                    else:
-                        assistant_sent = assistant_sent + delta
-                elif isinstance(content, str) and content:
-                    if content.startswith(assistant_sent):
-                        delta_text = content[len(assistant_sent) :]
-                        assistant_sent = content
+                delta_text, answer_already_on_the_queue = middleware_message_delta(
+                    answer_already_on_the_queue, data.get("delta"), data.get("content")
+                )
                 if isinstance(delta_text, str) and delta_text:
                     await self._put_middleware_stream_item(
                         job,
@@ -728,7 +731,7 @@ class EventEmitterHandler:
             if etype == "chat:message:delta":
                 delta_text = data.get("content")
                 if isinstance(delta_text, str) and delta_text:
-                    assistant_sent = assistant_sent + delta_text
+                    answer_already_on_the_queue = answer_already_on_the_queue + delta_text
                     await self._put_middleware_stream_item(
                         job,
                         stream_queue,
@@ -778,7 +781,7 @@ class EventEmitterHandler:
             if etype == "chat:completion":
                 completion_content = data.get("content")
                 if isinstance(completion_content, str):
-                    assistant_sent = completion_content
+                    answer_already_on_the_queue = completion_content
                     await self._put_middleware_stream_item(job, stream_queue, {"event": event})
 
                 error = data.get("error")

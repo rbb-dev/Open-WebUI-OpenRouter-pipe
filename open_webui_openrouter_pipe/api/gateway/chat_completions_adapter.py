@@ -67,7 +67,17 @@ if TYPE_CHECKING:
     from ...pipe import Pipe
 
 _CHAT_CHUNK_PARSE_WARN_COOLDOWN_S = 30.0
+_CHAT_SSE_DONE_SENTINEL = b"[DONE]"
 _warned_chat_chunk_parse: dict[str, float] = {}
+
+
+def _refusal_split(answer: str, refusal: str) -> tuple[str | None, str]:
+    refusal = refusal.strip()
+    if not refusal:
+        return None, answer
+    if not answer:
+        return refusal, refusal
+    return f"\n\n{refusal}", f"{answer}\n\n{refusal}"
 
 
 def _build_output_items(
@@ -224,7 +234,7 @@ class ChatCompletionsAdapter:
         image_item_id: str | None = None
         image_output_item: dict[str, Any] | None = None
         images_emitted = False
-        refusal_text_parts: list[str] = []
+        provider_refusal_parts: list[str] = []
         refusal_text_seen = False
 
         @timed
@@ -523,7 +533,7 @@ class ChatCompletionsAdapter:
                     message_refusal = message_obj.get("refusal")
                     if isinstance(message_refusal, str) and message_refusal.strip():
                         delivered_any = True
-                        refusal_text_parts.append(message_refusal)
+                        provider_refusal_parts.append(message_refusal)
                         refusal_text_seen = True
                 message_images = message_obj.get("images")
                 if (
@@ -578,7 +588,7 @@ class ChatCompletionsAdapter:
             delta_refusal = delta_obj.get("refusal")
             if isinstance(delta_refusal, str) and delta_refusal.strip():
                 delivered_any = True
-                refusal_text_parts.append(delta_refusal)
+                provider_refusal_parts.append(delta_refusal)
                 refusal_text_seen = True
 
             tool_calls = delta_obj.get("tool_calls")
@@ -639,7 +649,7 @@ class ChatCompletionsAdapter:
                         tool_calls_by_index.clear()
                         tool_call_added.clear()
                         assistant_text_parts.clear()
-                        refusal_text_parts.clear()
+                        provider_refusal_parts.clear()
                         refusal_text_seen = False
                         reasoning_text_parts.clear()
                         reasoning_summary_text = None
@@ -716,7 +726,7 @@ class ChatCompletionsAdapter:
                                     event_data_parts.clear()
                                     if not data_blob:
                                         continue
-                                    if data_blob == b"[DONE]":
+                                    if data_blob == _CHAT_SSE_DONE_SENTINEL:
                                         done = True
                                         timing_mark("chat_stream_done")
                                         break
@@ -726,7 +736,18 @@ class ChatCompletionsAdapter:
                                 if stripped.startswith(b":"):
                                     continue
                                 if stripped.startswith(b"data:"):
-                                    event_data_parts.append(bytes(stripped[5:].lstrip()))
+                                    payload = bytes(stripped[5:].lstrip())
+                                    if payload == _CHAT_SSE_DONE_SENTINEL:
+                                        if event_data_parts:
+                                            data_blob = b"\n".join(event_data_parts).strip()
+                                            event_data_parts.clear()
+                                            if data_blob and data_blob != _CHAT_SSE_DONE_SENTINEL:
+                                                for ev in _consume_blob(data_blob):
+                                                    yield ev
+                                        done = True
+                                        timing_mark("chat_stream_done")
+                                        break
+                                    event_data_parts.append(payload)
                                     continue
 
                             if done:
@@ -734,7 +755,7 @@ class ChatCompletionsAdapter:
                         if event_data_parts and not done:
                             data_blob = b"\n".join(event_data_parts).strip()
                             event_data_parts.clear()
-                            if data_blob and data_blob != b"[DONE]":
+                            if data_blob and data_blob != _CHAT_SSE_DONE_SENTINEL:
                                 for ev in _consume_blob(data_blob):
                                     yield ev
                         if not received_any:
@@ -789,11 +810,11 @@ class ChatCompletionsAdapter:
                 }
 
         assistant_text = "".join(assistant_text_parts)
-        if not assistant_text:
-            refusal_text = "".join(refusal_text_parts).strip()
-            if refusal_text:
-                yield {"type": "response.output_text.delta", "delta": refusal_text}
-                assistant_text = refusal_text
+        refusal_delta, assistant_text = _refusal_split(
+            assistant_text, "".join(provider_refusal_parts)
+        )
+        if refusal_delta is not None:
+            yield {"type": "response.output_text.delta", "delta": refusal_delta}
         tool_call_items: list[dict[str, Any]] = []
         for index in sorted(tool_calls_by_index.keys()):
             current = tool_calls_by_index[index]

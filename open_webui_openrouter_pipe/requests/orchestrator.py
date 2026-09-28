@@ -25,7 +25,11 @@ from ..api.transforms import (
     apply_context_transforms,
 )
 from ..core.config import _DEFAULT_RESPONSES_AUDIO_FORMATS, _PIPE_METADATA_KEY
-from ..core.context_budget import build_futility_notice, default_output_reservation
+from ..core.context_budget import (
+    build_futility_notice,
+    default_output_reservation,
+    omitted_tool_names,
+)
 from ..core.error_formatter import _api_caller_error_response
 from ..core.errors import (
     OpenRouterAPIError,
@@ -65,7 +69,7 @@ from ..storage.owui_files import (
     is_temporary_chat,
 )
 from ..storage.users import get_user_by_id
-from ..streaming.constants import DEFERRED_REASONING_FLUSH
+from ..streaming.constants import _REPLAY_DROPPED_OPENING, DEFERRED_REASONING_FLUSH
 from ..tools.tool_registry import (
     _advertised_names_for_replayed_calls,
     _build_collision_safe_tool_specs_and_registry,
@@ -1094,6 +1098,22 @@ class RequestOrchestrator:
                 build_futility_notice(budget_outcome),
                 level="warning",
             )
+        if budget_outcome is not None and not use_task_model_adapter:
+            fresh = {
+                call_id
+                for call_id in budget_outcome.omitted_call_ids
+                if call_id not in responses_body.budget_reported_call_ids
+            }
+            if fresh:
+                responses_body.budget_reported_call_ids.update(fresh)
+                names = omitted_tool_names(
+                    type(budget_outcome)(frozenset(fresh), False, 0, 0), responses_body.input
+                )
+                await self._pipe._event_emitter_handler._emit_notification(
+                    __event_emitter__,
+                    f"{_REPLAY_DROPPED_OPENING} {', '.join(names)}.",
+                    level="warning",
+                )
         reasoning = self._pipe._ensure_reasoning_config_manager()
         refused = reasoning._apply_reasoning_preferences(responses_body, valves)
         refused = reasoning._apply_gemini_thinking_config(responses_body, valves) or refused

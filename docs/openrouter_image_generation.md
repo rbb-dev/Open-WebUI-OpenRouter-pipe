@@ -1560,9 +1560,24 @@ pipes()
           │  from /api/v1/images/models/<id>/endpoints — 8 reads at a time,
           │  whole sweep capped at 45s by the pipe; a model that could not
           │  be read this pass keeps its last good record
+          ├─ a sweep the 45s budget cut off leaves the contract clock
+          │  unsatisfied, so the next refresh inside the window re-reads
+          │  the models it abandoned — once per successful repair, not on
+          │  every build; a repair that is itself cut off re-arms, because
+          │  the models it abandoned have still never been read. An empty
+          │  settings panel means "not read yet", not "no options" 
           └─ register_image_models()
                 ├─ skip multimodal (text in output_modalities)
-                ├─ stale-norm cleanup (drop models removed from catalog)
+                ├─ a sweep that completes with 0 models calls this with
+                │  an empty list, which retires every model the image
+                │  catalog itself registered -- a provider withdrawal
+                │  is a catalog that comes back empty. A model the chat
+                │  /models catalog also publishes is spared by that chat
+                │  provenance, not by being unowned: it stays a chat-catalog
+                │  model and is retired only when /models stops listing it.
+                │  A fetch that raised retires nothing.
+                │  Honoured in the model list: the Open WebUI model row
+                │  is retired by the model-editor flow, not by this sweep
                 ├─ publish as one run of plain assignments with no await
                 │  between them, so no request sees a half-updated catalog
                 └─ features = {"image_output", "image_gen_tool"}, plus

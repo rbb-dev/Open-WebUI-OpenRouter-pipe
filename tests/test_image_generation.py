@@ -1472,7 +1472,7 @@ async def test_a_model_whose_contract_cannot_be_read_is_simply_absent(failing, c
             return [{"provider_slug": "p", "supported_parameters": {"n": {"type": "range", "min": 1, "max": 4}}}]
 
     with caplog.at_level(_logging.DEBUG):
-        records = await _fetch_endpoint_records(
+        records, _abandoned = await _fetch_endpoint_records(
             _Client(), models, _logging.getLogger("test.image.catalog")
         )
 
@@ -2381,7 +2381,7 @@ async def test_a_contract_already_read_survives_a_later_failed_read():
         def debug(self, *a, **k):
             pass
 
-    failed = await _fetch_endpoint_records(_Failing(), [{"id": "a/b"}], _Log())
+    failed, _abandoned = await _fetch_endpoint_records(_Failing(), [{"id": "a/b"}], _Log())
     assert failed == {}, "a failed read publishes nothing"
     OpenRouterModelRegistry.set_image_endpoints(failed, known_ids={"a/b", "c/d"})
     assert OpenRouterModelRegistry.image_endpoint("a/b") == [record], (
@@ -2416,7 +2416,7 @@ async def test_a_contract_that_cannot_be_read_is_always_reported():
         def debug(self, *a, **k):
             pass
 
-    records = await _fetch_endpoint_records(_NoMethod(), [{"id": "a/b"}, {"id": "c/d"}], _Log())
+    records, _abandoned = await _fetch_endpoint_records(_NoMethod(), [{"id": "a/b"}, {"id": "c/d"}], _Log())
     assert records == {}
     assert logs, "a model that lost its contract must produce a diagnostic"
     assert "a/b" in logs[0] and "c/d" in logs[0], f"both models must be named; got {logs}"
@@ -3061,7 +3061,7 @@ async def test_the_contract_sweep_is_bounded_as_a_whole_not_only_per_read():
     image_catalog._SWEEP_BUDGET_SECONDS = 1
     started = time.monotonic()
     try:
-        records = await image_catalog._fetch_endpoint_records(_Slow(), models, _Log())
+        records, _abandoned = await image_catalog._fetch_endpoint_records(_Slow(), models, _Log())
     finally:
         image_catalog._SWEEP_BUDGET_SECONDS = original
     elapsed = time.monotonic() - started
