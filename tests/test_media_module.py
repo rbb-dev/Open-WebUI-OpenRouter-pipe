@@ -26,7 +26,7 @@ from open_webui_openrouter_pipe.media import (
     probe_video,
 )
 import imageio.v3 as iio
-from typing import cast
+from typing import Any, cast
 
 
 # -----------------------------------------------------------------------------

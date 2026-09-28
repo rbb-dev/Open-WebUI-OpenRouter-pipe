@@ -131,25 +131,33 @@ def _admission_error_response(
     )
 
 
-def _api_caller_error_response(
-    exc: OpenRouterAPIError, *, stream: bool, path: str
+def _transported_failure_response(
+    message: str, *, code: int, stream: bool, path: str, retry_after_seconds: float | None = None
 ) -> StreamingResponse | None:
     if stream or _is_anthropic_endpoint(path):
         return None
-    error: dict[str, Any] = {
-        "message": exc.upstream_message or exc.openrouter_message or exc.reason,
-        "code": exc.status,
-    }
+    error: dict[str, Any] = {"message": message, "code": code}
     headers: dict[str, str] = {}
-    retry_after = _resolve_retry_after_seconds(exc.metadata)
-    if retry_after is not None:
-        error["retry_after_seconds"] = retry_after
-        headers["Retry-After"] = str(int(retry_after))
+    if retry_after_seconds is not None:
+        error["retry_after_seconds"] = retry_after_seconds
+        headers["Retry-After"] = str(int(retry_after_seconds))
     return StreamingResponse(
         iter([json.dumps({"error": error}).encode("utf-8")]),
         status_code=400,
         media_type="application/json",
         headers=headers,
+    )
+
+
+def _api_caller_error_response(
+    exc: OpenRouterAPIError, *, stream: bool, path: str
+) -> StreamingResponse | None:
+    return _transported_failure_response(
+        exc.upstream_message or exc.openrouter_message or exc.reason,
+        code=exc.status,
+        stream=stream,
+        path=path,
+        retry_after_seconds=_resolve_retry_after_seconds(exc.metadata),
     )
 
 

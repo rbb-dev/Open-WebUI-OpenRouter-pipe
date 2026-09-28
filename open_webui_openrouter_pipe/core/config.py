@@ -79,6 +79,7 @@ _FUNCTION_MODULE_PREFIX = "function_"
 _OPENROUTER_FRONTEND_MODELS_URL = "https://openrouter.ai/api/frontend/v1/catalog/models"
 _OPENROUTER_MODEL_ENDPOINTS_URL_TEMPLATE = "https://openrouter.ai/api/v1/models/{slug}/endpoints"
 _OPENROUTER_SITE_URL = "https://openrouter.ai"
+_OPENROUTER_HOST = "openrouter.ai"
 _MAX_MODEL_PROFILE_IMAGE_BYTES = 2 * 1024 * 1024
 _MAX_MODEL_PROFILE_IMAGE_PIXELS = 25_000_000
 _MAX_OPENROUTER_ID_CHARS = 128
@@ -348,7 +349,8 @@ DEFAULT_SERVICE_ERROR_TEMPLATE = (
     "**Time:** {timestamp}\n"
     "{{/if}}\n\n"
     "**What the status means:**\n"
-    "- `502` — the chosen model is down, or it returned something OpenRouter could not read\n"
+    "- `502` — the chosen model is down, or it returned something OpenRouter could not read, or a proxy, "
+    "CDN or WAF in front of this deployment rewrote the reply\n"
     "- `503` — the provider is momentarily overloaded, or no provider was available that satisfies the "
     "routing requirements sent with this request\n"
     "- `504` — the provider did not answer in time\n"
@@ -359,6 +361,8 @@ DEFAULT_SERVICE_ERROR_TEMPLATE = (
     "- If a `503` keeps repeating rather than clearing, it may be the routing constraints rather than load: "
     "an admin can review `Enforce ZDR routing` and the provider-routing settings for this model\n"
     "- Check [OpenRouter Status](https://status.openrouter.ai/) for a platform-wide incident\n"
+    "- Check the network path, and any proxy between this host and OpenRouter, if the details quote a body "
+    "that is not an OpenRouter response\n"
     "{{#if support_email}}\n"
     "\n**Support:** {support_email}\n"
     "{{/if}}\n"
@@ -926,6 +930,9 @@ class Valves(BaseModel):
         description=(
             "Override the `HTTP-Referer` header sent to OpenRouter for app attribution. "
             "Must be a full URL including scheme (e.g. https://example.com), not just a hostname. "
+            "Applies to every request to an openrouter.ai host, including the catalogue, "
+            "endpoint and maker-page refresh reads; not to user- or model-supplied asset "
+            "downloads or the GitHub self-update check. "
             "When empty, the pipe uses its default project URL."
         ),
     )
@@ -1459,7 +1466,13 @@ class Valves(BaseModel):
     SESSION_LOG_CLEANUP_INTERVAL_SECONDS: int = Field(
         default=3600,
         ge=60,
-        description="How often (in seconds) to run the session log cleanup loop when storage is enabled.",
+        description=(
+            "How often (in seconds) to run the session log cleanup loop when storage is enabled. "
+            "A pass never prunes a directory a write in this same process is in the middle of, so an archive is "
+            "never lost to the sweep; another worker process runs its own sweep with its own set of reservations. "
+            "A write that fails leaves its directory to a later pass, while a process that dies mid-write leaves "
+            "a temporary file that no pass reaps. A warning about a lost archive is itself filtered by LOG_LEVEL."
+        ),
     )
     SESSION_LOG_ZIP_COMPRESSION: Literal["stored", "deflated", "bzip2", "lzma"] = Field(
         default="lzma",
@@ -1709,21 +1722,22 @@ class Valves(BaseModel):
     CONNECTION_ERROR_TEMPLATE: str = Field(
         default=DEFAULT_CONNECTION_ERROR_TEMPLATE,
         description=(
-            "Markdown template a chat reply shows, once the retries are spent, when its connection to OpenRouter fails before any of the answer arrives: the connection cannot be opened or drops, or, on every attempt, OpenRouter closes the stream without sending anything. A connection that fails before the first byte is a temporary failure: the request is re-sent up to TRANSIENT_RETRY_MAX_ATTEMPTS extra times (three attempts in all by default) and is counted once against the breaker however many attempts it took. Picture-only image models, video models and the panel, judge and final-answer calls inside internal Fusion report failures in their own way. A timeout uses NETWORK_TIMEOUT_TEMPLATE instead, and once part of the answer has arrived, STREAM_INTERRUPTED_TEMPLATE is used and nothing is retried. Available variables: {error_id}, {error_type}, {timestamp}, {session_id}, {user_id}, {support_email}, {support_url}. Supports Handlebars-style conditionals: wrap a section in {{#if variable}}...{{/if}} to show it only when that value is set."
+            "Markdown template a chat reply shows, once the retries are spent, when its connection to OpenRouter fails before any of the answer arrives: the connection cannot be opened or drops, or, on every attempt, OpenRouter closes the stream without sending anything. A connection that fails before the first byte is a temporary failure: the request is re-sent up to TRANSIENT_RETRY_MAX_ATTEMPTS extra times (three attempts in all by default) and is counted once against the breaker however many attempts it took. Picture-only image models, video models and the panel, judge and final-answer calls inside internal Fusion report failures in their own way. A timeout uses NETWORK_TIMEOUT_TEMPLATE instead, and once part of the answer has arrived, STREAM_INTERRUPTED_TEMPLATE is used and nothing is retried. A reply that arrives on an accepted status but whose body is not a JSON object is not a connection failure: the connection worked, and SERVICE_ERROR_TEMPLATE reports it. Available variables: {error_id}, {error_type}, {timestamp}, {session_id}, {user_id}, {support_email}, {support_url}. Supports Handlebars-style conditionals: wrap a section in {{#if variable}}...{{/if}} to show it only when that value is set."
         )
     )
 
     SERVICE_ERROR_TEMPLATE: str = Field(
         default=DEFAULT_SERVICE_ERROR_TEMPLATE,
         description=(
-            "Markdown template for OpenRouter 5xx errors, and for a failure OpenRouter reports inside a reply it has already started under one of its own typed codes: provider_unavailable, provider_overloaded, timeout, server or unmapped, or under its native code server_error. Available variables: {error_id}, {status_code}, {reason}, {timestamp}, {session_id}, {user_id}, {support_email}. A 5xx that OpenRouter itself returned also fills {request_id}, its own reference for that request. A 5xx reported inside a started reply fills it whenever the failure carries an id: the failed response's id on Responses, the generation id on Chat Completions, also available as {error_chunk_id}; {provider} likewise appears only when the error names the provider. A 5xx raised by the connection to OpenRouter carries no such reference and a line using it prints the braces verbatim unless it is wrapped in a conditional. Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to show them only when that value is set."
+            "Markdown template for OpenRouter 5xx errors, for an accepted response whose body is not a JSON object (a proxy, CDN or WAF in front of this deployment rewrote the reply), and for a failure OpenRouter reports inside a reply it has already started under one of its own typed codes: provider_unavailable, provider_overloaded, timeout, server or unmapped, or under its native code server_error. Available variables: {error_id}, {status_code}, {reason}, {timestamp}, {session_id}, {user_id}, {support_email}. A 5xx that OpenRouter itself returned also fills {request_id}, its own reference for that request. A 5xx reported inside a started reply fills it whenever the failure carries an id: the failed response's id on Responses, the generation id on Chat Completions, also available as {error_chunk_id}; {provider} likewise appears only when the error names the provider. A 5xx raised by the connection to OpenRouter carries no such reference and a line using it prints the braces verbatim unless it is wrapped in a conditional. Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to show them only when that value is set."
         )
     )
 
     INTERNAL_ERROR_TEMPLATE: str = Field(
         default=DEFAULT_INTERNAL_ERROR_TEMPLATE,
         description=(
-            "Markdown template for unexpected internal errors. "
+            "Markdown template for unexpected internal errors the pipe itself owns. "
+            "A response that arrived on an accepted status but whose body is not a JSON object is not one of those: SERVICE_ERROR_TEMPLATE reports that, because the network path, not the pipe, produced it. "
             "Available variables: {error_id}, {error_type}, {timestamp}, "
             "{session_id}, {user_id}, {support_email}, {support_url}. "
             "Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to show them only when that value is set."
@@ -1807,14 +1821,14 @@ class Valves(BaseModel):
         default=600,
         ge=1,
         description=(
-            "Maximum seconds a batch of calls to one tool may take, including time spent waiting for a slot, and never less than TOOL_TIMEOUT_SECONDS. When the limit is reached, finished calls keep their results and calls still running or waiting are cancelled."
+            "Maximum seconds a batch of calls to one tool may take once a worker has picked it up, and never less than TOOL_TIMEOUT_SECONDS. When the limit is reached, finished calls keep their results and calls still running or waiting are cancelled. It is also the ceiling on the time one response may take putting its calls on the queue: a round whose calls outnumber the free workers stops waiting and reports the calls it never started."
         ),
     )
     TOOL_IDLE_TIMEOUT_SECONDS: int | None = Field(
         default=None,
         ge=1,
         description=(
-            "Maximum seconds to wait in total for one response's tool results, counted once from when the model asked; every call whose result has not arrived by then is reported as timed out, however long that call has been running; Open WebUI's ask_user waits at least its question window. On timeout, a call that is already running continues until it finishes, another tool limit ends it, or request cleanup cancels it after TOOL_SHUTDOWN_TIMEOUT_SECONDS (inside internal Fusion, without that wait, as soon as the calling model's answer ends). The model never receives the late result. Outside internal Fusion, files or embeds the call returns still appear in the chat: a streamed reply waits for the call, bounded by TOOL_SHUTDOWN_TIMEOUT_SECONDS, so a call that returns during that wait is read before the reply ends, and a file it shows through Open Terminal opens in the preview panel (or nowhere for a person whose Open WebUI shows terminal files inline). A call still waiting for a slot or a worker never starts. Null means no limit, leaving TOOL_TIMEOUT_SECONDS and TOOL_BATCH_TIMEOUT_SECONDS in charge."
+            "Maximum seconds to wait in total for one response's tool results, counted once from when the model asked; every call whose result has not arrived by then is reported as timed out, however long that call has been running; Open WebUI's ask_user waits at least its question window. On timeout, a call that is already running continues until it finishes, another tool limit ends it, or request cleanup cancels it after TOOL_SHUTDOWN_TIMEOUT_SECONDS (inside internal Fusion, without that wait, as soon as the calling model's answer ends). The model never receives the late result. Outside internal Fusion, files or embeds the call returns still appear in the chat: a streamed reply waits for the call, bounded by TOOL_SHUTDOWN_TIMEOUT_SECONDS, so a call that returns during that wait is read before the reply ends, and a file it shows through Open Terminal opens in the preview panel (or nowhere for a person whose Open WebUI shows terminal files inline). A call still waiting for a slot or a worker never starts. Null means no limit, leaving TOOL_TIMEOUT_SECONDS and TOOL_BATCH_TIMEOUT_SECONDS in charge. It is not the limit on getting calls started: a round whose calls outnumber the free workers is additionally bounded by TOOL_BATCH_TIMEOUT_SECONDS, and the calls it never started are reported as not started rather than as idle timeouts."
         ),
     )
     TOOL_SHUTDOWN_TIMEOUT_SECONDS: float = Field(
@@ -1943,7 +1957,7 @@ class Valves(BaseModel):
     # Model metadata synchronization
     UPDATE_MODEL_IMAGES: bool = Field(
         default=True,
-        description="When enabled, automatically sync profile image URLs from OpenRouter's frontend catalog to Open WebUI model metadata. Disable to manage images manually.",
+        description="When enabled, automatically sync profile image URLs from OpenRouter's frontend catalog to Open WebUI model metadata, falling back to a model maker's logo. While the remembered source URL is unchanged the download is skipped, and for a model taking its maker's logo the maker's page is not re-fetched either. Disable to manage images manually.",
     )
     UPDATE_MODEL_CAPABILITIES: bool = Field(
         default=True,
@@ -2414,7 +2428,9 @@ class Valves(BaseModel):
             "measure, which frame - 'first' or 'last' - is substituted for it. It also "
             "decides the frame when the seek to an in-range moment comes back empty. "
             "A request that names a first or last frame directly gets that frame. "
-            "'last' matches 'continue this scene' intent."
+            "'last' matches 'continue this scene' intent. On a model that accepts only a "
+            "first frame the pipe has no choice and uses the first one, whatever moment "
+            "was asked for, and says so in the disclosure footer."
         ),
     )
     VIDEO_INTENT_TIMEOUT_S: int = Field(
@@ -2681,6 +2697,12 @@ def _select_openrouter_http_referer(valves: Any | None) -> str:
     if override and is_http_or_https_url(override):
         return override
     return _OPENROUTER_REFERER
+
+
+def openrouter_attribution_headers(valves: Any | str | None) -> dict[str, str]:
+    if isinstance(valves, str):
+        return {"HTTP-Referer": valves or _OPENROUTER_REFERER}
+    return {"HTTP-Referer": _select_openrouter_http_referer(valves)}
 
 
 OWUI_REQUEST: ContextVar[Any] = ContextVar("owui_request", default=None)

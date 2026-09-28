@@ -48,6 +48,23 @@ def _without_hidden_marker_lines(output: Any) -> Any:
     return output
 
 
+def _last_call_index_after(items: list[Any], start: int, cid: str) -> int:
+    anchor = start
+    for j in range(start + 1, len(items)):
+        later = items[j]
+        if (
+            isinstance(later, dict)
+            and later.get("type") == "function_call"
+            and later.get("call_id") == cid
+        ):
+            anchor = j
+    return anchor
+
+
+def _normalise_tool_call_id(value: Any) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
 def _reasoning_item_unsigned(item: dict[str, Any]) -> bool:
     """True for a /responses reasoning item that is plaintext thinking with no
     signature and no encrypted payload -- unreplayable to Anthropic."""
@@ -169,7 +186,7 @@ def _sanitize_request_input(pipe: Pipe, body: ResponsesBody) -> BudgetOutcome | 
                 changed = True
             minimal: dict[str, Any] = {
                 "type": "function_call",
-                "call_id": call_id,
+                "call_id": _normalise_tool_call_id(call_id),
                 "name": name.strip(),
                 "arguments": args,
             }
@@ -190,7 +207,7 @@ def _sanitize_request_input(pipe: Pipe, body: ResponsesBody) -> BudgetOutcome | 
                 changed = True
             minimal: dict[str, Any] = {
                 "type": "function_call_output",
-                "call_id": call_id.strip(),
+                "call_id": _normalise_tool_call_id(call_id),
                 "output": output,
             }
             reported_status = item.get("status")
@@ -273,7 +290,7 @@ def _validate_tool_call_pairs(
         call_id = item.get("call_id")
         if not (isinstance(call_id, str) and call_id.strip()):
             continue
-        cid = call_id.strip()
+        cid = call_id
         item_type = item.get("type")
         if item_type == "function_call":
             call_counts[cid] += 1
@@ -288,28 +305,48 @@ def _validate_tool_call_pairs(
         if call_counts[cid] and output_counts[cid] > call_counts[cid]
     }
 
-    if not orphaned_outputs and not orphaned_calls and not surplus_outputs:
+    last_user_pos = -1
+    for i, item in enumerate(items):
+        if (
+            isinstance(item, dict)
+            and item.get("type") == "message"
+            and item.get("role") == "user"
+        ):
+            last_user_pos = i
+
+    starved_occurrences: set[tuple[int, str]] = set()
+    seen_calls: Counter[str] = Counter()
+    for i, item in enumerate(items):
+        if not isinstance(item, dict) or item.get("type") != "function_call":
+            continue
+        cid = item.get("call_id")
+        if not (isinstance(cid, str) and cid.strip()):
+            continue
+        seen_calls[cid] += 1
+        if last_user_pos >= 0 and i < last_user_pos and (
+            cid in orphaned_calls or output_counts[cid] < seen_calls[cid]
+        ):
+            starved_occurrences.add((i, cid))
+
+    interior_orphaned_calls: set[str] = {cid for _i, cid in starved_occurrences}
+
+    if not orphaned_outputs and not orphaned_calls and not surplus_outputs and not starved_occurrences:
         return items
 
-    interior_orphaned_calls: set[str] = set()
-    if orphaned_calls:
-        last_user_pos = -1
-        for i, item in enumerate(items):
-            if (
-                isinstance(item, dict)
-                and item.get("type") == "message"
-                and item.get("role") == "user"
-            ):
-                last_user_pos = i
-        if last_user_pos >= 0:
-            for i, item in enumerate(items):
-                if not isinstance(item, dict) or item.get("type") != "function_call":
-                    continue
-                cid = item.get("call_id")
-                if not (isinstance(cid, str) and cid.strip()):
-                    continue
-                if cid.strip() in orphaned_calls and i < last_user_pos:
-                    interior_orphaned_calls.add(cid.strip())
+    stub_anchors: dict[str, int] = {}
+    seen_outputs: Counter[str] = Counter()
+    for i, item in enumerate(items):
+        if not isinstance(item, dict) or item.get("type") != "function_call_output":
+            continue
+        cid = item.get("call_id")
+        if not (isinstance(cid, str) and cid.strip()):
+            continue
+        if cid in orphaned_outputs:
+            continue
+        if cid in surplus_outputs and seen_outputs[cid] >= call_counts[cid]:
+            continue
+        seen_outputs[cid] += 1
+        stub_anchors[cid] = _last_call_index_after(items, i, cid)
 
     if orphaned_outputs:
         logger.warning(
@@ -332,13 +369,14 @@ def _validate_tool_call_pairs(
 
     result: list[Any] = []
     emitted: Counter[str] = Counter()
-    for item in items:
+    stubbed: set[tuple[int, str]] = set()
+    for i, item in enumerate(items):
         if not isinstance(item, dict):
             result.append(item)
             continue
         item_type = item.get("type")
         raw_cid = item.get("call_id")
-        cid = raw_cid.strip() if isinstance(raw_cid, str) else ""
+        cid = raw_cid if isinstance(raw_cid, str) else ""
 
         if item_type == "function_call_output" and cid in orphaned_outputs:
             continue
@@ -350,10 +388,16 @@ def _validate_tool_call_pairs(
 
         result.append(item)
 
-        if item_type == "function_call" and cid in interior_orphaned_calls:
+        for starved_index, starved_cid in starved_occurrences:
+            if (starved_index, starved_cid) in stubbed:
+                continue
+            anchor = stub_anchors.get(starved_cid, starved_index)
+            if anchor != i:
+                continue
+            stubbed.add((starved_index, starved_cid))
             result.append({
                 "type": "function_call_output",
-                "call_id": cid,
+                "call_id": starved_cid,
                 "output": _ORPHAN_STUB_OUTPUT,
                 "status": "incomplete",
             })

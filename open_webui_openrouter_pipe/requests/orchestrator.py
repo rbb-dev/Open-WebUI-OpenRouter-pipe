@@ -32,9 +32,14 @@ from ..core.context_budget import (
     default_output_reservation,
     omitted_tool_names,
 )
-from ..core.error_formatter import _api_caller_error_response
+from ..core.error_formatter import (
+    _api_caller_error_response,
+    _transported_failure_response,
+)
 from ..core.errors import (
+    FileUnavailableError,
     OpenRouterAPIError,
+    UpstreamBodyUnreadable,
     _is_reasoning_effort_error,
     _parse_supported_effort_values,
     is_sign_in_failure,
@@ -49,6 +54,7 @@ from ..core.logging_system import SessionLogger
 from ..core.timing_logger import timed
 from ..core.utils import (
     CONTINUED_REPLY,
+    _resolve_retry_after_seconds,
     _select_best_effort_fallback,
     continued_turn_counts,
     ends_on_hidden_marker_line,
@@ -137,12 +143,16 @@ async def _read_attachment(
     label = f"Native {modality} attachment"
     file_obj = await get_file_by_id(file_id, logger)
     if not file_obj:
-        raise ValueError(f"{label} '{file_id}' could not be loaded.")
+        raise FileUnavailableError(
+            f"{label} '{file_id}' could not be loaded."
+        )
     b64 = await gateway.read_file_record_base64(
         file_obj, chunk_size, max_bytes, user=user_model
     )
     if not b64:
-        raise ValueError(f"{label} '{file_id}' could not be encoded.")
+        raise FileUnavailableError(
+            f"{label} '{file_id}' could not be encoded."
+        )
     attachment_bytes[memo_key] = (b64, file_obj)
     return b64, file_obj
 
@@ -533,7 +543,7 @@ class RequestOrchestrator:
         self._pipe = pipe
         self.logger = logger
 
-    async def _note_provider_failure(self, exc: OpenRouterAPIError) -> None:
+    async def _note_provider_failure(self, exc: OpenRouterAPIError | UpstreamBodyUnreadable) -> None:
         if is_sign_in_failure(exc):
             self._pipe._note_auth_failure()
         await self._pipe._dispatch_plugin_event(
@@ -1718,116 +1728,174 @@ class RequestOrchestrator:
 
         setattr(responses_body, "api_model", OpenRouterModelRegistry.api_model_id(selected_model_id) or normalized_model_id)  # noqa: B010 - dynamic attribute not declared on ResponsesBody
 
-        if _fusion_internal_divert(
-            responses_body.model,
-            responses_body.plugins,
-            valves=valves,
-            is_task_request=use_task_model_adapter,
-            metadata=__metadata__,
-        ):
-            if CONTINUED_REPLY.get() is not None:
-                self.logger.info("Continue declined: internal Fusion replies cannot be continued")
-                await self._pipe._event_emitter_handler._emit_notification(
-                    __event_emitter__, _FUSION_CONTINUE_NOTICE, level="warning"
-                )
-                if __event_emitter__:
-                    await __event_emitter__({"type": "chat:completion", "data": {"done": True}})
-                return ""
-            plan = resolve_fusion_run(find_fusion_entry(responses_body.plugins))
-            self.logger.info(
-                "Diverting fusion request to internal engine model=%s panel=%s judge=%s",
-                responses_body.model, ",".join(plan.panel_models), plan.judge_model,
-            )
-            invocation = FusionInnerInvocation(
-                orchestrator=self,
-                user_valves=user_valves,
-                rejected_user_valves=list(rejected_user_valves or []),
-                messages=list(body.get("messages") or []) if isinstance(body, dict) else [],
-                outer_model_id=responses_body.model,
-                user=__user__,
-                request=__request__,
-                event_call=__event_call__,
-                metadata=__metadata__,
-                tools=__tools__,
-                valves=valves,
-                session=session,
-                pipe_identifier=pipe_identifier,
-                allowlist_norm_ids=set(allowlist_norm_ids or set()),
-                enforced_norm_ids=set(enforced_norm_ids or set()),
-                catalog_norm_ids=set(catalog_norm_ids or set()),
-                features=dict(features or {}),
-                user_id=user_id,
-                user_model=user_model,
-                user_model_resolved=user_model_resolved,
-                attachment_bytes=attachment_bytes,
-                disable_native_websearch=(
-                    getattr(responses_body, "disable_native_websearch", None)
-                    if getattr(responses_body, "disable_native_websearch", None) is not None
-                    else getattr(responses_body, "disable_native_web_search", None)
-                ),
-            )
-            engine_source = run_internal_fusion(
-                self._pipe,
-                invocation=invocation,
-                plan=plan,
-            )
-            if responses_body.stream:
-                fusion_result = await self._pipe._streaming_handler._run_streaming_loop(
-                    responses_body,
-                    valves,
-                    __event_emitter__,
-                    __metadata__,
-                    __tools__,
-                    session=session,
-                    user_id=user_id,
-                    endpoint_override=endpoint_override,
-                    request_context=__request__,
-                    user_obj=user_model,
-                    pipe_identifier=pipe_identifier,
-                    fusion_live_enabled=fusion_live_enabled,
-                    event_source=engine_source,
-                    outcome_sink=outcome_sink,
-                )
-            else:
-                fusion_result = await self._pipe._streaming_handler._run_nonstreaming_loop(
-                    responses_body,
-                    valves,
-                    __event_emitter__,
-                    __metadata__,
-                    __tools__,
-                    session=session,
-                    user_id=user_id,
-                    endpoint_override=endpoint_override,
-                    request_context=__request__,
-                    user_obj=user_model,
-                    pipe_identifier=pipe_identifier,
-                    fusion_live_enabled=fusion_live_enabled,
-                    event_source=engine_source,
-                    outcome_sink=outcome_sink,
-                )
-            if invocation.no_usable_member and outcome_sink is not None:
-                outcome_sink["error_occurred"] = True
-            if invocation.no_usable_member and not fusion_inner:
-                await self._pipe._event_emitter_handler._emit_notification(
-                    __event_emitter__,
-                    "Every Fusion panel member failed; this run has no deliberated answer.",
-                    level="error",
-                )
-            return fusion_result
-
-        reasoning_retry_attempted = False
-        reasoning_effort_retry_attempted = False
-        signature_retry_attempted = False
         retry_handoff: dict[str, Any] = {}
-        self.logger.debug(
-            "Orchestrator: __request__ type=%s, is_none=%s",
-            type(__request__).__name__,
-            __request__ is None,
-        )
-        while True:
-            try:
+
+        async def _escape_or_report(
+            exc: Any, code: int, message: str, retry_after: float | None = None
+        ) -> Any:
+            if _is_api_caller(__metadata__):
+                if isinstance(exc, OpenRouterAPIError):
+                    escape = _provider_error_response(exc, stream=responses_body.stream, request=__request__)
+                else:
+                    escape = _transported_failure_response(
+                        message, code=code, stream=responses_body.stream,
+                        path=getattr(getattr(__request__, "url", None), "path", "") or "",
+                        retry_after_seconds=retry_after,
+                    )
+                if escape is not None:
+                    await self._note_provider_failure(exc)
+                    return escape
+
+            if (__metadata__ or {}).get("message_id") and is_temporary_chat(
+                (__metadata__ or {}).get("chat_id")
+            ):
+                self._pipe._artifact_store._reply_memory.release(
+                    (__metadata__ or {}).get("chat_id"), (__metadata__ or {}).get("message_id")
+                )
+
+            deferred_flush = retry_handoff.pop(DEFERRED_REASONING_FLUSH, None)
+            if deferred_flush is not None:
+                await deferred_flush()
+            shown = await self._pipe._ensure_error_formatter()._report_openrouter_error(
+                exc,
+                event_emitter=__event_emitter__,
+                normalized_model_id=responses_body.model,
+                api_model_id=getattr(responses_body, "api_model", None),
+            )
+            await self._pipe._dispatch_plugin_event(
+                "dispatch_on_generation_complete",
+                None,
+                "failed",
+                request_id=SessionLogger.request_id.get() or "",
+            )
+            return shown
+
+        try:
+            if _fusion_internal_divert(
+                responses_body.model,
+                responses_body.plugins,
+                valves=valves,
+                is_task_request=use_task_model_adapter,
+                metadata=__metadata__,
+              ):
+                if CONTINUED_REPLY.get() is not None:
+                    self.logger.info("Continue declined: internal Fusion replies cannot be continued")
+                    await self._pipe._event_emitter_handler._emit_notification(
+                        __event_emitter__, _FUSION_CONTINUE_NOTICE, level="warning"
+                    )
+                    if __event_emitter__:
+                        await __event_emitter__({"type": "chat:completion", "data": {"done": True}})
+                    return ""
+                plan = resolve_fusion_run(find_fusion_entry(responses_body.plugins))
+                self.logger.info(
+                    "Diverting fusion request to internal engine model=%s panel=%s judge=%s",
+                    responses_body.model, ",".join(plan.panel_models), plan.judge_model,
+                )
+                invocation = FusionInnerInvocation(
+                    orchestrator=self,
+                    user_valves=user_valves,
+                    rejected_user_valves=list(rejected_user_valves or []),
+                    messages=list(body.get("messages") or []) if isinstance(body, dict) else [],
+                    outer_model_id=responses_body.model,
+                    user=__user__,
+                    request=__request__,
+                    event_call=__event_call__,
+                    metadata=__metadata__,
+                    tools=__tools__,
+                    valves=valves,
+                    session=session,
+                    pipe_identifier=pipe_identifier,
+                    allowlist_norm_ids=set(allowlist_norm_ids or set()),
+                    enforced_norm_ids=set(enforced_norm_ids or set()),
+                    catalog_norm_ids=set(catalog_norm_ids or set()),
+                    features=dict(features or {}),
+                    user_id=user_id,
+                    user_model=user_model,
+                    user_model_resolved=user_model_resolved,
+                    attachment_bytes=attachment_bytes,
+                    disable_native_websearch=(
+                        getattr(responses_body, "disable_native_websearch", None)
+                        if getattr(responses_body, "disable_native_websearch", None) is not None
+                        else getattr(responses_body, "disable_native_web_search", None)
+                    ),
+                )
+                engine_source = run_internal_fusion(
+                    self._pipe,
+                    invocation=invocation,
+                    plan=plan,
+                )
                 if responses_body.stream:
-                    return await self._pipe._streaming_handler._run_streaming_loop(
+                    fusion_result = await self._pipe._streaming_handler._run_streaming_loop(
+                        responses_body,
+                        valves,
+                        __event_emitter__,
+                        __metadata__,
+                        __tools__,
+                        session=session,
+                        user_id=user_id,
+                        endpoint_override=endpoint_override,
+                        request_context=__request__,
+                        user_obj=user_model,
+                        pipe_identifier=pipe_identifier,
+                        fusion_live_enabled=fusion_live_enabled,
+                        event_source=engine_source,
+                        outcome_sink=outcome_sink,
+                    )
+                else:
+                    fusion_result = await self._pipe._streaming_handler._run_nonstreaming_loop(
+                        responses_body,
+                        valves,
+                        __event_emitter__,
+                        __metadata__,
+                        __tools__,
+                        session=session,
+                        user_id=user_id,
+                        endpoint_override=endpoint_override,
+                        request_context=__request__,
+                        user_obj=user_model,
+                        pipe_identifier=pipe_identifier,
+                        fusion_live_enabled=fusion_live_enabled,
+                        event_source=engine_source,
+                        outcome_sink=outcome_sink,
+                    )
+                if invocation.no_usable_member and outcome_sink is not None:
+                    outcome_sink["error_occurred"] = True
+                if invocation.no_usable_member and not fusion_inner:
+                    await self._pipe._event_emitter_handler._emit_notification(
+                        __event_emitter__,
+                        "Every Fusion panel member failed; this run has no deliberated answer.",
+                        level="error",
+                    )
+                return fusion_result
+
+            reasoning_retry_attempted = False
+            reasoning_effort_retry_attempted = False
+            signature_retry_attempted = False
+            self.logger.debug(
+                "Orchestrator: __request__ type=%s, is_none=%s",
+                type(__request__).__name__,
+                __request__ is None,
+            )
+            while True:
+                try:
+                    if responses_body.stream:
+                        return await self._pipe._streaming_handler._run_streaming_loop(
+                            responses_body,
+                            valves,
+                            __event_emitter__,
+                            __metadata__,
+                            __tools__,
+                            session=session,
+                            user_id=user_id,
+                            endpoint_override=endpoint_override,
+                            request_context=__request__,
+                            user_obj=user_model,
+                            pipe_identifier=pipe_identifier,
+                            fusion_live_enabled=fusion_live_enabled,
+                            outcome_sink=outcome_sink,
+                            retry_handoff=retry_handoff,
+                        )
+                    return await self._pipe._streaming_handler._run_nonstreaming_loop(
                         responses_body,
                         valves,
                         __event_emitter__,
@@ -1843,134 +1911,128 @@ class RequestOrchestrator:
                         outcome_sink=outcome_sink,
                         retry_handoff=retry_handoff,
                     )
-                return await self._pipe._streaming_handler._run_nonstreaming_loop(
-                    responses_body,
-                    valves,
-                    __event_emitter__,
-                    __metadata__,
-                    __tools__,
-                    session=session,
-                    user_id=user_id,
-                    endpoint_override=endpoint_override,
-                    request_context=__request__,
-                    user_obj=user_model,
-                    pipe_identifier=pipe_identifier,
-                    fusion_live_enabled=fusion_live_enabled,
-                    outcome_sink=outcome_sink,
-                    retry_handoff=retry_handoff,
-                )
-            except OpenRouterAPIError as exc:
-                if not reasoning_effort_retry_attempted:
-                    error_details = {"provider_raw": exc.provider_raw}
-                    if _is_reasoning_effort_error(error_details):
-                        original_effort = None
-                        if isinstance(responses_body.reasoning, dict):
-                            original_effort = responses_body.reasoning.get("effort")
+                except OpenRouterAPIError as exc:
+                    if not reasoning_effort_retry_attempted:
+                        error_details = {"provider_raw": exc.provider_raw}
+                        if _is_reasoning_effort_error(error_details):
+                            original_effort = None
+                            if isinstance(responses_body.reasoning, dict):
+                                original_effort = responses_body.reasoning.get("effort")
 
-                        error_message = exc.upstream_message or exc.openrouter_message or ""
-                        supported_values = _parse_supported_effort_values(error_message)
+                            error_message = exc.upstream_message or exc.openrouter_message or ""
+                            supported_values = _parse_supported_effort_values(error_message)
 
-                        if supported_values:
-                            fallback_effort = _select_best_effort_fallback(
-                                original_effort or "",
-                                supported_values,
-                            )
-                            if fallback_effort:
-                                self.logger.info(
-                                    "Reasoning effort '%s' not supported by model %s. Retrying with '%s'. Supported values: %s",
-                                    original_effort,
-                                    responses_body.model,
-                                    fallback_effort,
-                                    ", ".join(supported_values),
+                            if supported_values:
+                                fallback_effort = _select_best_effort_fallback(
+                                    original_effort or "",
+                                    supported_values,
                                 )
-                                if __event_emitter__:
-                                    try:
-                                        await __event_emitter__(
-                                            {
-                                                "type": "status",
-                                                "data": {
-                                                    "description": (
-                                                        f"Adjusting reasoning effort from '{original_effort}' to "
-                                                        f"'{fallback_effort}' (model doesn't support '{original_effort}')"
-                                                    ),
-                                                    "done": False,
-                                                },
-                                            }
-                                        )
-                                    except Exception as emit_error:
-                                        self.logger.debug(
-                                            "Failed to emit status update: %s",
-                                            emit_error,
-                                            exc_info=True,
-                                        )
+                                if fallback_effort:
+                                    self.logger.info(
+                                        "Reasoning effort '%s' not supported by model %s. Retrying with '%s'. Supported values: %s",
+                                        original_effort,
+                                        responses_body.model,
+                                        fallback_effort,
+                                        ", ".join(supported_values),
+                                    )
+                                    if __event_emitter__:
+                                        try:
+                                            await __event_emitter__(
+                                                {
+                                                    "type": "status",
+                                                    "data": {
+                                                        "description": (
+                                                            f"Adjusting reasoning effort from '{original_effort}' to "
+                                                            f"'{fallback_effort}' (model doesn't support '{original_effort}')"
+                                                        ),
+                                                        "done": False,
+                                                    },
+                                                }
+                                            )
+                                        except Exception as emit_error:
+                                            self.logger.debug(
+                                                "Failed to emit status update: %s",
+                                                emit_error,
+                                                exc_info=True,
+                                            )
 
-                                if not isinstance(responses_body.reasoning, dict):
-                                    responses_body.reasoning = {}
-                                responses_body.reasoning["effort"] = fallback_effort
-                                reasoning_effort_retry_attempted = True
-                                await self._pipe._dispatch_plugin_event(
-                                    "dispatch_on_request_retry",
-                                    "reasoning_effort",
-                                    request_id=SessionLogger.request_id.get() or "",
-                                )
-                                self._pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config(
-                                    responses_body, valves, honour_existing_budget=False
-                                )
-                                self._pipe._ensure_reasoning_config_manager()._apply_anthropic_verbosity(responses_body, valves)
-                                continue
+                                    if not isinstance(responses_body.reasoning, dict):
+                                        responses_body.reasoning = {}
+                                    responses_body.reasoning["effort"] = fallback_effort
+                                    reasoning_effort_retry_attempted = True
+                                    await self._pipe._dispatch_plugin_event(
+                                        "dispatch_on_request_retry",
+                                        "reasoning_effort",
+                                        request_id=SessionLogger.request_id.get() or "",
+                                    )
+                                    self._pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config(
+                                        responses_body, valves, honour_existing_budget=False
+                                    )
+                                    self._pipe._ensure_reasoning_config_manager()._apply_anthropic_verbosity(responses_body, valves)
+                                    continue
 
-                if (
-                    not signature_retry_attempted
-                    and self._pipe._ensure_reasoning_config_manager()._should_retry_dropping_signed_reasoning(exc, responses_body)
-                ):
-                    signature_retry_attempted = True
-                    await self._pipe._dispatch_plugin_event(
-                        "dispatch_on_request_retry",
-                        "signature",
-                        request_id=SessionLogger.request_id.get() or "",
+                    if (
+                        not signature_retry_attempted
+                        and self._pipe._ensure_reasoning_config_manager()._should_retry_dropping_signed_reasoning(exc, responses_body)
+                    ):
+                        signature_retry_attempted = True
+                        await self._pipe._dispatch_plugin_event(
+                            "dispatch_on_request_retry",
+                            "signature",
+                            request_id=SessionLogger.request_id.get() or "",
+                        )
+                        continue
+
+                    if (
+                        not reasoning_retry_attempted
+                        and self._pipe._ensure_reasoning_config_manager()._should_retry_without_reasoning(exc, responses_body)
+                    ):
+                        reasoning_retry_attempted = True
+                        await self._pipe._dispatch_plugin_event(
+                            "dispatch_on_request_retry",
+                            "reasoning",
+                            request_id=SessionLogger.request_id.get() or "",
+                        )
+                        continue
+
+                    return await _escape_or_report(
+                        exc,
+                        exc.status,
+                        exc.upstream_message or exc.openrouter_message or exc.reason,
+                        _resolve_retry_after_seconds(exc.metadata),
                     )
-                    continue
-
-                if (
-                    not reasoning_retry_attempted
-                    and self._pipe._ensure_reasoning_config_manager()._should_retry_without_reasoning(exc, responses_body)
-                ):
-                    reasoning_retry_attempted = True
-                    await self._pipe._dispatch_plugin_event(
-                        "dispatch_on_request_retry",
-                        "reasoning",
-                        request_id=SessionLogger.request_id.get() or "",
-                    )
-                    continue
-
-                if _is_api_caller(__metadata__):
-                    escape = _provider_error_response(
-                        exc, stream=responses_body.stream, request=__request__
-                    )
-                    if escape is not None:
-                        await self._note_provider_failure(exc)
-                        return escape
-
-                if (__metadata__ or {}).get("message_id") and is_temporary_chat(
-                    (__metadata__ or {}).get("chat_id")
-                ):
-                    self._pipe._artifact_store._reply_memory.release(
-                        (__metadata__ or {}).get("chat_id"), (__metadata__ or {}).get("message_id")
-                    )
-
-                deferred_flush = retry_handoff.pop(DEFERRED_REASONING_FLUSH, None)
-                if deferred_flush is not None:
-                    await deferred_flush()
-                shown = await self._pipe._ensure_error_formatter()._report_openrouter_error(
-                    exc,
-                    event_emitter=__event_emitter__,
-                    normalized_model_id=responses_body.model,
-                    api_model_id=getattr(responses_body, "api_model", None),
+        except UpstreamBodyUnreadable as exc:
+            code = getattr(exc, "status", None) or 502
+            if _is_api_caller(__metadata__):
+                escape = _transported_failure_response(
+                    str(exc), code=code, stream=responses_body.stream,
+                    path=getattr(getattr(__request__, "url", None), "path", "") or "",
                 )
-                await self._pipe._dispatch_plugin_event(
-                    "dispatch_on_generation_complete",
-                    None,
-                    "failed",
-                    request_id=SessionLogger.request_id.get() or "",
+                if escape is not None:
+                    await self._note_provider_failure(exc)
+                    return escape
+
+            if (__metadata__ or {}).get("message_id") and is_temporary_chat(
+                (__metadata__ or {}).get("chat_id")
+            ):
+                self._pipe._artifact_store._reply_memory.release(
+                    (__metadata__ or {}).get("chat_id"), (__metadata__ or {}).get("message_id")
                 )
-                return shown
+
+            deferred_flush = retry_handoff.pop(DEFERRED_REASONING_FLUSH, None)
+            if deferred_flush is not None:
+                await deferred_flush()
+            shown = await self._pipe._ensure_error_formatter()._emit_templated_error(
+                __event_emitter__,
+                template=valves.SERVICE_ERROR_TEMPLATE,
+                variables={"error_type": type(exc).__name__, "status_code": str(code),
+                           "reason": f"{getattr(exc, 'endpoint', 'The endpoint')} answered with a body that is not an OpenRouter response"},
+                log_message=f"Unexpected error in request loop: {exc}",
+            )
+            await self._pipe._dispatch_plugin_event(
+                "dispatch_on_generation_complete",
+                None,
+                "failed",
+                request_id=SessionLogger.request_id.get() or "",
+            )
+            return shown

@@ -1250,7 +1250,9 @@ def _render_purpose_built_fields(spec: VideoFilterSpec) -> list[str]:
                 'this is the frame taken from it instead. last = the final frame, used to '
                 'continue the action from where it ended (the usual pick). first = the opening '
                 'frame, used to restart the scene from how it began. A request that names a '
-                'first or last frame outright gets that frame."\n'
+                'first or last frame outright gets that frame. On a model that accepts only '
+                'a first frame the pipe has no choice and uses the first one, whatever '
+                'moment was asked for, and says so in the disclosure footer."\n'
                 '            ),\n'
                 '        )'
             )

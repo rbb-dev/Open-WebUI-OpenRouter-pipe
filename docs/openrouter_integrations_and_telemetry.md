@@ -11,7 +11,7 @@ This document covers behaviors that are specific to the OpenRouter Responses API
 - The pipe targets the OpenRouter base URL configured by `BASE_URL` (default `https://openrouter.ai/api/v1`), using the `/responses` endpoint.
 - Requests include OpenRouter-identifying headers:
   - `X-OpenRouter-Title` (pipe title)
-  - `HTTP-Referer` (default project URL; can be overridden via `HTTP_REFERER_OVERRIDE` — must be a full URL including scheme)
+  - `HTTP-Referer` (default project URL; can be overridden via `HTTP_REFERER_OVERRIDE` — must be a full URL including scheme). Sent on every request to an openrouter.ai host, the catalogue, per-model endpoint and maker-page refresh reads included; not on user- or model-supplied asset downloads or the GitHub self-update check.
   - `X-OpenRouter-Categories` (pipe category identifier for analytics attribution)
 - Optional provider beta headers:
   - For Anthropic models (`anthropic/...` slugs and `~anthropic/...` router aliases), when `ENABLE_ANTHROPIC_INTERLEAVED_THINKING=True`, the pipe sends `x-anthropic-beta: interleaved-thinking-2025-05-14` to opt into Claude “interleaved thinking” streaming (reasoning may appear in multiple blocks during a single answer).
@@ -377,7 +377,7 @@ Key valves:
 Open WebUI stores additional per-model UI metadata (capabilities checkboxes and profile images) in its own Models table. This pipe can **automatically sync that metadata** for the OpenRouter models it exposes.
 
 What it syncs (best-effort):
-- `meta.profile_image_url`: downloads the model icon, converts it to **PNG**, and stores it as a `data:image/png;base64,...` data URL (Open WebUI does not process remote image URLs here). The source URL is stamped in the pipe's own metadata, so an icon whose source URL has not changed is not downloaded again; a change to the image at the same URL is therefore not picked up, and a card keeps its old icon — a hand-picked one included — until its source URL changes.
+- `meta.profile_image_url`: downloads the model icon, converts it to **PNG**, and stores it as a `data:image/png;base64,...` data URL (Open WebUI does not process remote image URLs here). The source URL is stamped in the pipe's own metadata under `image_source_url`, alongside the `image_source_kind` recording which of the two sources it was — the frontend catalogue (`frontend`) or the maker's page (`maker`) — so an icon whose source URL has not changed is not downloaded again, and for a model taking its maker's logo the maker's page is not re-fetched either; a row stamped from the frontend catalogue is always re-fetched, so a model whose catalogue icon is retired still reaches its maker's logo. A change to the image at the same URL is therefore not picked up, and a card keeps its old icon — a hand-picked one included — until its source URL changes. On the first pass after upgrading from a version that did not record the kind, each maker's page is fetched once more and the rows converge again.
   - SVG icons are rasterized to PNG (requires `cairosvg`).
   - Other images are converted to PNG (requires `Pillow`).
 - `meta.description`: writes the model’s user-facing description from OpenRouter’s `/models` catalog when present.
@@ -387,7 +387,9 @@ What it syncs (best-effort):
 Data sources / egress:
 - Fetches `https://openrouter.ai/api/frontend/v1/catalog/models` (no auth) to discover icons and descriptions.
 - When provider routing valves list models, fetches `https://openrouter.ai/api/v1/models/{author}/{slug}/endpoints` (no auth) for each listed model to build the full provider list for the routing filter dropdowns.
-- Downloads each icon URL (absolute or relative to `https://openrouter.ai`) and may fall back to a maker page OpenGraph image (`https://openrouter.ai/<maker>`).
+- Downloads each icon URL (absolute or relative to `https://openrouter.ai`) and may fall back to a maker page OpenGraph image (`https://openrouter.ai/<maker>`); while the stamped source is unchanged, neither the page nor its image is fetched again.
+
+All three of those fetches carry the `HTTP-Referer` attribution header, because each names an openrouter.ai host. An icon download is a different matter: its URL can name any host (a provider's favicon is fetched from a third-party CDN), so it carries none, and the vetted transport re-decides per redirect hop rather than replaying the header onto whatever a `Location` names.
 
 Controls:
 - `UPDATE_MODEL_IMAGES` (default `True`): enable/disable profile image sync.

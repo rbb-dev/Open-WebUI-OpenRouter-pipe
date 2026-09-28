@@ -235,6 +235,13 @@ _RESTRICTION_REASON_FALLBACK = "a restriction configured for this pipe"
 
 _PERSISTED_TASK_KINDS = frozenset({"title_generation", "tags_generation", "follow_up_generation"})
 
+_CONTENT_CONSUMED_TASK_KINDS = frozenset({"context_compaction", "context_summary", "memory_review"})
+
+
+def _is_content_consumed_task_kind(task: Any) -> bool:
+    return TaskModelAdapter._task_name(task) in _CONTENT_CONSUMED_TASK_KINDS
+
+
 _VALVE_DRAIN_MAX_FLUSHES = 64
 
 
@@ -1274,6 +1281,7 @@ class Pipe:
 
     async def _deactivate_switched_off_filters(self) -> None:
         from .filters.filter_manager import (
+            _OPENROUTER_FUSION_FILTER_MARKER,
             _OPENROUTER_IMAGE_GEN_FILTER_MARKER,
             _newest_marked_row,
             switched_off_meta,
@@ -1294,10 +1302,13 @@ class Pipe:
         if not self.valves.ENABLE_OPENROUTER_FUSION:
             try:
                 from open_webui.models.functions import Functions as _Funcs
-                ff = await _Funcs.get_function_by_id("openrouter_fusion")
+                _fusion_rows = await _Funcs.get_functions_by_type("filter", active_only=False)
+                _fusion_picked = _newest_marked_row(_fusion_rows, _OPENROUTER_FUSION_FILTER_MARKER)
+                _fid = str(getattr(_fusion_picked, "id", "") or "") or "openrouter_fusion"
+                ff = await _Funcs.get_function_by_id(_fid)
                 if ff and getattr(ff, "is_active", False):
                     await _Funcs.update_function_by_id(
-                        "openrouter_fusion", {"is_active": False, "meta": switched_off_meta(ff)}
+                        _fid, {"is_active": False, "meta": switched_off_meta(ff)}
                     )
                     self.logger.info("Disabled OpenRouter Fusion filter (ENABLE_OPENROUTER_FUSION=False)")
             except Exception:
@@ -1316,6 +1327,15 @@ class Pipe:
                     self.logger.info("Disabled OpenRouter Image Generation filter (ENABLE_IMAGE_GENERATION=False)")
             except Exception:
                 self.logger.debug("Disabling OpenRouter Image Generation filter failed", exc_info=True)
+        else:
+            try:
+                await self._ensure_filter_manager().reactivate_filters_by_marker(
+                    _OPENROUTER_IMAGE_GEN_FILTER_MARKER, log_label="Image Generation"
+                )
+            except Exception:
+                self.logger.debug(
+                    "Re-enabling OpenRouter Image Generation filters failed", exc_info=True
+                )
         if not self.valves.ENABLE_VIDEO_GENERATION:
             try:
                 await self._ensure_filter_manager().deactivate_video_gen_filters()
@@ -4555,6 +4575,8 @@ class Pipe:
         if TaskModelAdapter._uses_task_model_adapter(task):
             if TaskModelAdapter._task_name(task) in _PERSISTED_TASK_KINDS:
                 return join_answer_and_card("", content)
+            if _is_content_consumed_task_kind(task):
+                return ""
             fallback = self._build_task_fallback_content(TaskModelAdapter._task_name(task))
             if fallback:
                 return fallback
@@ -4564,6 +4586,8 @@ class Pipe:
         if TaskModelAdapter._uses_task_model_adapter(task):
             if TaskModelAdapter._task_name(task) in _PERSISTED_TASK_KINDS:
                 return join_answer_and_card("", content)
+            if _is_content_consumed_task_kind(task):
+                return ""
             return ""
         return join_answer_and_card("", content)
 

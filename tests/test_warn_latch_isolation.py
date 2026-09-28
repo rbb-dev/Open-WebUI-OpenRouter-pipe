@@ -23,6 +23,7 @@ from open_webui_openrouter_pipe.core import config as _core_config
 PACKAGE_DIR = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 
 EXPECTED_LATCHES = {
+    "_warned_archive_write_failed",
     "_warned_chat_chunk_parse",
     "_warned_collectors",
     "_warned_dropped_video_param",

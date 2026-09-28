@@ -122,6 +122,18 @@ class RequiredInternalFileError(Exception):
         self.denied = denied
 
 
+class UpstreamBodyUnreadable(RuntimeError):
+    def __init__(self, *, endpoint: str, body_excerpt: str, content_type: str | None) -> None:
+        super().__init__(f"Invalid JSON response from {endpoint}")
+        self.endpoint = endpoint
+        self.body_excerpt = body_excerpt
+        self.content_type = content_type
+
+
+class FileUnavailableError(RequiredInternalFileError, ValueError):
+    pass
+
+
 # OpenRouterAPIError Class
 
 class OpenRouterAPIError(RuntimeError):

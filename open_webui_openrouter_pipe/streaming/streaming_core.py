@@ -66,7 +66,12 @@ from ..core.context_budget import (
 
 # Import costs helper
 from ..core.costs import maybe_dump_costs_snapshot
-from ..core.errors import OpenRouterAPIError, RequiredInternalFileError, StatusMessages
+from ..core.errors import (
+    OpenRouterAPIError,
+    RequiredInternalFileError,
+    StatusMessages,
+    UpstreamBodyUnreadable,
+)
 
 # Import SessionLogger
 from ..core.logging_system import SessionLogger
@@ -3475,6 +3480,25 @@ class StreamingHandler:
             if reported:
                 assistant_message = reported
             self.logger.warning("Required internal file unavailable in streaming loop: %s", e.user_message)
+        except UpstreamBodyUnreadable as e:
+            error_occurred = True
+            session_log_reason = str(e)
+            if bool((metadata or {}).get("chat_id")) and bool((metadata or {}).get("message_id")):
+                cancel_thinking()
+                reported = await self._pipe._ensure_error_formatter()._emit_templated_error(
+                    event_emitter,
+                    template=valves.SERVICE_ERROR_TEMPLATE,
+                    variables={"error_type": type(e).__name__, "status_code": "502",
+                               "reason": f"{e.endpoint} answered with a body that is not an OpenRouter response "
+                                         f"(Content-Type: {e.content_type}): {e.body_excerpt[:200]}"},
+                    log_message=f"Unreadable upstream body from {e.endpoint}: {e}",
+                    partial_answer=assistant_message,
+                )
+                if reported:
+                    assistant_message = reported
+            else:
+                _record_outcome()
+                raise
         except Exception as e:  # pragma: no cover - network errors
             error_occurred = True
             session_log_reason = str(e)

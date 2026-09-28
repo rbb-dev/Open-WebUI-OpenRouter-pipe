@@ -2262,16 +2262,25 @@ async def test_direct_uploads_warnings_emitted():
                 __task_body__=None,
             )
 
-            await _consume_stream(result)
+            items: list[object] = []
+            if hasattr(result, "__aiter__"):
+                async for item in result:
+                    items.append(item)
 
-        # Check that a warning notification was emitted
-        warning_events = [
-            e for e in emitted_events
-            if e.get("type") == "notification"
+        notifications = [e for e in emitted_events if e.get("type") == "notification"]
+        notifications += [
+            i["event"] for i in items
+            if isinstance(i, dict) and isinstance(i.get("event"), dict)
+            and i["event"].get("type") == "notification"
         ]
-        # The warning message should be emitted but may vary
-        # Test passes if request completed without error
-        assert len(captured_payloads) >= 1
+
+        assert len(captured_payloads) >= 1, "the turn never reached the provider"
+        assert len(notifications) == 1, notifications
+        assert notifications[0]["data"] == {
+            "type": "warning",
+            "content": ("Direct uploads not applied for some attachments: "
+                        "File too large: document.pdf (+1 more)"),
+        }
 
     finally:
         await pipe.close()

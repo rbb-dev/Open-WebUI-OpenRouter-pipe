@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import case, func, tuple_
 
+from ..core.logging_system import _prune_archive_dir
 from ..core.timing_logger import timed
 from ..core.warn_latch import warn_level
 from ..integrations.video_intent_prompts import INTENT_SCHEMA_NAME
@@ -1425,7 +1426,10 @@ class SessionLogManager:
         archive_settings: tuple[str, bytes, str, int | None] | None = None,
     ) -> bool | _LockContended:
         """Assemble all segments for one message into a single zip, then delete DB rows."""
-        from ..core.logging_system import _SessionLogArchiveJob
+        from ..core.logging_system import (
+            _archive_publish_changed_file,
+            _SessionLogArchiveJob,
+        )
         from ..core.utils import _sanitize_path_component, _stable_crockford_id
         from ..storage.owui_files import is_temporary_chat
 
@@ -1676,14 +1680,7 @@ class SessionLogManager:
         )
         self._write_archive(job)
 
-        after_stat = None
-        with contextlib.suppress(Exception):
-            after_stat = out_path.stat()
-        wrote = after_stat is not None and (
-            before_stat is None
-            or after_stat.st_mtime_ns != before_stat.st_mtime_ns
-            or after_stat.st_size != before_stat.st_size
-        )
+        wrote = _archive_publish_changed_file(out_path, before_stat)
         if self.logger.isEnabledFor(logging.DEBUG):
             self.logger.debug(
                 "Session log archive write attempted (chat_id=%s message_id=%s terminal=%s wrote=%s)",
@@ -1752,9 +1749,7 @@ class SessionLogManager:
             try:
                 for dirpath, dirnames, filenames in os.walk(root, topdown=False):
                     with contextlib.suppress(Exception):
-                        if any(Path(dirpath).iterdir()):
-                            continue
-                        os.rmdir(dirpath)
+                        _prune_archive_dir(dirpath)
             except OSError:
                 self.logger.debug("Session log cleanup: directory prune failed for %s", base_dir, exc_info=True)
                 continue

@@ -128,6 +128,8 @@ The task files sit beside the answer's in the same `<chat_id>/` directory and ke
 
 Each archive is written to a temporary file in the same directory, flushed to disk, and then published with an atomic rename. The temporary file's name carries the writer's process id and a random suffix, so concurrent writers to one turn never share it. The result is that when two writers race, each publishes a complete archive rather than interleaving into one: a published archive is always openable, even though a later publish replaces an earlier one's content rather than merging with it.
 
+Before it creates anything, a write **reserves** the directory it is about to fill, and the cleanup sweep checks that reservation and removes the directory under the same lock, so a sweep can never take the directory out from under a write in progress. The guarantee is per process, and it is about the reservation being registered *before* the sweep's check — which is why the claim is taken before the directory is created rather than after. Once the write returns the reservation is dropped and a later sweep prunes the directory as usual.
+
 **Scope:** task archives are written for the housekeeping tasks Open WebUI dispatches with a resolvable `message_id` and a `task` name. **Fusion panel members are not archived** — they carry no `message_id` and no `task`, so they resolve to nothing and their segments are dropped.
 
 Path safety:
@@ -159,7 +161,7 @@ Key rotation note:
 When storage is enabled, a background cleanup loop periodically:
 
 1. Deletes `*.zip` files older than `SESSION_LOG_RETENTION_DAYS` (based on file modification time).
-2. Removes empty directories left behind (including the base directory if it becomes empty).
+2. Removes empty directories left behind (including the base directory if it becomes empty), except a directory a write in this process is currently filling; that one is left alone. A write that fails leaves its directory to a later sweep, while a process that dies mid-write leaves a `*.zip.tmp` that no pass reaps, because the prune leg only removes directories that are empty.
 
 Cleanup runs every `SESSION_LOG_CLEANUP_INTERVAL_SECONDS`. Turning `SESSION_LOG_STORE_ENABLED` off stops the sweep entirely: no archive is deleted and no directory is pruned, and every archive already on disk is left exactly where it is until you re-enable storage and the retention window passes again.
 
@@ -170,6 +172,7 @@ Additionally, once an archive is assembled, the per-invocation DB segments used 
 Operational note:
 
 - Cleanup is performed per-process and tracks the session log directories that have been used in that process. In multi-worker deployments, each worker performs its own cleanup pass.
+- A write reserves the directory it is filling, and the sweep honours that reservation, so a sweep does not remove a directory a write in the same process is in the middle of. The reservation is **per process**: another Open WebUI worker on the same host runs its own sweep with its own set of reservations, so a directory one worker is filling can still be pruned by a peer. Within a process the check and the removal are under one lock, so a write that reserves a directory before the sweep's check is never removed by that pass.
 
 ---
 

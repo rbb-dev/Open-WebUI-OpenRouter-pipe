@@ -46,8 +46,10 @@ from yarl import URL as _DialledURL
 from ..core.config import (
     _MAX_MODEL_PROFILE_IMAGE_BYTES,
     _MAX_MODEL_PROFILE_IMAGE_PIXELS,
+    _OPENROUTER_HOST,
     _OPENROUTER_SITE_URL,
     _REMOTE_FILE_MAX_SIZE_DEFAULT_MB,
+    _select_openrouter_http_referer,
 )
 from ..core.errors import (
     _classify_retryable_http_error,
@@ -1432,6 +1434,16 @@ class MultimodalHandler:
             self._vetted_loop = asyncio.get_running_loop()
             return session
 
+    def _hop_is_openrouter(self, url: str, openrouter_host: str) -> bool:
+        if not openrouter_host:
+            return False
+        target = self._parsed_target(url)
+        if target is None:
+            return False
+        host = target[0].rstrip(".").lower()
+        wanted = openrouter_host.rstrip(".").lower()
+        return host == wanted or host.endswith("." + wanted)
+
     def _hop_is_refused(self, url: str) -> bool:
         target = self._parsed_target(url)
         if target is None:
@@ -1463,6 +1475,8 @@ class MultimodalHandler:
         url: str,
         *,
         total_seconds: float,
+        referer: str = "",
+        openrouter_host: str = "",
         **kwargs: Any,
     ) -> AsyncIterator[Any]:
         caller_headers = dict(kwargs.pop("headers", None) or {})
@@ -1474,12 +1488,19 @@ class MultimodalHandler:
             for _hop in range(_MAX_VETTED_REDIRECTS + 1):
                 if self._hop_is_refused(target):
                     raise UnfetchableAddress(target)
+                hop_headers = dict(caller_headers)
+                if (
+                    referer
+                    and openrouter_host
+                    and self._hop_is_openrouter(target, openrouter_host)
+                ):
+                    hop_headers["HTTP-Referer"] = referer
                 session = await self._vetted_session(target)
                 connected = False
                 try:
                     async with session.get(
                         target,
-                        headers=caller_headers,
+                        headers=hop_headers,
                         allow_redirects=False,
                         timeout=request_timeout,
                         **kwargs,
@@ -1758,7 +1779,10 @@ class MultimodalHandler:
         url = f"{_OPENROUTER_SITE_URL}/{quote(maker_id)}"
         try:
             async with self._vetted_get(
-                url, total_seconds=_MAKER_PAGE_FETCH_TIMEOUT_SECONDS
+                url,
+                total_seconds=_MAKER_PAGE_FETCH_TIMEOUT_SECONDS,
+                referer=_select_openrouter_http_referer(self.valves),
+                openrouter_host=_OPENROUTER_HOST,
             ) as resp:
                 resp.raise_for_status()
                 capped = await _capped_body(resp, _MAKER_PAGE_MAX_BYTES)

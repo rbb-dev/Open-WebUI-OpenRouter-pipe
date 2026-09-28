@@ -53,6 +53,7 @@ from ..transforms import (
     _responses_payload_to_chat_completions_payload,
 )
 from .responses_adapter import (
+    _body_not_an_object,
     _count_failed_call,
     _decode_json_body,
     _record_failed_call,
@@ -947,7 +948,7 @@ class ChatCompletionsAdapter:
                         data = await _decode_json_body(resp, self.logger, "/chat/completions")
                         if not isinstance(data, dict):
                             _debug_print_response(data, logger=self.logger)
-                            raise RuntimeError("Invalid JSON response from /chat/completions")  # noqa: TRY004 - a remote body of the wrong shape is a runtime fault, and a ClientError subclass would be re-POSTed
+                            raise _body_not_an_object("/chat/completions", data, resp)
                         _debug_print_response(data, logger=self.logger)
                         reported_error = self._pipe._ensure_error_formatter()._extract_streaming_error_event(
                             data, chat_payload.get("model")

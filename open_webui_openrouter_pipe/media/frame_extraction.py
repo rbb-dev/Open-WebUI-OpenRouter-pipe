@@ -27,6 +27,7 @@ _FFMPEG_TIMEOUT_S = 30.0
 _PROBE_TIMEOUT_S = 10.0
 _END_SEEK_WINDOWS = ("-1", "-5", "-30")
 _RETRYABLE_FFMPEG_EXITS = frozenset({69})
+_MAX_SEEK_SECONDS = 1e12
 
 
 class FrameExtractionError(Exception):
@@ -85,6 +86,12 @@ def _index_end(meta: VideoMetadata, index: Literal["first", "last"]) -> float:
     if index == "first":
         return 0.0
     return max(0.0, meta.duration_seconds - (max(1.0 / meta.fps, 0.04) if meta.fps > 0 else 0.04))
+
+
+def _seek_seconds(timestamp_seconds: float) -> str:
+    if not math.isfinite(timestamp_seconds):
+        return "0"
+    return f"{min(max(0.0, timestamp_seconds), _MAX_SEEK_SECONDS):.6f}"
 
 
 # -----------------------------------------------------------------------------
@@ -250,7 +257,7 @@ async def _extract_frame_ffmpeg(
         seek_arg_sets = [["-sseof", window] for window in _END_SEEK_WINDOWS]
         vf = f"scale='min({_MAX_FRAME_WIDTH},iw)':-2,reverse"
     else:
-        seek_arg_sets = [["-ss", str(max(0.0, timestamp_seconds))]]
+        seek_arg_sets = [["-ss", _seek_seconds(timestamp_seconds)]]
         vf = f"scale='min({_MAX_FRAME_WIDTH},iw)':-2"
     last_no_frame: FrameExtractionError | None = None
     walked_past_damage = False

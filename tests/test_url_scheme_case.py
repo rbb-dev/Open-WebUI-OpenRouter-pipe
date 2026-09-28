@@ -314,7 +314,10 @@ async def test_a_remote_audio_url_is_refused_rather_than_read_as_base64(
         assert block["input_audio"]["data"] == data, f"payload={payload!r} produced {block!r}"
         return
     assert block["type"] == "input_text", f"payload={payload!r} produced {block!r}"
-    assert block["text"] == "[The user sent an empty message.]"
+    assert block["text"] == (
+        "[An attached item was not sent: an audio clip must be base64-encoded; "
+        "URLs are not supported.]"
+    )
 
 
 # ── the video path, end to end ────────────────────────────────────────────────

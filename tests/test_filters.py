@@ -21,6 +21,7 @@ from open_webui_openrouter_pipe.filters import FilterManager
 from open_webui_openrouter_pipe.filters.filter_manager import (
     _PIPE_INSTALLED_META_KEY,
     _PIPE_OFF_META_KEY,
+    _meta_dict,
 )
 from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
 
@@ -2726,7 +2727,7 @@ class TestInstalledRowMatchesTheRenderedModule:
         assert "example/toggle-model" in mapping, "the filter was never installed"
         stored = _FakeFunctionsTable.store[mapping["example/toggle-model"]]
 
-        row_toggle = getattr(stored.meta, "toggle", None)
+        row_toggle = _meta_dict(stored).get("toggle")
         assert row_toggle is not None, (
             "meta.toggle did not survive into the stored row at all. The FunctionMeta "
             "stub is dropping extra keys again, which makes every meta field the pipe "

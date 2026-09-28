@@ -763,6 +763,7 @@ class VideoGenerationAdapter:
                         chat_id=chat_id if isinstance(chat_id, str) else "",
                         message_id=message_id if isinstance(message_id, str) else "",
                         reused_frame_index=reused_frame_pref,
+                        video_model=video_model,
                     )
                     if isinstance(metadata, dict):
                         pipe_meta = metadata.setdefault(_PIPE_METADATA_KEY, {})
@@ -2816,6 +2817,7 @@ class VideoGenerationAdapter:
         chat_id: str,
         message_id: str,
         reused_frame_index: Literal["first", "last"] = "last",
+        video_model: Any = None,
     ) -> list[str]:
         """For each prior_video_* entry in frame_plan, extract the frame from
         the prior video file, upload it as a new OWUI image, and inject into
@@ -2881,14 +2883,26 @@ class VideoGenerationAdapter:
                             target = "at_timestamp"
                             ts = entry.timestamp_seconds
 
+                        first_only = (
+                            entry.target in ("first_frame", "last_frame")
+                            and self._supported_frame_types(video_model) == {"first_frame"}
+                        )
+                        if first_only and target != "at_timestamp":
+                            target = "first_frame"
+                        effective_fallback: Literal["first", "last"] = (
+                            "first" if first_only else reused_frame_index
+                        )
+
                         frame = await extract_frame(
                             tmp_path, target=target, timestamp_seconds=ts,
                             fallback_to_last_on_overshoot=True,
-                            reused_frame_index=reused_frame_index,
+                            reused_frame_index=effective_fallback,
                             logger=self.logger,
                         )
                         if frame.downgrade_note:
                             intent.downgrades.append(frame.downgrade_note)
+                        elif first_only and entry.source == "prior_video_last_frame":
+                            intent.downgrades.append("frame_source_mismatch_used_first_frame")
                     except FrameExtractionError as exc:
                         if (
                             entry.source == "prior_video_first_frame"

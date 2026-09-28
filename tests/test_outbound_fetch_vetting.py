@@ -186,7 +186,6 @@ NOT_A_SESSION: dict[str, str] = {
         "the slot",
 }
 
-
 def _rel(path: Path) -> str:
     return str(path.relative_to(REPO_ROOT)).replace("\\", "/")
 

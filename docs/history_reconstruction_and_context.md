@@ -207,7 +207,8 @@ On replay each round reaches the model exactly once, except in a temporary chat,
 only through the card Open WebUI keeps for it in the browser, and none with cards off:
 
 - Open WebUI hands back the rounds saved in the message -- the shown cards of a reply -- as ordinary tool messages.
-  Where it has handed back a call, the pipe's copy of that call is dropped.
+  Where it has handed back a call, the pipe's copy of that call is dropped. Where a call id appears more than once,
+  the drop is per round, not per id: each round the pipe has a result for keeps it.
 - A copy the pipe wrote for a round Open WebUI was never given -- with tool cards off -- is marked as such and always
   kept. Call ids alone cannot decide this: chats saved before the pipe made the ids it invents unique hold repeated
   ones, because the chat-completions route used to number calls without an id per request. This mark is what keeps the

@@ -23,7 +23,12 @@ import aiohttp
 import pytest
 from aioresponses import aioresponses
 
-from open_webui_openrouter_pipe.core.config import _OPENROUTER_WEB_TOOLS_FILTER_MARKER
+from open_webui_openrouter_pipe.core.config import (
+    _OPENROUTER_FUSION_FILTER_MARKER,
+    _OPENROUTER_IMAGE_GEN_FILTER_MARKER,
+    _OPENROUTER_VIDEO_GEN_FILTER_MARKER,
+    _OPENROUTER_WEB_TOOLS_FILTER_MARKER,
+)
 from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
 
 _STANDALONE_PATH = Path(__file__).resolve().parents[1] / "filters" / "openrouter_web_tools.py"
@@ -374,6 +379,52 @@ _CATALOG = {"data": [
 ]}
 
 
+class _FunctionsTable:
+    """Open WebUI's Functions table, in memory, recording every update written to it."""
+
+    def __init__(self) -> None:
+        self.rows: dict[str, SimpleNamespace] = {}
+        self.writes: list[tuple[str, dict[str, Any]]] = []
+        self.listings = 0
+        self.clock = 0
+
+    async def get_functions_by_type(self, type, active_only=False, db=None):
+        self.listings += 1
+        return [row for row in self.rows.values() if row.type == type and (row.is_active or not active_only)]
+
+    async def get_function_by_id(self, id, db=None):
+        return self.rows.get(id)
+
+    async def insert_new_function(self, user_id, type, form_data, db=None):
+        row = SimpleNamespace(
+            id=form_data.id, type=type, name=form_data.name, content=form_data.content, meta=form_data.meta,
+            is_active=False, is_global=False, updated_at=1,
+        )
+        self.rows[row.id] = row
+        return row
+
+    async def update_function_by_id(self, id, updated, db=None):
+        row = self.rows.get(id)
+        if row is None:
+            return None
+        self.writes.append((id, dict(updated)))
+        for key, value in dict(updated).items():
+            setattr(row, key, value)
+        self.clock = max(self.clock, row.updated_at) + 1
+        row.updated_at = self.clock
+        return row
+
+    async def get_function_valves_by_id(self, id, db=None):
+        return {}
+
+    async def get_user_valves_by_id_and_user_id(self, id, user_id, db=None):
+        return {}
+
+    async def delete_function_by_id(self, id, db=None):
+        self.rows.pop(id, None)
+        return True
+
+
 def _configure(pipe, **switches: bool) -> None:
     pipe.valves.API_KEY = "sk-test-key"
     pipe.valves.ENABLE_VIDEO_GENERATION = False
@@ -427,6 +478,40 @@ from a media gate.
 """
 
 
+def _seed_filter_row(
+    functions: _FunctionsTable,
+    row_id: str,
+    *,
+    name: str,
+    content: str,
+    is_active: bool = True,
+    is_global: bool = False,
+    updated_at: int = 10,
+) -> SimpleNamespace:
+    row = SimpleNamespace(
+        id=row_id,
+        type="filter",
+        name=name,
+        content=content,
+        meta={},
+        is_active=is_active,
+        is_global=is_global,
+        updated_at=updated_at,
+    )
+    functions.rows[row_id] = row
+    return row
+
+
+def _foreign_filter_source() -> str:
+    """An unrelated global filter: no marker, so no installer's candidate."""
+    return (
+        "# an admin's own filter, nothing to do with the pipe\n"
+        "class Filter:\n"
+        "    def inlet(self, body):\n"
+        "        return body\n"
+    )
+
+
 # `pipes()` runs the filter switch-offs ahead of the model list, so one all-off
 # pass writes the literal-id rows (`_PIPE_LITERAL_ID_WRITES`) from that sweep as
 # well as the installer's candidates. Those two writers are kept apart: the
@@ -434,6 +519,22 @@ from a media gate.
 # is about the content-classified sweep, which cannot see a row that carries no
 # marker whatever id it holds.
 _PIPE_LITERAL_ID_WRITES = frozenset({"openrouter_web_tools"})
+
+
+_FUSION_MARKER = _OPENROUTER_FUSION_FILTER_MARKER
+_IMAGE_GEN_MARKER = _OPENROUTER_IMAGE_GEN_FILTER_MARKER
+def _marked_source(marker: str) -> str:
+    return f'"""{marker}"""\nclass Filter:\n    def inlet(self, body):\n        return body\n'
+
+
+def _fusion_row(functions: _FunctionsTable, row_id: str, *, marked: bool, updated_at: int = 20):
+    return _seed_filter_row(
+        functions,
+        row_id,
+        name="OR Fusion" if marked else "Someone else's filter",
+        content=_marked_source(_FUSION_MARKER) if marked else _foreign_filter_source(),
+        updated_at=updated_at,
+    )
 
 
 def _valve_descriptions() -> dict[str, str]:

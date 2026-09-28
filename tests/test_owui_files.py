@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from open_webui_openrouter_pipe.core.config import Valves
-from open_webui_openrouter_pipe.core.errors import RequiredInternalFileError
+from open_webui_openrouter_pipe.core.errors import FileUnavailableError, RequiredInternalFileError
 from open_webui_openrouter_pipe.storage import owui_files
 from open_webui_openrouter_pipe.storage.owui_files import (
     InlineFileTooLargeError,
@@ -641,17 +641,27 @@ async def test_read_b64_inline_bytes_key(gateway: OwuiFileGateway):
 
 @pytest.mark.asyncio
 async def test_read_b64_inline_oversize_raises(gateway: OwuiFileGateway):
-    """Inline base64 whose estimated decode exceeds BASE64_MAX_SIZE_MB is rejected.
+    """Inline base64 is rejected by BOTH the valve and the caller's own cap.
 
-    The inline-string fast path is gated by validate_base64_size against the
-    BASE64_MAX_SIZE_MB valve (estimated decode = len*3/4), not the per-call
-    max_bytes, so the string length must exceed valve_bytes * 4/3.
+    The inline-string fast path checks two independent limits, and the per-call
+    `max_bytes` no longer misses: it is measured as the valve measures the
+    payload (estimated decode = len*3/4), so the string has to exceed the cap by
+    a quarter before the cap refuses it. The valve row is kept because the valve
+    is the operator's absolute ceiling and a generous caller cap must not
+    replace it.
     """
     gateway.valves.BASE64_MAX_SIZE_MB = 1
     big = "A" * int(1 * 1024 * 1024 * (4 / 3) + 1024)
     with pytest.raises(ValueError):
         await gateway.read_file_record_base64(
             _file_obj(data={"b64": big}), 1024, 10 * 1024 * 1024, require_auth=False
+        )
+
+    gateway.valves.BASE64_MAX_SIZE_MB = 50
+    over_cap = "A" * int(5 * 1024 * 1024 * (4 / 3) + 1024)
+    with pytest.raises(InlineFileTooLargeError):
+        await gateway.read_file_record_base64(
+            _file_obj(data={"b64": over_cap}), 1024, 5 * 1024 * 1024, require_auth=False
         )
 
 
@@ -906,13 +916,24 @@ async def test_inplace_converts_internal_file_url_and_pops_it(
 
 @pytest.mark.asyncio
 async def test_inplace_raises_on_inline_failure(gateway: OwuiFileGateway, monkeypatch: pytest.MonkeyPatch):
-    """A None inline result for a required file raises ValueError."""
+    """A None inline result for a required file names the file and is a typed error.
+
+    The type is asserted explicitly, not only through `ValueError`: a bare
+    `ValueError` is what this used to raise, and it is not the error the pipe's
+    handlers catch, so the person was shown the internal-error card for a file
+    they had deleted. The subclass keeps `ValueError` working for the callers
+    that catch that by name.
+    """
     monkeypatch.setattr(gateway, "inline_owui_file_id", AsyncMock(return_value=None))
     body = {"input": [{"content": [{"type": "input_file", "file_id": "internal-77"}]}]}
-    with pytest.raises(ValueError):
+    with pytest.raises(FileUnavailableError) as raised:
         await gateway.inline_internal_responses_input_files_inplace(
             body, chunk_size=1024, max_bytes=1024
         )
+    assert isinstance(raised.value, RequiredInternalFileError)
+    assert isinstance(raised.value, ValueError)
+    assert "internal-77" in raised.value.user_message
+    assert raised.value.denied is False
 
 
 @pytest.mark.asyncio

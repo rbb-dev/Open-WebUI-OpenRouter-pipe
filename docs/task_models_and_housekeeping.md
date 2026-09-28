@@ -11,6 +11,18 @@ Open WebUI can issue two different kinds of requests through `__task__`:
 
 The pipe treats these categories differently.
 
+Housekeeping tasks split three ways by **what happens to the value the pipe returns**, and the three are not the same thing:
+
+| Category | Kinds | What the return value becomes |
+| --- | --- | --- |
+| **Persisted** | `title_generation`, `tags_generation`, `follow_up_generation` | A card a person reads in a field. The pipe's card is the whole answer, and a refusal is shown as itself. |
+| **Content-consumed** | `context_compaction`, `context_summary`, `memory_review` | Prose Open WebUI feeds back to the model. Nobody displays it, and **any truthy value is stored as the chat's own memory**. |
+| **Display-string** | `query_generation`, `emoji_generation`, `autocomplete_generation`, and anything else not in the two sets above | A string a person reads; a refusal that is not a card is not useful, so it is `""`. |
+
+The middle category is the one to understand. The `context_compaction` sub-turn's return value becomes `contextSummary` and then the model-visible `[CONVERSATION SUMMARY]`, and `context_summary` and `memory_review` feed the same store. `context_compaction.py:385-395` takes the pipe's answer **if one is non-empty** and only re-derives a summary from the messages themselves when it is not — so returning an error sentence here converts Open WebUI's designed degradation into a corrupt summary that *looks* like a successful compaction and is then served to the model as fact.
+
+So a refused content-consumed kind returns `""`. That is Open WebUI's own degradation, not a new one: an empty summary is declined and re-derived, and the turn continues on full chat history. **The failure is visible only in the backend log**, as `Task model attempt N/M failed` — including for `context_summary`, which does carry a `chat_id` and no `message_id` and would otherwise meet the API caller's no-chat gate. It is caught and answered inside the task adapter, before the request loop can build an HTTP error, so no caller ever sees an envelope for these three. If a compaction silently looks wrong, read the backend log; nothing appears in a browser console.
+
 ---
 
 ## How the pipe detects a task request
@@ -152,6 +164,7 @@ If you need tasks to be as fast as possible, reduce `TASK_MODEL_REASONING_EFFORT
 | Symptom | Likely cause | What to check |
 |---|---|---|
 | A housekeeping task failed | Provider errors or repeated request failures in the housekeeping task adapter | A warning toast names the task, the model, the attempt count, the error class and the error id; the same id is on the `Task model '<task>' failed after N attempt(s)` **ERROR** record, which carries the model id, the error class and the request id. The per-attempt `Task model attempt %d/%d failed` records are WARNING and do not carry the id; DEBUG adds full stack traces (except on an auth failure, where `exc_info` is deliberately withheld at `task_model_adapter.py:267`). The toast is emitted once per chat-or-user and model per window, so a long outage toasts once rather than on every dispatch. |
+| A `[CONVERSATION SUMMARY]` that is a `- role: …` bullet list of truncated message starts | The compaction sub-turn failed: the pipe returned nothing for `context_compaction`, so Open WebUI re-derived a lossy summary from the messages themselves (`context_compaction.py:390-395`) | The pipe's own failure is visible only in the backend log, as `Task model attempt N/M failed`. The summary looks like a successful compaction and is not one. There is no browser-console error and no HTTP envelope for this kind — see the content-consumed category above. |
 | Task outputs are overly verbose | Housekeeping prompt/model configuration encourages long-form responses | Tune the task prompt/model configuration for short outputs; consider lowering `TASK_MODEL_REASONING_EFFORT`. |
 | A task fails and the model is one that thinks | The task's cap is below what the model needs for thinking | Two halves: the pipe's is `budget = min(budget, cap - 64)` on Gemini 2.5, and under `cap < 65` it asks for no bounded budget at all; the other half is the cap itself, which the pipe must not raise. Raise `task.model.params.max_tokens` (4 for the emoji task, 1000 for a title) or point the task at a different model. |
 | Housekeeping is running up unexpected spend | Housekeeping runs on every chat, so the task model it targets and the length of what that model produces both drive the total | Confirm the configured task model and review `usage`/cost snapshots (if enabled). What a model charges is on OpenRouter's pricing page. |

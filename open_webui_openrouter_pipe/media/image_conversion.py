@@ -22,6 +22,16 @@ def _carries_transparency(img: _Image.Image) -> bool:
     return "A" in img.getbands() or "transparency" in img.info
 
 
+DEEP_SINGLE_BAND_MODES = ("I", "I;16", "I;16B", "I;16L")
+
+_DEEP_RANGE_MAX = 65535
+_DEEP_RANGE_SCALE = 255.0 / _DEEP_RANGE_MAX
+
+
+def _rescale_deep_single_band(img: _Image.Image) -> _Image.Image:
+    return img.convert("I").point(lambda v: v * _DEEP_RANGE_SCALE).convert("L")
+
+
 def composite_on_white(img: _Image.Image) -> _Image.Image:
     from PIL import Image
 
@@ -32,4 +42,6 @@ def composite_on_white(img: _Image.Image) -> _Image.Image:
         background = Image.new("RGB", converted.size, (255, 255, 255))
         background.paste(converted, mask=converted.split()[3])
         return background
+    if img.mode in DEEP_SINGLE_BAND_MODES:
+        return _rescale_deep_single_band(img).convert("RGB")
     return img.convert("RGB")

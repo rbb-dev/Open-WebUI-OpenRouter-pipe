@@ -125,21 +125,40 @@ async def test_audio_requires_base64_not_urls(
 ):
     """Remote URLs should be rejected per OpenRouter's audio spec.
 
-    The rejection and its one error event are unchanged. What this row now also pins is
-    that the rejection does not leave an `input_audio` block behind for OpenRouter: an
-    empty `data` field is a claim that a clip was attached, so the turn says what
-    actually happened instead.
+    The rejection is unchanged; what it is reported through is not. A remote URL is a
+    malformed payload, and a malformed payload is reported as a `Files: skipped` status
+    naming the reason -- not as a per-block error card, which is the wrong vocabulary
+    for it and would put a second report beside the status. The turn also says what
+    happened instead of leaving an `input_audio` block behind for OpenRouter: an empty
+    `data` field is a claim that a clip was attached.
     """
 
-    pipe_instance._ensure_error_formatter()._emit_error = AsyncMock()
+    events: list = []
+
+    async def emitter(event):
+        events.append(event)
 
     block = {"type": "input_audio", "input_audio": "https://example.com/audio.mp3"}
-
-    result = await _transform_single_block(pipe_instance, block, mock_user)
+    transformed = await transform_messages_to_input(
+        pipe_instance,
+        [{"role": "user", "content": [block]}],
+        user_obj=mock_user,
+        event_emitter=emitter,
+    )
+    result = transformed[0]["content"][0]
 
     assert result["type"] == "input_text"
-    assert result["text"] == "[The user sent an empty message.]"
-    assert pipe_instance._ensure_error_formatter()._emit_error.await_count == 1
+    assert result["text"] == (
+        "[An attached item was not sent: an audio clip must be base64-encoded; "
+        "URLs are not supported.]"
+    )
+    statuses = [e for e in events if e.get("type") == "status"]
+    assert [e["data"]["description"] for e in statuses] == [
+        "Files: skipped 1 (an audio clip must be base64-encoded; URLs are not supported)."
+    ], events
+    assert not [e for e in events if isinstance((e.get("data") or {}).get("error"), dict)], (
+        f"a malformed payload was reported as an error card as well: {events!r}"
+    )
 
 
 def test_file_size_limit_enforced(pipe_instance):

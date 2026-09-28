@@ -20,6 +20,7 @@ import itertools
 import json
 import logging
 import re
+import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -86,6 +87,7 @@ _warned_stale_filter_rows: set[str] = set()
 _warned_write_refusals: dict[str, float] = {}
 
 _PIPE_OFF_META_KEY = "openrouter_pipe:switched_off_by_pipe"
+_PIPE_OFF_STAMP_META_KEY = "openrouter_pipe:switched_off_at"
 _PIPE_INSTALLED_META_KEY = "openrouter_pipe:installed_by"
 
 
@@ -99,6 +101,10 @@ def _stored_meta(row: Any) -> dict[str, Any]:
 
 def _switched_off_by_pipe(row: Any) -> bool:
     return bool(_stored_meta(row).get(_PIPE_OFF_META_KEY))
+
+
+def _is_already_switched_off(row: Any) -> bool:
+    return not getattr(row, "is_active", False) and _switched_off_by_pipe(row)
 
 
 def _installed_by(row: Any) -> str:
@@ -115,13 +121,25 @@ def _merged_meta(
     merged = {**_stored_meta(row), **desired_meta}
     if off_by_pipe is True:
         merged[_PIPE_OFF_META_KEY] = True
+        merged[_PIPE_OFF_STAMP_META_KEY] = int(time.time())
     elif off_by_pipe is False:
         merged.pop(_PIPE_OFF_META_KEY, None)
+        merged.pop(_PIPE_OFF_STAMP_META_KEY, None)
     return merged
 
 
+def _pipe_owns_the_off(row: Any) -> bool:
+    stored = _stored_meta(row)
+    if not stored.get(_PIPE_OFF_META_KEY):
+        return False
+    stamp = stored.get(_PIPE_OFF_STAMP_META_KEY)
+    if not isinstance(stamp, int) or isinstance(stamp, bool):
+        return True
+    return int(getattr(row, "updated_at", 0) or 0) <= stamp
+
+
 def _switch_on(row: Any) -> bool:
-    return bool(getattr(row, "is_active", False)) or _switched_off_by_pipe(row)
+    return bool(getattr(row, "is_active", False)) or _pipe_owns_the_off(row)
 
 
 def switched_off_meta(row: Any) -> dict[str, Any]:
@@ -190,12 +208,12 @@ def _is_web_tools_filter(content: Any) -> bool:
     )
 
 
+def _is_filter_carrying(content: Any, marker: str) -> bool:
+    return isinstance(content, str) and marker in content and "class Filter" in content
+
+
 def _is_video_gen_filter(content: Any) -> bool:
-    return (
-        isinstance(content, str)
-        and _OPENROUTER_VIDEO_GEN_FILTER_MARKER in content
-        and "class Filter" in content
-    )
+    return _is_filter_carrying(content, _OPENROUTER_VIDEO_GEN_FILTER_MARKER)
 
 
 def _offered_web_tools(content: str) -> frozenset[str] | None:
@@ -733,7 +751,7 @@ class FilterManager:
             if not await _write_function(
                 Functions,
                 candidate_id,
-                {"is_active": True, "is_global": False, "name": desired_name, "meta": FunctionMeta(**_merged_meta(created, desired_meta))},
+                {"is_active": True, "is_global": False, "name": desired_name, "meta": _merged_meta(created, desired_meta)},
                 f"activating the newly installed {log_label}",
                 self.logger,
             ):
@@ -1414,6 +1432,11 @@ class FilterManager:
     async def reactivate_video_gen_filters(self) -> None:
         if not self.valves.ENABLE_VIDEO_GENERATION:
             return
+        await self.reactivate_filters_by_marker(
+            _OPENROUTER_VIDEO_GEN_FILTER_MARKER, log_label="Video Generation"
+        )
+
+    async def reactivate_filters_by_marker(self, marker: str, *, log_label: str) -> None:
         try:
             from open_webui.models.functions import Functions  # type: ignore
         except ImportError:
@@ -1421,17 +1444,19 @@ class FilterManager:
         except Exception:
             self.logger.warning(
                 "open_webui.models.functions failed to import for a reason other than absence; "
-                "the Video Generation filters cannot be reactivated",
+                f"the {log_label} filters cannot be reactivated",
                 exc_info=True,
             )
             return
         try:
             found = await Functions.get_functions_by_type("filter", active_only=False)
         except Exception:
-            self.logger.warning("Could not list the installed Video Generation filters", exc_info=True)
+            self.logger.warning(
+                "Could not list the installed %s filters", log_label, exc_info=True
+            )
             return
         for row in found or []:
-            if not _is_video_gen_filter(getattr(row, "content", "")):
+            if not _is_filter_carrying(getattr(row, "content", ""), marker):
                 continue
             if getattr(row, "is_active", False):
                 continue
@@ -1442,9 +1467,11 @@ class FilterManager:
                     str(getattr(row, "id", "") or ""),
                     {"is_active": True, "meta": _merged_meta(row, {}, off_by_pipe=False)},
                 )
-                self.logger.info("Re-enabled OpenRouter Video Generation filter %r (ENABLE_VIDEO_GENERATION=True)", row.id)
+                self.logger.info("Re-enabled OpenRouter %s filter %r", log_label, row.id)
             except Exception:
-                self.logger.debug("Re-enabling Video Generation filter %s failed", row.id, exc_info=True)
+                self.logger.debug(
+                    "Re-enabling %s filter %s failed", log_label, row.id, exc_info=True
+                )
 
     # OPENROUTER FUSION FILTER
 
@@ -3359,7 +3386,7 @@ class Filter:
                         if await _write_function(
                             Functions,
                             candidate_id,
-                            {"is_active": True, "is_global": False, "meta": FunctionMeta(**_merged_meta(created_func, desired_meta))},
+                            {"is_active": True, "is_global": False, "meta": _merged_meta(created_func, desired_meta)},
                             "activating the new provider routing filter",
                             self.logger,
                         ):
@@ -3382,6 +3409,8 @@ class Filter:
         for orphan in orphan_filters:
             orphan_id = getattr(orphan, "id", "")
             if orphan_id and _row_owner(orphan) in ("", pipe_identifier):
+                if _is_already_switched_off(orphan):
+                    continue
                 if await _write_function(
                     Functions,
                     orphan_id,
@@ -3398,11 +3427,17 @@ class Filter:
             if slug in undeliverable or slug not in all_models:
                 existing_id = getattr(existing, "id", "")
                 if existing_id and _row_owner(existing) in ("", pipe_identifier):
-                    if (
+                    wanted_marker = (
                         slug not in all_models
                         or getattr(existing, "is_active", False)
                         or _switched_off_by_pipe(existing)
+                    )
+                    if (
+                        not getattr(existing, "is_active", False)
+                        and wanted_marker == _switched_off_by_pipe(existing)
                     ):
+                        continue
+                    if wanted_marker:
                         deactivation = {
                             "is_active": False,
                             "meta": switched_off_meta(existing),

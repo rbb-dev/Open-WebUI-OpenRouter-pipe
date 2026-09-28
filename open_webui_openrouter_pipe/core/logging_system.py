@@ -32,11 +32,19 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from .utils import _sanitize_path_component
+from .warn_latch import warn_level
 
 try:
     import pyzipper  # type: ignore[import-untyped]
 except ImportError:
     pyzipper = None  # type: ignore[assignment]
+
+_ARCHIVE_CLAIMS: dict[str, int] = {}
+_ARCHIVE_CLAIM_LOCK = threading.Lock()
+
+_warned_archive_write_failed: dict[str, float] = {}
+
+_MAX_ARCHIVE_WARNING_LATCH_KEYS = 32
 
 # Session Log Archive Job
 
@@ -573,7 +581,86 @@ def _archive_temp_path(out_dir: Path, message_id: str) -> Path:
     return out_dir / f"{message_id}.{os.getpid()}.{uuid.uuid4().hex[:8]}.zip.tmp"
 
 
-def _publish_archive(tmp_path: Path, out_path: Path, out_dir: Path) -> None:
+def _archive_out_dir(base_dir: Path, *, user_id: str, chat_id: str) -> Path:
+    return base_dir / _sanitize_path_component(user_id, fallback="user") / _sanitize_path_component(
+        chat_id, fallback="chat"
+    )
+
+
+def _archive_claim_key(path: Path | str) -> str:
+    return os.path.normpath(str(path))
+
+
+def _claim_archive_dir(out_dir: Path) -> None:
+    key = _archive_claim_key(out_dir)
+    with _ARCHIVE_CLAIM_LOCK:
+        _ARCHIVE_CLAIMS[key] = _ARCHIVE_CLAIMS.get(key, 0) + 1
+
+
+def _release_archive_dir(out_dir: Path) -> None:
+    key = _archive_claim_key(out_dir)
+    with _ARCHIVE_CLAIM_LOCK:
+        remaining = _ARCHIVE_CLAIMS.get(key, 0) - 1
+        if remaining > 0:
+            _ARCHIVE_CLAIMS[key] = remaining
+        else:
+            _ARCHIVE_CLAIMS.pop(key, None)
+
+
+def _prune_archive_dir(dirpath: str) -> bool:
+    with _ARCHIVE_CLAIM_LOCK:
+        if _ARCHIVE_CLAIMS.get(_archive_claim_key(dirpath), 0) > 0:
+            return False
+        try:
+            if any(Path(dirpath).iterdir()):
+                return False
+            os.rmdir(dirpath)
+        except OSError:
+            return False
+        return True
+
+
+_archive_warning = logging.getLogger(f"{__name__}.archive")
+
+
+def _archive_warning_logger() -> logging.Logger:
+    return _archive_warning
+
+
+def _report_archive_write_failed(cause: str, message: str, *args: Any) -> None:
+    with _ARCHIVE_CLAIM_LOCK:
+        _truncate_archive_warning_latch()
+    _archive_warning_logger().log(
+        warn_level(_warned_archive_write_failed, cause, cooldown_s=3600.0),
+        message,
+        *args,
+    )
+
+
+def _truncate_archive_warning_latch() -> None:
+    excess = len(_warned_archive_write_failed) - _MAX_ARCHIVE_WARNING_LATCH_KEYS
+    if excess <= 0:
+        return
+    for stale_key in sorted(_warned_archive_write_failed, key=lambda k: _warned_archive_write_failed[k])[:excess]:
+        _warned_archive_write_failed.pop(stale_key, None)
+
+
+def _archive_publish_changed_file(
+    out_path: Path, before: os.stat_result | None, *, published: bool | None = None
+) -> bool:
+    if published is not None:
+        return published
+    after: os.stat_result | None = None
+    with contextlib.suppress(Exception):
+        after = out_path.stat()
+    return after is not None and (
+        before is None
+        or after.st_mtime_ns != before.st_mtime_ns
+        or after.st_size != before.st_size
+    )
+
+
+def _publish_archive(tmp_path: Path, out_path: Path, out_dir: Path) -> bool:
     with contextlib.suppress(OSError):
         fd = os.open(tmp_path, os.O_RDONLY)
         try:
@@ -587,7 +674,7 @@ def _publish_archive(tmp_path: Path, out_path: Path, out_dir: Path) -> None:
         sys.stderr.write(f"session log archive: publish {out_path} failed: {exc}\n")
         with contextlib.suppress(Exception):
             tmp_path.unlink(missing_ok=True)  # type: ignore[arg-type]
-        return
+        return False
 
     with contextlib.suppress(OSError):
         dir_fd = os.open(out_dir, os.O_RDONLY)
@@ -595,6 +682,7 @@ def _publish_archive(tmp_path: Path, out_path: Path, out_dir: Path) -> None:
             os.fsync(dir_fd)
         finally:
             os.close(dir_fd)
+    return True
 
 
 def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
@@ -613,19 +701,25 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
     All files are encrypted using AES encryption with the provided password.
     Atomic file replacement is used to prevent partial writes.
     """
+    root = Path((job.base_dir or "").strip()).expanduser()
+    out_dir = _archive_out_dir(root, user_id=job.user_id, chat_id=job.chat_id)
+    _claim_archive_dir(out_dir)
+    try:
+        _write_session_log_archive_unclaimed(job, out_dir)
+    finally:
+        _release_archive_dir(out_dir)
+
+
+def _write_session_log_archive_unclaimed(job: _SessionLogArchiveJob, out_dir: Path) -> None:
     if pyzipper is None:
         return
     base_dir = (job.base_dir or "").strip()
     if not base_dir:
         return
 
-    user_id = _sanitize_path_component(job.user_id, fallback="user")
-    chat_id = _sanitize_path_component(job.chat_id, fallback="chat")
     message_id = _sanitize_path_component(job.message_id, fallback="message")
     session_id = str(job.session_id or "")
 
-    root = Path(base_dir).expanduser()
-    out_dir = root / user_id / chat_id
     out_path = out_dir / f"{message_id}.zip"
     tmp_path = _archive_temp_path(out_dir, message_id)
 
@@ -633,6 +727,14 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
         out_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         sys.stderr.write(f"session log archive: mkdir {out_dir} failed: {exc}\n")
+        _report_archive_write_failed(
+            f"session_log_archive_mkdir_failed:{out_dir}",
+            "Session log archive directory could not be created; the staged events are not "
+            "on disk in this archive (path=%s chat_id=%s message_id=%s).",
+            str(out_dir),
+            job.chat_id,
+            job.message_id,
+        )
         return
 
     compression_map = {
@@ -795,8 +897,26 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
                 zf.writestr("logs.jsonl", jsonl_payload)
     except Exception as exc:  # noqa: BLE001 - zip write net; mixed pyzipper error types; surfaced via stderr
         sys.stderr.write(f"session log archive: zip write {tmp_path} failed: {exc}\n")
+        _report_archive_write_failed(
+            f"session_log_archive_write_failed:{out_path}",
+            "Session log archive zip write failed; the staged events are not on disk in "
+            "this archive (path=%s chat_id=%s message_id=%s).",
+            str(out_path),
+            job.chat_id,
+            job.message_id,
+        )
         with contextlib.suppress(Exception):
             tmp_path.unlink(missing_ok=True)  # type: ignore[arg-type]
         return
 
-    _publish_archive(tmp_path, out_path, out_dir)
+    if not _archive_publish_changed_file(
+        out_path, None, published=_publish_archive(tmp_path, out_path, out_dir)
+    ):
+        _report_archive_write_failed(
+            f"session_log_archive_publish_failed:{out_path}",
+            "The archive was not published; the staged events are not on disk in this "
+            "archive (path=%s chat_id=%s message_id=%s).",
+            str(out_path),
+            job.chat_id,
+            job.message_id,
+        )

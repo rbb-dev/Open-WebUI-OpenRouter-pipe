@@ -27,7 +27,11 @@ from typing import Any, ClassVar
 
 import aiohttp
 
-from ..core.config import _OPENROUTER_CATEGORIES, _OPENROUTER_REFERER, _OPENROUTER_TITLE
+from ..core.config import (
+    _OPENROUTER_CATEGORIES,
+    _OPENROUTER_TITLE,
+    openrouter_attribution_headers,
+)
 from ..core.timing_logger import timed
 from .blocklists import is_direct_upload_blocklisted
 
@@ -490,7 +494,7 @@ class OpenRouterModelRegistry:
             "Authorization": f"Bearer {api_key}",
             "X-OpenRouter-Title": _OPENROUTER_TITLE,
             "X-OpenRouter-Categories": _OPENROUTER_CATEGORIES,
-            "HTTP-Referer": (http_referer or _OPENROUTER_REFERER),
+            **openrouter_attribution_headers(http_referer),
         }
         _catalog_read_timeout = _catalog_timeout(valves)
         _debug_print_request(headers, {"method": "GET", "url": url}, logger=logger)
@@ -1389,7 +1393,7 @@ class OpenRouterModelRegistry:
             "Authorization": f"Bearer {api_key}",
             "X-OpenRouter-Title": _OPENROUTER_TITLE,
             "X-OpenRouter-Categories": _OPENROUTER_CATEGORIES,
-            "HTTP-Referer": (http_referer or _OPENROUTER_REFERER),
+            **openrouter_attribution_headers(http_referer),
         }
         _debug_print_request(headers, {"method": "GET", "url": url}, logger=logger)
         async with session.get(

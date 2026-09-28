@@ -70,7 +70,7 @@ _EXPECTED: dict[str, int] = {
     # Wraps only the diagnostic itself: the workaround must not fail a request because
     # its own logging failed, and it runs before any pipe module exists.
     "../scripts/anyio_1111_workaround.py": 1,
-    "core/logging_system.py": 2,
+    "core/logging_system.py": 3,
     # 7th: the cost snapshot, now one guarded helper reached from all three exits. A job
     # OpenRouter has already billed for is recorded whatever the pipe does with the
     # bytes, and a storage error while recording it must not replace the failure the
@@ -91,7 +91,9 @@ _EXPECTED: dict[str, int] = {
     # write publish -- and a `stat()` that raises has no consequence the caller's own
     # report does not already cover, because a path that cannot be stat'd cannot have
     # been written either, so the capture reports the failure and leaves the rows.
-    "logging/session_log_manager.py": 21,
+    # B193 then removed the inline `after_stat` stat-diff in `_assemble_and_write_bundle`
+    # (hoisted into the shared `_archive_publish_changed_file` helper), so the count is 20.
+    "logging/session_log_manager.py": 20,
     # 3rd: the generic ffmpeg arm, which now stops the child it started before it
     # reports a transport fault. The suppression is load-bearing and is not a test
     # guard: PIL's `UnidentifiedImageError` subclasses `OSError`, so the common

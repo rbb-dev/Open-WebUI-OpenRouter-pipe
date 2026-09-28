@@ -13,6 +13,7 @@ import contextlib
 import json
 import logging
 import uuid
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -26,6 +27,7 @@ from ..core.utils import (
 from ..core.warn_latch import warn_level
 
 _OWUI_RESULT_WARN_COOLDOWN_S = 300.0
+_OWUI_RESULT_WARN_CAP = 256
 from ..storage.persistence import generate_item_id
 from .tool_schema import _strictify_schema
 
@@ -177,6 +179,7 @@ class _ToolExecutionContext:
     resolved_user: Any = None
     resolved_user_done: bool = False
     resolved_user_task: Any = None
+    resolved_user_waiters: int = 0
     metadata: dict[str, Any] | None = None
     request_id: str = ""
     fusion_inner: bool = False
@@ -204,7 +207,16 @@ async def _resolved_user_obj(context: _ToolExecutionContext) -> Any:
         return context.resolved_user
     if context.resolved_user_task is None:
         context.resolved_user_task = asyncio.ensure_future(_read_user_row(context))
-    user_obj = await asyncio.shield(context.resolved_user_task)
+    context.resolved_user_waiters += 1
+    try:
+        user_obj = await asyncio.shield(context.resolved_user_task)
+    finally:
+        context.resolved_user_waiters -= 1
+        if context.resolved_user_waiters <= 0 and not context.resolved_user_done:
+            task = context.resolved_user_task
+            context.resolved_user_task = None
+            if task is not None and not task.done():
+                task.cancel()
     context.resolved_user = user_obj
     context.resolved_user_done = True
     return user_obj
@@ -253,7 +265,15 @@ class ToolExecutor:
         """
         self._pipe = pipe
         self.logger = logger
-        self._owui_result_warn_ts: dict[str, float] = {}
+        self._owui_result_warn_ts: OrderedDict[str, float] = OrderedDict()
+
+    def _owui_warn_level(self, cause: str) -> int:
+        latch = self._owui_result_warn_ts
+        level = warn_level(latch, cause, cooldown_s=_OWUI_RESULT_WARN_COOLDOWN_S)
+        latch.move_to_end(cause)
+        while len(latch) > _OWUI_RESULT_WARN_CAP:
+            latch.popitem(last=False)
+        return level
 
     # Argument parsing helpers
 
@@ -338,9 +358,7 @@ class ToolExecutor:
             )
         except Exception:
             self.logger.log(
-                warn_level(
-                    self._owui_result_warn_ts, f"terminal-file:{origin_name}", cooldown_s=_OWUI_RESULT_WARN_COOLDOWN_S
-                ),
+                self._owui_warn_level(f"terminal-file:{origin_name}"),
                 "Open WebUI could not prepare the Open Terminal file result of '%s'; the model receives the result "
                 "as the terminal returned it",
                 origin_name,
@@ -364,9 +382,7 @@ class ToolExecutor:
             )
         except Exception:
             self.logger.log(
-                warn_level(
-                    self._owui_result_warn_ts, f"terminal-events:{origin_name}", cooldown_s=_OWUI_RESULT_WARN_COOLDOWN_S
-                ),
+                self._owui_warn_level(f"terminal-events:{origin_name}"),
                 "Open WebUI could not tell the chat about the Open Terminal call '%s'; its file browser and preview "
                 "are not updated for it",
                 origin_name,
@@ -424,11 +440,7 @@ class ToolExecutor:
                     return output_text, files, embeds
                 except Exception as proc_exc:
                     self.logger.log(
-                        warn_level(
-                            self._owui_result_warn_ts,
-                            tool_name,
-                            cooldown_s=_OWUI_RESULT_WARN_COOLDOWN_S,
-                        ),
+                        self._owui_warn_level(tool_name),
                         "Open WebUI could not process the result of '%s'; the model "
                         "will receive a plain string rendering of the raw payload "
                         "instead: %s",
@@ -599,8 +611,35 @@ class ToolExecutor:
                 pending.append((index, call, future, self._ask_user_window(tool_cfg, args)))
 
             pre_enqueue_at = loop.time()
-            for batch in batches:
-                await context.queue.put(batch)
+            enqueue_allowance = context.batch_timeout
+            for _index, _call, _future, window in pending:
+                if window is not None:
+                    enqueue_allowance = max(enqueue_allowance or 0.0, window)
+            enqueue_deadline = pre_enqueue_at + enqueue_allowance if enqueue_allowance else None
+            unqueued: list[_QueuedToolCall] = []
+            for position, batch in enumerate(batches):
+                if enqueue_deadline is None:
+                    await context.queue.put(batch)
+                    continue
+                try:
+                    async with asyncio.timeout_at(enqueue_deadline):
+                        await context.queue.put(batch)
+                except TimeoutError:
+                    unqueued.extend(item for later in batches[position:] for item in later)
+                    break
+            for item in unqueued:
+                if not item.future.done():
+                    item.future.set_result(self._build_tool_output(
+                        item.call,
+                        f"Tool '{item.call.get('name')}' was not started: every tool worker was still "
+                        f"busy {enqueue_allowance:.0f}s after the round asked for it (queue wait).",
+                        status="failed",
+                    ))
+            if unqueued:
+                context.timeout_error = context.timeout_error or (
+                    "tool workers were still busy when the round ran out of time to queue its calls"
+                )
+                self.logger.warning("Tool queue wait: %d call(s) were never started", len(unqueued))
 
             allowance = _idle_allowance(context, pending)
             collected: dict[int, Any] = {}

@@ -478,6 +478,43 @@ def test_register_image_models_full_fixture_exact_pure_image_count():
     )
 
 
+_PANEL_FUSION = "openrouter_fusion"
+def _whole_pass_spec(
+    openrouter_id: str, *, image_output: bool, video_output: bool = False
+) -> dict[str, Any]:
+    features = {"file_input"}
+    if image_output:
+        features.add("image_output")
+    if video_output:
+        features.add("video_generation")
+    return {
+        "features": features,
+        "capabilities": {
+            "vision": False, "file_upload": True, "web_search": False,
+            "image_generation": image_output, "video_generation": video_output,
+            "code_interpreter": False, "citations": False,
+            "status_updates": True, "usage": True,
+        },
+        "supported_parameters": frozenset({"max_tokens"}),
+        "max_completion_tokens": None,
+        "full_model": {"id": openrouter_id, "name": openrouter_id},
+        "image_model": {"id": openrouter_id, "name": openrouter_id} if image_output else None,
+        "context_length": 1000,
+        "architecture": {
+            "input_modalities": ["text"],
+            "output_modalities": ["image"] if image_output else ["text"],
+        },
+    }
+
+
+def _fusion_row() -> list[dict[str, Any]]:
+    return [
+        {"id": "openrouter.fusion", "original_id": "openrouter/fusion", "name": "Fusion",
+         "panel": _PANEL_FUSION, "family": "fusion",
+         "spec": _whole_pass_spec("openrouter/fusion", image_output=False)},
+    ]
+
+
 # =============================================================================
 # image_catalog and image_client — TTL + error handling smoke tests
 # =============================================================================

@@ -1259,14 +1259,8 @@ async def transform_messages_to_input(
                         and not pipe._multimodal_handler._is_insecure_http_allowed(file_data)
                     ):
                         pipe.logger.error(
-                            "Blocked insecure HTTP file_data URL by default: %s",
+                            "Blocked insecure HTTP file_data URL by default (blocked by security policy): %s",
                             loggable_link(file_data),
-                        )
-                        await pipe._ensure_error_formatter()._emit_error(
-                            event_emitter,
-                            "File URL blocked by security policy (HTTP disabled by default). "
-                            "Enable ALLOW_INSECURE_HTTP + ALLOW_INSECURE_HTTP_HOSTS to allow specific hosts.",
-                            show_error_message=True,
                         )
                         if file_id:
                             file_data = None
@@ -1285,12 +1279,9 @@ async def transform_messages_to_input(
                         and not is_internal_file_url(file_url)
                         and not pipe._multimodal_handler._is_insecure_http_allowed(file_url)
                     ):
-                        pipe.logger.error("Blocked insecure HTTP file_url by default: %s", loggable_link(file_url))
-                        await pipe._ensure_error_formatter()._emit_error(
-                            event_emitter,
-                            "File URL blocked by security policy (HTTP disabled by default). "
-                            "Enable ALLOW_INSECURE_HTTP + ALLOW_INSECURE_HTTP_HOSTS to allow specific hosts.",
-                            show_error_message=True,
+                        pipe.logger.error(
+                            "Blocked insecure HTTP file_url by default (blocked by security policy): %s",
+                            loggable_link(file_url),
                         )
                         if file_id:
                             file_url = None
@@ -1345,7 +1336,7 @@ async def transform_messages_to_input(
                     )
                     return _no_source_refusal("")
 
-            async def _to_input_audio(block: dict) -> dict | None:
+            async def _to_input_audio(block: dict) -> dict | ImageRefusal | None:
                 """Convert Open WebUI audio blocks into Responses API format.
 
                 Handles audio content blocks, transforming various input formats into
@@ -1418,6 +1409,9 @@ async def transform_messages_to_input(
                             "format": "mp3",
                         },
                     }
+
+                def _refuse_audio(why: str, cause: str) -> ImageRefusal:
+                    return ImageRefusal(why, cause, subject="audio")
 
                 async def _refuse_oversized_inline(estimate: int) -> None:
                     pipe.logger.warning(
@@ -1496,12 +1490,10 @@ async def transform_messages_to_input(
                         cleaned = _normalize_base64(_data)
                         if not cleaned:
                             pipe.logger.warning("Audio payload rejected: invalid base64 data.")
-                            await pipe._ensure_error_formatter()._emit_error(
-                                event_emitter,
-                                "Audio input was not valid base64.",
-                                show_error_message=False,
+                            return _refuse_audio(
+                                "an audio clip was not valid base64",
+                                "audio_not_base64",
                             )
-                            return _empty_audio_block()
                         audio_format = _normalize_format(audio_payload.get("format"), _resolved_mime_hint(audio_payload))
                         return _build_audio_block(cleaned, audio_format)
 
@@ -1513,12 +1505,10 @@ async def transform_messages_to_input(
                             cleaned = _normalize_base64(raw_data)
                             if not cleaned:
                                 pipe.logger.warning("Audio payload rejected: invalid base64 data.")
-                                await pipe._ensure_error_formatter()._emit_error(
-                                    event_emitter,
-                                    "Audio input was not valid base64.",
-                                    show_error_message=False,
+                                return _refuse_audio(
+                                    "an audio clip was not valid base64",
+                                    "audio_not_base64",
                                 )
-                                return _empty_audio_block()
                             mime_hint = _resolved_mime_hint(audio_payload)
                             audio_format = _normalize_format(audio_payload.get("format"), mime_hint)
                             return _build_audio_block(cleaned, audio_format)
@@ -1528,12 +1518,10 @@ async def transform_messages_to_input(
                         lowercase = sanitized.lower()
                         if is_http_or_https_url(sanitized):
                             pipe.logger.warning("Audio payload rejected: remote URLs are not supported.")
-                            await pipe._ensure_error_formatter()._emit_error(
-                                event_emitter,
-                                "Audio input must be base64-encoded. URLs are not supported.",
-                                show_error_message=False,
+                            return _refuse_audio(
+                                "an audio clip must be base64-encoded; URLs are not supported",
+                                "audio_remote_url",
                             )
-                            return _empty_audio_block()
 
                         if _inline_payload_bytes(sanitized) > max_inline_bytes:
                             return await _refuse_oversized_inline(_inline_payload_bytes(sanitized))
@@ -1542,41 +1530,38 @@ async def transform_messages_to_input(
                             parsed = await asyncio.to_thread(pipe._multimodal_handler._parse_data_url, sanitized if sanitized.startswith("data:") else f"data:{sanitized.split(':', 1)[1]}")
                             if not parsed or not parsed.get("mime_type", "").startswith("audio/"):
                                 pipe.logger.warning("Audio payload rejected: invalid data URL.")
-                                await pipe._ensure_error_formatter()._emit_error(
-                                    event_emitter,
-                                    "Audio input must be base64-encoded audio data.",
-                                    show_error_message=False,
+                                return _refuse_audio(
+                                    "an audio clip was not an audio data URL",
+                                    "audio_bad_data_url",
                                 )
-                                return _empty_audio_block()
                             audio_format = _map_format(parsed.get("mime_type"))
                             audio_b64 = _normalize_base64(parsed.get("b64", ""))
                             if not audio_b64:
                                 pipe.logger.warning("Audio payload rejected: invalid base64 data.")
-                                await pipe._ensure_error_formatter()._emit_error(
-                                    event_emitter,
-                                    "Audio input was not valid base64.",
-                                    show_error_message=False,
+                                return _refuse_audio(
+                                    "an audio clip was not valid base64",
+                                    "audio_not_base64",
                                 )
-                                return _empty_audio_block()
                             return _build_audio_block(audio_b64, audio_format)
 
                         cleaned = _normalize_base64(sanitized)
                         if not cleaned:
                             pipe.logger.warning("Audio payload rejected: invalid base64 data.")
-                            await pipe._ensure_error_formatter()._emit_error(
-                                event_emitter,
-                                "Audio input was not valid base64.",
-                                show_error_message=False,
+                            return _refuse_audio(
+                                "an audio clip was not valid base64",
+                                "audio_not_base64",
                             )
-                            return _empty_audio_block()
 
                         mime_type = _resolved_mime_hint()
                         audio_format = _map_format(mime_type)
                         return _build_audio_block(cleaned, audio_format)
 
                     # Invalid/empty
-                    pipe.logger.warning("Invalid audio payload format, returning empty audio block")
-                    return _empty_audio_block()
+                    pipe.logger.warning("Invalid audio payload format, refusing the audio block")
+                    return _refuse_audio(
+                        "an audio block carried no audio data",
+                        "audio_no_payload",
+                    )
 
                 except Exception as exc:
                     pipe.logger.exception("Error in _to_input_audio")
@@ -1587,7 +1572,7 @@ async def transform_messages_to_input(
                     )
                     return _empty_audio_block()
 
-            async def _to_input_video(block: dict) -> dict:
+            async def _to_input_video(block: dict) -> dict | ImageRefusal:
                 """Convert Open WebUI video blocks into Chat Completions video format.
 
                 Video Support by Provider (per OpenRouter docs):
@@ -1640,7 +1625,11 @@ async def transform_messages_to_input(
 
                     if not url:
                         pipe.logger.warning("Video block has no URL")
-                        return {"type": "video_url", "video_url": {"url": ""}}
+                        return ImageRefusal(
+                            "a video block carried no video URL",
+                            "video_no_url",
+                            subject="video",
+                        )
 
                     if names_an_owui_file_path(url):
                         raise RequiredInternalFileError(
@@ -1957,7 +1946,7 @@ async def transform_messages_to_input(
             notices = ["Images: " + "; ".join(image_notices) + "."] if image_notices else []
             if refused_files:
                 notices.append(f"Files: skipped {len(refused_files)} ({'; '.join(refused_files)}).")
-            if notices and (latest_user_message or (tool_images and idx == last_tool_handoff_index)):
+            if notices and (latest_user_message or (tool_images and idx == last_tool_handoff_index) or refused_files):
                 await pipe._event_emitter_handler._emit_status(
                     event_emitter,
                     " ".join(notices),

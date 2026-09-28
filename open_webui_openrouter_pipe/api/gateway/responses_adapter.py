@@ -27,6 +27,7 @@ from ...core.config import (
 )
 from ...core.errors import (
     OpenRouterAPIError,
+    UpstreamBodyUnreadable,
     _build_openrouter_api_error,
     _ChatRetryWait,
     _classify_retryable_openrouter_error,
@@ -52,6 +53,7 @@ if TYPE_CHECKING:
     from ...pipe import Pipe
 
 _RESPONSES_CHUNK_PARSE_WARN_COOLDOWN_S = 30.0
+_BODY_EXCERPT_CHARS = 200
 _RESPONSES_SSE_DONE_SENTINEL = b"[DONE]"
 _warned_responses_chunk_parse: dict[str, float] = {}
 _warned_queue_backlog: dict[str, float] = {}
@@ -167,12 +169,30 @@ async def _decode_json_body(resp: Any, logger: Any, endpoint: str) -> Any:
             "OpenRouter response was not decodable JSON; falling back to text",
             exc_info=True,
         )
+        text = ""
         try:
-            return json.loads(await resp.text())
+            text = await resp.text()
+            return json.loads(text)
         except (aiohttp.ClientPayloadError, aiohttp.ServerDisconnectedError) as exc:
             raise _AcceptedResponseLostBody(str(exc)) from exc
         except Exception as exc:
-            raise RuntimeError(f"Invalid JSON response from {endpoint}") from exc
+            raise UpstreamBodyUnreadable(
+                endpoint=endpoint,
+                body_excerpt=str(text)[:_BODY_EXCERPT_CHARS],
+                content_type=getattr(resp, "content_type", None),
+            ) from exc
+
+
+def _decoded_body_excerpt(payload: Any) -> str:
+    return repr(payload)[:_BODY_EXCERPT_CHARS]
+
+
+def _body_not_an_object(endpoint: str, payload: Any, resp: Any) -> UpstreamBodyUnreadable:
+    return UpstreamBodyUnreadable(
+        endpoint=endpoint,
+        body_excerpt=_decoded_body_excerpt(payload),
+        content_type=getattr(resp, "headers", {}).get("Content-Type"),
+    )
 
 
 
@@ -778,7 +798,7 @@ class ResponsesAdapter:
                             )
                         payload = await _decode_json_body(resp, self.logger, "/responses")
                         if not isinstance(payload, dict):
-                            raise RuntimeError("Invalid JSON response from /responses")  # noqa: TRY004 - a remote body of the wrong shape is a runtime fault, and a ClientError subclass would be re-POSTed
+                            raise _body_not_an_object("/responses", payload, resp)
                         _debug_print_response(payload, logger=self.logger)
                         reported_error = self._pipe._ensure_error_formatter()._extract_streaming_error_event(
                             payload, request_params.get("model")

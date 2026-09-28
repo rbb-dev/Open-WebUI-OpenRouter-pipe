@@ -29,7 +29,7 @@ from fastapi import BackgroundTasks, Request, UploadFile
 from starlette.datastructures import Headers
 
 from ..core.config import _INTERNAL_FILE_ID_PATTERN
-from ..core.errors import RequiredInternalFileError
+from ..core.errors import FileUnavailableError, RequiredInternalFileError
 from ..core.timing_logger import timed
 from ..core.url_scheme import is_absolute_url, url_path
 from ..core.warn_latch import warn_level
@@ -97,6 +97,10 @@ class InlinedFile(NamedTuple):
 
 class InlineFileTooLargeError(ValueError):
     pass
+
+
+def _estimate_base64_bytes(b64_data: str) -> float:
+    return (len(b64_data) * 3) / 4
 
 
 @timed
@@ -761,7 +765,7 @@ class OwuiFileGateway:
         if not b64_data:
             return True
 
-        estimated_size_bytes = (len(b64_data) * 3) / 4
+        estimated_size_bytes = _estimate_base64_bytes(b64_data)
         max_size_bytes = self.valves.BASE64_MAX_SIZE_MB * 1024 * 1024
 
         if estimated_size_bytes > max_size_bytes:
@@ -814,12 +818,17 @@ class OwuiFileGateway:
             for key in ("b64", "base64", "data"):
                 inline_value = data_field.get(key)
                 if isinstance(inline_value, str) and inline_value.strip():
+                    if _estimate_base64_bytes(inline_value) > max_bytes:
+                        raise InlineFileTooLargeError("File exceeds BASE64_MAX_SIZE_MB limit")
                     if not self.validate_base64_size(inline_value):
                         raise InlineFileTooLargeError("Stored base64 payload exceeds configured limit")
                     return inline_value.strip()
             blob_value = data_field.get("bytes")
             if isinstance(blob_value, (bytes, bytearray)):
                 return _from_bytes(bytes(blob_value))
+            content_value = data_field.get("content")
+            if isinstance(content_value, str) and content_value:
+                return _from_bytes(content_value.encode("utf-8"))
 
         if real:
             if getattr(file_obj, "path", None):
@@ -977,7 +986,11 @@ class OwuiFileGateway:
                 else None
             )
             if not inlined:
-                raise ValueError(f"Failed to inline a tool's picture for /responses: {image_url}")
+                raise FileUnavailableError(
+                    f"A referenced picture ({picture_id or image_url}) is no longer "
+                    f"available in Open WebUI storage.",
+                    kind="image",
+                )
             part["image_url"] = inlined.data_url
 
         for item in input_items:
@@ -1026,8 +1039,9 @@ class OwuiFileGateway:
                     user=user,
                 )
                 if not result:
-                    raise ValueError(
-                        f"Failed to inline Open WebUI file id for /responses: {internal_file_id}"
+                    raise FileUnavailableError(
+                        f"A referenced file ({internal_file_id}) is no longer "
+                        f"available in Open WebUI storage.",
                     )
 
                 block["file_data"] = result.data_url

@@ -900,7 +900,12 @@ class TestInlineInternalResponsesInputFilesInplace:
 
     @pytest.mark.asyncio
     async def test_raises_when_inlining_fails(self, pipe_instance_async, monkeypatch):
-        """Should raise ValueError when inlining fails."""
+        """Should raise a named, typed error when inlining fails.
+
+        The `match` is the sentence the person is shown, so it names the file
+        rather than describing the mechanism: a bare `ValueError` here is not
+        caught by the pipe's typed handler and became the internal-error card.
+        """
         monkeypatch.setattr(owui_files_module, "get_file_by_id", AsyncMock(return_value=None))
 
         body = {
@@ -912,7 +917,7 @@ class TestInlineInternalResponsesInputFilesInplace:
             }]
         }
 
-        with pytest.raises(ValueError, match="Failed to inline Open WebUI file id"):
+        with pytest.raises(ValueError, match="A referenced file .* is no longer available"):
             await pipe_instance_async._file_gateway.inline_internal_responses_input_files_inplace(
                 body, chunk_size=1024, max_bytes=1024 * 1024
             )
@@ -3478,11 +3483,11 @@ class TestAudioTransformer:
     ):
         """A malformed audio payload reaches the provider as no audio at all.
 
-        The converter still returns the empty `input_audio` block it always did -- the
-        per-block contract is unchanged, and the row that pins it is the one below. What
-        changed is what happens to that void block: it is no longer shipped, because
-        T433 established that a payload-less `input_audio` must never be put in front of
-        OpenRouter, and the pipe now records *why* the block yielded nothing.
+        The converter returns a refusal rather than the empty `input_audio` block it
+        used to, and the block loop routes that refusal into the attachment note. What
+        matters here is unchanged by that: a payload-less `input_audio` is never put in
+        front of OpenRouter, because T433 established it must not be and the pipe
+        records *why* the block yielded nothing.
 
         The line the turn carries is therefore the attachment note, not the
         empty-message line. A person who attached a recording that turned out to be
@@ -3495,7 +3500,7 @@ class TestAudioTransformer:
         assert audio_block is not None
         assert audio_block["type"] == "input_text"
         assert audio_block["text"] == (
-            "[An attached item was not sent: an audio clip carried no audio data.]"
+            "[An attached item was not sent: an audio block carried no audio data.]"
         )
 
     @pytest.mark.asyncio
@@ -3552,6 +3557,10 @@ class TestAudioTransformer:
         payload-less `input_audio`. A URL that OpenRouter will refuse is worth no more
         to it than an empty string would be, and shipping one is what made this turn
         look to the provider like a user who attached nothing and said nothing.
+
+        The line the turn carries is the attachment note rather than the empty-message
+        line, and it names the URL as the reason: a person who attached a link was told
+        nothing at all by the sentence they used to get.
         """
         block = {
             "type": "input_audio",
@@ -3560,7 +3569,10 @@ class TestAudioTransformer:
         audio_block = await _transform_single_block(pipe_instance, block, mock_user)
         assert audio_block is not None
         assert audio_block["type"] == "input_text"
-        assert audio_block["text"] == "[The user sent an empty message.]"
+        assert audio_block["text"] == (
+            "[An attached item was not sent: an audio clip must be base64-encoded; "
+            "URLs are not supported.]"
+        )
 
     @pytest.mark.asyncio
     async def test_audio_partial_dict_without_format(

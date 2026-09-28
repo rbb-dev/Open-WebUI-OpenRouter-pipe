@@ -47,6 +47,7 @@ from ..core.config import (
     _PIPE_METADATA_KEY,
     _PROVIDER_ROUTING_MAX_PROVIDERS,
     _PROVIDER_ROUTING_OVERLAY_MAX_MODELS,
+    openrouter_attribution_headers,
 )
 from ..integrations.provider_options import options_key
 from .registry import ModelFamily, OpenRouterModelRegistry, uses_dedicated_image_api
@@ -93,6 +94,9 @@ def _normalize_id_list(meta_dict: dict, key: str) -> list[str]:
     return normalized
 
 
+_MAKER_SOURCE_KIND = "maker"
+
+
 def _ensure_pipe_meta(meta_dict: dict) -> dict:
     pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
     if isinstance(pipe_meta, dict):
@@ -109,6 +113,41 @@ def _covered_icon(row: Any, icon_url: str) -> str | None:
     if data_url and stamp == icon_url:
         return data_url
     return None
+
+
+def _convergent_stamp(row: tuple[str | None, str | None, bool, bool, str | None]) -> str:
+    if row[1] and row[4] == _MAKER_SOURCE_KIND:
+        return row[1]
+    return ""
+
+
+def makers_needing_a_page(
+    models: list[dict[str, Any]],
+    icon_mapping: dict[str, str],
+    stored_icons: dict[str, tuple[str | None, str | None, bool, bool, str | None]],
+    pipe_identifier: str,
+) -> tuple[set[str], dict[str, str]]:
+    stamps: dict[str, set[str]] = {}
+    for model in models:
+        original_id = model.get("original_id")
+        if not isinstance(original_id, str) or not original_id:
+            continue
+        if original_id in icon_mapping:
+            continue
+        maker_id = original_id.split("/", 1)[0]
+        if not maker_id:
+            continue
+        row = stored_icons.get(f"{pipe_identifier}.{model.get('id')}")
+        if row is not None and (row[2] or row[3]):
+            continue
+        stamps.setdefault(maker_id, set()).add(
+            _convergent_stamp(row) if row is not None else ""
+        )
+
+    covered = {maker for maker, seen in stamps.items() if len(seen) == 1 and "" not in seen}
+    missing = set(stamps) - covered
+    seeded = {maker: seen.pop() for maker, seen in stamps.items() if maker in covered}
+    return missing, seeded
 
 
 def _warn_on_empty_read(
@@ -130,7 +169,7 @@ async def _stored_profile_images(
     models: list[dict[str, Any]],
     pipe_identifier: str,
     logger: Any,
-) -> dict[str, tuple[str | None, str | None, bool, bool]]:
+) -> dict[str, tuple[str | None, str | None, bool, bool, str | None]]:
     from open_webui.models.models import Models
 
     from ..api.transforms import _get_disable_param
@@ -152,9 +191,10 @@ async def _stored_profile_images(
         )
         return {}
     if not rows:
-        return _warn_on_empty_read(ids, rows, logger)
+        _warn_on_empty_read(ids, rows, logger)
+        return {}
 
-    stored: dict[str, tuple[str | None, str | None, bool, bool]] = {}
+    stored: dict[str, tuple[str | None, str | None, bool, bool, str | None]] = {}
     for row in rows or []:
         model_id = getattr(row, "id", None)
         if not isinstance(model_id, str) or not model_id:
@@ -169,12 +209,14 @@ async def _stored_profile_images(
             pipe_meta = {}
         data_url = meta_dict.get("profile_image_url")
         stamp = pipe_meta.get("image_source_url")
+        kind = pipe_meta.get("image_source_kind")
         params = getattr(row, "params", None)
         stored[model_id] = (
             data_url if isinstance(data_url, str) and data_url else None,
             stamp if isinstance(stamp, str) and stamp else None,
             bool(_get_disable_param(params, "disable_image_updates")),
             bool(_get_disable_param(params, "disable_model_metadata_sync")),
+            kind if isinstance(kind, str) and kind else None,
         )
     return stored
 
@@ -1186,7 +1228,10 @@ class ModelCatalogManager:
     ) -> dict[str, Any] | None:
         """Fetch OpenRouter's public frontend model catalog (no auth)."""
         try:
-            async with session.get(_OPENROUTER_FRONTEND_MODELS_URL) as resp:
+            async with session.get(
+                _OPENROUTER_FRONTEND_MODELS_URL,
+                headers=openrouter_attribution_headers(self._pipe.valves),
+            ) as resp:
                 resp.raise_for_status()
                 payload = await resp.json()
         except Exception as exc:
@@ -1211,7 +1256,11 @@ class ModelCatalogManager:
         """Fetch OpenRouter's public per-model endpoint list (no auth)."""
         url = _OPENROUTER_MODEL_ENDPOINTS_URL_TEMPLATE.format(slug=model_slug)
         try:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            async with session.get(
+                url,
+                headers=openrouter_attribution_headers(self._pipe.valves),
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
                 resp.raise_for_status()
                 payload = await resp.json()
         except Exception as exc:
@@ -1507,29 +1556,23 @@ class ModelCatalogManager:
             )
 
             maker_mapping: dict[str, str] = {}
+            stored_icons: dict[str, tuple[str | None, str | None, bool, bool, str | None]] = {}
             if valves.UPDATE_MODEL_IMAGES:
-                missing_makers: set[str] = set()
-                for model in models:
-                    original_id = model.get("original_id")
-                    if not isinstance(original_id, str) or not original_id:
-                        continue
-                    if original_id in icon_mapping:
-                        continue
-                    maker_id = original_id.split("/", 1)[0]
-                    if maker_id:
-                        missing_makers.add(maker_id)
+                stored_icons = await _stored_profile_images(models, pipe_identifier, self.logger)
+                missing_makers, seeded_makers = makers_needing_a_page(
+                    models, icon_mapping, stored_icons, pipe_identifier
+                )
+                maker_mapping = dict(seeded_makers)
                 if missing_makers:
-                    maker_mapping = await self._build_maker_profile_image_mapping(
-                        missing_makers,
+                    maker_mapping.update(
+                        await self._build_maker_profile_image_mapping(missing_makers)
                     )
 
             icon_data_mapping: dict[str, str] = {}
             maker_data_mapping: dict[str, str] = {}
             slug_to_icon_url: dict[str, str] = {}
             maker_to_image_url: dict[str, str] = {}
-            stored_icons: dict[str, tuple[str | None, str | None, bool, bool]] = {}
             if valves.UPDATE_MODEL_IMAGES:
-                stored_icons = await _stored_profile_images(models, pipe_identifier, self.logger)
                 slug_to_icon_url = {}
                 for model in models:
                     original_id = model.get("original_id")
@@ -1929,6 +1972,7 @@ class ModelCatalogManager:
 
                 profile_image_url = None
                 image_source_url = None
+                image_source_kind = None
                 if (
                     valves.UPDATE_MODEL_IMAGES
                     and isinstance(original_id, str) and original_id
@@ -1941,6 +1985,12 @@ class ModelCatalogManager:
                         profile_image_url = maker_data_mapping.get(maker_id)
                         if profile_image_url:
                             image_source_url = maker_to_image_url.get(maker_id)
+                    if image_source_url:
+                        image_source_kind = (
+                            "frontend"
+                            if image_source_url == slug_to_icon_url.get(original_id)
+                            else _MAKER_SOURCE_KIND
+                        )
 
                 from ..filters.fusion_filter_renderer import (
                     is_fusion_model as _is_fusion,
@@ -2076,6 +2126,7 @@ class ModelCatalogManager:
                             valves.UPDATE_MODEL_CAPABILITIES,
                             valves.UPDATE_MODEL_IMAGES,
                             image_source_url=image_source_url,
+                            image_source_kind=image_source_kind,
                             capability_defaults=capability_defaults,
                             filter_function_id=web_tools_filter_function_id,
                             filter_supported=web_tools_supported,
@@ -2276,6 +2327,7 @@ class ModelCatalogManager:
         openrouter_pipe_capabilities: dict[str, bool] | None = None,
         description: str | None = None,
         image_source_url: str | None = None,
+        image_source_kind: str | None = None,
         update_descriptions: bool = False,
         new_model_access_control: str,
     ):
@@ -2664,6 +2716,9 @@ class ModelCatalogManager:
                 if pipe_meta.get("image_source_url") != image_source_url:
                     pipe_meta["image_source_url"] = image_source_url
                     meta_updated = True
+                if image_source_kind and pipe_meta.get("image_source_kind") != image_source_kind:
+                    pipe_meta["image_source_kind"] = image_source_kind
+                    meta_updated = True
 
             if (
                 update_descriptions and description
@@ -2901,6 +2956,8 @@ class ModelCatalogManager:
                 meta_dict["profile_image_url"] = profile_image_url
             if update_images and image_source_url:
                 _ensure_pipe_meta(meta_dict)["image_source_url"] = image_source_url
+                if image_source_kind:
+                    _ensure_pipe_meta(meta_dict)["image_source_kind"] = image_source_kind
             if update_descriptions and description:
                 meta_dict["description"] = description
 

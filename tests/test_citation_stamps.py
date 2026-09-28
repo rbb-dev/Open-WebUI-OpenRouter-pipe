@@ -30,7 +30,7 @@ PACKAGE = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 # 82 -> 83: `is_channel_chat`'s prefix resolver reaches the Functions table lazily, so the
 # channel predicate follows whatever prefix the host publishes instead of repeating one.
 # 83 -> 84: the video kill switch's two sweeps (`deactivate_video_gen_filters` and
-# `reactivate_video_gen_filters` in filters/filter_manager.py) each reach the Functions
+# `reactivate_filters_by_marker` in filters/filter_manager.py) each reach the Functions
 # table lazily, beside the other function-local lookups in the same module.
 # 84 -> 85 with the channel-message lookup: `VideoPersistence._load_channel_message`
 # imports `open_webui.models.messages` inside a broad `except`, function-local like its
