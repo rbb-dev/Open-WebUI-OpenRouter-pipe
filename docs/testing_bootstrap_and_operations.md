@@ -101,7 +101,7 @@ The suite is organized by subsystem. Common entry points:
 | Confirm Open WebUI ≥ 0.11.4 | The pipe manifest requires 0.11.4. |
 | Set `OPENROUTER_API_KEY` (valve or env) | Required for provider requests. |
 | Configure `WEBUI_SECRET_KEY` | Recommended so Open WebUI can encrypt/decrypt secret valve values stored via `EncryptedStr`. |
-| Decide on `ARTIFACT_ENCRYPTION_KEY` | Set before first launch if you plan to encrypt persisted artifacts; rotating later creates a new table and strands old rows. |
+| Decide on `ARTIFACT_ENCRYPTION_KEY` | Set before first launch if you plan to encrypt persisted artifacts; rotating later creates a new table and strands old rows, and a write already inside the cipher build when the rotation lands is dropped and logged with its artifact kind. |
 | Enable Redis when scaling out | Provide `REDIS_URL`, `WEBSOCKET_MANAGER=redis`, `WEBSOCKET_REDIS_URL`, and `UVICORN_WORKERS>1` to activate multi-worker cache behavior. |
 | Assign unique pipe IDs for multiple installs | Pipe id influences SQL table names and Redis namespaces; keep them distinct (see [Persistence, Encryption & Storage](persistence_encryption_and_storage.md)). |
 | Set `FALLBACK_STORAGE_*` if defaults clash | Ensure fallback uploads map to a valid Open WebUI account in your deployment. |

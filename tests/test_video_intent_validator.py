@@ -5,6 +5,8 @@ produces the expected VideoIntentResult.
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from open_webui_openrouter_pipe.integrations.video_intent import (

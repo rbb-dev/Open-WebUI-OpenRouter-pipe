@@ -1920,7 +1920,7 @@ class FilterManager:
         await self._retire_variant_image_filters()
         return installed
 
-    async def _retire_variant_image_filters(self) -> None:
+    async def _retire_variant_image_filters(self) -> set[str]:
         """Deactivate image filters left over from the fixed-variant design.
 
         Those rows carry the image marker but no ``IMAGE_FILTER_MODEL_ID``, so nothing
@@ -1929,13 +1929,14 @@ class FilterManager:
         for the model -- and it stays attached precisely to the models that now get no
         filter of their own.
         """
+        retired: set[str] = set()
         try:
             from open_webui.models.functions import Functions
 
             rows = await Functions.get_functions_by_type("filter", active_only=True)
         except Exception as exc:
             self.logger.debug("Could not list filters to retire old ones: %s", exc, exc_info=True)
-            return
+            return retired
 
         for row in rows or []:
             content = getattr(row, "content", "")
@@ -1957,9 +1958,11 @@ class FilterManager:
                 self.logger,
             ):
                 continue
+            retired.add(row_id)
             self.logger.info(
                 "Retired superseded image filter %r; each model now has its own.", row_id
             )
+        return retired
 
     async def _retire_variant_video_filters(self) -> None:
         try:

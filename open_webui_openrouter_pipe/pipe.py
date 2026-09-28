@@ -683,7 +683,18 @@ class Pipe:
         if self._startup_checks_complete:
             return
         if self._startup_task and not self._startup_task.done():
-            return
+            try:
+                task_loop = self._startup_task.get_loop()
+            except AttributeError:  # pragma: no cover - defensive for older asyncio implementations
+                task_loop = None
+            try:
+                current_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                current_loop = None
+            if task_loop is not None and task_loop is current_loop:
+                return
+            self._startup_task = None
+            self._startup_checks_started = False
         if self._startup_task and self._startup_task.done():
             self._startup_task = None
         api_key_value, api_key_error = self._resolve_openrouter_api_key(self.valves)
@@ -938,7 +949,13 @@ class Pipe:
             return
         self._redis_loop = loop
         if self._redis_ready_task and not self._redis_ready_task.done():
-            return
+            try:
+                task_loop = self._redis_ready_task.get_loop()
+            except AttributeError:  # pragma: no cover - defensive for older asyncio implementations
+                task_loop = None
+            if task_loop is not None and task_loop is loop:
+                return
+            self._redis_ready_task = None
         self._redis_ready_task = _detached_task(
             loop, self._init_redis_client(), "openrouter-redis-init"
         )
@@ -952,13 +969,17 @@ class Pipe:
 
     @timed
     def _maybe_start_cleanup(self) -> None:
-        if self._cleanup_task and not self._cleanup_task.done():
-            return
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        if self._cleanup_task and self._cleanup_task.done():
+        if self._cleanup_task and not self._cleanup_task.done():
+            try:
+                task_loop = self._cleanup_task.get_loop()
+            except AttributeError:  # pragma: no cover - defensive for older asyncio implementations
+                task_loop = None
+            if task_loop is not None and task_loop is loop:
+                return
             self._cleanup_task = None
         self._cleanup_task = _detached_task(
             loop,
@@ -1974,7 +1995,8 @@ class Pipe:
         for attr in ("_redis_listener_task", "_redis_flush_task", "_redis_ready_task"):
             task = getattr(self, attr, None)
             if task and not task.done():
-                task.cancel()
+                with contextlib.suppress(RuntimeError):
+                    task.cancel()
                 cancelled_tasks.append(task)
             setattr(self, attr, None)
 
@@ -2115,12 +2137,13 @@ class Pipe:
         """Stop this instance's queue worker and drain pending items."""
         worker = self._queue_worker_task
         if worker:
-            worker.cancel()
+            with contextlib.suppress(RuntimeError):
+                worker.cancel()
             try:
                 worker_loop = worker.get_loop()
             except AttributeError:  # pragma: no cover - defensive for older asyncio implementations
                 worker_loop = None
-            if worker_loop is None or worker_loop is asyncio.get_running_loop():
+            if worker_loop is not None and worker_loop is asyncio.get_running_loop():
                 with contextlib.suppress(asyncio.CancelledError):
                     await worker
             else:
@@ -2137,8 +2160,13 @@ class Pipe:
                 except asyncio.QueueEmpty:
                     break
                 if not abandoned.future.done():
-                    abandoned.future.cancel()
-                queue.task_done()
+                    with contextlib.suppress(RuntimeError):
+                        abandoned.future.cancel()
+                state = getattr(abandoned, "counter_state", None)
+                if state is not None and not state.get("tail"):
+                    Pipe._release_stream_counter(abandoned.pipe, state)
+                with contextlib.suppress(ValueError):
+                    queue.task_done()
 
     @timed
     async def _stop_log_worker(self) -> None:
@@ -2147,7 +2175,8 @@ class Pipe:
         owned_loop = self._log_queue_loop
         worker = self._log_worker_task
         if worker:
-            worker.cancel()
+            with contextlib.suppress(RuntimeError):
+                worker.cancel()
             try:
                 worker_loop = worker.get_loop()
             except AttributeError:  # pragma: no cover - defensive for older asyncio implementations
@@ -2295,8 +2324,9 @@ class Pipe:
                 await handler.aclose()
 
         if self._cleanup_task:
-            self._cleanup_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
+            with contextlib.suppress(RuntimeError):
+                self._cleanup_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, RuntimeError):
                 await self._cleanup_task
             self._cleanup_task = None
 

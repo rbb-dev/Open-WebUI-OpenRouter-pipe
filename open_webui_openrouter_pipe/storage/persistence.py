@@ -451,6 +451,7 @@ class ArtifactStore:
             self.valves.ENABLE_LZ4_COMPRESSION and lz4frame is not None
         )
         self._fernet: Fernet | None = None
+        self._fernet_key_source: str | None = None
         self._lz4_warning_emitted = False
 
     def _apply_artifact_encryption_key(self, plaintext: str | None, stored: Any) -> None:
@@ -534,6 +535,7 @@ class ArtifactStore:
         encryption_key = (plaintext or "").strip()
         if encryption_key != self._encryption_key:
             self._fernet = None
+            self._fernet_key_source = None
         self._apply_artifact_encryption_key(plaintext, valves.ARTIFACT_ENCRYPTION_KEY)
         self._encrypt_all = valves.ENCRYPT_ALL
         self._compression_min_bytes = valves.MIN_COMPRESS_BYTES
@@ -1004,10 +1006,12 @@ class ArtifactStore:
         """Return (and cache) the Fernet helper derived from the encryption key."""
         if not self._encryption_key:
             return None
-        if self._fernet is None:
-            digest = hashlib.sha256(self._encryption_key.encode("utf-8")).digest()
+        key_source = self._encryption_key
+        if self._fernet is None or self._fernet_key_source != key_source:
+            digest = hashlib.sha256(key_source.encode("utf-8")).digest()
             key = base64.urlsafe_b64encode(digest)
             self._fernet = Fernet(key)
+            self._fernet_key_source = key_source
         return self._fernet
 
     def _should_encrypt(self, item_type: str) -> bool:
@@ -1579,7 +1583,10 @@ class ArtifactStore:
                 try:
                     payload = self._decrypt_payload(ciphertext or "")
                 except Exception as exc:
-                    self.logger.warning("Failed to decrypt artifact %s: %s", row.id, exc, exc_info=True)
+                    self.logger.warning(
+                        "Failed to decrypt artifact %s (item_type=%s): %s",
+                        row.id, getattr(row, "item_type", "unknown"), exc, exc_info=True,
+                    )
                     continue
                 if sealed is not None:
                     sealed.add(row.id)

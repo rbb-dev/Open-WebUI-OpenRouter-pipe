@@ -219,6 +219,14 @@ def _reference_family(label: str) -> str:
     return head if head in _REFERENCE_FAMILY_FIELDS else ""
 
 
+async def _decoded_length(b64: str) -> int:
+    return len(await asyncio.to_thread(base64.b64decode, b64, validate=False))
+
+
+async def _decoded_payload(b64: str) -> bytes:
+    return await asyncio.to_thread(base64.b64decode, b64, validate=False)
+
+
 @dataclass(frozen=True, slots=True)
 class _AcceptedReference:
     file_id: str
@@ -228,6 +236,7 @@ class _AcceptedReference:
     b64: str
     via_file_host: bool
     filename: str
+    blob: bytes
 
 
 _FLOOR_UNPUBLISHED = (
@@ -2062,7 +2071,7 @@ class VideoGenerationAdapter:
             if not b64:
                 raise VideoGenerationError(f"Frame image '{file_id}' could not be encoded.")
             try:
-                decoded_len = len(base64.b64decode(b64, validate=False))
+                decoded_len = await _decoded_length(b64)
             except Exception as exc:
                 raise VideoGenerationError(f"Frame image '{file_id}' contains invalid base64 data.") from exc
             total_bytes += decoded_len
@@ -2201,7 +2210,7 @@ class VideoGenerationAdapter:
                 _skip(file_id, "unencodable", "it could not be encoded")
                 continue
             try:
-                decoded_len = len(base64.b64decode(b64, validate=False))
+                blob = await _decoded_payload(b64)
             except Exception as exc:
                 self.logger.debug(
                     "input_references asset %s is not valid base64: %s", file_id, exc,
@@ -2209,6 +2218,7 @@ class VideoGenerationAdapter:
                 )
                 _skip(file_id, "not-base64", "it contains invalid base64 data")
                 continue
+            decoded_len = len(blob)
             if family == "image":
                 if decoded_len > image_max:
                     _skip(file_id, "over-single", _over_reference_single)
@@ -2220,7 +2230,7 @@ class VideoGenerationAdapter:
             if via_file_host:
                 self._refuse_over_the_relay_cap(decoded_len, relay_bytes, relay_max)
                 if family == "video":
-                    note = await self._clip_too_small_note(blob_floor, b64, mime)
+                    note = await self._clip_too_small_note(blob_floor, blob, mime)
                     if note:
                         _skip(file_id, "clip-size", note)
                         continue
@@ -2234,6 +2244,7 @@ class VideoGenerationAdapter:
                     b64=b64,
                     via_file_host=via_file_host,
                     filename=_clean_str(getattr(file_obj, "filename", "")),
+                    blob=blob,
                 )
             )
         if past_the_count:
@@ -2256,7 +2267,7 @@ class VideoGenerationAdapter:
         for entry in accepted:
             if entry.via_file_host:
                 link, host = await self._relay_reference(
-                    valves, entry.b64, filename=entry.filename,
+                    valves, entry.blob, filename=entry.filename,
                     mime=entry.mime, family=entry.family,
                     deadline=relay_deadline,
                 )
@@ -2464,14 +2475,17 @@ class VideoGenerationAdapter:
         return bool(per_kind and getattr(valves, per_kind, False))
 
     async def _clip_too_small_note(
-        self, floor: _InputPixelFloor | None, b64: str, mime: str
+        self, floor: _InputPixelFloor | None, payload: str | bytes, mime: str
     ) -> str:
         if floor is None:
             return ""
-        try:
-            blob = base64.b64decode(b64, validate=False)
-        except (binascii.Error, ValueError):
-            return ""
+        if isinstance(payload, (bytes, bytearray)):
+            blob = bytes(payload)
+        else:
+            try:
+                blob = await asyncio.to_thread(base64.b64decode, payload, validate=False)
+            except (binascii.Error, ValueError):
+                return ""
         suffix = extension_for_video_mime(mime) or ".mp4"
         handle, path = tempfile.mkstemp(suffix=suffix, prefix="openrouter-clip-")
         temp = Path(path)
@@ -2496,15 +2510,18 @@ class VideoGenerationAdapter:
         )
 
     async def _relay_reference(
-        self, valves: Any, b64: str, *, filename: str, mime: str, family: str,
-        deadline: float,
+        self, valves: Any, payload: str | bytes, *, filename: str, mime: str,
+        family: str, deadline: float,
     ) -> tuple[str, str]:
-        try:
-            blob = base64.b64decode(b64, validate=False)
-        except (binascii.Error, ValueError) as exc:
-            raise VideoGenerationError(
-                f"The attached {family} could not be read, so it was not sent."
-            ) from exc
+        if isinstance(payload, (bytes, bytearray)):
+            blob = bytes(payload)
+        else:
+            try:
+                blob = await asyncio.to_thread(base64.b64decode, payload, validate=False)
+            except (binascii.Error, ValueError) as exc:
+                raise VideoGenerationError(
+                    f"The attached {family} could not be read, so it was not sent."
+                ) from exc
         hosts = self._relay_hosts(valves)
         failures: list[str] = []
         async with self._pipe._create_http_session(valves) as http:

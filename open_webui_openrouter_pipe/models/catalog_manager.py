@@ -245,6 +245,7 @@ def _apply_list_filter_ids(
     auto_attach: bool,
     prune_key: str,
     hands_off: bool = False,
+    retired_ids: frozenset[str] = frozenset(),
 ) -> bool:
     if hands_off:
         return False
@@ -265,6 +266,7 @@ def _apply_list_filter_ids(
     for prev_fid in previous_ids:
         if not attaching or prev_fid not in current_set:
             wanted.discard(prev_fid)
+    wanted -= retired_ids
     if wanted == had:
         if not attaching and _record_ownership(
             meta_dict, record_key=prune_key, owned=None, attaching=False
@@ -1659,6 +1661,7 @@ class ModelCatalogManager:
             image_filter_function_ids: dict[str, list[str]] = {}
             image_filter_ids_known = True
             image_filter_ids_unresolved: frozenset[str] = frozenset()
+            retired_image_filter_ids: frozenset[str] = frozenset()
             if (
                 (valves.AUTO_INSTALL_IMAGE_FILTERS or valves.AUTO_ATTACH_IMAGE_FILTERS)
                 and valves.ENABLE_OPENROUTER_IMAGE_GENERATION
@@ -1681,7 +1684,10 @@ class ModelCatalogManager:
                 # filter would otherwise stay attached and keep writing its invented
                 # values into every request.
                 try:
-                    await self._pipe._ensure_filter_manager()._retire_variant_image_filters()
+                    retired_image_filter_ids = frozenset(
+                        await self._pipe._ensure_filter_manager()._retire_variant_image_filters()
+                        or ()
+                    )
                 except Exception as exc:
                     self.logger.debug(
                         "Retiring superseded image filters failed: %s", exc, exc_info=True
@@ -2083,6 +2089,7 @@ class ModelCatalogManager:
                             ),
                             image_filter_ids_known=image_filter_ids_known,
                             image_ids_unresolved=image_ids_unresolved,
+                            retired_image_filter_ids=retired_image_filter_ids,
                             fusion_filter_function_ids=fusion_filter_ids_for_model,
                             fusion_filter_supported=bool(fusion_filter_ids_for_model),
                             auto_attach_fusion_filter=auto_attach_fusion,
@@ -2247,6 +2254,7 @@ class ModelCatalogManager:
         auto_default_image_filter: bool = False,
         image_filter_ids_known: bool = True,
         image_ids_unresolved: bool = False,
+        retired_image_filter_ids: frozenset[str] = frozenset(),
         fusion_filter_function_ids: list[str] | None = None,
         fusion_filter_supported: bool = False,
         auto_attach_fusion_filter: bool = False,
@@ -2771,6 +2779,7 @@ class ModelCatalogManager:
                 auto_attach=auto_attach_image_filter,
                 prune_key="image_filter_ids",
                 hands_off=image_hands_off,
+                retired_ids=retired_image_filter_ids,
             ):
                 meta_updated = True
 
@@ -2923,6 +2932,7 @@ class ModelCatalogManager:
                 auto_attach=auto_attach_image_filter,
                 prune_key="image_filter_ids",
                 hands_off=image_hands_off,
+                retired_ids=retired_image_filter_ids,
             )
             _apply_list_default_filter_ids(
                 meta_dict,

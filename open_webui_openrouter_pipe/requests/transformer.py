@@ -100,6 +100,7 @@ from ..storage.persistence import generate_item_id, normalize_persisted_item
 from ..tools.tool_schema import (
     _classify_function_call_artifacts,
 )
+from .tool_names import _tool_names_by_position
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
@@ -181,53 +182,6 @@ def _without_tool_result(
     if isinstance(item_type, str) and item_type.startswith("openrouter:"):
         return _server_round(item, "{}", unretained_tool_result(server_tool_status(item) != "completed"))
     return None
-
-
-def _tool_name_for_round(messages: list[dict[str, Any]], position: int) -> str:
-    target = str(messages[position].get("tool_call_id") or "")
-    if not target:
-        return ""
-    for offset in range(position - 1, -1, -1):
-        message = messages[offset]
-        if not isinstance(message, dict):
-            continue
-        if (message.get("role") or "").lower() == "tool":
-            continue
-        calls = [
-            call for call in (message.get("tool_calls") or [])
-            if isinstance(call, dict) and str(call.get("id") or "") == target
-        ]
-        if not calls:
-            break
-        ordinal = sum(
-            1 for prior in messages[offset + 1: position]
-            if isinstance(prior, dict) and str(prior.get("tool_call_id") or "") == target
-        )
-        if ordinal >= len(calls):
-            break
-        function = calls[ordinal].get("function")
-        return str((function or {}).get("name") or "") if isinstance(function, dict) else ""
-    return ""
-
-
-def _issuing_assistant_index(messages: list[dict[str, Any]], position: int) -> int:
-    target = str(messages[position].get("tool_call_id") or "")
-    if not target:
-        return -1
-    for offset in range(position - 1, -1, -1):
-        message = messages[offset]
-        if not isinstance(message, dict):
-            continue
-        if (message.get("role") or "").lower() == "tool":
-            continue
-        calls = [
-            call for call in (message.get("tool_calls") or [])
-            if isinstance(call, dict) and str(call.get("id") or "") == target
-        ]
-        if calls:
-            return offset
-        break
-    return -1
 
 
 _REUSE_DOWNLOAD_MEMO_MAX_BYTES = 8 * 1024 * 1024
@@ -842,6 +796,7 @@ async def transform_messages_to_input(
         for call in message["tool_calls"]
         if isinstance(call, dict) and call.get("id") and isinstance(call.get("function"), dict)
     }
+    tool_name_at, issuer_at = _tool_names_by_position(messages)
 
     def _withheld(turn_index: int | None) -> bool:
         return not active_valves.PERSIST_TOOL_RESULTS and turn_index is not None and turn_index < total_turns - 1
@@ -919,8 +874,8 @@ async def transform_messages_to_input(
             if not call_id:
                 continue
 
-            round_name = _tool_name_for_round(messages, idx)
-            issuer = _issuing_assistant_index(messages, idx)
+            round_name = tool_name_at[idx] or ""
+            issuer = issuer_at[idx]
             if not _is_ask_user_name(round_name, ask_user_names) and not (
                 issuer >= 0 and issuer in window_armed_at and not is_picture_output(raw_content)
             ):
@@ -1053,7 +1008,7 @@ async def transform_messages_to_input(
                         )
 
                     if is_inline_data_url(url):
-                        url = f"data:{url.partition(':')[2]}"
+                        url = "data:" + url[url.index(":") + 1:]
                         try:
                             split = split_base64_data_url(url)
                             if split is None:
@@ -1063,26 +1018,26 @@ async def transform_messages_to_input(
                                     "unencoded_inline",
                                     subject=loggable_link(url),
                                 )
-                            parsed = await asyncio.to_thread(pipe._multimodal_handler._parse_data_url, url)
-                            if not parsed:
-                                oversized = (len(split[1]) * 3) // 4 > max_inline_bytes
+                            if (len(split[1]) * 3) // 4 > max_inline_bytes:
                                 return ImageRefusal(
-                                    f"larger than the {max_inline_bytes}-byte inline limit"
-                                    if oversized
-                                    else "not decodable as base64",
-                                    "oversized_inline" if oversized else "undecodable_inline",
+                                    f"larger than the {max_inline_bytes}-byte inline limit",
+                                    "oversized_inline",
                                     subject=loggable_link(url),
                                 )
-                            if split is not None:
-                                _body = "".join(split[1].split())
-                                try:
-                                    base64.b64decode(_body, validate=True)
-                                except (binascii.Error, ValueError):
-                                    return ImageRefusal(
-                                        "not decodable as base64", "undecodable_inline",
-                                        subject=loggable_link(url),
-                                    )
-                                url = split[0] + "," + _body
+                            _body = "".join(split[1].split())
+                            if not _body:
+                                return ImageRefusal(
+                                    "not decodable as base64", "undecodable_inline",
+                                    subject=loggable_link(url),
+                                )
+                            if not await asyncio.to_thread(
+                                pipe._multimodal_handler._parse_data_url, url
+                            ):
+                                return ImageRefusal(
+                                    "not decodable as base64", "undecodable_inline",
+                                    subject=loggable_link(url),
+                                )
+                            url = split[0] + "," + _body
                         except Exception as exc:
                             pipe.logger.exception("Failed to process base64 image")
                             await pipe._ensure_error_formatter()._emit_error(

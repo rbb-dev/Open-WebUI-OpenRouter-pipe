@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import re
 import time
 import unicodedata
@@ -568,7 +569,12 @@ def validate_intent_params(
                     continue
                 source_index = resolved
                 if source == "prior_video_at_timestamp":
-                    if not isinstance(timestamp_seconds_raw, (int, float)) or timestamp_seconds_raw < 0:
+                    if (
+                        not isinstance(timestamp_seconds_raw, (int, float))
+                        or isinstance(timestamp_seconds_raw, bool)
+                        or not math.isfinite(float(timestamp_seconds_raw))
+                        or timestamp_seconds_raw < 0
+                    ):
                         downgrades.append("dropped_invalid_timestamp")
                         continue
                     timestamp_seconds = float(timestamp_seconds_raw)

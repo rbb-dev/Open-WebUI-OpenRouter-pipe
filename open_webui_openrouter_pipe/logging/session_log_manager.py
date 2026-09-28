@@ -62,36 +62,57 @@ def _unwritten_archive_count(job_queue: queue.Queue) -> int:
         return sum(1 for entry in job_queue.queue if entry is not None)
 
 
+def _report_drain_incomplete(
+    mgr_ref: Any, job_queue: queue.Queue, dropped: int = 0
+) -> None:
+    residual = _unwritten_archive_count(job_queue) + int(dropped)
+    if residual <= 0:
+        return
+    mgr = mgr_ref()
+    if mgr is not None:
+        _truncate_latch(mgr._unreadable_archive_warnings, _MAX_DRAIN_LATCH_KEYS)
+        mgr.logger.log(
+            warn_level(
+                mgr._unreadable_archive_warnings,
+                f"session_log_shutdown_drain_incomplete:{time.monotonic_ns()}",
+                cooldown_s=3600.0,
+            ),
+            "Session log writer stopped with %d queued archive(s) it could not write.",
+            residual,
+        )
+        return
+    _truncate_latch(_DEAD_MANAGER_DRAIN_WARNINGS, _MAX_DRAIN_LATCH_KEYS)
+    logger.log(
+        warn_level(
+            _DEAD_MANAGER_DRAIN_WARNINGS,
+            f"session_log_shutdown_drain_incomplete:{time.monotonic_ns()}",
+            cooldown_s=3600.0,
+        ),
+        "Session log writer stopped with %d queued archive(s) it could not write.",
+        residual,
+    )
+
+
 def _writer_loop(mgr_ref: Any, stop_event: threading.Event, job_queue: queue.Queue) -> None:
     drain_deadline: float | None = None
+    dropped = 0
 
     def _should_stop(deadline: float | None) -> bool:
         return deadline is not None or stop_event.is_set()
 
     while True:
-        if mgr_ref() is None:
-            break
+        manager_gone = mgr_ref() is None
         item: Any = None
-        if stop_event.is_set():
+        if manager_gone or stop_event.is_set():
             if drain_deadline is None:
                 drain_deadline = time.monotonic() + _WRITER_DRAIN_SECONDS
             if drain_deadline is not None and time.monotonic() >= drain_deadline and not job_queue.empty():
-                mgr = mgr_ref()
-                if mgr is not None:
-                    _truncate_latch(mgr._unreadable_archive_warnings, _MAX_DRAIN_LATCH_KEYS)
-                    mgr.logger.log(
-                        warn_level(
-                            mgr._unreadable_archive_warnings,
-                            f"session_log_shutdown_drain_incomplete:{time.monotonic_ns()}",
-                            cooldown_s=3600.0,
-                        ),
-                        "Session log writer stopped with %d queued archive(s) it could not write.",
-                        _unwritten_archive_count(job_queue),
-                    )
+                _report_drain_incomplete(mgr_ref, job_queue, dropped)
                 break
             try:
                 item = job_queue.get_nowait()
             except queue.Empty:
+                _report_drain_incomplete(mgr_ref, job_queue, dropped)
                 break
         else:
             try:
@@ -103,9 +124,14 @@ def _writer_loop(mgr_ref: Any, stop_event: threading.Event, job_queue: queue.Que
                 continue
         mgr = mgr_ref()
         if mgr is None:
+            if item is not None:
+                dropped += 1
             with contextlib.suppress(Exception):
                 job_queue.task_done()
-            break
+            if item is None:
+                _report_drain_incomplete(mgr_ref, job_queue, dropped)
+                break
+            continue
         if item is None:
             with contextlib.suppress(Exception):
                 job_queue.task_done()
@@ -187,6 +213,8 @@ _WRITER_DRAIN_SECONDS = 1.0
 _MAX_EXCLUDED_TURNS = 1000
 
 _MAX_DRAIN_LATCH_KEYS = 32
+
+_DEAD_MANAGER_DRAIN_WARNINGS: dict[str, float] = {}
 
 _INCOMPLETE_MARKER_PREFIX = "Session log finalized as incomplete"
 _INCOMPLETE_MARKER_FUNC = "_assemble_and_write_bundle"
@@ -1244,7 +1272,6 @@ class SessionLogManager:
         self._unreadable_archive_attempts[key] = attempts
         if attempts < _UNREADABLE_ARCHIVE_CAPTURE_AFTER:
             return
-        self._unreadable_archive_attempts[key] = 0
 
         events: list[dict[str, Any]] = []
         request_id = ""
@@ -1260,6 +1287,10 @@ class SessionLogManager:
             return
 
         fallback_message_id = f"{message_id}.{request_id}"
+        rescue_path = out_path.with_name(f"{fallback_message_id}.zip")
+        before_stat = None
+        with contextlib.suppress(Exception):
+            before_stat = rescue_path.stat()
         try:
             self._write_archive(
                 _SessionLogArchiveJob(
@@ -1287,6 +1318,30 @@ class SessionLogManager:
             )
             return
 
+        after_stat = None
+        with contextlib.suppress(Exception):
+            after_stat = rescue_path.stat()
+        wrote = after_stat is not None and (
+            before_stat is None
+            or after_stat.st_mtime_ns != before_stat.st_mtime_ns
+            or after_stat.st_size != before_stat.st_size
+        )
+        if not wrote:
+            self._unreadable_archive_attempts[key] = attempts
+            self.logger.log(
+                warn_level(
+                    self._unreadable_archive_warnings,
+                    f"session_log_capture_failed:{key}",
+                    cooldown_s=3600.0,
+                ),
+                "Could not capture stranded session log turn chat_id=%s message_id=%s; "
+                "its staged segments stay in the database until artifact retention reaps them.",
+                chat_id,
+                message_id,
+            )
+            return
+
+        self._unreadable_archive_attempts[key] = 0
         self._captured_turns.add(key)
         self._rescue_pending.discard((chat_id, message_id))
         self._release_assembly_lock(
@@ -1537,6 +1592,7 @@ class SessionLogManager:
                 chat_id,
                 message_id,
             )
+            self._restore_touched_stamps(model, session_factory, stamps, list(ids), chat_id, message_id)
             self._release_assembly_lock(lock_id)
             return False
         base_dir, zip_password, zip_compression, zip_compresslevel = settings
@@ -1583,6 +1639,7 @@ class SessionLogManager:
                 )
 
         if read_failed:
+            self._restore_touched_stamps(model, session_factory, stamps, list(ids), chat_id, message_id)
             self._release_assembly_lock(lock_id)
             self._capture_unassemblable_turn(
                 chat_id,
@@ -1642,6 +1699,7 @@ class SessionLogManager:
             return True
 
         # If writing failed, keep segments for retry and allow lock reaping.
+        self._restore_touched_stamps(model, session_factory, stamps, list(ids), chat_id, message_id)
         self._release_assembly_lock(lock_id)
         self.logger.log(
             warn_level(

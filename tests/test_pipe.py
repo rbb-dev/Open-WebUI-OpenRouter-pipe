@@ -9935,13 +9935,20 @@ class TestRedisInitPaths:
                 pipe._redis_candidate = True
                 pipe._artifact_store._redis_enabled = False
 
-                # Create a mock task that's not done
-                mock_task = MagicMock()
-                mock_task.done.return_value = False
-                pipe._redis_ready_task = mock_task
+                # A real task on the running loop, not a mock: the guard now compares
+                # the task's loop with the current one, and a MagicMock has no loop.
+                first = asyncio.create_task(asyncio.sleep(10))
+                pipe._redis_ready_task = first
 
                 pipe._maybe_start_redis()
-                assert pipe._redis_ready_task is mock_task
+                assert pipe._redis_ready_task is first
+
+                # Clean up the task
+                pipe._redis_ready_task.cancel()
+                try:
+                    await pipe._redis_ready_task
+                except asyncio.CancelledError:
+                    pass
 
             asyncio.run(run_test())
         finally:

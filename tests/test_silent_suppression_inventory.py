@@ -85,8 +85,24 @@ _EXPECTED: dict[str, int] = {
     # the manager died. `task_done` is bookkeeping on a queue the dying manager will
     # never again read, and a ValueError from over-counting it must not take the
     # thread's exit down with it.
-    "logging/session_log_manager.py": 19,
-    "media/frame_extraction.py": 2,
+    # H685-1 added the twentieth and twenty-first: the two `rescue_path.stat()` calls
+    # around the stranded-turn capture's write. They are the stat-diff the sibling
+    # `_assemble_and_write_bundle` already uses for the same question -- did this
+    # write publish -- and a `stat()` that raises has no consequence the caller's own
+    # report does not already cover, because a path that cannot be stat'd cannot have
+    # been written either, so the capture reports the failure and leaves the rows.
+    "logging/session_log_manager.py": 21,
+    # 3rd: the generic ffmpeg arm, which now stops the child it started before it
+    # reports a transport fault. The suppression is load-bearing and is not a test
+    # guard: PIL's `UnidentifiedImageError` subclasses `OSError`, so the common
+    # corrupt-output decode failure lands in that arm on a child asyncio has ALREADY
+    # reaped, and `kill()` on a reaped child raises `ProcessLookupError`. Without the
+    # suppression that path surfaces `ProcessLookupError` instead of
+    # `FrameExtractionError`, and the caller in `integrations/video.py` catches only
+    # the latter -- so an escaping `ProcessLookupError` would fall to the outer
+    # `except Exception` and degrade to a generic `materialise_failed` instead of
+    # the honest `frame_extract_failed_idx_*` disclosure.
+    "media/frame_extraction.py": 3,
     "models/catalog_manager.py": 2,
     # 19th: `MultimodalHandler.aclose()` during shutdown, closing the vetted transport's
     # session and its decode pool. It sits among the teardown steps either side of it,

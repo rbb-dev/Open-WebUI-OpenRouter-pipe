@@ -9,6 +9,7 @@ import asyncio
 import contextlib
 import io
 import logging
+import math
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -156,7 +157,7 @@ async def probe_video(path: Path) -> VideoMetadata:
 # -----------------------------------------------------------------------------
 
 def _normalise_png_mode(img: Image.Image) -> bytes:
-    if img.mode not in ("RGB", "RGBA"):
+    if img.mode != "RGB":
         img = composite_on_white(img)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
@@ -181,6 +182,16 @@ def _declared_size(path: Path) -> tuple[int, int] | None:
     except Exception:  # noqa: BLE001 - a header we cannot read is a header we lack
         return None
     return None
+
+
+def _normalise_frame_sync(stdout: bytes) -> tuple[bytes, int, int]:
+    img = Image.open(io.BytesIO(stdout))
+    if _over_pixel_cap(img.width, img.height):
+        raise _ffmpeg_pixel_cap_refusal(img.width, img.height)
+    img.load()
+    if img.mode != "RGB":
+        stdout = _normalise_png_mode(img)
+    return stdout, img.width, img.height
 
 
 def _extract_frame_imageio_sync(
@@ -281,15 +292,10 @@ async def _extract_frame_ffmpeg(
                 )
             if not stdout:
                 raise FrameExtractionError("ffmpeg produced empty output", no_frame=True)
-            img = Image.open(io.BytesIO(stdout))
-            if _over_pixel_cap(img.width, img.height):
-                raise _ffmpeg_pixel_cap_refusal(img.width, img.height)
-            img.load()
-            if img.mode not in ("RGB", "RGBA"):
-                stdout = _normalise_png_mode(img)
+            stdout, width, height = await asyncio.to_thread(_normalise_frame_sync, stdout)
             if saw_damage is not None:
                 saw_damage.append(walked_past_damage)
-            return stdout, img.width, img.height
+            return stdout, width, height
         except asyncio.CancelledError:
             if proc is not None:
                 with contextlib.suppress(Exception):
@@ -303,12 +309,41 @@ async def _extract_frame_ffmpeg(
                 walked_past_damage = True
             last_no_frame = exc
         except Exception as exc:
+            if proc is not None:
+                with contextlib.suppress(Exception):
+                    proc.kill()
+                    await proc.wait()
             raise FrameExtractionError(f"ffmpeg extract failed: {exc}") from exc
     if saw_damage is not None:
         saw_damage.append(walked_past_damage)
     if last_no_frame is not None:
         raise last_no_frame
     raise FrameExtractionError("ffmpeg extract failed: no seek attempted")
+
+
+async def _imageio_last_resort(
+    path: Path, *, requested_ts: float | None,
+    downgrade_note: str, logger: logging.Logger,
+) -> ExtractedFrame:
+    png_bytes, w, h = await asyncio.to_thread(
+        _extract_frame_imageio_sync, path, frame_index=0,
+    )
+    if not downgrade_note:
+        downgrade_note = "frame_damaged_used_first_frame"
+    logger.debug("ffmpeg produced no frame; the file's first frame is the last resort")
+    return ExtractedFrame(
+        image_bytes=png_bytes, width=w, height=h,
+        actual_timestamp_seconds=0.0,
+        requested_timestamp_seconds=requested_ts,
+        downgrade_note=downgrade_note,
+        resolved_target="first_frame",
+    )
+
+
+def _is_finite_non_negative(value) -> bool:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    return math.isfinite(value) and value >= 0
 
 
 async def extract_frame(
@@ -332,14 +367,17 @@ async def extract_frame(
     logger = logger or logging.getLogger(__name__)
     if not path.exists():
         raise FrameExtractionError(f"video file not found: {path}")
-    if target == "at_timestamp" and (timestamp_seconds is None or timestamp_seconds < 0):
-        raise FrameExtractionError("at_timestamp requires non-negative timestamp_seconds")
+    if target == "at_timestamp" and not _is_finite_non_negative(timestamp_seconds):
+        raise FrameExtractionError(
+            "at_timestamp requires a finite non-negative timestamp_seconds"
+        )
 
     downgrade_note = ""
     requested_ts = timestamp_seconds if target == "at_timestamp" else None
     use_end_seek = False
     meta: VideoMetadata | None = None
     overshoot_measured = False
+    overshoot_downgrade = ""
 
     if target == "first_frame":
         actual_ts = 0.0
@@ -374,7 +412,9 @@ async def extract_frame(
                     )
                 actual_ts = _index_end(meta, reused_frame_index)
                 fallback_word = "first" if reused_frame_index == "first" else "last"
-                downgrade_note = f"timestamp_past_video_end_used_{fallback_word}_frame"
+                overshoot_downgrade = (
+                    f"timestamp_past_video_end_used_{fallback_word}_frame"
+                )
                 resolved_target = (
                     "first_frame" if reused_frame_index == "first" else "last_frame"
                 )
@@ -409,7 +449,14 @@ async def extract_frame(
         )
         if not downgrade_note and direct_saw_damage and direct_saw_damage[0]:
             downgrade_note = "frame_damaged_used_last_decodable_frame"
+        elif not downgrade_note and overshoot_measured:
+            downgrade_note = overshoot_downgrade
     except FrameExtractionError as exc:
+        if use_end_seek and exc.no_frame:
+            return await _imageio_last_resort(
+                path, requested_ts=requested_ts, downgrade_note=downgrade_note,
+                logger=logger,
+            )
         if use_end_seek or target == "first_frame" or (
             not exc.no_frame and exc.returncode not in _RETRYABLE_FFMPEG_EXITS
         ) or (
@@ -460,18 +507,12 @@ async def extract_frame(
         walked_past_damage = bool(ladder_saw_damage and ladder_saw_damage[0])
         if walked_past_damage and not rescue_first and not downgrade_note:
             downgrade_note = "frame_damaged_used_last_decodable_frame"
+        elif not downgrade_note and target == "at_timestamp" and overshoot_measured:
+            downgrade_note = ("frame_past_eof_used_first_frame" if rescue_first
+                             else "frame_past_eof_used_last_frame")
         elif not downgrade_note and target == "at_timestamp":
-            # Coded key (not prose) so _user_facing_downgrade_message can map it.
-            if overshoot_measured:
-                downgrade_note = (
-                    "frame_past_eof_used_first_frame" if rescue_first
-                    else "frame_past_eof_used_last_frame"
-                )
-            else:
-                downgrade_note = (
-                    "frame_seek_failed_used_first_frame" if rescue_first
-                    else "frame_seek_failed_used_last_frame"
-                )
+            downgrade_note = ("frame_seek_failed_used_first_frame" if rescue_first
+                             else "frame_seek_failed_used_last_frame")
     return ExtractedFrame(
         image_bytes=png_bytes, width=w, height=h,
         actual_timestamp_seconds=actual_ts,
