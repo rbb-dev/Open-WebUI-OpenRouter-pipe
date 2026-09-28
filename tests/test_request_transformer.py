@@ -18,7 +18,9 @@ import asyncio
 import base64
 import inspect
 import json
+import struct
 import sys
+import zlib
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
@@ -32,6 +34,7 @@ from tests.log_capture import emitted
 
 from open_webui_openrouter_pipe import Pipe
 from open_webui_openrouter_pipe.core.errors import RequiredInternalFileError
+from open_webui_openrouter_pipe.core.utils import OPEN_WEBUI_TOOL_IMAGES_TEXT
 from open_webui_openrouter_pipe.storage.owui_files import InlinedFile
 from open_webui_openrouter_pipe.requests.transformer import (
     transform_messages_to_input,

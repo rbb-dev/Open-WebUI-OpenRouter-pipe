@@ -786,7 +786,7 @@ class Pipe:
             return supplied
         return stored if isinstance(stored, Mapping) else supplied
 
-    def _user_valve_blob_is_unreadable(self, __user__: dict[str, Any], stored: Any) -> bool:
+    def _user_valve_blob_is_rejected(self, __user__: dict[str, Any], stored: Any) -> bool:
         """True when this user HAS a saved valve blob for this pipe that did not decode.
 
         `decrypt_valves` returns `{}` on InvalidToken exactly as it does for a row with
@@ -835,7 +835,7 @@ class Pipe:
         """
         stored = await self._stored_user_valves(__user__)
         user_valves, rejected = parse_user_valves(stored, model=self.UserValves)
-        if self._user_valve_blob_is_unreadable(__user__, stored):
+        if self._user_valve_blob_is_rejected(__user__, stored):
             self.logger.log(
                 warn_level(_warned_user_valves, "undecodable_blob"),
                 "The stored user valves did not decode (a rotated WEBUI_SECRET_KEY does "
@@ -851,7 +851,7 @@ class Pipe:
             self.logger.log(
                 warn_level(_warned_user_valves, "stored_read_unavailable"),
                 "The stored row could not be read; every setting the pipe cannot "
-                "evidence from what Open WebUI supplied is reported unreadable",
+                "evidence from what Open WebUI supplied is reported rejected",
             )
         return user_valves, rejected
 
@@ -1642,7 +1642,7 @@ class Pipe:
                     "User valve %s could not be read and is using its default",
                     name,
                 )
-            valves = self._merge_valves(self.valves, user_valves)
+            valves = self._merge_valves(self.valves, user_valves, rejected=rejected_user_valves)
             user_id = str(__user__.get("id") or __metadata__.get("user_id") or "")
             wants_stream = bool(body.get("stream"))
 
@@ -4421,13 +4421,18 @@ class Pipe:
         return join_answer_and_card("", content)
 
     @timed
-    def _merge_valves(self, global_valves, user_valves) -> Pipe.Valves:
+    def _merge_valves(
+        self,
+        global_valves,
+        user_valves,
+        rejected: list[str] | tuple[str, ...] | set[str] | None = None,
+    ) -> Pipe.Valves:
         """Merge user-level valves into the global defaults.
 
         Any field set to ``"INHERIT"`` (case-insensitive) is ignored so the
         corresponding global value is preserved.
         """
-        if not user_valves:
+        if not user_valves and not rejected:
             return global_valves
 
         overrides: dict[str, Any] = {}
@@ -4444,6 +4449,14 @@ class Pipe:
                 for key, value in user_valves.items()
                 if value is not None and str(value).lower() != "inherit"
             }
+
+        for name in rejected or ():
+            if name in overrides:
+                continue
+            field = self.UserValves.model_fields.get(name)
+            if field is None or not hasattr(global_valves, name):
+                continue
+            overrides[name] = field.default
 
         if not overrides:
             return global_valves

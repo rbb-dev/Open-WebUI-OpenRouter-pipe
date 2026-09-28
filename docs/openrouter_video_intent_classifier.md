@@ -64,6 +64,14 @@ The `index` of an uploaded attachment is its position in the user's attachment l
 
 The `attachments` array in the classifier's payload is that list: one entry per attachment the turn carries, each with `index` (its position, 0-based and gap-free), `kind` (`image` / `video` / `other`), `mime_type`, `id`, `name` and `size`, ordered by `index`. A picture the Frames dropdown claimed as a keyframe and a picture it demoted to a reference both appear once, each at the position the user attached it, and neither is listed twice because it occupies both channels. What the pipe does not send is the bytes and not the role the picture plays downstream — the classifier is told *what* the user attached, and it is the classifier's `frame_plan` that says what to do with it. Under `frame_mode="none"` the array is empty by design: the dropdown sends the pictures nowhere, so there is nothing for the classifier to refer to.
 
+### What a temporary chat keeps of the classifier's own state
+
+A temporary chat (`temporary:` / `local:` id — see `temporary_chat_prefixes()`, which resolves from Open WebUI's own published constants) gets the same inference as any other chat and keeps none of it. Three structures would otherwise hold something, and the rule is that a temporary chat reaches none of them:
+
+- **The frame plan** is dropped whole, and the request runs from the prompt alone (above).
+- **The once-per-chat warning latch** is never written, so the person is warned on *every* failing turn rather than once. The id is never a key in it.
+- **The per-chat cost counter** — `VIDEO_INTENT_MAX_CALLS_PER_CHAT` — is the one that is **not** yet covered, and is recorded as out of scope rather than claimed here: with the cap on, an admitted turn is charged into a per-chat dict that nothing prunes, so a temporary id does sit in that map for the life of the process. It is bounded by the cap and unreachable on the shipped default (the cap is `0`), and closing it belongs with a bound-and-prune resource item. `tests/test_video_generation.py::test_the_per_chat_cost_counter_still_pins_a_temporary_id` is a deliberately red test that says so.
+
 ## Intent Disclosure Block
 
 When `frame_plan` is non-empty, the assistant message includes an **Intent Disclosure Block** rendered before the video appears:
@@ -109,7 +117,7 @@ The pipe validates the requested timestamp against how long the previous video's
 
 A seek that misses the last decodable frame is retried against the end of the file with a wider window (1s, then 5s, then 30s), and a damaged tail is retried against wider windows before the frame is given up on, so a tail of up to 30s still yields a frame at up to three times the normal extraction time. A window that hits damage inside an otherwise readable file widens before the frame is given up on; an input ffmpeg cannot open at all fails on the first window, because no wider window will read it either.
 
-Before a `first_frame` extraction decodes anything, the pipe reads the source's declared frame size from the container header and refuses to decode a source over the 25-megapixel pixel budget; the frame is then re-acquired through ffmpeg at the 1920-wide ceiling. That header read costs roughly one extra container open on every `first_frame` extraction, and it is the difference between allocating a few kilobytes and allocating the whole decoded frame (180 MB on a 10000×3000 source) for a source the budget already refuses.
+Before a `first_frame` extraction decodes anything, the pipe reads the source's declared frame size from the container header and refuses to decode a source over the 25-megapixel pixel budget; the caller then obtains the frame through ffmpeg's 1920-wide bound, which is the bound the other two targets already return. That header read costs roughly one extra container open on every `first_frame` extraction, and it is the difference between allocating a few kilobytes and allocating the whole decoded frame (180 MB on a 10000×3000 source) for a source the budget already refuses.
 
 ## Configuration valves (admin)
 
@@ -193,7 +201,11 @@ Every failure path in the classifier returns a fallback result equivalent to "no
 
 The **first** classifier infrastructure failure per chat surfaces a notification toast: *"Intent inference unavailable; using simple text-to-video."* Subsequent failures within the same chat are silent (logged at DEBUG). The rule covers both failure branches — a classifier that reported failure, and a classifier call that raised — and holds whether or not the emit itself succeeded.
 
+**Temporary chats are the exception, and deliberately so.** A temporary chat keeps nothing, so it is warned on **every** failing turn instead of once. Its `chat_id` (a `temporary:` or `local:` id — see `temporary_chat_prefixes()`, which resolves from Open WebUI's own published constants, so a new upstream prefix is covered without an edit here) is never written to the "already notified" record, and never printed in a log line. The toast is *not* suppressed along with the key: suppressing the latch is what keeps the raw id out of a process-lifetime structure, and it is not a reason to stop telling the person. A `channel:` chat is a different case and is latched like any saved chat, because Open WebUI does store it.
+
 The "already notified" record is a bounded window of the most recent **300** failing chats, oldest evicted first. It is not valve-gated — it fills on the shipped configuration — and the bound is why a chat that falls out of the window may be shown the toast a second time. In practice eviction is not expected within months of continuous, total classifier failure: a failure arms a 60-second process-global breaker, so the window gains at most one entry per minute, i.e. roughly five hours of unbroken failure just to fill it and five more before the first eviction. Eviction happens on the add path only, so the classifier hot path's membership check stays constant-time. The real cost of the bound is that the attribute is an insertion-ordered mapping rather than a `set`.
+
+A call that carries no `chat_id` at all is a third case, and not the temporary chat's twin. It is not a chat Open WebUI stores, but it is a program calling the pipe, not a person whose browser holds a conversation, so it is warned **once per process** rather than on every failing turn. One process-global slot in the "already notified" record stands in for the missing id: the sentinel key `__no_chat_id__` is a latch key and never a log argument, so the `chat_key` on those lines still reads `<not retained>` like a temporary chat's does.
 
 **Diagnostic log lines** for the toast emission path (search these when the toast doesn't appear as expected):
 
@@ -203,6 +215,8 @@ The "already notified" record is a bounded window of the most recent **300** fai
 - `first-failure toast suppressed: event_emitter is None` — DEBUG, fires when OWUI didn't pass an emitter (rare; indicates an upstream integration issue). It fires **once per request** for the life of an emitter-less chat, not once per chat, because no notice is consumed on this path. Nobody was there, so the chat's one notice is **not** consumed: the next request that does have an emitter still warns.
 - `first-failure toast emission raised (suppressed): <exc>` — WARNING, `classifier_failed` branch only, fires if the event_emitter call itself raised. Pipe continues; the chat is latched and its one warning is spent, so later failures in it are silent. `video_intent classifier failed (degrade-open)` is the enclosing handler's own log line, and is the one to grep for this path.
 - The raise branch's emit sits in a bare `contextlib.suppress` and logs nothing of its own. The only record for that path is `video_intent classifier failed (degrade-open)`, written **before** the toast is attempted, so it says the classifier raised, not that the toast was lost.
+**`chat_key=<...>` in those lines.** The argument is the chat id for a chat the pipe is allowed to remember, and the literal string `<not retained>` when it is not — that is, for a temporary chat (`temporary:`/`local:`) or a call carrying no `chat_id` at all. The placeholder is a real value in the log, not a missing field, and its presence is expected: it says the key was withheld on purpose, because the pipe does not keep those ids. Two consequences worth knowing before grepping: `<not retained>` is not a chat you can look up, and a `chat_key` that is **absent from the latch** after a temporary chat's failing turn is correct rather than a miss — nothing was written. The `__no_chat_id__` sentinel is the one spelling that does reach the latch, on the id-less path, where it is the process-global slot that makes that warning once per process; it is a latch key only, and no log line carries it.
+
 
 ## Rollback
 

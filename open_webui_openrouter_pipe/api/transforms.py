@@ -504,6 +504,19 @@ ALLOWED_OPENROUTER_CHAT_FIELDS = {
 }
 
 
+_SERVER_TOOL_PREFIX = "openrouter:"
+
+
+def _has_server_tool(tools: Any) -> bool:
+    items = tools if isinstance(tools, list) else []
+    return any(
+        isinstance(t, dict)
+        and isinstance(t.get("type"), str)
+        and t["type"].startswith(_SERVER_TOOL_PREFIX)
+        for t in items
+    )
+
+
 # Request Filtering
 
 def _filter_openrouter_chat_request(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1573,6 +1586,8 @@ def _apply_disable_native_websearch_to_payload(
                 payload["tools"] = kept
             else:
                 payload.pop("tools", None)
+            if not _has_server_tool(payload.get("tools")):
+                payload.pop("stop_server_tools_when", None)
 
     plugins = payload.get("plugins")
     if isinstance(plugins, list) and plugins:

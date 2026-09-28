@@ -59,6 +59,7 @@ from ..core.utils import (
     is_picture_output,
     is_server_tool_call_id,
     is_tool_image_handoff,
+    is_tool_image_handoff_for_round,
     opens_a_turn,
     picture_output,
     recorded_tool_text,
@@ -587,6 +588,36 @@ def _one_copy_per_round(region: list[Any]) -> list[Any]:
     return _move_kept_outputs_after_their_calls(kept)
 
 
+def _handoff_ahead(messages: list[dict[str, Any]], position: int) -> bool:
+    results: list[Any] = [messages[position]]
+    for offset in range(position + 1, len(messages)):
+        message = messages[offset]
+        if is_tool_image_handoff_for_round(results, message):
+            return True
+        role = (message.get("role") or "").lower()
+        if role == "tool":
+            results.append(message)
+            continue
+        if role in ("assistant", "system", "developer"):
+            continue
+        return False
+    return False
+
+
+def _handoff_back(messages: list[dict[str, Any]], position: int) -> bool:
+    results: list[Any] = []
+    for offset in range(position - 1, -1, -1):
+        message = messages[offset]
+        role = (message.get("role") or "").lower()
+        if role == "tool":
+            results.append(message)
+            continue
+        if role in ("assistant", "system", "developer"):
+            continue
+        break
+    return is_tool_image_handoff_for_round(results, messages[position])
+
+
 def _tool_images_message(pictures: list[str]) -> dict[str, Any]:
     return {"type": "message", "role": "user", "content": [
         {"type": "input_text", "text": OPEN_WEBUI_TOOL_IMAGES_TEXT},
@@ -676,6 +707,7 @@ async def transform_messages_to_input(
     last_image_blocks: list[dict[str, Any]] = []
     last_image_turn: int | None = None
     window_armed_at: set[int] = set()
+    _deferred_tool_pictures: list[str] = []
 
     def _message_identifier(entry: dict[str, Any]) -> str | None:
         """Return the most specific identifier available on ``entry``."""
@@ -883,6 +915,10 @@ async def transform_messages_to_input(
                 )
             continue
 
+        if role != "tool" and _deferred_tool_pictures:
+            openai_input.append(_tool_images_message(_deferred_tool_pictures))
+            _deferred_tool_pictures.clear()
+
         if role == "tool":
             call_id = msg.get("tool_call_id") or msg.get("id") or msg.get("call_id")
             call_id = call_id.strip() if isinstance(call_id, str) else ""
@@ -897,8 +933,11 @@ async def transform_messages_to_input(
                 last_image_blocks, last_image_turn = [], None
 
             tool_content = raw_content
+            tool_pictures: list[str] = []
             if tool_content is None:
                 tool_content_text = ""
+            elif is_picture_output(tool_content):
+                tool_content_text, tool_pictures = tool_output_text_and_pictures(tool_content)
             elif isinstance(tool_content, str):
                 tool_content_text = tool_content
             else:
@@ -907,8 +946,13 @@ async def transform_messages_to_input(
                 except (TypeError, ValueError):
                     tool_content_text = str(tool_content)
 
-            if _withheld(msg_turn_index) and not _is_ask_user_name(round_name, ask_user_names):
-                tool_content_text = unretained_tool_result(_tool_result_failed(tool_content_text))
+            if is_picture_output(tool_content):
+                last_image_blocks, last_image_turn = [], None
+
+            if _withheld(msg_turn_index):
+                if not _is_ask_user_name(round_name, ask_user_names):
+                    tool_content_text = unretained_tool_result(_tool_result_failed(tool_content_text))
+                tool_pictures = []
 
             tool_item: dict[str, Any] = {
                 "type": "function_call_output",
@@ -918,10 +962,15 @@ async def transform_messages_to_input(
             if pruning_turns > 0 and _is_old_turn(msg_turn_index, threshold=prune_before_turn):
                 _prune_tool_output(tool_item, marker=None, turn_index=msg_turn_index, retention_turns=pruning_turns)
             openai_input.append(tool_item)
+            if tool_pictures and not _handoff_ahead(messages, idx):
+                _deferred_tool_pictures.extend(tool_pictures)
             continue
 
         if role == "user":
-            tool_images = bool(idx) and is_tool_image_handoff(messages[idx - 1], msg)
+            tool_images = bool(idx) and (
+                is_tool_image_handoff(messages[idx - 1], msg)
+                or _handoff_back(messages, idx)
+            )
             if tool_images:
                 last_image_blocks, last_image_turn = [], None
             if tool_images and _withheld(msg_turn_index):
@@ -2197,6 +2246,10 @@ async def transform_messages_to_input(
                         "arguments": args_text,
                     }
                 )
+
+    if _deferred_tool_pictures:
+        openai_input.append(_tool_images_message(_deferred_tool_pictures))
+        _deferred_tool_pictures.clear()
 
     if missing_artifact_markers:
         distinct_missing = sorted(set(missing_artifact_markers))

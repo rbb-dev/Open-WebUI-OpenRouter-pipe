@@ -47,6 +47,7 @@ from ..storage.multimodal import (
 )
 from ..storage.owui_files import (
     PUBLISHING_NEEDS_OWNERSHIP,
+    InlineFileTooLargeError,
     authorize_file_publication,
     declared_file_size,
     get_file_by_id,
@@ -118,6 +119,8 @@ _MAX_VIDEO_OUTPUTS = 16
 _REFERENCE_KINDS_NEEDING_A_LINK = frozenset({"audio_url", "video_url"})
 
 _INTENT_NOTIFIED_WINDOW = 300
+
+_INTENT_NO_CHAT_ID_KEY = "__no_chat_id__"
 
 
 def _reference_write_key(video_meta: dict[str, Any]) -> str:
@@ -681,22 +684,20 @@ class VideoGenerationAdapter:
                             "breaker tripped",
                             intent_result.failure_reason or "<unknown>",
                         )
-                        chat_key_f = (
-                            chat_id if isinstance(chat_id, str) and chat_id
-                            else "__no_chat_id__"
-                        )
-                        if self._intent_was_failure_notified(chat_key_f):
+                        latch_key = self._intent_latch_key(chat_id)
+                        log_key = self._intent_notice_key(chat_id) or "<not retained>"
+                        if self._intent_was_failure_notified(latch_key):
                             self.logger.debug(
                                 "first-failure toast suppressed (chat already "
-                                "notified): chat_key=%s", chat_key_f,
+                                "notified): chat_key=%s", log_key,
                             )
                         elif event_emitter is None:
                             self.logger.debug(
                                 "first-failure toast suppressed: event_emitter "
-                                "is None (chat_key=%s)", chat_key_f,
+                                "is None (chat_key=%s)", log_key,
                             )
                         else:
-                            self._intent_note_failure_notified(chat_key_f)
+                            self._intent_note_failure_notified(latch_key)
                             try:
                                 await event_emitter({
                                     "type": "notification",
@@ -710,7 +711,7 @@ class VideoGenerationAdapter:
                                 })
                                 self.logger.info(
                                     "first-failure toast emitted (chat_key=%s)",
-                                    chat_key_f,
+                                    log_key,
                                 )
                             except Exception as exc:
                                 self.logger.warning(
@@ -791,15 +792,17 @@ class VideoGenerationAdapter:
                         "video_intent classifier failed (degrade-open): %s", exc, exc_info=True
                     )
                     self._intent_record_failure(user_id if isinstance(user_id, str) else "")
-                    chat_key = chat_id if isinstance(chat_id, str) else ""
-                    if chat_key and not self._intent_was_failure_notified(chat_key):
+                    latch_key = self._intent_latch_key(chat_id)
+                    log_key = self._intent_notice_key(chat_id) or "<not retained>"
+                    already = self._intent_was_failure_notified(latch_key)
+                    if not already:
                         if event_emitter is None:
                             self.logger.debug(
                                 "first-failure toast suppressed: event_emitter "
-                                "is None (chat_key=%s)", chat_key,
+                                "is None (chat_key=%s)", log_key,
                             )
                         else:
-                            self._intent_note_failure_notified(chat_key)
+                            self._intent_note_failure_notified(latch_key)
                             with contextlib.suppress(Exception):
                                 await event_emitter({
                                     "type": "notification",
@@ -2081,6 +2084,10 @@ class VideoGenerationAdapter:
         relay_bytes = 0
         past_the_count = 0
 
+        _over_reference_single = (
+            f"it is larger than the {megabytes(image_max)} one reference may be"
+        )
+
         def _skip(name: str, cause: str, text: str) -> None:
             self.logger.log(
                 warn_level(_warned_dropped_video_param, f"input_reference:{cause}"),
@@ -2129,6 +2136,11 @@ class VideoGenerationAdapter:
             if via_file_host and not authorize_file_publication(file_obj, user_obj):
                 _skip(file_id, "not-owner", PUBLISHING_NEEDS_OWNERSHIP)
                 continue
+            if family == "image" and via_file_host:
+                declared = declared_file_size(file_obj)
+                if declared and declared > image_max:
+                    _skip(file_id, "over-single", _over_reference_single)
+                    continue
             if via_file_host:
                 self._refuse_over_the_relay_cap(
                     declared_file_size(file_obj), relay_bytes, relay_max
@@ -2141,8 +2153,16 @@ class VideoGenerationAdapter:
                     user=user_obj,
                 )
             except RequiredInternalFileError as exc:
+                if family == "image" and getattr(exc, "kind", None) == "size":
+                    _skip(file_id, "over-single", _over_reference_single)
+                    continue
                 _skip(file_id, "not-allowed", exc.user_message)
                 continue
+            except InlineFileTooLargeError:
+                if family == "image":
+                    _skip(file_id, "over-single", _over_reference_single)
+                    continue
+                raise
             except ValueError as exc:
                 if not via_file_host:
                     raise
@@ -2162,6 +2182,14 @@ class VideoGenerationAdapter:
                 )
                 _skip(file_id, "not-base64", "it contains invalid base64 data")
                 continue
+            if family == "image":
+                if decoded_len > image_max:
+                    _skip(file_id, "over-single", _over_reference_single)
+                    continue
+                if total_bytes + decoded_len > total_max:
+                    _skip(file_id, "over-budget", _OVER_REFERENCE_BUDGET)
+                    continue
+                total_bytes += decoded_len
             if via_file_host:
                 self._refuse_over_the_relay_cap(decoded_len, relay_bytes, relay_max)
                 if family == "video":
@@ -2170,11 +2198,6 @@ class VideoGenerationAdapter:
                         _skip(file_id, "clip-size", note)
                         continue
                 relay_bytes += decoded_len
-            elif total_bytes + decoded_len > total_max:
-                _skip(file_id, "over-budget", _OVER_REFERENCE_BUDGET)
-                continue
-            else:
-                total_bytes += decoded_len
             accepted.append(
                 _AcceptedReference(
                     file_id=file_id,
@@ -2583,10 +2606,25 @@ class VideoGenerationAdapter:
             self._intent_breaker_until_ts.get(key, 0.0), now + 60.0,
         )
 
+    def _intent_latch_key(self, chat_id: Any) -> str:
+        if not isinstance(chat_id, str) or not chat_id:
+            return _INTENT_NO_CHAT_ID_KEY
+        if is_temporary_chat(chat_id):
+            return ""
+        return chat_id
+
+    def _intent_notice_key(self, chat_id: Any) -> str:
+        key = self._intent_latch_key(chat_id)
+        return "" if key == _INTENT_NO_CHAT_ID_KEY else key
+
     def _intent_was_failure_notified(self, chat_key: str) -> bool:
+        if not chat_key or is_temporary_chat(chat_key):
+            return False
         return chat_key in self._intent_failure_notified_chats
 
     def _intent_note_failure_notified(self, chat_key: str) -> None:
+        if not chat_key or is_temporary_chat(chat_key):
+            return
         notified = self._intent_failure_notified_chats
         notified[chat_key] = None
         notified.move_to_end(chat_key)
@@ -2793,15 +2831,31 @@ class VideoGenerationAdapter:
                     if frame.downgrade_note:
                         intent.downgrades.append(frame.downgrade_note)
                 except FrameExtractionError as exc:
-                    self.logger.warning(
-                        "frame extraction failed for entry %s: %s",
-                        entry.source_index, exc,
-                    )
-                    intent.downgrades.append(
-                        f"frame_extract_failed_idx_{entry.source_index}_at_{position}"
-                    )
-                    thumb_urls.append("")
-                    continue
+                    if (
+                        entry.source == "prior_video_first_frame"
+                        and getattr(exc, "pixel_cap", False)
+                    ):
+                        try:
+                            frame = await extract_frame(
+                                tmp_path, target="at_timestamp", timestamp_seconds=0.0,
+                                fallback_to_last_on_overshoot=True,
+                                reused_frame_index="last",
+                                logger=self.logger,
+                            )
+                        except FrameExtractionError:
+                            raise exc
+                        if frame.downgrade_note:
+                            intent.downgrades.append(frame.downgrade_note)
+                    else:
+                        self.logger.warning(
+                            "frame extraction failed for entry %s: %s",
+                            entry.source_index, exc,
+                        )
+                        intent.downgrades.append(
+                            f"frame_extract_failed_idx_{entry.source_index}_at_{position}"
+                        )
+                        thumb_urls.append("")
+                        continue
                 finally:
                     tmp_path.unlink(missing_ok=True)
 

@@ -161,8 +161,8 @@ class ModelFamily:
     def _resolve_spec_key(cls, norm: str, specs: dict[str, dict[str, Any]]) -> str:
         if norm in specs:
             return norm
-        base, _, tag = norm.rpartition(":")
-        if not base or tag.startswith("preset/"):
+        base, _, _ = norm.rpartition(":")
+        if not base:
             return norm
         return base
 
@@ -181,8 +181,20 @@ class ModelFamily:
         return base
 
     @classmethod
+    def catalog_spec(cls, model_id: str) -> dict[str, Any]:
+        return cls._DYNAMIC_SPECS.get(cls.catalog_norm_id(model_id)) or {}
+
+    @classmethod
+    def catalog_supported_parameters(cls, model_id: str) -> frozenset[str]:
+        norm = cls.catalog_norm_id(model_id)
+        base, _, tag = norm.rpartition(":")
+        if base and tag.startswith("preset/") and norm not in cls._DYNAMIC_SPECS:
+            return frozenset()
+        return cls.supported_parameters(norm)
+
+    @classmethod
     def reasoning_contract(cls, model_id: str) -> dict[str, Any]:
-        full = cls._lookup_spec(cls.catalog_norm_id(model_id)).get("full_model")
+        full = cls.catalog_spec(model_id).get("full_model")
         row = full.get("reasoning") if isinstance(full, dict) else None
         return row if isinstance(row, dict) else {}
 

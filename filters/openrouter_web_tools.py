@@ -135,7 +135,7 @@ class Filter:
         SERVER_TOOLS_MAX_COST_USD: float = Field(
             default=0.0,
             ge=0,
-            description="Cap cumulative server-tool loop cost per request in USD. 0 means no cap.",
+            description="Cap cumulative server-tool loop cost per request in USD. 0 means no cap. The cap is sent only while an openrouter: server tool is on the request.",
         )
 
     class UserValves(BaseModel):

@@ -33,10 +33,29 @@ class FrameExtractionError(Exception):
     """
 
     def __init__(self, message: str, *, no_frame: bool = False,
-                 returncode: int | None = None) -> None:
+                 returncode: int | None = None, pixel_cap: bool = False) -> None:
         super().__init__(message)
         self.no_frame = no_frame
         self.returncode = returncode
+        self.pixel_cap = pixel_cap
+
+
+def _over_pixel_cap(width: int, height: int) -> bool:
+    return width * height > _MAX_FRAME_PIXELS
+
+
+def _pixel_cap_refusal(width: int, height: int) -> FrameExtractionError:
+    return FrameExtractionError(
+        f"frame too large: {width}x{height} exceeds {_MAX_FRAME_PIXELS} pixel cap",
+        pixel_cap=True,
+    )
+
+
+def _ffmpeg_pixel_cap_refusal(width: int, height: int) -> FrameExtractionError:
+    return FrameExtractionError(
+        f"ffmpeg output {width}x{height} exceeds pixel cap",
+        pixel_cap=True,
+    )
 
 
 @dataclass
@@ -168,20 +187,15 @@ def _extract_frame_imageio_sync(
     on decompression-bomb-sized output."""
     try:
         declared = _declared_size(path)
-        if declared is not None and declared[0] * declared[1] > _MAX_FRAME_PIXELS:
-            raise FrameExtractionError(
-                f"source video {declared[0]}x{declared[1]} exceeds the "
-                f"{_MAX_FRAME_PIXELS} pixel cap"
-            )
+        if declared is not None and _over_pixel_cap(*declared):
+            raise _pixel_cap_refusal(*declared)
         arr = iio.imread(str(path), index=frame_index)
         if arr is None or len(arr.shape) < 2:
             raise FrameExtractionError("imageio returned empty frame")
         h = int(arr.shape[0])
         w = int(arr.shape[1])
-        if w * h > _MAX_FRAME_PIXELS:
-            raise FrameExtractionError(
-                f"frame too large: {w}x{h} exceeds {_MAX_FRAME_PIXELS} pixel cap",
-            )
+        if _over_pixel_cap(w, h):
+            raise _pixel_cap_refusal(w, h)
         img = _scale_to_max_width(Image.fromarray(arr))
         return _normalise_png_mode(img), img.width, img.height
     except FrameExtractionError:
@@ -264,10 +278,8 @@ async def _extract_frame_ffmpeg(
             if not stdout:
                 raise FrameExtractionError("ffmpeg produced empty output", no_frame=True)
             img = Image.open(io.BytesIO(stdout))
-            if img.width * img.height > _MAX_FRAME_PIXELS:
-                raise FrameExtractionError(
-                    f"ffmpeg output {img.width}x{img.height} exceeds pixel cap",
-                )
+            if _over_pixel_cap(img.width, img.height):
+                raise _ffmpeg_pixel_cap_refusal(img.width, img.height)
             img.load()
             if img.mode not in ("RGB", "RGBA"):
                 stdout = _normalise_png_mode(img)
@@ -381,6 +393,8 @@ async def extract_frame(
                 resolved_target=resolved_target,
             )
         except FrameExtractionError as exc:
+            if getattr(exc, "pixel_cap", False):
+                raise
             logger.debug("imageio first_frame failed; falling through to ffmpeg: %s", exc)
 
     direct_saw_damage: list[bool] = []

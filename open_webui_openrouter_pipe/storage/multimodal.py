@@ -13,6 +13,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import contextvars
+import functools
 import io
 import ipaddress
 import logging
@@ -22,6 +24,7 @@ import time
 from collections.abc import AsyncIterator, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from enum import Enum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -89,6 +92,10 @@ _ADDRESS_WARN_COOLDOWN_SECONDS = 300.0
 
 _ICON_DECODE_WORKERS = 2
 
+_ADDRESS_CHECK_WORKERS = 4
+
+_ICON_SWEEP_ADDRESS_WORKERS = 10
+
 _VETTED_CONNECTION_LIMIT = 20
 
 _VETTED_CONNECTION_LIMIT_PER_HOST = 10
@@ -139,6 +146,48 @@ class _IconPixelBudgetExceeded(Exception):
     pass
 
 
+_icon_sweep_address_check: ContextVar[bool] = ContextVar(
+    "icon_sweep_address_check", default=False
+)
+
+
+def _pipe_pool(
+    handler: Any, attr: str, workers: int, prefix: str
+) -> ThreadPoolExecutor:
+    pool = getattr(handler, attr, None)
+    if pool is None:
+        pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix=prefix)
+        setattr(handler, attr, pool)
+    return pool
+
+
+def _address_check_workers(handler: Any) -> int:
+    limit: Any = getattr(
+        getattr(handler, "valves", None), "MAX_CONCURRENT_REQUESTS", None
+    )
+    try:
+        bound = int(limit)
+    except (TypeError, ValueError):
+        bound = 200
+    return max(_ADDRESS_CHECK_WORKERS, bound)
+
+
+async def _run_address(handler: Any, func: Callable[..., Any], *args: Any) -> Any:
+    if getattr(handler, "_transport_closed", False):
+        raise RuntimeError("the address-check pool is closed")
+    sweep = _icon_sweep_address_check.get()
+    pool = _pipe_pool(
+        handler,
+        "_icon_sweep_address_pool" if sweep else "_address_pool",
+        _ICON_SWEEP_ADDRESS_WORKERS if sweep else _address_check_workers(handler),
+        "or-icon-sweep-address" if sweep else "or-address",
+    )
+    ctx = contextvars.copy_context()
+    return await asyncio.get_running_loop().run_in_executor(
+        pool, functools.partial(ctx.run, func, *args)
+    )
+
+
 class _VettedResolver(AbstractResolver):
     def __init__(self, handler: MultimodalHandler, protection: bool) -> None:
         self._handler = handler
@@ -154,7 +203,9 @@ class _VettedResolver(AbstractResolver):
         if not self._protection:
             return await self._fallback.resolve(host, port, family=family)
         ips = await asyncio.wait_for(
-            asyncio.to_thread(self._handler._validated_ips_for_host, host, port),
+            _run_address(
+                self._handler, self._handler._validated_ips_for_host, host, port
+            ),
             timeout=ADDRESS_CHECK_SECONDS,
         )
         if not ips:
@@ -638,6 +689,8 @@ class MultimodalHandler:
         self._warned_blocked_hosts: dict[str, float] = {}
         self._vetted_http_session: aiohttp.ClientSession | None = None
         self._decode_pool: ThreadPoolExecutor | None = None
+        self._address_pool: ThreadPoolExecutor | None = None
+        self._icon_sweep_address_pool: ThreadPoolExecutor | None = None
         self._transport_closed = False
         self._vetted_protection: bool | None = None
         self._vetted_loop: asyncio.AbstractEventLoop | None = None
@@ -1056,7 +1109,7 @@ class MultimodalHandler:
         """
         try:
             resolved = await asyncio.wait_for(
-                asyncio.to_thread(self._request_ips_blocking, url),
+                _run_address(self, self._request_ips_blocking, url),
                 timeout=max(0.0, seconds),
             )
         except TimeoutError:
@@ -1314,7 +1367,7 @@ class MultimodalHandler:
         """
         try:
             ips = await asyncio.wait_for(
-                asyncio.to_thread(self._request_ips_blocking, url),
+                _run_address(self, self._request_ips_blocking, url),
                 timeout=ADDRESS_CHECK_SECONDS,
             )
         except TimeoutError:
@@ -1460,12 +1513,9 @@ class MultimodalHandler:
     async def _run_decode(self, func: Callable[..., Any], *args: Any) -> Any:
         if self._transport_closed:
             raise RuntimeError("the model-icon decode pool is closed")
-        pool = self._decode_pool
-        if pool is None:
-            pool = ThreadPoolExecutor(
-                max_workers=_ICON_DECODE_WORKERS, thread_name_prefix="or-icon-decode"
-            )
-            self._decode_pool = pool
+        pool = _pipe_pool(
+            self, "_decode_pool", _ICON_DECODE_WORKERS, "or-icon-decode"
+        )
         return await asyncio.get_running_loop().run_in_executor(pool, func, *args)
 
     def transport_session_state(self) -> str:
@@ -1480,10 +1530,11 @@ class MultimodalHandler:
         async with self._vetted_transport_lock():
             self._transport_closed = True
             await self._retire_vetted_session()
-        pool = self._decode_pool
-        self._decode_pool = None
-        if pool is not None:
-            pool.shutdown(wait=False, cancel_futures=True)
+        for attr in ("_decode_pool", "_address_pool", "_icon_sweep_address_pool"):
+            pool = getattr(self, attr, None)
+            setattr(self, attr, None)
+            if pool is not None:
+                pool.shutdown(wait=False, cancel_futures=True)
 
     def _is_youtube_url(self, url: str | None) -> bool:
         """Check if URL is a valid YouTube video URL.
@@ -1566,6 +1617,7 @@ class MultimodalHandler:
         elif not url.startswith(("http://", "https://")):
             url = f"{_OPENROUTER_SITE_URL}/{url.lstrip('/')}"
 
+        _sweep_token = _icon_sweep_address_check.set(True)
         try:
             async with self._vetted_get(
                 url, total_seconds=_ICON_FETCH_TIMEOUT_SECONDS
@@ -1592,6 +1644,8 @@ class MultimodalHandler:
                 "Failed to download model icon (url=%s): %s", url, exc, exc_info=True
             )
             return None
+        finally:
+            _icon_sweep_address_check.reset(_sweep_token)
 
         mime = _guess_image_mime_type(url, content_type, data)
         if not mime:

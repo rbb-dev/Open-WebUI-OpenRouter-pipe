@@ -19,9 +19,11 @@ from starlette.requests import Request
 from starlette.responses import StreamingResponse
 
 from ..api.transforms import (
+    _SERVER_TOOL_PREFIX,
     CompletionsBody,
     ResponsesBody,
     _chat_tools_to_responses_tools,
+    _has_server_tool,
     apply_context_transforms,
 )
 from ..core.config import _DEFAULT_RESPONSES_AUDIO_FORMATS, _PIPE_METADATA_KEY
@@ -162,7 +164,7 @@ _SERVER_TOOL_SWITCHES = {
 
 
 def _server_tool_type(tool_key: str) -> str:
-    return _SERVER_TOOL_TYPE_OVERRIDES.get(tool_key, f"openrouter:{tool_key}")
+    return _SERVER_TOOL_TYPE_OVERRIDES.get(tool_key, f"{_SERVER_TOOL_PREFIX}{tool_key}")
 
 
 def _reaches_display_file(exposed_to_origin: dict[str, str] | None) -> bool:
@@ -465,7 +467,7 @@ def _apply_server_tools_metadata(
                     ", ".join(server_tools.keys()),
                 )
     stop_when = pipe_meta.get("stop_server_tools_when")
-    if isinstance(stop_when, list) and stop_when:
+    if isinstance(stop_when, list) and stop_when and _has_server_tool(responses_body.tools):
         responses_body.stop_server_tools_when = stop_when
     return superseded
 
@@ -499,6 +501,17 @@ class RequestOrchestrator:
             and is_fusion
             and not is_direct
         )
+
+    def _endpoint_is_valve_forced(
+        self,
+        model_id: str,
+        valves: Pipe.Valves,
+        endpoint: Literal["responses", "chat_completions"],
+    ) -> bool:
+        selected, forced = self._pipe._streaming_handler._select_llm_endpoint_with_forced(
+            model_id, valves=valves
+        )
+        return bool(forced and selected == endpoint)
 
     @timed
     async def process_request(
@@ -1232,12 +1245,44 @@ class RequestOrchestrator:
         is_direct = bool(getattr(getattr(__request__, "state", None), "direct", False))
         fusion_enabled = bool(valves.ENABLE_OPENROUTER_FUSION) and _fusion_backend_openrouter(valves)
         fusion_model = is_fusion_model(responses_body.model)
+        if fusion_model and fusion_enabled:
+            if self._endpoint_is_valve_forced(responses_body.model, valves, "chat_completions"):
+                shown = await self._pipe._ensure_error_formatter()._emit_templated_error(
+                    __event_emitter__,
+                    template=valves.ENDPOINT_OVERRIDE_CONFLICT_TEMPLATE,
+                    variables={
+                        "requested_model": responses_body.model or "",
+                        "required_endpoint": "responses",
+                        "enforced_endpoint": "chat_completions",
+                        "reason": (
+                            "This model is a Fusion model, which needs the /responses endpoint; "
+                            "it is forced to /chat/completions by Models forced to chat "
+                            "completions (FORCE_CHAT_COMPLETIONS_MODELS)."
+                        ),
+                    },
+                    log_message="Endpoint override conflict for the Fusion model",
+                    log_level=logging.WARNING,
+                )
+                if use_task_model_adapter:
+                    return self._pipe._task_refusal_result(__task__, shown)
+                return shown
+            if endpoint_override == "chat_completions":
+                self.logger.warning(
+                    "OpenRouter Fusion requires the /responses endpoint; overriding "
+                    "endpoint_override=chat_completions to responses for model=%s",
+                    responses_body.model,
+                )
+                endpoint_override = "responses"
         selected_endpoint = endpoint_override
         if selected_endpoint is None:
             selected_endpoint = self._pipe._streaming_handler._select_llm_endpoint(
                 responses_body.model, valves=valves
             )
-        if fusion_model and fusion_enabled and selected_endpoint == "chat_completions":
+        if (
+            fusion_model
+            and fusion_enabled
+            and selected_endpoint == "chat_completions"
+        ):
             self.logger.warning(
                 "OpenRouter Fusion requires the /responses endpoint; overriding "
                 "endpoint_override=chat_completions to responses for model=%s",
@@ -1613,6 +1658,9 @@ class RequestOrchestrator:
 
         if _required_with_no_callable_tool(responses_body):
             responses_body.tool_choice = None
+
+        if responses_body.stop_server_tools_when and not _has_server_tool(responses_body.tools):
+            responses_body.stop_server_tools_when = None
 
         setattr(responses_body, "api_model", OpenRouterModelRegistry.api_model_id(selected_model_id) or normalized_model_id)  # noqa: B010 - dynamic attribute not declared on ResponsesBody
 

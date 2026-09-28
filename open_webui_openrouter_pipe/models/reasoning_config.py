@@ -48,7 +48,7 @@ class ReasoningConfigManager:
 
     @staticmethod
     def _set_include_reasoning(responses_body: ResponsesBody, value: bool | None) -> None:
-        if value is not None and "include_reasoning" not in ModelFamily.supported_parameters(ModelFamily.catalog_norm_id(responses_body.model)):
+        if value is not None and "include_reasoning" not in ModelFamily.catalog_supported_parameters(responses_body.model):
             value = None
         responses_body.include_reasoning = value
 
@@ -96,7 +96,7 @@ class ReasoningConfigManager:
         return cls._refuse_off_on_mandatory_model(model_id, cfg)
 
     def _apply_reasoning_preferences(self, responses_body: ResponsesBody, valves: Pipe.Valves) -> str | None:
-        supported = ModelFamily.supported_parameters(ModelFamily.catalog_norm_id(responses_body.model))
+        supported = ModelFamily.catalog_supported_parameters(responses_body.model)
         supports_reasoning = "reasoning" in supported
         supports_legacy_only = "include_reasoning" in supported and not supports_reasoning
         summary_mode = valves.REASONING_SUMMARY_MODE
@@ -130,7 +130,7 @@ class ReasoningConfigManager:
         """Override reasoning effort for task models."""
         if not effort:
             return None
-        supported = ModelFamily.supported_parameters(ModelFamily.catalog_norm_id(responses_body.model))
+        supported = ModelFamily.catalog_supported_parameters(responses_body.model)
         supports_reasoning = "reasoning" in supported
         supports_legacy_only = "include_reasoning" in supported and not supports_reasoning
         target_effort = effort.strip().lower()
@@ -176,7 +176,7 @@ class ReasoningConfigManager:
         responses_body.thinking_config = None
         if not _classify_gemini_thinking_family(ModelFamily.base_model(responses_body.model)):
             return None
-        if "reasoning" not in ModelFamily.supported_parameters(ModelFamily.catalog_norm_id(responses_body.model)):
+        if "reasoning" not in ModelFamily.catalog_supported_parameters(responses_body.model):
             return None
         cfg = dict(responses_body.reasoning) if isinstance(responses_body.reasoning, dict) else {}
         requested = bool(responses_body.include_reasoning) or bool(cfg and cfg.get("enabled", True) and not cfg.get("exclude", False))
@@ -233,7 +233,7 @@ class ReasoningConfigManager:
             if lowest:
                 fitted["effort"] = lowest
             responses_body.reasoning = fitted or None
-        elif settings_applied and "reasoning" in ModelFamily.supported_parameters(ModelFamily.catalog_norm_id(responses_body.model)):
+        elif settings_applied and "reasoning" in ModelFamily.catalog_supported_parameters(responses_body.model):
             responses_body.reasoning = {"effort": "none"}
             self._set_include_reasoning(responses_body, None)
 

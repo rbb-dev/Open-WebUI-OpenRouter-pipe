@@ -210,8 +210,10 @@ streaming panel deltas, the cards simply fill in at completion as before.
 - A Fusion answer cut off by a length or provider cap is a **finished** run, not an interruption: the footer, the clock and the cost render exactly as they do for a completed turn.
 
 - Forces the `/responses` endpoint (the only one that emits the granular Fusion events). A
-  `FORCE_CHAT_COMPLETIONS_MODELS` match on the fusion model is overridden to `/responses` with a warning log.
-- No effect on **Direct Connections** — Open WebUI does not deliver in-chat embeds on that path; the final answer is unaffected.
+  `FORCE_CHAT_COMPLETIONS_MODELS` match on the fusion model is **not** overridden: the valve holds and the turn
+  is refused with the endpoint-conflict card, because the Fusion plugin entry cannot travel to
+  `/chat/completions`. The pin is kept and the request does not run.
+- No effect on **Direct Connections** — Open WebUI does not deliver in-chat embeds on that path. A valve-pinned Fusion model is still refused there with the endpoint-conflict card, as it is anywhere else.
 - Automatic on the fusion models — `openrouter/fusion`, `openrouter/fusion-flash` and their `:tag` / `@preset/…` forms — whenever Fusion is enabled — the master `ENABLE_OPENROUTER_FUSION` switch turns it off along with the rest of Fusion. Non-fusion models are never affected.
 
 ### Socket transport — network & CSP requirements (admin)

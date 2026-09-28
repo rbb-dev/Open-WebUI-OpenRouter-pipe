@@ -360,6 +360,56 @@ def is_tool_image_handoff(previous: Any, message: Any) -> bool:
     )
 
 
+def _picture_urls(blocks: Any) -> list[str]:
+    urls: list[str] = []
+    for part in blocks if isinstance(blocks, list) else []:
+        if not (isinstance(part, dict) and part.get("type") == "input_image"):
+            continue
+        url = part.get("image_url")
+        if isinstance(url, dict):
+            url = url.get("url")
+        if isinstance(url, str) and url:
+            urls.append(url)
+    return urls
+
+
+def _handoff_urls(message: Any) -> list[str]:
+    if not isinstance(message, dict) or message.get("role") != "user":
+        return []
+    content = message.get("content")
+    if not isinstance(content, list) or not content:
+        return []
+    first, *images = content
+    if not (
+        isinstance(first, dict)
+        and first.get("type") == "text"
+        and first.get("text") == OPEN_WEBUI_TOOL_IMAGES_TEXT
+        and images
+        and all(isinstance(part, dict) and part.get("type") == "image_url" for part in images)
+    ):
+        return []
+    urls: list[str] = []
+    for part in images:
+        url = part.get("image_url")
+        if isinstance(url, dict):
+            url = url.get("url")
+        if isinstance(url, str) and url:
+            urls.append(url)
+    return urls
+
+
+def is_tool_image_handoff_for_round(results: list[Any], message: Any) -> bool:
+    handoff = _handoff_urls(message)
+    if not handoff:
+        return False
+    seen: set[str] = set()
+    for result in results:
+        if not (isinstance(result, dict) and result.get("role") == "tool"):
+            continue
+        seen.update(_picture_urls(result.get("content")))
+    return any(url in seen for url in handoff)
+
+
 def brings_tool_results(body: dict[str, Any]) -> bool:
     messages = body.get("messages")
     if not isinstance(messages, list) or not messages or not isinstance(messages[-1], dict):

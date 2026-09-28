@@ -22,7 +22,7 @@ Available server tools:
 | `subagent` | Delegate a self-contained task to a worker model an admin chooses |
 | `chat_search_models` | Let the model search the OpenRouter model catalog |
 
-> Advisor and subagent each spawn an **additional model call**; both default **off** per chat and are gated by `ENABLE_ADVISOR` / `ENABLE_SUBAGENT`. The `SERVER_TOOLS_MAX_COST_USD` filter valve bounds the server-tool agent loop via the OpenRouter `stop_server_tools_when` request parameter (overrides `max_tool_calls`). What a model charges is on OpenRouter's pricing page.
+> Advisor and subagent each spawn an **additional model call**; both default **off** per chat and are gated by `ENABLE_ADVISOR` / `ENABLE_SUBAGENT`. The `SERVER_TOOLS_MAX_COST_USD` filter valve bounds the server-tool agent loop via the OpenRouter `stop_server_tools_when` request parameter (overrides `max_tool_calls`); it is sent only while an `openrouter:` server tool is on the request, and dropped when every tool it bounds has been switched off or stripped. What a model charges is on OpenRouter's pricing page.
 
 The model decides **when** to call these tools based on the conversation context. The pipe does not invoke them directly; it includes the tool definitions in the outgoing request and OpenRouter handles execution.
 
@@ -107,7 +107,7 @@ These are configured on the companion filter functions themselves (Open WebUI Ad
 | `WEB_FETCH_BLOCKED_DOMAINS` | `str` | `""` | Comma-separated list of domains blocked from fetching. |
 | `ADVISOR_MODEL` | `str` | `""` | Advisor model to consult (any OpenRouter model). Empty uses the chat's own model. |
 | `SUBAGENT_MODEL` | `str` | `""` | Worker model for delegated subagent tasks. Empty uses the chat's own model. |
-| `SERVER_TOOLS_MAX_COST_USD` | `float` | `0.0` | Cap cumulative server-tool loop cost per request in USD (sets OpenRouter `stop_server_tools_when`). 0 means no cap. |
+| `SERVER_TOOLS_MAX_COST_USD` | `float` | `0.0` | Cap cumulative server-tool loop cost per request in USD (sets OpenRouter `stop_server_tools_when`). 0 means no cap. The cap is sent only while an `openrouter:` server tool is on the request. |
 
 ### OpenRouter Image Generation filter valves (admin)
 

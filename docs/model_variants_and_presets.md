@@ -567,7 +567,7 @@ When you select a preset model:
 
 Note: The internal separator (`:`) is converted to `@` when sending to OpenRouter, matching their API expectations.
 
-**Reasoning:** unlike a routing variant, a preset model does not take its base model's reasoning settings. The pipe adds no reasoning settings of its own to it, so the preset's saved ones apply. A reasoning effort the chat itself sets (for example Open WebUI's per-chat reasoning effort) still goes out with the request, and OpenRouter lets request fields override a preset's saved ones, so it overrides the preset's setting for that request.
+**Reasoning:** unlike a routing variant, a preset model does not take its base model's reasoning settings. The pipe adds no reasoning settings of its own to it, so the preset's saved ones apply. A reasoning effort the chat itself sets (for example Open WebUI's per-chat reasoning effort) still goes out with the request, and OpenRouter lets request fields override a preset's saved ones, so it overrides the preset's setting for that request. That reasoning configuration is the one thing a preset does not inherit: in every other respect a preset entry is its base model, and inherits the base model's capabilities, context window, output ceiling, supported parameters, ZDR status, pricing and filter support. A preset of a base model with `video_generation` or `image_output` is therefore generated through the video or image adapter rather than streamed as chat, exactly as its base model is.
 
 ### Creating Presets
 

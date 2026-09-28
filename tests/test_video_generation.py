@@ -4452,7 +4452,6 @@ def test_a_case_variant_published_name_does_not_render_twice():
     assert "VIDEO_VENDOR_OTHER" in module.Filter.UserValves.model_fields
 
 
-
 # ============================================================================
 # REGFIX: video fixes 1-7
 # ============================================================================

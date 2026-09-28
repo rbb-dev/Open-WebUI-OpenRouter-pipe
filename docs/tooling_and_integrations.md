@@ -60,7 +60,7 @@ Tool *schemas* are assembled by the tool registry builder and attached to the ou
 
 ### Preconditions
 
-- A function tool reaches OpenRouter only if the model's catalogue row lists `tools` or `tool_choice`, publishes no parameters, or does not exist. This holds in every mode, whatever the tool's source, and for Fusion panel models; a model the catalogue rules out is sent no function tools at all, and a `tool_choice`, `parallel_tool_calls` or `stop_server_tools_when` left with nothing to point at is cleared.
+- A function tool reaches OpenRouter only if the model's catalogue row lists `tools` or `tool_choice`, publishes no parameters, or does not exist. This holds in every mode, whatever the tool's source, and for Fusion panel models; a model the catalogue rules out is sent no function tools at all, and a `tool_choice`, `parallel_tool_calls` or `stop_server_tools_when` left with nothing to point at is cleared. The general rule is the same whatever removed the tool: a `stop_server_tools_when` cap reaches OpenRouter only while at least one `openrouter:`-prefixed server tool is still on the request, so a cap whose every tool was switched off or stripped is dropped rather than sent pointing at nothing.
 - The same row decides the per-chat Image Generation and Web Tools switches: a model whose tool use is ruled out is offered neither, so the switch and the request-time guarantee cannot disagree.
 
 ### Tool sources (in order)

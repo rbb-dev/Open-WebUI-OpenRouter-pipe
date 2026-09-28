@@ -662,6 +662,8 @@ class ChatCompletionsAdapter:
                         received_any = False
                         cut_off = False
                         tool_calls_completed = False
+                        truncating_reason = None
+                        latest_usage = {}
 
                     await self._inline_internal_chat_files(chat_payload, effective_valves, user=user)
 

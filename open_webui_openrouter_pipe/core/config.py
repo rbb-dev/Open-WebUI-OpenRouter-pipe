@@ -368,7 +368,7 @@ DEFAULT_INTERNAL_ERROR_TEMPLATE = (
 
 DEFAULT_ENDPOINT_OVERRIDE_CONFLICT_TEMPLATE = (
     "### ⚠️ Endpoint Override Conflict\n\n"
-    "This request includes attachments that require a different OpenRouter endpoint than the one enforced for the selected model.\n\n"
+    "This request requires a different OpenRouter endpoint than the one enforced for the selected model.\n\n"
     "**Error ID:** `{error_id}`\n"
     "{{#if requested_model}}\n"
     "**Model:** `{requested_model}`\n"
@@ -387,7 +387,7 @@ DEFAULT_ENDPOINT_OVERRIDE_CONFLICT_TEMPLATE = (
     "{{/if}}\n\n"
     "**What to do:**\n"
     "- Ask an admin to adjust the model endpoint override (or choose a different model)\n"
-    "- Or remove the attachment(s) and retry\n"
+    "- Or remove the attachment(s) and retry, unless the requirement is the model's own\n"
     "{{#if support_email}}\n"
     "\n**Support:** {support_email}\n"
     "{{/if}}\n"
@@ -870,7 +870,10 @@ class Valves(BaseModel):
         description=(
             "Comma-separated glob patterns of model ids that must use /chat/completions "
             "(e.g. 'anthropic/*, openai/gpt-4.1-mini'). Matches both slash and dotted model ids. "
-            "Globs are literal about the `~` prefix; add '~anthropic/*' to cover router aliases."
+            "Globs are literal about the `~` prefix; add '~anthropic/*' to cover router aliases. "
+            "A match on a Fusion model is not overridden: the valve holds and the request is refused "
+            "with the endpoint-conflict card, because the Fusion plugin entry cannot travel to "
+            "/chat/completions."
         ),
     )
     FORCE_RESPONSES_MODELS: str = Field(
@@ -1005,7 +1008,7 @@ class Valves(BaseModel):
     )
     ENABLE_SSRF_PROTECTION: bool = Field(
         default=True,
-        description="Enable SSRF (Server-Side Request Forgery) protection for remote URL downloads. When enabled, a remote address is fetched only if it is provably globally routable, so loopback, 10.x/172.16.x/192.168.x, link-local, carrier-grade NAT (100.64.0.0/10 -- also Tailscale's default range) and IPv6 site-local are all refused, as is any range the registries do not mark as globally routable. IPv6 addresses that wrap an IPv4 one (::ffff:, 6to4, Teredo, NAT64) are judged on the address they carry. A refused address is not sent either: the person sees `Images: skipped N (could not be fetched, so it was not sent).` A public `https://` link the pipe merely failed to download is still forwarded for the provider to fetch. A failed download costs one further address check, so an unreachable resolver can add up to two `ADDRESS_CHECK_SECONDS` per picture, sequentially. HTTP is disabled by default; see ALLOW_INSECURE_HTTP_* for explicit opt-in.",
+        description="Enable SSRF (Server-Side Request Forgery) protection for remote URL downloads. When enabled, a remote address is fetched only if it is provably globally routable, so loopback, 10.x/172.16.x/192.168.x, link-local, carrier-grade NAT (100.64.0.0/10 -- also Tailscale's default range) and IPv6 site-local are all refused, as is any range the registries do not mark as globally routable. IPv6 addresses that wrap an IPv4 one (::ffff:, 6to4, Teredo, NAT64) are judged on the address they carry. A refused address is not sent either: the person sees `Images: skipped N (could not be fetched, so it was not sent).` A public `https://` link the pipe merely failed to download is still forwarded for the provider to fetch. A failed download costs one further address check, so an unreachable resolver can add up to two `ADDRESS_CHECK_SECONDS` per picture, sequentially. The address checks run on a dedicated bounded thread pool, so a stalled resolver is bounded there rather than queued behind everything else the process does; a check that cannot start inside its own budget is refused, exactly like any other failed check. HTTP is disabled by default; see ALLOW_INSECURE_HTTP_* for explicit opt-in.",
     )
     ALLOW_INSECURE_HTTP: bool = Field(
         default=False,
@@ -1259,7 +1262,7 @@ class Valves(BaseModel):
     PERSIST_REASONING_TOKENS: Literal["disabled", "next_reply", "conversation"] = Field(
         default="conversation",
         title="Reasoning retention",
-        description="Reasoning retention: 'disabled' keeps nothing, 'next_reply' keeps thoughts only until the following assistant reply finishes, when that reply happens in this chat; rows whose answering request never arrives are dropped by the periodic cleanup, and 'conversation' keeps them for the full chat history. Reasoning is kept when the provider sends it as a replayable output item; reasoning that arrives only as streamed deltas is shown in the thinking box but not replayed on later turns. A temporary chat stores no reasoning; in Open-WebUI tool mode the thinking of a streamed reply is held in memory for that reply only, and dropped when the pipe answers its last call back, or when the provider refuses a call-back the pipe was waiting for, or after 15 minutes unused. A call that carries no chat_id has its reasoning and tool records held in memory for the length of that request only and never written to the database (see API_CALL_ARTIFACT_MEMORY), so an API call's records last for the request, not the conversation.",
+        description="Reasoning retention: 'disabled' keeps nothing, 'next_reply' keeps thoughts only until the following assistant reply finishes, when that reply happens in this chat; rows whose answering request never arrives are dropped by the periodic cleanup, and 'conversation' keeps them for the full chat history. Reasoning is kept when the provider sends it as a replayable output item; reasoning that arrives only as streamed deltas is shown in the thinking box but not replayed on later turns. A temporary chat stores no reasoning; in Open-WebUI tool mode the thinking of a streamed reply is held in memory for that reply only, and dropped when the pipe answers its last call back, or when the provider refuses a call-back the pipe was waiting for, or after 15 minutes unused. A user setting the pipe cannot read (an undecodable stored row, after a WEBUI_SECRET_KEY rotation) falls back to that field's own per-user default, whichever side of this site-wide value that default sits on, and never to the value set here. A call that carries no chat_id has its reasoning and tool records held in memory for the length of that request only and never written to the database (see API_CALL_ARTIFACT_MEMORY), so an API call's records last for the request, not the conversation.",
     )
     TASK_MODEL_REASONING_EFFORT: Literal["none", "minimal", "low", "medium", "high", "xhigh"] = Field(
         default="low",
@@ -1295,7 +1298,7 @@ class Valves(BaseModel):
     PERSIST_TOOL_RESULTS: bool = Field(
         default=False,
         title="Keep tool results",
-        description="Give the model the full arguments and results of tool calls from earlier turns. When disabled, the model sees each tool call from an earlier turn as its name and a short note on whether it succeeded (an ask_user question and the person's answer always go back), and relies on its own earlier answers or runs the tool again. The setting applies in both tool execution modes and decides what the model is handed, not whether results are stored: a shown tool card keeps the full result in the message, and the pipe's own copy of each tool round keeps the full call and result, pictures included, encrypted only while ARTIFACT_ENCRYPTION_KEY is set and ENCRYPT_ALL is on. A temporary chat stores none of its tool rounds or thinking; in Open-WebUI tool mode the rounds and thinking of a streamed reply are held in memory for that reply only, and dropped when the pipe answers its last call back, or when the provider refuses a call-back the pipe was waiting for, or after 15 minutes unused. A call that carries no chat_id has its tool records held in memory for the length of that request only and never written to the database (see API_CALL_ARTIFACT_MEMORY), so an API call's records last for the request, not the conversation.",
+        description="Give the model the full arguments and results of tool calls from earlier turns. When disabled, the model sees each tool call from an earlier turn as its name and a short note on whether it succeeded (an ask_user question and the person's answer always go back), and relies on its own earlier answers or runs the tool again. The setting applies in both tool execution modes and decides what the model is handed, not whether results are stored: a shown tool card keeps the full result in the message, and the pipe's own copy of each tool round keeps the full call and result, pictures included, encrypted only while ARTIFACT_ENCRYPTION_KEY is set and ENCRYPT_ALL is on. A temporary chat stores none of its tool rounds or thinking; in Open-WebUI tool mode the rounds and thinking of a streamed reply are held in memory for that reply only, and dropped when the pipe answers its last call back, or when the provider refuses a call-back the pipe was waiting for, or after 15 minutes unused. A user setting the pipe cannot read (an undecodable stored row, after a WEBUI_SECRET_KEY rotation) falls back to that field's own per-user default, whichever side of this site-wide value that default sits on, and never to the value set here. A call that carries no chat_id has its tool records held in memory for the length of that request only and never written to the database (see API_CALL_ARTIFACT_MEMORY), so an API call's records last for the request, not the conversation.",
     )
     API_CALL_ARTIFACT_MEMORY: bool = Field(
         default=True,
@@ -1595,8 +1598,10 @@ class Valves(BaseModel):
     ENDPOINT_OVERRIDE_CONFLICT_TEMPLATE: str = Field(
         default=DEFAULT_ENDPOINT_OVERRIDE_CONFLICT_TEMPLATE,
         description=(
-            "Markdown template used when a request requires /chat/completions (e.g. direct video uploads) but the model is "
-            "explicitly forced to /responses by endpoint override valves."
+            "Markdown template used when a request and the endpoint its model is forced to disagree: a request that "
+            "requires /chat/completions (e.g. direct video uploads) on a model explicitly forced to /responses by "
+            "endpoint override valves, or a request that requires /responses (e.g. a Fusion model, whose plugin entry "
+            "cannot travel) on a model forced to /chat/completions."
         ),
     )
     DIRECT_UPLOAD_FAILURE_TEMPLATE: str = Field(
@@ -2531,12 +2536,12 @@ class UserValves(BaseModel):
     PERSIST_REASONING_TOKENS: Literal["disabled", "next_reply", "conversation"] = Field(
         default="next_reply",
         title="How long to keep reasoning",
-        description="Choose whether reasoning is kept just for the next reply or the entire conversation.",
+        description="Choose whether reasoning is kept just for the next reply or the entire conversation. A setting the pipe cannot read (an undecodable stored row, after a WEBUI_SECRET_KEY rotation) falls back to this valve's own per-user default rather than to the administrator's site-wide value.",
     )
     PERSIST_TOOL_RESULTS: bool = Field(
         default=False,
         title="Remember tool and search results",
-        description="Let the AI reuse outputs from tools (for example pages it fetched or other apps) later in the conversation, using more tokens on long chats. When off, the AI relies on its own summaries and can re-run tools as needed, but a question the AI asked you and your answer always go back to it. A temporary chat stores none of its tool results. Tool cards in the chat, while shown, still show every result.",
+        description="Let the AI reuse outputs from tools (for example pages it fetched or other apps) later in the conversation, using more tokens on long chats. When off, the AI relies on its own summaries and can re-run tools as needed, but a question the AI asked you and your answer always go back to it. A temporary chat stores none of its tool results. Tool cards in the chat, while shown, still show every result. A setting the pipe cannot read (an undecodable stored row, after a WEBUI_SECRET_KEY rotation) falls back to this valve's own per-user default rather than to the administrator's site-wide value.",
     )
     TOOL_EXECUTION_MODE: Literal["Pipeline", "Open-WebUI"] = Field(
         default="Pipeline",

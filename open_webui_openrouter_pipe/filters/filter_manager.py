@@ -800,7 +800,7 @@ class FilterManager:
             '        SERVER_TOOLS_MAX_COST_USD: float = Field(\n'
             '            default=0.0,\n'
             '            ge=0,\n'
-            '            description="Cap cumulative server-tool loop cost per request in USD. 0 means no cap.",\n'
+            '            description="Cap cumulative server-tool loop cost per request in USD. 0 means no cap. The cap is sent only while an openrouter: server tool is on the request.",\n'
             '        )'
         )
 
