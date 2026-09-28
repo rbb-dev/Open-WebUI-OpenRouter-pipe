@@ -2081,7 +2081,9 @@ class Valves(BaseModel):
             "panel whose install failed once: a model whose image panel could not be "
             "written keeps the panel it already carries and the default it already had, "
             "and takes them off at the next refresh that installs it, or at the next one "
-            "that finds it no longer offers images."
+            "that finds it no longer offers images. A pass that cannot find the panel it "
+            "was told to attach leaves the existing one in place and tries again at the "
+            "next catalog fetch."
         ),
     )
     AUTO_DEFAULT_IMAGE_FILTERS: bool = Field(
@@ -2089,7 +2091,9 @@ class Valves(BaseModel):
         description=(
             "Keep the attached image filters enabled by default on "
             "image-output models. Reapplied at every catalog refresh; turning it off "
-            "clears the default the pipe seeded, leaving the filter attached."
+            "clears the default the pipe seeded, leaving the filter attached. A pass that "
+            "cannot find the panel it was told to attach leaves the existing one in place "
+            "and tries again at the next catalog fetch."
         ),
     )
 
@@ -2128,11 +2132,11 @@ class Valves(BaseModel):
     )
     AUTO_ATTACH_FUSION_FILTER: bool = Field(
         default=True,
-        description="Automatically attach the OpenRouter Fusion filter to the fusion models only — `openrouter/fusion`, `openrouter/fusion-flash`, and their `:tag` variant and `@preset/…` rows (so their panel/judge options appear in the Integrations menu). Never attaches to any other model. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone.",
+        description="Automatically attach the OpenRouter Fusion filter to the fusion models only — `openrouter/fusion`, `openrouter/fusion-flash`, and their `:tag` variant and `@preset/…` rows (so their panel/judge options appear in the Integrations menu). Never attaches to any other model. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. Auto-install off with this on — the install-by-hand mode — no longer detaches on a pass that finds no panel: the attached filter stays and the next catalog fetch tries again.",
     )
     AUTO_DEFAULT_FUSION_FILTER: bool = Field(
         default=True,
-        description="Mark the OpenRouter Fusion filter as a Default Filter on the fusion models (pre-enabled per chat) — including their `:tag` variant and `@preset/…` rows. Does NOT force Fusion to run — the per-user 'Always run Fusion' toggle is off by default. Reapplied at every catalog refresh; turning it off clears the default the pipe seeded, leaving the filter attached.",
+        description="Mark the OpenRouter Fusion filter as a Default Filter on the fusion models (pre-enabled per chat) — including their `:tag` variant and `@preset/…` rows. Does NOT force Fusion to run — the per-user 'Always run Fusion' toggle is off by default. Reapplied at every catalog refresh; turning it off clears the default the pipe seeded, leaving the filter attached. A pass that cannot find the filter it was told to attach leaves the existing one in place and tries again at the next catalog fetch.",
     )
     FUSION_BACKEND: Literal["openrouter", "internal"] = Field(
         default="internal",
@@ -2413,13 +2417,16 @@ class Valves(BaseModel):
         ge=1,
         le=60,
         description=(
-            "Hard timeout (seconds) for the classifier task-model call. The limit "
+            "Timeout (seconds) for each candidate task-model call. The limit "
             "covers the model call only; the lookup of those Task Model settings "
             "happens before it and is a database read, so it is not counted against "
-            "this window. If the call exceeds this or fails for any reason, the pipe "
-            "falls back to sending only the latest user message to the video model. "
-            "The paid video generation request still proceeds — the classifier never "
-            "blocks generation."
+            "this window. It is charged per attempt, so a host whose Task Model "
+            "fallback valve is on can roughly double the worst-case wait for the "
+            "model calls — up to 60 s per candidate, and the valve times the number "
+            "of candidates tried. If the call exceeds this or fails for any reason, "
+            "the pipe falls back to sending only the latest user message to the video "
+            "model. The paid video generation request still proceeds — the classifier "
+            "never blocks generation."
         ),
     )
     VIDEO_INTENT_CONFIRM_MODE: Literal["always", "on_reference", "low_confidence", "never"] = Field(
@@ -2438,7 +2445,11 @@ class Valves(BaseModel):
         description=(
             "Cost guard: maximum task-model calls per chat session. 0 (default) = unlimited. "
             "Admin sets a positive integer to enforce a per-chat ceiling. A call is charged "
-            "when it is admitted, so concurrent turns in one chat share the ceiling."
+            "when it is admitted, so concurrent turns in one chat share the ceiling. The "
+            "tally is per worker process and in memory, keyed on a one-way SHA-256 prefix of "
+            "the chat id rather than the id itself, so no chat id is held in it; a temporary "
+            "chat is charged like any other. It keeps the most recent 300 chats, so a chat "
+            "pushed out of that window by other chats in between starts a fresh budget."
         ),
     )
     VIDEO_INTENT_MAX_CALLS_PER_USER_DAY: int = Field(
@@ -2511,7 +2522,9 @@ class Valves(BaseModel):
             "preferences apply without users having to switch the filter on per chat. The filter does "
             "nothing until preferences are actually configured, so defaulting it on is free. "
             "Disable to make users opt in per chat; on the next sync this also clears the default "
-            "the pipe seeded, leaving the filters attached."
+            "the pipe seeded, leaving the filters attached. A pass that could not read the filter "
+            "table leaves the filters it already found in place and tries again at the next "
+            "catalog fetch."
         ),
     )
 

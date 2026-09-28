@@ -83,11 +83,14 @@ fails returns a contextual card for a persisted kind and the empty string for
 every other, and the answer on screen is left exactly as the model wrote it. The refusal paths are the exception, and deliberately so: a task
 the pipe refuses before it enqueues the job — an open circuit breaker, a failed
 warmup, a missing or full request queue, a setup exception — gets the refusal
-sentence rather than a stub, for every kind. The same holds for the three refusals
+sentence rather than a stub, for every kind. The same holds for the refusals
 that happen in-request, after the job is queued: ZDR enforcement on a model with no
-ZDR endpoint, the same refusal when the endpoint list cannot be read at all, and an
-endpoint-override conflict from a preset on a model forced to `/responses`. A task
-on any of those three gets the refusal card only if Open WebUI persists that kind's
+ZDR endpoint, the same refusal when the endpoint list cannot be read at all, an
+endpoint-override conflict from a preset on a model forced to `/responses`, and the
+six sites inside `_handle_pipe_call` where the job itself fails — an artifact store
+that will not open, an API key that cannot be read, an active auth breaker, an
+unusable model catalog, and the catch-all tail. A task
+on any of those gets the refusal card only if Open WebUI persists that kind's
 return value; every other kind gets the empty string, because Open WebUI hands that
 return value to a consumer that displays it — a search query, an emoji, a prompt
 suggestion — and the sentence would be shown as one. A stub is a write, not
@@ -103,7 +106,11 @@ outage that happened without this pipe at all. That is Open WebUI's behaviour
 for its own failed title generation, the pipe follows it rather than returning a
 stub, and the alternative would be renaming the chat to the literal placeholder
 "Chat". Toast notifications are the one channel still open, because Open WebUI
-shows those beside the conversation rather than inside a message.
+shows those beside the conversation rather than inside a message; a
+refused task says so in a single plain sentence. The two refusal sites that have
+already rendered an error card into the chat do not toast as well — the card is
+the report, and a second rendering of the same failure is noise rather than
+information.
 
 The adapter's failure tail follows the same rule: a persisted kind gets the card,
 every other kind gets `""`, and the toast carries the text. `str(last_error)`

@@ -1537,9 +1537,14 @@ class Pipe:
             or self.valves.AUTO_ATTACH_IMAGE_GEN_FILTER
         ):
             try:
-                image_gen_filter_model = (
-                    await self._ensure_filter_manager().image_gen_filter_selected_model()
-                ) or ""
+                if self.valves.AUTO_INSTALL_IMAGE_GEN_FILTER:
+                    image_gen_filter_model = (
+                        self._ensure_filter_manager().installed_image_gen_model
+                    ) or ""
+                else:
+                    image_gen_filter_model = (
+                        await self._ensure_filter_manager().image_gen_filter_selected_model()
+                    ) or ""
             except Exception as exc:
                 level = warn_level(
                     _warned_pipes_maintenance, f"image_gen_model:{type(exc).__name__}"
@@ -2996,7 +3001,6 @@ class Pipe:
         model_block = __metadata__.get("model")
         openwebui_model_id = model_block.get("id", "") if isinstance(model_block, dict) else ""
         pipe_identifier = self.id
-        task_name = TaskModelAdapter._task_name(__task__)
         use_task_model_adapter = TaskModelAdapter._uses_task_model_adapter(__task__)
         try:
             self._artifact_store._ensure_artifact_store(valves, pipe_identifier)
@@ -3008,7 +3012,7 @@ class Pipe:
                 variables={"error_type": type(e).__name__},
                 log_message=f"Unexpected error: {e}")
             if use_task_model_adapter:
-                return self._build_task_fallback_content(task_name)
+                return self._task_refusal_result(__task__, shown)
             return shown
 
         plugin_result = None
@@ -3040,20 +3044,25 @@ class Pipe:
 
         __event_emitter__ = _task_visible_channel_emitter(__event_emitter__, __task__)
         if use_task_model_adapter and self._auth_failure_active():
-            fallback = self._build_task_fallback_content(task_name)
+            reason = "OpenRouter access is temporarily disabled after repeated authentication failures."
+            await self._event_emitter_handler._emit_notification(
+                __event_emitter__, reason, level="warning"
+            )
             return self._build_chat_completion_payload(
                 model=str(body.get("model") or openwebui_model_id or "pipe"),
-                content=fallback,
+                content=self._task_refusal_result(__task__, reason),
             )
 
         api_key_value, api_key_error = self._resolve_openrouter_api_key(valves)
         if api_key_error:
             self._note_auth_failure()
             if use_task_model_adapter:
-                fallback = self._build_task_fallback_content(task_name)
+                await self._event_emitter_handler._emit_notification(
+                    __event_emitter__, api_key_error, level="warning"
+                )
                 return self._build_chat_completion_payload(
                     model=str(body.get("model") or openwebui_model_id or "pipe"),
-                    content=fallback,
+                    content=self._task_refusal_result(__task__, api_key_error),
                 )
 
             template = valves.AUTHENTICATION_ERROR_TEMPLATE
@@ -3134,7 +3143,12 @@ class Pipe:
                 done=True,
             )
             if use_task_model_adapter:
-                return self._build_task_fallback_content(task_name)
+                await self._event_emitter_handler._emit_notification(
+                    __event_emitter__,
+                    "OpenRouter configuration error. Please check this pipe's settings.",
+                    level="warning",
+                )
+                return self._task_refusal_result(__task__, shown)
             return shown
         except Exception as exc:
             available_models = OpenRouterModelRegistry.list_models()
@@ -3147,7 +3161,12 @@ class Pipe:
                 )
                 self.logger.exception("OpenRouter model catalog unavailable")
                 if use_task_model_adapter:
-                    return self._build_task_fallback_content(task_name)
+                    await self._event_emitter_handler._emit_notification(
+                        __event_emitter__,
+                        "OpenRouter model catalog unavailable. Please retry shortly.",
+                        level="warning",
+                    )
+                    return self._task_refusal_result(__task__, shown)
                 return shown
             self.logger.log(
                 warn_level(_warned_pipes_maintenance, f"chat_catalog_refresh:{type(exc).__name__}"),
@@ -3240,7 +3259,7 @@ class Pipe:
             return result
 
         if use_task_model_adapter:
-            return self._build_task_fallback_content(task_name)
+            return self._task_refusal_result(__task__, shown)
         return shown
 
 

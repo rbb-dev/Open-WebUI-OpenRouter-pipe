@@ -58,6 +58,7 @@ from tenacity import (
 
 from ..core.timing_logger import timed
 from ..core.utils import _await_if_needed, is_picture_output
+from ..core.warn_latch import warn_level
 from .owui_files import is_temporary_chat, temporary_chat_prefixes
 
 # Optional dependencies
@@ -248,6 +249,7 @@ class ReplyMemory:
         max_bytes: int = REPLY_MEMORY_MAX_BYTES,
         clock: Callable[[], float] = time.monotonic,
         user_id: Callable[[], str] | None = None,
+        logger: logging.Logger | None = None,
     ) -> None:
         self._idle_seconds = idle_seconds
         self._max_bytes = max_bytes
@@ -256,6 +258,9 @@ class ReplyMemory:
         self._replies: OrderedDict[tuple[Any, Any, Any], tuple[float, dict[str, dict[str, Any]], int]] = OrderedDict()
         self._sweep: asyncio.TimerHandle | None = None
         self._lock = threading.RLock()
+        self._logger = logger
+        self._evict_warn: dict[str, float] = {}
+        self._evict_latch = threading.Lock()
 
     def _key(self, chat_id: Any, message_id: Any) -> tuple[Any, Any, Any]:
         return (self._user_id(), chat_id, message_id)
@@ -322,6 +327,8 @@ class ReplyMemory:
     def _hold(self, rows: list[dict[str, Any]]) -> list[str]:
         self._expire()
         held: list[str] = []
+        dropped = 0
+        oversized = 0
         for row in rows:
             key = self._key(row.get("chat_id"), row.get("message_id"))
             if key not in self._replies:
@@ -336,8 +343,21 @@ class ReplyMemory:
         for key in {self._key(row.get("chat_id"), row.get("message_id")) for row in rows}:
             if key in self._replies and self._replies[key][2] > self._max_bytes:
                 del self._replies[key]
+                dropped += 1
+                oversized += 1
         while self._replies and sum(size for _touched, _rows, size in self._replies.values()) > self._max_bytes:
             self._replies.popitem(last=False)
+            dropped += 1
+        if dropped and self._logger is not None:
+            with self._evict_latch:
+                level = warn_level(self._evict_warn, "reply-memory-evicted", cooldown_s=300.0)
+            self._logger.log(
+                level,
+                "Held reply memory over its %d byte ceiling: dropped %d in-flight held repl%s "
+                "(%d of them larger than the whole ceiling); an evicted reply loses its tool "
+                "rounds and thinking for the rest of the stream",
+                self._max_bytes, dropped, "y" if dropped == 1 else "ies", oversized,
+            )
         kept_ids = {item_id for _touched, kept, _size in self._replies.values() for item_id in kept}
         self._arm()
         return [item_id for item_id in held if item_id in kept_ids]
@@ -418,10 +438,12 @@ class ArtifactStore:
         self._user_id_context = user_id_context_var
 
         self._reply_memory = ReplyMemory(
-            user_id=lambda: (self._user_id_context.get() or "") if self._user_id_context else ""
+            user_id=lambda: (self._user_id_context.get() or "") if self._user_id_context else "",
+            logger=self.logger,
         )
         self._api_reply_memory = ReplyMemory(
-            user_id=lambda: (self._user_id_context.get() or "") if self._user_id_context else ""
+            user_id=lambda: (self._user_id_context.get() or "") if self._user_id_context else "",
+            logger=self.logger,
         )
         self._initialize_encryption_state()
         self._initialize_circuit_breakers()

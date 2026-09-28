@@ -97,7 +97,9 @@ image model returns a curated model-specific help blurb covering:
 It quotes no prices: what a model charges is on OpenRouter's pricing page.
 
 This is the fastest way to learn a model without leaving the chat. Try
-it on each image model — the answers are different for every one.
+it on each image model — the answers are different for every one. A
+routing variant of an image model (`:free`, `:nitro`, `@preset/…`, …) shows
+the same curated card as the model it is built from.
 
 ### For administrators
 
@@ -1292,6 +1294,9 @@ both the panel and this list offer it and say so.
 If a model isn't in the curated dataset (newly added by OpenRouter
 between catalog refreshes, for example), `help` falls back to the
 catalog metadata — display name, description, output/input modalities.
+The dataset is keyed on the model a variant is built from, so a `:free`,
+`:nitro` or `@preset/…` row of a curated model gets that model's curated
+card rather than the fallback.
 
 ---
 

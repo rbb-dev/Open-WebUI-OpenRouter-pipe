@@ -193,6 +193,7 @@ See: [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry
 - Refresh failures with cache: the pipe can continue serving cached models; logs will show a warning about serving cached catalog data.
 - Refresh failures with no cache: the error propagates, and requests that require the catalog cannot proceed.
 - Empty catalog: the registry treats an empty model list as an error.
+- Missing provider dropdown: the provider map is retained per slug, so a frontend-catalog cycle that returns nothing for a model the catalog still lists keeps that slug's previously fetched providers instead of dropping them.
 
 Operator guidance:
 - Treat catalog failures like an upstream connectivity/credential issue first (API key, network egress, proxy/gateway, OpenRouter availability), then inspect logs for the last refresh failure.

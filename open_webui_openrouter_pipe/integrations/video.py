@@ -86,6 +86,7 @@ from .video_intent import (
     FramePlanEntry,
     VideoIntentResult,
     _admin_intent_floor,
+    _hash_chat_id,
     collect_attachments_from_video_meta,
     emit_telemetry_log,
     render_clarification_message,
@@ -119,6 +120,10 @@ _MAX_VIDEO_OUTPUTS = 16
 _REFERENCE_KINDS_NEEDING_A_LINK = frozenset({"audio_url", "video_url"})
 
 _INTENT_NOTIFIED_WINDOW = 300
+
+_INTENT_CHAT_COUNT_WINDOW = 300
+
+_INTENT_BREAKER_SWEEP_INTERVAL_SECONDS = 60.0
 
 _INTENT_NO_CHAT_ID_KEY = "__no_chat_id__"
 
@@ -521,10 +526,11 @@ class VideoGenerationAdapter:
         self._pipe = pipe
         self.logger = logger
         self._persistence = VideoPersistence(logger=logger)
-        self._intent_call_counts_per_chat: dict[str, int] = {}
+        self._intent_call_counts_per_chat: OrderedDict[str, int] = OrderedDict()
         self._intent_call_counts_per_user_day: dict[tuple[str, str], int] = {}
         self._intent_pruned_day: str = ""
         self._intent_breaker_until_ts: dict[str, float] = {}
+        self._intent_breaker_swept_at: float = 0.0
         self._intent_failure_notified_chats: OrderedDict[str, None] = OrderedDict()
 
     async def generate(
@@ -739,17 +745,9 @@ class VideoGenerationAdapter:
                         await self._emit_completion(event_emitter, clar_content)
                         self._emit_intent_telemetry(intent_result, valves=valves, chat_id=chat_id)
                         return clar_content
-                    reused_frame_pref_raw = (
-                        resolve_intent_user_setting(
-                            metadata, "frame_extraction_index",
-                            valves, "VIDEO_INTENT_FRAME_EXTRACTION_INDEX", "last",
-                        )
-                        if _admin_intent_floor(
-                            valves, "VIDEO_INTENT_ENABLED", True,
-                        )
-                        else _admin_intent_floor(
-                            valves, "VIDEO_INTENT_FRAME_EXTRACTION_INDEX", "last",
-                        )
+                    reused_frame_pref_raw = resolve_intent_user_setting(
+                        metadata, "frame_extraction_index",
+                        valves, "VIDEO_INTENT_FRAME_EXTRACTION_INDEX", "last",
                     )
                     reused_frame_pref: Literal["first", "last"] = (
                         "first" if reused_frame_pref_raw == "first" else "last"
@@ -771,17 +769,9 @@ class VideoGenerationAdapter:
                         if isinstance(pipe_meta, dict):
                             pipe_meta["video_generation"] = video_meta_pre
                     confirm_mode = str(
-                        (
-                            resolve_intent_user_setting(
-                                metadata, "confirm_mode",
-                                valves, "VIDEO_INTENT_CONFIRM_MODE", "on_reference",
-                            )
-                            if _admin_intent_floor(
-                                valves, "VIDEO_INTENT_ENABLED", True,
-                            )
-                            else _admin_intent_floor(
-                                valves, "VIDEO_INTENT_CONFIRM_MODE", "on_reference",
-                            )
+                        resolve_intent_user_setting(
+                            metadata, "confirm_mode",
+                            valves, "VIDEO_INTENT_CONFIRM_MODE", "on_reference",
                         )
                         or "on_reference"
                     )
@@ -2606,7 +2596,8 @@ class VideoGenerationAdapter:
         if self._intent_breaker_open(user_id):
             return False
         charge_chat = cap_chat > 0 and bool(chat_id)
-        if charge_chat and self._intent_call_counts_per_chat.get(chat_id, 0) >= cap_chat:
+        tally_key = _hash_chat_id(chat_id) if charge_chat else ""
+        if charge_chat and self._intent_call_counts_per_chat.get(tally_key, 0) >= cap_chat:
             return False
         charge_day = cap_day > 0 and bool(user_id)
         day = ""
@@ -2616,9 +2607,11 @@ class VideoGenerationAdapter:
             if self._intent_call_counts_per_user_day.get((user_id, day), 0) >= cap_day:
                 return False
         if charge_chat:
-            self._intent_call_counts_per_chat[chat_id] = (
-                self._intent_call_counts_per_chat.get(chat_id, 0) + 1
-            )
+            per_chat = self._intent_call_counts_per_chat
+            per_chat[tally_key] = per_chat.get(tally_key, 0) + 1
+            per_chat.move_to_end(tally_key)
+            while len(per_chat) > _INTENT_CHAT_COUNT_WINDOW:
+                per_chat.popitem(last=False)
         if charge_day:
             if self._intent_pruned_day != day:
                 self._intent_call_counts_per_user_day = {
@@ -2635,9 +2628,14 @@ class VideoGenerationAdapter:
         return
 
     def _intent_breaker_open(self, user_id: str) -> bool:
+        now = time.time()
+        if now - self._intent_breaker_swept_at >= _INTENT_BREAKER_SWEEP_INTERVAL_SECONDS:
+            self._intent_breaker_swept_at = now
+            for expired in [k for k, until in self._intent_breaker_until_ts.items() if until <= now]:
+                self._intent_breaker_until_ts.pop(expired, None)
         key = user_id or ""
         until = self._intent_breaker_until_ts.get(key, 0.0)
-        if time.time() < until:
+        if now < until:
             return True
         self._intent_breaker_until_ts.pop(key, None)
         return False
@@ -2647,7 +2645,8 @@ class VideoGenerationAdapter:
         now = time.time()
         key = user_id or ""
         self._intent_breaker_until_ts[key] = max(
-            self._intent_breaker_until_ts.get(key, 0.0), now + 60.0,
+            self._intent_breaker_until_ts.get(key, 0.0),
+            now + _INTENT_BREAKER_SWEEP_INTERVAL_SECONDS,
         )
 
     def _intent_latch_key(self, chat_id: Any) -> str:

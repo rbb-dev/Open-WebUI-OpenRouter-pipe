@@ -294,6 +294,19 @@ earlier generation on a non-streamed Continue as it does on a streamed one. The 
 generation: the non-streamed one flushes each round's reasoning before its tool calls, exactly as the
 streamed one does, so a thought the model produced before a call is replayed before it on both.
 
+Within one request the same question arrives by a different route, because a tool round re-sends the previous
+round's reasoning item verbatim — `id` included — the pipe having normalised only `function_call` and
+`function_call_output`. So a second round whose thinking arrives under an upstream id already used is the
+ordinary shape of a tool turn with a reasoning model, not a provider quirk, and the reuse is the pipe's own making.
+Merging those two blocks on the id would be wrong for a reason that has nothing to do with ordering: every reducer
+downstream replaces by id, so the second would overwrite the first in the record instead of standing beside it. The
+pipe therefore treats the round, not the key, as the unit: a fragment that recurs under a key in a later round is
+published as a block of its own under a fresh id — the first block keeping the provider's, because that is the id
+Open WebUI merges the stored record by — while two fragments under one key inside one round stay the one block that
+they are, which is also the shape providers reject. What makes this a display question rather than a replay one is
+that the pipe sends the reasoning to the model unchanged and mints a display id only for the block it publishes;
+the offsets above govern what is sent, and this governs only what the person is shown.
+
 The continuation's first output also has to bring its own line break. Open WebUI joins that output onto the
 stored reply's last line. A hidden marker line that gains text after it is no longer a marker: its row stops
 replaying, and the line either shows its id as text or, when the added text contains no space, hides the added text
@@ -307,6 +320,11 @@ could not load when the Continue is not streamed - starts a block of its own on 
 the catalog notice shows as Open WebUI's error instead, and the stored reply stays as it was. A reply written by
 internal Fusion is not continued: a Continue on one leaves the reply as it was, and a notification says that Continue
 is not available for Fusion replies and that regenerating runs Fusion again.
+
+A continuation's closing frame carries no replacing `content`. The stored array is right and stays right; it is the
+live message that would be shortened, because the browser assigns `message.content` absolutely from a frame that
+carries text and no `output`. So the turn still ends with its `chat:completion` frame, carrying `done` and `usage`,
+and carries no `content` for the frontend to write over the prefix with.
 
 ---
 

@@ -541,8 +541,11 @@ def _apply_provider_routing_default_filter_ids(
     provider_routing_filter_id: str | None,
     auto_default_provider_routing_filter: bool,
     detached: set[str] | None = None,
+    hands_off: bool = False,
 ) -> bool:
     """Apply provider routing filter default-on flag to `meta_dict["defaultFilterIds"]`."""
+    if hands_off:
+        return False
     filter_ids = _normalize_id_list(meta_dict, "filterIds")
     default_ids = _normalize_id_list(meta_dict, "defaultFilterIds")
     changed = False
@@ -1483,19 +1486,25 @@ class ModelCatalogManager:
                 )
             else:
                 provider_map = self._build_model_provider_map(frontend_data)
-            if provider_map or not self._cached_provider_map:
-                self._cached_provider_map = provider_map
-                self.logger.info(
-                    "Provider map built: %d models have provider info. Sample keys: %s",
-                    len(provider_map),
-                    list(provider_map.keys())[:5] if provider_map else "[]",
-                )
-            else:
+            if not provider_map and self._cached_provider_map:
                 self.logger.warning(
                     "Provider map rebuild returned 0 models; keeping the previous map of %d. "
                     "Provider routing options and video provider slugs are now stale.",
                     len(self._cached_provider_map),
                 )
+                provider_map = dict(self._cached_provider_map)
+            else:
+                known_ids = {str(m.get("original_id") or "").strip() for m in models} - {""}
+                for slug, previous in self._cached_provider_map.items():
+                    if slug in provider_map or slug not in known_ids:
+                        continue
+                    provider_map[slug] = dict(previous)
+            self._cached_provider_map = provider_map
+            self.logger.info(
+                "Provider map built: %d models have provider info. Sample keys: %s",
+                len(provider_map),
+                list(provider_map.keys())[:5] if provider_map else "[]",
+            )
 
             maker_mapping: dict[str, str] = {}
             if valves.UPDATE_MODEL_IMAGES:
@@ -1807,6 +1816,7 @@ class ModelCatalogManager:
 
             # Provider routing filter generation
             provider_routing_filter_map: dict[str, str] = {}
+            pr_ids_known = True
             if provider_routing_enabled:
                 admin_list = [m.strip() for m in admin_routing_models.split(",") if m.strip()]
                 user_list = [m.strip() for m in user_routing_models.split(",") if m.strip()]
@@ -1828,8 +1838,12 @@ class ModelCatalogManager:
                         if not isinstance(provider_routing_filter_map, dict):
                             provider_routing_filter_map = {}
                     except Exception as exc:
+                        pr_ids_known = False
                         self.logger.warning("Provider routing filter generation failed: %s", exc, exc_info=True)
                         provider_routing_filter_map = {}
+                    pr_ids_known = pr_ids_known and bool(
+                        self._pipe._ensure_filter_manager()._provider_routing_ids_known
+                    )
                 else:
                     self.logger.warning(
                         "Provider routing enabled but provider_map is empty (frontend catalog may have failed to load)"
@@ -2099,6 +2113,7 @@ class ModelCatalogManager:
                             ),
                             fusion_ids_known=fusion_ids_known,
                             provider_routing_filter_id=pr_filter_id,
+                            provider_routing_ids_known=pr_ids_known,
                             auto_default_provider_routing_filter=bool(
                                 valves.AUTO_DEFAULT_PROVIDER_ROUTING_FILTERS
                             ),
@@ -2149,10 +2164,6 @@ class ModelCatalogManager:
         then sweeps the ``model`` table and removes any ``filterIds`` entries
         that match the ``openrouter_`` prefix but are not in the valid set.
 
-        Designed to run **synchronously** inside ``pipes()`` — before OWUI's
-        ``get_all_models()`` reads model overlays — so that the pre-warming
-        cache step never encounters stale function references.
-
         Returns the number of models that were updated.
         """
         from open_webui.models.functions import Functions as _FunctionsTable
@@ -2164,8 +2175,6 @@ class ModelCatalogManager:
         valid_ids = frozenset(
             f.id for f in all_filters if f.id.startswith("openrouter_")
         )
-        if not valid_ids:
-            return 0
 
         updated = 0
         all_models = await Models.get_all_models()
@@ -2261,6 +2270,7 @@ class ModelCatalogManager:
         auto_default_fusion_filter: bool = False,
         fusion_ids_known: bool = True,
         provider_routing_filter_id: str | None = None,
+        provider_routing_ids_known: bool = True,
         auto_default_provider_routing_filter: bool = False,
         valid_openrouter_filter_ids: frozenset[str] = frozenset(),
         openrouter_pipe_capabilities: dict[str, bool] | None = None,
@@ -2548,6 +2558,8 @@ class ModelCatalogManager:
 
         def _apply_provider_routing_filter_ids(meta_dict: dict) -> bool:
             """Attach provider routing filter to model if configured."""
+            if not provider_routing_ids_known:
+                return False
             self.logger.debug(
                 "PR attach attempt: model=%r, filter_id=%r",
                 openwebui_model_id,
@@ -2842,6 +2854,7 @@ class ModelCatalogManager:
                 detached=pr_detached,
                 provider_routing_filter_id=provider_routing_filter_id,
                 auto_default_provider_routing_filter=auto_default_provider_routing_filter,
+                hands_off=not provider_routing_ids_known,
             ):
                 meta_updated = True
 
@@ -2982,6 +2995,7 @@ class ModelCatalogManager:
                 detached=pr_detached,
                 provider_routing_filter_id=provider_routing_filter_id,
                 auto_default_provider_routing_filter=auto_default_provider_routing_filter,
+                hands_off=not provider_routing_ids_known,
             )
 
             if openrouter_pipe_capabilities is not None:

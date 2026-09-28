@@ -50,7 +50,10 @@ PACKAGE = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 # 90 -> 91: the retirement pass (`retire_families_whose_install_valve_is_off` in
 # filters/filter_manager.py) looks the rows up through Open WebUI's `Functions` lazily, like
 # the module's other install and repair passes.
-_EXPECTED_OWUI_IMPORTS = (25, 91)
+# 91 -> 92: B220 (H740-1) reads the pipe row's `updated_at` through a narrow select in
+# `read_config_rev` (plugins/pipe_dashboard/dashboard_socket.py), Open WebUI's own idiom: the lazy
+# `Functions` import became `get_async_db_context` + `Function`, inside the same guarded `try`.
+_EXPECTED_OWUI_IMPORTS = (25, 92)
 
 @pytest.mark.skipif(
     bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),

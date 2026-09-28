@@ -1655,7 +1655,14 @@ class RequestOrchestrator:
             records=records,
             model_resolver=_image_model_records,
         )
-        if superseded and not tool_use_ruled_out:
+        _will_strip_server_tools = _fusion_server_tools_stripped(
+            responses_body.model,
+            responses_body.plugins,
+            responses_body.tools,
+            fusion_enabled=bool(valves.ENABLE_OPENROUTER_FUSION) and _fusion_backend_openrouter(valves),
+            is_task_request=use_task_model_adapter,
+        ) is not None
+        if superseded and not tool_use_ruled_out and not _will_strip_server_tools:
             grouped: dict[str, list[Any]] = {}
             for drawn_by, note in superseded:
                 grouped.setdefault(drawn_by, []).append(note)

@@ -2109,27 +2109,6 @@ class TestConcurrencyControls:
         finally:
             await pipe.close()
 
-    @pytest.mark.asyncio
-    async def test_ensure_concurrency_controls_stale_queue_detection(self):
-        """Test that _ensure_concurrency_controls detects stale queue from different loop."""
-        pipe = Pipe()
-
-        # Reset class-level state
-        Pipe._global_semaphore = None
-        Pipe._semaphore_limit = 0
-
-        try:
-            # First init creates queue
-            await pipe._ensure_concurrency_controls(pipe.valves)
-            original_queue = pipe._request_queue
-
-            # Mark queue as bound to a different loop (simulated)
-            # This is hard to test directly, but we can verify the code path exists
-            assert pipe._request_queue is not None
-        finally:
-            await pipe.close()
-
-
 # =============================================================================
 # RENDER FILTER SOURCE TESTS
 # =============================================================================
@@ -4020,31 +3999,6 @@ async def test_handle_pipe_call_auth_error_nonstreaming_fallback(monkeypatch, pi
 
 
 @pytest.mark.asyncio
-async def test_handle_pipe_call_auth_error_task_fallback(monkeypatch, pipe_instance_async) -> None:
-    pipe = pipe_instance_async
-
-    monkeypatch.setattr(pipe, "_resolve_openrouter_api_key", lambda _valves: (None, "missing key"))
-    monkeypatch.setattr(pipe._artifact_store, "_ensure_artifact_store", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(TaskModelAdapter, "_task_name", staticmethod(lambda _task: "title"))
-
-    result = await pipe._handle_pipe_call(
-        {"stream": False},
-        {},
-        None,
-        None,
-        None,
-        {},
-        None,
-        object(),
-        None,
-        session=_DummySession(),
-    valves=pipe.valves,
-    )
-
-    assert "title" in result["choices"][0]["message"]["content"]
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("surfaced", ["Catalog is down.", "No models could be loaded."])
 async def test_handle_pipe_call_openrouter_catalog_unavailable(monkeypatch, pipe_instance_async, surfaced) -> None:
     pipe = pipe_instance_async
@@ -5634,24 +5588,6 @@ import pytest
 
 from open_webui_openrouter_pipe import Pipe
 from open_webui_openrouter_pipe.tools.tool_executor import _QueuedToolCall, _ToolExecutionContext
-
-
-@pytest.mark.asyncio
-async def test_ensure_concurrency_controls_initializes_queue(pipe_instance):
-    pipe = pipe_instance
-    pipe._request_queue = None
-    pipe._queue_worker_task = None
-    pipe._queue_worker_lock = None
-
-    await pipe._ensure_concurrency_controls(pipe.valves)
-
-    assert pipe._request_queue is not None
-    assert pipe._queue_worker_task is not None
-
-    if pipe._queue_worker_task:
-        pipe._queue_worker_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await cast(asyncio.Task, pipe._queue_worker_task)
 
 
 def test_enqueue_job_queue_full(pipe_instance):

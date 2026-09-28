@@ -320,6 +320,11 @@ class OpenRouterModelRegistry:
     _consecutive_failures: int = 0
     _last_error: str | None = None
     _last_error_time: float = 0.0
+    _name_map: ClassVar[dict[str, str] | None] = None
+
+    @classmethod
+    def _invalidate_name_map(cls) -> None:
+        cls._name_map = None
 
     @classmethod
     def _key_changed(cls, api_key: str) -> bool:
@@ -614,6 +619,7 @@ class OpenRouterModelRegistry:
         cls._models = models
         cls._specs = specs
         cls._id_map = id_map
+        cls._invalidate_name_map()
         if zdr_read_ok:
             cls._zdr_rosters[_fingerprint(api_key)] = set(zdr_model_ids or ())
         cls._zdr_model_ids = cls._zdr_roster_for(api_key)
@@ -936,6 +942,7 @@ class OpenRouterModelRegistry:
         cls._specs = new_specs
         cls._id_map = new_id_map
         cls._models = sorted(models_by_norm.values(), key=lambda m: str(m.get("name") or "").lower())
+        cls._invalidate_name_map()
         cls._video_catalog_norms = frozenset(owned_video_norms)
         ModelFamily.set_dynamic_specs(cls._specs)
         if video_models:
@@ -1193,6 +1200,7 @@ class OpenRouterModelRegistry:
         cls._specs = new_specs
         cls._id_map = new_id_map
         cls._models = sorted(models_by_norm.values(), key=lambda m: str(m.get("name") or "").lower())
+        cls._invalidate_name_map()
         cls._image_catalog_norms = frozenset(owned_image_norms)
         ModelFamily.set_dynamic_specs(cls._specs)
         if image_models:

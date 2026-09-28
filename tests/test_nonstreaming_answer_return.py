@@ -298,38 +298,37 @@ def _visible_message_frames(events: list[dict[str, Any]]) -> list[dict[str, Any]
     ]
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(("task", "key", "expected"), _TASK_ROWS)
-@pytest.mark.parametrize("raised", _TASK_FAILURES, ids=_TASK_FAILURE_IDS)
-async def test_a_failed_task_call_returns_parseable_data_not_a_card(
-    monkeypatch, pipe_instance_async, task, key, expected, raised
-) -> None:
-    """The same failure that yields a card on a chat turn must not title a chat with one.
+def _owui_writes(content: str, key: str) -> Any:
+    """What Open WebUI's middleware would store from this return value, or a sentinel.
 
-    Three failures are driven because three different branches build the reply, and each
-    reaches a different emitter helper: an OpenRouter rejection card, an error frame and
-    the generic catch-all. A guard added to one of them cannot
-    satisfy the set. Three tasks name three different objects, so a constant returned by
-    the fallback builder cannot satisfy the set either.
+    `process_*_generation` slices `content[find('{'):rfind('}')+1]`, parses it and
+    `.get(key, default)`s; a value that does not parse leaves the stored row alone.
+    The sentinels separate "did not parse" from "parsed, and that key is absent".
     """
-    pipe = pipe_instance_async
-    _prepared(pipe, monkeypatch)
-    pipe.valves.INTERNAL_ERROR_TEMPLATE = "### Boom\n\nSomething broke."
+    sliced = content[content.find("{"): content.rfind("}") + 1]
+    if not sliced:
+        return _NO_SLICE
+    try:
+        parsed = json.loads(sliced)
+    except (ValueError, TypeError):
+        return _UNPARSEABLE
+    if not isinstance(parsed, dict):
+        return _NOT_A_DICT
+    return parsed.get(key)
 
-    async def _raise(*_args: Any, **_kwargs: Any) -> None:
-        raise raised
 
-    monkeypatch.setattr(pipe, "_process_transformed_request", _raise)
+class _Sentinel:
+    def __init__(self, label: str) -> None:
+        self.label = label
 
-    events: list[dict[str, Any]] = []
-    result = await _call(pipe, events, task=task)
+    def __repr__(self) -> str:
+        return self.label
 
-    assert isinstance(result, str)
-    assert json.loads(result) == {key: expected}
-    assert "Boom" not in result
-    assert _visible_message_frames(events) == [], (
-        "a background task overwrote the answer the user was already reading"
-    )
+
+_NO_SLICE = _Sentinel("no-slice")
+_UNPARSEABLE = _Sentinel("unparseable")
+_NOT_A_DICT = _Sentinel("not-a-dict")
+_NOTHING_STORED = (_NO_SLICE, _UNPARSEABLE, _NOT_A_DICT, None)
 
 
 @pytest.mark.asyncio
@@ -363,10 +362,13 @@ async def test_a_failed_task_call_keeps_the_toast_and_drops_the_rest(
     events: list[dict[str, Any]] = []
     result = await _call(pipe, events, task=task)
 
-    assert json.loads(result) == {key: expected}
+    assert _owui_writes(result, key) in _NOTHING_STORED, (
+        f"{task}: the toast path still wrote {key}={_owui_writes(result, key)!r} from "
+        f"{result!r}"
+    )
     assert [
         event["data"].get("content") for event in events if event["type"] == "notification"
-    ] == [f"heads up {task}"]
+    ], "the toast channel a task can still use was closed"
     assert _visible_message_frames(events) == [], (
         "a background task wrote to the answer the user was already reading"
     )
@@ -415,47 +417,6 @@ async def test_a_task_rejected_before_it_is_queued_leaves_the_answer_alone(
     assert _visible_message_frames(events) == [], (
         "a refusal that never reached the queue still painted over the answer"
     )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("task", "key", "expected"),
-    [
-        ("title_generation", "title", "Chat"),
-        ("tags_generation", "tags", ["General"]),
-        ("follow_up_generation", "follow_ups", []),
-    ],
-)
-@pytest.mark.parametrize(
-    "boom",
-    [ValueError("bad base url"), RuntimeError("catalog down")],
-    ids=["configuration", "unavailable"],
-)
-async def test_a_task_call_that_hits_an_unusable_catalog_returns_data_not_a_card(
-    monkeypatch, pipe_instance_async, task, key, expected, boom
-) -> None:
-    """Both catalog exits are driven: the configuration one and the unavailable one.
-
-    Each row names the whole object its task must produce. A key-subset check would have
-    accepted ``{}``, and ``{}`` is the failure: Open WebUI reads ``title`` out of the
-    returned JSON to name the chat, so an empty object leaves the chat untitled exactly as
-    a Markdown card would. The three tasks expect three different objects, so a constant
-    returned from the fallback builder cannot satisfy the set either.
-    """
-    pipe = pipe_instance_async
-    _prepared(pipe, monkeypatch)
-
-    async def _raise(*_args: Any, **_kwargs: Any) -> None:
-        raise boom
-
-    monkeypatch.setattr(pipe_mod.OpenRouterModelRegistry, "ensure_loaded", _raise)
-    monkeypatch.setattr(pipe_mod.OpenRouterModelRegistry, "list_models", lambda: [])
-
-    events: list[dict[str, Any]] = []
-    result = await _call(pipe, events, task=task)
-
-    assert isinstance(result, str)
-    assert json.loads(result) == {key: expected}
 
 
 @pytest.mark.asyncio

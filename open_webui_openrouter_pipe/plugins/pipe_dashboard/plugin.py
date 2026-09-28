@@ -78,6 +78,12 @@ def _registry_pricing(model_id: str) -> dict[str, Any] | None:
         return None
 
 
+def _dashboard_observability_needed(valves: Any) -> bool:
+    return bool(getattr(valves, "PIPE_DASHBOARD_ENABLE", False)) or bool(
+        getattr(valves, "PIPE_DASHBOARD_USAGE_COLLECT", False)
+    )
+
+
 def _registry_model_name(model_id: str) -> str:
     try:
         from .formatters import build_model_name_map, resolve_model_name
@@ -357,16 +363,17 @@ class PipeDashboardPlugin(PluginBase):
     ) -> dict[str, Any] | str | None:
         requested_model = str(body.get("model", ""))
         if not self._is_our_model(requested_model):
-            try:
-                self._tracker.start(
-                    str(kwargs.get("request_id") or ""),
-                    body=body,
-                    user=user,
-                    metadata=metadata,
-                    task=task,
-                )
-            except Exception:
-                logging.getLogger(__name__).debug("session track start failed", exc_info=True)
+            if _dashboard_observability_needed(getattr(self.ctx, "valves", None)):
+                try:
+                    self._tracker.start(
+                        str(kwargs.get("request_id") or ""),
+                        body=body,
+                        user=user,
+                        metadata=metadata,
+                        task=task,
+                    )
+                except Exception:
+                    logging.getLogger(__name__).debug("session track start failed", exc_info=True)
             return None  # Not for us — let the request continue
 
         # Plugin disabled — don't handle requests for our model

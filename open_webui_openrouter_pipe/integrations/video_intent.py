@@ -827,15 +827,9 @@ async def resolve_intent(
             isinstance(video_meta, dict) and video_meta.get("frame_images")
         )
         prior_clar = count_prior_clarifications(messages)
-        max_clar_raw = (
-            resolve_intent_user_setting(
-                metadata, "max_clarifications",
-                valves, "VIDEO_INTENT_MAX_CLARIFICATIONS", 1,
-            )
-            if _admin_intent_floor(valves, "VIDEO_INTENT_ENABLED", True)
-            else _admin_intent_floor(
-                valves, "VIDEO_INTENT_MAX_CLARIFICATIONS", 1,
-            )
+        max_clar_raw = resolve_intent_user_setting(
+            metadata, "max_clarifications",
+            valves, "VIDEO_INTENT_MAX_CLARIFICATIONS", 1,
         )
         try:
             max_clar = max(0, min(3, int(max_clar_raw)))

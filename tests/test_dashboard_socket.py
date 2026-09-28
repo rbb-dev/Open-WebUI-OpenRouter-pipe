@@ -16,6 +16,143 @@ import pytest
 
 pytest.importorskip("open_webui_openrouter_pipe.plugins.pipe_dashboard")
 
+_READ_CONFIG_REV_HARNESS = """
+from __future__ import annotations
+
+import asyncio, contextlib, os, sys, types
+from typing import Any
+
+os.environ.setdefault("WEBUI_SECRET_KEY", "probe")
+sys.path.insert(0, os.getcwd())
+sys.path.insert(0, os.path.join(os.getcwd(), "tests"))
+
+import owui_stubs  # noqa: F401
+
+import pydantic
+from sqlalchemy import BigInteger, Boolean, Column, String, Text, event, select
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.orm import declarative_base
+
+import open_webui.models.functions as functions_module
+from open_webui_openrouter_pipe.plugins.pipe_dashboard import dashboard_socket as ds
+
+emitted: list[tuple[str, Any]] = []
+
+# `owui_stubs` stops at `open_webui.models.functions`; `open_webui.internal.db` is a
+# real module of a real install and absent here, so the harness supplies the one name
+# the read closes over. `config_service._raw_valve_column` binds the same pair and is
+# covered the same way, so this is the suite's established substitute, not a new one.
+_internal = types.ModuleType("open_webui.internal")
+_internal.__path__ = []
+_db_module = types.ModuleType("open_webui.internal.db")
+sys.modules["open_webui.internal"] = _internal
+sys.modules["open_webui.internal.db"] = _db_module
+
+Base = declarative_base()
+
+
+class Function(Base):
+    __tablename__ = "function"
+    id = Column(String, primary_key=True, unique=True)
+    user_id = Column(String, index=True)
+    name = Column(Text, nullable=False)
+    type = Column(Text, nullable=False)
+    content = Column(Text, nullable=True)
+    meta = Column(Text, nullable=True)
+    valves = Column(Text, nullable=True)
+    is_active = Column(Boolean, default=False)
+    is_global = Column(Boolean)
+    updated_at = Column(BigInteger)
+    created_at = Column(BigInteger)
+
+
+class _FunctionModel(pydantic.BaseModel):
+    # Open WebUI's own `FunctionModel`, field for field. `model_validate(row)` reads
+    # every column of the row it is handed, which is the cost this item is about: a
+    # plain `select(Function)` cannot answer "one integer" without copying the source.
+    id: str
+    user_id: str | None = None
+    name: str
+    type: str
+    content: str
+    is_active: bool = False
+    is_global: bool = False
+    updated_at: int
+    created_at: int
+
+    model_config = pydantic.ConfigDict(from_attributes=True)
+
+
+async def _build(rows, *, content="# source\\n" + "y" * 200_000):
+    import tempfile
+
+    path = os.path.join(tempfile.mkdtemp(), "function.db")
+    engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    async with engine.begin() as conn:
+        await conn.execute(
+            Function.__table__.insert(),
+            [
+                {
+                    "id": row_id, "user_id": "u", "name": row_id, "type": "pipe",
+                    "content": content, "is_active": True, "is_global": False,
+                    "updated_at": rev, "created_at": 1,
+                }
+                for row_id, rev in rows
+            ],
+        )
+
+    @event.listens_for(engine.sync_engine, "before_cursor_execute")
+    def _record(conn, cursor, statement, parameters, context, executemany):
+        emitted.append((statement, parameters))
+
+    @contextlib.asynccontextmanager
+    async def _ctx(*_a, **_k):
+        async with engine.connect() as conn:
+            yield conn
+
+    class _Functions:
+        # Open WebUI's own accessor, for whichever seam the read under test reaches.
+        # Without it the pre-fix body would find the stub no-op returning None, and
+        # every arm would go red on the same absent row instead of on the read's shape.
+        # It answers exactly what Open WebUI's returns: a mapped instance, validated
+        # through FunctionModel -- which reads every column, content included.
+
+        @staticmethod
+        async def get_function_by_id(id, db=None):
+            async with engine.connect() as conn:
+                result = await conn.execute(select(Function).filter_by(id=id))
+                return _FunctionModel.model_validate(result.first())
+
+    _db_module.get_async_db_context = _ctx
+    functions_module.Function = Function
+    functions_module.Functions = _Functions
+    return engine
+
+
+@contextlib.asynccontextmanager
+async def _raising():
+    @contextlib.asynccontextmanager
+    async def _ctx(*_a, **_k):
+        raise RuntimeError("(sqlite3.OperationalError) database is locked")
+        yield
+
+    _db_module.get_async_db_context = _ctx
+    yield
+
+
+def _projection(statement: str) -> str:
+    # The column list of a SELECT, lowercased and whitespace-collapsed. Only the part
+    # before FROM counts: a `WHERE function.id = ?` legitimately names the id, and
+    # reading that as "the id was selected" would pass a wide read.
+    head = statement.lower().split("from")[0]
+    return " ".join(head.replace("select", "").split()).strip()
+
+
+DEFAULT_ROWS = [("openrouter", 4242), ("other", 9999)]
+"""
+
 from open_webui_openrouter_pipe.plugins.pipe_dashboard import authz, dashboard_publisher, dashboard_socket
 from open_webui_openrouter_pipe.plugins.pipe_dashboard.dashboard_publisher import (
     _build_emit_payload,
@@ -937,62 +1074,100 @@ class TestReadConfigRev:
     `cfg_rev = None` -- which are the two mechanisms the tab uses to notice a settings
     change at all.
 
-    Stubbed one seam lower, at `Functions.get_function_by_id`, because the subject IS
-    the code between that seam and the caller. Mocking the outer one deletes it.
+    Driven over a real SQLAlchemy `Function` mapping and a real `aiosqlite` database --
+    the same engine Open WebUI's own `get_async_db_context` builds -- with only the
+    session helper substituted, which is the one boundary that is legitimately a seam.
+    A narrow `select` does not go through `Functions.get_function_by_id`, so stubbing
+    that method no longer reaches the code under test: the three arms below used to
+    patch it, and each of them passed without executing the subject at all.
+
+    The work runs in a subprocess because it re-executes Open WebUI's source and swaps
+    `sys.modules` entries, and neither is undone by restoring the mapping.
     """
 
+    @staticmethod
+    def _run(body: str) -> None:
+        import os
+        import subprocess
+        import textwrap
+        from pathlib import Path
+
+        project_root = Path(__file__).resolve().parents[1]
+        script = textwrap.dedent(_READ_CONFIG_REV_HARNESS) + "\n" + textwrap.dedent(body)
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            cwd=str(project_root),
+            env={**os.environ, "PYTHONPATH": str(project_root), "WEBUI_SECRET_KEY": "probe"},
+            timeout=300,
+            check=False,
+        )
+        assert proc.returncode == 0, (
+            f"probe failed (rc={proc.returncode})\n--- stdout ---\n{proc.stdout}\n"
+            f"--- stderr ---\n{proc.stderr}"
+        )
+
     @pytest.mark.parametrize("rev", [1717171717, 1828282828])
-    @pytest.mark.asyncio
-    async def test_it_returns_the_rows_updated_at(self, rev, monkeypatch):
+    def test_it_returns_the_rows_updated_at(self, rev):
         """Two revisions, because one is satisfied by returning that constant.
 
         Verified: with a single case, replacing the body with `return 1717171717`
         passed. A second distinct value makes any hardcoded answer fail one of them.
+        The single-statement assertion is what makes this the read's own: Open WebUI's
+        `get_function_by_id` issues a whole-row select, so the wide path fails here on
+        the column list rather than on the value, which is the point.
         """
-        import open_webui.models.functions as owui_functions
+        self._run(
+            f"""
+            async def main():
+                engine = await _build([("openrouter", {rev}), ("other", 9999)])
+                try:
+                    assert await ds.read_config_rev("openrouter") == {rev}, (
+                        "the row's own updated_at is not what the tab was told"
+                    )
+                finally:
+                    await engine.dispose()
+                assert len(emitted) == 1, f"expected one statement, got {{emitted!r}}"
+                statement, parameters = emitted[0]
+                assert "openrouter" in str(parameters), (
+                    f"the revision read for the wrong pipe id: {{statement!r}} "
+                    f"with {{parameters!r}}"
+                )
+                assert "9999" not in str(parameters), (
+                    f"another function's revision was read: {{parameters!r}}"
+                )
+                assert _projection(statement) == "function.updated_at", (
+                    f"the revision read selected {{_projection(statement)!r}} rather "
+                    f"than the one column it needs: {{statement!r}}"
+                )
 
-        from open_webui_openrouter_pipe.plugins.pipe_dashboard import dashboard_socket
-
-        seen: list[str] = []
-
-        async def _get(function_id):
-            seen.append(function_id)
-            return types.SimpleNamespace(id=function_id, updated_at=rev)
-
-        monkeypatch.setattr(
-            owui_functions.Functions, "get_function_by_id", _get, raising=False
+            asyncio.run(main())
+            """
         )
-        assert await dashboard_socket.read_config_rev("openrouter") == rev
-        assert seen == ["openrouter"], (
-            f"the row was looked up as {seen!r}; a revision read for the wrong pipe id "
-            "would report another function's revision as this one's"
-        )
 
-    @pytest.mark.asyncio
-    async def test_it_is_none_when_the_row_is_missing(self, monkeypatch):
+    def test_it_is_none_when_the_row_is_missing(self):
         """Needed alongside the case above: alone, either is satisfied by a constant."""
-        import open_webui.models.functions as owui_functions
+        self._run(
+            """
+            async def main():
+                engine = await _build([("other", 9999)])
+                try:
+                    assert await ds.read_config_rev("openrouter") is None
+                finally:
+                    await engine.dispose()
 
-        from open_webui_openrouter_pipe.plugins.pipe_dashboard import dashboard_socket
-
-        async def _missing(_function_id):
-            return None
-
-        monkeypatch.setattr(
-            owui_functions.Functions, "get_function_by_id", _missing, raising=False
+            asyncio.run(main())
+            """
         )
-        assert await dashboard_socket.read_config_rev("openrouter") is None
 
-    @pytest.mark.asyncio
-    async def test_it_is_none_when_the_lookup_raises(self, monkeypatch):
-        import open_webui.models.functions as owui_functions
+    def test_it_is_none_when_the_lookup_raises(self):
+        self._run(
+            """
+            async def main():
+                async with _raising():
+                    assert await ds.read_config_rev("openrouter") is None
 
-        from open_webui_openrouter_pipe.plugins.pipe_dashboard import dashboard_socket
-
-        async def _boom(_function_id):
-            raise RuntimeError("db down")
-
-        monkeypatch.setattr(
-            owui_functions.Functions, "get_function_by_id", _boom, raising=False
+            asyncio.run(main())
+            """
         )
-        assert await dashboard_socket.read_config_rev("openrouter") is None

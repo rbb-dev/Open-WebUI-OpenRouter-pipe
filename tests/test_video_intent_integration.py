@@ -27,6 +27,7 @@ from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
 from open_webui_openrouter_pipe.integrations.video_intent import (
     FramePlanEntry,
     VideoIntentResult,
+    _hash_chat_id,
     resolve_intent,
 )
 from open_webui_openrouter_pipe.structured_task import call_with_candidates
@@ -225,7 +226,7 @@ class TestShortCircuit:
 
     def test_per_chat_cap_exceeded_returns_false(self):
         adapter = self._make_adapter()
-        adapter._intent_call_counts_per_chat["chat1"] = 5
+        adapter._intent_call_counts_per_chat[_hash_chat_id("chat1")] = 5
         assert not adapter._intent_classifier_should_run(
             valves=_make_valves(VIDEO_INTENT_MAX_CALLS_PER_CHAT=5),
             persisted_content="", prompt="hi",
@@ -263,10 +264,10 @@ class TestShortCircuit:
         assert allowed == cap, (
             f"a cap of {cap} allowed {allowed} classifier call(s) before it closed"
         )
-        assert adapter._intent_call_counts_per_chat["chat1"] == cap
+        assert adapter._intent_call_counts_per_chat[_hash_chat_id("chat1")] == cap
 
         adapter._intent_record_call("chat1", "", valves=valves)
-        assert adapter._intent_call_counts_per_chat["chat1"] == cap, (
+        assert adapter._intent_call_counts_per_chat[_hash_chat_id("chat1")] == cap, (
             "the call site charged the call the gate had already reserved"
         )
 
@@ -307,7 +308,9 @@ class TestShortCircuit:
                 body={"messages": [{}, {}]}, video_meta={}, chat_id=chat_id,
             )
 
-        assert adapter._intent_call_counts_per_chat == {"chat-a": 2, "chat-b": 1}
+        assert adapter._intent_call_counts_per_chat == {
+            _hash_chat_id("chat-a"): 2, _hash_chat_id("chat-b"): 1,
+        }
         assert adapter._intent_classifier_should_run(
             valves=valves,
             persisted_content="", prompt="make a video",
@@ -344,7 +347,7 @@ class TestShortCircuit:
         """
         adapter = self._make_adapter()
         if chat_id:
-            adapter._intent_call_counts_per_chat[chat_id] = 7
+            adapter._intent_call_counts_per_chat[_hash_chat_id(chat_id)] = 7
         assert adapter._intent_classifier_should_run(
             valves=_make_valves(),
             persisted_content="", prompt="make a video",

@@ -300,6 +300,10 @@ def _tool_result_for_log(output: dict[str, Any]) -> str:
     return wrap_code_block(_data_url_log_subject(tool_output_text_and_pictures(output.get("output"))[0]))
 
 
+async def _aclose_quietly(it: AsyncGenerator[dict[str, Any], None]) -> None:
+    await it.aclose()
+
+
 class StreamingHandler:
     """Manages streaming response processing.
 
@@ -1293,6 +1297,8 @@ class StreamingHandler:
                         "mono_open": _monotonic(),
                         "mono_close": None,
                         "emitted": False,
+                        "published_len": 0,
+                        "published_round": None,
                     }
                     reasoning_display[key] = state
                 return state
@@ -1300,31 +1306,35 @@ class StreamingHandler:
             def _close_open_reasoning_windows() -> None:
                 now = _monotonic()
                 for state in reasoning_display.values():
-                    if not state["emitted"] and state["mono_close"] is None:
+                    if state["mono_close"] is None:
                         state["mono_close"] = now
 
             async def _emit_reasoning_item(key: str) -> None:
                 nonlocal emitted_response_output_items
                 if event_emitter is None or not thinking_box_enabled:
                     return
-                if key in reasoning_stream_completed:
-                    return
                 text = reasoning_stream_buffers.get(key, "")
-                if not text.strip():
-                    return
                 state = _reasoning_display_state(key)
-                if state["emitted"]:
+                published = int(state.get("published_len", 0) or 0)
+                if not text.strip() or len(text) <= published:
+                    return
+                if state.get("published_round") == loop_index:
                     return
                 mono_end = state["mono_close"] if state["mono_close"] is not None else _monotonic()
                 duration = max(0.1, round(mono_end - state["mono_open"], 1))
-                item_id = key if key != "__reasoning__" else f"rs-{uuid.uuid4().hex}"
+                if published or key == "__reasoning__":
+                    item_id = f"rs-{uuid.uuid4().hex}"
+                else:
+                    item_id = key
+                state["published_len"] = len(text)
+                state["published_round"] = loop_index
                 state["emitted"] = True
                 reasoning_stream_completed.add(key)
                 emitted_response_output_items = True
                 reasoning_item: dict[str, Any] = {
                     "type": "reasoning",
                     "id": item_id,
-                    "summary": [{"type": "summary_text", "text": text}],
+                    "summary": [{"type": "summary_text", "text": text[published:]}],
                     "status": "completed",
                     "started_at": state["wall_open"],
                     "ended_at": time.time(),
@@ -1564,6 +1574,7 @@ class StreamingHandler:
             dispatched_metered_chars: int | None = None
             dispatched_model_id: str = ""
             _release_armed = False
+            event_iter: AsyncGenerator[dict[str, Any], None] | None = None
         except BaseException:
             if _release_armed:
                 self._pipe._artifact_store._reply_memory.release(chat_id, message_id)
@@ -2512,7 +2523,7 @@ class StreamingHandler:
                                 append = _append_reasoning_text(
                                     key,
                                     normalized_snapshot,
-                                    allow_misaligned=False,
+                                    allow_misaligned=True,
                                 )
                             if append:
                                 reasoning_stream_active = True
@@ -2618,7 +2629,25 @@ class StreamingHandler:
                         raw_reason = incomplete_details.get("reason") or incomplete_details.get("type")
                         if isinstance(raw_reason, str):
                             reason = raw_reason.strip()
-                    warning_msg = "Model response ended incomplete; attempting best-effort continuation."
+                    _continues = any(
+                        isinstance(i, dict)
+                        and i.get("type") == "function_call"
+                        and (
+                            str(i.get("name") or "").strip()
+                            or str(i.get("call_id") or i.get("id") or "").strip()
+                        )
+                        for i in (final_response.get("output") or [])
+                    )
+                    if _continues:
+                        warning_msg = (
+                            "Model response ended incomplete; attempting best-effort continuation."
+                        )
+                    else:
+                        warning_msg = (
+                            "Model response ended incomplete; the answer was cut short here. "
+                            "Press Continue Response if your account has it, or regenerate, "
+                            "to ask for the rest."
+                        )
                     if reason:
                         warning_msg = f"{warning_msg} Reason: {reason}."
                     await self._pipe._event_emitter_handler._emit_notification(
@@ -2650,7 +2679,11 @@ class StreamingHandler:
                         if isinstance(i, dict) and i.get("type") == "function_call"
                     )
                     total_usage = merge_usage_stats(total_usage, usage)
-                    intermediate_content = None if fusion_armed else (assistant_message if assistant_message else None)
+                    intermediate_content = (
+                        None
+                        if (fusion_armed or open_webui_keeps_stored_output)
+                        else (assistant_message if assistant_message else None)
+                    )
                     await self._pipe._event_emitter_handler._emit_completion(
                         event_emitter,
                         content=intermediate_content,
@@ -3476,6 +3509,9 @@ class StreamingHandler:
                 assistant_message = reported
 
         finally:
+            if event_iter is not None:
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await asyncio.shield(_aclose_quietly(event_iter))
             cancel_thinking()
             for t in thinking_tasks:
                 with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -3755,7 +3791,11 @@ class StreamingHandler:
             if (not error_occurred) and (not was_cancelled):
                 self._audit_orphan_tool_cards(emitted_tool_call_items, emitted_tool_output_items)
                 if terminal:
-                    final_content = None if emitted_response_output_items else assistant_message
+                    final_content = (
+                        None
+                        if (emitted_response_output_items or open_webui_keeps_stored_output)
+                        else assistant_message
+                    )
                     final_output = None
                     if (
                         final_content is None

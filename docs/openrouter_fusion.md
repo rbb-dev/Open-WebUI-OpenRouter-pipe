@@ -166,6 +166,14 @@ wiring. They are documented alongside the other pipe valves in
 The fusion models are auto-wired because access to them is already governed by Open
 WebUI's model ACLs. The filter is **never** auto-attached to any other model.
 
+**Attach and detach lifecycle.** The filter comes off a fusion model when
+`AUTO_ATTACH_FUSION_FILTER` is turned off, or when the model stops being a fusion
+model — not because a catalog pass failed to find it. In particular, running with
+`AUTO_INSTALL_FUSION_FILTER=False` and `AUTO_ATTACH_FUSION_FILTER=True`, the
+install-by-hand mode, keeps whatever is already attached: a pass that finds no panel
+leaves the attached filter and the default the pipe seeded in place, and the next
+catalog fetch tries again.
+
 ### `openrouter/fusion-flash` (forward-compat)
 
 OpenRouter documents a faster `openrouter/fusion-flash` alias (the `general-fast` preset pinned as its

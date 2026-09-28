@@ -774,8 +774,22 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
 IMAGE_HELP_BY_MODEL = _IMAGE_PER_MODEL_HELP_DATA
 
 
+def _canonical_image_model_id(model_id: str, image_model: dict[str, Any] | None) -> str:
+    raw = (image_model or {}).get("id") if isinstance(image_model, dict) else None
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    candidate = (model_id or "").strip()
+    if not candidate:
+        return ""
+    if "@" in candidate:
+        return candidate.split("@", 1)[0].strip()
+    return candidate.rsplit(":", 1)[0].strip() if ":" in candidate else candidate
+
+
 def _image_render_template(model_id: str, image_model: dict[str, Any] | None) -> str:
-    entry = _IMAGE_PER_MODEL_HELP_DATA.get(model_id)
+    entry = _IMAGE_PER_MODEL_HELP_DATA.get(
+        _canonical_image_model_id(model_id, image_model)
+    )
     if not entry:
         return _image_render_catalog_fallback(model_id, image_model)
     parts: list[str] = []

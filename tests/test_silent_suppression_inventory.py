@@ -163,7 +163,14 @@ _EXPECTED: dict[str, int] = {
     # banner survives a reload the way Open WebUI's own `emit_message_error` makes it survive. It
     # runs after the notification has already reached the caller, so a storage failure costs the
     # persisted copy alone and must not replace the note the person is being shown.
-    "streaming/streaming_core.py": 3,
+    # 4th: the turn's own `event_iter.aclose()`, the first act of the streaming loop's `finally`. It
+    # is a teardown on a path that is already leaving, and it is the one await there that can block
+    # (delegated three generators deep, through the adapter whose `finally` awaits its workers), so it
+    # runs shielded. A failure to close costs the release of the producer, its workers and the aiohttp
+    # response -- which the garbage collector would eventually do anyway -- and must not replace the
+    # turn's result or mask the exception that ended it. It also swallows `CancelledError` for the same
+    # reason the two beside it do: a turn being torn down must not raise out of its own teardown.
+    "streaming/streaming_core.py": 4,
     # 5th: the tool card emitted as each call's result is collected, the twin of the one in the loop that
     # follows. The card is what the person sees; a failure emitting it must not lose the tool result the
     # loop is in the middle of collecting, which is the model's answer.

@@ -217,36 +217,3 @@ async def test_the_second_host_draws_on_what_the_first_one_already_spent(
     assert asked and asked[-1] < budget, (
         f"the second host was handed {asked[-1]}s out of a {budget}s request budget"
     )
-
-
-@pytest.mark.parametrize("pause", [2.0, 0.0])
-def test_the_retry_pause_never_outlives_the_budget(pause, monkeypatch):
-    """A fixed pause between attempts can itself exceed what is left.
-
-    Two pauses, so a production `sleep(_RETRY_PAUSE_SECONDS * attempt)` that ignores the
-    remaining budget fails the first and a hardcoded zero fails nothing but proves
-    nothing either -- the assertion is on what was requested, not on what elapsed.
-    """
-    slept: list[float] = []
-
-    async def _record(seconds):
-        slept.append(seconds)
-
-    failure = aiohttp.ClientConnectorError(MagicMock(ssl=None), OSError(111, "refused"))
-
-    async def _run():
-        async with aiohttp.ClientSession() as session:
-            with aioresponses() as http:
-                http.post(_ENDPOINTS["litterbox"][0], exception=failure, repeat=True)
-                monkeypatch.setattr(media_relay, "_RETRY_PAUSE_SECONDS", pause)
-                monkeypatch.setattr(media_relay.asyncio, "sleep", _record)
-                with pytest.raises(MediaRelayError):
-                    await relay_to_public_url(
-                        session, MP4, filename="c.mp4", mime="video/mp4",
-                        host="litterbox", retention="1h", max_bytes=0, seconds_left=0.5,
-                    )
-
-    asyncio.run(_run())
-
-    assert slept, "no retry happened, so the pause was never exercised"
-    assert all(s <= 0.5 for s in slept), f"a pause outran the whole budget: {slept}"

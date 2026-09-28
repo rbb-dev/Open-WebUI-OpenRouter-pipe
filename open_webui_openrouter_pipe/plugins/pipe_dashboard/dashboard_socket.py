@@ -122,16 +122,20 @@ async def emit_config_changed(rev: Any) -> bool:
 
 async def read_config_rev(pipe_id: str) -> Any:
     try:
-        from open_webui.models.functions import Functions
+        from open_webui.internal.db import get_async_db_context
+        from open_webui.models.functions import Function
+        from sqlalchemy import select
 
-        function = await Functions.get_function_by_id(pipe_id)
+        async with get_async_db_context() as db:
+            result = await db.execute(select(Function.updated_at).filter_by(id=pipe_id))
+            rev = result.scalar_one_or_none()
     except Exception:
         logger.debug("pipe_dashboard config rev read failed", exc_info=True)
         return None
-    if function is None:
+    if rev is None:
         logger.debug("pipe_dashboard config rev unavailable for %s", pipe_id)
         return None
-    return getattr(function, "updated_at", None)
+    return rev
 
 
 async def _emit_config_rev(pipe_id: str) -> None:

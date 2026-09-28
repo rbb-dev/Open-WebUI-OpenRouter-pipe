@@ -3496,31 +3496,6 @@ async def test_bulk_prune_returns_zero_when_nothing_stale(pipe_instance_async) -
 
 
 @pytest.mark.asyncio
-async def test_bulk_prune_returns_zero_when_no_valid_filters(pipe_instance_async) -> None:
-    """Returns 0 (skip) when the valid filter set is empty — fail-safe."""
-    pipe = pipe_instance_async
-    pipe._ensure_catalog_manager()
-
-    models = [
-        _make_model_for_bulk_prune("model_stale", [
-            "openrouter_native_attachments",
-        ]),
-    ]
-
-    functions_mod = _make_functions_module([])
-
-    update_mock = AsyncMock()
-
-    with patch.dict(sys.modules, {"open_webui.models.functions": functions_mod}), \
-         patch("open_webui.models.models.Models.get_all_models", new=AsyncMock(return_value=models)), \
-         patch("open_webui.models.models.Models.update_model_by_id", new=update_mock):
-        count = await pipe._catalog_manager.prune_stale_openrouter_filter_ids()
-
-    assert count == 0
-    update_mock.assert_not_called()
-
-
-@pytest.mark.asyncio
 async def test_bulk_prune_skips_models_without_meta(pipe_instance_async) -> None:
     """Models with no meta should be silently skipped."""
     pipe = pipe_instance_async
@@ -4524,6 +4499,14 @@ async def test_the_provider_map_is_built_when_no_routing_models_are_configured(
 async def test_an_empty_rebuild_keeps_the_previous_provider_map_and_says_so(
     pipe_instance_async, monkeypatch, caplog
 ) -> None:
+    """The routing-off arm: an empty rebuild keeps the old map and says so.
+
+    This is the arm the per-slug carry-over must NOT divert. With provider
+    routing off there is no overlay, so an empty rebuild is genuinely zero and
+    the warning is the operator's only signal. ``original_id`` is present
+    because real model dicts always carry it — without it this fixture would
+    make the carry-over bound look satisfied for the wrong reason.
+    """
     pipe = pipe_instance_async
     manager = pipe._ensure_catalog_manager()
     pipe.valves.ADMIN_PROVIDER_ROUTING_MODELS = ""
@@ -4538,7 +4521,8 @@ async def test_an_empty_rebuild_keeps_the_previous_provider_map_and_says_so(
 
     with caplog.at_level(logging.WARNING):
         await manager._sync_model_metadata_to_owui(
-            [{"id": "google.veo-3.1", "name": "Veo"}], pipe_identifier="test_pipe"
+            [{"id": "google.veo-3.1", "name": "Veo", "original_id": "google/veo-3.1"}],
+            pipe_identifier="test_pipe",
         )
 
     assert manager.get_cached_provider_map() == {
@@ -4547,7 +4531,6 @@ async def test_an_empty_rebuild_keeps_the_previous_provider_map_and_says_so(
     assert any("keeping the previous map" in record.getMessage() for record in caplog.records), (
         "silently keeping a stale map is how an operator loses provider options with no signal"
     )
-
 
 
 # ============================================================================

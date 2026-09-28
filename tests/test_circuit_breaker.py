@@ -18,6 +18,7 @@ This test module targets the missing lines in circuit_breaker.py:
 
 from __future__ import annotations
 
+import json
 import math
 import time
 from collections import deque
@@ -709,42 +710,6 @@ async def test_invalid_encrypted_api_key_returns_auth_error_and_skips_catalog(mo
             assert isinstance(content, str)
             assert "Authentication Failed" in content
             assert "cannot be decrypted" in content
-        finally:
-            await session.close()
-            await pipe.close()
-
-
-@pytest.mark.asyncio
-async def test_invalid_encrypted_api_key_task_returns_safe_stub(monkeypatch) -> None:
-    """Test that invalid API key for task request returns safe stub."""
-    monkeypatch.setenv("WEBUI_SECRET_KEY", "unit-test-secret")
-
-    pipe = Pipe()
-    valves = pipe.valves.model_copy(update={"API_KEY": EncryptedStr("encrypted:not-a-valid-token")})
-    session = pipe._create_http_session(valves)
-
-    with aioresponses() as mock_http:
-        # Do NOT mock catalog - should not be called for auth failures
-
-        try:
-            result = await pipe._handle_pipe_call(
-                {"model": "openai/gpt-4o-mini", "stream": False},
-                __user__={},
-                __request__=None,
-                __event_emitter__=None,
-                __event_call__=None,
-                __metadata__={"model": {"id": "openai/gpt-4o-mini"}},
-                __tools__=None,
-                __task__="tags_generation",
-                __task_body__={},
-                session=session,
-            valves=valves,
-            )
-
-            assert isinstance(result, dict)
-            content = ((result.get("choices") or [{}])[0].get("message") or {}).get("content")
-            assert isinstance(content, str)
-            assert "\"tags\"" in content
         finally:
             await session.close()
             await pipe.close()

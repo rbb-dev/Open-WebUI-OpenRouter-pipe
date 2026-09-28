@@ -350,6 +350,7 @@ class FilterManager:
     _unresolved_image_filter_ids: frozenset[str] = frozenset()
     _unresolved_fusion_filter_id: bool = False
     _write_not_installed: bool = False
+    _installed_image_gen_model: str | None = None
 
     def __init__(
         self,
@@ -367,9 +368,11 @@ class FilterManager:
         self._pipe = pipe
         self._valves = valves
         self._provider_routing_state_hash = ""
+        self._provider_routing_ids_known = True
         self.logger = logger
         self._unresolved_image_filter_ids = frozenset()
         self._unresolved_fusion_filter_id = False
+        self._installed_image_gen_model = None
 
     @property
     def valves(self) -> Any:
@@ -383,6 +386,10 @@ class FilterManager:
     @property
     def unresolved_fusion_filter_id(self) -> bool:
         return self._unresolved_fusion_filter_id
+
+    @property
+    def installed_image_gen_model(self) -> str | None:
+        return self._installed_image_gen_model
 
 
     @staticmethod
@@ -1480,7 +1487,10 @@ class FilterManager:
             matches_candidate=_matches,
             primary_marker=_OPENROUTER_FUSION_FILTER_MARKER,
         )
-        if not function_id and self._write_not_installed:
+        if not function_id and (
+            self._write_not_installed
+            or getattr(self.valves, "AUTO_ATTACH_FUSION_FILTER", False)
+        ):
             self._unresolved_fusion_filter_id = True
         return function_id
 
@@ -1538,6 +1548,8 @@ class FilterManager:
     async def ensure_openrouter_image_gen_filter_function_id(self) -> str | None:
         """Ensure the OpenRouter Image Generation filter exists (and is up to date), returning its OWUI function id."""
 
+        self._installed_image_gen_model = None
+
         def _matches(content: str) -> bool:
             if not isinstance(content, str) or not content:
                 return False
@@ -1554,6 +1566,7 @@ class FilterManager:
         )
         if model_id is None:
             return None
+        self._installed_image_gen_model = model_id
         spec = build_image_model_filter_spec(
             model_id, image_model, endpoint_record, dedicated_image_api=dedicated_image_api
         )
@@ -1776,11 +1789,16 @@ class FilterManager:
         *,
         web_tools_still_offered: bool = False,
     ) -> None:
-        rows = await self._filter_rows()
-        if not rows:
-            return
         owner = self._install_owner()
         if not owner:
+            return
+        families = [
+            (valve, marker)
+            for valve, marker in _AUTO_INSTALL_FAMILY_MARKERS
+            if not getattr(self.valves, valve, False)
+            and not (valve == "AUTO_INSTALL_WEB_TOOLS_FILTER" and web_tools_still_offered)
+        ]
+        if not families:
             return
         try:
             from open_webui.models.functions import Functions  # type: ignore
@@ -1793,11 +1811,10 @@ class FilterManager:
                 exc_info=True,
             )
             return
-        for valve, marker in _AUTO_INSTALL_FAMILY_MARKERS:
-            if getattr(self.valves, valve, False):
-                continue
-            if valve == "AUTO_INSTALL_WEB_TOOLS_FILTER" and web_tools_still_offered:
-                continue
+        rows = await self._filter_rows()
+        if not rows:
+            return
+        for valve, marker in families:
             for row in rows:
                 content = getattr(row, "content", None)
                 if not isinstance(content, str) or marker not in content:
@@ -1905,6 +1922,9 @@ class FilterManager:
                 self.logger.warning(
                     "Image filter install failed for %r: %s", canonical_id, exc, exc_info=True
                 )
+                unresolved.add(model_id)
+                if isinstance(original_id, str) and original_id.strip() and original_id != model_id:
+                    unresolved.add(original_id)
                 continue
 
             if function_id:
@@ -3095,9 +3115,11 @@ class Filter:
             else:
                 model_visibility[slug] = "user"
 
+        self._provider_routing_ids_known = True
         try:
             all_filters = await Functions.get_functions_by_type("filter", active_only=False)
         except Exception:
+            self._provider_routing_ids_known = False
             self.logger.exception(
                 "Cannot enumerate OWUI filter functions; aborting provider routing sync "
                 "to avoid creating duplicate filters"

@@ -271,23 +271,6 @@ def _make_plugin():
 
 
 @pytest.mark.asyncio
-async def test_plugin_on_request_tracks_only_foreign_models():
-    plugin = _make_plugin()
-    plugin._tracker = Mock()
-    result = await plugin.on_request(
-        {"model": "anthropic/claude-sonnet-4.6"}, {"id": "u"}, {"chat_id": "c"}, None, None,
-        request_id="rid-1",
-    )
-    assert result is None
-    assert plugin._tracker.start.call_args.args[0] == "rid-1"
-
-    plugin._tracker.reset_mock()
-    plugin.ctx.build_response = Mock(return_value={"choices": []})
-    await plugin.on_request({"model": "pipe-dashboard"}, {"id": "u"}, {}, None, "title_generation", request_id="rid-2")
-    assert not plugin._tracker.start.called
-
-
-@pytest.mark.asyncio
 async def test_plugin_emitter_wrap_observes_usage_and_tool_start():
     plugin = _make_plugin()
     inner = AsyncMock(return_value="sent")

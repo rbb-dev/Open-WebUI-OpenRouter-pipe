@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 from types import ModuleType
 from typing import Any, get_args
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import logging
 

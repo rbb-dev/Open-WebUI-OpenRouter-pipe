@@ -5588,22 +5588,60 @@ class TestAdaptiveToolBudgeting:
         assert any("no assistant content" in str(e).lower() for e in notifications)
 
     @pytest.mark.asyncio
-    async def test_incomplete_response_emits_warning_notification(self, monkeypatch, pipe_instance_async):
-        """Warn users when provider marks the response incomplete."""
+    @pytest.mark.parametrize(
+        "events",
+        [
+            pytest.param(
+                [
+                    {
+                        "type": "response.completed",
+                        "response": {
+                            "status": "incomplete",
+                            "incomplete_details": {"reason": "max_output_tokens"},
+                            "output": [],
+                            "usage": {},
+                        },
+                    },
+                ],
+                id="plain-capped",
+            ),
+            pytest.param(
+                [
+                    {
+                        "type": "response.completed",
+                        "response": {
+                            "status": "incomplete",
+                            "incomplete_details": {"reason": "max_output_tokens"},
+                            "output": [
+                                {
+                                    "type": "function_call",
+                                    "id": "fc1",
+                                    "call_id": "call_1",
+                                    "name": "get_weather",
+                                    "arguments": '{"city": "Paris"}',
+                                }
+                            ],
+                            "usage": {},
+                        },
+                    },
+                ],
+                id="capped-mid-tool-call",
+            ),
+        ],
+    )
+    async def test_incomplete_response_emits_warning_notification(
+        self, monkeypatch, pipe_instance_async, events
+    ):
+        """Warn users when provider marks the response incomplete, in the words that are true.
+
+        The old assertion was `any("incomplete" in str(e).lower())`, which any notice at
+        all satisfies -- including one making the opposite claim. The rendered text is
+        asserted instead, on both arms: a terminal with no tool call issues no second
+        request and must not claim a continuation, while one carrying a call the loop
+        will re-issue for it still says so.
+        """
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
-
-        events = [
-            {
-                "type": "response.completed",
-                "response": {
-                    "status": "incomplete",
-                    "incomplete_details": {"reason": "max_output_tokens"},
-                    "output": [],
-                    "usage": {},
-                },
-            },
-        ]
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
 
@@ -5622,8 +5660,30 @@ class TestAdaptiveToolBudgeting:
             user_id="user-123",
         )
 
-        notifications = [e for e in emitted if e.get("type") == "notification"]
-        assert any("incomplete" in str(e).lower() for e in notifications)
+        warnings = [
+            str(e["data"]["content"])
+            for e in emitted
+            if e.get("type") == "notification" and isinstance(e.get("data"), dict)
+        ]
+        said = " ".join(warnings).lower()
+        assert "incomplete" in said, f"no incomplete warning was shown: {warnings!r}"
+        assert "max_output_tokens" in said, (
+            f"the notice does not name the reason the provider gave: {warnings!r}"
+        )
+        carries_a_call = bool(events[0]["response"]["output"])
+        if carries_a_call:
+            assert "attempting" in said, (
+                f"the loop continues on this arm but the person was not told: {warnings!r}"
+            )
+        else:
+            assert "attempting" not in said, (
+                f"no second request is made on this arm, so claiming a continuation is "
+                f"false: {warnings!r}"
+            )
+            assert "continue response" in said or "cut short" in said, (
+                f"the notice neither claims a continuation nor says what did happen: "
+                f"{warnings!r}"
+            )
 
 
 # Validate Base64 Size Tests

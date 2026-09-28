@@ -192,6 +192,7 @@ Variant models automatically inherit all properties from their base model:
 | **Pricing** | ✅ Yes | Same pricing structure (unless variant modifies it) |
 | **Context Length** | ✅ Yes | Base context (`:extended` may increase this) |
 | **Reasoning** | ✅ Yes | Sent the reasoning settings its base model is sent; a suffixed id with its own catalog entry (for example a `:free` model) follows that entry |
+| **Help** | ✅ Yes | The base model's curated help card |
 | **Display Name** | ⚙️ Modified | Appends variant tag (e.g., "Exacto", "Free") |
 | **Model ID** | ⚙️ Modified | Includes `:variant` suffix for API routing |
 

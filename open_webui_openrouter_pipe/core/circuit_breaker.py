@@ -53,6 +53,7 @@ class CircuitBreaker:
         )
 
         self._sweep_after: float = 0.0
+        self._read_swept_at: float = 0.0
 
     def _sweep_expired(self, now: float) -> None:
         if now < self._sweep_after:
@@ -107,10 +108,14 @@ class CircuitBreaker:
         if not user_id:
             return True
 
+        now = time.time()
+        if now - self._read_swept_at >= self._window_seconds:
+            self._read_swept_at = now
+            self._sweep_expired(now)
+
         window = self._breaker_records.get(user_id)
         if window is None:
             return True
-        now = time.time()
 
         # Evict old failures outside the time window
         while window and now - window[0] > self._window_seconds:
@@ -160,11 +165,16 @@ class CircuitBreaker:
         if not user_id or not tool_type:
             return True
 
+        now = time.time()
+        if now - self._read_swept_at >= self._window_seconds:
+            self._read_swept_at = now
+            self._sweep_expired(now)
+
         tools = self._tool_breakers.get(user_id)
         window = tools.get((tool_type, tool_name)) if tools else None
         if tools is None or window is None:
             return True
-        live = counted_tool_failures(window, time.time(), self._window_seconds)
+        live = counted_tool_failures(window, now, self._window_seconds)
         if not live:
             tools.pop((tool_type, tool_name), None)
             if not tools:

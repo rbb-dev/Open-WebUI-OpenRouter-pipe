@@ -144,11 +144,18 @@ _HUMANIZE_LABELS: dict[str, str] = {
 }
 
 
-def build_model_name_map() -> dict[str, str]:
+def build_model_name_map(refresh: bool = False) -> dict[str, str]:
     """Build a mapping from any model ID form to its display name."""
-    id_to_name: dict[str, str] = {}
     try:
         from ...models.registry import OpenRouterModelRegistry
+        cached = OpenRouterModelRegistry._name_map
+    except (AttributeError, ImportError, TypeError):
+        logger.debug("model id->name map build failed", exc_info=True)
+        return {}
+    if not refresh and cached is not None:
+        return cached
+    id_to_name: dict[str, str] = {}
+    try:
         for m in OpenRouterModelRegistry.list_models():
             name = m.get("name", "")
             if not name:
@@ -157,8 +164,9 @@ def build_model_name_map() -> dict[str, str]:
                 mid = m.get(key)
                 if mid:
                     id_to_name[mid] = name
-    except (AttributeError, ImportError, TypeError):
+    except (AttributeError, TypeError):
         logger.debug("model id->name map build failed", exc_info=True)
+    OpenRouterModelRegistry._name_map = id_to_name
     return id_to_name
 
 
