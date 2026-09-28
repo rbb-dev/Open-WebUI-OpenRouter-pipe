@@ -364,6 +364,7 @@ class SessionLogManager:
         self._read_fault_warnings: dict[str, float] = {}
         self._captured_turns: set[str] = set()
         self._skip_info_emitted: set[str] = set()
+        self._warned_temporary_chat: dict[str, float] = {}
 
     @property
     def _assembly_failures(self) -> dict[tuple[str, str], float]:
@@ -431,6 +432,28 @@ class SessionLogManager:
     def _warn_once(self, cause: str, message: str) -> None:
         with self._lock:
             self.logger.log(warn_level(self._warned, cause), message)
+
+    def _warn_temporary_chat_skip(
+        self, site: str, user_id: str, message: str, *args: object
+    ) -> None:
+        cooldown_s = 300.0
+        now = time.monotonic()
+        with self._lock:
+            for key in [
+                k
+                for k, armed_at in self._warned_temporary_chat.items()
+                if now - armed_at >= cooldown_s
+            ]:
+                self._warned_temporary_chat.pop(key, None)
+            self.logger.log(
+                warn_level(
+                    self._warned_temporary_chat,
+                    f"temporary_chat:{site}:{user_id}" if user_id else f"temporary_chat:{site}",
+                    cooldown_s=cooldown_s,
+                ),
+                message,
+                *args,
+            )
 
     @property
     def _warning_emitted(self) -> bool:
@@ -610,7 +633,9 @@ class SessionLogManager:
                 )
             return
         if is_temporary_chat(chat_id):
-            self.logger.debug("Session log archive skipped (temporary chat): request_id=%s", request_id)
+            self._warn_temporary_chat_skip(
+                "archive", user_id, "Session log archive skipped (temporary chat): request_id=%s", request_id,
+            )
             return
         if not (chat_id and message_id):
             if not getattr(valves, "SESSION_LOG_ARCHIVE_API_CALLS", True):
@@ -736,7 +761,9 @@ class SessionLogManager:
                 )
             return
         if is_temporary_chat(chat_id):
-            self.logger.debug("Session log segment skipped (temporary chat): request_id=%s", request_id)
+            self._warn_temporary_chat_skip(
+                "segment", user_id, "Session log segment skipped (temporary chat): request_id=%s", request_id,
+            )
             return
         surrogate_in_play = False
         if not (chat_id and message_id):
@@ -1341,7 +1368,9 @@ class SessionLogManager:
         if not (chat_id and message_id):
             return False
         if is_temporary_chat(chat_id):
-            self.logger.debug("Session log assembly skipped (temporary chat): chat_id=%s message_id=%s", chat_id, message_id)
+            self._warn_temporary_chat_skip(
+                "assembly", "", "Session log assembly skipped (temporary chat): message_id=%s", message_id,
+            )
             return False
         model, session_factory = self._db_handles()
         if not model or not session_factory:

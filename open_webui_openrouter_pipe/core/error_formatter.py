@@ -52,33 +52,14 @@ _DEFAULT_USAGE_STATUS_ICONS: tuple[str, ...] = (
 _USAGE_ICON_FIELDS = ("time", "cost", "total", "input", "output", "cached", "reasoning")
 
 
-_IN_BAND_STATUS_BY_ERROR_TYPE = {
-    "authentication": 401,
-    "payment_required": 402,
-    "permission_denied": 403,
-    "content_policy_violation": 403,
-    "refusal": 403,
-    "not_found": 404,
-    "image_not_found": 404,
-    "precondition_failed": 412,
-    "payload_too_large": 413,
-    "unprocessable": 422,
-    "rate_limit_exceeded": 429,
-    "server": 500,
-    "unmapped": 500,
-    "provider_unavailable": 502,
-    "provider_overloaded": 503,
-    "timeout": 504,
-}
+from .errors import (
+    _IN_BAND_STATUS_BY_ERROR_TYPE,
+    _IN_BAND_STATUS_BY_NATIVE_CODE,
+    _resolved_error_status,
+)
 
 
-_IN_BAND_STATUS_BY_NATIVE_CODE = {
-    "invalid_api_key": 401,
-    "image_content_policy_violation": 403,
-    "server_error": 500,
-}
-
-def _in_band_status(code: Any, error_type: str) -> int:
+def _in_band_status(code: Any, error_type: str, *, default: int = 400) -> int:
     named_code = code.strip().lower() if isinstance(code, str) else ""
     for table, named in (
         (_IN_BAND_STATUS_BY_ERROR_TYPE, error_type.strip().lower()),
@@ -96,7 +77,7 @@ def _in_band_status(code: Any, error_type: str) -> int:
         numeric = None
     if numeric is not None and 400 <= numeric <= 599:
         return numeric
-    return 400
+    return default
 
 
 def _choice_error(event: dict[str, Any]) -> Any:
@@ -323,7 +304,7 @@ class ErrorFormatter:
         reasons = error_metadata.get("reasons")
         raw_body = _pretty_json(event)
         return OpenRouterAPIError(
-            status=_in_band_status(code, error_type),
+            status=_resolved_error_status(code, error_type, 400, from_wire=False),
             openrouter_error_type=error_type or None,
             reason=message,
             provider=chunk_provider or _as_text(error_metadata.get("provider_name")),

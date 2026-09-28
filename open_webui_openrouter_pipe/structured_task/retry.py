@@ -12,8 +12,8 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ..core.logging_system import SessionLogger
-from .client import read_task_model_response_json
-from .logging import safe_log_payload
+from .client import TaskModelFault, read_task_model_response_json
+from .logging import _fault_code, safe_log_payload
 
 
 async def call_with_candidates(
@@ -47,7 +47,7 @@ async def call_with_candidates(
             exception is chained via `from`.
     """
     if not candidates:
-        raise RuntimeError("no_task_model_candidates")
+        raise TaskModelFault("no_task_model_candidates")
 
     last_error: Exception | None = None
     for index, model_id in enumerate(candidates):
@@ -64,7 +64,7 @@ async def call_with_candidates(
             response = await invoke(fd)
             params = await read_task_model_response_json(response)
             if not isinstance(params, dict):
-                raise RuntimeError("task_model_invalid_schema")  # noqa: TRY004 - a remote schema mismatch is a runtime fault, not a local type error
+                raise TaskModelFault("task_model_invalid_schema")
             return params
         try:
             params = await asyncio.wait_for(_attempt(form_data), timeout=timeout_s)
@@ -74,13 +74,14 @@ async def call_with_candidates(
             return params
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - the candidate loop absorbs every fault and reports the last one
             logger.warning(
-                "structured_task candidate '%s' failed: %s", model_id, exc, exc_info=True
+                "structured_task candidate '%s' failed: %s", model_id, type(exc).__name__
             )
             last_error = exc
             continue
 
     raise RuntimeError(
-        f"task_model execution failed for all candidates; last_error={last_error}"
+        "task_model execution failed for all candidates; "
+        f"last_error={_fault_code(last_error)}"
     ) from last_error

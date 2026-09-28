@@ -14,6 +14,7 @@ _logger = logging.getLogger(__name__)
 
 _TASK_RESPONSE_MAX_BYTES = 256 * 1024
 
+
 def _content_part_text(item: Any) -> str | None:
     if not isinstance(item, dict):
         return str(item)
@@ -31,6 +32,13 @@ def _join_content_parts(value: list[Any]) -> str:
         if piece is not None:
             parts.append(piece)
     return "".join(parts)
+
+
+class TaskModelFault(RuntimeError):
+    def __init__(self, code: str, detail: str | None = None) -> None:
+        super().__init__(code if detail is None else f"{code}: {detail}")
+        self.code = code
+        self.detail = detail
 
 
 def normalise_model_content(value: Any) -> str:
@@ -120,7 +128,6 @@ async def read_task_model_response_json(response: Any) -> dict[str, Any]:
 
     Raises:
         RuntimeError("task_model_empty_response") on empty/whitespace content.
-        RuntimeError(f"task_model_refusal: {text}") on explicit refusal field.
         RuntimeError("task_model_no_choices") on missing choices.
         TypeError on unexpected response shape.
         json.JSONDecodeError on unparseable JSON content.
@@ -128,24 +135,24 @@ async def read_task_model_response_json(response: Any) -> dict[str, Any]:
     if hasattr(response, "body_iterator"):
         content = await read_model_response_content(response)
         if not content:
-            raise RuntimeError("task_model_empty_response")
+            raise TaskModelFault("task_model_empty_response")
         if len(content) > _TASK_RESPONSE_MAX_BYTES:
-            raise RuntimeError(f"task_model_response_too_large: {len(content)}")
+            raise TaskModelFault("task_model_response_too_large", f"{len(content)}")
         try:
             return json.loads(content)
         except json.JSONDecodeError as exc:
-            raise RuntimeError(f"task_model_invalid_json: {exc}") from exc
+            raise TaskModelFault("task_model_invalid_json", f"{exc}") from exc
 
     if isinstance(response, str):
         text = response.strip()
         if not text:
-            raise RuntimeError("task_model_empty_response")
+            raise TaskModelFault("task_model_empty_response")
         if len(text) > _TASK_RESPONSE_MAX_BYTES:
-            raise RuntimeError(f"task_model_response_too_large: {len(text)}")
+            raise TaskModelFault("task_model_response_too_large", f"{len(text)}")
         try:
             return json.loads(text)
         except json.JSONDecodeError as exc:
-            raise RuntimeError(f"task_model_invalid_json: {exc}") from exc
+            raise TaskModelFault("task_model_invalid_json", f"{exc}") from exc
 
     if not isinstance(response, dict):
         raise TypeError(f"unexpected task model response type: {type(response).__name__}")
@@ -165,16 +172,16 @@ async def read_task_model_response_json(response: Any) -> dict[str, Any]:
         if text_parts:
             joined = "\n".join(p for p in text_parts if p).strip()
             if len(joined) > _TASK_RESPONSE_MAX_BYTES:
-                raise RuntimeError(f"task_model_response_too_large: {len(joined)}")
+                raise TaskModelFault("task_model_response_too_large", f"{len(joined)}")
             if joined:
                 try:
                     return json.loads(joined)
                 except json.JSONDecodeError as exc:
-                    raise RuntimeError(f"task_model_invalid_json: {exc}") from exc
+                    raise TaskModelFault("task_model_invalid_json", f"{exc}") from exc
 
     choices = response.get("choices")
     if not isinstance(choices, list) or not choices:
-        raise RuntimeError("task_model_no_choices")
+        raise TaskModelFault("task_model_no_choices")
 
     first_choice = choices[0]
     if not isinstance(first_choice, dict):
@@ -186,7 +193,7 @@ async def read_task_model_response_json(response: Any) -> dict[str, Any]:
 
     refusal = message.get("refusal")
     if isinstance(refusal, str) and refusal.strip():
-        raise RuntimeError(f"task_model_refusal: {refusal.strip()}")
+        raise TaskModelFault("task_model_refusal")
 
     content_value = message.get("content")
     if isinstance(content_value, list):
@@ -197,16 +204,16 @@ async def read_task_model_response_json(response: Any) -> dict[str, Any]:
         except (ValueError, RecursionError):
             measured = _TASK_RESPONSE_MAX_BYTES + 1
         if measured > _TASK_RESPONSE_MAX_BYTES:
-            raise RuntimeError(f"task_model_response_too_large: {measured}")
+            raise TaskModelFault("task_model_response_too_large", f"{measured}")
         return content_value
     if isinstance(content_value, str):
         if not content_value.strip():
-            raise RuntimeError("task_model_empty_response")
+            raise TaskModelFault("task_model_empty_response")
         if len(content_value) > _TASK_RESPONSE_MAX_BYTES:
-            raise RuntimeError(f"task_model_response_too_large: {len(content_value)}")
+            raise TaskModelFault("task_model_response_too_large", f"{len(content_value)}")
         try:
             return json.loads(content_value)
         except json.JSONDecodeError as exc:
-            raise RuntimeError(f"task_model_invalid_json: {exc}") from exc
+            raise TaskModelFault("task_model_invalid_json", f"{exc}") from exc
 
     raise TypeError(f"unexpected task model content type: {type(content_value).__name__}")

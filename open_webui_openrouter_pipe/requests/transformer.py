@@ -171,7 +171,7 @@ def _without_tool_result(
     if item_type == "function_call":
         name = str(item.get("name") or "")
         if isinstance(call_id, str):
-            names.setdefault(call_id, name)
+            names[call_id] = name
         return None if _is_ask_user_name(name, ask_user_names) else [{**item, "arguments": "{}"}]
     if item_type == "function_call_output":
         if _is_ask_user_name(names.get(str(call_id)) or "", ask_user_names):

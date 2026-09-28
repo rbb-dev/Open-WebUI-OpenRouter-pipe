@@ -41,7 +41,7 @@ Notes:
 - `logs.jsonl` is the **evidence** and the text sinks are the **presentation**, so for a record carrying a neutralised character the two renderings differ: the archive keeps the caller's original bytes, while the console and `logs.txt` show the neutralised text.
 - The `LOG_LEVEL` valve controls what is written to stdout/backend logs for a request. The stored archive is sourced from the in-memory session buffer and can include entries that are not emitted to stdout.
 - Session logs can contain sensitive content (prompts, tool arguments, provider errors). Enable this only if you understand your retention and access controls.
-- Every media field appears as scheme, host and port only — the path and query are dropped, so a signed CDN link cannot be recovered from an archive. (The fields are the media-URL keys the pipe keys on, not a list maintained here: it goes stale the moment one is added.) A `data:` URL contributes only its media type (for example `data:image/png`); its bytes never reach a log, including when the URL carries no comma.
+- Every media field appears as scheme, host and port only — the path and query are dropped, so a signed CDN link cannot be recovered from an archive. (The fields are the media-URL keys the pipe keys on, not a list maintained here: it goes stale the moment one is added.) A `data:` URL contributes only its media type (for example `data:image/png`); its bytes never reach a log, including when the URL carries no comma. A `data:` URL in a tool result, in any record, contributes only its media type and never its `;name=` parameter — except where the URL's own header carries whitespace before its payload.
 
 ---
 
@@ -80,6 +80,8 @@ The pipe **skips persistence** when any of the following are true:
 - The chat is a temporary chat, which Open WebUI keeps only in the browser; the pipe stores nothing for it either. In Open-WebUI tool mode the tool rounds and thinking of a streamed reply are held in memory for that reply only, and only for the user who opened that reply, and dropped when the pipe answers its last call back, or when the provider refuses a call-back the pipe was waiting for, or after 15 minutes unused.
 
 If persistence is skipped, the request still completes normally; the archive is simply not written.
+
+Each skip names itself at the level the code uses for it. On the segment-persist path the missing-id and valve-off skips are at `INFO`, the store-disabled, no-events and archive-settings-unavailable skips at `DEBUG`, and the passphrase, log-directory and `pyzipper` skips at `WARNING`. The enqueue path records the archive-settings skips at `WARNING` and the missing-id and valve-off skips at `INFO`, but records nothing at all when storage is off or when the request produced no captured log lines. The temporary-chat skips on the three archive paths (enqueue, segment persist, bundle assembly) warn once per path and warn again after a five-minute cooldown.
 
 ### Assembly timing
 

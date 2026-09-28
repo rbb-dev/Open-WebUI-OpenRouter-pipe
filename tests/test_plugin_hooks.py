@@ -429,7 +429,42 @@ async def test_a_failing_filter_install_is_reported_once_across_repeated_pipes_c
                 for _ in range(3):
                     await pipe.pipes()
 
-            # Third phase: the routing row probe. It runs only when BOTH routing valve
+            # Third phase: the key-resolution site. It degrades open on its own
+            # `refresh_error` path, so the same once-per-cause rule applies, and it is
+            # driven here rather than exempted: the fault is a valve that cannot be read,
+            # which this drive produces by patching the resolver, not by any endpoint.
+            real_resolver = pipe_module.Pipe.__dict__["_resolve_openrouter_api_key"]
+            real_startup_checks = pipe._maybe_start_startup_checks
+
+            def _resolver(valves: Any) -> tuple[str, str]:
+                raise AttributeError("'int' object has no attribute 'startswith'")
+
+            # The start-up probe is a DIFFERENT caller of the same resolver and is
+            # deliberately outside the guarded region, so it must not see this fault:
+            # its raise is supposed to escape `pipes()`. Stubbing the probe on the
+            # instance for this phase leaves the arm under test the only thing
+            # exercising the resolver.
+            pipe._maybe_start_startup_checks = lambda: None
+            pipe_module.Pipe._resolve_openrouter_api_key = staticmethod(_resolver)  # type: ignore[method-assign]
+            try:
+                with aioresponses() as http:
+                    http.get(
+                        "https://openrouter.ai/api/v1/models",
+                        exception=RuntimeError("catalog endpoint down"),
+                        repeat=True,
+                    )
+                    http.get(
+                        "https://openrouter.ai/api/v1/endpoints/zdr",
+                        exception=RuntimeError("ZDR endpoint down"),
+                        repeat=True,
+                    )
+                    for _ in range(3):
+                        await pipe.pipes()
+            finally:
+                setattr(pipe_module.Pipe, "_resolve_openrouter_api_key", real_resolver)
+                pipe._maybe_start_startup_checks = real_startup_checks
+
+            # Fourth phase: the routing row probe. It runs only when BOTH routing valve
             # lists are empty and no routing filter was installed this worker, so the
             # drive has to clear them; the latch has to be un-probed for the same
             # reason. Same once-per-cause rule as every other site here.
@@ -475,14 +510,16 @@ async def test_a_failing_filter_install_is_reported_once_across_repeated_pipes_c
         "pipes() runs per /api/models request, so a stable configuration fault would "
         "repeat for the life of the worker."
     )
-    # The two catalog sites need the chat-catalog REFRESH to fail, which this drive
+    # The catalog REFRESH site needs the chat-catalog refresh to fail, which this drive
     # cannot produce: phase 1 has to populate the registry for the later sites to be
-    # reachable at all, and a populated registry is served from cache. They are covered
+    # reachable at all, and a populated registry is served from cache. It is covered
     # by no test today -- named here rather than dropped from the inventory, so the gap
     # is visible in the failure message instead of being an absence nobody can see.
+    # `catalog_cached` is NOT exempt any more: the key-resolution phase produces a
+    # `refresh_error` with the registry populated, which is exactly that site, so the
+    # two-sided check below reports the exemption as stale until it is removed.
     not_driven_here = {
         "catalog_refresh",
-        "catalog_cached",
         # The chat path, which this drive never enters -- it calls pipes() only. Named
         # here rather than given a driver written to satisfy the census: a drive that
         # exists only to arm a latch passes for the wrong reason, and this file has
@@ -504,6 +541,7 @@ async def test_a_failing_filter_install_is_reported_once_across_repeated_pipes_c
         "zdr_list_unavailable", "models_missing", "variant_base_missing",
         "enforcement_base_not_allowed", "enforcement_base_unnormalized",
         "chat_catalog_refresh", "metadata_sync", "web_tools_repair",
+        "api_key_resolution",
     }
     from tests.warn_latch_census import UNRESOLVABLE_MESSAGE
 

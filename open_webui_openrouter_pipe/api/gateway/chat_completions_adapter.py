@@ -940,16 +940,16 @@ class ChatCompletionsAdapter:
                                 extra_metadata=extra_meta or None,
                             )
                         data = await _decode_json_body(resp, self.logger, "/chat/completions")
-                        if isinstance(data, dict):
+                        if not isinstance(data, dict):
                             _debug_print_response(data, logger=self.logger)
-                            reported_error = self._pipe._ensure_error_formatter()._extract_streaming_error_event(
-                                data, chat_payload.get("model")
-                            )
-                            if reported_error is not None:
-                                raise reported_error
-                            return data
+                            raise RuntimeError("Invalid JSON response from /chat/completions")  # noqa: TRY004 - a remote body of the wrong shape is a runtime fault, and a ClientError subclass would be re-POSTed
                         _debug_print_response(data, logger=self.logger)
-                        return {}
+                        reported_error = self._pipe._ensure_error_formatter()._extract_streaming_error_event(
+                            data, chat_payload.get("model")
+                        )
+                        if reported_error is not None:
+                            raise reported_error
+                        return data
 
         return {}
 

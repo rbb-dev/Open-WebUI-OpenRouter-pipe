@@ -297,8 +297,6 @@ class ResponsesAdapter:
         async def _producer() -> None:
             seq = 0
             first_chunk_received = False
-            queued_any = False
-            delivered_any = False
 
             async def _put_seq(data_blob: bytes) -> None:
                 nonlocal seq
@@ -334,6 +332,8 @@ class ResponsesAdapter:
                 async with _count_failed_call(self._pipe, breaker_key):
                     async for attempt in retryer:
                         with attempt:
+                            queued_any = False
+                            delivered_any = False
                             buf = bytearray()
                             event_data_parts: list[bytes] = []
                             stream_complete = False

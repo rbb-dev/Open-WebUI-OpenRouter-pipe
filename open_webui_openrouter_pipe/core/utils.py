@@ -197,6 +197,19 @@ def tool_output_text_and_pictures(output: Any) -> tuple[str, list[str]]:
     return (output if isinstance(output, str) else ("" if output is None else str(output))), []
 
 
+_DATA_URL_LOG_SCAN = re.compile(r"(?<![A-Za-z0-9+.-])data:[^\s]*", re.IGNORECASE)
+_DATA_URL_NAME_PARAM = re.compile(r";name=[^;,]*", re.IGNORECASE)
+
+
+def _data_url_log_subject(text: str) -> str:
+    def _replace(match: re.Match[str]) -> str:
+        url = match.group(0)
+        media = url.partition(",")[0][len("data:") :].split(";", 1)[0][:64]
+        return f"data:{media} [redacted]"
+
+    return _DATA_URL_LOG_SCAN.sub(_replace, text)
+
+
 def picture_output(text: str, pictures: list[str]) -> list[dict[str, Any]]:
     return [{"type": "input_text", "text": text}, *({"type": "input_image", "image_url": url} for url in pictures)]
 
@@ -960,10 +973,11 @@ def _redact_payload_blobs(value: Any, *, max_chars: int = 256) -> Any:
         candidate = text.strip()
         split = split_base64_data_url(candidate)
         if split is None:
-            return text
+            return _data_url_log_subject(text)
         header, b64 = split
+        header = _DATA_URL_NAME_PARAM.sub("", header)
         if len(candidate) <= max_chars:
-            return candidate
+            return _data_url_log_subject(candidate)
         keep = max(8, min(64, max_chars // 4))
         return f"{header},{b64[:keep]}…{_REDACTED_DATA_URL_MARKER}({len(b64)} chars)…"
 

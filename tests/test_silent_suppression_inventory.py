@@ -115,7 +115,14 @@ _EXPECTED: dict[str, int] = {
     # crossed a task boundary -- in which case the token is already spent and the next
     # request's own reset mints its own. Letting it out would replace the answer the
     # caller is still waiting for with a bookkeeping error.
-    "pipe.py": 29,
+    # 30th: the `pipes()` refresh session's close, in the `finally` that the key
+    # resolution moved inside of. A close that fails after the refresh has already been
+    # turned into a `refresh_error` would replace a reported catalogue fault with a
+    # teardown fault and skip the `list_models()` that decides what the picker is
+    # served, so the close is the last thing allowed to fail silently. Same reason as
+    # the pooled session closes above: the caller is already on its way out and there
+    # is nothing left to serve.
+    "pipe.py": 30,
     "storage/persistence.py": 3,
     # 1st: the caller-supplied fallback in `_emit_templated_error_event`. It is reached only because the
     # admin's own template already failed to render, and the generic card below it is the answer if the

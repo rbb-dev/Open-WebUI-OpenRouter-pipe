@@ -232,12 +232,7 @@ def _web_tools_owned(
     *,
     id_from_record: bool,
 ) -> bool:
-    attached = pipe_meta.get("web_tools_attached_id")
-    return (
-        bool(pipe_meta.get("web_tools_default_seeded"))
-        or previous_id_str == fid
-        or (id_from_record and isinstance(attached, str) and bool(attached))
-    )
+    return bool(pipe_meta.get("web_tools_default_seeded")) or bool(previous_id_str)
 
 
 def _apply_single_id_filter_ids(
@@ -2345,8 +2340,7 @@ class ModelCatalogManager:
                 pipe_meta = {}
             previous_id = pipe_meta.get("web_tools_filter_id")
             previous_id_str = previous_id if isinstance(previous_id, str) else ""
-            attached_id = pipe_meta.get("web_tools_attached_id")
-            recorded_id_str = attached_id if isinstance(attached_id, str) and attached_id else previous_id_str
+            recorded_id_str = previous_id_str
             owned_id = default_filter_id
             owned_id_str = (
                 owned_id
@@ -2384,10 +2378,19 @@ class ModelCatalogManager:
                 changed = True
                 pipe_meta = _ensure_pipe_meta(meta_dict)
                 pipe_meta[seeded_key] = False
+                pipe_meta.pop("web_tools_filter_id", None)
 
             seeding = bool(auto_default_filter and owned_id and filter_supported)
             if not seeding:
-                superseded = [fid for fid in default_ids if fid in (attach_detached or set())]
+                superseded = [
+                    fid
+                    for fid in default_ids
+                    if fid in (attach_detached or set())
+                    and (
+                        bool(pipe_meta.get(seeded_key, False))
+                        or previous_id_str == fid
+                    )
+                ]
                 if superseded:
                     default_ids = [fid for fid in default_ids if fid not in superseded]
                     changed = True
@@ -2421,7 +2424,7 @@ class ModelCatalogManager:
                 pipe_meta[seeded_key] = False
                 changed = True
 
-            if previous_id_str != owned_id:
+            if previous_id_str != owned_id and pipe_meta.get(seeded_key, False):
                 pipe_meta["web_tools_filter_id"] = owned_id
                 changed = True
 

@@ -1352,12 +1352,21 @@ class Pipe:
         self._maybe_start_startup_checks()
         self._maybe_start_redis()
         self._maybe_start_cleanup()
-        session = self._create_http_session()
+        session: aiohttp.ClientSession | None = None
         refresh_error: Exception | None = None
-        api_key_value, api_key_error = self._resolve_openrouter_api_key(self.valves)
-        if api_key_error:
-            refresh_error = ValueError(api_key_error)
+        api_key_value: str | None = None
+        api_key_error: str | None = None
+        session = self._create_http_session()
         try:
+            api_key_value, api_key_error = self._resolve_openrouter_api_key(self.valves)
+        except Exception as exc:
+            api_key_value, api_key_error = None, None
+            refresh_error = exc
+            level = warn_level(_warned_pipes_maintenance, f"api_key_resolution:{type(exc).__name__}")
+            self.logger.log(level, "OpenRouter API key resolution failed: %s", exc, exc_info=True)
+        try:
+            if api_key_error:
+                refresh_error = ValueError(api_key_error)
             if api_key_value and not api_key_error:
                 await OpenRouterModelRegistry.ensure_loaded(
                     session,
@@ -1392,7 +1401,9 @@ class Pipe:
             level = warn_level(_warned_pipes_maintenance, f"catalog_refresh:{type(exc).__name__}")
             self.logger.log(level, "OpenRouter catalog refresh failed: %s", exc, exc_info=True)
         finally:
-            await session.close()
+            if session is not None:
+                with contextlib.suppress(Exception):
+                    await session.close()
 
         available_models = OpenRouterModelRegistry.list_models()
         if refresh_error and available_models:

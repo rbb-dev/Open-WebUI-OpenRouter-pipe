@@ -989,7 +989,14 @@ async def test_chat_completions_nonstreaming_with_breaker_key_failure(pipe_insta
 
 @pytest.mark.asyncio
 async def test_chat_completions_nonstreaming_non_dict_response(pipe_instance_async):
-    """Test non-streaming with non-dict response returns empty dict."""
+    """Test non-streaming with a non-dict response is reported, not swallowed into an empty dict.
+
+    This row used to assert `result == {}` and to call that correct. It is the test that
+    let the defect ship: it named the case and recorded the wrong answer. A body that is
+    valid JSON but not an object means a proxy rewrote the response, and returning an
+    empty dict turns that into a finished, successful, empty answer for the user. The
+    sibling /responses route already raised here, with the same message this now carries.
+    """
     pipe = pipe_instance_async
     valves = pipe.valves
     session = pipe._create_http_session(valves)
@@ -1001,17 +1008,15 @@ async def test_chat_completions_nonstreaming_non_dict_response(pipe_instance_asy
             payload=[1, 2, 3],  # Not a dict
         )
 
-        result = await pipe.send_openai_chat_completions_nonstreaming_request(
-            session,
-            {"model": "openai/gpt-4o", "input": []},
-            api_key="test-key",
-            valves=valves,
-            base_url="https://openrouter.ai/api/v1",        )
+        with pytest.raises(RuntimeError, match="Invalid JSON response from /chat/completions"):
+            await pipe.send_openai_chat_completions_nonstreaming_request(
+                session,
+                {"model": "openai/gpt-4o", "input": []},
+                api_key="test-key",
+                valves=valves,
+                base_url="https://openrouter.ai/api/v1",        )
 
         await session.close()
-
-    # Should return empty dict for non-dict response
-    assert result == {}
 
 
 # ============================================================================

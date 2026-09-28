@@ -6,6 +6,33 @@ from __future__ import annotations
 
 from typing import Any
 
+_TASK_MODEL_FAULT_CODES = frozenset(
+    {
+        "task_model_refusal",
+        "task_model_empty_response",
+        "task_model_no_choices",
+        "task_model_response_too_large",
+        "task_model_invalid_json",
+        "task_model_invalid_schema",
+        "no_task_model_candidates",
+    }
+)
+
+
+def _fault_code(exc: BaseException | None) -> str:
+    if exc is None:
+        return "UnknownError"
+    seen: set[int] = set()
+    link: BaseException | None = exc
+    while link is not None and id(link) not in seen:
+        seen.add(id(link))
+        code = getattr(link, "code", None)
+        if isinstance(code, str) and code in _TASK_MODEL_FAULT_CODES:
+            return code
+        link = link.__cause__ or link.__context__
+    cause = exc.__cause__
+    return type(cause).__name__ if cause is not None else type(exc).__name__
+
 
 def safe_log_payload(form_data: dict[str, Any]) -> dict[str, Any]:
     """Redact form_data for debug logs.

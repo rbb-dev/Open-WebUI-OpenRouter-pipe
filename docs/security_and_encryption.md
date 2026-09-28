@@ -83,6 +83,7 @@ See also: [Persistence, Encryption & Storage](persistence_encryption_and_storage
 - If `ARTIFACT_ENCRYPTION_KEY` is set (non-empty), the pipe encrypts artifacts before persistence.
   - When `ENCRYPT_ALL=True`, *all* persisted artifact types are encrypted.
   - When `ENCRYPT_ALL=False`, only reasoning artifacts are encrypted; other artifacts remain plaintext.
+- `ENCRYPT_ALL` governs what is written. A row written while it was on stays encrypted, in the table and in the replay cache, whatever the valve says afterwards.
 
 ### Table naming and key rotation implications
 

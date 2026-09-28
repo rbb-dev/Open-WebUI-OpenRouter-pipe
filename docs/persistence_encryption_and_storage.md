@@ -16,7 +16,8 @@ Persisted artifacts include (at least):
   which lists the rounds that are stored differently or not at all):
   the call and its output, with the full arguments and result, pictures included, whatever `PERSIST_TOOL_RESULTS`
   says. That setting decides what later turns receive; tool results are stored even while it is off. They are
-  encrypted at rest only when `ARTIFACT_ENCRYPTION_KEY` is set and `ENCRYPT_ALL` is on.
+  encrypted at rest only when `ARTIFACT_ENCRYPTION_KEY` is set and `ENCRYPT_ALL` is on at write time; a row written
+  while it was on stays encrypted.
 
 The pipe never stores a copy of a picture or file a person attaches, in any chat.
 
@@ -125,7 +126,7 @@ The master switch is read at the moment a Redis gate is reached, not frozen at s
 
 High-level behavior:
 - When Redis caching is enabled and available, the pipe can enqueue persisted rows into Redis and flush them to the database asynchronously.
-- When Redis is enabled, the pipe can also cache persisted artifacts for faster replay reads.
+- When Redis is enabled, the pipe can also cache persisted artifacts for faster replay reads. A cached artifact keeps the form its table row has, so a cache read is never a weaker read than a database read — except for an artifact cached by a build before this one, which keeps its previous form until the entry expires within `REDIS_CACHE_TTL_SECONDS`.
 - When Redis write-behind is active, a row deleted while it is still queued is removed from the table and its cache entry, so it cannot be replayed from either. The marker carrying that decision is the one Redis lifetime deliberately not tied to `REDIS_CACHE_TTL_SECONDS`: it lives in Redis for its own fixed lifetime of 24 hours, because the write-behind queue it has to outlive has no deadline at all, and a row still queued when its marker expired would be written to the table and re-cached, losing the delete permanently — which is what a queue backlogged past that window means. The `{ns}:deleted:{row}` marker value is the `message_id` a cleanup spared, or the sentinel `"1"` when it spared none; the key layout and the marker lifetime are unchanged. A worker from before this change reads `"1"` the same way, but reads a spared `message_id` as truthy and will **drop that row** during a rolling deploy — a lost row, never a resurrected one. The no-keep path is byte-identical and does not diverge.
 - Redis keys are namespaced per pipe so multiple pipes can share the same Redis deployment.
 
@@ -172,7 +173,7 @@ When an earlier turn's tool result is handed to the model again, `TOOL_OUTPUT_RE
 | Valve | Default (verified) | Notes |
 | --- | --- | --- |
 | `ARTIFACT_ENCRYPTION_KEY` | `(empty)` | Enables artifact encryption when set. Changing it changes the table name used for artifact storage. |
-| `ENCRYPT_ALL` | `True` | When encryption is enabled, controls whether all artifacts are encrypted or only reasoning. |
+| `ENCRYPT_ALL` | `True` | When encryption is enabled, controls whether all artifacts are encrypted or only reasoning. It decides what is written; a row already stored encrypted stays encrypted, in the table and in the replay cache, whatever it is set to. |
 | `ENABLE_LZ4_COMPRESSION` | `True` | Compresses some payloads before encryption (when `lz4` is available and compression is beneficial). |
 | `MIN_COMPRESS_BYTES` | `0` | Compression threshold; `0` always attempts compression. |
 | `ENABLE_REDIS_CACHE` | `True` | Enables Redis support when Redis is available and the deployment is a candidate for it. |

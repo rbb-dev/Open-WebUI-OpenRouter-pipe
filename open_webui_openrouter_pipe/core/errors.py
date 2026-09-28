@@ -353,8 +353,14 @@ def _build_openrouter_api_error(
     metadata_block = details.get("metadata") or {}
     if extra_metadata:
         metadata_block = {**metadata_block, **extra_metadata}
+    resolved_status = _resolved_error_status(
+        details.get("openrouter_code"),
+        details.get("openrouter_error_type") or "",
+        status,
+        metadata=metadata_block,
+    )
     return OpenRouterAPIError(
-        status=status,
+        status=resolved_status,
         reason=reason,
         provider=details.get("provider"),
         openrouter_message=details.get("openrouter_message"),
@@ -400,6 +406,70 @@ def _parse_supported_effort_values(error_message: str) -> list[str]:
     return re.findall(r"'([^']+)'", values_str)
 
 
+_IN_BAND_STATUS_BY_ERROR_TYPE = {
+    "authentication": 401,
+    "payment_required": 402,
+    "permission_denied": 403,
+    "content_policy_violation": 403,
+    "refusal": 403,
+    "not_found": 404,
+    "image_not_found": 404,
+    "precondition_failed": 412,
+    "payload_too_large": 413,
+    "unprocessable": 422,
+    "rate_limit_exceeded": 429,
+    "server": 500,
+    "unmapped": 500,
+    "provider_unavailable": 502,
+    "provider_overloaded": 503,
+    "timeout": 504,
+    "invalid_request": 400,
+    "invalid_prompt": 400,
+    "context_length_exceeded": 400,
+    "max_tokens_exceeded": 400,
+    "token_limit_exceeded": 400,
+    "string_too_long": 400,
+    "invalid_image": 400,
+    "image_too_large": 400,
+    "image_too_small": 400,
+    "unsupported_image_format": 400,
+    "image_download_failed": 400,
+}
+
+
+_IN_BAND_STATUS_BY_NATIVE_CODE = {
+    "invalid_api_key": 401,
+    "image_content_policy_violation": 403,
+    "server_error": 500,
+}
+
+
+_CONTENT_DECISION_MARKERS = ("patterns", "reasons", "flagged_input")
+
+
+def _is_content_decision(metadata: Any) -> bool:
+    meta = metadata if isinstance(metadata, dict) else {}
+    return any(meta.get(marker) for marker in _CONTENT_DECISION_MARKERS)
+
+
+def _resolved_error_status(
+    code: Any,
+    error_type: str,
+    http_status: int,
+    *,
+    from_wire: bool = True,
+    metadata: Any = None,
+) -> int:
+    from .error_formatter import _in_band_status
+
+    if from_wire and _is_content_decision(metadata):
+        return http_status
+    kind = error_type.strip() if isinstance(error_type, str) else ""
+    if from_wire and kind not in _IN_BAND_STATUS_BY_ERROR_TYPE:
+        return http_status
+    return _in_band_status(code, kind, default=http_status)
+
+
 _CONTEXT_OVERFLOW_ERROR_TYPE = "context_length_exceeded"
 
 _CONTEXT_OVERFLOW_PHRASES = (
@@ -418,6 +488,15 @@ def _inline_span(text: str) -> str:
 
 def _fenced_block(text: str) -> str:
     return wrap_code_block(text, "") if text else ""
+
+
+def _streaming_rows(error: OpenRouterAPIError) -> tuple[str, str]:
+    if not error.is_streaming_error:
+        return "", ""
+    return (
+        _inline_span(error.chunk_provider or error.provider or ""),
+        _inline_span(error.chunk_model or ""),
+    )
 
 
 def _build_error_template_values(
@@ -451,6 +530,7 @@ def _build_error_template_values(
 
     metadata_json = error.metadata_json or _pretty_json(error.metadata)
     provider_raw_json = error.provider_raw_json or _pretty_json(error.provider_raw)
+    streaming_provider, streaming_model = _streaming_rows(error)
     context = context or {}
     retry_after = context.get("retry_after_seconds")
     if retry_after is None:
@@ -484,8 +564,8 @@ def _build_error_template_values(
         "native_finish_reason": _inline_span(error.native_finish_reason or ""),
         "error_chunk_id": _inline_span(error.chunk_id or ""),
         "error_chunk_created": _inline_span(error.chunk_created or ""),
-        "streaming_provider": _inline_span(error.chunk_provider or (error.provider or "")),
-        "streaming_model": _inline_span(error.chunk_model or ""),
+        "streaming_provider": streaming_provider,
+        "streaming_model": streaming_model,
         "is_streaming_error": bool(error.is_streaming_error),
         "error_id": _inline_span(context.get("error_id", "")),
         "timestamp": context.get("timestamp", ""),
@@ -513,18 +593,18 @@ def is_sign_in_failure(exc: Any) -> bool:
         return True
     if status != 403:
         return False
+    metadata = getattr(exc, "metadata", None) or {}
+    if (
+        getattr(exc, "moderation_reasons", None)
+        or getattr(exc, "flagged_input", None)
+        or _is_content_decision(metadata)
+    ):
+        return False
     kind = (getattr(exc, "openrouter_error_type", None) or "").strip().lower()
     if kind:
         return kind not in _BLOCKED_RATHER_THAN_REJECTED
     code = getattr(exc, "openrouter_code", None)
-    if isinstance(code, str) and code.strip().lower() in _BLOCKED_NATIVE_CODES:
-        return False
-    metadata = getattr(exc, "metadata", None) or {}
-    return not (
-        getattr(exc, "moderation_reasons", None)
-        or getattr(exc, "flagged_input", None)
-        or metadata.get("patterns")
-    )
+    return not (isinstance(code, str) and code.strip().lower() in _BLOCKED_NATIVE_CODES)
 
 
 def _resolve_error_model_context(

@@ -86,6 +86,7 @@ from ..core.utils import (
     REASONING_FOLLOWING_SERVER_ITEM_KEY,
     REASONING_PRECEDING_ORDINAL_KEY,
     REASONING_TEXT_ORDINAL_KEY,
+    _data_url_log_subject,
     _image_item_is_empty,
     _redact_payload_blobs,
     _safe_json_loads,
@@ -293,6 +294,10 @@ def _read_arguments_as_open_webui_reads_them(item: dict[str, Any]) -> str:
     if not isinstance(arguments, str):
         arguments = json.dumps(arguments, ensure_ascii=False)
     return arguments.strip() or "{}"
+
+
+def _tool_result_for_log(output: dict[str, Any]) -> str:
+    return wrap_code_block(_data_url_log_subject(tool_output_text_and_pictures(output.get("output"))[0]))
 
 
 class StreamingHandler:
@@ -3320,10 +3325,9 @@ class StreamingHandler:
                             await _mark_committed_rows()
 
                         for output in all_function_outputs:
-                            result_text = wrap_code_block(tool_output_text_and_pictures(output.get("output"))[0])
                             if thinking_tasks:
                                 cancel_thinking()
-                            self.logger.debug("Received tool result\n%s", result_text)
+                            self.logger.debug("Received tool result\n%s", _tool_result_for_log(output))
                         body.input.extend(budgeted_outputs)
                         shipped_budget = _sanitize_request_input(self._pipe, body)
                         await _warn_if_futile(shipped_budget)
@@ -3334,10 +3338,9 @@ class StreamingHandler:
                         tool_loops_executed = True
                         all_function_outputs = list(invalid_call_outputs)
                         for output in all_function_outputs:
-                            result_text = wrap_code_block(tool_output_text_and_pictures(output.get("output"))[0])
                             if thinking_tasks:
                                 cancel_thinking()
-                            self.logger.debug("Received tool result\n%s", result_text)
+                            self.logger.debug("Received tool result\n%s", _tool_result_for_log(output))
                         body.input.extend(all_function_outputs)
                         shipped_budget = _sanitize_request_input(self._pipe, body)
                         await _warn_if_futile(shipped_budget)

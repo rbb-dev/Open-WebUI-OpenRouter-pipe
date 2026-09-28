@@ -748,6 +748,7 @@ def test_streaming_fields_render_in_templates():
         chunk_model="anthropic/claude-3",
         metadata={"foo": "bar"},
         metadata_json="{\n  \"foo\": \"bar\"\n}",
+        is_streaming_error=True,
     )
     rendered = err.to_markdown(
         template=(
@@ -1743,3 +1744,92 @@ def test_the_provider_type_and_openrouters_type_stay_separate_fields():
 
     assert error.openrouter_error_type == "context_length_exceeded"
     assert error.upstream_type == "invalid_request_error"
+
+
+# ---------------------------------------------------------------------------
+# T384 · a body whose fields are not text still gets the card its status selects
+# ---------------------------------------------------------------------------
+#
+# `_extract_openrouter_error_details` handed the constructor raw JSON values, and the
+# constructor called `.strip()` on eight of them, so a number or an object in any one of
+# those fields raised while the error was being built. The turn then ended in the
+# unexpected-error card instead of the one for the failure the provider actually reported.
+
+_T384_CARD_MARKERS = {
+    "OPENROUTER_ERROR_TEMPLATE": "### REJECTED-CARD {status_code}",
+    "RATE_LIMIT_TEMPLATE": "### RATE-LIMIT-CARD {status_code}",
+    "SERVICE_ERROR_TEMPLATE": "### SERVICE-CARD {status_code}",
+    "AUTHENTICATION_ERROR_TEMPLATE": "### AUTH-CARD {status_code}",
+    "INSUFFICIENT_CREDITS_TEMPLATE": "### CREDITS-CARD {status_code}",
+    "SERVER_TIMEOUT_TEMPLATE": "### SERVER-TIMEOUT-CARD {status_code}",
+    "PAYLOAD_TOO_LARGE_TEMPLATE": "### PAYLOAD-CARD {status_code}",
+    "INTERNAL_ERROR_TEMPLATE": "### UNEXPECTED-CARD",
+}
+
+def _t384_user_valves():
+    from open_webui_openrouter_pipe import Pipe
+
+    return Pipe.UserValves()
+
+def _t384_reach_the_model(monkeypatch, pipe) -> None:
+    import open_webui_openrouter_pipe.pipe as pipe_mod
+
+    async def loaded(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(pipe, "_resolve_openrouter_api_key", lambda _valves: ("sk-test-key", None))
+    monkeypatch.setattr(pipe._artifact_store, "_ensure_artifact_store", lambda *_a, **_k: None)
+    monkeypatch.setattr(pipe_mod.OpenRouterModelRegistry, "ensure_loaded", loaded)
+    monkeypatch.setattr(
+        pipe_mod.OpenRouterModelRegistry,
+        "list_models",
+        lambda: [{"id": "openai/gpt-4o", "name": "GPT-4o", "norm_id": "openai.gpt-4o"}],
+    )
+
+
+async def _t384_card(monkeypatch, pipe_instance_async, status: int, error: dict[str, Any]) -> str:
+    """Drive one real turn rejected with `status` and `error`; return what was shown."""
+    import json as _json
+    from unittest.mock import AsyncMock as _AsyncMock
+
+    pipe = pipe_instance_async
+    pipe.valves.API_KEY = EncryptedStr("test-api-key")
+    pipe.valves.BASE_URL = "https://openrouter.ai/api/v1"
+    _t384_reach_the_model(monkeypatch, pipe)
+    pipe.valves = pipe.valves.model_copy(
+        update={
+            "DEFAULT_LLM_ENDPOINT": "responses",
+            **{name: marker for name, marker in _T384_CARD_MARKERS.items()},
+        }
+    )
+    pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = MagicMock()
+    pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = MagicMock()
+    pipe._ensure_tool_executor()._build_direct_tool_server_registry = MagicMock(return_value={})
+    pipe._ensure_reasoning_config_manager()._should_retry_without_reasoning = MagicMock(return_value=False)
+    pipe._ensure_reasoning_config_manager()._should_retry_dropping_signed_reasoning = MagicMock(return_value=False)
+
+    with aioresponses() as mock_http:
+        mock_http.post(
+            "https://openrouter.ai/api/v1/responses",
+            status=status,
+            body=_json.dumps({"error": error}).encode("utf-8"),
+            repeat=True,
+        )
+        mock_http.get("https://openrouter.ai/api/v1/models", payload={"data": []}, repeat=True)
+        mock_http.get("https://openrouter.ai/api/v1/endpoints/zdr", payload={"data": []}, repeat=True)
+        result = await pipe.pipe(
+            body={"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "hi"}], "stream": True},
+            __user__={"id": "user1", "valves": _t384_user_valves()},
+            __request__=None,
+            __event_emitter__=None,
+            __event_call__=None,
+            __metadata__={"model": {"id": "openai/gpt-4o"}},
+            __tools__=None,
+            __task__=None,
+            __task_body__=None,
+        )
+        if hasattr(result, "__aiter__"):
+            shown = "".join([str(chunk) async for chunk in result])
+        else:
+            shown = str(result)
+    return shown

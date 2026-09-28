@@ -145,8 +145,10 @@ _ARMS: dict[str, tuple[str, bool, bytes, str, int]] = {
     "responses-stream-error-event-invalid-key": ("responses", True, _responses_error_event("error", "invalid_api_key"), "AUTHENTICATION_ERROR_TEMPLATE", 401),
     "responses-stream-error-event-blocked-image": ("responses", True, _responses_error_event("response.error", "image_content_policy_violation"), "OPENROUTER_ERROR_TEMPLATE", 403),
     "responses-stream-error-event-unknown-code": ("responses", True, _responses_error_event("error", "wolves_ate_the_response"), "OPENROUTER_ERROR_TEMPLATE", 400),
-    # every remaining row of _IN_BAND_STATUS_BY_ERROR_TYPE, sent with a numeric code of 400 so the arm fails
-    # if the kind stops deciding the status
+    # the remaining 4xx/5xx rows of _IN_BAND_STATUS_BY_ERROR_TYPE that the chat skin can carry, sent with a
+    # numeric code of 400 so the arm fails if the kind stops deciding the status. Not every row of the table:
+    # the eleven kinds OpenRouter documents at 400 are covered on the rejection path instead, by
+    # test_a_rejection_and_a_mid_reply_failure_read_the_same_way.py::test_every_documented_400_kind_is_read_as_a_bad_request
     "chat-stream-permission-denied": ("chat_completions", True, _chat_stream(400, "permission_denied"), "OPENROUTER_ERROR_TEMPLATE", 403),
     "chat-stream-content-policy": ("chat_completions", True, _chat_stream(400, "content_policy_violation"), "OPENROUTER_ERROR_TEMPLATE", 403),
     "chat-stream-refusal": ("chat_completions", True, _chat_stream(400, "refusal"), "OPENROUTER_ERROR_TEMPLATE", 403),

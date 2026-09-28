@@ -1117,12 +1117,17 @@ class ArtifactStore:
             if not isinstance(row, dict):
                 continue
             payload = row.get("payload")
-            if (
-                row.get("is_encrypted")
-                and isinstance(payload, dict)
-                and "ciphertext" in payload
-            ):
-                payload.setdefault("enc_v", _ENCRYPTED_PAYLOAD_VERSION)
+            if row.get("is_encrypted"):
+                if isinstance(payload, dict) and "ciphertext" in payload:
+                    payload.setdefault("enc_v", _ENCRYPTED_PAYLOAD_VERSION)
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                if self._get_fernet() is None:
+                    row["is_encrypted"] = False
+                    continue
+                stored_payload, _ = self._encrypt_if_needed("reasoning", payload)
+                row["payload"] = stored_payload
                 continue
             if not isinstance(payload, dict):
                 continue
@@ -1507,6 +1512,7 @@ class ArtifactStore:
         chat_id: str,
         message_id: str | None,
         item_ids: list[str],
+        sealed: set[str] | None = None,
     ) -> dict[str, dict]:
         """Synchronously fetch persisted artifacts for ``chat_id``."""
         if not item_ids or not self._item_model or not self._session_factory:
@@ -1570,6 +1576,8 @@ class ArtifactStore:
                 except Exception as exc:
                     self.logger.warning("Failed to decrypt artifact %s: %s", row.id, exc, exc_info=True)
                     continue
+                if sealed is not None:
+                    sealed.add(row.id)
             if isinstance(payload, dict):
                 results[row.id] = payload
         return results
@@ -1620,7 +1628,8 @@ class ArtifactStore:
             return cached
 
         try:
-            fetched = await self._db_fetch_direct(chat_id, message_id, missing_ids)
+            sealed: set[str] = set()
+            fetched = await self._db_fetch_direct(chat_id, message_id, missing_ids, sealed)
             if fetched and self._redis_active():
                 cache_rows = [
                     {
@@ -1629,6 +1638,7 @@ class ArtifactStore:
                         "message_id": message_id,
                         "item_type": (payload or {}).get("type", "unknown") if isinstance(payload, dict) else "unknown",
                         "payload": payload,
+                        "is_encrypted": item_id in sealed,
                     }
                     for item_id, payload in fetched.items()
                 ]
@@ -1651,6 +1661,7 @@ class ArtifactStore:
         chat_id: str,
         message_id: str | None,
         item_ids: list[str],
+        sealed: set[str] | None = None,
     ) -> dict[str, dict]:
         retryer = AsyncRetrying(
             stop=stop_after_attempt(3),
@@ -1661,7 +1672,7 @@ class ArtifactStore:
         loop = asyncio.get_running_loop()
         async for attempt in retryer:
             with attempt:
-                fetch_call = functools.partial(self._db_fetch_sync, chat_id, message_id, item_ids)
+                fetch_call = functools.partial(self._db_fetch_sync, chat_id, message_id, item_ids, sealed)
                 return await loop.run_in_executor(self._db_executor, fetch_call)
         return {}
 

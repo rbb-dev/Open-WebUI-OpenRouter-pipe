@@ -33,6 +33,7 @@ from ..structured_task import (
     call_with_candidates,
     resolve_task_model_candidates,
 )
+from ..structured_task.logging import _fault_code
 from .image_types import system_prompt_text
 from .video_intent_prompts import (
     INTENT_JSON_SCHEMA,
@@ -911,12 +912,12 @@ async def resolve_intent(
         return result
     except asyncio.CancelledError:
         raise
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - the classifier degrades open on every fault
         logger.warning(
-            "video_intent classifier failed (degrade-open): %s", exc, exc_info=True
+            "video_intent classifier failed (degrade-open): %s", _fault_code(exc)
         )
         fallback.classifier_failed = True
-        fallback.failure_reason = f"{type(exc).__name__}: {exc}"
+        fallback.failure_reason = f"{type(exc).__name__}: {_fault_code(exc)}"
         if _t0 is not None:
             fallback.task_model_latency_ms = int((time.monotonic() - _t0) * 1000)
         return fallback

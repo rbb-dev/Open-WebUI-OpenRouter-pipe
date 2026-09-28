@@ -482,7 +482,7 @@ OpenRouter reasoning outputs can be large, so persistence controls matter for op
 Relevant valves:
 - `PERSIST_REASONING_TOKENS` (system default `conversation`)
 - `ARTIFACT_ENCRYPTION_KEY` (enables encryption when set)
-- `ENCRYPT_ALL` (default `True`; when encryption is enabled, encrypts all artifacts vs reasoning-only)
+- `ENCRYPT_ALL` (default `True`; when encryption is enabled, encrypts all artifacts vs reasoning-only; a row already stored encrypted stays encrypted, in the table and in the cache, whatever it is set to)
 - `ENABLE_LZ4_COMPRESSION` (default `True`, when `lz4` is available)
 
 See [Persistence, Encryption & Storage](persistence_encryption_and_storage.md) for the full behavior description.
