@@ -80,13 +80,13 @@ Tool *schemas* are assembled by the tool registry builder and attached to the ou
 
 2. **Open WebUI Direct Tool Servers** (direct entries in `__metadata__["tools"]`)
    - These are user-configured OpenAPI tool servers that Open WebUI executes client-side.
-   - Before calling the pipe, Open WebUI resolves the tools of the servers selected for the chat and adds each tool to `__metadata__["tools"]` as a direct entry carrying its spec and its server. The pipe builds its browser-run tools from those entries, so a tool Open WebUI withholds stays withheld (for example, the shell tools of a personal Open Terminal while no shell is connected).
+   - Before calling the pipe, Open WebUI resolves the tools of the servers selected for the chat and adds each tool to `__metadata__["tools"]` as a direct entry carrying its spec and its server, and writes the same specs into the request's own `form_data["tools"]`. The pipe builds its browser-run tools from those entries, so a tool Open WebUI withholds stays withheld (for example, the shell tools of a personal Open Terminal while no shell is connected).
    - This pipe:
      - advertises the tools to the model under the names Open WebUI gives them (OpenAPI `operationId` values). Open WebUI keeps one tool per name, so a direct tool replaces a same-named tool from another source before the pipe sees it; when names collide among the tools the pipe receives, it disambiguates them with a source prefix (e.g. `direct__`), and
      - executes tool calls via the Socket.IO bridge (`__event_call__`) by emitting `execute:tool` so the browser performs the request.
 
    The prefix is a provider-facing label only: the Open-WebUI hand-back and the tool-card name read the tool's origin name. Citation routing requires the registry entry to be one of Open WebUI's own builtins — a `type` of `builtin` with a `builtin:`-prefixed `tool_id`. That marker, not the name, is the whole test: a direct tool, an MCP tool or a user custom tool that merely carries a builtin's name never has it, whichever name the provider saw. A request-supplied tool is the one case that can carry it, and only because the executor it resolves to *is* Open WebUI's own builtin.
-   - Direct tools are only advertised when `__event_call__` is available; without an active Socket.IO session there is no safe execution path, so the pipe skips them.
+   - Direct tools are only advertised when `__event_call__` is available; without an active Socket.IO session there is no safe execution path, so the pipe skips them. A direct tool is therefore withheld from any request that carries no browser session — an API call, an automation, a background task — on the request-spec side as well as on the registry side.
 
 3. **Extra tools** (`extra_tools`)
    - A caller-provided list of already OpenAI-format tool specs is offered as they arrive: in Pipeline mode an extra tool is offered only when a tool of that name can run it; a spec whose name several registry entries share is left out, as on the request route (non-dict entries are ignored).

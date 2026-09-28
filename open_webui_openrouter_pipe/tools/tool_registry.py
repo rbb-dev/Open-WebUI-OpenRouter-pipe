@@ -289,7 +289,7 @@ def _build_collision_safe_tool_specs_and_registry(
         lookup_name = raw_name.strip() if isinstance(raw_name, str) else ""
         tool_cfg = _pick_executor(lookup_name) if lookup_name else None
         runnable = isinstance(tool_cfg, dict) and tool_cfg.get("callable") is not None
-        spec = _normalize_responses_function_tool_spec(raw_tool, strictify=strictify)
+        spec = _normalize_responses_function_tool_spec(raw_tool, strictify=False)
         if not spec:
             continue
         origin_name = spec["name"]
@@ -297,7 +297,8 @@ def _build_collision_safe_tool_specs_and_registry(
         if same_name_entries > 1:
             log.debug("Skipping request tool %s: %d registry tools share the name.", origin_name, same_name_entries)
             continue
-        if owui_tool_passthrough or not runnable:
+        handed_back = owui_tool_passthrough or not runnable
+        if handed_back:
             spec = {**raw_tool, "name": origin_name}
         resolved_request_names.add(origin_name)
         candidates.append(
@@ -306,6 +307,7 @@ def _build_collision_safe_tool_specs_and_registry(
                 "origin_name": origin_name,
                 "spec": spec,
                 "tool_cfg": tool_cfg,
+                "handed_back": handed_back,
                 "pre_strictify_parameters": (
                     raw_tool.get("parameters") if isinstance(raw_tool.get("parameters"), dict) else None
                 ),
@@ -323,7 +325,7 @@ def _build_collision_safe_tool_specs_and_registry(
     for tool_cfg in direct_entries:
         if id(tool_cfg) in carried_by_request:
             continue
-        spec = _responses_spec_from_owui_tool_cfg(tool_cfg, strictify=strictify)
+        spec = _responses_spec_from_owui_tool_cfg(tool_cfg, strictify=False)
         if not spec:
             continue
         origin_name = spec["name"]
@@ -337,12 +339,13 @@ def _build_collision_safe_tool_specs_and_registry(
                 "origin_name": origin_name,
                 "spec": spec,
                 "tool_cfg": tool_cfg,
+                "handed_back": False,
                 "origin_key": str(tool_cfg.get("origin_key") or f"direct::{origin_name}::{id(tool_cfg)}"),
             }
         )
 
     for key, tool_cfg in owui_entries:
-        spec = _responses_spec_from_owui_tool_cfg(tool_cfg, strictify=strictify)
+        spec = _responses_spec_from_owui_tool_cfg(tool_cfg, strictify=False)
         if not spec:
             continue
         if spec["name"] in resolved_request_names:
@@ -361,13 +364,14 @@ def _build_collision_safe_tool_specs_and_registry(
                 "origin_name": origin_name,
                 "spec": spec,
                 "tool_cfg": tool_cfg,
+                "handed_back": False,
                 "origin_key": str(tool_cfg.get("origin_key") or f"owui_registry::{origin_name}"),
             }
         )
 
     # 4) Extra tools (schema-only). Include only when executable (pipeline) or passthrough is enabled.
     for raw_tool in extra_tools:
-        spec = _normalize_responses_function_tool_spec(raw_tool, strictify=strictify)
+        spec = _normalize_responses_function_tool_spec(raw_tool, strictify=False)
         if not spec:
             continue
         origin_name = spec["name"]
@@ -385,6 +389,7 @@ def _build_collision_safe_tool_specs_and_registry(
                 "origin_name": origin_name,
                 "spec": spec,
                 "tool_cfg": tool_cfg,
+                "handed_back": False,
                 "pre_strictify_parameters": (
                     raw_tool.get("parameters") if isinstance(raw_tool.get("parameters"), dict) else None
                 ),
@@ -431,6 +436,11 @@ def _build_collision_safe_tool_specs_and_registry(
 
         spec = dict(c["spec"])
         spec["name"] = exposed_name
+        if strictify and not c.get("handed_back"):
+            spec["parameters"] = _strictify_schema(
+                spec.get("parameters") or {"type": "object", "properties": {}}
+            )
+            spec["strict"] = True
         tools_out.append(spec)
         exposed_to_origin[exposed_name] = origin_name
         if builtin_ask_user_names is not None and is_builtin_ask_user(c.get("tool_cfg")):

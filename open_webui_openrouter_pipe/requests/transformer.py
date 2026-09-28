@@ -184,10 +184,89 @@ def _without_tool_result(
 
 
 _REUSE_DOWNLOAD_MEMO_MAX_BYTES = 8 * 1024 * 1024
+_BASE64_SCAN_CHUNK = 1 << 12
 _REUSE_WARN_COOLDOWN_S = 30.0
-_reuse_download_memo: OrderedDict[tuple[str, str], tuple[bytes, str]] = OrderedDict()
+
+
+class _ReuseDownloadMemo(OrderedDict):
+    __slots__ = ("held",)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.held: int = 0
+
+    @staticmethod
+    def _value_bytes(value: tuple[bytes, str]) -> int:
+        return len(value[0])
+
+    def __setitem__(self, key, value) -> None:
+        old = self.get(key)
+        if old is not None:
+            self.held -= self._value_bytes(old)
+        super().__setitem__(key, value)
+        self.held += self._value_bytes(value)
+
+    def __delitem__(self, key) -> None:
+        old = self[key]
+        super().__delitem__(key)
+        self.held -= self._value_bytes(old)
+
+    _pop_sentinel: Any = object()
+
+    def pop(self, key, default=_pop_sentinel):
+        if key in self:
+            self.held -= self._value_bytes(self[key])
+        if default is self._pop_sentinel:
+            return super().pop(key)
+        return super().pop(key, default)
+
+    def popitem(self, last: bool = True):
+        key, value = super().popitem(last=last)
+        self.held -= self._value_bytes(value)
+        return key, value
+
+    def clear(self) -> None:
+        super().clear()
+        self.held = 0
+
+    def update(self, *args, **kwargs) -> None:
+        for key, value in dict(*args, **kwargs).items():
+            self[key] = value
+
+
+_reuse_download_memo: _ReuseDownloadMemo = _ReuseDownloadMemo()
 _warned_image_reuse: dict[str, float] = {}
 _warned_oversized_inline: dict[str, float] = {}
+
+
+def _b64encode_ascii(raw: bytes) -> str:
+    pieces: list[str] = []
+    whole_bytes = (len(raw) // 3) * 3
+    if whole_bytes:
+        pieces.append(base64.b64encode(raw[:whole_bytes]).decode("ascii"))
+    leftover = raw[whole_bytes:]
+    if leftover:
+        pieces.append(base64.b64encode(leftover).decode("ascii"))
+    return "".join(pieces)
+
+
+def _base64_quantum_is_valid(payload: str) -> bool:
+    try:
+        binascii.a2b_base64(payload, strict_mode=True)
+    except (binascii.Error, ValueError):
+        return False
+    return True
+
+
+def _is_well_formed_base64(cleaned: str) -> bool:
+    if not cleaned:
+        return False
+    n = len(cleaned)
+    end = n - (n % _BASE64_SCAN_CHUNK) if n >= _BASE64_SCAN_CHUNK else n
+    for i in range(0, end, _BASE64_SCAN_CHUNK):
+        if not _base64_quantum_is_valid(cleaned[i : i + _BASE64_SCAN_CHUNK]):
+            return False
+    return _base64_quantum_is_valid(cleaned[end:]) if cleaned[end:] else True
 
 
 class ImageRefusal(NamedTuple):
@@ -1127,16 +1206,14 @@ async def transform_messages_to_input(
                                 and len(downloaded["data"])
                                 <= _REUSE_DOWNLOAD_MEMO_MAX_BYTES
                             ):
-                                held = sum(
-                                    len(data) for data, _ in _reuse_download_memo.values()
-                                )
+                                held = _reuse_download_memo.held
                                 while (
                                     _reuse_download_memo
                                     and held + len(downloaded["data"])
                                     > _REUSE_DOWNLOAD_MEMO_MAX_BYTES
                                 ):
-                                    _, evicted = _reuse_download_memo.popitem(last=False)
-                                    held -= len(evicted[0])
+                                    _reuse_download_memo.popitem(last=False)
+                                    held = _reuse_download_memo.held
                                 _reuse_download_memo[memo_key] = (
                                     downloaded["data"],
                                     downloaded.get("mime_type") or "",
@@ -1152,9 +1229,8 @@ async def transform_messages_to_input(
                                     "inline_untyped",
                                     subject=loggable_link(url),
                                 )
-                            url = (
-                                f"data:{resolved_type};base64,"
-                                + base64.b64encode(downloaded["data"]).decode("ascii")
+                            url = f"data:{resolved_type};base64," + await asyncio.to_thread(
+                                _b64encode_ascii, downloaded["data"]
                             )
                     owui_file_id = extract_internal_file_id(url) if is_internal_file_url(url) else None
 
@@ -1453,9 +1529,7 @@ async def transform_messages_to_input(
                     cleaned = "".join(data.split())
                     if not cleaned:
                         return None
-                    try:
-                        base64.b64decode(cleaned, validate=True)
-                    except (binascii.Error, ValueError):
+                    if not _is_well_formed_base64(cleaned):
                         return None
                     return cleaned
 
@@ -1557,7 +1631,7 @@ async def transform_messages_to_input(
                                     "audio_bad_data_url",
                                 )
                             audio_format = _map_format(parsed.get("mime_type"))
-                            audio_b64 = _normalize_base64(parsed.get("b64", ""))
+                            audio_b64 = "".join(str(parsed.get("b64", "")).split())
                             if not audio_b64:
                                 pipe.logger.warning("Audio payload rejected: invalid base64 data.")
                                 return _refuse_audio(
@@ -1693,33 +1767,24 @@ async def transform_messages_to_input(
                             StatusMessages.VIDEO_BASE64,
                             done=False
                         )
-                    elif pipe._multimodal_handler._is_youtube_url(url):
-                        await pipe._event_emitter_handler._emit_status(
-                            event_emitter,
-                            StatusMessages.VIDEO_YOUTUBE,
-                            done=False
+                    elif not await pipe._multimodal_handler._is_safe_url(url):
+                        pipe.logger.error(
+                            "SSRF protection blocked video URL: %s", loggable_link(url)
                         )
-                    elif is_http_or_https_url(url):
-                        if not await pipe._multimodal_handler._is_safe_url(url):
-                            pipe.logger.error(
-                                "SSRF protection blocked video URL: %s", loggable_link(url)
-                            )
-                            await pipe._ensure_error_formatter()._emit_error(
-                                event_emitter,
-                                "Video URL blocked by security policy (private network)",
-                                show_error_message=True
-                            )
-                            return {"type": "video_url", "video_url": {"url": ""}}
-
-                        await pipe._event_emitter_handler._emit_status(
+                        await pipe._ensure_error_formatter()._emit_error(
                             event_emitter,
-                            StatusMessages.VIDEO_REMOTE,
-                            done=False
+                            "Video URL blocked by security policy (only http and https links are allowed)"
+                            if not is_http_or_https_url(url)
+                            else "Video URL blocked by security policy (private network)",
+                            show_error_message=True
                         )
+                        return {"type": "video_url", "video_url": {"url": ""}}
                     else:
                         await pipe._event_emitter_handler._emit_status(
                             event_emitter,
-                            StatusMessages.VIDEO_REMOTE,
+                            StatusMessages.VIDEO_YOUTUBE
+                            if pipe._multimodal_handler._is_youtube_url(url)
+                            else StatusMessages.VIDEO_REMOTE,
                             done=False
                         )
 

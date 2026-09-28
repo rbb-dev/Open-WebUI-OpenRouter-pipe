@@ -162,6 +162,20 @@ def resolved_tool_name(call: dict[str, Any]) -> str:
     return raw_name.strip() if isinstance(raw_name, str) else ""
 
 
+_BROWSER_TRANSPORT_ERRORS = frozenset({
+    "Client session disconnected.",
+    "Event call timed out. The browser tab may be inactive or closed.",
+    "Tool Server Not Found",
+})
+_HTTP_ERROR_PREFIX = "HTTP error! Status:"
+
+
+def _reports_a_browser_transport_failure(error: Any) -> bool:
+    if not isinstance(error, str):
+        return False
+    return error in _BROWSER_TRANSPORT_ERRORS or error.startswith(_HTTP_ERROR_PREFIX)
+
+
 @dataclass(slots=True)
 class _QueuedToolCall:
     """Stores a pending tool call plus execution metadata for worker pools."""
@@ -775,7 +789,7 @@ class ToolExecutor:
                             },
                         }
                         reply = await send(payload)
-                        if isinstance(reply, dict) and reply.get("error"):
+                        if isinstance(reply, dict) and _reports_a_browser_transport_failure(reply.get("error")):
                             return [reply, None]
                         return reply
                     except Exception as exc:

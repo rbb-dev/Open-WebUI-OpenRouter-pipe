@@ -2122,9 +2122,9 @@ class ModelCatalogManager:
 
                 if provider_routing_filter_map:
                     self.logger.debug(
-                        "PR lookup: original_id=%r, map_keys=%r, pr_filter_id=%r",
+                        "PR lookup: original_id=%r, map_keys=%d, pr_filter_id=%r",
                         original_id,
-                        list(provider_routing_filter_map.keys()),
+                        len(provider_routing_filter_map),
                         pr_filter_id,
                     )
 

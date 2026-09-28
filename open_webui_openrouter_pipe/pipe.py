@@ -1317,7 +1317,9 @@ class Pipe:
             try:
                 from open_webui.models.functions import Functions as _Funcs
                 _fusion_rows = await _Funcs.get_functions_by_type("filter", active_only=False)
-                _fusion_picked = _newest_marked_row(_fusion_rows, _OPENROUTER_FUSION_FILTER_MARKER)
+                _fusion_picked = _newest_marked_row(
+                    _fusion_rows, _OPENROUTER_FUSION_FILTER_MARKER, tie_break_id=True
+                )
                 _fid = str(getattr(_fusion_picked, "id", "") or "") or "openrouter_fusion"
                 ff = await _Funcs.get_function_by_id(_fid)
                 if ff and getattr(ff, "is_active", False):

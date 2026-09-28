@@ -298,25 +298,33 @@ def _image_model_panel_id(content: str) -> str | None:
     return sanitize_image_filter_id(stored) if stored is not None else None
 
 
-def _on_identity_active_sibling_exists(rows: list[Any], row_id: Any, row_content: str) -> bool:
-    model_panel_id = _image_model_panel_id(row_content) if isinstance(row_content, str) else None
-    if model_panel_id is None:
-        return False
+def _index_active_image_panels(rows: list[Any]) -> dict[str, list[Any]]:
+    panels: dict[str, list[Any]] = {}
     for row in rows or []:
         content = getattr(row, "content", "")
-        other_id = getattr(row, "id", "")
-        if not isinstance(content, str) or not other_id or other_id == row_id:
+        row_id = getattr(row, "id", "")
+        if not isinstance(content, str) or not row_id:
             continue
         if "IMAGE_FILTER_MODEL_ID" not in content:
             continue
         if not bool(getattr(row, "is_active", False)):
             continue
-        if _row_is_off_identity(content, other_id):
+        if _row_is_off_identity(content, row_id):
             continue
-        if _image_model_panel_id(content) != model_panel_id:
+        panel = _image_model_panel_id(content)
+        if panel is None:
             continue
-        return True
-    return False
+        panels.setdefault(panel, []).append(row)
+    return panels
+
+
+def _on_identity_active_sibling_exists(
+    rows: list[Any], row_id: Any, row_content: str, panels: dict[str, list[Any]]
+) -> bool:
+    model_panel_id = _image_model_panel_id(row_content) if isinstance(row_content, str) else None
+    if model_panel_id is None:
+        return False
+    return any(getattr(r, "id", "") != row_id for r in panels.get(model_panel_id, ()))
 
 
 _AUTO_INSTALL_FAMILY_MARKERS: tuple[tuple[str, str], ...] = (
@@ -2046,6 +2054,7 @@ class FilterManager:
             self.logger.debug("Could not list filters to retire old ones: %s", exc, exc_info=True)
             return retired
 
+        panels = _index_active_image_panels(rows)
         for row in rows or []:
             content = getattr(row, "content", "")
             row_id = getattr(row, "id", "")
@@ -2056,7 +2065,7 @@ class FilterManager:
             if "IMAGE_FILTER_MODEL_ID" in content:
                 if not _row_is_off_identity(content, row_id):
                     continue
-                if not _on_identity_active_sibling_exists(rows, row_id, content):
+                if not _on_identity_active_sibling_exists(rows, row_id, content, panels):
                     continue
             if not await _write_function(
                 Functions,

@@ -20,7 +20,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-_STRICT_SCHEMA_CACHE_SIZE = 128
+_STRICT_SCHEMA_CACHE_SIZE = 512
 
 _FREE_FORM_ITEMS_KEY = "_pipe_free_form_items"
 

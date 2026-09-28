@@ -394,7 +394,7 @@ class OpenRouterModelRegistry:
         if fp is None:
             return cls._zdr_model_ids
         stored = cls._zdr_rosters.get(fp)
-        return set(stored) if stored is not None else None
+        return stored
 
     @classmethod
     def _stamp_zdr_capable(
@@ -879,19 +879,47 @@ class OpenRouterModelRegistry:
                 if "video_generation" in set(spec.get("features") or set())
             }
         )
+        chat_owned = {n for n in old_video_norms if n in cls._chat_catalog_norms}
+        retired_video_norms = old_video_norms - chat_owned
         if old_video_norms:
-            for norm_id in old_video_norms:
+            for norm_id in retired_video_norms:
                 new_specs.pop(norm_id, None)
             for model in cls._models:
-                if isinstance(model, dict) and model.get("norm_id") in old_video_norms:
+                if isinstance(model, dict) and model.get("norm_id") in retired_video_norms:
                     new_id_map.pop(cls._exact_norm(str(model.get("id") or "")), None)
+
+        for norm_id in chat_owned:
+            merged = new_specs.get(norm_id)
+            if not isinstance(merged, dict):
+                continue
+            full = merged.get("full_model")
+            full = full if isinstance(full, dict) else {}
+            features = cls._derive_features(
+                set(full.get("supported_parameters") or set()),
+                full.get("architecture") or {},
+                full.get("pricing") or {},
+            )
+            if is_direct_upload_blocklisted(str(full.get("id") or "")):
+                features.discard("file_input")
+            else:
+                features.add("file_input")
+            capabilities = cls._derive_capabilities(
+                full.get("architecture") or {}, full.get("pricing") or {}
+            )
+            capabilities["image_generation"] = False
+            capabilities["video_generation"] = False
+            restored = dict(merged)
+            restored["features"] = features
+            restored["capabilities"] = capabilities
+            restored.pop("video_model", None)
+            new_specs[norm_id] = restored
 
         models_by_norm: dict[str, dict[str, Any]] = {}
         for model in cls._models:
             if not isinstance(model, dict):
                 continue
             norm = model.get("norm_id")
-            if isinstance(norm, str) and norm and norm not in old_video_norms:
+            if isinstance(norm, str) and norm and norm not in retired_video_norms:
                 models_by_norm[cls._exact_norm(str(model.get("id") or ""))] = dict(model)
 
         owned_video_norms: set[str] = set()

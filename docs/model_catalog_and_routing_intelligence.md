@@ -48,6 +48,8 @@ Caching:
 
 The video catalog is registered on top of the chat catalog, and where they meet, the chat field wins: a normalized ID that already holds a chat spec keeps its `features`, `capabilities`, `context_length`, `max_completion_tokens`, `description`, `pricing`, `architecture` and `full_model`, and the video catalog only adds its own row and the features and video-only capability flag that go with it. The image catalog does not merge: it leaves an existing chat spec alone and registers no image row at all for an ID the chat catalog already lists. A normalized ID in neither catalog registers from its own row alone. The chat side's `image_output` / `image_gen_tool` features are the exception: they are dropped from a dual model, which has no `image_model` row to serve them, and a chat refresh in turn wins over a video or image spec on the same ID.
 
+Ownership runs the other way too, on the retirement side: where a normalized ID is in both catalogs, the video catalog's refresh may not retire it. A refresh that stops listing such an ID returns its row to the chat catalog's own features, capabilities and `full_model` — the video claims (`video_generation`, `video_output`, `video_model`, `capabilities.video_generation`) are dropped rather than subtracted, because the video row's `supported_frame_images` also contributed `vision`, which is a legitimate chat feature and has to survive. Only a normalized ID in neither catalog is retired, the moment it leaves `/videos/models`.
+
 ### 1.3 Derived spec fields (what the pipe computes)
 
 For each model, the registry stores the full catalog entry (`full_model`) and derives:

@@ -1669,10 +1669,8 @@ class StreamingHandler:
                     _apply_provider_routing_params_to_payload(request_payload, logger=self.logger)
                     _strip_disable_model_settings_params(request_payload)
                     dispatched_model_id = budget_model_id(body)
-                    dispatched_metered_chars = estimate_serialized_chars(
-                        body.input,
-                        referenced_sizes=getattr(body, "input_file_sizes", None),
-                    ) + _request_overhead_chars(body)
+                    dispatched_metered_chars = None
+                    dispatch_overhead = _request_overhead_chars(body)
 
                     api_key_value = EncryptedStr.decrypt(valves.API_KEY)
                     is_streaming = bool(request_payload.get("stream"))
@@ -2701,7 +2699,12 @@ class StreamingHandler:
                 raw_usage = final_response.get("usage") or {}
                 usage = dict(raw_usage) if isinstance(raw_usage, dict) else {}
 
-                priced_chars, dispatched_metered_chars = dispatched_metered_chars, None
+                priced_chars = dispatched_metered_chars
+                if priced_chars is None and dispatched_model_id:
+                    priced_chars = estimate_serialized_chars(
+                        body.input,
+                        referenced_sizes=getattr(body, "input_file_sizes", None),
+                    ) + dispatch_overhead
                 if priced_chars is not None:
                     measured = measure_chars_per_token(
                         metered_chars=priced_chars,

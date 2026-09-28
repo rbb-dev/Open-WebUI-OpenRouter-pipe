@@ -1113,9 +1113,16 @@ class RequestOrchestrator:
                         if name not in owui_registry and name not in known_origins:
                             owui_registry[name] = tool_cfg
 
-        owui_registry = {
-            name: cfg for name, cfg in owui_registry.items() if not (cfg.get("direct") is True and cfg.get("callable") is None)
-        }
+        unreachable_direct_names = frozenset(
+            name for name, cfg in owui_registry.items()
+            if cfg.get("direct") is True and cfg.get("callable") is None
+        )
+        owui_registry = {name: cfg for name, cfg in owui_registry.items() if name not in unreachable_direct_names}
+        if unreachable_direct_names and not owui_tool_passthrough:
+            incoming_tools = [
+                t for t in (incoming_tools or [])
+                if not (isinstance(t, dict) and t.get("name") in unreachable_direct_names)
+            ]
 
         if fusion_inner:
             is_builtin_ask_user = self._pipe._ensure_tool_executor()._is_builtin_ask_user
@@ -1137,7 +1144,7 @@ class RequestOrchestrator:
             )
         )
         if withhold_owui_tools:
-            resolved_names = _resolved_tool_names(owui_registry, direct_registry)
+            resolved_names = _resolved_tool_names(owui_registry, direct_registry) | unreachable_direct_names
             owui_registry = {}
             direct_registry = {}
             incoming_tools = [
