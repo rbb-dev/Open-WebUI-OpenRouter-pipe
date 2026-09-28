@@ -263,10 +263,13 @@ Filters are regenerated when:
 The pipe uses a **state hash** to avoid unnecessary database writes when nothing has changed. That hash covers every renderer input, including the pipe version.
 
 When regeneration changes the dropdown options, previously saved selections that no longer
-exist in the new option list (for example an ORDER preference saved before a provider was
-added or removed) silently reset to "(no preference)" instead of breaking the filter.
-Selections that still exist keep working unchanged; only stale ones reset, so re-pick your
-preference after a provider lineup change.
+exist in the new option list are healed instead of breaking the filter. A stored `ORDER`
+whose leading provider is still served keeps that provider as an `"<X> first"` preference,
+and the filter logs a WARNING naming the discarded order and what it kept. A stale `ONLY`,
+`IGNORE` or `QUANTIZATION` — and an `ORDER` whose leading provider is gone — resets to
+"(no preference)" and is also logged, so no value ever changes without a record. Selections
+that still exist keep working unchanged; only stale ones are touched, so re-pick to pin the
+rest of a provider lineup change.
 
 ### Removal
 

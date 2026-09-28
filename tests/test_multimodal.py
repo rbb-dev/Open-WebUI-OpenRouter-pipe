@@ -3482,13 +3482,21 @@ class TestAudioTransformer:
         per-block contract is unchanged, and the row that pins it is the one below. What
         changed is what happens to that void block: it is no longer shipped, because
         T433 established that a payload-less `input_audio` must never be put in front of
-        OpenRouter. The turn now carries the one line that says so.
+        OpenRouter, and the pipe now records *why* the block yielded nothing.
+
+        The line the turn carries is therefore the attachment note, not the
+        empty-message line. A person who attached a recording that turned out to be
+        undecodable did send an attachment; telling them (and the model) they had sent
+        an empty message is the false statement this change removes. The note names the
+        conversion failure that dropped it.
         """
         block = {"type": "input_audio", "input_audio": 12345}
         audio_block = await _transform_single_block(pipe_instance, block, mock_user)
         assert audio_block is not None
         assert audio_block["type"] == "input_text"
-        assert audio_block["text"] == "[The user sent an empty message.]"
+        assert audio_block["text"] == (
+            "[An attached item was not sent: an audio clip carried no audio data.]"
+        )
 
     @pytest.mark.asyncio
     async def test_audio_error_returns_minimal_block(

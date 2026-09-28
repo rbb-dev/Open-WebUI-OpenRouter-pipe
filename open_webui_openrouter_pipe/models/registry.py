@@ -655,7 +655,6 @@ class OpenRouterModelRegistry:
         - function_calling: Model supports tools/function calling
         - reasoning: Model supports extended reasoning
         - reasoning_summary: Model supports reasoning summaries
-        - web_search_tool: Model has web search capability
         - image_gen_tool: Model can generate images (output)
         - vision: Model accepts image inputs
         - audio_input: Model accepts audio inputs
@@ -670,9 +669,6 @@ class OpenRouterModelRegistry:
             features.add("reasoning")
         if "include_reasoning" in supported_parameters:
             features.add("reasoning_summary")
-
-        if pricing.get("web_search") is not None:
-            features.add("web_search_tool")
 
         if is_image_output_architecture(architecture):
             features.add("image_gen_tool")

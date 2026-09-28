@@ -222,12 +222,15 @@ Variant models work seamlessly with existing model selection:
 - Example: Selecting `gpt-4o` enables both "GPT-4o" and "GPT-4o Exacto"
 
 **By construction:** `MODEL_ID` matches catalogue rows by their normalized ID. A `base_id:tag` entry is therefore
-*not* an allowlist entry - it names a routing variant, not a model the catalogue holds - and an allowlist naming
-only `openai/gpt-4o:exacto` resolves to nothing, publishes nothing, and refuses every request. A
-`base_id@preset/slug` entry is the one form that does resolve: with no preset row in the catalogue it falls back
-to the model before the `@`, so `openai/gpt-4o@preset/x` publishes `openai/gpt-4o`. A value of only commas or
-spaces is the other exception: it is read as blank and imports the whole catalogue. Listing the base ID is still
-the clearer way to say it.
+matched on its exact normalized id: when the catalogue holds that tagged model as a row of its own it publishes
+that row - `openai/gpt-4o:free` publishes the `:free` model, not the paid base - and when it does not, it
+publishes the base instead. So an allowlist naming only `openai/gpt-4o:exacto` publishes `openai/gpt-4o` on any
+catalogue that holds the base; it resolves to nothing only when the base itself is absent, which is the fail-closed
+case described under Model Renames above. A
+`base_id@preset/slug` entry is the one form that always resolves to the model before the `@`: with no preset row in
+the catalogue it falls back to that base, so `openai/gpt-4o@preset/x` publishes `openai/gpt-4o`. A value of only
+commas or spaces is the other exception: it is read as blank and imports the whole catalogue. Listing the base ID is
+still the clearer way to say it.
 
 ### Model Filters
 

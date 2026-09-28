@@ -247,7 +247,8 @@ def test_registry_feature_and_capability_derivation():
         architecture={"input_modalities": ["image"], "output_modalities": ["image"]},
         pricing={"web_search": "1"},
     )
-    assert {"function_calling", "reasoning_summary", "web_search_tool", "vision", "image_gen_tool"}.issubset(features)
+    assert {"function_calling", "reasoning_summary", "vision", "image_gen_tool"}.issubset(features)
+    assert "web_search_tool" not in features, "a flag nothing reads is still being published"
 
     assert ow.OpenRouterModelRegistry._supports_web_search({"web_search": "0.01"}) is True
     assert ow.OpenRouterModelRegistry._supports_web_search({"web_search": {"price": "0.02"}}) is True

@@ -98,7 +98,7 @@ Artifact encryption is controlled by these system valves:
 
 ### When encryption is active
 - If `ARTIFACT_ENCRYPTION_KEY` is set (non-empty), the pipe encrypts payloads before persistence.
-- When encrypted, the stored `payload` becomes a wrapper containing ciphertext (plus a version field).
+- When encrypted, the stored `payload` becomes a wrapper containing ciphertext (plus a version field). A row written by a build from before the wrapper existed holds the bare ciphertext as a plain string in that column; when such a row is written again, its ciphertext is kept as it is rather than re-encrypted, and it keeps reading back to the plaintext that went in.
 - If compression is enabled and effective, the pipe compresses the JSON payload before encryption; the plaintext then begins with a one-byte flag saying whether the bytes after it are compressed. The flag lives inside the encrypted plaintext, not in the `payload` column. A payload written before the flag existed still decodes: a first byte of `0` or `1` is a flag, a JSON lead byte (`{`, `[`, space, tab, CR, LF) means the whole body is headerless, and any other first byte is refused as an unknown flag.
 
 ### When encryption is not active
@@ -114,7 +114,7 @@ The pipe has an optional Redis-backed cache/write-behind path intended for multi
 
 ### When Redis is used
 
-`ENABLE_REDIS_CACHE` enables Redis support, but Redis is only used when the runtime environment indicates a multi-worker Open WebUI deployment and Redis tooling is available. The switch and the cache lifetime are re-read on every operation, so turning the switch off takes effect without a restart; turning it on again needs the worker to have connected at start-up, as it would after a restart. In particular, the pipe requires:
+`ENABLE_REDIS_CACHE` enables Redis support, but Redis is only used when the runtime environment indicates a multi-worker Open WebUI deployment and Redis tooling is available. The switch and the cache lifetime are re-read on every operation, so turning the switch off takes effect without a restart, and turning it on again does too: the request path reconnects to Redis and brings the cache back up on the next message, with no restart. In particular, the pipe requires:
 
 - `UVICORN_WORKERS > 1` (multi-worker mode), and
 - `REDIS_URL` is set, and
@@ -123,11 +123,11 @@ The pipe has an optional Redis-backed cache/write-behind path intended for multi
 
 If these prerequisites are not met, the pipe runs without Redis and persists artifacts directly to the database (when persistence is enabled).
 
-The master switch is read at the moment a Redis gate is reached, not frozen at start-up, so a change saved in the admin UI takes effect on the next request that reaches one without a restart. A change to `False` stops new connections immediately; a client that is already running keeps serving its existing connections and keeps writing through them, until restart or `close()`.
+The master switch is read at the moment a Redis gate is reached, not frozen at start-up, so a change saved in the admin UI takes effect on the next request that reaches one without a restart. A change to `False` stops new connections immediately. A client that is already running keeps *serving reads* while the switch is off, and that is deliberate: a row still buffered in the pending queue has the cache as its only copy until the drain commits it, so a read gated on the switch would lose it from the model's context for good. Nothing is *written* to Redis while the switch is off — every write path is behind the valve, so the switching turn's own row and any later turn's row go straight to the database. The read side is valve-blind on purpose; a "fix" that gates it on the switch loses buffered artifacts.
 
 High-level behavior:
 - When Redis caching is enabled and available, the pipe can enqueue persisted rows into Redis and flush them to the database asynchronously.
-- When Redis is enabled, the pipe can also cache persisted artifacts for faster replay reads. A cached artifact keeps the form its table row has, so a cache read is never a weaker read than a database read — except for an artifact cached by a build before this one, which keeps its previous form until the entry expires within `REDIS_CACHE_TTL_SECONDS`.
+- When Redis is enabled, the pipe can also cache persisted artifacts for faster replay reads. A cached artifact keeps the form its table row has, so a cache read is never a weaker read than a database read — except for an artifact cached by a build before this one, which keeps its previous form until the entry expires within `REDIS_CACHE_TTL_SECONDS`. The table side has the same upgrade path for the encrypted form: a row stored before the ciphertext wrapper existed is preserved, not re-encrypted, when it is written again.
 - When Redis write-behind is active, a row deleted while it is still queued is removed from the table and its cache entry, so it cannot be replayed from either. The marker carrying that decision is the one Redis lifetime deliberately not tied to `REDIS_CACHE_TTL_SECONDS`: it lives in Redis for its own fixed lifetime of 24 hours, because the write-behind queue it has to outlive has no deadline at all, and a row still queued when its marker expired would be written to the table and re-cached, losing the delete permanently — which is what a queue backlogged past that window means. The `{ns}:deleted:{row}` marker value is the `message_id` a cleanup spared, or the sentinel `"1"` when it spared none; the key layout and the marker lifetime are unchanged. A worker from before this change reads `"1"` the same way, but reads a spared `message_id` as truthy and will **drop that row** during a rolling deploy — a lost row, never a resurrected one. The no-keep path is byte-identical and does not diverge.
 - Redis keys are namespaced per pipe so multiple pipes can share the same Redis deployment.
 
@@ -178,7 +178,7 @@ When an earlier turn's tool result is handed to the model again, `TOOL_OUTPUT_RE
 | `ENCRYPT_ALL` | `True` | When encryption is enabled, controls whether all artifacts are encrypted or only reasoning. It decides what is written; a row already stored encrypted stays encrypted, in the table and in the replay cache, whatever it is set to. |
 | `ENABLE_LZ4_COMPRESSION` | `True` | Compresses some payloads before encryption (when `lz4` is available and compression is beneficial). |
 | `MIN_COMPRESS_BYTES` | `0` | Compression threshold; `0` always attempts compression. |
-| `ENABLE_REDIS_CACHE` | `True` | Enables Redis support when Redis is available and the deployment is a candidate for it. |
+| `ENABLE_REDIS_CACHE` | `True` | Enables Redis support when Redis is available and the deployment is a candidate for it. Re-read on every request, so it can be turned off and back on again without a restart; the request path reconnects when it is turned back on. |
 | `REDIS_CACHE_TTL_SECONDS` | `600` | TTL for cached artifacts in Redis, read live at each write, so a change applies to entries written from that moment on. |
 | `ARTIFACT_CLEANUP_DAYS` | `90` | Time-based retention window. |
 | `ARTIFACT_CLEANUP_INTERVAL_HOURS` | `1.0` | Cleanup cadence. |

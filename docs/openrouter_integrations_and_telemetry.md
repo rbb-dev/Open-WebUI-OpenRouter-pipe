@@ -40,6 +40,7 @@ Before sending requests to OpenRouter, the pipe filters request bodies to the al
 | `tools` | Tool definitions (merged from Open WebUI registry tools plus Open WebUI Direct Tool Servers when present). |
 | `tool_choice` | Tool selection directive. |
 | `plugins` | Legacy plugin configuration (retained for backward compatibility). |
+| `truncation` | Context-truncation strategy — what OpenRouter does when a request exceeds the model's context window. The pipe sets it itself when automatic context trimming is on (`apply_context_transforms`); see §4. |
 | `preset` | OpenRouter preset slug for pre-configured LLM settings (system prompts, provider routing, parameters). See [Model Variants & Presets](model_variants_and_presets.md#presets). |
 | `text` | Response text configuration (`text.format` for structured outputs / JSON mode; `text.verbosity` when supported). `text.verbosity` is the `/responses` spelling of the verbosity setting: on chat requests the pipe writes it from a request's top-level `verbosity` (a Custom Parameter, or Open WebUI's own field) and from `REASONING_EFFORT=xhigh` on Claude Opus/Sonnet. The same value is sent as top-level `verbosity` on `/chat/completions`. Housekeeping requests are governed by the task valve, not this one. |
 | `parallel_tool_calls` | Tool parallelism hint (when supported). |
@@ -47,6 +48,7 @@ Before sending requests to OpenRouter, the pipe filters request bodies to the al
 | `session_id` | OpenRouter session identifier (optional; controlled by identifier valves). |
 | `trace` | OpenRouter Broadcast observability metadata; a JSON object forwarded as-is to OpenRouter's tracing destinations (Datadog, Langfuse, LangSmith, webhook, etc.). This pipe supports `openrouter_trace` as an OWUI convenience mapping to this field. |
 | `transforms` | Deprecated OpenRouter transforms list (forwarded only if explicitly supplied). Automatic context trimming now uses the `context-compression` plugin — see §4. |
+| `stop_server_tools_when` | Conditions under which OpenRouter stops a server-side tool run. The pipe writes a `max_cost` condition from the `SERVER_TOOLS_MAX_COST_USD` valve, and strips the field again when the tools it guarded are removed from the request. |
 | `background` | Run the request in the background (OpenRouter extension). |
 | `frequency_penalty` | Frequency penalty for sampling (-2 to 2). |
 | `image_config` | Image generation configuration (OpenRouter extension). |
@@ -61,6 +63,10 @@ Before sending requests to OpenRouter, the pipe filters request bodies to the al
 | `service_tier` | Service tier selection (default: `"auto"`). |
 | `store` | Privacy signal — send `false` to tell the provider not to store your prompt/completion data. OpenRouter only accepts `false` for this field. |
 | `top_logprobs` | Number of top log probabilities to return (0–20). |
+| `provider` | Provider routing preferences — `only`, `ignore` and `order`. The pipe builds this dict itself from the `openrouter_provider_only` / `_ignore` / `_order` custom parameters described in §2.5. |
+| `route` | Routing strategy, forwarded to OpenRouter. |
+| `debug` | OpenRouter debug options, forwarded. |
+| `thinking_config` | Gemini-family native thinking configuration; the pipe builds it for Gemini models. |
 
 Operational note:
 - The pipe always constructs a canonical "Responses-style" request first, then converts it to a Chat Completions payload only when needed (forced endpoint selection or automatic fallback).

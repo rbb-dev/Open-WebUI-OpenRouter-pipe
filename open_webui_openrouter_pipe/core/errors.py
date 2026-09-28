@@ -91,7 +91,7 @@ class _ChatRetryWait(_RetryWait):
         if isinstance(exc, _RetryableHTTPStatusError):
             retry_after = exc.retry_after
             if isinstance(retry_after, (int, float)) and retry_after > 0:
-                return max(base_delay, retry_after)
+                return max(base_delay, min(float(retry_after), self._cap))
         if isinstance(exc, OpenRouterAPIError):
             retry_after = _resolve_retry_after_seconds(getattr(exc, "metadata", None))
             if retry_after is not None and retry_after > 0:

@@ -1122,14 +1122,21 @@ class RequestOrchestrator:
             event_emitter=__event_emitter__,
             transformer_valves=valves,
             capability_model_id=pre_capability_model_id,
-            ask_user_names=frozenset(builtin_ask_user_names) if builtin_ask_user_names else None,
+            ask_user_names=frozenset(builtin_ask_user_names),
         )
         responses_body._continued_turn = continued_turn_counts(responses_body.input)
         responses_body._continues_after_marker = ends_on_hidden_marker_line(CONTINUED_REPLY.get())
         responses_body.input_file_sizes = await index_referenced_file_payloads(
             responses_body.input, self.logger, user=user_model
         )
-        if valves.USE_MODEL_MAX_OUTPUT_TOKENS and responses_body.max_output_tokens is None:
+        if valves.USE_MODEL_MAX_OUTPUT_TOKENS and (
+            responses_body.max_output_tokens is None
+            or (
+                isinstance(responses_body.max_output_tokens, int)
+                and not isinstance(responses_body.max_output_tokens, bool)
+                and responses_body.max_output_tokens < 1
+            )
+        ):
             default_max = default_output_reservation(responses_body.model)
             if default_max:
                 responses_body.max_output_tokens = default_max

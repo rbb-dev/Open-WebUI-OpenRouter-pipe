@@ -143,7 +143,12 @@ _EXPECTED: dict[str, int] = {
     # Same reason as the 25th: the request has already been answered with a degraded
     # result, the resets are bookkeeping on this task's own timing state, and a failure
     # there must not replace the answer the caller is receiving.
-    "pipe.py": 32,
+    # 33rd (B218, H742-1): the resize of the shared connector in `_shared_request_session`
+    # when the concurrency valve was raised. It sets aiohttp's plain `_limit` attribute and
+    # then calls the private `_release_waiter()`; if that call is missing or raises, the
+    # raised limit is already in place and waiting requests take the new slots at the next
+    # connection release, so the only consequence is a later wake, not a lost resize.
+    "pipe.py": 33,
     "storage/persistence.py": 3,
     # 1st: the caller-supplied fallback in `_emit_templated_error_event`. It is reached only because the
     # admin's own template already failed to render, and the generic card below it is the answer if the

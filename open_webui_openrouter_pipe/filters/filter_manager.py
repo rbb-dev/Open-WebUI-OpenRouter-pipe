@@ -2931,7 +2931,15 @@ __KEEP_WHAT_STILL_FITS__
         @classmethod
         def _coerce_stale_choice(cls, value: Any, info: ValidationInfo) -> Any:
             options = get_args(cls.model_fields[info.field_name].annotation)
-            return value if value in options else _NO_PREF
+            if value in options:
+                return value
+            kept = _NO_PREF
+            if info.field_name == "ORDER" and isinstance(value, str):
+                head = value.split(" > ")[0].strip()
+                if head and f"{{head}} first" in options:
+                    kept = f"{{head}} first"
+            _warn_stale_choice(info.field_name, value, kept)
+            return kept
 ''' if guarded else ""
 
         valves_class = ""
@@ -2994,6 +3002,21 @@ _PROVIDER_MAP: dict[str, str] = {provider_map_code}
 
 # Map ORDER display values to provider slug lists
 _ORDER_MAP: dict[str, list[str]] = {order_map_code}
+
+_WARNED_STALE_CHOICES: set[tuple[str, str, str]] = set()
+
+
+def _warn_stale_choice(field: str, value: Any, kept: str) -> None:
+    marker = (field, str(value), kept)
+    if marker in _WARNED_STALE_CHOICES:
+        return
+    _WARNED_STALE_CHOICES.add(marker)
+    logging.getLogger(MODEL_SLUG).warning(
+        "Provider routing valve %s: %r is no longer offered; using %r",
+        field,
+        value,
+        kept,
+    )
 
 
 class Filter:

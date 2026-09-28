@@ -136,6 +136,9 @@ def test_enum_rejects_invalid_value():
         cs.merge_for_save(Valves, current={}, edits={"REASONING_EFFORT": "not-a-real-option"})
 
 
+"""A valve an earlier release named. The row can still carry it; the model cannot."""
+
+
 def test_numeric_bound_rejects_out_of_range():
     with pytest.raises(Exception):
         cs.merge_for_save(Valves, current={}, edits={"TOOL_TIMEOUT_SECONDS": 99999})

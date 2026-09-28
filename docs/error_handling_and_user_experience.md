@@ -166,7 +166,7 @@ Rendering rules implemented by the pipe:
 - A line is dropped when a placeholder it uses was supplied but came out empty; a name the message never supplies is left in the text verbatim, so wrap such a line in `{{#if name}}` and it is left out instead.
 - A `{name}` token belongs to the template, never to a value: a substituted value is shown verbatim and is never re-read as a placeholder.
 - Provider-controlled values arrive already shaped for the card: inside a backtick span, on a heading or on a bare card line they are collapsed to one line and their backticks removed; inside a fence they arrive fenced, so a template must not fence such a value again.
-- A boolean placeholder renders `True`/`False`, and its line is dropped when the value is false; the `{{#if}}` form of the same value is equivalent.
+- A boolean placeholder renders `True` when the value is true, and its line is dropped when the value is false; the `{{#if}}` form of the same value behaves the same way.
 - A value made only of backticks renders as `_` rather than deleting its own line. Backticks are stripped after whitespace collapses, so a value of ` ``` ` would otherwise become empty and the drop rule above would remove the whole bullet — on the shipped card, one such word from a provider erased the entire `### Error:` section. A value that is legitimately empty (`""`, `"   "`, a blank line) still reads as empty, so its `{{#if}}` gate and the drop rule keep working.
 - Conditional blocks render only when the referenced variable is “present”.
 
@@ -204,7 +204,7 @@ Because OpenRouter/provider responses vary, treat these fields as optional and w
 
 `max_output_tokens` on an error card is the provider's **advertised** ceiling, read straight from the catalog entry (`core/errors.py`). It is deliberately not the value the pipe sends when `USE_MODEL_MAX_OUTPUT_TOKENS` is on: that is the smaller of the advertised ceiling and half the model's context window. A diagnostic about a failure should report the provider's own limit, so the two numbers are meant to differ.
 
-The pipe does the span and fence work on these values itself: a value placed inside a backtick span, on a `### ` heading, or on a bare `**…**` / `- ` line arrives as one logical line with its backticks removed, and a value placed in a fenced block arrives inside a fence long enough to contain it, so a custom template does not have to. The pipe's own numbers and labels (`status_code`, `retry_after_seconds`, `context_limit_tokens`, `max_output_tokens`, `diagnostics`) are already single-line, and a boolean placeholder renders `True`/`False`.
+The pipe does the span and fence work on these values itself: a value placed inside a backtick span, on a `### ` heading, or on a bare `**…**` / `- ` line arrives as one logical line with its backticks removed, and a value placed in a fenced block arrives inside a fence long enough to contain it, so a custom template does not have to. The pipe's own numbers and labels (`status_code`, `retry_after_seconds`, `context_limit_tokens`, `max_output_tokens`, `diagnostics`) are already single-line.
 
 ### When the model-limits block renders
 

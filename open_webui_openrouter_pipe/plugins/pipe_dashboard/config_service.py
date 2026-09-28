@@ -145,16 +145,23 @@ def drift(valves_cls: type) -> dict[str, list[str]]:
     return {"unenriched": sorted(live - mapped), "orphaned": sorted(mapped - live)}
 
 
+def _split_stored(valves_cls: type, stored: dict[str, Any]) -> tuple[dict[str, Any], set[str]]:
+    present = {k: v for k, v in stored.items() if v is not None}
+    unknown = {k for k in present if k not in valves_cls.model_fields}
+    kept = {k: v for k, v in present.items() if k in valves_cls.model_fields}
+    return kept, unknown
+
+
 def readable_stored(valves_cls: type, stored: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
-    kept = {k: v for k, v in stored.items() if v is not None and k in valves_cls.model_fields}
+    kept, unknown = _split_stored(valves_cls, stored)
     try:
         built = valves_cls(**kept)
     except ValidationError as exc:
         bad = {str(err["loc"][0]) for err in exc.errors() if err.get("loc")}
-        return {k: v for k, v in kept.items() if k not in bad}, sorted(bad)
+        return {k: v for k, v in kept.items() if k not in bad}, sorted(bad | unknown)
     bad = {k for k in kept if k not in built.model_fields_set}
     bad = {k for k in bad if not _is_blanked_nullable(valves_cls, k, kept.get(k))}
-    return {k: v for k, v in kept.items() if k not in bad}, sorted(bad)
+    return {k: v for k, v in kept.items() if k not in bad}, sorted(bad | unknown)
 
 
 def _is_blanked_nullable(valves_cls: type, name: str, value: Any) -> bool:

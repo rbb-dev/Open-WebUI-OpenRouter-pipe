@@ -147,35 +147,31 @@ def _as_replayed(item: dict[str, Any], fallback_id: Any = None) -> list[dict[str
     )
 
 
-def _is_ask_user_name(name: str, ask_user_names: frozenset[str] | None) -> bool:
-    if ask_user_names is None:
-        return name == "ask_user"
-    return name == "ask_user" or name in ask_user_names
+def _is_ask_user_name(name: str, ask_user_names: frozenset[str]) -> bool:
+    return name in ask_user_names
 
 
-def _stored_round_name(db_artifacts: dict[str, dict], call_id: Any) -> str:
-    for payload in db_artifacts.values():
-        if not isinstance(payload, dict) or payload.get("type") != "function_call":
-            continue
-        if str(payload.get("call_id") or "") == str(call_id or ""):
-            return str(payload.get("name") or "")
-    return ""
+def _replay_round_name(item_type: str, name: str, call_id: Any, pending: dict[str, list[str]]) -> str:
+    key = str(call_id or "")
+    if item_type == "function_call":
+        pending.setdefault(key, []).append(name)
+        return name
+    if item_type == "function_call_output":
+        queue = pending.get(key) or []
+        return queue.pop(0) if queue else ""
+    return name
 
 
 def _without_tool_result(
     item: dict[str, Any],
-    names: dict[str, str],
-    ask_user_names: frozenset[str] | None,
+    name: str,
+    ask_user_names: frozenset[str],
 ) -> list[dict[str, Any]] | None:
     item_type = item.get("type")
-    call_id = item.get("call_id")
     if item_type == "function_call":
-        name = str(item.get("name") or "")
-        if isinstance(call_id, str):
-            names[call_id] = name
         return None if _is_ask_user_name(name, ask_user_names) else [{**item, "arguments": "{}"}]
     if item_type == "function_call_output":
-        if _is_ask_user_name(names.get(str(call_id)) or "", ask_user_names):
+        if _is_ask_user_name(name, ask_user_names):
             return None
         text = tool_output_text_and_pictures(item.get("output"))[0]
         return [{**item, "output": unretained_tool_result(_tool_result_failed(text, item.get("status")))}]
@@ -230,7 +226,7 @@ def _block_is_usable(block: dict[str, Any]) -> bool:
         return _payload_is_present(block.get("input_audio"))
     if btype == "video_url":
         return _payload_is_present(block.get("video_url"))
-    return True
+    return _unconverted_block_reason(block) is None
 
 
 def _unconverted_block_reason(block: dict[str, Any]) -> str | None:
@@ -619,7 +615,7 @@ async def transform_messages_to_input(
     model_id: str | None = None,
     valves: Pipe.Valves | None = None,
     capability_model_id: str | None = None,
-    ask_user_names: frozenset[str] | None = None,
+    ask_user_names: frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     """
     Build an OpenAI Responses-API `input` array from Open WebUI-style messages.
@@ -789,13 +785,6 @@ async def transform_messages_to_input(
     person_images_this_turn = False
     temporary_chat = is_temporary_chat(chat_id)
     request_memo: dict[tuple[str, str], tuple[bytes, str]] = {}
-    tool_names_by_call_id: dict[str, str] = {
-        str(call.get("id")): str((call.get("function") or {}).get("name") or "")
-        for message in messages
-        if isinstance(message, dict) and isinstance(message.get("tool_calls"), list)
-        for call in message["tool_calls"]
-        if isinstance(call, dict) and call.get("id") and isinstance(call.get("function"), dict)
-    }
     tool_name_at, issuer_at = _tool_names_by_position(messages)
 
     def _withheld(turn_index: int | None) -> bool:
@@ -982,6 +971,12 @@ async def transform_messages_to_input(
                             detail = block_detail
 
                     if not url:
+                        image_block_detail = block.get("detail")
+                        if isinstance(image_block_detail, str):
+                            detail = image_block_detail
+                        url = block.get("url", "") if isinstance(block.get("url"), str) else ""
+
+                    if not url:
                         return None
 
                     if (
@@ -1124,8 +1119,19 @@ async def transform_messages_to_input(
                                     downloaded["data"],
                                     downloaded.get("mime_type") or "",
                                 )
+                            declared_type = str(downloaded.get("mime_type") or "").split(";", 1)[0].strip().lower()
+                            resolved_type = resolve_download_type(
+                                declared_type,
+                                _sniff_evidence(bytes(downloaded["data"][:_SNIFF_PREFIX_BYTES])),
+                            )
+                            if not resolved_type.startswith("image/"):
+                                return _refuse(
+                                    "not identifiable as an image",
+                                    "inline_untyped",
+                                    subject=loggable_link(url),
+                                )
                             url = (
-                                f"data:{downloaded.get('mime_type') or ''};base64,"
+                                f"data:{resolved_type};base64,"
                                 + base64.b64encode(downloaded["data"]).decode("ascii")
                             )
                     owui_file_id = extract_internal_file_id(url) if is_internal_file_url(url) else None
@@ -1417,7 +1423,7 @@ async def transform_messages_to_input(
                     pipe.logger.warning(
                         "Audio payload rejected: ~%.1fMB is over the %dMB inline limit.",
                         estimate / (1024 * 1024),
-                        pipe.valves.BASE64_MAX_SIZE_MB,
+                        max_inline_bytes // (1024 * 1024),
                     )
                     await pipe._ensure_error_formatter()._emit_error(
                         event_emitter,
@@ -1731,6 +1737,7 @@ async def transform_messages_to_input(
                 "text":       lambda b: {"type": "input_text",  "text": b.get("text", "")},
                 "image_url":  _to_input_image,
                 "input_image": _to_input_image,
+                "image":      _to_input_image,
                 "input_file": _to_input_file,
                 "file":       _to_input_file,
                 "input_audio": _to_input_audio,
@@ -1772,7 +1779,7 @@ async def transform_messages_to_input(
                 raw_block_type = block.get("type")
                 block_type = raw_block_type if isinstance(raw_block_type, str) else ""
                 transformer = block_transform.get(block_type, _identity_block)
-                is_image_block = block_type in {"image_url", "input_image"}
+                is_image_block = block_type in {"image_url", "input_image", "image"}
 
                 if is_image_block:
                     if not (latest_user_message or tool_images):
@@ -1796,6 +1803,17 @@ async def transform_messages_to_input(
                         result = await transformer(block)
                     else:
                         result = transformer(block)
+                    if isinstance(block, dict):
+                        _void = result is None or (
+                            isinstance(result, dict) and not _block_is_usable(result)
+                        )
+                        _unconverted = _unconverted_block_reason(block) if _void else None
+                        if _unconverted is not None:
+                            if block.get("type") in {"input_image", "image_url", "image"}:
+                                refused_images.append(_unconverted)
+                            else:
+                                refused_files.append(_unconverted)
+                            result = None
                     if isinstance(result, ImageRefusal):
                         if not is_image_block:
                             pipe.logger.log(
@@ -1946,20 +1964,6 @@ async def transform_messages_to_input(
                     done=False,
                 )
 
-            if (
-                not any(_block_is_usable(b) for b in converted_blocks)
-                and any(b.get("type") == "input_text" for b in converted_blocks)
-                and any(_unconverted_block_reason(b) for b in content_blocks)
-            ):
-                for original in content_blocks:
-                    reason = _unconverted_block_reason(original) if isinstance(original, dict) else None
-                    if reason is None:
-                        continue
-                    if original.get("type") in {"input_image", "image_url", "image"}:
-                        refused_images.append(reason)
-                    else:
-                        refused_files.append(reason)
-
             if carried_blocks and not any(_block_is_usable(b) for b in converted_blocks):
                 converted_blocks = [b for b in converted_blocks if _block_is_usable(b)]
                 if not converted_blocks:
@@ -2072,6 +2076,7 @@ async def transform_messages_to_input(
                     logger.warning("Artifact loader failed for chat_id=%s message_id=%s", chat_id, msg_id, exc_info=True)
                     db_artifacts = {}
 
+            replay_pending: dict[str, list[str]] = {}
             for segment in segments:
                 if segment["type"] == "marker":
                     artifact_payload = db_artifacts.get(segment["marker"])
@@ -2115,18 +2120,17 @@ async def transform_messages_to_input(
                                 msg_id,
                             )
                             continue
+                        replay_round_name = _replay_round_name(
+                            item_type, str(item.get("name") or ""), item.get("call_id"), replay_pending
+                        )
                         if item_type == "function_call_output" and not (
-                            _is_ask_user_name(
-                                _stored_round_name(db_artifacts, item.get("call_id"))
-                                or tool_names_by_call_id.get(str(item.get("call_id")) or "", ""),
-                                ask_user_names,
-                            )
+                            _is_ask_user_name(replay_round_name, ask_user_names)
                             or (idx in window_armed_at and not is_picture_output(item.get("output")))
                         ):
                             last_image_blocks, last_image_turn = [], None
                         if _withheld(msg_turn_index):
                             withheld_items = _without_tool_result(
-                                item, tool_names_by_call_id, ask_user_names
+                                item, replay_round_name, ask_user_names
                             )
                             if withheld_items is not None:
                                 openai_input.extend(_from_pipe_storage(withheld) for withheld in withheld_items)

@@ -58,14 +58,14 @@ Open WebUI may provide user content as a string or as block objects. Text is nor
 ### 3.2 Images (vision gating + storage)
 Image handling is described in detail in [Multimodal Intake Pipeline](multimodal_ingestion_pipeline.md). Key behaviors relevant to history reconstruction:
 
-- Vision gating: if the target model is not vision-capable, the person's attachments and reused images are skipped and the pipe emits a status message saying so. Pictures a tool returns still go to the model, whatever it accepts, as in Open WebUI's own tool loop (section 5.4).
+- Vision gating: if the target model is not vision-capable, the person's attachments and reused images are skipped and the pipe emits a status message saying so. A picture left out of an earlier turn by that gate is reported on the turn that lost it, not only on the turn that skipped it. Pictures a tool returns still go to the model, whatever it accepts, as in Open WebUI's own tool loop (section 5.4).
 - Image forwarding policy:
   - `MAX_INPUT_IMAGES_PER_REQUEST` caps the images one of the person's messages forwards, its own or a reused one;
     pictures a tool returns are never capped.
   - `IMAGE_INPUT_SELECTION` controls fallback behavior:
     - `user_turn_only`: only user-attached images are forwarded.
     - `user_then_assistant`: if the user turn has no images, the pipe may reuse the most recent image already in the conversation - an assistant image extracted from Markdown image syntax, or one the user attached on an earlier turn - bounded by `IMAGE_REUSE_MAX_TURNS`. An image returned by a tool is never reused this way: it belongs to its tool round (section 5.4), and a tool round ends the window for pictures from before it — once a tool has run, nothing older is reused either, whether or not that round returned a picture. A round that asked you a question is not a media round and does not end the window, and neither does a picture the model shows you in its own reply to a round.
-- An image the person attached is never written to Open WebUI storage, in any chat and by any request of a turn. A `data:` URL within `BASE64_MAX_SIZE_MB` is sent as it came apart from the scheme, which is lower-cased to `data:`, and one over the limit is not sent, the picture being skipped and the person told in a status on their latest message; a remote image is downloaded and its bytes sent inline, or its link is forwarded when it cannot be downloaded **unless the pipe's own address check refused the host**: a host that does not resolve, or resolves to a non-routable address, fails closed and is not sent, and the person sees `Images: skipped N (could not be fetched, so it was not sent).`; an Open WebUI file URL is read with the requester's access and inlined, so providers never need to fetch from your Open WebUI host. An image reused from an earlier turn is inlined as a `data:` URL, under a media type the pipe resolves from the bytes. Images the model generates are stored by the output path.
+- An image the person attached is never written to Open WebUI storage, in any chat and by any request of a turn. A `data:` URL within `BASE64_MAX_SIZE_MB` is sent as it came apart from the scheme, which is lower-cased to `data:`, and one over the limit is not sent, the picture being skipped and the person told in a status on their latest message; a remote image is downloaded and its bytes sent inline, or its link is forwarded when it cannot be downloaded **unless the pipe's own address check refused the host**: a host that does not resolve, or resolves to a non-routable address, fails closed and is not sent, and the person sees `Images: skipped N (could not be fetched, so it was not sent).`; an Open WebUI file URL is read with the requester's access and inlined, so providers never need to fetch from your Open WebUI host. Both an attached remote image and one reused from an earlier turn are inlined as a `data:` URL, under a media type the pipe resolves from the bytes; a payload that settles on a non-image type is refused and reported rather than inlined, and a declaration the bytes do not corroborate is forwarded under that declaration. Images the model generates are stored by the output path.
 
 ### 3.3 Files, audio, and video
 The pipe includes transformer functions for:
@@ -221,9 +221,15 @@ only through the card Open WebUI keeps for it in the browser, and none with card
   wins over the card pair Open WebUI saved for it.
 - An earlier turn's results are withheld by the same rule whichever copy carries them: with `PERSIST_TOOL_RESULTS` off
   the model gets `{}` in place of the arguments and a placeholder result -- `[tool result not retained]`, or
-  `[tool call failed; result not retained]` when the call did not complete. An `ask_user` round is the exception:
-  its question and the person's typed answer are always handed over, since the answer is the person's own words.
-  The stored row is left alone, so turning the setting back on hands the full result over again.
+  `[tool call failed; result not retained]` when the call did not complete. A round of Open WebUI's built-in
+  `ask_user` is the exception: its question and the person's typed answer are always handed over, since the answer
+  is the person's own words. The round is recognised by the tool behind it, not by the name it was advertised under,
+  so a third-party tool that happens to be called `ask_user` is a tool like any other and is withheld.
+  The exemption is also **per round**, not per call id: a model may reuse one `call_id` across two rounds, and on the
+  replay path the exempt round is the one whose own stored call is the built-in, while the other round on that same
+  id is withheld. Because each output is paired with its own call, a tool round that shares an id with a built-in
+  round still counts as a tool round for the picture-reuse window, and so still closes it. The stored rows are left
+  alone, so turning the setting back on hands the full results over again.
 - An image returned by a tool comes back as a separate message right after the round's results ("Here are the
   images from the tool results above"): Open WebUI builds it from its own record, and the pipe builds the same
   message when its own copy carries the round, so the request is the same whatever the card switch says. It is

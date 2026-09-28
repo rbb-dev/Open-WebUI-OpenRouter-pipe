@@ -241,7 +241,7 @@ def _recorded_output(emitted):
     return []
 
 
-async def _stage_b(pipe, valves, content, persisted, *, refs=None, recorded=None):
+async def _stage_b(pipe, valves, content, persisted, *, refs=None, recorded=None, ask_user_names=frozenset()):
     """Feed the turn back as the next request.
 
     When the turn published output items, Open WebUI does NOT hand the pipe the assistant message as text:
@@ -264,7 +264,7 @@ async def _stage_b(pipe, valves, content, persisted, *, refs=None, recorded=None
         pipe,
         [{"role": "user", "content": "q1"}, *assistant_turn, {"role": "user", "content": "q2"}],
         chat_id="c1", openwebui_model_id="owui", artifact_loader=loader, model_id=MODEL, valves=valves,
-        replayed_reasoning_refs=refs,
+        replayed_reasoning_refs=refs, ask_user_names=ask_user_names,
     )
 
 

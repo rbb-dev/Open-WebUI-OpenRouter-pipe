@@ -283,6 +283,7 @@ class ChatCompletionsAdapter:
         emitted_any = False
         received_any = False
         delivered_any = False
+        saw_choice_chunk = False
 
         def _retry_streaming(retry_state) -> bool:
             exc = retry_state.outcome.exception() if retry_state.outcome else None
@@ -378,7 +379,7 @@ class ChatCompletionsAdapter:
             nonlocal emitted_any, received_any, latest_usage, reasoning_item_id, reasoning_text_seen, \
                 reasoning_summary_text, latest_message_annotations, image_item_id, \
                 image_output_item, images_emitted, refusal_text_seen, tool_calls_completed, \
-                truncating_reason, delivered_any
+                truncating_reason, delivered_any, saw_choice_chunk
             try:
                 chunk_obj = json.loads(data_blob.decode("utf-8"))
             except (RecursionError, UnicodeDecodeError, ValueError) as exc:
@@ -408,6 +409,7 @@ class ChatCompletionsAdapter:
             choices = chunk_obj.get("choices") if isinstance(chunk_obj, dict) else None
             if not isinstance(choices, list) or not choices:
                 return
+            saw_choice_chunk = True
             choice0 = choices[0] if isinstance(choices[0], dict) else {}
             delta = choice0.get("delta") if isinstance(choice0, dict) else None
             delta_obj = delta if isinstance(delta, dict) else {}
@@ -660,6 +662,7 @@ class ChatCompletionsAdapter:
                         images_emitted = False
                         emitted_any = False
                         received_any = False
+                        saw_choice_chunk = False
                         cut_off = False
                         tool_calls_completed = False
                         truncating_reason = None
@@ -762,6 +765,8 @@ class ChatCompletionsAdapter:
                                     yield ev
                         if not received_any:
                             raise aiohttp.ClientPayloadError("OpenRouter closed the stream before sending anything")
+                        if not saw_choice_chunk:
+                            raise aiohttp.ClientPayloadError("OpenRouter sent no choices on /chat/completions")
                         if not done and not tool_calls_completed:
                             _record_failed_call(self._pipe, breaker_key)
                             cut_off = True
@@ -949,6 +954,11 @@ class ChatCompletionsAdapter:
                         )
                         if reported_error is not None:
                             raise reported_error
+                        choices = data.get("choices")
+                        if not (isinstance(choices, list) and choices and isinstance(choices[0], dict)):
+                            raise aiohttp.ClientPayloadError(
+                                "OpenRouter returned 200 with no choices on /chat/completions"
+                            )
                         return data
 
         return {}

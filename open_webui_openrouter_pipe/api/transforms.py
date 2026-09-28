@@ -293,7 +293,7 @@ class ResponsesBody(BaseModel):
         transformer_context: Any | None = None,
         transformer_valves: Pipe.Valves | None = None,
         capability_model_id: str | None = None,
-        ask_user_names: frozenset[str] | None = None,
+        ask_user_names: frozenset[str] = frozenset(),
         **extra_params,
     ) -> ResponsesBody:
         """
@@ -1367,7 +1367,12 @@ def _responses_payload_to_chat_completions_payload(
     if isinstance(explicit_cap, int) and explicit_cap < 1:
         chat_payload.pop("max_completion_tokens", None)
     max_output_tokens = responses_payload.get("max_output_tokens")
-    if max_output_tokens is not None and "max_completion_tokens" not in chat_payload:
+    if (
+        isinstance(max_output_tokens, int)
+        and not isinstance(max_output_tokens, bool)
+        and max_output_tokens >= 1
+        and "max_completion_tokens" not in chat_payload
+    ):
         chat_payload["max_tokens"] = max_output_tokens
 
     # Tools

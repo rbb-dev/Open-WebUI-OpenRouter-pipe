@@ -572,7 +572,11 @@ class ArtifactStore:
         loop = self._resolve_valve_loop()
         if loop is not None:
             self._redis_valve_loop = loop
-        if bool(getattr(valves, "ENABLE_REDIS_CACHE", True)) or not self._redis_enabled:
+        if bool(getattr(valves, "ENABLE_REDIS_CACHE", True)):
+            if not self._redis_valve_draining:
+                self._redis_valve_off = False
+            return
+        if not self._redis_enabled:
             return
         if self._redis_valve_draining:
             return
@@ -1244,7 +1248,9 @@ class ArtifactStore:
                         or not isinstance(stored_payload, dict)
                         or "ciphertext" not in stored_payload
                     )
-                    if needs_encryption:
+                    if needs_encryption and is_encrypted and isinstance(payload, str):
+                        stored_payload = payload
+                    elif needs_encryption:
                         raw_payload = payload if isinstance(payload, dict) else {}
                         stored_payload, is_encrypted = self._encrypt_if_needed(row.get("item_type", ""), raw_payload)
                     instances.append(

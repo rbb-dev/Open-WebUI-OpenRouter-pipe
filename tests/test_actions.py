@@ -872,3 +872,6 @@ async def test_the_real_service_reports_an_unreadable_valve_read(
         "the merged dict should carry the stored value where there is one and the "
         "in-memory fallback otherwise; only the flag says whether it is verified"
     )
+
+
+"""A valve an earlier release named; the row still carries it, the model does not."""

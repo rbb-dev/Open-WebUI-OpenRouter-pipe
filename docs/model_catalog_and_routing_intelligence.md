@@ -55,7 +55,6 @@ For each model, the registry stores the full catalog entry (`full_model`) and de
 - `features`: a set of higher-level flags derived from `supported_parameters`, model architecture, and pricing metadata:
   - `function_calling` (based on support for tools-related parameters)
   - `reasoning` and `reasoning_summary` (based on reasoning-related parameters)
-  - `web_search_tool` (based on web search pricing metadata)
   - modality flags: `vision`, `audio_input`, `video_input`, `file_input`
   - `image_gen_tool` (based on output modalities)
 - `capabilities`: a dictionary of Open WebUI “capability checkboxes” used for UI affordances (for example `vision`, `file_upload`, `web_search`, `image_generation`), plus always-on UI toggles (`code_interpreter`, `citations`, `status_updates`, `usage`).
@@ -76,7 +75,7 @@ Behavior:
 - The tail of the call is best-effort too: a failure in the model-metadata sync, in the image-generation filter lookup, or in the plugin `on_models` dispatch is logged and the pipe still returns the models it has. A raise at any of those points would make Open WebUI's handler serve an empty model list, so every picker would lose the pipe.
 - The system valve `MODEL_ID` selects which models are exposed:
   - `auto` exposes the full catalog.
-  - A comma-separated list restricts the exposed models. A list that resolves to nothing exposes nothing, and the pipe refuses every request rather than serving the whole catalog; one `WARNING` names the IDs it could not resolve. The one exception is a value of only commas or spaces, which is read as blank and imports the whole catalog. An `@preset/slug` entry resolves to the model before the `@`; a bare `:tag` is not an allowlist entry.
+  - A comma-separated list restricts the exposed models. A list that resolves to nothing exposes nothing, and the pipe refuses every request rather than serving the whole catalog; one `WARNING` names the IDs it could not resolve. The one exception is a value of only commas or spaces, which is read as blank and imports the whole catalog. An `@preset/slug` entry resolves to the model before the `@`. A `base_id:tag` entry resolves to that exact tagged model when the catalog lists it as one in its own right — `openai/gpt-4o:free` publishes the `:free` model, not the paid base — and otherwise to its base.
 - The pipe returns a minimal `{"id","name"}` list for the model selector.
 - The special `openrouter/auto` model is included in the catalog and can be selected like any other model. Auto Router configuration (allowed model patterns) is managed in the OpenRouter UI (Settings → Plugins) and is not surfaced in Open WebUI.
 - Optional: the pipe can schedule a background “model metadata sync” that writes Open WebUI model metadata:
@@ -163,7 +162,7 @@ For the full User Interface story (Open WebUI Web Search vs OpenRouter Web Tools
 
 ### 4.5 Output token cap selection
 
-When `USE_MODEL_MAX_OUTPUT_TOKENS=True` and the request carries no limit of its own, the pipe fills `max_output_tokens` with the smaller of the provider-advertised `max_completion_tokens` in the catalog and half that model's context window, or the advertised value alone when its context window is unknown. When it is disabled, the pipe adds no limit of its own and provider defaults apply. The valve controls the pipe's automatic value, not the caller's: a `max_tokens` of 1 or above is forwarded unchanged. OpenRouter documents the parameter as "1 or above" and Open WebUI's slider reaches -2, so a value below 1 is sent as no cap — and the automatic ceiling then applies if the valve is on. A routing variant resolves through its base's row, so it gets the base's ceiling.
+When `USE_MODEL_MAX_OUTPUT_TOKENS=True` and the request carries no limit of its own, the pipe fills `max_output_tokens` with the smaller of the provider-advertised `max_completion_tokens` in the catalog and half that model's context window, or the advertised value alone when its context window is unknown. When it is disabled, the pipe adds no limit of its own and provider defaults apply. The valve controls the pipe's automatic value, not the caller's: a `max_tokens` or `max_output_tokens` of 1 or above is forwarded unchanged. OpenRouter documents the parameter as "1 or above" and Open WebUI's slider reaches -2, so a value below 1 is sent as no cap — and the automatic ceiling then applies if the valve is on. A routing variant resolves through its base's row, so it gets the base's ceiling.
 
 On Gemini 2.5 the same cap bounds the thinking budget: `budget = min(budget, cap - 64)`, never the other way round, because reasoning tokens count against the cap and a budget equal to the cap is the documented failure boundary. When the cap leaves no room the pipe writes no bounded budget at all, writes no off flag, and leaves the cap as the caller sent it.
 

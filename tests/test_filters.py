@@ -1984,7 +1984,6 @@ class TestProviderRoutingStaleValueHealing:
         routing = metadata.get("openrouter_pipe", {}).get("provider", {})
         assert "only" not in routing
 
-
 from types import SimpleNamespace
 
 

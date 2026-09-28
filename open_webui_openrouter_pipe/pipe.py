@@ -3929,6 +3929,13 @@ class Pipe:
             await self._retire_request_session()
             session = self._request_sessions.get(running)
             if session is not None and not session.closed:
+                connector = session.connector
+                target = max(50, type(self)._semaphore_limit or 0)
+                if getattr(connector, "_limit", 0) < target:
+                    with contextlib.suppress(Exception):
+                        connector._limit = target  # type: ignore[attr-defined]
+                        connector._release_waiter()  # type: ignore[attr-defined]
+                        self.logger.debug("Resized shared connector limit to %s", target)
                 return session
             session = self._create_http_session(valves, shared=True)
             self._request_sessions[running] = session
