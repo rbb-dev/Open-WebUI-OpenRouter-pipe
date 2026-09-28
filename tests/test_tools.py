@@ -3242,6 +3242,19 @@ class TestToolCallBatching:
                 10,
                 [["c1", "c2"], ["c3", "c4"], ["c5"]],
             ),
+            ([("c1", "tool_a", {}), ("c2", "tool_a", {}), ("c3", "tool_a", {"note": "see c2"})], 10, [["c1", "c2"], ["c3"]]),
+            (
+                [("c1", "tool_a", {}), ("c2", "tool_a", {}), ("c3", "tool_a", {}), ("c4", "tool_a", {"note": "see c3"})],
+                10,
+                [["c1", "c2", "c3"], ["c4"]],
+            ),
+            (
+                [("c1", "tool_a", {}), ("c2", "tool_a", {}), ("c3", "tool_a", {}), ("c4", "tool_a", {"note": "see c2"})],
+                10,
+                [["c1", "c2", "c3"], ["c4"]],
+            ),
+            ([("c1", "tool_a", {}), ("c2", "tool_a", {"note": "about c3"}), ("c3", "tool_a", {})], 10, [["c1", "c2"], ["c3"]]),
+            ([("c1", "tool_a", {}), ("c2", "tool_a", {}), ("c3", "tool_a", {"note": "see nobody"})], 10, [["c1", "c2", "c3"]]),
         ],
         ids=[
             "one-tool-under-the-cap",
@@ -3253,11 +3266,15 @@ class TestToolCallBatching:
             "a-call-that-refers-to-another",
             "a-call-answered-before-queueing-does-not-split",
             "mixed",
+            "c3-names-a-non-first-member",
+            "c4-names-a-later-member",
+            "c4-names-a-member-that-is-not-last",
+            "a-member-names-the-candidate",
+            "c3-names-nobody",
         ],
     )
     async def test_calls_share_a_batch_only_when_they_can_run_together(self, monkeypatch, calls, batch_cap, expected):
         assert await _batches_formed(monkeypatch, calls, batch_cap) == expected
-
 
 
 # ===== From test_tool_passthrough.py =====

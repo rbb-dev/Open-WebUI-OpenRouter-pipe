@@ -75,7 +75,7 @@ Tool *schemas* are assembled by the tool registry builder and attached to the ou
      - Missing property `type` values are inferred defensively (object/array) so schemas remain valid.
      - If a schema cannot be serialized for strictification, it is sent unmodified (with a warning logged).
      - A small LRU cache (size 128) avoids repeated strictification work for identical schemas.
-     - The strictified copy is only what is advertised to the model; the executor keeps the tool's original schema, so argument validation (such as the empty-arguments guard) uses the tool's own `required` list.
+     - The strictified copy is what is advertised to the model and what the executor filters the tool's arguments by, so the two name sets cannot drift apart: a tool whose root schema is not an object root is advertised as a single `value` property and its argument is delivered under that name, and arguments the model invents beyond those names are dropped before the tool runs.
      - A tool the pipe advertises on the Responses route also carries `strict: true`, so the provider enforces the strictified schema (except where the schema is free-form and cannot be made strict: an array whose `items` node declares no properties is left open, because sealing it could only be satisfied by an empty object); a provider that does not support strict tool calling rejects the request.
 
 2. **Open WebUI Direct Tool Servers** (direct entries in `__metadata__["tools"]`)
@@ -189,7 +189,7 @@ Tools are executed via a per-request worker pool backed by a bounded queue:
 
 Batching behavior:
 
-- The pipe groups a response's tool calls into batches before any of them runs. Consecutive calls join one batch, up to `TOOL_BATCH_CAP` calls, when they share a tool name, when neither the joining call nor the batch's first call carries a dependency or ordering blocker in its arguments, and when neither of those two names the other's call ID. A call refused before queueing (an unknown tool, invalid arguments or a tripped breaker) does not break a run of consecutive calls.
+- The pipe groups a response's tool calls into batches before any of them runs. Consecutive calls join one batch, up to `TOOL_BATCH_CAP` calls, when they share a tool name, when neither the joining call nor any call already in the batch carries a dependency or ordering blocker in its arguments, and when the joining call names the call ID of no call already in the batch. A call refused before queueing (an unknown tool, invalid arguments or a tripped breaker) does not break a run of consecutive calls.
 - A call whose arguments include any of `depends_on`, `_depends_on`, `sequential` or `no_batch` is never batched. These keys only keep the call out of a batch; they do not make it wait for other calls.
 - Batching does not require identical arguments and never deduplicates calls. It does not raise concurrency either: every call in a batch except `ask_user` still waits for a per-request slot and a global slot, and all calls in a batch share one batch deadline.
 - Each batch is queued separately, so while slots are free, a slow call never holds up a call to another tool, and a response's calls start together as long as there are free slots for all of them. Each call's result is handed back as soon as that call finishes, even while other calls in its batch are still running. The same holds inside internal Fusion, where each model gets as many tool workers as the chat request it answers, and all of those models share that request's slots.

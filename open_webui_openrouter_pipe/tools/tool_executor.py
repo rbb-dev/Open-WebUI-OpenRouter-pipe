@@ -506,6 +506,10 @@ class ToolExecutor:
             for index, call in enumerate(calls):
                 raw_name = call.get("name")
                 tool_name = raw_name.strip() if isinstance(raw_name, str) else ""
+                tool_cfg = tools.get(tool_name)
+                if ask_user_refusal and self._is_builtin_ask_user(tool_cfg):
+                    await _refuse(index, call, ask_user_refusal)
+                    continue
                 try:
                     args = parse_tool_arguments(call.get("arguments"))
                 except ValueError:
@@ -521,12 +525,8 @@ class ToolExecutor:
                         f"incomplete JSON for `{tool_name}`. Please try again.",
                     )
                     continue
-                tool_cfg = tools.get(tool_name)
                 if not tool_cfg:
                     await _refuse(index, call, f'Error: Tool "{tool_name}" not found.')
-                    continue
-                if ask_user_refusal and self._is_builtin_ask_user(tool_cfg):
-                    await _refuse(index, call, ask_user_refusal)
                     continue
                 if _owui_normalize_ask_user_request is not None and self._is_builtin_ask_user(tool_cfg):
                     try:
@@ -579,7 +579,7 @@ class ToolExecutor:
                     and allow_batch
                     and batch[0].allow_batch
                     and len(batch) < context.batch_cap
-                    and self._can_batch_tool_calls(batch[0], queued)
+                    and all(self._can_batch_tool_calls(member, queued) for member in batch)
                 ):
                     batch.append(queued)
                 else:
