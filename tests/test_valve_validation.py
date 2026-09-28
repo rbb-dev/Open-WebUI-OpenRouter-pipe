@@ -57,16 +57,6 @@ class TestEncryptedStr:
         result = EncryptedStr.encrypt(already_encrypted)
         assert result == already_encrypted
 
-    def test_decrypt_with_invalid_token_returns_original(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Malformed encrypted data returns original value gracefully (line 512-515)."""
-        monkeypatch.setenv("WEBUI_SECRET_KEY", "unit-test-webui-secret")
-        # This is "encrypted:" prefix with garbage that won't decrypt
-        malformed = "encrypted:not_valid_fernet_data_at_all"
-        result = EncryptedStr.decrypt(malformed)
-        # Should return original value on InvalidToken
-        assert result == malformed
-
-
 class TestUserValveInheritNormalization:
     """Tests for the 'inherit' string normalization in UserValves validator."""
 

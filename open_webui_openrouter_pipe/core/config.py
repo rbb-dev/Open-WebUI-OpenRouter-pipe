@@ -664,10 +664,14 @@ class EncryptedStr(str):
             return decrypted.decode()
         except InvalidToken:
             logger.warning("Failed to decrypt value: invalid token or key mismatch")
-            return value
+            return cls._undecryptable()
         except (ValueError, UnicodeDecodeError) as e:
             logger.warning(f"Failed to decrypt value: {type(e).__name__}: {e}")
-            return value
+            return cls._undecryptable()
+
+    @classmethod
+    def _undecryptable(cls) -> str:
+        return ""
 
     @classmethod
     def _is_ciphertext(cls, value: str) -> bool:
@@ -681,6 +685,21 @@ class EncryptedStr(str):
         return len(raw) >= _FERNET_MIN_BODY and raw[0] == 0x80 and (len(raw) - 57) % 16 == 0
 
     @classmethod
+    def is_unreadable(cls, value: str) -> bool:
+        if not value or not value.startswith(cls._ENCRYPTION_PREFIX):
+            return False
+        if not cls._is_ciphertext(value):
+            return False
+        key = cls._get_encryption_key()
+        if key is None:
+            return True
+        try:
+            Fernet(key).decrypt(value[len(cls._ENCRYPTION_PREFIX) :].encode())
+        except (InvalidToken, ValueError):
+            return True
+        return False
+
+    @classmethod
     def read(cls, value: str) -> str | None:
         if not value:
             return None
@@ -688,10 +707,9 @@ class EncryptedStr(str):
             return value
         if cls._get_encryption_key() is None:
             return None
-        out = cls.decrypt(value)
-        if out == value and cls._is_ciphertext(value):
-            return None
-        return out
+        if not cls._is_ciphertext(value):
+            return value
+        return cls.decrypt(value) or None
 
     @classmethod
     def __get_pydantic_core_schema__(
@@ -1297,7 +1315,7 @@ class Valves(BaseModel):
     )
     ARTIFACT_ENCRYPTION_KEY: EncryptedStr = Field(
         default_factory=_default_artifact_encryption_key,
-        description="Use at least 16 chars. Encrypt reasoning tokens (and optionally all persisted artifacts). Changing the key creates a new table; prior artifacts become inaccessible. Clearing it stops artifact encryption and returns the setting to its default, which is empty. Both the artifact table and the usage-history table are named from a hash of this key, so new writes after a clear go to a fresh, unencrypted pair of tables and everything already saved under the previous key is stranded there, unread.",
+        description="Use at least 16 chars. Encrypt reasoning tokens (and optionally all persisted artifacts). Changing the key creates a new table; prior artifacts become inaccessible. Clearing it stops artifact encryption and returns the setting to its default, which is empty. Both the artifact table and the usage-history table are named from a hash of this key, so new writes after a clear go to a fresh, unencrypted pair of tables and everything already saved under the previous key is stranded there, unread. A value that cannot be read under the current WEBUI_SECRET_KEY cannot be used either: the pipe refuses to write artifacts while the key is unreadable rather than storing them in the clear, and the key must be re-entered here before writes resume.",
     )
     ENCRYPT_ALL: bool = Field(
         default=True,
@@ -1385,9 +1403,8 @@ class Valves(BaseModel):
         description=(
             "Password used to encrypt session log zip files (AES-encrypted zip). "
             "Recommend using a long random passphrase and encrypting the value (requires WEBUI_SECRET_KEY). "
-            "Clearing it stops all archive writing: no archive is written at all while the passphrase is empty. "
-            "Rotating WEBUI_SECRET_KEY makes the stored value unreadable, and archives are then "
-            "skipped rather than written under the wrong passphrase."
+            "Clearing it stops all archive writing, and so does a stored value that cannot be read under "
+            "the current WEBUI_SECRET_KEY: no archive is written until a passphrase is re-entered here."
         ),
     )
     SESSION_LOG_RETENTION_DAYS: int = Field(
@@ -1464,7 +1481,7 @@ class Valves(BaseModel):
     SESSION_LOG_LOCK_STALE_SECONDS: int = Field(
         default=1800,
         ge=60,
-        description="Stale lock timeout (seconds) for DB-backed session log assembly locks; stale locks are reclaimed. It is also the write-failure backoff: a bundle the assembler could not write is skipped for this long before it is retried, so one bundle the pipe cannot write does not hold the window. A lock held by another worker is not a write failure and is never backed off.",
+        description="Stale lock timeout (seconds) for DB-backed session log assembly locks; stale locks are reclaimed. It is also the write-failure backoff: a bundle whose archive could not be written is skipped for this long before it is retried, so one bundle the pipe cannot write does not hold the window. A lock held by another worker is not a write failure and is never backed off.",
     )
     ENABLE_TIMING_LOG: bool = Field(
         default=False,
@@ -2335,8 +2352,11 @@ class Valves(BaseModel):
     VIDEO_INTENT_FRAME_EXTRACTION_INDEX: Literal["first", "last"] = Field(
         default="last",
         description=(
-            "When extracting a frame from a prior video for image-to-video continuation, "
-            "which frame to grab by default. 'last' matches 'continue this scene' intent."
+            "When a requested moment in a prior video runs past the end the pipe can "
+            "measure, which frame - 'first' or 'last' - is substituted for it. It also "
+            "decides the frame when the seek to an in-range moment comes back empty. "
+            "A request that names a first or last frame directly gets that frame. "
+            "'last' matches 'continue this scene' intent."
         ),
     )
     VIDEO_INTENT_TIMEOUT_S: int = Field(

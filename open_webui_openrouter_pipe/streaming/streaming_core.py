@@ -2831,10 +2831,24 @@ class StreamingHandler:
                         for c in call_items
                     )
                 )
-                if hand_back:
-                    reply_key = (metadata.get("chat_id"), metadata.get("message_id"))
-                    self._pipe._hand_back_counts[reply_key] += 1
-                    if self._pipe._hand_back_counts[reply_key] > valves.MAX_FUNCTION_CALL_LOOPS:
+                if hand_back and chat_id and message_id and not metadata.get("task"):
+                    reply_key = (chat_id, message_id)
+                    counts = self._pipe._hand_back_counts
+                    max_keys = max(
+                        self._pipe._HAND_BACK_MAX_KEYS,
+                        valves.MAX_CONCURRENT_REQUESTS + 2,
+                    )
+                    if len(counts) >= max_keys:
+                        for oldest in list(counts):
+                            if counts[oldest] > valves.MAX_FUNCTION_CALL_LOOPS:
+                                counts.pop(oldest, None)
+                                break
+                        else:
+                            counts.pop(next(iter(counts)), None)
+                    spent = counts[reply_key] = min(
+                        counts.get(reply_key, 0) + 1, valves.MAX_FUNCTION_CALL_LOOPS + 1
+                    )
+                    if spent > valves.MAX_FUNCTION_CALL_LOOPS:
                         hand_back = False
                         self.logger.debug(
                             "Hand-back cap reached for this reply (%d); answering in the loop instead",
@@ -3663,6 +3677,19 @@ class StreamingHandler:
             else:
                 await _flush_pending("finalize")
                 await _mark_committed_rows()
+
+            if (
+                chat_id
+                and message_id
+                and not metadata.get("task")
+                and not metadata.get("assistant_message_id")
+                and terminal
+                and not handed_back_for_retry
+                and not ran_out
+                and not error_occurred
+                and not was_cancelled
+            ):
+                self._pipe._hand_back_counts.pop((chat_id, message_id), None)
 
             if holds_the_reply and terminal and not handed_back_for_retry:
                 self._pipe._artifact_store._reply_memory.release(chat_id, message_id)

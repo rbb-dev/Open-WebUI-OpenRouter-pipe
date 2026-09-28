@@ -110,7 +110,12 @@ _EXPECTED: dict[str, int] = {
     # Two more: the `OWUI_CHAT_ID.reset(token)` calls in the `finally` blocks that undo the
     # channel-chat-id token; resetting a ContextVar is bookkeeping for the next request, and letting
     # one out would replace the turn's real outcome with an error raised while unwinding it.
-    "pipe.py": 28,
+    # 25th: the per-call reset of a timing contextvar token in `pipe()`'s `finally`.
+    # The token belongs to this task's Context, and the reset only raises if the request
+    # crossed a task boundary -- in which case the token is already spent and the next
+    # request's own reset mints its own. Letting it out would replace the answer the
+    # caller is still waiting for with a bookkeeping error.
+    "pipe.py": 29,
     "storage/persistence.py": 3,
     # 1st: the caller-supplied fallback in `_emit_templated_error_event`. It is reached only because the
     # admin's own template already failed to render, and the generic card below it is the answer if the

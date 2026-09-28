@@ -57,6 +57,13 @@ class ExtractedFrame:
     actual_timestamp_seconds: float
     requested_timestamp_seconds: float | None
     downgrade_note: str = ""
+    resolved_target: Literal["first_frame", "last_frame", "at_timestamp"] = "at_timestamp"
+
+
+def _index_end(meta: VideoMetadata, index: Literal["first", "last"]) -> float:
+    if index == "first":
+        return 0.0
+    return max(0.0, meta.duration_seconds - (max(1.0 / meta.fps, 0.04) if meta.fps > 0 else 0.04))
 
 
 # -----------------------------------------------------------------------------
@@ -294,17 +301,13 @@ async def extract_frame(
     target: Literal["first_frame", "last_frame", "at_timestamp"],
     timestamp_seconds: float | None = None,
     fallback_to_last_on_overshoot: bool = True,
-    overshoot_fallback_index: Literal["first", "last"] = "last",
+    reused_frame_index: Literal["first", "last"] = "last",
     logger: logging.Logger | None = None,
 ) -> ExtractedFrame:
     """Extract a frame from a video file.
 
     - first_frame: frame at index 0
     - last_frame: last frame (probes duration to compute timestamp)
-    - at_timestamp: frame at requested seconds; if > duration AND
-      fallback_to_last_on_overshoot, downgrades to either the first frame
-      (overshoot_fallback_index="first") or the last frame ("last", default)
-      and sets `downgrade_note`.
 
     PIL+imageio first; ffmpeg subprocess fallback if imageio fails.
 
@@ -324,6 +327,7 @@ async def extract_frame(
 
     if target == "first_frame":
         actual_ts = 0.0
+        resolved_target = "first_frame"
     elif target in ("last_frame", "at_timestamp"):
         try:
             meta = await probe_video(path)
@@ -331,13 +335,14 @@ async def extract_frame(
             meta = None
         if target == "last_frame":
             if meta and meta.duration_seconds > 0:
-                actual_ts = max(0.0, meta.duration_seconds - max(1.0 / meta.fps, 0.04))
+                actual_ts = _index_end(meta, "last")
             else:
                 # No probe -> can't compute a duration-based timestamp. Input
                 # seeking past EOF returns 0 bytes, so seek from the end instead
                 # (an -ss sentinel would just produce an empty frame and fail).
                 actual_ts = 0.0
                 use_end_seek = True
+            resolved_target = "last_frame"
         else:
             assert timestamp_seconds is not None
             overshoot_measured = (
@@ -351,17 +356,15 @@ async def extract_frame(
                     raise FrameExtractionError(
                         f"timestamp {timestamp_seconds}s exceeds video duration {meta.duration_seconds}s"
                     )
-                if overshoot_fallback_index == "first":
-                    actual_ts = 0.0
-                    fallback_word = "first"
-                else:
-                    actual_ts = max(
-                        0.0, meta.duration_seconds - max(1.0 / meta.fps, 0.04)
-                    )
-                    fallback_word = "last"
+                actual_ts = _index_end(meta, reused_frame_index)
+                fallback_word = "first" if reused_frame_index == "first" else "last"
                 downgrade_note = f"timestamp_past_video_end_used_{fallback_word}_frame"
+                resolved_target = (
+                    "first_frame" if reused_frame_index == "first" else "last_frame"
+                )
             else:
                 actual_ts = float(timestamp_seconds)
+                resolved_target = "at_timestamp"
     else:
         raise FrameExtractionError(f"unknown target: {target}")
 
@@ -375,6 +378,7 @@ async def extract_frame(
                 actual_timestamp_seconds=0.0,
                 requested_timestamp_seconds=requested_ts,
                 downgrade_note=downgrade_note,
+                resolved_target=resolved_target,
             )
         except FrameExtractionError as exc:
             logger.debug("imageio first_frame failed; falling through to ffmpeg: %s", exc)
@@ -394,7 +398,7 @@ async def extract_frame(
             target == "at_timestamp" and not fallback_to_last_on_overshoot
         ):
             raise
-        rescue_first = target == "at_timestamp" and overshoot_fallback_index == "first"
+        rescue_first = target == "at_timestamp" and reused_frame_index == "first"
         logger.debug(
             "ffmpeg seek to %.3fs produced no frame; falling back to %s frame", actual_ts,
             "first" if rescue_first else "last",
@@ -417,19 +421,22 @@ async def extract_frame(
                 actual_timestamp_seconds=actual_ts,
                 requested_timestamp_seconds=requested_ts,
                 downgrade_note=downgrade_note,
+                resolved_target="first_frame",
             )
         use_end_seek = not rescue_first
         if rescue_first:
             actual_ts = 0.0
-        elif meta is not None and meta.duration_seconds > 0:
-            # Report the true last-frame timestamp, not the overshot request.
-            actual_ts = max(0.0, meta.duration_seconds - max(1.0 / meta.fps, 0.04))
-        elif meta is None or meta.duration_seconds <= 0:
-            actual_ts = float("nan")
-            logger.debug(
-                "probe failed or duration unmeasurable: rescue frame position is "
-                "unmeasurable",
-            )
+            resolved_target = "first_frame"
+        else:
+            resolved_target = "last_frame"
+            if meta is not None and meta.duration_seconds > 0:
+                actual_ts = _index_end(meta, "last")
+            elif meta is None or meta.duration_seconds <= 0:
+                actual_ts = float("nan")
+                logger.debug(
+                    "probe failed or duration unmeasurable: rescue frame position is "
+                    "unmeasurable",
+                )
         walked_past_damage = bool(ladder_saw_damage and ladder_saw_damage[0])
         if walked_past_damage and not rescue_first and not downgrade_note:
             downgrade_note = "frame_damaged_used_last_decodable_frame"
@@ -450,4 +457,5 @@ async def extract_frame(
         actual_timestamp_seconds=actual_ts,
         requested_timestamp_seconds=requested_ts,
         downgrade_note=downgrade_note,
+        resolved_target=resolved_target,
     )

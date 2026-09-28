@@ -3055,13 +3055,13 @@ class TestHandlePipeCallEdgeCases:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("detail", ["Configuration error", "Malformed base URL"])
     async def test_handle_pipe_call_catalog_load_error(self, detail):
-        """A catalog load failure answers the caller with the reason, emitter or no emitter.
+        """A catalog load failure answers the caller, emitter or no emitter.
 
         This asserted ``result == ""``, which is what the caller with no chat context
         actually received -- and Open WebUI's non-streaming handler treats an empty return
-        as "no answer", skipping the message write and every background task with it. Two
-        distinct details, so the returned text has to come from the failure rather than
-        from a constant.
+        as "no answer", skipping the message write and every background task with it. The
+        answer is a fixed sentence: the detail is the configuration fault's own text and
+        can carry the value that is wrong, which is the operator's to read in the log.
         """
         pipe = Pipe()
         pipe.valves.API_KEY = EncryptedStr("sk-test-key")
@@ -3092,8 +3092,8 @@ class TestHandlePipeCallEdgeCases:
                 assert isinstance(result, str) and result.strip(), (
                     f"a catalog load failure answered with {result!r}"
                 )
-                assert detail in result, (
-                    f"the answer does not carry the reason it failed: {result!r}"
+                assert detail not in result, (
+                    f"the answer reported the configuration value to the caller: {result!r}"
                 )
         finally:
             await pipe.close()

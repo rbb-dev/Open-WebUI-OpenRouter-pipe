@@ -208,6 +208,10 @@ async def test_an_error_frame_is_returned_as_well_as_shown(
 async def test_a_catalog_configuration_error_is_returned_as_well_as_shown(
     monkeypatch, pipe_instance_async, detail
 ) -> None:
+    """A configuration fault is still answered -- twice -- but it does not report the
+    configuration value. `detail` is the exception's own text and it can carry a key
+    fragment or a path, so what reaches the caller is a fixed sentence. The caller's
+    own two answers must still agree with each other."""
     pipe = pipe_instance_async
     _prepared(pipe, monkeypatch)
 
@@ -220,7 +224,11 @@ async def test_a_catalog_configuration_error_is_returned_as_well_as_shown(
     result = await _call(pipe, events)
 
     assert result == _shown_error(events)
-    assert detail in result
+    assert result, "the caller was left with nothing: an empty error card renders blank"
+    assert detail not in result, (
+        f"the configuration value {detail!r} reached the caller; the exception's own "
+        "text is for the log, not the reply"
+    )
 
 
 @pytest.mark.asyncio
@@ -948,8 +956,13 @@ async def _call_without_emitter(pipe: Pipe, *, task: Any = None, stream: bool = 
     )
 
 
-def _arrange_failure(pipe: Pipe, monkeypatch, branch: str, variant: str) -> str:
-    """Make one branch of ``_handle_pipe_call`` fire, and return the words it must carry."""
+def _arrange_failure(pipe: Pipe, monkeypatch, branch: str, variant: str) -> str | None:
+    """Make one branch of ``_handle_pipe_call`` fire, and return the words it must carry,
+    or ``None`` when the branch must NOT carry its exception's own text.
+
+    A configuration fault's text can contain the configuration value, so those branches
+    answer with a fixed sentence instead. ``None`` is how this says so.
+    """
     _prepared(pipe, monkeypatch)
 
     def _from_request(exc: BaseException):
@@ -974,6 +987,7 @@ def _arrange_failure(pipe: Pipe, monkeypatch, branch: str, variant: str) -> str:
             raise ValueError(variant)
 
         monkeypatch.setattr(pipe_mod.OpenRouterModelRegistry, "ensure_loaded", _bad_config)
+        return None
     elif branch == "catalog unusable":
 
         async def _down(*_args: Any, **_kwargs: Any) -> None:
@@ -1031,9 +1045,15 @@ async def test_every_failure_branch_answers_a_caller_with_no_emitter(
         f"the {branch!r} branch returns something different when nobody is watching: "
         f"{without_emitter!r} vs {with_emitter!r}"
     )
-    assert words in without_emitter, (
-        f"the {branch!r} branch did not carry its own failure through: {without_emitter!r}"
-    )
+    if words is None:
+        assert variant not in without_emitter, (
+            f"the {branch!r} branch reported its exception's own text ({variant!r}) to the "
+            f"caller: {without_emitter!r}"
+        )
+    else:
+        assert words in without_emitter, (
+            f"the {branch!r} branch did not carry its own failure through: {without_emitter!r}"
+        )
     shown = [
         event["data"]["content"]
         for event in events

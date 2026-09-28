@@ -122,7 +122,7 @@ All admin-scoped on the global `Valves` model. User-tunable per-chat versions of
 | `VIDEO_INTENT_TASK_MODEL_FALLBACK` | `none` / `other_task_model` | `other_task_model` | Failure fallback strategy. `none` returns only the primary task model; `other_task_model` also tries the other (internal/external) Task Model. With neither configured the classifier is skipped, with one warning logged per chat. |
 | `VIDEO_INTENT_SKIP_WHEN_EMPTY_CHAT` | `bool` | `True` | Skip the classifier when the chat has no prior turns and no attachments — there is nothing to classify against, so the call is wasted. Turn off if you want clarifying questions on first-turn ambiguous prompts. |
 | `VIDEO_INTENT_MAX_CLARIFICATIONS` | `0`–`3` | `1` | Per-session cap on consecutive clarifying questions. `0` disables the clarification loop entirely. |
-| `VIDEO_INTENT_FRAME_EXTRACTION_INDEX` | `first` / `last` | `last` | Default frame to extract from a prior video when the requested frame is unavailable. |
+| `VIDEO_INTENT_FRAME_EXTRACTION_INDEX` | `first` / `last` | `last` | Which frame to substitute when a requested moment in a prior video cannot be read. A request that names a first or last frame outright gets that frame. |
 | `VIDEO_INTENT_TIMEOUT_S` | `int` | `8` | Hard timeout (seconds) on the classifier call. On breach, the pipe falls back to sending only the latest user message — the paid video request still proceeds. |
 | `VIDEO_INTENT_CONFIRM_MODE` | `always` / `on_reference` / `low_confidence` / `never` | `on_reference` | When to surface the confirmation footer. `on_reference` confirms only when a prior video's frame is reused or more than one frame is combined; a lone attached image does not trigger it. |
 | `VIDEO_INTENT_MAX_CALLS_PER_CHAT` | `int` | `0` (unlimited) | Cost guard. `0` = unlimited. Admin sets a positive integer to enforce a per-chat ceiling. A call is charged when it is admitted, before the classifier runs, so concurrent turns in one chat share the ceiling. |
@@ -137,7 +137,7 @@ When admin `VIDEO_INTENT_ENABLED=True`, each video model's companion filter expo
 |---|---|---|
 | `VIDEO_INTENT_ENABLED` | `Reuse previous videos` | Per-user opt-out. When off, this user's video chats bypass the classifier even though it's on globally. |
 | `VIDEO_INTENT_MAX_CLARIFICATIONS` | `Clarifying question limit` | Override the cap on consecutive clarifying questions for this user. |
-| `VIDEO_INTENT_FRAME_EXTRACTION_INDEX` | `Which frame to use from previous video` | Pick which frame the user prefers when the request is ambiguous about first vs last. |
+| `VIDEO_INTENT_FRAME_EXTRACTION_INDEX` | `Which frame to use from previous video` | Which frame the pipe substitutes when it cannot read the requested moment in the previous video. |
 | `VIDEO_INTENT_CONFIRM_MODE` | `Show what was reused` | Control when the disclosure footer appears for this user (always / on reference / on low confidence / never). |
 
 "Shown as" is the label above the control in the filter settings panel and the

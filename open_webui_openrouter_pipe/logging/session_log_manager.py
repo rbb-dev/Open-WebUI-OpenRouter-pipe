@@ -22,10 +22,11 @@ import random
 import threading
 import time
 import weakref
+from collections.abc import Collection, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import case, func
+from sqlalchemy import case, func, tuple_
 
 from ..core.timing_logger import timed
 from ..core.warn_latch import warn_level
@@ -47,18 +48,58 @@ def _wait_alive(mgr_ref: Any, stop_event: threading.Event, seconds: float) -> bo
     return mgr_ref() is None or stop_event.is_set()
 
 
+def _truncate_latch(latch: dict[str, float], keep: int) -> None:
+    excess = len(latch) - int(keep)
+    if excess <= 0:
+        return
+    for stale_key in sorted(latch, key=lambda k: latch[k])[:excess]:
+        latch.pop(stale_key, None)
+
+
+def _unwritten_archive_count(job_queue: queue.Queue) -> int:
+    with job_queue.mutex:
+        return sum(1 for entry in job_queue.queue if entry is not None)
+
+
 def _writer_loop(mgr_ref: Any, stop_event: threading.Event, job_queue: queue.Queue) -> None:
+    drain_deadline: float | None = None
+
+    def _should_stop(deadline: float | None) -> bool:
+        return deadline is not None or stop_event.is_set()
+
     while True:
-        if mgr_ref() is None or stop_event.is_set():
+        if mgr_ref() is None:
             break
         item: Any = None
-        try:
-            item = job_queue.get(timeout=0.5)
-        except queue.Empty:
-            continue
-        except Exception:
-            logger.debug("Session log writer queue.get failed", exc_info=True)
-            continue
+        if stop_event.is_set():
+            if drain_deadline is None:
+                drain_deadline = time.monotonic() + _WRITER_DRAIN_SECONDS
+            if drain_deadline is not None and time.monotonic() >= drain_deadline and not job_queue.empty():
+                mgr = mgr_ref()
+                if mgr is not None:
+                    _truncate_latch(mgr._unreadable_archive_warnings, _MAX_DRAIN_LATCH_KEYS)
+                    mgr.logger.log(
+                        warn_level(
+                            mgr._unreadable_archive_warnings,
+                            f"session_log_shutdown_drain_incomplete:{time.monotonic_ns()}",
+                            cooldown_s=3600.0,
+                        ),
+                        "Session log writer stopped with %d queued archive(s) it could not write.",
+                        _unwritten_archive_count(job_queue),
+                    )
+                break
+            try:
+                item = job_queue.get_nowait()
+            except queue.Empty:
+                break
+        else:
+            try:
+                item = job_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            except Exception:
+                logger.debug("Session log writer queue.get failed", exc_info=True)
+                continue
         mgr = mgr_ref()
         if mgr is None:
             with contextlib.suppress(Exception):
@@ -67,6 +108,8 @@ def _writer_loop(mgr_ref: Any, stop_event: threading.Event, job_queue: queue.Que
         if item is None:
             with contextlib.suppress(Exception):
                 job_queue.task_done()
+            if drain_deadline is None and _should_stop(None):
+                break
             continue
         try:
             mgr._write_archive(item)
@@ -138,10 +181,21 @@ def _assembler_loop(mgr_ref: Any, stop_event: threading.Event) -> None:
 
 _UNREADABLE_ARCHIVE_CAPTURE_AFTER = 3
 
+_WRITER_DRAIN_SECONDS = 1.0
+
+_MAX_EXCLUDED_TURNS = 1000
+
+_MAX_DRAIN_LATCH_KEYS = 32
+
 _INCOMPLETE_MARKER_PREFIX = "Session log finalized as incomplete"
 _INCOMPLETE_MARKER_FUNC = "_assemble_and_write_bundle"
 
-_LOCK_CONTENDED: Any = object()
+class _LockContended:
+
+    __slots__ = ()
+
+
+_LOCK_CONTENDED = _LockContended()
 
 
 def _is_incomplete_marker(evt: Any) -> bool:
@@ -301,6 +355,8 @@ class SessionLogManager:
         self._cleanup_interval_seconds = self.valves.SESSION_LOG_CLEANUP_INTERVAL_SECONDS
         self._dirs: set[str] = set()
         self._assembler_recent_failures: dict[tuple[str, str], float] = {}
+        self._rescue_pending: set[tuple[str, str]] = set()
+        self._assembly_failure_stale_arm: set[tuple[str, str]] = set()
         self._warned: set[str] = set()
         self._unreadable_archive_warnings: dict[str, float] = {}
         self._unreadable_archive_attempts: dict[str, int] = {}
@@ -308,6 +364,10 @@ class SessionLogManager:
         self._read_fault_warnings: dict[str, float] = {}
         self._captured_turns: set[str] = set()
         self._skip_info_emitted: set[str] = set()
+
+    @property
+    def _assembly_failures(self) -> dict[tuple[str, str], float]:
+        return self._assembler_recent_failures
 
     def set_artifact_store(self, artifact_store: ArtifactStore) -> None:
         """Set the artifact store reference."""
@@ -832,55 +892,81 @@ class SessionLogManager:
 
         self._cleanup_stale_locks(model, session_factory, lock_stale_seconds)
 
-        exclude = self._recent_failure_exclusions(lock_stale_seconds)
+        backed_off = self._backoff_exclusion(lock_stale_seconds)
 
-        terminals = self._list_terminal_messages(
-            model, session_factory, limit=batch_size, exclude=exclude
-        )
-        failed_now: set[tuple[str, str]] = set()
-        for chat_id, message_id in terminals:
-            if self._assemble_and_write_bundle(chat_id, message_id, terminal=True) is False:
-                failed_now.add((chat_id, message_id))
-        if failed_now:
-            stamp = time.time()
+        def _record(key: tuple[str, str], assembled: bool | Any, *, stale_arm: bool = False) -> None:
+            if assembled is not _LOCK_CONTENDED and assembled is not True and assembled is not False:
+                return
             with self._lock:
-                for key in failed_now:
-                    self._assembler_recent_failures[key] = stamp
+                if assembled or key in self._rescue_pending:
+                    self._assembler_recent_failures.pop(key, None)
+                    self._assembly_failure_stale_arm.discard(key)
+                else:
+                    self._assembler_recent_failures[key] = time.monotonic() + float(lock_stale_seconds)
+                    if stale_arm:
+                        self._assembly_failure_stale_arm.add(key)
+                    else:
+                        self._assembly_failure_stale_arm.discard(key)
 
-        exclude = exclude | failed_now
+        for terminal, turns in self._candidate_turns(
+            model, session_factory, batch_size, stale_finalize_seconds, backed_off
+        ):
+            if terminal:
+                assembled = self._assemble_and_write_bundle(turns[0], turns[1], terminal=True)
+            else:
+                assembled = self._assemble_and_write_bundle(
+                    turns[0], turns[1], terminal=False,
+                    stale_finalize_seconds=stale_finalize_seconds,
+                )
+            _record(turns, assembled, stale_arm=not terminal)
 
-        stale = self._list_stale_messages(
+    def _backoff_exclusion(
+        self, lock_stale_seconds: float
+    ) -> tuple[tuple[str, str], ...]:
+        now = time.monotonic()
+        with self._lock:
+            for key in [k for k, deadline in self._assembler_recent_failures.items() if deadline <= now]:
+                self._assembler_recent_failures.pop(key, None)
+                self._assembly_failure_stale_arm.discard(key)
+            live = sorted(
+                (
+                    key
+                    for key, deadline in self._assembler_recent_failures.items()
+                    if deadline > now
+                ),
+                key=lambda key: self._assembler_recent_failures[key],
+                reverse=True,
+            )
+        if len(live) > _MAX_EXCLUDED_TURNS:
+            self.logger.debug(
+                "Session log assembly excluded %d set-aside turn(s) beyond the %d bound",
+                len(live) - _MAX_EXCLUDED_TURNS,
+                _MAX_EXCLUDED_TURNS,
+            )
+        return tuple(live[:_MAX_EXCLUDED_TURNS])
+
+    def _candidate_turns(
+        self,
+        model: Any,
+        session_factory: Any,
+        batch_size: int,
+        stale_finalize_seconds: float,
+        backed_off: Sequence[tuple[str, str]],
+    ) -> list[tuple[bool, tuple[str, str]]]:
+        terminal_excluded = tuple(
+            key for key in backed_off if key not in self._assembly_failure_stale_arm
+        )
+        turns = [(True, turn) for turn in self._list_terminal_messages(
+            model, session_factory, limit=batch_size, exclude=terminal_excluded
+        )]
+        turns += [(False, turn) for turn in self._list_stale_messages(
             model,
             session_factory,
             stale_finalize_seconds=stale_finalize_seconds,
             limit=batch_size,
-            exclude=exclude,
-        )
-        stale_failed: set[tuple[str, str]] = set()
-        for chat_id, message_id in stale:
-            if (
-                self._assemble_and_write_bundle(
-                    chat_id,
-                    message_id,
-                    terminal=False,
-                    stale_finalize_seconds=stale_finalize_seconds,
-                )
-                is False
-            ):
-                stale_failed.add((chat_id, message_id))
-        if stale_failed:
-            stamp = time.time()
-            with self._lock:
-                for key in stale_failed:
-                    self._assembler_recent_failures[key] = stamp
-
-    def _recent_failure_exclusions(self, lock_stale_seconds: float) -> frozenset[tuple[str, str]]:
-        cutoff = time.time() - max(0.0, float(lock_stale_seconds))
-        with self._lock:
-            expired = [key for key, stamp in self._assembler_recent_failures.items() if stamp <= cutoff]
-            for key in expired:
-                self._assembler_recent_failures.pop(key, None)
-            return frozenset(self._assembler_recent_failures)
+            exclude=backed_off,
+        )]
+        return turns
 
     @timed
     def _cleanup_stale_locks(
@@ -915,16 +1001,21 @@ class SessionLogManager:
         session_factory: Any,
         *,
         limit: int,
-        exclude: frozenset[tuple[str, str]] = frozenset(),
+        exclude: Collection[tuple[str, str]] = (),
     ) -> list[tuple[str, str]]:
         rows: list[Any] = []
         _page = int(limit) + len(exclude)
         while True:
             try:
                 with _db_session(session_factory) as session:
+                    query = session.query(model.chat_id, model.message_id)  # type: ignore[attr-defined]
+                    query = query.filter(model.item_type == "session_log_segment_terminal")  # type: ignore[attr-defined]
+                    if exclude:
+                        query = query.filter(
+                            ~tuple_(model.chat_id, model.message_id).in_(list(exclude))  # type: ignore[attr-defined]
+                        )
                     rows = (
-                        session.query(model.chat_id, model.message_id)  # type: ignore[attr-defined]
-                        .filter(model.item_type == "session_log_segment_terminal")  # type: ignore[attr-defined]
+                        query
                         .group_by(model.chat_id, model.message_id)  # type: ignore[attr-defined]
                         .order_by(func.min(model.created_at).asc())  # type: ignore[attr-defined]
                         .limit(_page)
@@ -966,7 +1057,7 @@ class SessionLogManager:
         *,
         stale_finalize_seconds: float,
         limit: int,
-        exclude: frozenset[tuple[str, str]] = frozenset(),
+        exclude: Collection[tuple[str, str]] = (),
     ) -> list[tuple[str, str]]:
         cutoff = datetime.datetime.now(datetime.UTC).replace(tzinfo=None) - datetime.timedelta(seconds=float(stale_finalize_seconds))
         try:
@@ -975,9 +1066,14 @@ class SessionLogManager:
                 terminal_count = func.sum(
                     case((model.item_type == "session_log_segment_terminal", 1), else_=0)  # type: ignore[attr-defined]
                 )
+                query = session.query(model.chat_id, model.message_id)  # type: ignore[attr-defined]
+                query = query.filter(model.item_type.in_(["session_log_segment", "session_log_segment_terminal"]))  # type: ignore[attr-defined]
+                if exclude:
+                    query = query.filter(
+                        ~tuple_(model.chat_id, model.message_id).in_(list(exclude))  # type: ignore[attr-defined]
+                    )
                 rows = (
-                    session.query(model.chat_id, model.message_id)  # type: ignore[attr-defined]
-                    .filter(model.item_type.in_(["session_log_segment", "session_log_segment_terminal"]))  # type: ignore[attr-defined]
+                    query
                     .group_by(model.chat_id, model.message_id)  # type: ignore[attr-defined]
                     .having(func.max(model.created_at) < cutoff)  # type: ignore[attr-defined]
                     .having(terminal_count == 0)  # type: ignore[attr-defined]
@@ -1156,6 +1252,7 @@ class SessionLogManager:
             return
 
         self._captured_turns.add(key)
+        self._rescue_pending.discard((chat_id, message_id))
         self._release_assembly_lock(
             _stable_crockford_id(f"{chat_id}:{message_id}:session_log_lock"), list(ids or [])
         )
@@ -1235,7 +1332,7 @@ class SessionLogManager:
         terminal: bool,
         stale_finalize_seconds: float = 0.0,
         archive_settings: tuple[str, bytes, str, int | None] | None = None,
-    ) -> bool | Any:
+    ) -> bool | _LockContended:
         """Assemble all segments for one message into a single zip, then delete DB rows."""
         from ..core.logging_system import _SessionLogArchiveJob
         from ..core.utils import _sanitize_path_component, _stable_crockford_id
@@ -1388,6 +1485,17 @@ class SessionLogManager:
 
         settings = archive_settings or self.resolve_archive_settings(self.valves)
         if settings is None:
+            self.logger.log(
+                warn_level(
+                    self._unreadable_archive_warnings,
+                    f"session_log_settings_unresolved:{chat_id}:{message_id}",
+                    cooldown_s=3600.0,
+                ),
+                "Session log archive settings did not resolve for chat_id=%s message_id=%s; "
+                "keeping staged segments for retry.",
+                chat_id,
+                message_id,
+            )
             self._release_assembly_lock(lock_id)
             return False
         base_dir, zip_password, zip_compression, zip_compresslevel = settings
@@ -1448,6 +1556,7 @@ class SessionLogManager:
                 segments,
                 list(ids),
             )
+            self._rescue_pending.add((chat_id, message_id))
             return False
 
         meta_message_id, meta_task = _split_archive_key(message_id)
@@ -1493,6 +1602,15 @@ class SessionLogManager:
 
         # If writing failed, keep segments for retry and allow lock reaping.
         self._release_assembly_lock(lock_id)
+        self.logger.log(
+            warn_level(
+                self._unreadable_archive_warnings,
+                f"session_log_write_failed:{chat_id}:{message_id}",
+                cooldown_s=3600.0,
+            ),
+            "Session log archive write failed for chat_id=%s message_id=%s path=%s; keeping staged segments for retry.",
+            chat_id, message_id, str(out_path),
+        )
         return False
 
     # =========================================================================

@@ -224,9 +224,11 @@ def merge_for_save_with_drops(
         if name not in full:
             continue
         if is_secret(fld.annotation):
-            plain = EncryptedStr.decrypt(str(full.get(name) or ""))
+            stored_value = str(full.get(name) or "")
+            plain = EncryptedStr.decrypt(stored_value)
             default_plain = EncryptedStr.decrypt(str(defaults.get(name) or ""))
-            if plain and plain != default_plain:
+            unreadable_encrypted = EncryptedStr.is_unreadable(stored_value)
+            if unreadable_encrypted or (plain and plain != default_plain):
                 out[name] = full[name]
         elif full.get(name) != defaults.get(name):
             out[name] = full[name]

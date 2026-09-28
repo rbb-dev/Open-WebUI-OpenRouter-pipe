@@ -525,7 +525,7 @@ class TestOvershootFallback:
             frame = asyncio.run(frame_extraction.extract_frame(
                 video, target="at_timestamp", timestamp_seconds=30.0,
                 fallback_to_last_on_overshoot=True,
-                overshoot_fallback_index="first",
+                reused_frame_index="first",
             ))
             assert captured["ts"] == 0.0
             assert frame.downgrade_note == "timestamp_past_video_end_used_first_frame"

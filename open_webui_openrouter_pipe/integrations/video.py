@@ -695,7 +695,7 @@ class VideoGenerationAdapter:
                         await self._emit_completion(event_emitter, clar_content)
                         self._emit_intent_telemetry(intent_result, valves=valves, chat_id=chat_id)
                         return clar_content
-                    overshoot_pref_raw = (
+                    reused_frame_pref_raw = (
                         resolve_intent_user_setting(
                             metadata, "frame_extraction_index",
                             valves, "VIDEO_INTENT_FRAME_EXTRACTION_INDEX", "last",
@@ -707,8 +707,8 @@ class VideoGenerationAdapter:
                             valves, "VIDEO_INTENT_FRAME_EXTRACTION_INDEX", "last",
                         )
                     )
-                    overshoot_pref: Literal["first", "last"] = (
-                        "first" if overshoot_pref_raw == "first" else "last"
+                    reused_frame_pref: Literal["first", "last"] = (
+                        "first" if reused_frame_pref_raw == "first" else "last"
                     )
                     self._apply_uploaded_attachment_retargeting(
                         intent_result, video_meta_pre, valves,
@@ -720,7 +720,7 @@ class VideoGenerationAdapter:
                         user_obj=user_obj or user,
                         chat_id=chat_id if isinstance(chat_id, str) else "",
                         message_id=message_id if isinstance(message_id, str) else "",
-                        overshoot_fallback_index=overshoot_pref,
+                        reused_frame_index=reused_frame_pref,
                     )
                     if isinstance(metadata, dict):
                         pipe_meta = metadata.setdefault(_PIPE_METADATA_KEY, {})
@@ -1953,6 +1953,7 @@ class VideoGenerationAdapter:
         encoded: list[dict[str, Any]] = []
         total_bytes = 0
         seen_frame_types: set[str] = set()
+        seen_file_ids: set[str] = set()
 
         for item in raw_frames:
             if not isinstance(item, dict):
@@ -1965,7 +1966,7 @@ class VideoGenerationAdapter:
                 raise VideoGenerationError(
                     f"Frame type '{frame_type}' is not supported by this model. Supported: {', '.join(sorted(supported))}."
                 )
-            if frame_type in seen_frame_types:
+            if file_id in seen_file_ids:
                 continue
             file_obj = await get_file_by_id(file_id, self._pipe.logger)
             if not file_obj:
@@ -2011,6 +2012,7 @@ class VideoGenerationAdapter:
                 }
             )
             seen_frame_types.add(frame_type)
+            seen_file_ids.add(file_id)
         return encoded
 
     async def _encode_input_references(
@@ -2683,7 +2685,7 @@ class VideoGenerationAdapter:
         user_obj: Any,
         chat_id: str,
         message_id: str,
-        overshoot_fallback_index: Literal["first", "last"] = "last",
+        reused_frame_index: Literal["first", "last"] = "last",
     ) -> list[str]:
         """For each prior_video_* entry in frame_plan, extract the frame from
         the prior video file, upload it as a new OWUI image, and inject into
@@ -2694,10 +2696,6 @@ class VideoGenerationAdapter:
         noted in intent.downgrades). Returns a list of thumbnail URLs (one
         per resolved frame) for the disclosure block — empty strings for
         entries that failed.
-
-        `overshoot_fallback_index` controls which frame to use when an
-        `at_timestamp` entry asks for a moment past the prior video's
-        duration. Sourced from `VIDEO_INTENT_FRAME_EXTRACTION_INDEX`.
         """
         thumb_urls: list[str] = []
         if not intent.frame_plan:
@@ -2750,7 +2748,7 @@ class VideoGenerationAdapter:
                     frame = await extract_frame(
                         tmp_path, target=target, timestamp_seconds=ts,
                         fallback_to_last_on_overshoot=True,
-                        overshoot_fallback_index=overshoot_fallback_index,
+                        reused_frame_index=reused_frame_index,
                         logger=self.logger,
                     )
                     if frame.downgrade_note:
@@ -2787,12 +2785,15 @@ class VideoGenerationAdapter:
                 intent.frames_extracted += 1
 
                 if entry.target in ("first_frame", "last_frame"):
+                    extracted = getattr(frame, "resolved_target", entry.target)
+                    if extracted not in ("first_frame", "last_frame"):
+                        extracted = entry.target
                     fi_list = video_meta.setdefault("frame_images", [])
                     if isinstance(fi_list, list):
                         fi_list.append({
                             "id": frame_file_id,
-                            "frame_type": entry.target,
-                            "name": f"intent-frame-{entry.target}.png",
+                            "frame_type": extracted,
+                            "name": f"intent-frame-{extracted}.png",
                             "content_type": "image/png",
                         })
                 elif entry.target == "input_reference":

@@ -31,7 +31,7 @@ import uuid
 import weakref
 from collections import Counter
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast, no_type_check
 
@@ -474,6 +474,7 @@ class Pipe:
         self._close_done: concurrent.futures.Future | None = None
         self._active_pipes_calls: int = 0
         self._hand_back_counts: Counter[tuple[Any, Any]] = Counter()
+        self._HAND_BACK_MAX_KEYS = 64
 
         if os.environ.get("OWUI_PIPE_TEST_MODE") == "1":
             self._init_minimal_for_tests()
@@ -1526,6 +1527,7 @@ class Pipe:
             )
         self._active_pipes_calls += 1
         state: dict[str, bool] = {"released": False, "owned": False}
+        timing_tokens: list[tuple[ContextVar[Any], Token[Any]]] = []
         continued_token = CONTINUED_REPLY.set(continued_reply_text(body, __metadata__))
         try:
             result = await self._pipe_impl(
@@ -1539,6 +1541,7 @@ class Pipe:
                 __task__,
                 __task_body__,
                 counter_state=state,
+                timing_holder=timing_tokens,
             )
             if inspect.isasyncgen(result):
                 wrapped = self._wrap_stream_with_counter_release(result, state)
@@ -1555,6 +1558,9 @@ class Pipe:
             return result
         finally:
             CONTINUED_REPLY.reset(continued_token)
+            for _var, _token in timing_tokens:
+                with contextlib.suppress(Exception):
+                    _var.reset(_token)
             if not state.get("owned"):
                 Pipe._release_stream_counter(self, state)
 
@@ -1589,6 +1595,7 @@ class Pipe:
         __task_body__: Any = None,
         *,
         counter_state: dict[str, bool] | None = None,
+        timing_holder: list[tuple[ContextVar[Any], Token[Any]]] | None = None,
     ) -> AsyncGenerator[dict[str, Any] | str, None] | dict[str, Any] | str | None | JSONResponse:
         """Entry point that enqueues work and awaits the isolated job result."""
         safe_event_emitter = None
@@ -1598,7 +1605,9 @@ class Pipe:
             from .core.timing_logger import set_timing_context, timing_mark
             _early_request_id = secrets.token_hex(8)
             self._maybe_configure_timing_file()
-            set_timing_context(_early_request_id, self.valves.ENABLE_TIMING_LOG)
+            _timing_tokens = set_timing_context(_early_request_id, self.valves.ENABLE_TIMING_LOG)
+            if timing_holder is not None:
+                timing_holder.extend(_timing_tokens)
             timing_mark("pipe_entry")
 
             self._maybe_start_log_worker()
@@ -1807,16 +1816,20 @@ class Pipe:
                 future.cancel()
             self.logger.debug("Pipe request cancelled by caller (request_id=%s)", job.request_id)
             raise
-        except Exception as exc:  # pragma: no cover - defensive top-level guard
+        except Exception:
             self.logger.exception("Pipe request failed (request_id=%s)", job.request_id)
             if safe_event_emitter:
                 await self._ensure_error_formatter()._emit_error(
                     safe_event_emitter,
-                    f"Pipe request failed: {exc}",
+                    self._ensure_error_formatter()._safe_detail(
+                        "Request failed. Please retry.",
+                    ),
                     show_error_message=True,
                     done=True,
                 )
-            return "Request failed. Please retry."
+            return self._ensure_error_formatter()._safe_detail(
+                "Request failed. Please retry.",
+            )
         finally:
             with contextlib.suppress(Exception):
                 OWUI_CHAT_ID.reset(await_future_token)
@@ -2631,7 +2644,11 @@ class Pipe:
             if stream_queue is not None and not job.future.cancelled():
                 self._event_emitter_handler._try_put_middleware_stream_nowait(
                     stream_queue,
-                    {"error": {"detail": str(exc)}},
+                    {"error": {
+                        "detail": self._ensure_error_formatter()._safe_detail(
+                            "Request failed. Please retry.",
+                        ),
+                    }},
                 )
             if not job.future.done():
                 job.future.set_exception(exc)
@@ -2970,10 +2987,13 @@ class Pipe:
                 cache_seconds=valves.MODEL_CATALOG_REFRESH_SECONDS,
                 with_contracts=False,
             )
-        except ValueError as exc:
+        except ValueError:
+            self.logger.exception("OpenRouter catalog configuration error")
             shown = await self._ensure_error_formatter()._emit_error(
                 __event_emitter__,
-                f"OpenRouter configuration error: {exc}",
+                self._ensure_error_formatter()._safe_detail(
+                    "OpenRouter configuration error. Please check this pipe's settings.",
+                ),
                 show_error_message=True,
                 done=True,
             )
@@ -4293,6 +4313,13 @@ class Pipe:
         raw_value = valves.API_KEY
         decrypted = EncryptedStr.decrypt(raw_value)
         decrypted = decrypted.strip() if isinstance(decrypted, str) else ""
+
+        if raw_value.startswith(EncryptedStr._ENCRYPTION_PREFIX) and not decrypted:
+            return (
+                None,
+                ("OpenRouter API key is encrypted but cannot be decrypted. "
+                "This usually means WEBUI_SECRET_KEY changed. Re-enter the API key in this pipe's settings."),
+            )
 
         if not decrypted:
             return None, "OpenRouter API key is not configured."

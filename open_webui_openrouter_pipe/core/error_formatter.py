@@ -181,6 +181,9 @@ class ErrorFormatter:
     # Error Emission Methods
     # ======================================================================
 
+    def _safe_detail(self, reason: str) -> str:
+        return reason
+
     async def _emit_error(
         self,
         event_emitter: EventEmitter | None,

@@ -30,7 +30,7 @@ import time
 from collections import deque
 from collections.abc import Callable
 from contextlib import contextmanager
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeVar
@@ -234,7 +234,9 @@ def ensure_timing_file_configured(file_path: str) -> bool:
 # -----------------------------------------------------------------------------
 
 
-def set_timing_context(request_id: str, enabled: bool) -> None:
+def set_timing_context(
+    request_id: str, enabled: bool
+) -> list[tuple[ContextVar[Any], Token[Any]]]:
     """Set timing context for the current request.
 
     Call this at the start of request handling to enable/disable timing
@@ -244,8 +246,10 @@ def set_timing_context(request_id: str, enabled: bool) -> None:
         request_id: Unique identifier for the request (same as SessionLogger uses)
         enabled: Whether timing is enabled for this request
     """
-    _timing_request_id.set(request_id)
-    _timing_enabled.set(enabled)
+    return [
+        (_timing_request_id, _timing_request_id.set(request_id)),
+        (_timing_enabled, _timing_enabled.set(enabled)),
+    ]
 
 
 def clear_timing_context() -> None:
