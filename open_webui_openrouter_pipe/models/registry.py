@@ -1130,6 +1130,11 @@ def _map_effort_to_gemini_budget(effort: str, base_budget: int) -> int | None:
     return int(max(1, round(base_budget * scalar)))
 
 
+def _is_model_glob(value: str) -> bool:
+    """Return True when value contains fnmatch wildcard characters."""
+    return any(ch in value for ch in "*?[")
+
+
 def _parse_model_patterns(value: Any) -> list[str]:
     """Parse comma-separated fnmatch patterns (order preserved, empty removed)."""
     if not isinstance(value, str):

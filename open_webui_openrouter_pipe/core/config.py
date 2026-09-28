@@ -906,7 +906,9 @@ class Valves(BaseModel):
         default="auto",
         title="Model allowlist",
         description=(
-            "Comma separated OpenRouter model IDs to expose in Open WebUI. "
+            "Comma separated OpenRouter model IDs or glob patterns to expose in Open WebUI "
+            "(e.g. 'deepseek/*, z-ai/glm-5*'). Prefix an entry with '!' to exclude matches "
+            "(e.g. 'auto, !openai/*, !*:free'). "
             "Set to 'auto' to import every available Responses-capable model."
         ),
     )

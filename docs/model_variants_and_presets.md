@@ -220,6 +220,10 @@ Variant models work seamlessly with existing model selection:
 - If base model is selected, its configured variants are added automatically
 - Example: Selecting `gpt-4o` enables both "GPT-4o" and "GPT-4o Exacto"
 
+**Pattern selection (`MODEL_ID = "deepseek/*, z-ai/glm-5*, !*:free"`):**
+- Entries containing `*`, `?` or `[` are glob patterns matched against the catalog IDs
+- Entries prefixed with `!` exclude matches; a list of only exclusions (or `auto, !openai/*`) starts from the full catalog
+
 ### Model Filters
 
 Variant models respect all existing filters:
@@ -289,8 +293,8 @@ Variant models inherit tool-calling capabilities:
    MODEL_ID = "anthropic/claude-sonnet-4.5"
    VARIANT_MODELS = "openai/gpt-4o:exacto"
    ```
-   **Issue:** Base GPT-4o is excluded because MODEL_ID lists only the Claude model — MODEL_ID matches exact IDs, not wildcards
-   **Solution:** Add the base model's exact ID to MODEL_ID (e.g. `anthropic/claude-sonnet-4.5, openai/gpt-4o`)
+   **Issue:** Base GPT-4o is excluded because MODEL_ID lists only the Claude model — the GPT-4o base is not covered by any MODEL_ID entry
+   **Solution:** Add the base model's ID or a matching pattern to MODEL_ID (e.g. `anthropic/claude-sonnet-4.5, openai/gpt-4o*`)
 
 ### Variant Tag Capitalization
 
@@ -394,7 +398,7 @@ VARIANT_MODELS = "meta-llama/llama-3.2-3b-instruct:free,meta-llama/llama-3.2-1b-
 ```
 
 **Result:**
-- All models appear in catalog — `auto` imports everything; MODEL_ID matches exact IDs, not wildcards
+- All models appear in catalog — `auto` imports everything
 - Free variants appear for configured models
 - Users can choose between paid and free versions
 

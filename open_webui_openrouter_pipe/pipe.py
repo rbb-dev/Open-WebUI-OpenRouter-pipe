@@ -139,6 +139,9 @@ from .models.reasoning_config import ReasoningConfigManager
 from .models.registry import (
     ModelFamily,
     OpenRouterModelRegistry,
+    _is_model_glob,
+    _matches_any_model_pattern,
+    _parse_model_patterns,
     is_free_model,
     sanitize_model_id,
     supports_tool_calling,
@@ -3206,23 +3209,49 @@ class Pipe:
         if not filter_value or filter_value.lower() == "auto":
             return available_models
 
-        requested = {
-            ModelFamily.base_model(sanitize_model_id(model_id.strip()))
-            for model_id in filter_value.split(",")
-            if model_id.strip()
-        }
-        if not requested:
-            return available_models
+        include_all = False
+        requested: set[str] = set()
+        include_patterns: list[str] = []
+        exclude_patterns: list[str] = []
+        for entry in _parse_model_patterns(filter_value):
+            if entry.startswith("!"):
+                if entry[1:].strip():
+                    exclude_patterns.append(entry[1:].strip().lower())
+            elif entry.lower() == "auto":
+                include_all = True
+            elif _is_model_glob(entry):
+                include_patterns.append(entry.lower())
+            else:
+                requested.add(ModelFamily.base_model(sanitize_model_id(entry)))
+        # Only exclusions given -> start from the full catalog.
+        if not (requested or include_patterns):
+            include_all = True
 
-        selected = [model for model in available_models if model["norm_id"] in requested]
-        missing = requested - {model["norm_id"] for model in selected}
-        if missing:
-            self.logger.log(
-                warn_level(_warned_pipes_maintenance, f"models_missing:{','.join(sorted(missing))}"),
-                "Requested models not found in OpenRouter catalog: %s",
-                ", ".join(sorted(missing)),
+        def _matches(model: dict[str, Any], patterns: list[str]) -> bool:
+            return any(
+                _matches_any_model_pattern(str(model.get(key) or "").lower(), patterns)
+                for key in ("original_id", "norm_id")
             )
-        return selected or available_models
+
+        if include_all:
+            selected = list(available_models)
+        else:
+            selected = [
+                model for model in available_models
+                if model["norm_id"] in requested or _matches(model, include_patterns)
+            ]
+            missing = requested - {model["norm_id"] for model in selected}
+            if missing:
+                self.logger.log(
+                    warn_level(_warned_pipes_maintenance, f"models_missing:{','.join(sorted(missing))}"),
+                    "Requested models not found in OpenRouter catalog: %s",
+                    ", ".join(sorted(missing)),
+                )
+            selected = selected or list(available_models)
+
+        if exclude_patterns:
+            selected = [model for model in selected if not _matches(model, exclude_patterns)]
+        return selected
 
     @timed
     def _apply_model_filters(self, models: list[dict[str, Any]], valves: Pipe.Valves) -> list[dict[str, Any]]:
@@ -3405,7 +3434,7 @@ class Pipe:
                 return specs
             for spec in raw_csv.split(","):
                 spec = spec.strip()
-                if not spec or spec.lower() == "auto":
+                if not spec or spec.lower() == "auto" or spec.startswith("!") or _is_model_glob(spec):
                     continue
                 if "@" in spec:
                     parts = spec.rsplit("@", 1)

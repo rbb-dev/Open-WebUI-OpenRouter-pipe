@@ -623,6 +623,55 @@ class TestModelSelectionAndFiltering:
         finally:
             pipe.shutdown()
 
+    def test_select_models_glob_patterns_and_exclusions(self):
+        """MODEL_ID accepts glob includes, family globs and !exclusions (#63)."""
+        pipe = Pipe()
+
+        def _m(original_id: str) -> dict:
+            norm = original_id.replace("/", ".")
+            return {"id": norm, "norm_id": norm, "original_id": original_id, "name": original_id}
+
+        models = [
+            _m("deepseek/deepseek-v4-pro"),
+            _m("deepseek/deepseek-v4-flash:free"),
+            _m("z-ai/glm-5.3"),
+            _m("z-ai/glm-4.7"),
+            _m("anthropic/claude-fable-5.1"),
+            _m("anthropic/claude-opus-5.5"),
+            _m("openai/gpt-6-sol"),
+            _m("~openai/gpt-sol-latest"),
+            _m("mistralai/mistral-large-2512"),
+        ]
+
+        def ids(value: str) -> list[str]:
+            return [m["original_id"] for m in pipe._select_models(value, models)]
+
+        try:
+            assert ids("deepseek/*, z-ai/glm-5*, anthropic/claude-fable-5*, !*:free") == [
+                "deepseek/deepseek-v4-pro",
+                "z-ai/glm-5.3",
+                "anthropic/claude-fable-5.1",
+            ]
+            # exclusions only -> everything else stays
+            assert ids("!openai/*, !~openai/*, !anthropic/*") == [
+                "deepseek/deepseek-v4-pro",
+                "deepseek/deepseek-v4-flash:free",
+                "z-ai/glm-5.3",
+                "z-ai/glm-4.7",
+                "mistralai/mistral-large-2512",
+            ]
+            # auto + exclusion, dotted pattern form, case-insensitive
+            assert ids("auto, !Z-AI.*") == [
+                m["original_id"] for m in models if not m["original_id"].startswith("z-ai/")
+            ]
+            # exact ids and globs mix
+            assert ids("mistralai/mistral-large-2512, openai/gpt-6-*") == [
+                "openai/gpt-6-sol",
+                "mistralai/mistral-large-2512",
+            ]
+        finally:
+            pipe.shutdown()
+
     def test_apply_model_filters_free_only(self):
         """Test that _apply_model_filters with FREE_MODEL_FILTER=only filters correctly."""
         pipe = Pipe()
