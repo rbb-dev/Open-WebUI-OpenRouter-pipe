@@ -64,7 +64,7 @@ Image handling is described in detail in [Multimodal Intake Pipeline](multimodal
     pictures a tool returns are never capped.
   - `IMAGE_INPUT_SELECTION` controls fallback behavior:
     - `user_turn_only`: only user-attached images are forwarded.
-    - `user_then_assistant`: if the user turn has no images, the pipe may reuse the most recent image already in the conversation - an assistant image extracted from Markdown image syntax, or one the user attached on an earlier turn - bounded by `IMAGE_REUSE_MAX_TURNS`. An image returned by a tool is never reused this way: it belongs to its tool round (section 5.4), and once a tool has returned a picture, nothing older is reused either.
+    - `user_then_assistant`: if the user turn has no images, the pipe may reuse the most recent image already in the conversation - an assistant image extracted from Markdown image syntax, or one the user attached on an earlier turn - bounded by `IMAGE_REUSE_MAX_TURNS`. An image returned by a tool is never reused this way: it belongs to its tool round (section 5.4), and a tool round ends the window for pictures from before it — once a tool has run, nothing older is reused either, whether or not that round returned a picture. A round that asked you a question is not a media round and does not end the window, and neither does a picture the model shows you in its own reply to a round.
 - An image the person attached is never written to Open WebUI storage, in any chat and by any request of a turn. A `data:` URL within `BASE64_MAX_SIZE_MB` is sent as it came apart from the scheme, which is lower-cased to `data:`, and one over the limit is not sent, the picture being skipped and the person told in a status on their latest message; a remote image is downloaded and its bytes sent inline, or its link is forwarded when it cannot be downloaded **unless the pipe's own address check refused the host**: a host that does not resolve, or resolves to a non-routable address, fails closed and is not sent, and the person sees `Images: skipped N (could not be fetched, so it was not sent).`; an Open WebUI file URL is read with the requester's access and inlined, so providers never need to fetch from your Open WebUI host. An image reused from an earlier turn is inlined as a `data:` URL, under a media type the pipe resolves from the bytes. Images the model generates are stored by the output path.
 
 ### 3.3 Files, audio, and video
@@ -182,7 +182,7 @@ keeps its copy in memory for the length of that request only, keyed on the reque
 database; the request ends and it is gone, and no marker line is added to the caller's response, so such a call's
 records last for the request, not the conversation. A temporary chat
 keeps nothing, so with tool cards off its rounds reach no later request. (In Open-WebUI tool mode the rounds of a
-temporary chat's reply are held in memory until that reply ends, so Open WebUI's calls back after each round of tool
+temporary chat's reply are held in memory until that reply ends or the provider refuses a call-back the pipe was waiting for, so Open WebUI's calls back after each round of tool
 calls still hand them to the model; see [Persistence](persistence_encryption_and_storage.md).) The calls are written when
 the round starts and each result when its call returns, and the round comes back to the model in call order on that turn. So in a streamed
 reply, Stop keeps a round's calls before the first one still running. A call refused before it ran is answered as soon as it

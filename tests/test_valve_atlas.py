@@ -20,6 +20,7 @@ pinning the reverse direction would need an exemption list longer than the guard
 
 from __future__ import annotations
 
+import inspect
 import re
 from pathlib import Path
 
@@ -88,3 +89,7 @@ def test_the_atlas_default_column_matches_the_model():
         "the atlas states its defaults are verified against the source, and these are "
         "not:\n  " + "\n  ".join(sorted(wrong))
     )
+
+
+# --- the Fusion help surfaces must not scope to the base id alone ------------
+_BASE = re.compile(r"openrouter/fusion(?![\w-])", re.IGNORECASE)

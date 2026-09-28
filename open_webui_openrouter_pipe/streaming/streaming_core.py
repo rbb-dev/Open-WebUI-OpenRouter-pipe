@@ -3691,7 +3691,10 @@ class StreamingHandler:
             ):
                 self._pipe._hand_back_counts.pop((chat_id, message_id), None)
 
-            if holds_the_reply and terminal and not handed_back_for_retry:
+            reply_over = bool(
+                terminal and not handed_back_for_retry and message_id and is_temporary_chat(chat_id)
+            )
+            if reply_over:
                 self._pipe._artifact_store._reply_memory.release(chat_id, message_id)
             if api_hold_key:
                 self._pipe._artifact_store._api_reply_memory.release("", api_hold_key)

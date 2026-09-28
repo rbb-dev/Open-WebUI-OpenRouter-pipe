@@ -62,6 +62,7 @@ from ..storage.owui_files import (
     index_referenced_file_payloads,
     infer_file_mime_type,
     is_linkable_chat,
+    is_temporary_chat,
 )
 from ..storage.users import get_user_by_id
 from ..streaming.constants import DEFERRED_REASONING_FLUSH
@@ -1826,6 +1827,13 @@ class RequestOrchestrator:
                     if escape is not None:
                         await self._note_provider_failure(exc)
                         return escape
+
+                if (__metadata__ or {}).get("message_id") and is_temporary_chat(
+                    (__metadata__ or {}).get("chat_id")
+                ):
+                    self._pipe._artifact_store._reply_memory.release(
+                        (__metadata__ or {}).get("chat_id"), (__metadata__ or {}).get("message_id")
+                    )
 
                 deferred_flush = retry_handoff.pop(DEFERRED_REASONING_FLUSH, None)
                 if deferred_flush is not None:

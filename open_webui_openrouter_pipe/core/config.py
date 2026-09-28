@@ -1259,7 +1259,7 @@ class Valves(BaseModel):
     PERSIST_REASONING_TOKENS: Literal["disabled", "next_reply", "conversation"] = Field(
         default="conversation",
         title="Reasoning retention",
-        description="Reasoning retention: 'disabled' keeps nothing, 'next_reply' keeps thoughts only until the following assistant reply finishes, when that reply happens in this chat; rows whose answering request never arrives are dropped by the periodic cleanup, and 'conversation' keeps them for the full chat history. Reasoning is kept when the provider sends it as a replayable output item; reasoning that arrives only as streamed deltas is shown in the thinking box but not replayed on later turns. A temporary chat stores no reasoning; in Open-WebUI tool mode the thinking of a streamed reply is held in memory for that reply only, and dropped when the pipe answers its last call back or after 15 minutes unused. A call that carries no chat_id has its reasoning and tool records held in memory for the length of that request only and never written to the database (see API_CALL_ARTIFACT_MEMORY), so an API call's records last for the request, not the conversation.",
+        description="Reasoning retention: 'disabled' keeps nothing, 'next_reply' keeps thoughts only until the following assistant reply finishes, when that reply happens in this chat; rows whose answering request never arrives are dropped by the periodic cleanup, and 'conversation' keeps them for the full chat history. Reasoning is kept when the provider sends it as a replayable output item; reasoning that arrives only as streamed deltas is shown in the thinking box but not replayed on later turns. A temporary chat stores no reasoning; in Open-WebUI tool mode the thinking of a streamed reply is held in memory for that reply only, and dropped when the pipe answers its last call back, or when the provider refuses a call-back the pipe was waiting for, or after 15 minutes unused. A call that carries no chat_id has its reasoning and tool records held in memory for the length of that request only and never written to the database (see API_CALL_ARTIFACT_MEMORY), so an API call's records last for the request, not the conversation.",
     )
     TASK_MODEL_REASONING_EFFORT: Literal["none", "minimal", "low", "medium", "high", "xhigh"] = Field(
         default="low",
@@ -1295,7 +1295,7 @@ class Valves(BaseModel):
     PERSIST_TOOL_RESULTS: bool = Field(
         default=False,
         title="Keep tool results",
-        description="Give the model the full arguments and results of tool calls from earlier turns. When disabled, the model sees each tool call from an earlier turn as its name and a short note on whether it succeeded (an ask_user question and the person's answer always go back), and relies on its own earlier answers or runs the tool again. The setting applies in both tool execution modes and decides what the model is handed, not whether results are stored: a shown tool card keeps the full result in the message, and the pipe's own copy of each tool round keeps the full call and result, pictures included, encrypted only while ARTIFACT_ENCRYPTION_KEY is set and ENCRYPT_ALL is on. A temporary chat stores none of its tool rounds or thinking; in Open-WebUI tool mode the rounds and thinking of a streamed reply are held in memory for that reply only, and dropped when the pipe answers its last call back or after 15 minutes unused. A call that carries no chat_id has its tool records held in memory for the length of that request only and never written to the database (see API_CALL_ARTIFACT_MEMORY), so an API call's records last for the request, not the conversation.",
+        description="Give the model the full arguments and results of tool calls from earlier turns. When disabled, the model sees each tool call from an earlier turn as its name and a short note on whether it succeeded (an ask_user question and the person's answer always go back), and relies on its own earlier answers or runs the tool again. The setting applies in both tool execution modes and decides what the model is handed, not whether results are stored: a shown tool card keeps the full result in the message, and the pipe's own copy of each tool round keeps the full call and result, pictures included, encrypted only while ARTIFACT_ENCRYPTION_KEY is set and ENCRYPT_ALL is on. A temporary chat stores none of its tool rounds or thinking; in Open-WebUI tool mode the rounds and thinking of a streamed reply are held in memory for that reply only, and dropped when the pipe answers its last call back, or when the provider refuses a call-back the pipe was waiting for, or after 15 minutes unused. A call that carries no chat_id has its tool records held in memory for the length of that request only and never written to the database (see API_CALL_ARTIFACT_MEMORY), so an API call's records last for the request, not the conversation.",
     )
     API_CALL_ARTIFACT_MEMORY: bool = Field(
         default=True,
@@ -1476,7 +1476,10 @@ class Valves(BaseModel):
             "If a message has staged session-log segments but never signals that it finished "
             "(the worker crashed or was killed), finalize an incomplete zip after this many seconds since the last piece. "
             "This is a cutoff on the last segment, not on the turn: a turn still running when it passes is sealed as "
-            "incomplete too, and a segment it stages afterwards is left stranded until the next assembly. That "
+            "incomplete too, and a segment it stages afterwards is left stranded until the next assembly, unless it lands before "
+            "the sealing pass has read that turn's segments - a pass that finds a terminal segment among the rows it loaded writes the "
+            "turn complete instead; one that lands after that read is not folded into that archive by that pass and is "
+            "picked up by a later one. That "
             "exposure is why the default is long. Each pass takes the oldest stranded bundles first and seals a "
             "bundle only if the sealed write succeeds, keeping the segments for a retry otherwise."
             "The incomplete marker is written at most once per archive: a pass that finds the turn still stale leaves the single marker "
@@ -1883,7 +1886,7 @@ class Valves(BaseModel):
         description=(
             "Controls which images are forwarded to the provider. "
             "'user_turn_only' restricts inputs to the images supplied with the current user message. "
-            "'user_then_assistant' falls back to the most recent image already in the conversation, from either side, when the user did not attach any; when the most recent picture came from a tool, nothing older is reused in its place."
+            "'user_then_assistant' falls back to the most recent image already in the conversation, from either side, when the user did not attach any; a tool round ends the window for pictures from before it, so nothing older is reused after one whether or not it returned a picture. A round that asked you a question is not a media round and does not end the window, and neither does a picture the model shows you in its own reply to a round."
         ),
     )
     IMAGE_REUSE_MAX_TURNS: int = Field(
@@ -2074,7 +2077,7 @@ class Valves(BaseModel):
     )
     ENABLE_OPENROUTER_FUSION: bool = Field(
         default=True,
-        description="Master switch for OpenRouter Fusion support. When enabled, the pipe installs the 'OpenRouter Fusion' filter and attaches it to the openrouter/fusion model automatically.",
+        description="Master switch for OpenRouter Fusion support. When enabled, the pipe installs the 'OpenRouter Fusion' filter and attaches it to the fusion models automatically.",
     )
     AUTO_INSTALL_FUSION_FILTER: bool = Field(
         default=True,
@@ -2086,11 +2089,11 @@ class Valves(BaseModel):
     )
     AUTO_ATTACH_FUSION_FILTER: bool = Field(
         default=True,
-        description="Automatically attach the OpenRouter Fusion filter to the openrouter/fusion model only (so its panel/judge options appear in the Integrations menu). Never attaches to other models. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone.",
+        description="Automatically attach the OpenRouter Fusion filter to the fusion models only — `openrouter/fusion`, `openrouter/fusion-flash`, and their `:tag` variant and `@preset/…` rows (so their panel/judge options appear in the Integrations menu). Never attaches to any other model. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone.",
     )
     AUTO_DEFAULT_FUSION_FILTER: bool = Field(
         default=True,
-        description="Mark the OpenRouter Fusion filter as a Default Filter on the openrouter/fusion model (pre-enabled per chat). Does NOT force Fusion to run — the per-user 'Always run Fusion' toggle is off by default. Reapplied at every catalog refresh; turning it off clears the default the pipe seeded, leaving the filter attached.",
+        description="Mark the OpenRouter Fusion filter as a Default Filter on the fusion models (pre-enabled per chat) — including their `:tag` variant and `@preset/…` rows. Does NOT force Fusion to run — the per-user 'Always run Fusion' toggle is off by default. Reapplied at every catalog refresh; turning it off clears the default the pipe seeded, leaving the filter attached.",
     )
     FUSION_BACKEND: Literal["openrouter", "internal"] = Field(
         default="internal",

@@ -1472,6 +1472,9 @@ class SessionLogManager:
 
         merged_events.sort(key=_event_ts)
 
+        if not terminal and any(seg.get("type") == "session_log_segment_terminal" for seg in segments):
+            terminal = True
+
         # Add a final synthetic marker to make incomplete bundles explicit.
         if not terminal:
             merged_events.append(

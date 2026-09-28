@@ -35,8 +35,8 @@ FUSION_FILTER_DISPLAY_NAME = "OpenRouter Fusion"
 #   OWUI full model id  "open_webui_openrouter_pipe.openrouter.fusion"  (runtime body["model"])
 # The first two keep the vendor/model slash; the last two are all-dots. Match both
 # shapes — the slash form via the anchored pattern, the dotted form via a suffix match.
-_FUSION_MODEL_PATTERN = re.compile(r"^openrouter/fusion(?:-flash)?$")
-_FUSION_DOTTED_PATTERN = re.compile(r"(?:^|\.)openrouter\.fusion(?:-flash)?$")
+_FUSION_MODEL_PATTERN = re.compile(r"^~?openrouter/fusion(?:-flash)?(?::[^@\s][^@]*)?$")
+_FUSION_DOTTED_PATTERN = re.compile(r"(?:^|\.)~?openrouter\.fusion(?:-flash)?(?::[^@\s][^@]*)?$")
 
 
 def canonical_model_slug(raw: str) -> str:
@@ -94,8 +94,8 @@ OWUI_OPENROUTER_PIPE_MARKER = "__MARKER__"
 # Match the fusion model in slash forms ("openrouter/fusion", "<prefix>.openrouter/fusion")
 # and all-dots forms ("openrouter.fusion", "<funcid>.openrouter.fusion"). The pipe
 # sanitizes '/'->'.' in OWUI model ids, so the runtime body["model"] is all-dots.
-_FUSION_MODEL_PATTERN = re.compile(r"^openrouter/fusion(?:-flash)?$")
-_FUSION_DOTTED_PATTERN = re.compile(r"(?:^|\\.)openrouter\\.fusion(?:-flash)?$")
+_FUSION_MODEL_PATTERN = re.compile(r"__FUSION_MODEL_PATTERN__")
+_FUSION_DOTTED_PATTERN = re.compile(r"__FUSION_DOTTED_PATTERN__")
 
 
 class FusionConfigError(Exception):
@@ -123,9 +123,10 @@ __KEEP_WHAT_STILL_FITS__
             default=False,
             title="Allow on non-Fusion models",
             description=(
-                "Off (default): this filter only acts on the openrouter/fusion model and "
-                "no-ops if attached to anything else. On: it adds the Fusion panel to any "
-                "model it is attached to."
+                "Off (default): this filter acts only on the fusion models — "
+                "`openrouter/fusion`, `openrouter/fusion-flash` and their `:tag` / "
+                "`@preset/…` / `~` forms — and no-ops if attached to anything else. "
+                "On: it adds the Fusion panel to any model it is attached to."
             ),
         )
 
@@ -300,4 +301,6 @@ def render_openrouter_fusion_filter_source(*, marker: str) -> str:
         .replace("__FILTER_ID__", FUSION_FILTER_FUNCTION_ID)
         .replace("__ADAPTER_CACHE__", _ADAPTER_CACHE)
         .replace("__KEEP_WHAT_STILL_FITS__", _KEEP_WHAT_STILL_FITS)
+        .replace("__FUSION_MODEL_PATTERN__", _FUSION_MODEL_PATTERN.pattern)
+        .replace("__FUSION_DOTTED_PATTERN__", _FUSION_DOTTED_PATTERN.pattern)
     )

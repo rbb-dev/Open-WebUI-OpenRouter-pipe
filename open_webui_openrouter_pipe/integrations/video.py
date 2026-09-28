@@ -2528,7 +2528,10 @@ class VideoGenerationAdapter:
             return False
         if getattr(valves, "VIDEO_INTENT_SKIP_WHEN_EMPTY_CHAT", True):
             messages = body.get("messages") if isinstance(body, dict) else None
-            if isinstance(messages, list) and len(messages) <= 1:
+            if isinstance(messages, list) and len([
+                m for m in messages
+                if isinstance(m, dict) and (m.get("role") or "").lower() not in ("system", "developer")
+            ]) <= 1:
                 has_attachments = bool(collect_attachments_from_video_meta(video_meta))
                 if not has_attachments:
                     return False

@@ -151,6 +151,15 @@ def _is_ask_user_name(name: str, ask_user_names: frozenset[str] | None) -> bool:
     return name == "ask_user" or name in ask_user_names
 
 
+def _stored_round_name(db_artifacts: dict[str, dict], call_id: Any) -> str:
+    for payload in db_artifacts.values():
+        if not isinstance(payload, dict) or payload.get("type") != "function_call":
+            continue
+        if str(payload.get("call_id") or "") == str(call_id or ""):
+            return str(payload.get("name") or "")
+    return ""
+
+
 def _without_tool_result(
     item: dict[str, Any],
     names: dict[str, str],
@@ -198,6 +207,26 @@ def _tool_name_for_round(messages: list[dict[str, Any]], position: int) -> str:
         function = calls[ordinal].get("function")
         return str((function or {}).get("name") or "") if isinstance(function, dict) else ""
     return ""
+
+
+def _issuing_assistant_index(messages: list[dict[str, Any]], position: int) -> int:
+    target = str(messages[position].get("tool_call_id") or "")
+    if not target:
+        return -1
+    for offset in range(position - 1, -1, -1):
+        message = messages[offset]
+        if not isinstance(message, dict):
+            continue
+        if (message.get("role") or "").lower() == "tool":
+            continue
+        calls = [
+            call for call in (message.get("tool_calls") or [])
+            if isinstance(call, dict) and str(call.get("id") or "") == target
+        ]
+        if calls:
+            return offset
+        break
+    return -1
 
 
 _REUSE_DOWNLOAD_MEMO_MAX_BYTES = 8 * 1024 * 1024
@@ -646,6 +675,7 @@ async def transform_messages_to_input(
     openai_input: list[dict] = []
     last_image_blocks: list[dict[str, Any]] = []
     last_image_turn: int | None = None
+    window_armed_at: set[int] = set()
 
     def _message_identifier(entry: dict[str, Any]) -> str | None:
         """Return the most specific identifier available on ``entry``."""
@@ -859,6 +889,13 @@ async def transform_messages_to_input(
             if not call_id:
                 continue
 
+            round_name = _tool_name_for_round(messages, idx)
+            issuer = _issuing_assistant_index(messages, idx)
+            if not _is_ask_user_name(round_name, ask_user_names) and not (
+                issuer >= 0 and issuer in window_armed_at and not is_picture_output(raw_content)
+            ):
+                last_image_blocks, last_image_turn = [], None
+
             tool_content = raw_content
             if tool_content is None:
                 tool_content_text = ""
@@ -870,9 +907,7 @@ async def transform_messages_to_input(
                 except (TypeError, ValueError):
                     tool_content_text = str(tool_content)
 
-            if _withheld(msg_turn_index) and not _is_ask_user_name(
-                _tool_name_for_round(messages, idx), ask_user_names
-            ):
+            if _withheld(msg_turn_index) and not _is_ask_user_name(round_name, ask_user_names):
                 tool_content_text = unretained_tool_result(_tool_result_failed(tool_content_text))
 
             tool_item: dict[str, Any] = {
@@ -1976,6 +2011,7 @@ async def transform_messages_to_input(
                 for url in assistant_image_urls
             ]
             last_image_turn = msg_turn_index
+            window_armed_at.add(idx)
 
         appended_text_chunks: list[dict[str, Any]] = []
 
@@ -2082,7 +2118,14 @@ async def transform_messages_to_input(
                                 msg_id,
                             )
                             continue
-                        if item_type == "function_call_output" and is_picture_output(item.get("output")):
+                        if item_type == "function_call_output" and not (
+                            _is_ask_user_name(
+                                _stored_round_name(db_artifacts, item.get("call_id"))
+                                or tool_names_by_call_id.get(str(item.get("call_id")) or "", ""),
+                                ask_user_names,
+                            )
+                            or (idx in window_armed_at and not is_picture_output(item.get("output")))
+                        ):
                             last_image_blocks, last_image_turn = [], None
                         if _withheld(msg_turn_index):
                             withheld_items = _without_tool_result(

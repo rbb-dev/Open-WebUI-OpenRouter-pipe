@@ -1359,7 +1359,7 @@ class FilterManager:
             desired_meta={
                 "description": (
                     "Configure OpenRouter Fusion (multi-model judge panel): panel models, judge, "
-                    "preset, and optional force-run. Acts on the openrouter/fusion model."
+                    "preset, and optional force-run. Acts on the fusion models."
                 ),
                 "toggle": True,
                 "manifest": {
