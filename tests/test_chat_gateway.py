@@ -4011,6 +4011,17 @@ async def test_chat_completions_stream_adapts_tool_calls_and_usage() -> None:
         message_items = [i for i in final["output"] if i.get("type") == "message"]
         assert message_items, "Expected assistant message output"
         assert "annotations" in message_items[0]
+        assert message_items[0]["annotations"] == [
+            {
+                "type": "url_citation",
+                "url_citation": {
+                    "url": "https://example.com/web-search-result",
+                    "title": "Example result",
+                    "start_index": 0,
+                    "end_index": 5,
+                },
+            }
+        ]
         assert "reasoning_details" in message_items[0]
 
     await pipe.close()

@@ -480,3 +480,9 @@ def _valve_descriptions() -> dict[str, str]:
                     except ValueError:
                         pass
     return out
+
+
+def _direct_uploads_module() -> ModuleType:
+    return _load_filter_from_source(
+        FilterManager.render_direct_uploads_filter_source(), "_embedded_direct_uploads_filter"
+    )

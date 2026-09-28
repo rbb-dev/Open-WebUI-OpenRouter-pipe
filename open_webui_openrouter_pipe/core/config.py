@@ -1338,7 +1338,12 @@ class Valves(BaseModel):
             "enforcing explicit types, required fields, and disallowing additionalProperties. Only the "
             "registry tools this pipe runs are made strict; a schema that will be handed back is forwarded untouched. "
             "Tools are also sent with `strict: true` on `/chat/completions`, nested under each `function`; "
-            "a provider that does not support strict tool calling there will reject the request."
+            "a provider that does not support strict tool calling there will reject the request. "
+            "On the Responses route the registry and direct-tool specs the pipe advertises also carry "
+            "`strict: true`, so the provider enforces the strictified schema. The strictified schema is not "
+            "renamed to meet strict mode's property-name rules, so a tool whose author gave a property a name "
+            "with a dot, a space, or more than 64 characters, or a free-form array whose `items` declare no "
+            "properties, can be rejected by a strict provider; turn this valve off for such a tool."
         ),
     )
     MAX_FUNCTION_CALL_LOOPS: int = Field(
@@ -1503,7 +1508,7 @@ class Valves(BaseModel):
         default=200,
         ge=1,
         le=2000,
-        description="Maximum number of in-flight OpenRouter requests allowed per process. A request holds its slot until its own tool calls have finished cleanup, so a tool-bearing request occupies its slot a little longer than its answer. The wait list behind this limit is bounded: the pipe queues further requests and sheds load with a \"Server busy (503)\" card once that queue is full.",
+        description="Maximum number of in-flight OpenRouter requests allowed per process. Takes effect without a restart, in both directions: a higher value admits more requests at once, and a lower one binds from the moment it is saved, counting the requests already running, which finish first. A request holds its slot until its own tool calls have finished cleanup, so a tool-bearing request occupies its slot a little longer than its answer. The wait list behind this limit is bounded: the pipe queues further requests and sheds load with a \"Server busy (503)\" card once that queue is full.",
     )
     SSE_WORKERS_PER_REQUEST: int = Field(
         default=4,
@@ -1704,7 +1709,9 @@ class Valves(BaseModel):
         ge=1,
         le=2000,
         description=(
-            "Global ceiling for simultaneously executing tool calls; Open WebUI's ask_user takes no slot."
+            "Global ceiling for simultaneously executing tool calls; Open WebUI's ask_user takes no slot. "
+            "Takes effect without a restart, in both directions: a higher value admits more calls at once, "
+            "and a lower one binds from the moment it is saved, counting the calls already running, which finish first."
         ),
     )
     MAX_PARALLEL_TOOLS_PER_REQUEST: int = Field(
@@ -2276,7 +2283,7 @@ class Valves(BaseModel):
         default=2,
         ge=1,
         le=100,
-        description="Maximum number of video generation jobs running per pipe process.",
+        description="Maximum number of video generation jobs running per pipe process. Takes effect without a restart, at the next generation: a lower value binds from that moment and the jobs already running finish first.",
     )
     MAX_CONCURRENT_VIDEO_GENS_PER_USER: int = Field(
         default=2,

@@ -362,17 +362,37 @@ async def test_materialize_declared_size_over_limit_raises(
 
 @pytest.mark.asyncio
 async def test_materialize_unknown_size_cloud_denied_when_not_allowed(
-    logger: logging.Logger, monkeypatch: pytest.MonkeyPatch
+    logger: logging.Logger, monkeypatch: pytest.MonkeyPatch, upload_dir: Path
 ):
-    """Unknown declared size + non-local provider + not allowed => rejected."""
+    """Unknown declared size + non-local provider + not allowed => rejected.
+
+    The refusal must be the unknown-size arm specifically, not any of the other
+    ten raises the function can produce, so the reason, the not-denied flag and
+    the absence of any storage read are all asserted.
+    """
     monkeypatch.setattr(owui_files, "authorize_file_read", AsyncMock(return_value=True))
     monkeypatch.setattr(owui_files, "_OWUI_STORAGE_PROVIDER", "s3")
+    backing = upload_dir / "blob.bin"
+    backing.write_bytes(b"cloud-bytes")
+    called: dict[str, bool] = {"storage": False}
+
+    def _get_file(key: str) -> str:
+        called["storage"] = True
+        return str(backing)
+
+    monkeypatch.setattr(
+        owui_files, "get_owui_storage",
+        lambda: SimpleNamespace(get_file=_get_file),
+    )
     fobj = _file_obj(id="f1", user_id="u1", path="key", meta={})
-    with pytest.raises(RequiredInternalFileError):
+    with pytest.raises(RequiredInternalFileError) as ei:
         await materialize_owui_file_to_temp(
             fobj, user=SimpleNamespace(id="u1", role="user"),
             logger=logger, max_bytes=1000, allow_unknown_size=False,
         )
+    assert "unknown size and cannot be safely fetched from cloud storage" in str(ei.value)
+    assert ei.value.denied is not True
+    assert called["storage"] is False
 
 
 @pytest.mark.asyncio

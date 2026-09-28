@@ -80,7 +80,7 @@ Behavior:
 - The special `openrouter/auto` model is included in the catalog and can be selected like any other model. Auto Router configuration (allowed model patterns) is managed in the OpenRouter UI (Settings → Plugins) and is not surfaced in Open WebUI.
 - Optional: the pipe can schedule a background “model metadata sync” that writes Open WebUI model metadata:
   - `meta.capabilities` (capability checkboxes), and
-  - `meta.profile_image_url` (model icon as a PNG data URL), and
+  - `meta.profile_image_url` (model icon as a PNG data URL), stamped with the source URL the icon was downloaded from so an unchanged source is not downloaded again, which keeps a hand-picked icon on that row until its source URL changes — a change to the image at the same URL is therefore not picked up — and
   - `meta.description` (model description text).
   This behavior is controlled by `UPDATE_MODEL_CAPABILITIES`, `UPDATE_MODEL_IMAGES`, and `UPDATE_MODEL_DESCRIPTIONS`. A sync that fails or is cancelled is retried on the next model-list refresh and its exception is logged at ERROR, so a stale sync is distinguishable from a healthy one. See: [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry.md).
   - New model access control defaults are set **on insert only**: `NEW_MODEL_ACCESS_CONTROL` determines whether newly inserted OpenRouter overlays are public (wildcard read grant) or private (no access grants), with the `admins` option relying on Open WebUI's `BYPASS_ADMIN_ACCESS_CONTROL` for admin access.

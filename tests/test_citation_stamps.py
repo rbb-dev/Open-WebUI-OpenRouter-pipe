@@ -44,7 +44,13 @@ PACKAGE = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 # socket and the room-membership lookup, and the valve-off arm of `_pipe_dashboard_sub`
 # emits its own denied notice -- both function-local inside a broad guard, beside the
 # other socket lookups in the same module.
-_EXPECTED_OWUI_IMPORTS = (25, 89)
+# 89 -> 90: the icon pass's stored-state batch read (`_stored_profile_images` in
+# models/catalog_manager.py) reaches the Models table lazily, beside the per-model
+# `get_model_by_id` it supplements, so the skip decision can be made before the gather.
+# 90 -> 91: the retirement pass (`retire_families_whose_install_valve_is_off` in
+# filters/filter_manager.py) looks the rows up through Open WebUI's `Functions` lazily, like
+# the module's other install and repair passes.
+_EXPECTED_OWUI_IMPORTS = (25, 91)
 
 @pytest.mark.skipif(
     bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),

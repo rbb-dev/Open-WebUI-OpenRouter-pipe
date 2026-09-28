@@ -140,6 +140,8 @@ class FusionInnerInvocation:
     rejected_user_valves: list = field(default_factory=list)
     no_usable_member: bool = False
     tool_breaker: Any = None
+    user_model: Any = None
+    user_model_resolved: bool = False
 
 
 async def run_fusion_member(
@@ -224,6 +226,8 @@ async def run_fusion_member(
             batch_cap=outer_ctx.batch_cap,
             request=outer_ctx.request,
             user=outer_ctx.user,
+            resolved_user=invocation.user_model,
+            resolved_user_done=invocation.user_model_resolved,
             metadata=identifier_metadata,
             request_id=SessionLogger.request_id.get() or "",
             fusion_inner=True,
@@ -260,6 +264,8 @@ async def run_fusion_member(
             outcome_sink=sink,
             user_valves=invocation.user_valves,
             rejected_user_valves=list(invocation.rejected_user_valves),
+            resolved_user_model=invocation.user_model,
+            resolved_user_done=invocation.user_model_resolved,
         )
         content = result if isinstance(result, str) else ""
         if captured_files:

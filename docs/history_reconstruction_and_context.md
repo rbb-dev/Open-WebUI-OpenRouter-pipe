@@ -247,7 +247,9 @@ A reasoning row keeps the `signature`, `format` and `encrypted_content` the prov
 A model produces reasoning at a particular moment: before a tool call, after its result, or between two
 sentences of an answer. Open WebUI stores the answer as text, so that position is lost unless the pipe records
 it. Each persisted reasoning item therefore carries an anchor - which call it preceded or followed, or which
-assistant message it sat before - and replay puts it back in that place rather than appending it.
+assistant message it sat before - and replay puts it back in that place rather than appending it. An ordinal at
+or beyond the turn's message count places the block after the last message, in that turn: a continued turn whose
+carried turn ends in reasoning produces exactly that one-past ordinal.
 
 Anchors are **scoped to a turn**, where a turn is the region between user messages. Tool `call_id` values are
 not guaranteed unique across a conversation: in chats saved before the pipe made the ids it invents unique, the

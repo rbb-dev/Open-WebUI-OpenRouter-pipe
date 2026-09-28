@@ -66,7 +66,7 @@ Tool *schemas* are assembled by the tool registry builder and attached to the ou
 ### Tool sources (in order)
 
 1. **Open WebUI tool registry** (`__tools__` dict)
-   - Converted to OpenAI tool specs (`{"type":"function","name",...}`) via `ResponsesBody.transform_owui_tools(...)`.
+   - Converted to OpenAI tool specs (`{"type":"function","name",...}`) by `_build_collision_safe_tool_specs_and_registry` (called from `requests/orchestrator.py`), which builds each registry entry with `_responses_spec_from_owui_tool_cfg`.
    - When `TOOL_EXECUTION_MODE="Pipeline"` and `ENABLE_STRICT_TOOL_CALLING=true`, each tool schema is strictified:
      - Object nodes get `additionalProperties: false`.
      - All declared properties are marked required; properties that were not explicitly required become nullable (their type gains `"null"`).
@@ -76,6 +76,7 @@ Tool *schemas* are assembled by the tool registry builder and attached to the ou
      - If a schema cannot be serialized for strictification, it is sent unmodified (with a warning logged).
      - A small LRU cache (size 128) avoids repeated strictification work for identical schemas.
      - The strictified copy is only what is advertised to the model; the executor keeps the tool's original schema, so argument validation (such as the empty-arguments guard) uses the tool's own `required` list.
+     - A tool the pipe advertises on the Responses route also carries `strict: true`, so the provider enforces the strictified schema (except where the schema is free-form and cannot be made strict: an array whose `items` node declares no properties is left open, because sealing it could only be satisfied by an empty object); a provider that does not support strict tool calling rejects the request.
 
 2. **Open WebUI Direct Tool Servers** (direct entries in `__metadata__["tools"]`)
    - These are user-configured OpenAPI tool servers that Open WebUI executes client-side.
@@ -113,7 +114,7 @@ Notes:
 - A round that names an offered tool the pipe has nothing to run behind goes back whole after exactly one upstream request: an API caller gets it back directly, and a streamed saved chat hands it to Open WebUI. The pipe never answers `Tool not found` for a name the request itself offered.
 - A reply's hand-back budget is charged only against that reply, and only a reply Open WebUI can re-ask is charged at all. A request that supplies both a `chat_id` and a `message_id` spends one turn of that reply's budget per turn. Anything else — an OpenAI-compatible API caller, a caller that supplies only one of the two ids, any internal Fusion member, and Open WebUI's own task requests such as follow-up and title generation on the same chat — is handed back once per request, so those requests no longer share a budget with each other or with a live reply. The budget ends when a turn ends the reply; a turn the person continues from — a Continue, or a tool prompt they answered — is a further turn of that same reply rather than the end of it, so it carries the budget on rather than resetting it. The pipe keeps a budget for at least as many replies as it admits requests at once (`MAX_CONCURRENT_REQUESTS`), so a reply in flight is never the one whose budget is dropped to make room.
 - A name nobody offered is answered `Tool not found` inside the loop.
-- A schema that will be handed back is forwarded exactly as written and never strictified. A caller's tool the pipe runs keeps the fields the request put on it (`cache_control`, `strict`), and its `strict` is the caller's.
+- A schema that will be handed back is forwarded exactly as written and never strictified. A caller's tool the pipe runs keeps the fields the request put on it (`cache_control`, `strict`), and its `strict` is the caller's - unless the valve is on and passthrough is off, in which case the pipe strictifies the schema and advertises `strict: true` itself.
 - A tool receives only the arguments its schema declares, as in Open WebUI's own tool loop: anything else the model sends is dropped before the tool runs, so it can never replace what Open WebUI bound into the tool (such as the user a built-in tool acts for) or point a browser-run call at another operation or server.
 - Before each call the pipe hands the tool the chat's messages and files as the current request carries them (`__messages__`, `__files__`), as Open WebUI's own loop does; a Fusion panel model's tools see the person's chat.
 - The pipe does not “stream” tool outputs mid-request. Tools are executed between Responses calls.

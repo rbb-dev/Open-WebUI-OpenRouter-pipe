@@ -132,6 +132,10 @@ def _install_open_webui_stubs() -> None:
             return None
 
         @staticmethod
+        async def get_models_by_ids(_ids, db=None):
+            return []
+
+        @staticmethod
         async def get_all_models():
             return []
 

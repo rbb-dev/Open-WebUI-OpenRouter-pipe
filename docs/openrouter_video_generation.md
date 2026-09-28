@@ -1980,8 +1980,13 @@ next request.
 Two valves cap simultaneous generations:
 
 - **`MAX_CONCURRENT_VIDEO_GENS`** (default 2): global cap per pipe
-  process. Implemented as a class-level lazy `asyncio.Semaphore`. When
-  exhausted, new requests wait silently in the semaphore queue.
+  process. One semaphore object is the gate for the life of the
+  process on one event loop, and a valve change resizes it in place
+  rather than replacing it. A higher value admits that many more jobs
+  at once; a lower one binds from the moment it is saved, counting the
+  jobs already running — those finish first, and no new job starts
+  until the pool is back under the new number. When exhausted, new
+  requests wait silently in the semaphore queue.
 - **`MAX_CONCURRENT_VIDEO_GENS_PER_USER`** (default 2): per-user cap.
   Implemented as a counter + per-user lock. Exceeding the cap returns
   an immediate visible error in chat — the user must wait for one of
@@ -2016,7 +2021,7 @@ Functions → OpenRouter pipe → Valves; the per-model filter ones live on each
 | Valve | Default | Range | Purpose |
 |-------|---------|-------|---------|
 | `ENABLE_VIDEO_GENERATION` | `True` | bool | Master kill switch. False removes all video models from `pipes()` output and deactivates all installed per-model video filter rows at the next model-list refresh; the rows are identified by their source, so a hand-made copy of one of these filters' source is switched off too. Turning it back on re-activates the ones still in the catalogue, whether or not `AUTO_INSTALL_VIDEO_FILTERS` is on. |
-| `AUTO_INSTALL_VIDEO_FILTERS` | `True` | bool | Install per-model filter rows in OWUI Functions table on `pipes()`. A model whose catalogue entry publishes no video contract is left as it is: any filter it already has is kept, and none is installed for it. With this off, an installed row whose stored source is out of date is logged but never rewritten, so every fix to that filter stays undelivered until it is on. |
+| `AUTO_INSTALL_VIDEO_FILTERS` | `True` | bool | Install per-model filter rows in OWUI Functions table on `pipes()`. A model whose catalogue entry publishes no video contract is left as it is: any filter it already has is kept, and none is installed for it. With this off, an installed row whose stored source is out of date is logged but never rewritten, so every fix to that filter stays undelivered until it is on. Turning this off retires the rows the pipe installed for it - switched off, not deleted, so their settings survive - and turning it back on brings them back; a copy an admin installed by hand carries no such record and is left alone. |
 | `AUTO_ATTACH_VIDEO_FILTERS` | `True` | bool | Attach each filter to its corresponding video model row. |
 | `AUTO_DEFAULT_VIDEO_FILTERS` | `True` | bool | Keep per-model filter enabled by default per chat (**re-asserted on every catalog metadata sync** — admins who manually disable a filter will see it re-defaulted on the next sync; set to `False` to opt out). |
 | `VIDEO_INITIAL_POLL_DELAY_SECONDS` | `5.0` | 0.0–60.0 | Wait before the first poll on a freshly submitted job. |
@@ -2027,7 +2032,7 @@ Functions → OpenRouter pipe → Valves; the per-model filter ones live on each
 | `VIDEO_STATUS_POLL_MAX_ERRORS` | `5` | 1–25 | Tolerable consecutive transient poll errors before failing. |
 | `REMOTE_VIDEO_MAX_SIZE_MB` | `500` | 1–2048 | Max downloaded video size; oversized aborts streaming. Bounds the generated video only, never an attachment. |
 | `VIDEO_DOWNLOAD_CHUNK_SIZE` | `1048576` | 65536–8388608 | Chunk size in bytes for streaming download. |
-| `MAX_CONCURRENT_VIDEO_GENS` | `2` | 1–100 | Global concurrency cap per pipe process. |
+| `MAX_CONCURRENT_VIDEO_GENS` | `2` | 1–100 | Global concurrency cap per pipe process. Applies on the next generation, with no restart; a lower value binds from that moment and jobs already running finish first. |
 | `MAX_CONCURRENT_VIDEO_GENS_PER_USER` | `2` | 1–25 | Per-user concurrency cap. |
 | `VIDEO_FRAME_IMAGE_MAX_BYTES` | `12_582_912` (12 MB) | 65536–67108864 | Per-image decoded size cap. |
 | `VIDEO_FRAME_TOTAL_MAX_BYTES` | `52_428_800` (50 MB) | 65536–134217728 | Combined frame-bytes cap across one request. |
@@ -2056,6 +2061,8 @@ Tuning hints:
   `MAX_CONCURRENT_VIDEO_GENS` (process-wide cap) but keep
   `MAX_CONCURRENT_VIDEO_GENS_PER_USER` low (per-user fairness). Watch
   memory pressure — each lifecycle pins a temp file ~50 MB to ~500 MB.
+  The cap binds during the edit, so lowering it stops new jobs at once even
+  while the ones already running drain.
 - **Long jobs** (Sora 20s clips): no change needed.
   `VIDEO_MAX_POLL_TIME_SECONDS` bounds silence, not duration, so a render
   that keeps reporting progress runs to completion at any length.

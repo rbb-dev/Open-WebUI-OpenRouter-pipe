@@ -2,11 +2,12 @@
 import asyncio
 import math
 from typing import Any
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from open_webui_openrouter_pipe.core.circuit_breaker import CircuitBreaker
-from open_webui_openrouter_pipe.tools.tool_executor import _ToolExecutionContext
+from open_webui_openrouter_pipe.tools.tool_executor import _ToolExecutionContext, _resolved_user_obj
 
 
 async def _echo_tool(**kwargs: Any) -> str:

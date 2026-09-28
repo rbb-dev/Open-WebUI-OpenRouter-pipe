@@ -100,6 +100,83 @@ def _ensure_pipe_meta(meta_dict: dict) -> dict:
     return pipe_meta
 
 
+def _covered_icon(row: Any, icon_url: str) -> str | None:
+    if row is None:
+        return None
+    data_url, stamp = row[0], row[1]
+    if data_url and stamp == icon_url:
+        return data_url
+    return None
+
+
+def _warn_on_empty_read(
+    ids: list[str],
+    rows: Any,
+    logger: Any,
+) -> dict[str, tuple[str | None, str | None, bool, bool]]:
+    if rows:
+        return {}
+    logger.warning(
+        "Stored model icon read failed (returned no rows for %d ids); "
+        "every icon will be re-fetched",
+        len(ids),
+    )
+    return {}
+
+
+async def _stored_profile_images(
+    models: list[dict[str, Any]],
+    pipe_identifier: str,
+    logger: Any,
+) -> dict[str, tuple[str | None, str | None, bool, bool]]:
+    from open_webui.models.models import Models
+
+    from ..api.transforms import _get_disable_param
+
+    ids = [
+        f"{pipe_identifier}.{model['id']}"
+        for model in models
+        if isinstance(model.get("id"), str) and model["id"]
+    ]
+    if not ids:
+        return {}
+    try:
+        rows = await Models.get_models_by_ids(ids)
+    except Exception as exc:
+        logger.warning(
+            "Stored model icon read failed; every icon will be re-fetched: %s",
+            exc,
+            exc_info=True,
+        )
+        return {}
+    if not rows:
+        return _warn_on_empty_read(ids, rows, logger)
+
+    stored: dict[str, tuple[str | None, str | None, bool, bool]] = {}
+    for row in rows or []:
+        model_id = getattr(row, "id", None)
+        if not isinstance(model_id, str) or not model_id:
+            continue
+        meta = getattr(row, "meta", None)
+        dump = getattr(meta, "model_dump", None)
+        meta_dict = dump() if callable(dump) else meta
+        if not isinstance(meta_dict, dict):
+            meta_dict = {}
+        pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
+        if not isinstance(pipe_meta, dict):
+            pipe_meta = {}
+        data_url = meta_dict.get("profile_image_url")
+        stamp = pipe_meta.get("image_source_url")
+        params = getattr(row, "params", None)
+        stored[model_id] = (
+            data_url if isinstance(data_url, str) and data_url else None,
+            stamp if isinstance(stamp, str) and stamp else None,
+            bool(_get_disable_param(params, "disable_image_updates")),
+            bool(_get_disable_param(params, "disable_model_metadata_sync")),
+        )
+    return stored
+
+
 def _apply_list_filter_ids(
     meta_dict: dict,
     *,
@@ -1361,8 +1438,12 @@ class ModelCatalogManager:
 
             icon_data_mapping: dict[str, str] = {}
             maker_data_mapping: dict[str, str] = {}
+            slug_to_icon_url: dict[str, str] = {}
+            maker_to_image_url: dict[str, str] = {}
+            stored_icons: dict[str, tuple[str | None, str | None, bool, bool]] = {}
             if valves.UPDATE_MODEL_IMAGES:
-                slug_to_icon_url: dict[str, str] = {}
+                stored_icons = await _stored_profile_images(models, pipe_identifier, self.logger)
+                slug_to_icon_url = {}
                 for model in models:
                     original_id = model.get("original_id")
                     if not isinstance(original_id, str) or not original_id:
@@ -1373,9 +1454,38 @@ class ModelCatalogManager:
 
                 maker_to_image_url = {k: v for k, v in maker_mapping.items() if isinstance(v, str) and v}
 
-                unique_urls = sorted(set(slug_to_icon_url.values()) | set(maker_to_image_url.values()))
+                stored_data_by_url: dict[str, str] = {}
+                fetchable: dict[str, str] = {}
+                needs_maker: set[str] = set()
+                for model in models:
+                    original_id = model.get("original_id")
+                    if not isinstance(original_id, str) or not original_id:
+                        continue
+                    row = stored_icons.get(f"{pipe_identifier}.{model.get('id')}")
+                    if row is not None and (row[2] or row[3]):
+                        continue
+                    icon_url = slug_to_icon_url.get(original_id)
+                    if icon_url:
+                        covered = _covered_icon(row, icon_url)
+                        if covered is not None:
+                            stored_data_by_url[original_id] = covered
+                            continue
+                        fetchable[original_id] = icon_url
+                        continue
+                    maker_id = original_id.split("/", 1)[0]
+                    if maker_id in maker_to_image_url:
+                        covered = _covered_icon(row, maker_to_image_url[maker_id])
+                        if covered is not None:
+                            stored_data_by_url[original_id] = covered
+                        else:
+                            needs_maker.add(maker_id)
+
+                for maker in needs_maker:
+                    fetchable.setdefault(maker, maker_to_image_url[maker])
+
+                unique_urls = sorted(set(fetchable.values()))
+                url_to_data: dict[str, str] = {}
                 if unique_urls:
-                    url_to_data: dict[str, str] = {}
                     fetch_semaphore = asyncio.Semaphore(10)
 
                     async def _fetch_image_data_url(url: str) -> None:
@@ -1389,16 +1499,25 @@ class ModelCatalogManager:
                         return_exceptions=True,
                     )
 
-                    icon_data_mapping = {
-                        slug: url_to_data.get(url, "")
-                        for slug, url in slug_to_icon_url.items()
-                        if url_to_data.get(url)
+                icon_data_mapping = {
+                    slug: data_url
+                    for slug, data_url in stored_data_by_url.items()
+                    if isinstance(slug, str) and "/" in slug and data_url
+                }
+                icon_data_mapping.update(
+                    {
+                        slug: url_to_data[url]
+                        for slug, url in fetchable.items()
+                        if isinstance(slug, str) and "/" in slug and url_to_data.get(url)
                     }
-                    maker_data_mapping = {
-                        maker: url_to_data.get(url, "")
-                        for maker, url in maker_to_image_url.items()
-                        if url_to_data.get(url)
+                )
+                maker_data_mapping.update(
+                    {
+                        maker: url_to_data[url]
+                        for maker, url in fetchable.items()
+                        if isinstance(maker, str) and "/" not in maker and url_to_data.get(url)
                     }
+                )
 
             semaphore = asyncio.Semaphore(10)
             web_valves = self._pipe.valves
@@ -1692,14 +1811,19 @@ class ModelCatalogManager:
                 original_id = model.get("original_id")
 
                 profile_image_url = None
+                image_source_url = None
                 if (
                     valves.UPDATE_MODEL_IMAGES
                     and isinstance(original_id, str) and original_id
                 ):
                     profile_image_url = icon_data_mapping.get(original_id)
+                    if profile_image_url:
+                        image_source_url = slug_to_icon_url.get(original_id)
                     if not profile_image_url:
                         maker_id = original_id.split("/", 1)[0]
                         profile_image_url = maker_data_mapping.get(maker_id)
+                        if profile_image_url:
+                            image_source_url = maker_to_image_url.get(maker_id)
 
                 from ..filters.fusion_filter_renderer import (
                     is_fusion_model as _is_fusion,
@@ -1834,6 +1958,7 @@ class ModelCatalogManager:
                             profile_image_url,
                             valves.UPDATE_MODEL_CAPABILITIES,
                             valves.UPDATE_MODEL_IMAGES,
+                            image_source_url=image_source_url,
                             capability_defaults=capability_defaults,
                             filter_function_id=web_tools_filter_function_id,
                             filter_supported=web_tools_supported,
@@ -2034,6 +2159,7 @@ class ModelCatalogManager:
         valid_openrouter_filter_ids: frozenset[str] = frozenset(),
         openrouter_pipe_capabilities: dict[str, bool] | None = None,
         description: str | None = None,
+        image_source_url: str | None = None,
         update_descriptions: bool = False,
     ):
         """Safely update existing model or insert new overlay with metadata, never touching owner."""
@@ -2406,6 +2532,12 @@ class ModelCatalogManager:
                 meta_dict["profile_image_url"] = profile_image_url
                 meta_updated = True
 
+            if update_images and image_source_url:
+                pipe_meta = _ensure_pipe_meta(meta_dict)
+                if pipe_meta.get("image_source_url") != image_source_url:
+                    pipe_meta["image_source_url"] = image_source_url
+                    meta_updated = True
+
             if (
                 update_descriptions and description
                 and meta_dict.get("description") != description
@@ -2638,6 +2770,8 @@ class ModelCatalogManager:
                     meta_dict["builtinTools"] = {**builtin_tool_defaults}
             if update_images and profile_image_url:
                 meta_dict["profile_image_url"] = profile_image_url
+            if update_images and image_source_url:
+                _ensure_pipe_meta(meta_dict)["image_source_url"] = image_source_url
             if update_descriptions and description:
                 meta_dict["description"] = description
 

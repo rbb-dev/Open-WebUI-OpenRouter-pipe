@@ -1282,6 +1282,12 @@ class Pipe:
             except Exception:
                 self.logger.debug("Re-enabling OpenRouter Video Generation filters failed", exc_info=True)
         try:
+            await self._ensure_filter_manager().retire_families_whose_install_valve_is_off(
+                web_tools_still_offered=not all_web_tools_disabled,
+            )
+        except Exception as exc:
+            self.logger.debug("Retiring filters whose install valve is off failed: %s", exc, exc_info=True)
+        try:
             from open_webui.models.functions import Functions as _Funcs
             legacy = await _Funcs.get_function_by_id("openrouter_video_openrouter_video")
             if legacy is not None:
@@ -2361,7 +2367,6 @@ class Pipe:
                 )
                 self.logger.debug("Started request queue worker")
 
-            target = valves.MAX_CONCURRENT_REQUESTS
             for attr in ("_global_semaphore", "_tool_global_semaphore"):
                 sem = getattr(cls, attr, None)
                 if sem is None:
@@ -2372,33 +2377,62 @@ class Pipe:
                     sem_loop = None
                 if sem_loop is not current_loop:
                     setattr(cls, attr, None)
-            if cls._global_semaphore is None:
-                cls._global_semaphore = asyncio.Semaphore(target)
-                cls._semaphore_limit = target
-                self.logger.debug("Initialized semaphore (limit=%s)", target)
-            elif target > cls._semaphore_limit:
-                delta = target - cls._semaphore_limit
-                for _ in range(delta):
-                    cls._global_semaphore.release()
-                cls._semaphore_limit = target
-                self.logger.info("Increased MAX_CONCURRENT_REQUESTS to %s", target)
-            elif target < cls._semaphore_limit:
-                self.logger.warning("Lower MAX_CONCURRENT_REQUESTS (%s->%s) requires restart to take full effect.", cls._semaphore_limit, target)
 
-            target_tool = valves.MAX_PARALLEL_TOOLS_GLOBAL
-            if cls._tool_global_semaphore is None:
-                cls._tool_global_semaphore = asyncio.Semaphore(target_tool)
-                cls._tool_global_limit = target_tool
-                self.logger.debug("Initialized tool semaphore (limit=%s)", target_tool)
-            elif target_tool > cls._tool_global_limit:
-                delta = target_tool - cls._tool_global_limit
-                for _ in range(delta):
-                    cls._tool_global_semaphore.release()
-                cls._tool_global_limit = target_tool
-                self.logger.info("Increased MAX_PARALLEL_TOOLS_GLOBAL to %s", target_tool)
-            elif target_tool < cls._tool_global_limit:
-                self.logger.warning("Lower MAX_PARALLEL_TOOLS_GLOBAL (%s->%s) requires restart to take full effect.", cls._tool_global_limit, target_tool)
+            self._apply_limit(
+                "MAX_CONCURRENT_REQUESTS",
+                valves.MAX_CONCURRENT_REQUESTS,
+                cls._global_semaphore,
+                lambda: cls._global_semaphore,
+                lambda value: setattr(cls, "_global_semaphore", value),
+                lambda: cls._semaphore_limit,
+                lambda value: setattr(cls, "_semaphore_limit", value),
+                "request semaphore",
+            )
+            self._apply_limit(
+                "MAX_PARALLEL_TOOLS_GLOBAL",
+                valves.MAX_PARALLEL_TOOLS_GLOBAL,
+                cls._tool_global_semaphore,
+                lambda: cls._tool_global_semaphore,
+                lambda value: setattr(cls, "_tool_global_semaphore", value),
+                lambda: cls._tool_global_limit,
+                lambda value: setattr(cls, "_tool_global_limit", value),
+                "tool semaphore",
+            )
 
+
+    def _apply_limit(
+        self,
+        label: str,
+        target: int,
+        current: Any,
+        read_sem: Any,
+        write_sem: Any,
+        read_limit: Any,
+        write_limit: Any,
+        what: str,
+    ) -> None:
+        from .integrations.video import VideoResizableSemaphore
+
+        if current is None:
+            write_sem(VideoResizableSemaphore(target))
+            write_limit(target)
+            self.logger.debug("Initialized %s (limit=%s)", what, target)
+            return
+        if int(target) != int(read_limit()):
+            previous = int(read_limit())
+            sem = read_sem()
+            if int(getattr(sem, "_limit", target)) != target:
+                sem.resize(target)
+            write_limit(target)
+            if int(target) > previous:
+                self.logger.info("Increased %s to %s", label, target)
+            else:
+                self.logger.info(
+                    "Lowered %s (%s->%s); jobs already in flight finish first",
+                    label,
+                    previous,
+                    target,
+                )
 
     @timed
     def _enqueue_job(self, job: _PipeJob) -> bool:

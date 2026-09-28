@@ -335,10 +335,12 @@ def opens_a_turn(items: list[Any], index: int) -> bool:
         and all(isinstance(part, dict) and part.get("type") == "input_image" for part in rest)
     ):
         return True
-    before = next(
-        (it for it in reversed(items[:index]) if not (isinstance(it, dict) and it.get("type") == "reasoning")),
-        None,
-    )
+    before = None
+    for pos in range(index - 1, -1, -1):
+        candidate = items[pos]
+        if not (isinstance(candidate, dict) and candidate.get("type") == "reasoning"):
+            before = candidate
+            break
     return not (isinstance(before, dict) and before.get("type") == "function_call_output")
 
 
@@ -1416,6 +1418,7 @@ class _NoValves:
     HTTP_CONNECT_TIMEOUT_SECONDS = None
     HTTP_TOTAL_TIMEOUT_SECONDS = None
     HTTP_SOCK_READ_SECONDS = None
+
 
 
 _DEFAULT_VALVES = _NoValves()

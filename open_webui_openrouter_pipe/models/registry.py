@@ -40,6 +40,15 @@ def sanitize_model_id(model_id: str) -> str:
     return f"{head}.{tail.replace('/', '.')}"
 
 
+def _build_image_endpoint_aliases(
+    published: dict[str, list[dict[str, Any]]],
+) -> dict[str, list[dict[str, Any]]]:
+    aliases: dict[str, list[dict[str, Any]]] = {}
+    for original, records in published.items():
+        aliases.setdefault(sanitize_model_id(original), records)
+    return aliases
+
+
 PHASE_SUPPORTED_MODELS: tuple[str, ...] = (
     "openai/gpt-5.3-codex",
     "openai/gpt-5.4",
@@ -805,9 +814,19 @@ class OpenRouterModelRegistry:
         if video_models:
             cls._last_video_fetch = time.time()
 
+    @classmethod
+    def _image_endpoint_aliases(cls) -> dict[str, list[dict[str, Any]]]:
+        current = cls._image_endpoints
+        if cls._image_endpoint_alias_of is not current:
+            cls._image_endpoint_alias = _build_image_endpoint_aliases(current)
+            cls._image_endpoint_alias_of = current
+        return cls._image_endpoint_alias
+
     _last_image_fetch: float = 0.0
     _last_image_attempt: float = 0.0
     _image_endpoints: ClassVar[dict[str, list[dict[str, Any]]]] = {}
+    _image_endpoint_alias: ClassVar[dict[str, list[dict[str, Any]]]] = {}
+    _image_endpoint_alias_of: ClassVar[dict[str, list[dict[str, Any]]] | None] = None
     _last_image_contract_attempt: float = 0.0
 
     @classmethod
@@ -867,10 +886,7 @@ class OpenRouterModelRegistry:
         record = cls._image_endpoints.get(wanted)
         if record is not None:
             return record
-        for original, published in cls._image_endpoints.items():
-            if sanitize_model_id(original) == wanted:
-                return published
-        return None
+        return cls._image_endpoint_aliases().get(wanted)
 
     @classmethod
     def last_image_fetch(cls) -> float:

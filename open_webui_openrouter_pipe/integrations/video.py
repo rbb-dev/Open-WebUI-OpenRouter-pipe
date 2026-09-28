@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import UTC
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 from urllib.parse import urlsplit
 
 from ..api.gateway.responses_adapter import _record_failed_call
@@ -463,6 +463,39 @@ if TYPE_CHECKING:
 def _write_and_close(handle: int, blob: bytes) -> None:
     with open(handle, "wb") as sink:
         sink.write(blob)
+
+
+class VideoResizableSemaphore(asyncio.Semaphore):
+    _debt: int
+
+    def __init__(self, value: int = 1) -> None:
+        super().__init__(value)
+        self._limit = value
+        self._debt = 0
+
+    def release(self) -> None:
+        if self._debt > 0:
+            self._debt -= 1
+            return
+        super().release()
+
+    def resize(self, new_limit: int) -> None:
+        new_limit = int(new_limit)
+        if new_limit > self._limit:
+            for _ in range(new_limit - self._limit):
+                if self._debt > 0:
+                    self._debt -= 1
+                else:
+                    super().release()
+        else:
+            in_flight = self._debt + self._limit - self._value
+            if in_flight > new_limit:
+                self._debt = in_flight - new_limit
+                self._value = 0
+            else:
+                self._debt = 0
+                self._value = new_limit - in_flight
+        self._limit = new_limit
 
 
 class VideoGenerationAdapter:
@@ -1524,9 +1557,12 @@ class VideoGenerationAdapter:
                 sem_loop = None
             if current_loop is not None and sem_loop is not current_loop:
                 setattr(cls, attr, None)
-        if cls._video_global_semaphore is None or cls._video_global_limit != limit:
-            cls._video_global_semaphore = asyncio.Semaphore(limit)
-            cls._video_global_limit = limit
+        if cls._video_global_semaphore is None:
+            cls._video_global_semaphore = VideoResizableSemaphore(limit)
+        else:
+            if int(getattr(cls._video_global_semaphore, "_limit", limit)) != limit:
+                cast(VideoResizableSemaphore, cls._video_global_semaphore).resize(limit)
+        cls._video_global_limit = limit
         return cls._video_global_semaphore
 
     async def _try_acquire_user_slot(self, user_id: str, valves: Any) -> bool:

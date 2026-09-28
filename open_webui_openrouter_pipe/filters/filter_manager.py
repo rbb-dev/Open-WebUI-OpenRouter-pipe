@@ -44,6 +44,10 @@ from ..core.config import (
     _PROVIDER_SLUG_PATTERN,
 )
 from ..core.timing_logger import timed
+from ..core.utils import (
+    _ADAPTER_CACHE,
+    _KEEP_WHAT_STILL_FITS,
+)
 from ..core.utils import OWUI_FUNCTION_ID_ILLEGAL_RE as _MODEL_FILTER_ID_RE
 from ..core.warn_latch import warn_level
 from ..integrations.provider_options import CHAT_PROVIDER_KEYS, TRANSPORT_PROVIDER_KEYS
@@ -81,6 +85,7 @@ _PROVIDER_NAME_COLLAPSE_RE = re.compile(r"[ _]{2,}")
 _warned_stale_filter_rows: set[str] = set()
 
 _PIPE_OFF_META_KEY = "openrouter_pipe:switched_off_by_pipe"
+_PIPE_INSTALLED_META_KEY = "openrouter_pipe:installed_by"
 
 
 def _stored_meta(row: Any) -> dict[str, Any]:
@@ -93,6 +98,11 @@ def _stored_meta(row: Any) -> dict[str, Any]:
 
 def _switched_off_by_pipe(row: Any) -> bool:
     return bool(_stored_meta(row).get(_PIPE_OFF_META_KEY))
+
+
+def _installed_by(row: Any) -> str:
+    value = _stored_meta(row).get(_PIPE_INSTALLED_META_KEY)
+    return value if isinstance(value, str) else ""
 
 
 def _merged_meta(
@@ -178,12 +188,37 @@ def _offered_web_tools(content: str) -> frozenset[str] | None:
                     )
     return None
 
+_PROVIDER_ROUTING_OWNER_PREFIX = "OWUI_PIPE_OWNER"
+
+
+def _row_owner(row: Any) -> str:
+    content = getattr(row, "content", None)
+    if not isinstance(content, str) or not content:
+        return ""
+    for line in content.split("\n"):
+        if not line.startswith(_PROVIDER_ROUTING_OWNER_PREFIX):
+            continue
+        _, _, raw = line.partition("=")
+        return raw.strip().strip('"').strip("'")
+    return ""
+
+
 def _is_pipe_video_filter_row(content: Any, row_id: Any) -> bool:
     if not isinstance(content, str) or not isinstance(row_id, str) or not row_id:
         return False
     if not row_id.startswith("openrouter_video_"):
         return False
     return _OPENROUTER_VIDEO_GEN_FILTER_MARKER in content
+
+
+_AUTO_INSTALL_FAMILY_MARKERS: tuple[tuple[str, str], ...] = (
+    ("AUTO_INSTALL_WEB_TOOLS_FILTER", _OPENROUTER_WEB_TOOLS_FILTER_MARKER),
+    ("AUTO_INSTALL_IMAGE_GEN_FILTER", _OPENROUTER_IMAGE_GEN_FILTER_MARKER),
+    ("AUTO_INSTALL_VIDEO_FILTERS", _OPENROUTER_VIDEO_GEN_FILTER_MARKER),
+    ("AUTO_INSTALL_IMAGE_FILTERS", _OPENROUTER_IMAGE_FILTER_MARKER),
+    ("AUTO_INSTALL_FUSION_FILTER", _OPENROUTER_FUSION_FILTER_MARKER),
+    ("AUTO_INSTALL_DIRECT_UPLOADS_FILTER", _DIRECT_UPLOADS_FILTER_MARKER),
+)
 
 
 _REPLACE_IMPORTS_REFUSAL = (
@@ -229,7 +264,8 @@ class FilterManager:
     Instance methods handle filter installation/updates in OWUI.
     """
 
-    _provider_routing_state_hash: str = ""
+    def _install_owner(self) -> str:
+        return str(getattr(self._pipe, "id", "") or "")
 
     _unresolved_image_filter_ids: frozenset[str] = frozenset()
     _unresolved_fusion_filter_id: bool = False
@@ -250,6 +286,7 @@ class FilterManager:
         """
         self._pipe = pipe
         self._valves = valves
+        self._provider_routing_state_hash = ""
         self.logger = logger
         self._unresolved_image_filter_ids = frozenset()
         self._unresolved_fusion_filter_id = False
@@ -561,6 +598,7 @@ class FilterManager:
                 return None
 
             self._validate_before_write(desired_source, log_label)
+            desired_meta = {**desired_meta, _PIPE_INSTALLED_META_KEY: self._install_owner()}
 
             candidate_id = preferred_id
             suffix = 0
@@ -613,6 +651,7 @@ class FilterManager:
 
         existing_content = _stored_source(chosen)
         if getattr(self.valves, auto_install_valve, False):
+            desired_meta = {**desired_meta, _PIPE_INSTALLED_META_KEY: self._install_owner()}
             switch_on = _switch_on(chosen)
             if not switch_on:
                 self.logger.log(
@@ -942,9 +981,12 @@ class FilterManager:
         template += 'from __future__ import annotations\n'
         template += '\n'
         template += 'import logging\n'
-        template += 'from typing import Any, Literal\n'
+        template += 'from typing import Annotated, Any, Literal\n'
         template += '\n'
-        template += 'from pydantic import BaseModel, Field\n'
+        template += 'from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator\n'
+        template += '\n'
+        template += _ADAPTER_CACHE + '\n'
+        template += '\n'
         template += '\n'
         template += 'try:' + '\n'
         template += '    from open_webui.env import SRC_LOG_LEVELS' + '\n'
@@ -960,14 +1002,16 @@ class FilterManager:
 
         # Valves class
         template += '    class Valves(BaseModel):\n'
+        template += _KEEP_WHAT_STILL_FITS + '\n'
+        template += '\n'
         template += '\n'.join(valves_fields) + '\n'
         template += '\n'
 
         template += '    class UserValves(BaseModel):\n'
+        template += _KEEP_WHAT_STILL_FITS + '\n'
+        template += '\n'
         if user_valves_fields:
             template += '\n'.join(user_valves_fields) + '\n'
-        else:
-            template += '        pass\n'
         template += '\n'
 
         # __init__
@@ -1622,6 +1666,50 @@ class FilterManager:
             )
         )
 
+    async def retire_families_whose_install_valve_is_off(
+        self,
+        *,
+        web_tools_still_offered: bool = False,
+    ) -> None:
+        rows = await self._filter_rows()
+        if not rows:
+            return
+        owner = self._install_owner()
+        if not owner:
+            return
+        try:
+            from open_webui.models.functions import Functions  # type: ignore
+        except ImportError:
+            return
+        except Exception:
+            self.logger.warning(
+                "Cannot enumerate OWUI filter functions; a family whose install valve is "
+                "off cannot be retired",
+                exc_info=True,
+            )
+            return
+        for valve, marker in _AUTO_INSTALL_FAMILY_MARKERS:
+            if getattr(self.valves, valve, False):
+                continue
+            if valve == "AUTO_INSTALL_WEB_TOOLS_FILTER" and web_tools_still_offered:
+                continue
+            for row in rows:
+                content = getattr(row, "content", None)
+                if not isinstance(content, str) or marker not in content:
+                    continue
+                if not getattr(row, "is_active", False):
+                    continue
+                if _installed_by(row) != owner:
+                    continue
+                function_id = str(getattr(row, "id", "") or "")
+                if not function_id:
+                    continue
+                await Functions.update_function_by_id(
+                    function_id,
+                    {"is_active": False, "meta": switched_off_meta(row)},
+                )
+                self.logger.info("Switched off %s filter %r (%s is off)", valve, function_id, valve)
+
     async def _filter_rows(self) -> list[Any] | None:
         try:
             from open_webui.models.functions import Functions  # type: ignore
@@ -1866,9 +1954,12 @@ from __future__ import annotations
 
 import fnmatch
 import logging
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
+
+__ADAPTER_CACHE__
+
 
 try:
     from open_webui.env import SRC_LOG_LEVELS
@@ -1887,6 +1978,8 @@ class Filter:
     toggle = True
 
     class Valves(BaseModel):
+__KEEP_WHAT_STILL_FITS__
+
         priority: int = Field(
             default=0,
             description="Priority level for the filter operations.",
@@ -1937,6 +2030,8 @@ class Filter:
         )
 
     class UserValves(BaseModel):
+__KEEP_WHAT_STILL_FITS__
+
         DIRECT_FILES: bool = Field(
             default=False,
             description="When enabled, uploads files directly to the model.",
@@ -2285,6 +2380,8 @@ class Filter:
             template.replace("__FILTER_ID__", _DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID)
             .replace("__MARKER__", _DIRECT_UPLOADS_FILTER_MARKER)
             .replace("__PIPE_META_KEY__", _PIPE_METADATA_KEY)
+            .replace("__ADAPTER_CACHE__", _ADAPTER_CACHE)
+            .replace("__KEEP_WHAT_STILL_FITS__", _KEEP_WHAT_STILL_FITS)
         )
 
     @timed
@@ -2593,6 +2690,7 @@ class Filter:
         short_name: str = "",
         provider_names: dict[str, str] | None = None,
         transport: str = "chat",
+        owner: str = "",
     ) -> str:
         """Generate filter source code for a specific model's provider routing.
 
@@ -2619,6 +2717,7 @@ class Filter:
 
         marker = f"{_PROVIDER_ROUTING_FILTER_MARKER_PREFIX}{model_slug}:{_PROVIDER_ROUTING_FILTER_MARKER_VERSION}"
         safe_marker_escaped = json.dumps(marker)[1:-1]
+        owner_assignment = f"{_PROVIDER_ROUTING_OWNER_PREFIX} = {json.dumps(str(owner))}" if owner else ""
 
         safe_providers = [
             p for p in providers
@@ -2767,6 +2866,7 @@ except Exception:  # noqa: BLE001 - open_webui.env does filesystem work on impor
     SRC_LOG_LEVELS = {{}}
 
 OWUI_OPENROUTER_PIPE_MARKER = "{safe_marker_escaped}"
+{owner_assignment}
 MODEL_SLUG = "{safe_model_slug_escaped}"
 OPENROUTER_PIPE_VERSION = {__version__!r}
 
@@ -2834,7 +2934,7 @@ class Filter:
         user_models = {m.strip() for m in user_models_csv.split(",") if m.strip()}
 
         current_hash = self.compute_provider_routing_hash(admin_models_csv, user_models_csv, provider_map)
-        hash_unchanged = current_hash == FilterManager._provider_routing_state_hash
+        hash_unchanged = current_hash == self._provider_routing_state_hash
         if hash_unchanged:
             self.logger.info("Provider routing state unchanged (hash=%s), returning existing filter mappings", current_hash[:8])
         else:
@@ -2986,6 +3086,7 @@ class Filter:
                 short_name=short_name,
                 provider_names=prov_names,
                 transport=transport,
+                owner=pipe_identifier,
             ).strip() + "\n"
 
             is_valid, validation_error = self.validate_filter_source(desired_source)
@@ -3017,6 +3118,11 @@ class Filter:
                 # Update existing filter
                 existing_id = getattr(existing, "id", "")
                 existing_content = (getattr(existing, "content", "") or "").strip() + "\n"
+                if _row_owner(existing) not in ("", pipe_identifier):
+                    existing_id = getattr(existing, "id", "")
+                    if existing_id:
+                        slug_to_filter_id[slug] = existing_id
+                    continue
                 switch_on = _switch_on(existing)
                 if not switch_on:
                     self.logger.log(
@@ -3088,7 +3194,7 @@ class Filter:
         disabled = 0
         for orphan in orphan_filters:
             orphan_id = getattr(orphan, "id", "")
-            if orphan_id:
+            if orphan_id and _row_owner(orphan) in ("", pipe_identifier):
                 await Functions.update_function_by_id(
                     orphan_id, {"is_active": False, "meta": switched_off_meta(orphan)}
                 )
@@ -3098,7 +3204,7 @@ class Filter:
         for slug, existing in existing_filters.items():
             if slug in undeliverable or slug not in all_models:
                 existing_id = getattr(existing, "id", "")
-                if existing_id:
+                if existing_id and _row_owner(existing) in ("", pipe_identifier):
                     if (
                         slug not in all_models
                         or getattr(existing, "is_active", False)
@@ -3123,7 +3229,7 @@ class Filter:
                 created, updated, disabled, len(all_models),
             )
 
-        FilterManager._provider_routing_state_hash = current_hash
+        self._provider_routing_state_hash = current_hash
         self.logger.debug("Provider routing state hash updated: %s", current_hash[:8])
 
         self.logger.info(

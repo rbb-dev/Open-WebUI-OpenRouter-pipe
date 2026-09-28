@@ -371,7 +371,7 @@ Key valves:
 Open WebUI stores additional per-model UI metadata (capabilities checkboxes and profile images) in its own Models table. This pipe can **automatically sync that metadata** for the OpenRouter models it exposes.
 
 What it syncs (best-effort):
-- `meta.profile_image_url`: downloads the model icon, converts it to **PNG**, and stores it as a `data:image/png;base64,...` data URL (Open WebUI does not process remote image URLs here).
+- `meta.profile_image_url`: downloads the model icon, converts it to **PNG**, and stores it as a `data:image/png;base64,...` data URL (Open WebUI does not process remote image URLs here). The source URL is stamped in the pipe's own metadata, so an icon whose source URL has not changed is not downloaded again; a change to the image at the same URL is therefore not picked up, and a card keeps its old icon — a hand-picked one included — until its source URL changes.
   - SVG icons are rasterized to PNG (requires `cairosvg`).
   - Other images are converted to PNG (requires `Pillow`).
 - `meta.description`: writes the model’s user-facing description from OpenRouter’s `/models` catalog when present.
@@ -420,6 +420,11 @@ Operational guidance:
   - Direct Tool Servers are executed client-side via Open WebUI (the pipe emits `execute:tool` via Socket.IO).
 - Tool schema strictness:
   - When `ENABLE_STRICT_TOOL_CALLING=True`, the pipe strictifies tool schemas for more predictable function calling.
+  - When `ENABLE_STRICT_TOOL_CALLING=True` and the pipe runs the tool (not `Open-WebUI` mode,
+    and not under `ask` approval in a saved chat), the tools it advertises on the Responses route
+    carry `strict: true`. OpenRouter strips `strict` from a tool on Anthropic models unless the
+    `structured-outputs-2025-11-13` header is passed; the pipe does not pass that header, so on
+    those models the field does not take effect and the call routes normally.
 
 See also: [Tooling & Integrations](tooling_and_integrations.md).
 And: [Web Search (Open WebUI) vs OpenRouter Web Tools](web_search_owui_vs_openrouter_search.md).

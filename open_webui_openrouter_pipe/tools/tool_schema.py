@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 _STRICT_SCHEMA_CACHE_SIZE = 128
 
+_FREE_FORM_ITEMS_KEY = "_pipe_free_form_items"
+
 _STRICT_UNSUPPORTED_KEYS = (
     "default",
     "$schema",
@@ -153,6 +155,13 @@ def _strictify_schema(schema):
         return schema
 
 
+def _is_free_form_items_node(items: dict[str, Any]) -> bool:
+    if items.get("properties") or items.get("items") or "$ref" in items:
+        return False
+    t = items.get("type")
+    return t == "object" or (isinstance(t, list) and "object" in t)
+
+
 def _strictify_schema_impl(schema: dict[str, Any]) -> dict[str, Any]:
     """
     Internal implementation for `_strictify_schema` that assumes input is a fresh dict.
@@ -223,6 +232,8 @@ def _strictify_schema_impl(schema: dict[str, Any]) -> dict[str, Any]:
         is_object = ("properties" in node) or (t == "object") or (
             isinstance(t, list) and "object" in t
         )
+        if node.pop(_FREE_FORM_ITEMS_KEY, None):
+            continue
         if is_object:
             props = node.get("properties")
             if not isinstance(props, dict):
@@ -304,6 +315,8 @@ def _strictify_schema_impl(schema: dict[str, Any]) -> dict[str, Any]:
             ):
                 items["type"] = "object"
                 logger.debug("Added default type 'object' to empty items schema")
+            if _is_free_form_items_node(items):
+                items[_FREE_FORM_ITEMS_KEY] = True
             stack.append(items)
         elif isinstance(items, list):
             for it in items:

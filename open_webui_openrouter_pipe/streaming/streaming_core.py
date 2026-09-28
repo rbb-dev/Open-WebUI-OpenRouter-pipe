@@ -722,7 +722,7 @@ class StreamingHandler:
                 if not text:
                     return None
                 if text.startswith("data:"):
-                    parsed = self._pipe._multimodal_handler._parse_data_url(text)
+                    parsed = await asyncio.to_thread(self._pipe._multimodal_handler._parse_data_url, text)
                     if parsed:
                         stored = await _persist_generated_image(parsed["data"], parsed["mime_type"])
                         if stored:

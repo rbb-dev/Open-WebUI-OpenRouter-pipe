@@ -89,7 +89,7 @@ def _semaphore_active(sem: Any, limit: int) -> int:
     if sem is None or not limit:
         return 0
     try:
-        return max(0, limit - int(sem._value))
+        return max(0, limit - int(sem._value)) + _safe_int(getattr(sem, "_debt", 0))
     except (AttributeError, TypeError, ValueError):
         _level = warn_level(_warned_collectors, 'semaphore_active')
         logger.log(

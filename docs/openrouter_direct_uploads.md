@@ -214,7 +214,7 @@ These are configured on the **pipe** function in Open WebUI (Admin → Functions
 | Valve | Default (verified) | Purpose / notes |
 | --- | --- | --- |
 | `AUTO_ATTACH_DIRECT_UPLOADS_FILTER` | `True` | Auto-enable the OpenRouter Direct Uploads filter in each compatible model’s Advanced Settings (`filterIds`), so the switch appears only where it can work. |
-| `AUTO_INSTALL_DIRECT_UPLOADS_FILTER` | `True` | Auto-install / auto-update the companion filter function into Open WebUI’s Functions DB (recommended with auto-attach). |
+| `AUTO_INSTALL_DIRECT_UPLOADS_FILTER` | `True` | Auto-install / auto-update the companion filter function into Open WebUI’s Functions DB (recommended with auto-attach). Turning this off retires the rows the pipe installed for it - switched off, not deleted, so their settings survive - and turning it back on brings them back; a copy an admin installed by hand carries no such record and is left alone. |
 | `BASE64_MAX_SIZE_MB` | `50` | Upper bound for inlining Open WebUI internal file URLs into base64 data URLs. |
 
 For the full list, see: [Valves & Configuration Atlas](valves_and_configuration_atlas.md).
@@ -234,6 +234,8 @@ These are configured on the **OpenRouter Direct Uploads** filter function (Admin
 | `DIRECT_VIDEO_MIME_ALLOWLIST` | `video/mp4,video/mpeg,video/quicktime,video/webm` | Comma-separated MIME allowlist for diverted direct video files. |
 | `DIRECT_AUDIO_FORMAT_ALLOWLIST` | `wav,mp3,aiff,aac,ogg,flac,m4a,pcm16,pcm24` | Comma-separated audio format allowlist (derived from filename/MIME). Listing a format lets a direct audio upload through even when it is outside the nine the pipe sends natively; the request is then normalised to `mp3`. A `webm` container is refused outright. |
 | `DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST` | `wav,mp3` | Comma-separated audio formats eligible for `/responses` `input_audio.format`. |
+
+A stored value from an older version of the pipe that no longer fits its field falls back to that field's default rather than failing the request, and every other stored value on the same row is kept.
 
 ### Companion filter user valves (per-user)
 

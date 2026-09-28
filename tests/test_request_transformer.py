@@ -1829,6 +1829,14 @@ class TestMarkerBasedArtifactReplay:
             assert any(i.get("type") == "reasoning" for i in result), (
                 "the artifact loader was skipped, so this turn's reasoning was dropped"
             )
+        if artifact_kind == "function_call":
+            # Both `function_call` rows carry a stored output; the two
+            # `reasoning` rows carry none, so asserting here would break them.
+            outputs = [i for i in result if i.get("type") == "function_call_output"
+                       and i.get("call_id") == call_id]
+            assert len(outputs) == 1, (
+                f"the call reached the provider with {len(outputs)} results: {result}"
+            )
 
     @pytest.mark.asyncio
     async def test_phase_markers_inserted_before_marker_artifacts(self, pipe_instance):
@@ -4077,30 +4085,59 @@ class TestVideoBase64StatusEmission:
 
 
 class TestFileOuterException:
-    """Tests for _to_input_file outer exception handling (lines 753-760)."""
+    """The inner handler's failure is reported, not swallowed.
+
+    `_to_input_file` catches what goes wrong inside it, reports it, and hands back
+    a no-source refusal rather than a payload. Two siblings cover the two
+    handlers around that one -- `TestFileProcessingException` pins the inner
+    handler and `TestBlockTransformExceptionNonImage` pins the block loop's own
+    handler -- and they are left exactly as they are; they fail for different
+    reasons and collapsing them would lose the guard on the non-`dict` drop.
+
+    What this node pins is the *reporting*: the inner handler exists because the
+    failure was silent, so an exception that reaches it has to come out through
+    `_emit_error`. What it does not pin is the block's fate, which the two
+    siblings already cover. Measured on the clean tree, this handler's return is
+    refused rather than forwarded, so the turn keeps only the usable text
+    sibling; the empty-turn fallback that would replace it never fires.
+
+    `BadBlock` is a `dict` subclass on purpose. As a plain object it is dropped
+    by the non-`dict` guard before dispatch and can never reach `_to_input_file`,
+    which is what made the old version of this test vacuous. It sits *after* a
+    normal text block, because a lone `BadBlock` is replaced by the
+    empty-content fallback and nothing would be observable.
+    """
 
     @pytest.mark.asyncio
     async def test_file_outer_exception_returns_minimal_block(self, pipe_instance):
-        """Outer exception in _to_input_file returns minimal block (lines 753-760)."""
-        # To trigger the outer exception handler, we need an exception that escapes
-        # all inner handlers. This is tricky - let's try patching dict.get on the block
+        """A block that explodes inside `_to_input_file` is reported and not forwarded bare.
 
+        `BadBlock` answers `get("type")` and raises on every other key, so it
+        survives the non-`dict` guard and the type dispatch, then throws on
+        `block.get("file")` deep inside the file handler.
+        """
         error_logged = []
+
         async def mock_emit_error(*args, **kwargs):
-            error_logged.append(True)
+            error_logged.append(args)
 
         pipe_instance._ensure_error_formatter()._emit_error = mock_emit_error
 
-        # Create a malformed block that causes issues
-        # The file block type triggers _to_input_file, but we need something
-        # that escapes inner try/except blocks
+        class BadBlock(dict):
+            def __init__(self):
+                super().__init__(type="input_file", file_data="http://example.com/notes.txt")
 
-        # Let's use a mock that raises on the first access
-        class BadBlock:
+            def __len__(self):
+                return 1
+
+            def __bool__(self):
+                return True
+
             def get(self, key, default=None):
                 if key == "type":
                     return "input_file"
                 raise RuntimeError("Unexpected access")
+
             def __getitem__(self, key):
                 if key == "type":
                     return "input_file"
@@ -4108,13 +4145,16 @@ class TestFileOuterException:
 
         messages = [
             {"role": "user", "content": [
-                {"type": "text", "text": "text block"},  # Normal block first
+                {"type": "text", "text": "text block"},
+                BadBlock(),
             ]}
         ]
 
-        # Normal processing should work
         result = await transform_messages_to_input(pipe_instance, messages)
-        assert len(result) == 1
+
+        blocks = result[0]["content"]
+        assert error_logged, "the failure was swallowed; nothing reported it"
+        assert blocks[0] == {"type": "input_text", "text": "text block"}, blocks
 
 
 class TestAudioBase64SizeValidation:

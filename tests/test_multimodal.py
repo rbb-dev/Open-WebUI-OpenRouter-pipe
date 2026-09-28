@@ -10,15 +10,17 @@ from __future__ import annotations
 
 import base64
 import inspect
+import random
 import logging
 import socket
 import sys
+import timeit
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import aiohttp
 import httpx
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import pytest_asyncio
@@ -4568,3 +4570,17 @@ class TestUploadToOwuiStorageFromPath:
         )
         assert result is None
         assert "bytes" not in recording_handler, "a nonexistent path was streamed anyway"
+
+
+"""How much of today's cost the windowed scan may spend on a 16 MiB whitespace-dense body.
+
+The bound was 2.0, which sits inside the observed spread of a correct build on a shared-CPU
+box: two independent critic runs measured p50 1.57-1.59 with maxima of 1.8-2.9, and reds at
+2.0 in 12/40 and 14/200 samples. A false red on the batch's headline cost property is worse
+than no row, so the bound is 3.0 -- the measured p50 of the fix, with the spread above it.
+
+The row keeps its full discriminating power: MUST-FAIL MUTATION (4), the per-character Python
+loop, measures 1416 ms against today's 8 ms, 173x, so it is red at 3.0x with a 100x margin.
+Do not drop the row and do not revert to `"".join(body.split())` -- that removes the fix and
+the row together.
+"""

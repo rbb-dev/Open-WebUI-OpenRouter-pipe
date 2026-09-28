@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from open_webui_openrouter_pipe import Pipe
 from open_webui_openrouter_pipe.filters import FilterManager
 from open_webui_openrouter_pipe.filters.filter_manager import (
+    _PIPE_INSTALLED_META_KEY,
     _PIPE_OFF_META_KEY,
 )
 from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
@@ -2038,10 +2039,7 @@ class TestProviderRoutingEndToEndOverlay:
 
         _FakeFunctionsTable.reset()
         monkeypatch.setattr(functions_module, "Functions", _FakeFunctionsTable)
-        previous_hash = FilterManager._provider_routing_state_hash
-        FilterManager._provider_routing_state_hash = ""
-        yield
-        FilterManager._provider_routing_state_hash = previous_hash
+
 
     @pytest.mark.asyncio
     async def test_null_endpoint_model_gets_full_filter(self, pipe_instance_async):
@@ -2139,10 +2137,7 @@ class TestProviderRoutingHashPersistence:
 
         _FakeFunctionsTable.reset()
         monkeypatch.setattr(functions_module, "Functions", _FakeFunctionsTable)
-        previous_hash = FilterManager._provider_routing_state_hash
-        FilterManager._provider_routing_state_hash = ""
         yield
-        FilterManager._provider_routing_state_hash = previous_hash
 
     @pytest.mark.asyncio
     async def test_listing_failure_aborts_without_creating_duplicates(self, pipe_instance_async, monkeypatch):
@@ -2167,13 +2162,13 @@ class TestProviderRoutingHashPersistence:
         )
         assert "example/steady-model" in first
         rows_before = dict(_FakeFunctionsTable.store)
-        hash_before = FilterManager._provider_routing_state_hash
+        hash_before = filter_manager._provider_routing_state_hash
 
         async def _boom(*_args, **_kwargs):
             raise RuntimeError("db down")
 
         monkeypatch.setattr(_FakeFunctionsTable, "get_functions_by_type", _boom)
-        FilterManager._provider_routing_state_hash = ""
+        filter_manager._provider_routing_state_hash = ""
 
         result = await filter_manager.ensure_provider_routing_filters(
             "example/steady-model", "", provider_map, [], "openrouter"
@@ -2181,7 +2176,7 @@ class TestProviderRoutingHashPersistence:
         assert result == {}
         assert _FakeFunctionsTable.store == rows_before
         assert not any(k.endswith("_1") for k in _FakeFunctionsTable.store)
-        assert FilterManager._provider_routing_state_hash != hash_before or hash_before == ""
+        assert filter_manager._provider_routing_state_hash != hash_before or hash_before == ""
 
     @pytest.mark.asyncio
     async def test_create_loop_lookup_error_propagates(self, pipe_instance_async, monkeypatch):
@@ -2295,7 +2290,7 @@ class TestProviderRoutingHashPersistence:
         assert slug in first
         created = len(_FakeFunctionsTable.store)
 
-        FilterManager._provider_routing_state_hash = ""
+        filter_manager._provider_routing_state_hash = ""
         second = await filter_manager.ensure_provider_routing_filters(slug, "", provider_map, [], "openrouter")
         assert second == first
         assert len(_FakeFunctionsTable.store) == created
@@ -2317,21 +2312,21 @@ class TestProviderRoutingHashPersistence:
             "example/steady-model", "", provider_map, [], "openrouter"
         )
         assert "example/steady-model" in first
-        hash_after_create = FilterManager._provider_routing_state_hash
+        hash_after_create = filter_manager._provider_routing_state_hash
         assert hash_after_create
 
         second = await filter_manager.ensure_provider_routing_filters(
             "example/steady-model", "", provider_map, [], "openrouter"
         )
         assert second == first
-        assert FilterManager._provider_routing_state_hash == hash_after_create
+        assert filter_manager._provider_routing_state_hash == hash_after_create
 
-        FilterManager._provider_routing_state_hash = ""
+        filter_manager._provider_routing_state_hash = ""
         third = await filter_manager.ensure_provider_routing_filters(
             "example/steady-model", "", provider_map, [], "openrouter"
         )
         assert third == first
-        assert FilterManager._provider_routing_state_hash == hash_after_create
+        assert filter_manager._provider_routing_state_hash == hash_after_create
 
     @pytest.mark.asyncio
     async def test_unresolvable_slug_does_not_defeat_early_return(self, pipe_instance_async):
@@ -2682,10 +2677,7 @@ class TestInstalledRowMatchesTheRenderedModule:
 
         _FakeFunctionsTable.reset()
         monkeypatch.setattr(functions_module, "Functions", _FakeFunctionsTable)
-        previous_hash = FilterManager._provider_routing_state_hash
-        FilterManager._provider_routing_state_hash = ""
         yield
-        FilterManager._provider_routing_state_hash = previous_hash
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

@@ -286,6 +286,25 @@ Note that the entry may still be visible in the model's filter list while it is 
 Open WebUI applies only the active entries, so a listed-but-inactive provider routing entry
 does nothing until it is switched on again.
 
+### Two installed copies
+
+Each generated filter records the id of the pipe that wrote it, in an `OWUI_PIPE_OWNER`
+assignment beside the marker in its source. A copy only writes a row it owns, so two
+installed copies each manage the models in their own valve lists and neither rewrites,
+disables, or re-enables the other's entries. A model missing from a copy's list is
+missing because that copy's admin does not use it, not because the filter was retired.
+
+Rows created before the stamp existed carry none, and the first copy to find one claims
+it; a row with no owner is therefore never left unmanaged. The attach mapping is
+unaffected either way: a filter this copy does not write is still the filter the model
+carries.
+
+The same applies to the install record the six filter families carry, in the row's meta
+as `openrouter_pipe:installed_by`: it is new, so a row installed by an earlier build
+carries none. Turning an `AUTO_INSTALL_*` valve off retires only the rows whose meta
+names this pipe, so a recordless row is claimed on the first refresh **on which its valve
+is on** and retired only from that refresh on. A copy an admin installed by hand keeps
+no record either, and is never retired.
 ---
 
 ## Troubleshooting

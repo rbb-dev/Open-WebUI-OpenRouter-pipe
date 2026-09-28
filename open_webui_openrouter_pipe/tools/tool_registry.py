@@ -90,6 +90,13 @@ def _dedupe_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
     return list(canonical.values())
 
 
+def _advertise_strict(spec: dict[str, Any], source: dict[str, Any], *, strictify: bool) -> None:
+    if strictify:
+        spec["strict"] = True
+    elif "strict" in source:
+        spec["strict"] = source["strict"]
+
+
 def _normalize_responses_function_tool_spec(tool: Any, *, strictify: bool) -> dict[str, Any] | None:
     """Return a normalized Responses-style function tool spec, or None when invalid."""
     if not isinstance(tool, dict):
@@ -108,10 +115,7 @@ def _normalize_responses_function_tool_spec(tool: Any, *, strictify: bool) -> di
         spec["parameters"] = _strictify_schema(parameters) if strictify else parameters
     if isinstance(tool.get("cache_control"), dict):
         spec["cache_control"] = tool["cache_control"]
-    if strictify:
-        spec["strict"] = True
-    elif "strict" in tool:
-        spec["strict"] = tool["strict"]
+    _advertise_strict(spec, tool, strictify=strictify)
     return spec
 
 
@@ -134,6 +138,7 @@ def _responses_spec_from_owui_tool_cfg(tool_cfg: dict[str, Any], *, strictify: b
         "description": spec.get("description") or name.strip(),
         "parameters": _strictify_schema(params) if strictify else params,
     }
+    _advertise_strict(out, spec, strictify=strictify)
     return out
 
 

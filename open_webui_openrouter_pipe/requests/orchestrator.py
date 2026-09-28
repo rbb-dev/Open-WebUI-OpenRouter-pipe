@@ -521,6 +521,8 @@ class RequestOrchestrator:
         outcome_sink: dict[str, Any] | None = None,
         user_valves: Any = None,
         rejected_user_valves: list[str] | None = None,
+        resolved_user_model: Any = None,
+        resolved_user_done: bool = False,
     ) -> AsyncGenerator[str, None] | dict[str, Any] | str | StreamingResponse | None:
         def _extract_direct_uploads(metadata: dict[str, Any]) -> dict[str, Any]:
             pipe_meta = metadata.get(_PIPE_METADATA_KEY)
@@ -773,15 +775,17 @@ class RequestOrchestrator:
             last_user_msg["content"] = content_blocks
 
         user_id = user_id or str(__user__.get("id") or __metadata__.get("user_id") or "")
-        user_model = None
-        if user_id:
+        user_model = resolved_user_model
+        user_model_resolved = resolved_user_done
+        if user_id and not user_model_resolved:
             user_model = await get_user_by_id(user_id, self.logger)
-            if user_model is None:
-                self.logger.warning(
-                    "User %s did not resolve; uploads in this request will be stored "
-                    "under the fallback account",
-                    user_id,
-                )
+            user_model_resolved = True
+        if user_id and user_model is None:
+            self.logger.warning(
+                "User %s did not resolve; uploads in this request will be stored "
+                "under the fallback account",
+                user_id,
+            )
         chat_id = (__metadata__ or {}).get("chat_id")
         chat_id = chat_id.strip() if isinstance(chat_id, str) else ""
         task_name = TaskModelAdapter._task_name(__task__) if __task__ else ""
@@ -1630,6 +1634,8 @@ class RequestOrchestrator:
                 catalog_norm_ids=set(catalog_norm_ids or set()),
                 features=dict(features or {}),
                 user_id=user_id,
+                user_model=user_model,
+                user_model_resolved=user_model_resolved,
                 disable_native_websearch=(
                     getattr(responses_body, "disable_native_websearch", None)
                     if getattr(responses_body, "disable_native_websearch", None) is not None

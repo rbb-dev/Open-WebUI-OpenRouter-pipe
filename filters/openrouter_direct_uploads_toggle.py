@@ -12,9 +12,16 @@ from __future__ import annotations
 
 import fnmatch
 import logging
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
+
+_ADAPTERS: dict = {}
+
+
+def _adapters_for(cls: type) -> dict:
+    return _ADAPTERS.setdefault(cls, {})
+
 
 try:
     from open_webui.env import SRC_LOG_LEVELS
@@ -33,6 +40,41 @@ class Filter:
     toggle = True
 
     class Valves(BaseModel):
+        @model_validator(mode="before")
+        @classmethod
+        def _keep_what_still_fits(cls, data: Any) -> Any:
+            """Drop stored values the model no longer publishes, keep the rest.
+
+            These fields track a live contract, so a provider joining the model can
+            narrow a range or remove a ratio while a value the user chose earlier is
+            still stored. Open WebUI builds this class from that stored dict and passes
+            no valves at all if construction raises -- so one stale entry silently threw
+            away every other choice the user had made.
+            """
+            if not isinstance(data, dict):
+                return data
+            kept = {}
+            table = _adapters_for(cls)
+            for name in data:
+                field = cls.model_fields.get(name)
+                if field is None:
+                    continue
+                adapter = table.get(name)
+                if adapter is None:
+                    metadata = field.metadata
+                    annotated = (
+                        Annotated[(field.annotation, *metadata)]
+                        if metadata
+                        else field.annotation
+                    )
+                    adapter = table[name] = TypeAdapter(annotated)
+                try:
+                    adapter.validate_python(data[name])
+                except ValidationError:
+                    continue
+                kept[name] = data[name]
+            return kept
+
         priority: int = Field(
             default=0,
             description="Priority level for the filter operations.",
@@ -83,6 +125,41 @@ class Filter:
         )
 
     class UserValves(BaseModel):
+        @model_validator(mode="before")
+        @classmethod
+        def _keep_what_still_fits(cls, data: Any) -> Any:
+            """Drop stored values the model no longer publishes, keep the rest.
+
+            These fields track a live contract, so a provider joining the model can
+            narrow a range or remove a ratio while a value the user chose earlier is
+            still stored. Open WebUI builds this class from that stored dict and passes
+            no valves at all if construction raises -- so one stale entry silently threw
+            away every other choice the user had made.
+            """
+            if not isinstance(data, dict):
+                return data
+            kept = {}
+            table = _adapters_for(cls)
+            for name in data:
+                field = cls.model_fields.get(name)
+                if field is None:
+                    continue
+                adapter = table.get(name)
+                if adapter is None:
+                    metadata = field.metadata
+                    annotated = (
+                        Annotated[(field.annotation, *metadata)]
+                        if metadata
+                        else field.annotation
+                    )
+                    adapter = table[name] = TypeAdapter(annotated)
+                try:
+                    adapter.validate_python(data[name])
+                except ValidationError:
+                    continue
+                kept[name] = data[name]
+            return kept
+
         DIRECT_FILES: bool = Field(
             default=False,
             description="When enabled, uploads files directly to the model.",

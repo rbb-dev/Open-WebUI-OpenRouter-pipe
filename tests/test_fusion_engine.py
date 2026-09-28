@@ -2,6 +2,7 @@
 import asyncio
 import json
 from typing import Any, cast
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest

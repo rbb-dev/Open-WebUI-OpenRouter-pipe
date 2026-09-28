@@ -173,6 +173,9 @@ class _ToolExecutionContext:
     batch_cap: int
     request: Request | None = None
     user: dict[str, Any] | None = None
+    resolved_user: Any = None
+    resolved_user_done: bool = False
+    resolved_user_task: Any = None
     metadata: dict[str, Any] | None = None
     request_id: str = ""
     fusion_inner: bool = False
@@ -184,6 +187,26 @@ class _ToolExecutionContext:
     carded_calls: set[str] = field(default_factory=set)
     terminal_files_inline: bool = False
     messages: list[dict[str, Any]] = field(default_factory=list)
+
+
+async def _read_user_row(context: _ToolExecutionContext) -> Any:
+    user_obj = context.user
+    if isinstance(user_obj, dict) and _Users is not None:
+        user_id = user_obj.get("id")
+        if user_id:
+            user_obj = await _Users.get_user_by_id(user_id)
+    return user_obj
+
+
+async def _resolved_user_obj(context: _ToolExecutionContext) -> Any:
+    if context.resolved_user_done:
+        return context.resolved_user
+    if context.resolved_user_task is None:
+        context.resolved_user_task = asyncio.ensure_future(_read_user_row(context))
+    user_obj = await asyncio.shield(context.resolved_user_task)
+    context.resolved_user = user_obj
+    context.resolved_user_done = True
+    return user_obj
 
 
 def is_builtin_ask_user(tool_cfg: Any) -> bool:
@@ -358,11 +381,7 @@ class ToolExecutor:
         try:
             if _owui_process_tool_result is not None and context is not None:
                 try:
-                    user_obj = context.user
-                    if isinstance(user_obj, dict) and _Users is not None:
-                        user_id = user_obj.get("id")
-                        if user_id:
-                            user_obj = await _Users.get_user_by_id(user_id)
+                    user_obj = await _resolved_user_obj(context)
                     processed_result, files, embeds = await _owui_process_tool_result(
                         request=context.request,
                         tool_function_name=tool_name,
@@ -802,9 +821,7 @@ class ToolExecutor:
         if _owui_store_tool_result_image is None:
             return url
         try:
-            user_obj = context.user
-            if isinstance(user_obj, dict) and _Users is not None and user_obj.get("id"):
-                user_obj = await _Users.get_user_by_id(str(user_obj["id"]))
+            user_obj = await _resolved_user_obj(context)
             stored = await _owui_store_tool_result_image(context.request, url, context.metadata, user_obj)
         except Exception:
             self.logger.debug("Could not store a tool's picture; it stays inline", exc_info=True)

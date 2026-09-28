@@ -31,6 +31,7 @@ from ..core.context_budget import inline_payload_bytes
 from ..core.errors import RequiredInternalFileError, StatusMessages
 from ..core.image_detail import image_detail_or_auto
 from ..core.url_scheme import (
+    first_n_non_whitespace,
     is_cleartext_http_url,
     is_http_or_https_url,
     is_inline_data_url,
@@ -269,6 +270,24 @@ def _unconverted_block_reason(block: dict[str, Any]) -> str | None:
     return None
 
 
+def _is_text_ordinal_upper_bound(
+    msg_items: list[dict[str, Any]],
+    ordinal: int,
+) -> bool:
+    return bool(msg_items) and 0 <= ordinal <= len(msg_items) + 1
+
+
+def _text_ordinal_anchor(
+    msg_items: list[tuple[int, dict[str, Any]]],
+    ordinal: int,
+) -> int | None:
+    if 0 <= ordinal < len(msg_items):
+        return msg_items[ordinal][0]
+    if not msg_items or ordinal < 0:
+        return None
+    return msg_items[-1][0]
+
+
 def _reinterleave_region(region: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Re-interleave reasoning within one assistant turn using call ORDINALS.
 
@@ -286,6 +305,11 @@ def _reinterleave_region(region: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
     movable: list[tuple[int, dict[str, Any], str, int, str | None]] = []
     skeleton: list[dict[str, Any]] = []
+    region_messages = [
+        it
+        for it in region
+        if isinstance(it, dict) and it.get("type") == "message" and it.get("role") == "assistant"
+    ]
     for it in region:
         if isinstance(it, dict) and it.get("type") == "reasoning":
             raw_seq = it.get(REASONING_ANCHOR_SEQ_KEY)
@@ -301,7 +325,10 @@ def _reinterleave_region(region: list[dict[str, Any]]) -> list[dict[str, Any]]:
             elif isinstance(preceding, int):
                 movable.append((seq, stripped, "after", preceding, server_item))
             elif isinstance(text_ordinal, int):
-                movable.append((seq, stripped, "text", text_ordinal, server_item))
+                if _is_text_ordinal_upper_bound(region_messages, text_ordinal):
+                    movable.append((seq, stripped, "text", text_ordinal, server_item))
+                else:
+                    skeleton.append(stripped)
             else:
                 skeleton.append(stripped)
         elif isinstance(it, dict):
@@ -355,9 +382,8 @@ def _reinterleave_region(region: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 pos = fc_items[ordinal][0]
             bucket = inserts_before
         elif mode == "text":
-            if 0 <= ordinal < len(msg_items):
-                pos = msg_items[ordinal][0]
-            bucket = inserts_before
+            pos = _text_ordinal_anchor(msg_items, ordinal)
+            bucket = inserts_after if (msg_items and ordinal >= len(msg_items)) else inserts_before
         else:
             if ordinal in output_index_for_call:
                 pos = output_index_for_call[ordinal]
@@ -417,11 +443,73 @@ def _from_pipe_storage(item: dict[str, Any]) -> dict[str, Any]:
     return item
 
 
+def _gate_already_kept_an_output_for(kept: list[Any], call_id: Any) -> bool:
+    return any(
+        isinstance(it, dict)
+        and it.get("type") == "function_call_output"
+        and it.get("call_id") == call_id
+        for it in kept
+    )
+
+
+def _pipe_row_is_shadowed(
+    it: dict[str, Any],
+    supplied: set[Any],
+    owui_answered: set[Any],
+    shadowed: set[Any],
+) -> bool:
+    if it.get("type") == "function_call_output":
+        return it.get("call_id") not in owui_answered and it.get("call_id") not in shadowed
+    return False
+
+
+def _move_kept_outputs_after_their_calls(kept: list[Any]) -> list[Any]:
+    first_call: dict[Any, int] = {}
+    for index, it in enumerate(kept):
+        if isinstance(it, dict) and it.get("type") == "function_call":
+            first_call.setdefault(it.get("call_id"), index)
+    misplaced = [
+        (index, it)
+        for index, it in enumerate(kept)
+        if isinstance(it, dict)
+        and it.get("type") == "function_call_output"
+        and it.get("call_id") in first_call
+        and index < first_call[it.get("call_id")]
+    ]
+    if not misplaced:
+        return kept
+    out: list[Any] = []
+    placed: set[int] = set()
+    drop = {index for index, _ in misplaced}
+    for index, it in enumerate(kept):
+        if index in drop:
+            continue
+        out.append(it)
+        if isinstance(it, dict) and it.get("type") == "function_call":
+            call_id = it.get("call_id")
+            if call_id in first_call and first_call[call_id] == index:
+                for source_index, source in misplaced:
+                    if source.get("call_id") == call_id and source_index not in placed:
+                        placed.add(source_index)
+                        out.append(source)
+    for source_index, source in misplaced:
+        if source_index not in placed:
+            out.append(source)
+    return out
+
+
 def _one_copy_per_round(region: list[Any]) -> list[Any]:
     supplied = {
         it.get("call_id")
         for it in region
         if isinstance(it, dict) and it.get("type") == "function_call" and not it.get(_PIPE_STORAGE_KEY)
+    }
+    owui_answered = {
+        it.get("call_id")
+        for it in region
+        if isinstance(it, dict)
+        and it.get("type") == "function_call_output"
+        and not it.get(_PIPE_STORAGE_KEY)
     }
     raw_server_ids = {
         it["id"]
@@ -448,7 +536,12 @@ def _one_copy_per_round(region: list[Any]) -> list[Any]:
             from_pipe = bool(it.get(_PIPE_STORAGE_KEY))
             pipe_only = bool(it.get(PIPE_ONLY_TOOL_ROUND_KEY) or it.get(TOOL_ROUND_SKELETON_KEY))
             if from_pipe and not pipe_only and it.get("call_id") in supplied:
-                continue
+                if from_pipe and _pipe_row_is_shadowed(
+                    it, supplied, owui_answered, shadowed
+                ) and not _gate_already_kept_an_output_for(kept, it.get("call_id")):
+                    pass
+                else:
+                    continue
             if not from_pipe and it.get("call_id") in shadowed:
                 continue
         if isinstance(it, dict) and any(key in it for key in _TRANSPORT_ONLY_KEYS):
@@ -462,7 +555,7 @@ def _one_copy_per_round(region: list[Any]) -> list[Any]:
         kept.append(it)
     if pictures:
         kept.append(_tool_images_message(pictures))
-    return kept
+    return _move_kept_outputs_after_their_calls(kept)
 
 
 def _tool_images_message(pictures: list[str]) -> dict[str, Any]:
@@ -470,6 +563,23 @@ def _tool_images_message(pictures: list[str]) -> dict[str, Any]:
         {"type": "input_text", "text": OPEN_WEBUI_TOOL_IMAGES_TEXT},
         *({"type": "input_image", "image_url": url, "detail": "auto"} for url in pictures),
     ]}
+
+
+def _note_memo_use(
+    memo_key: Any,
+    remembered: tuple[bytes, str] | None,
+    *,
+    mode: str,
+    temporary_chat: bool,
+) -> None:
+    if mode != "reuse" or temporary_chat or memo_key is None:
+        return
+    if remembered is not None:
+        if memo_key in _reuse_download_memo:
+            _reuse_download_memo.move_to_end(memo_key)
+        return
+    if memo_key in _reuse_download_memo:
+        _reuse_download_memo.move_to_end(memo_key)
 
 
 async def _memo_hit_is_still_permitted(
@@ -875,7 +985,7 @@ async def transform_messages_to_input(
                                     "unencoded_inline",
                                     subject=loggable_link(url),
                                 )
-                            parsed = pipe._multimodal_handler._parse_data_url(url)
+                            parsed = await asyncio.to_thread(pipe._multimodal_handler._parse_data_url, url)
                             if not parsed:
                                 oversized = (len(split[1]) * 3) // 4 > max_inline_bytes
                                 return ImageRefusal(
@@ -914,12 +1024,16 @@ async def transform_messages_to_input(
                             if mode == "reuse" and memo_key is not None
                             else None
                         )
-                        if remembered is None and mode == "reuse" and not temporary_chat:
+                        if mode == "reuse" and not temporary_chat and remembered is None:
                             remembered = (
                                 _reuse_download_memo.get(memo_key)
                                 if memo_key is not None
                                 else None
                             )
+                        _note_memo_use(
+                            memo_key, remembered,
+                            mode=mode, temporary_chat=temporary_chat,
+                        )
                         if remembered is not None and not await (
                             _memo_hit_is_still_permitted(pipe, memo_key, url)
                         ):
@@ -1024,7 +1138,7 @@ async def transform_messages_to_input(
                         declared = head[len("data:") :].split(";", 1)[0].strip().lower()
                         try:
                             sniffed = base64.b64decode(
-                                "".join(body.split())[: (_SNIFF_PREFIX_BYTES + 2) // 3 * 4]
+                                first_n_non_whitespace(body, (_SNIFF_PREFIX_BYTES + 2) // 3 * 4)
                             )
                         except (binascii.Error, ValueError):
                             sniffed = b""
@@ -1386,7 +1500,7 @@ async def transform_messages_to_input(
                             return await _refuse_oversized_inline(_inline_payload_bytes(sanitized))
 
                         if lowercase.startswith("data:"):
-                            parsed = pipe._multimodal_handler._parse_data_url(sanitized if sanitized.startswith("data:") else f"data:{sanitized.split(':', 1)[1]}")
+                            parsed = await asyncio.to_thread(pipe._multimodal_handler._parse_data_url, sanitized if sanitized.startswith("data:") else f"data:{sanitized.split(':', 1)[1]}")
                             if not parsed or not parsed.get("mime_type", "").startswith("audio/"):
                                 pipe.logger.warning("Audio payload rejected: invalid data URL.")
                                 await pipe._ensure_error_formatter()._emit_error(

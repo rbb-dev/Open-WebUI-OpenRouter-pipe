@@ -1818,7 +1818,9 @@ class TestFusionLiveGate:
                                              metadata=metadata)
         body = captured["body"]
         tool_types = [t.get("type") for t in (body.tools or []) if isinstance(t, dict)]
-        assert [t for t in tool_types if isinstance(t, str) and t.startswith("openrouter:")]
+        assert {t for t in tool_types if isinstance(t, str) and t.startswith("openrouter:")} == {
+            "openrouter:web_search", "openrouter:web_fetch", "openrouter:datetime",
+        }
 
 
     @pytest.mark.asyncio

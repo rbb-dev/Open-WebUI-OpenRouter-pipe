@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import re
 
+from ..core.utils import _ADAPTER_CACHE, _KEEP_WHAT_STILL_FITS
+
 # Canonical id of the dedicated Fusion model and the OWUI function id.
 FUSION_MODEL_SLUG = "openrouter/fusion"
 FUSION_FILTER_FUNCTION_ID = "openrouter_fusion"
@@ -76,9 +78,12 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
+
+__ADAPTER_CACHE__
+
 
 try:
     from open_webui.env import SRC_LOG_LEVELS
@@ -108,6 +113,8 @@ class Filter:
     toggle = True
 
     class Valves(BaseModel):
+__KEEP_WHAT_STILL_FITS__
+
         priority: int = Field(
             default=0,
             description="Priority level for the filter operations.",
@@ -123,6 +130,8 @@ class Filter:
         )
 
     class UserValves(BaseModel):
+__KEEP_WHAT_STILL_FITS__
+
         FUSION_PRESET: Literal["", "general-high", "general-budget", "general-fast"] = Field(
             default="",
             title="Preset",
@@ -289,4 +298,6 @@ def render_openrouter_fusion_filter_source(*, marker: str) -> str:
         _FUSION_FILTER_TEMPLATE
         .replace("__MARKER__", marker)
         .replace("__FILTER_ID__", FUSION_FILTER_FUNCTION_ID)
+        .replace("__ADAPTER_CACHE__", _ADAPTER_CACHE)
+        .replace("__KEEP_WHAT_STILL_FITS__", _KEEP_WHAT_STILL_FITS)
     )

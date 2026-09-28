@@ -6,27 +6,51 @@ from urllib.parse import urlsplit
 HTTP_SCHEMES = frozenset({"http", "https"})
 
 
+def _scheme_prefix(url: str) -> str | None:
+    if url[:5].lower() == "data:":
+        return "data"
+    return None
+
+
 def url_scheme(url: Any) -> str:
     if not isinstance(url, str):
         return ""
-    for candidate in (url, f"{url.partition(':')[0]}:"):
-        try:
-            return urlsplit(candidate).scheme
-        except ValueError:
-            continue
-    return ""
+    prefix = _scheme_prefix(url)
+    if prefix is not None:
+        return prefix
+    try:
+        return urlsplit(url).scheme
+    except ValueError:
+        pass
+    try:
+        return urlsplit(f"{url.partition(':')[0]}:").scheme
+    except ValueError:
+        return ""
 
 
 def is_absolute_url(url: Any) -> bool:
     if not isinstance(url, str):
         return False
-    for candidate in (url, f"{url.partition(':')[0]}:"):
+    if _scheme_prefix(url) is not None:
+        return True
+    try:
+        parts = urlsplit(url)
+    except ValueError:
         try:
-            parts = urlsplit(candidate)
+            parts = urlsplit(f"{url.partition(':')[0]}:")
         except ValueError:
-            continue
-        return bool(parts.scheme or parts.netloc)
-    return False
+            return False
+    return bool(parts.scheme or parts.netloc)
+
+
+def first_n_non_whitespace(text: str, n: int) -> str:
+    step = 4096
+    got = ""
+    for i in range(0, max(len(text), 1), step):
+        got += "".join(text[i : i + step].split())
+        if len(got) >= n:
+            return got[:n]
+    return got[:n]
 
 
 def is_cleartext_http_url(url: Any) -> bool:

@@ -140,6 +140,8 @@ These appear in the filter's user-facing knobs UI and control per-user, per-chat
 | `SUBAGENT` | `bool` | `False` | Enable the OpenRouter subagent tool (delegate tasks to a worker model an admin chooses). Runs an extra model call. |
 | `SEARCH_MODELS` | `bool` | `False` | Enable the OpenRouter model-search tool (let the model search the OpenRouter catalog). |
 
+A stored value from an older version of the pipe that no longer fits its field falls back to that field's default rather than failing the request, and every other stored value on the same row is kept.
+
 ### OpenRouter Image Generation filter user valves
 
 Six controls, always six. The filter is re-rendered for whichever model
@@ -264,7 +266,7 @@ Switching a web tool off affects **every** Web Tools filter, whatever its id, an
 - With **every** web tool off, every Web Tools filter is switched off. Nothing is added back. A filter you switch off yourself in Open WebUI's Functions list stays off: the pipe keeps its code up to date but never switches it back on. One this version switched off itself comes back on its own when you enable the feature again.
 - Where several copies exist, the pipe maintains and attaches the one with the id `openrouter_web_tools`, or the most recently updated copy if none has that id. Turning a web tool back on revives **the copy the pipe maintains** and leaves the others switched off until an admin switches them on in the Functions list.
 - If the row you need was one **you** switched off, the pipe will not bring it back; switch it on there.
-- **Upgrading:** a filter that was already off before this version stays off. The pipe only re-arms a filter it switched off itself, and it records that in the filter's own meta, so a row that was already off when you upgraded carries no such record. Switch it on in Workspace > Functions if you want it.
+- **Upgrading:** a filter that was already off before this version stays off. The pipe only re-arms a filter it switched off itself, and it records that in the filter's own meta. The same record is what makes retirement safe: turning an `AUTO_INSTALL_*` valve off switches off only the rows the pipe itself installed, so a copy an admin added by hand — Web Tools, Direct Uploads or anything else — is left alone. A row that was already off when you upgraded carries no such record. Switch it on in Workspace > Functions if you want it.
 
 The same rule holds for every other filter the pipe installs (Fusion, image generation, the per-model panels, Direct Uploads, provider routing).
 
@@ -335,7 +337,7 @@ nothing. The pipe repairs the rows:
   Switch it on in Open WebUI's Functions list if you want it. One this version switched off itself comes back on its own
   when you enable the feature again.
 - **Upgrading:** a filter that was already off before this version stays off. The pipe only re-arms a filter it switched
-  off itself, and it records that in the filter's own meta, so a row that was already off when you upgraded carries no
+  off itself, and it records that in the filter's own meta. The same record is what makes retirement safe: turning an `AUTO_INSTALL_*` valve off switches off only the rows the pipe itself installed, so a copy an admin added by hand — Web Tools, Direct Uploads or anything else — is left alone. A row that was already off when you upgraded carries no
   such record. Switch it on in Workspace > Functions if you want it.
 
 The same rule holds for every other filter the pipe installs (Fusion, image generation, the per-model panels, Direct

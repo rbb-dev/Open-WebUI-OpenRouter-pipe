@@ -2085,29 +2085,6 @@ class TestConcurrencyControls:
             await pipe.close()
 
     @pytest.mark.asyncio
-    async def test_ensure_concurrency_controls_warns_on_decrease(self, caplog):
-        """Test that _ensure_concurrency_controls warns when decreasing limit."""
-        pipe = Pipe()
-
-        # Reset class-level semaphore for test isolation
-        Pipe._global_semaphore = None
-        Pipe._semaphore_limit = 0
-
-        try:
-            pipe.valves.MAX_CONCURRENT_REQUESTS = 10
-            await pipe._ensure_concurrency_controls(pipe.valves)
-
-            # Try to decrease
-            pipe.valves.MAX_CONCURRENT_REQUESTS = 5
-            with caplog.at_level(logging.WARNING):
-                await pipe._ensure_concurrency_controls(pipe.valves)
-
-            # Should have warned about needing restart
-            assert any("restart" in msg.lower() for msg in caplog.messages)
-        finally:
-            await pipe.close()
-
-    @pytest.mark.asyncio
     async def test_ensure_concurrency_controls_tool_semaphore_increase(self):
         """Test that _ensure_concurrency_controls can increase tool semaphore limit."""
         pipe = Pipe()
@@ -2128,29 +2105,6 @@ class TestConcurrencyControls:
             await pipe._ensure_concurrency_controls(pipe.valves)
 
             assert Pipe._tool_global_limit == 10
-        finally:
-            await pipe.close()
-
-    @pytest.mark.asyncio
-    async def test_ensure_concurrency_controls_tool_semaphore_decrease_warns(self, caplog):
-        """Test that _ensure_concurrency_controls warns when decreasing tool limit."""
-        pipe = Pipe()
-
-        # Reset class-level tool semaphore for test isolation
-        Pipe._tool_global_semaphore = None
-        Pipe._tool_global_limit = 0
-
-        try:
-            pipe.valves.MAX_PARALLEL_TOOLS_GLOBAL = 10
-            await pipe._ensure_concurrency_controls(pipe.valves)
-
-            # Try to decrease
-            pipe.valves.MAX_PARALLEL_TOOLS_GLOBAL = 5
-            with caplog.at_level(logging.WARNING):
-                await pipe._ensure_concurrency_controls(pipe.valves)
-
-            # Should have warned about needing restart
-            assert any("MAX_PARALLEL_TOOLS_GLOBAL" in msg for msg in caplog.messages)
         finally:
             await pipe.close()
 
