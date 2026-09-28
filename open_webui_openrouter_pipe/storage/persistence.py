@@ -1151,7 +1151,12 @@ class ArtifactStore:
         return {"ciphertext": encrypted, "enc_v": _ENCRYPTED_PAYLOAD_VERSION}, True
 
 
-    def _prepare_rows_for_storage(self, rows: Iterable[dict[str, Any]]) -> None:
+    def _prepare_rows_for_storage(
+        self,
+        rows: Iterable[dict[str, Any]],
+        *,
+        form_settled: bool = False,
+    ) -> None:
         """Normalize row payloads so Redis/DB always receive the stored schema."""
         if not rows:
             return
@@ -1159,6 +1164,16 @@ class ArtifactStore:
             if not isinstance(row, dict):
                 continue
             payload = row.get("payload")
+            if form_settled:
+                if not isinstance(payload, dict):
+                    continue
+                if row.get("is_encrypted"):
+                    if "ciphertext" in payload:
+                        payload.setdefault("enc_v", _ENCRYPTED_PAYLOAD_VERSION)
+                        continue
+                    stored_payload, row["is_encrypted"] = self._encrypt_if_needed("reasoning", payload)
+                    row["payload"] = stored_payload
+                continue
             if row.get("is_encrypted"):
                 if isinstance(payload, dict) and "ciphertext" in payload:
                     payload.setdefault("enc_v", _ENCRYPTED_PAYLOAD_VERSION)
@@ -1177,12 +1192,15 @@ class ArtifactStore:
             row["payload"] = stored_payload
             row["is_encrypted"] = is_encrypted
 
-    async def _seal_rows(self, rows: list[dict[str, Any]]) -> None:
+    async def _seal_rows(self, rows: list[dict[str, Any]], *, form_settled: bool = False) -> None:
         if self._db_executor is None:
-            self._prepare_rows_for_storage(rows)
+            self._prepare_rows_for_storage(rows, form_settled=form_settled)
             return
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(self._db_executor, self._prepare_rows_for_storage, rows)
+        await loop.run_in_executor(
+            self._db_executor,
+            functools.partial(self._prepare_rows_for_storage, rows, form_settled=form_settled),
+        )
 
     def _reply_memory_for(self, chat_id: Any) -> ReplyMemory:
         return self._api_reply_memory if not chat_id else self._reply_memory
@@ -1685,8 +1703,9 @@ class ArtifactStore:
             sealed: set[str] = set()
             fetched = await self._db_fetch_direct(chat_id, message_id, missing_ids, sealed)
             if fetched and self._redis_active():
-                cache_rows = [
-                    {
+                cache_rows = []
+                for item_id, payload in fetched.items():
+                    row = {
                         "id": item_id,
                         "chat_id": chat_id,
                         "message_id": message_id,
@@ -1694,9 +1713,8 @@ class ArtifactStore:
                         "payload": payload,
                         "is_encrypted": item_id in sealed,
                     }
-                    for item_id, payload in fetched.items()
-                ]
-                await self._seal_rows(cache_rows)
+                    cache_rows.append(row)
+                await self._seal_rows(cache_rows, form_settled=True)
                 await self._redis_cache_rows(cache_rows, chat_id=chat_id)
             if user_id:
                 self._reset_db_failure(user_id)
@@ -2343,7 +2361,7 @@ class ArtifactStore:
             is_encrypted = False
             if isinstance(row_data, dict):
                 is_encrypted = bool(row_data.get("is_encrypted"))
-            if not is_encrypted and isinstance(payload, dict):
+            if not is_encrypted and isinstance(payload, dict) and "enc_v" in payload:
                 is_encrypted = "ciphertext" in payload
             if is_encrypted:
                 ciphertext = ""

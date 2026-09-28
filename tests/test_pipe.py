@@ -462,6 +462,12 @@ class TestStartupChecks:
     def test_maybe_start_startup_checks_task_done_clears(self):
         """Test that _maybe_start_startup_checks clears a done task."""
         pipe = Pipe()
+        # The only arm in this class that needs a genuinely cold pipe: the tree's conftest
+        # marks every other `Pipe` warm-up-complete so the warm-up gate does not refuse
+        # requests in tests that are not about warm-up, and this one asserts the guard the
+        # fixture would otherwise satisfy before `_maybe_start_startup_checks` is called.
+        pipe._warmup_tests_may_refuse = True
+        pipe._startup_checks_complete = False
 
         async def run_test():
             # Create a task that completes immediately
@@ -477,6 +483,59 @@ class TestStartupChecks:
         finally:
             pipe.shutdown()
 
+
+    # ── a failed warm-up is retried on a backoff, not once per request ──────────
+    #
+    # `_run_startup_checks`'s `finally` clears `_startup_task` and `_startup_checks_started`, so
+    # `_maybe_start_startup_checks` -- which every request calls -- finds its guard false again and
+    # arms a fresh task. The ping behind it is itself three attempts of exponential backoff, with
+    # no outer bound, so the warm-up's cost is set by request arrival and nothing else.
+
+    @staticmethod
+    def _reset_startup_flags(pipe) -> None:
+        """Start from the state a fresh pipe has before any request arms a warm-up."""
+        pipe._startup_task = None
+        pipe._startup_checks_started = False
+        pipe._startup_checks_pending = False
+        pipe._startup_checks_complete = False
+        pipe._warmup_failed = False
+
+    @staticmethod
+    def _arm_ping(pipe, monkeypatch, pings: list[str], *, failing: bool = True) -> None:
+        """Stub the three seams `_run_startup_checks` reaches, and count the pings that get through.
+
+        `_ping_openrouter` is a four-parameter coroutine, and `_create_http_session` and
+        `_resolve_openrouter_api_key` are synchronous, so a wrong-shaped stub raises a `TypeError`
+        inside `_run_startup_checks`, is swallowed by its `except Exception`, and every arm then
+        passes without ever calling it. `_resolve_openrouter_api_key` is a staticmethod and
+        `_create_http_session` is an instance method, so they are patched with the arity each one
+        is called with. A session stub of `None` is safe: the `finally` guards its close with
+        `if session:`.
+        """
+        async def _ping(self, session, base_url, api_key):
+            pings.append(api_key)
+            if failing:
+                raise RuntimeError("openrouter unreachable")
+
+        monkeypatch.setattr(Pipe, "_ping_openrouter", _ping)
+        monkeypatch.setattr(Pipe, "_resolve_openrouter_api_key", staticmethod(lambda _valves: ("sk-test-key", None)))
+        monkeypatch.setattr(Pipe, "_create_http_session", lambda *_a, **_k: None)
+
+    @staticmethod
+    def _ping_recording(pings: list[str], *, raising: bool = False):
+        """A `_ping_openrouter` stub that records the key it was handed and always fails.
+
+        `_arm_ping` pins `_resolve_openrouter_api_key` to a constant, so an arm that has to
+        change the key between two warm-ups cannot use it: the resolver it installs wins and
+        the key the arm sets is never the one that is pinged.
+        """
+        async def _ping(self, session, base_url, api_key):
+            pings.append(api_key)
+            if raising:
+                raise asyncio.CancelledError
+            raise RuntimeError("openrouter unreachable")
+
+        return _ping
 
 # =============================================================================
 # LOG WORKER TESTS
@@ -6400,6 +6459,11 @@ def test_pipe_init_invalid_uvicorn_workers_defaults(monkeypatch) -> None:
 
 def test_startup_checks_defer_without_loop(monkeypatch) -> None:
     pipe = Pipe()
+    # This arm is about the deferral guard itself, so it needs a genuinely cold pipe: the
+    # tree's conftest marks every other `Pipe` warm-up-complete, and `_maybe_start_startup_checks`
+    # returns on that latch before it ever reaches the key or the loop.
+    pipe._warmup_tests_may_refuse = True
+    pipe._startup_checks_complete = False
     pipe._startup_checks_pending = False
     pipe._startup_checks_started = False
     monkeypatch.setattr(pipe, "_resolve_openrouter_api_key", lambda _valves: ("sk-test", None))

@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -15,6 +16,9 @@ from ..core.errors import OpenRouterAPIError
 from ..core.logging_system import SessionLogger
 from .client import TaskModelFault, read_task_model_response_json
 from .logging import _fault_code, safe_log_payload
+
+_MIN_CANDIDATE_SLICE_S = 0.05
+_MIN_CANDIDATE_SHARE = 0.25
 
 _TASK_MODEL_FAULT_PREFIX = "task_model_"
 _REPAIR_OUTPUT_CHARS = 200
@@ -122,7 +126,6 @@ async def call_with_candidates(
             "response_format", "temperature", "stream").
         invoke: Async callable that takes form_data and returns the raw response
             (typically a closure over OWUI's `generate_chat_completion`).
-        timeout_s: Per-candidate timeout in seconds (asyncio.wait_for wrapper).
         logger: For DEBUG payload logs and WARNING failure logs.
         log_redact: Redaction function for DEBUG payload logging.
 
@@ -138,6 +141,7 @@ async def call_with_candidates(
 
     last_error: Exception | None = None
     seen_output: list[str] = []
+    deadline = time.monotonic() + timeout_s
 
     async def _attempt(fd: dict[str, Any]) -> Any:
         response = await invoke(fd)
@@ -163,7 +167,14 @@ async def call_with_candidates(
                 except Exception:
                     logger.debug("structured_task payload could not be logged", exc_info=True)
             try:
-                params = await asyncio.wait_for(_attempt(request), timeout=timeout_s)
+                remaining = deadline - time.monotonic()
+                reserved = (len(candidates) - index - 1) * max(
+                    _MIN_CANDIDATE_SLICE_S, timeout_s * _MIN_CANDIDATE_SHARE
+                )
+                params = await asyncio.wait_for(
+                    _attempt(request),
+                    timeout=max(remaining - reserved, _MIN_CANDIDATE_SLICE_S),
+                )
                 if outcome is not None:
                     outcome["index"] = index
                     outcome["model_id"] = model_id

@@ -2467,16 +2467,18 @@ class Valves(BaseModel):
         ge=1,
         le=60,
         description=(
-            "Timeout (seconds) for each candidate task-model call. The limit "
-            "covers the model call only; the lookup of those Task Model settings "
-            "happens before it and is a database read, so it is not counted against "
-            "this window. It is charged per attempt, so a host whose Task Model "
-            "fallback valve is on can roughly double the worst-case wait for the "
-            "model calls — up to 60 s per candidate, and the valve times the number "
-            "of candidates tried. If the call exceeds this or fails for any reason, "
-            "the pipe falls back to sending only the latest user message to the video "
-            "model. The paid video generation request still proceeds — the classifier "
-            "never blocks generation."
+            "Hard timeout (seconds) for the classifier task-model call. The window "
+            "covers the whole classifier, all candidates, so a fallback task model does "
+            "not double the wait; each candidate still to run keeps a quarter of the "
+            "window reserved for it, so at a small value a slow fallback may still not "
+            "fit. The limit covers the model call only, and the lookup of those Task "
+            "Model settings happens before it and is a database read, so it is not "
+            "counted against this window. The calls themselves are unchanged in number: "
+            "a fallback candidate is a second call, and a candidate whose reply cannot "
+            "be parsed is retried once more, but they all happen inside that one window. "
+            "If the calls exceed this or fail for any reason, the pipe falls back to "
+            "sending only the latest user message to the video model. The paid video "
+            "generation request still proceeds — the classifier never blocks generation."
         ),
     )
     VIDEO_INTENT_CONFIRM_MODE: Literal["always", "on_reference", "low_confidence", "never"] = Field(

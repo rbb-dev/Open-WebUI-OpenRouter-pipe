@@ -401,6 +401,7 @@ _warned_plugin_dispatch: set[str] = set()
 _warned_pipes_maintenance: set[str] = set()
 
 _WEB_TOOLS_REPAIR_COOLDOWN_S = 300.0
+_WARMUP_RETRY_SECONDS = 300.0
 _warned_user_valves: set[str] = set()
 _warned_timing_file: set[str] = set()
 
@@ -629,6 +630,8 @@ class Pipe:
         self._startup_checks_pending = False
         self._startup_checks_complete = False
         self._warmup_failed = False
+        self._warmup_retry_at = 0.0
+        self._warmup_failed_key: str | None = None
 
         self._redis_url, self._websocket_manager, self._websocket_redis_url, self._redis_candidate = (
             _detect_redis_config(self.valves, self.logger)
@@ -741,6 +744,11 @@ class Pipe:
             return
 
         if self._startup_checks_started and not self._startup_checks_pending:
+            return
+
+        if api_key_value != self._warmup_failed_key:
+            self._warmup_retry_at = 0.0
+        elif time.monotonic() < self._warmup_retry_at:
             return
 
         self._startup_checks_started = True
@@ -2087,6 +2095,8 @@ class Pipe:
         self._startup_checks_pending = False
         self._startup_checks_complete = False
         self._warmup_failed = False
+        self._warmup_retry_at = 0.0
+        self._warmup_failed_key: str | None = None
         self._redis_url = None
         self._websocket_manager = None
         self._websocket_redis_url = None
@@ -2434,6 +2444,7 @@ class Pipe:
     async def _run_startup_checks(self) -> None:
         """Warm OpenRouter connections and log readiness without blocking startup."""
         session: aiohttp.ClientSession | None = None
+        api_key: str | None = None
         try:
             api_key, api_key_error = self._resolve_openrouter_api_key(self.valves)
             if api_key_error or not api_key:
@@ -2449,9 +2460,12 @@ class Pipe:
             self._warmup_failed = False
             self._startup_checks_complete = True
             self._startup_checks_pending = False
+            self._warmup_failed_key = None
         except Exception as exc:  # pragma: no cover - depends on IO
             self.logger.warning("OpenRouter warmup failed: %s", exc, exc_info=True)
             self._warmup_failed = True
+            self._warmup_failed_key = api_key
+            self._warmup_retry_at = time.monotonic() + _WARMUP_RETRY_SECONDS
             self._startup_checks_complete = False
             self._startup_checks_pending = True
         finally:

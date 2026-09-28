@@ -46,6 +46,40 @@ def _reset_site_default_memo():
         memo.clear()
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _pipes_start_warm():
+    """Every pipe the tree builds starts warm-up-complete, and the original is restored.
+
+    The warm-up gate refuses a request while a warm-up has failed and none is in flight, and
+    on a test that never stubs `_ping_openrouter` the warm-up fails for real -- a refused
+    connection to a provider the test never wanted to reach. The gate is doing its job; the
+    tests below it are simply not about warm-up, so 85 of them were red for a reason that had
+    nothing to do with what they assert.
+
+    `Pipe.__init__` is wrapped rather than each fixture patched, so a pipe built directly in
+    a test body gets the same state as one from `pipe_instance`/`pipe_instance_async`, and the
+    wrap is undone when the session ends. The wrapper keeps no reference to the pipes it saw:
+    `test_hot_reload_lifecycle.py` asserts that a finished pipe is collectable, so a list of
+    them would pin all of them and turn six arms that are not about warm-up red. A test that
+    genuinely needs a cold pipe opts out by setting `_warmup_tests_may_refuse` on itself,
+    which this guard reads; there are three such tests.
+    """
+    import open_webui_openrouter_pipe.pipe as pipe_mod
+
+    original = pipe_mod.Pipe.__init__
+
+    def _warm_init(self, *args: Any, **kwargs: Any) -> None:
+        original(self, *args, **kwargs)
+        if not getattr(self, "_warmup_tests_may_refuse", False):
+            self._startup_checks_complete = True
+
+    pipe_mod.Pipe.__init__ = _warm_init
+    try:
+        yield
+    finally:
+        pipe_mod.Pipe.__init__ = original
+
+
 def _schedule_pipe_cleanup(pipe: "Pipe") -> None:
     try:
         asyncio.get_running_loop()
