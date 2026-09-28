@@ -24,6 +24,7 @@ from unittest.mock import MagicMock, Mock, patch, AsyncMock
 
 import pytest
 from aioresponses import aioresponses
+from starlette.responses import StreamingResponse
 
 from sqlalchemy import Table, Column, String, Boolean, DateTime, Index, MetaData, case, func
 
@@ -3880,7 +3881,12 @@ async def test_pipe_queue_full_returns_503(monkeypatch, pipe_instance_async) -> 
         None,
     )
 
-    assert result == "Server busy (503)"
+    # An empty __metadata__ is the provider-failure gate's shape: no chat to write
+    # a card into, so the refusal leaves as a status rather than as prose.
+    assert isinstance(result, StreamingResponse)
+    assert result.status_code == 503
+    body = b"".join([chunk async for chunk in result.body_iterator])
+    assert json.loads(body.decode("utf-8"))["error"]["message"] == "Server busy (503)"
     assert emitted
 
 

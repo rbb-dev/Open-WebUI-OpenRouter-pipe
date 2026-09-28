@@ -95,6 +95,11 @@ class _FakeQuery:
     def all(self):
         return self._apply()
 
+    def one(self):
+        ids = [getattr(row, "id", None) for row in self._apply()]
+        present = [row_id for row_id in ids if row_id is not None]
+        return (min(present), max(present)) if present else (None, None)
+
     def update(self, values, synchronize_session: bool = False):
         rows = self._apply()
         for row in rows:
@@ -1470,7 +1475,7 @@ async def test_cleanup_sync_exception(pipe_instance):
     store._item_model = _FakeModel
 
     class _FailingSession:
-        def query(self, model):
+        def query(self, *models):
             raise SQLAlchemyError("Query failed")
 
         def rollback(self):
@@ -2197,6 +2202,11 @@ class _FakeQuery:
     def first(self):
         rows = self.all()
         return rows[0] if rows else None
+
+    def one(self):
+        ids = [getattr(row, "id", None) for row in self._apply()]
+        present = [row_id for row_id in ids if row_id is not None]
+        return (min(present), max(present)) if present else (None, None)
 
     def update(self, values, synchronize_session: bool = False):
         rows = self._apply()

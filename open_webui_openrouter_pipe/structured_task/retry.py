@@ -11,9 +11,74 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from ..core.errors import OpenRouterAPIError
 from ..core.logging_system import SessionLogger
 from .client import TaskModelFault, read_task_model_response_json
 from .logging import _fault_code, safe_log_payload
+
+_TASK_MODEL_FAULT_PREFIX = "task_model_"
+_REPAIR_OUTPUT_CHARS = 200
+_REPAIR_TEMPERATURE = 0.2
+_CORRECTABLE_FAULTS = frozenset(
+    {
+        "task_model_invalid_json",
+        "task_model_empty_response",
+        "task_model_refusal",
+        "task_model_no_choices",
+        "task_model_response_too_large",
+        "task_model_invalid_schema",
+    }
+)
+
+
+def _is_correctable(exc: BaseException | None) -> bool:
+    if not isinstance(exc, RuntimeError) or isinstance(exc, OpenRouterAPIError):
+        return False
+    if str(exc).split(":", 1)[0].strip() in _CORRECTABLE_FAULTS:
+        return True
+    return str(exc).startswith(_TASK_MODEL_FAULT_PREFIX)
+
+
+def _response_text(response: Any) -> str:
+    if isinstance(response, str):
+        return response
+    if isinstance(response, dict):
+        choices = response.get("choices")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            message = choices[0].get("message")
+            if isinstance(message, dict) and isinstance(message.get("content"), str):
+                return message["content"]
+        output = response.get("output")
+        if isinstance(output, list):
+            parts = [
+                str(part.get("text") or "")
+                for item in output
+                if isinstance(item, dict)
+                for part in (item.get("content") or [])
+                if isinstance(part, dict) and part.get("type") == "output_text"
+            ]
+            if parts:
+                return "\n".join(p for p in parts if p)
+    return ""
+
+
+def _sanitised_excerpt(text: str) -> str:
+    printable = "".join(ch for ch in text if ch == "\n" or ch.isprintable())
+    return printable.strip()[:_REPAIR_OUTPUT_CHARS]
+
+
+def _with_repair(
+    form_data: dict[str, Any], repair: list[dict[str, Any]] | None
+) -> dict[str, Any]:
+    if not repair:
+        return form_data
+    repaired = dict(form_data)
+    messages = list(form_data.get("messages") or [])
+    messages.extend(repair)
+    repaired["messages"] = messages
+    if repaired.get("temperature") == 0:
+        repaired["temperature"] = _REPAIR_TEMPERATURE
+    return repaired
 
 
 async def call_with_candidates(
@@ -25,6 +90,8 @@ async def call_with_candidates(
     logger: logging.Logger,
     log_redact: Callable[[dict[str, Any]], dict[str, Any]] = safe_log_payload,
     outcome: dict[str, Any] | None = None,
+    attempts_per_candidate: int = 2,
+    repair_messages: Callable[[str], list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Loop candidates calling the task model; return first success.
 
@@ -50,36 +117,48 @@ async def call_with_candidates(
         raise TaskModelFault("no_task_model_candidates")
 
     last_error: Exception | None = None
+    seen_output: list[str] = []
+
+    async def _attempt(fd: dict[str, Any]) -> Any:
+        response = await invoke(fd)
+        seen_output.append(_response_text(response))
+        params = await read_task_model_response_json(response)
+        if not isinstance(params, dict):
+            raise TaskModelFault("task_model_invalid_schema")
+        return params
+
     for index, model_id in enumerate(candidates):
         form_data = build_form_data(model_id)
-        if SessionLogger.debug_enabled(logger):
+        for attempt in range(1, max(1, attempts_per_candidate) + 1):
+            repair = None
+            if attempt > 1 and repair_messages is not None and seen_output:
+                repair = repair_messages(_sanitised_excerpt(seen_output[-1]))
+            request = _with_repair(form_data, repair)
+            if SessionLogger.debug_enabled(logger):
+                try:
+                    logger.debug(
+                        "structured_task request payload: %s",
+                        json.dumps(log_redact(request), ensure_ascii=False, default=str),
+                    )
+                except Exception:
+                    logger.debug("structured_task payload could not be logged", exc_info=True)
             try:
-                logger.debug(
-                    "structured_task request payload: %s",
-                    json.dumps(log_redact(form_data), ensure_ascii=False, default=str),
+                params = await asyncio.wait_for(_attempt(request), timeout=timeout_s)
+                if outcome is not None:
+                    outcome["index"] = index
+                    outcome["model_id"] = model_id
+                return params
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - the candidate loop absorbs every fault and reports the last one
+                attempt_error = exc
+                logger.warning(
+                    "structured_task candidate '%s' failed: %s", model_id, type(exc).__name__
                 )
-            except Exception:
-                logger.debug("structured_task payload could not be logged", exc_info=True)
-        async def _attempt(fd: dict[str, Any]) -> Any:
-            response = await invoke(fd)
-            params = await read_task_model_response_json(response)
-            if not isinstance(params, dict):
-                raise TaskModelFault("task_model_invalid_schema")
-            return params
-        try:
-            params = await asyncio.wait_for(_attempt(form_data), timeout=timeout_s)
-            if outcome is not None:
-                outcome["index"] = index
-                outcome["model_id"] = model_id
-            return params
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - the candidate loop absorbs every fault and reports the last one
-            logger.warning(
-                "structured_task candidate '%s' failed: %s", model_id, type(exc).__name__
-            )
-            last_error = exc
-            continue
+            if not _is_correctable(attempt_error):
+                last_error = attempt_error
+                break
+            last_error = attempt_error
 
     raise RuntimeError(
         "task_model execution failed for all candidates; "

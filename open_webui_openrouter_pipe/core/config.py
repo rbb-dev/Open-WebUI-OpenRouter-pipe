@@ -142,7 +142,22 @@ _RAW_REPLAYED_SERVER_TOOLS = frozenset(
 _REMOTE_FILE_MAX_SIZE_DEFAULT_MB = 50
 _REMOTE_FILE_MAX_SIZE_MAX_MB = 500
 _INTERNAL_FILE_ID_PATTERN = re.compile(r"/files/([A-Za-z0-9-]+)(?:/|\\?|$)")
-_MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\((?P<url>[^)]+)\)")
+_MARKDOWN_IMAGE_RE = re.compile(
+    r"!\[[^\]]*\]\(\s*(?:<(?P<angled>[^<>\n]*)>|(?P<bare>(?:(?!\n[\"'(])[^ \t()])*(?:\((?:(?!\n[\"'(])[^ \t()])*\)(?:(?!\n[\"'(])[^ \t()])*)*))"
+    r"(?:\s+(?:\"[^\"]*\"|'[^']*'|\([^()]*\)))?\s*\)"
+)
+
+
+def markdown_image_destinations(text: str) -> list[str]:
+    if not isinstance(text, str):
+        return []
+    return [
+        destination
+        for match in _MARKDOWN_IMAGE_RE.finditer(text)
+        for destination in [(match.group("angled") or match.group("bare") or "").strip()]
+        if destination
+    ]
+
 
 # ULID generation constants
 ULID_LENGTH = 20
@@ -1341,6 +1356,12 @@ class Valves(BaseModel):
             "When True, converts Open WebUI registry tools to strict JSON Schema for OpenAI tools, "
             "enforcing explicit types, required fields, and disallowing additionalProperties. Only the "
             "registry tools this pipe runs are made strict; a schema that will be handed back is forwarded untouched. "
+            "A tool whose root schema is a string or an array is not supported: strict mode requires an object "
+            "root, so the pipe wraps such a schema in a single `value` property and the model sends its argument "
+            "under that name. "
+            "Any root that is not an object is wrapped this way - a number, a boolean, an `enum`/`const`, a "
+            "`oneOf`/`anyOf`, or a schema that declares no `properties`. A root carried by `$ref` or `allOf` is "
+            "resolved and its properties advertised, as far as the resolver's depth and budget reach. "
             "Tools are also sent with `strict: true` on `/chat/completions`, nested under each `function`; "
             "a provider that does not support strict tool calling there will reject the request. "
             "On the Responses route the registry and direct-tool specs the pipe advertises also carry "
@@ -1377,7 +1398,7 @@ class Valves(BaseModel):
         description=(
             "When True, save the full log of each request to encrypted zip files on disk. "
             "Archives capture the full OpenRouter request/response (prompts, model output, tool calls, provider errors) plus request identifiers — treat as sensitive conversation data at rest. "
-            "One zip is written per message turn, plus one for each housekeeping task Open WebUI dispatches on that turn, named <message_id>.<task>.zip. Open WebUI defines nine task types, so a turn that triggers all of them produces up to ten archives. "
+            "One zip is written per message turn, plus one for each housekeeping task Open WebUI dispatches on that turn, named <message_id>.<task>.zip. Open WebUI defines nine task types in its TASKS enum plus three more named inline (context_compaction, memory_review, context_summary), so a turn that triggers all of them produces up to thirteen archives. "
             "Persistence needs a user_id and a request_id; with it on, a call that carries no usable chat_id or message_id is archived under "
             "`api/api-<request_id>.zip` (see SESSION_LOG_ARCHIVE_API_CALLS), and every temporary chat is still dropped; that drop is logged as a warning on each of the three archive paths, once per path and again after a five-minute cooldown. Only the segment-persist path runs for a request today, so that is the one that warns. "
             "A task invocation that resolves to no message id is skipped the same way, which includes every Fusion panel member — those carry no message id at all, so they are not archived. "
@@ -1515,7 +1536,7 @@ class Valves(BaseModel):
         default=200,
         ge=1,
         le=2000,
-        description="Maximum number of in-flight OpenRouter requests allowed per process. Takes effect without a restart, in both directions: a higher value admits more requests at once, and a lower one binds from the moment it is saved, counting the requests already running, which finish first. A request holds its slot until its own tool calls have finished cleanup, so a tool-bearing request occupies its slot a little longer than its answer. The wait list behind this limit is bounded: the pipe queues further requests and sheds load with a \"Server busy (503)\" card once that queue is full.",
+        description="Maximum number of in-flight OpenRouter requests allowed per process. Takes effect without a restart, in both directions: a higher value admits more requests at once, and a lower one binds from the moment it is saved, counting the requests already running, which finish first. A request holds its slot until its own tool calls have finished cleanup, so a tool-bearing request occupies its slot a little longer than its answer. The wait list behind this limit is bounded: the pipe queues further requests and sheds load once that queue is full — a chat caller sees a \"Server busy (503)\" card, and an API caller gets a 503 response carrying the same sentence.",
     )
     SSE_WORKERS_PER_REQUEST: int = Field(
         default=4,
@@ -1736,7 +1757,7 @@ class Valves(BaseModel):
         ge=1,
         le=50,
         description=(
-            "Number of failures one user may accumulate before their requests are refused, a failing tool is skipped, or their database reads and writes are skipped; raise it for fewer trips in noisy environments. A request failure is a failed chat call to OpenRouter (an error reply; a connection that cannot be opened, drops or times out; an error reported inside a response; or a stream that stops before its final event). A request counts once however many attempts it took: a 429, a 5xx, a 408 that names the provider-timeout kind, or that failure reported inside a response before anything has been shown is retried first, up to TRANSIENT_RETRY_MAX_ATTEMPTS extra tries, and the request is a single failure whichever attempt gave up on it. A generation on a picture-only image model or a video model that fails after it was sent to OpenRouter is also a request failure, counted once. Request and database failures count within BREAKER_WINDOW_SECONDS. Raising or lowering the setting mid-session re-reads the failures already recorded: it does not discard them, and a lowered setting applies from the next request without evicting anything. Request failures clear when a request ends without an error (for a picture-only image model or a video model, only once its result is delivered; for an internal Fusion run, only if a panel model answered); a request the user stops clears no request failures. Housekeeping tasks such as title generation neither count nor clear; Open WebUI's merge-responses task counts but never clears. Database failures also clear when a database operation succeeds. The request breaker never refuses a request whose last message is a tool result, or is Open WebUI's own message that comes right after a tool result and hands the model a tool's images; a question or picture the user sends is refused like any other request. Each tool counts its failures in a row: errors it raises, per-call timeouts, running calls cut off by TOOL_BATCH_TIMEOUT_SECONDS, and calls whose tool server cannot be reached or answers with an HTTP error status; an ask_user timeout and a call to an MCP tool whose session has closed do not count. An error the tool reports in a result it returns normally is shown as failed but neither adds to the count nor clears it."
+            "Number of failures one user may accumulate before their requests are refused, a failing tool is skipped, or their database reads and writes are skipped; raise it for fewer trips in noisy environments. A request failure is a failed chat call to OpenRouter (an error reply; a connection that cannot be opened, drops or times out; an error reported inside a response; or a stream that stops before its final event). A request counts once however many attempts it took: a 429, a 5xx, a 408 that names the provider-timeout kind, or that failure reported inside a response before anything has been shown is retried first, up to TRANSIENT_RETRY_MAX_ATTEMPTS extra tries, and the request is a single failure whichever attempt gave up on it. A generation on a picture-only image model or a video model that fails after it was sent to OpenRouter is also a request failure, counted once. Request and database failures count within BREAKER_WINDOW_SECONDS. Raising or lowering the setting mid-session re-reads the failures already recorded: it does not discard them, and a lowered setting applies from the next request without evicting anything. Request failures clear when a request ends without an error (for a picture-only image model or a video model, only once its result is delivered; for an internal Fusion run, only if a panel model answered); a request the user stops clears no request failures. Housekeeping tasks such as title generation neither count nor clear; Open WebUI's merge-responses task counts but never clears. Database failures also clear when a database operation succeeds. The request breaker never refuses a request whose last message is a tool result, or is Open WebUI's own message that comes right after a tool result and hands the model a tool's images; a question or picture the user sends is refused like any other request. Each tool counts its failures in a row: errors it raises, per-call timeouts, running calls cut off by TOOL_BATCH_TIMEOUT_SECONDS, and calls whose tool server cannot be reached or answers with an HTTP error status; an ask_user timeout and a call to an MCP tool whose session has closed do not count. A SystemExit, KeyboardInterrupt or GeneratorExit from a tool is shown as failed but is not a failure of that tool: it signals the process rather than the tool, and it never adds to the count or clears it. An error the tool reports in a result it returns normally is shown as failed but neither adds to the count nor clears it."
         ),
     )
     BREAKER_WINDOW_SECONDS: int = Field(

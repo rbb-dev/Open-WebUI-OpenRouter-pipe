@@ -121,6 +121,76 @@ def _inline_allof_once(
         combined.extend(name for name in merged_required if name not in combined)
         node["required"] = combined
 
+def _root_is_object(schema: dict[str, Any]) -> bool:
+    root_t = schema.get("type")
+    return bool(
+        root_t == "object"
+        or (isinstance(root_t, list) and "object" in root_t)
+        or "properties" in schema
+    )
+
+
+def _root_was_wrapped(parameters: dict[str, Any]) -> bool:
+    return isinstance(parameters, dict) and not _root_is_object(parameters)
+
+
+def merge_schema_nodes(
+    base: dict[str, Any], overlay: dict[str, Any]
+) -> dict[str, Any]:
+    merged = copy.deepcopy(base)
+    for key, value in overlay.items():
+        if key == "properties":
+            existing = merged.get("properties")
+            if isinstance(existing, dict) and isinstance(value, dict):
+                combined = copy.deepcopy(existing)
+                for name, prop in value.items():
+                    combined[name] = copy.deepcopy(prop)
+                merged["properties"] = combined
+                continue
+        elif key == "required":
+            existing_required = merged.get("required")
+            if isinstance(existing_required, list) and isinstance(value, list):
+                combined_required = list(existing_required)
+                for name in value:
+                    if name not in combined_required:
+                        combined_required.append(name)
+                merged["required"] = combined_required
+                continue
+        merged[key] = copy.deepcopy(value)
+    return merged
+
+
+def _resolve_root_refs(
+    schema: dict[str, Any],
+    defs_lookup: dict[str, Any],
+    resolve_budget: list[int],
+) -> None:
+    seen: set[str] = set()
+    for _ in range(resolve_budget[0] + 1):
+        if resolve_budget[0] <= 0:
+            return
+        before = json.dumps(schema, sort_keys=True, default=str)
+        ref_value = schema.get("$ref")
+        if isinstance(ref_value, str) and ref_value not in seen:
+            target = defs_lookup.get(ref_value)
+            if not isinstance(target, dict):
+                return
+            seen.add(ref_value)
+            resolve_budget[0] -= 1
+            merged = merge_schema_nodes(
+                target, {key: value for key, value in schema.items() if key != "$ref"}
+            )
+            schema.clear()
+            schema.update(merged)
+        branches = schema.get("allOf")
+        if isinstance(branches, list) and branches and all(
+            isinstance(branch, dict) for branch in branches
+        ):
+            _inline_allof(schema, defs_lookup, resolve_budget)
+        if json.dumps(schema, sort_keys=True, default=str) == before:
+            return
+
+
 @lru_cache(maxsize=_STRICT_SCHEMA_CACHE_SIZE)
 def _strictify_schema_cached(serialized_schema: str) -> str:
     """Cached worker that enforces strict schema rules on serialized JSON."""
@@ -177,12 +247,18 @@ def _strictify_schema_impl(schema: dict[str, Any]) -> dict[str, Any]:
 
     This defensive type inference ensures schemas are valid for OpenAI strict mode.
     """
-    root_t = schema.get("type")
-    if not (
-        root_t == "object"
-        or (isinstance(root_t, list) and "object" in root_t)
-        or "properties" in schema
-    ):
+    defs_lookup: dict[str, Any] = {}
+    for defs_key in ("$defs", "definitions"):
+        defs = schema.get(defs_key)
+        if isinstance(defs, dict):
+            for def_name, def_body in defs.items():
+                if isinstance(def_body, dict):
+                    defs_lookup[f"#/{defs_key}/{def_name}"] = def_body
+    resolve_budget = [64]
+
+    _resolve_root_refs(schema, defs_lookup, resolve_budget)
+
+    if not _root_is_object(schema):
         hoisted: dict[str, Any] = {}
         for defs_key in ("$defs", "definitions"):
             defs = schema.get(defs_key)
@@ -195,15 +271,6 @@ def _strictify_schema_impl(schema: dict[str, Any]) -> dict[str, Any]:
             "additionalProperties": False,
             **hoisted,
         }
-
-    defs_lookup: dict[str, Any] = {}
-    for defs_key in ("$defs", "definitions"):
-        defs = schema.get(defs_key)
-        if isinstance(defs, dict):
-            for def_name, def_body in defs.items():
-                if isinstance(def_body, dict):
-                    defs_lookup[f"#/{defs_key}/{def_name}"] = def_body
-    resolve_budget = [64]
 
     stack = [schema]
     while stack:

@@ -281,9 +281,11 @@ Pick model selection rules of thumb:
   reference documents what that setting accepts.
 - **Want commentary alongside the image (chat-style)** → multimodal
   text+image models (GPT-5 Image, Gemini Image variants).
-- **Deterministic regeneration with same prompt** → any model that
+- **Regeneration with the same prompt and seed** → any model that
   publishes a seed: the four FLUX.2 variants, Seedream 4.5, the three
-  Krea 2 variants, and Qwen Image 3 and 3 Pro.
+  Krea 2 variants, and Qwen Image 3 and 3 Pro. OpenRouter says a repeat
+  should come back the same and does not guarantee that determinism for
+  every provider.
 - **Don't know which to pick** → pick the family (FLUX, Seedream, Krea, Qwen Image,
   Gemini Image) and let the model list narrow it. `openrouter/auto` is a chat router:
   it is not one of these models and asking it for a picture returns the routed model's
@@ -509,11 +511,12 @@ of the two listings.
 
 Black Forest Labs' flagship FLUX.2 model — pure-image-only with strong
 photorealism and prompt adherence. Best for high-quality deliverables.
-**Supports seed for deterministic generation.**
+**Supports seed for regeneration from the same prompt.**
 
 - PURE-image-only — does NOT output text.
-- Seed support enables deterministic regeneration with same prompt +
-  seed.
+- Seed support lets you ask for a regeneration with the same prompt +
+  seed. OpenRouter says a repeat should come back the same and does not
+  guarantee that for every provider.
 - No Sourceful-only or Gemini-only extensions.
 
 ### Black Forest Labs: FLUX.2 Max
@@ -525,7 +528,7 @@ Pure-image-only with seed support. Reserve for hero shots and finals
 where Pro isn't enough.
 
 - PURE-image-only — does NOT output text.
-- Seed enables deterministic regeneration.
+- Seed lets you ask for a regeneration from the same prompt.
 - Use for finals only.
 
 ### Black Forest Labs: FLUX.2 Flex

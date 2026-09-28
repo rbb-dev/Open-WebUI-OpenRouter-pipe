@@ -20,7 +20,7 @@ A call that arrives with no usable `chat_id`/`message_id` — the plain API rout
 - any intermediate OpenRouter traffic
 - any tool calls/results that occur within the turn
 
-One zip is written per message turn, plus one for each housekeeping task Open WebUI dispatches on that turn, named `<message_id>.<task>.zip`. Open WebUI defines nine task types, so a turn that triggers all of them produces up to ten archives. That is deliberate: the operator debugs from these archives, and a title or tags task folded into the answer's file would make its traffic unattributable. A task invocation with no resolvable message id is skipped entirely.
+One zip is written per message turn, plus one for each housekeeping task Open WebUI dispatches on that turn, named `<message_id>.<task>.zip`. Open WebUI defines nine task types in its `TASKS` enum plus three more it names inline (`context_compaction`, `memory_review`, `context_summary`), so a turn that triggers all of them produces up to thirteen archives. The count is checkable rather than asserted: `tests/test_session_logs.py::test_the_archive_key_split_takes_every_task_name_open_webui_sends` reads the names out of the Open WebUI source under `.external/` and fails when a name it has not recorded appears. That is deliberate: the operator debugs from these archives, and a title or tags task folded into the answer's file would make its traffic unattributable. A task invocation with no resolvable message id is skipped entirely.
 
 A reply that may hand a call back -- in Open-WebUI mode, or in Pipeline mode for a tool the pipe cannot run -- may be re-invoked for the same `message_id` during its tool loops. In that case, the pipe stages per-invocation log “segments” into the persistence layer and a background assembler merges them into a single archive.
 
@@ -134,6 +134,7 @@ Path safety:
 
 - For filesystem safety, the `<user_id>`, `<chat_id>`, and `<message_id>` path components are **sanitized** (non-alphanumeric characters are replaced, and components are length-limited).
 - The original (unsanitized) identifiers are preserved in `meta.json` under `ids.*` for correlation. A task archive's `ids.message_id` is the **bare** Open WebUI message id — the one that field can be joined against — with the task qualifier in the **filename** and in a separate `ids.task`, not appended to `ids.message_id`. An answer archive has no qualifier, so it carries no `ids.task` at all.
+- The split tests the key's tail against a known list of task names, not against a shape. A name Open WebUI sends that the pipe has never seen leaves the qualifier **in** `ids.message_id` (`msg-1.brand_new_task`) and leaves `ids.task` absent. That is a loud, visible gap rather than a silent misreading: the composed key is what the filename already says, so the archive is still findable — but `ids.message_id` does not join against an Open WebUI message. `tests/test_session_logs.py::test_the_archive_key_split_takes_every_task_name_open_webui_sends` is the row that turns a new name into a failing test the day Open WebUI ships it; note that it reads `.external/`, which is gitignored, so it **skips on CI and on a fresh checkout** and guards only where the Open WebUI source is present (local and farm runs).
 
 ---
 

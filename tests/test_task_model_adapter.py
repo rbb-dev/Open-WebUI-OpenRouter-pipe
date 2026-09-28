@@ -387,8 +387,8 @@ async def test_task_model_request_empty_output_retries(pipe_instance_async):
                 task_context="title_generation",
             )
 
-            # Should return error message after retries
-            assert "[Task error]" in result
+            # A persisted kind gets the contextual card
+            assert result.startswith("###")
             assert "title_generation" in result
             # Should have retried (2 attempts)
             assert call_count[0] == 2
@@ -436,8 +436,8 @@ async def test_task_model_request_generic_exception_retry(pipe_instance_async):
                 task_context="tags_generation",
             )
 
-            # Should return error message after retries
-            assert "[Task error]" in result
+            # A persisted kind gets the contextual card
+            assert result.startswith("###")
             assert "tags_generation" in result
             # Should have retried (2 attempts)
             assert call_count[0] == 2
@@ -479,16 +479,18 @@ async def test_task_model_request_auth_failure_no_retry(pipe_instance_async):
                 task_context="title_generation",
             )
 
-            # Should return error message
-            assert "[Task error]" in result
+            # A persisted kind gets the contextual card
+            assert result.startswith("###")
             # Should NOT retry on auth failure (only 1 attempt)
             assert call_count[0] == 1
+            # ... and the card reports the attempt it actually made
+            assert "1 attempt(s)" in result
     finally:
         await session.close()
 
 
 @pytest.mark.asyncio
-async def test_task_model_request_auth_failure_403(pipe_instance_async):
+async def test_task_model_request_auth_failure_403(pipe_instance_async, caplog):
     """Test _run_task_model_request does not retry on 403 (lines 182-196)."""
     pipe = pipe_instance_async
     pipe.valves.API_KEY = EncryptedStr("test-api-key")
@@ -521,10 +523,12 @@ async def test_task_model_request_auth_failure_403(pipe_instance_async):
                 task_context="summary",
             )
 
-            # Should return error message
-            assert "[Task error]" in result
+            # "summary" is not a persisted kind, so it gets nothing
+            assert result == ""
             # Should NOT retry on auth failure (only 1 attempt)
             assert call_count[0] == 1
+            # ... and the count the card and the ERROR record carry is that one
+            assert "1 attempt(s)" in caplog.text
     finally:
         await session.close()
 
@@ -535,8 +539,12 @@ async def test_task_model_request_auth_failure_403(pipe_instance_async):
 
 
 @pytest.mark.asyncio
-async def test_task_model_request_task_name_in_error(pipe_instance_async):
-    """Test _run_task_model_request uses task_context in error message (line 201)."""
+async def test_task_model_request_task_name_in_error(pipe_instance_async, caplog):
+    """The custom task's name survives in the log, never in the returned string.
+
+    `custom_task` is not a persisted kind, so `_task_refusal_result` returns "". A
+    dict task_context is still resolved, and still reported -- in the ERROR record.
+    """
     pipe = pipe_instance_async
     pipe.valves.API_KEY = EncryptedStr("test-api-key")
 
@@ -567,7 +575,9 @@ async def test_task_model_request_task_name_in_error(pipe_instance_async):
                 task_context={"type": "custom_task"},
             )
 
-            assert "custom_task" in result
+            # The name survives only in the log, never in the returned string
+            assert result == ""
+            assert "custom_task" in caplog.text
     finally:
         await session.close()
 
@@ -605,8 +615,9 @@ async def test_task_model_request_fallback_task_name(pipe_instance_async):
                 task_context=None,
             )
 
-            assert "[Task error]" in result
-            assert "task" in result.lower()
+            # A None task takes _task_refusal_result's last branch and gets the card
+            assert result != ""
+            assert "failed" in result
     finally:
         await session.close()
 
@@ -920,6 +931,9 @@ def _t379_rejection(error: dict[str, Any]) -> CallbackResult:
     )
 
 
+_EMITTER_UNSET = object()
+
+
 async def _t379_run(
     model: str,
     *,
@@ -931,11 +945,22 @@ async def _t379_run(
     fail_chat: bool = False,
     preset: str | None = None,
     pipe: Pipe | None = None,
+    events: list[dict[str, Any]] | None = None,
+    chat_id: str | None = None,
+    event_emitter: Any = _EMITTER_UNSET,
 ) -> tuple[list[str], list[dict[str, Any]], str]:
     """Drive one real request through `Pipe.pipe()`; return (endpoints, bodies, answer).
 
     A caller that passes its own `pipe` keeps it (and its circuit breaker) after the call,
     which is how the breaker arm below reads the records the task left behind.
+
+    A caller that passes `events` also gets every whole event appended to it, in order.
+    `collected` below keeps only the string payloads, so a row that needs the event
+    *types* (which channel a failure used) has no other way to see them.
+
+    `chat_id` puts the request on a named chat, and `event_emitter=None` drives
+    the no-emitter shape Open WebUI's browser-initiated task routes really
+    produce; both default to what every other caller already gets.
     """
     from tests.test_request_orchestrator import _consume_stream, _smart_callback
 
@@ -959,6 +984,9 @@ async def _t379_run(
         return answer(url, **kwargs)
 
     async def _emit(event) -> None:
+        if events is not None:
+            raw = getattr(event, "data", event)
+            events.append(raw if isinstance(raw, dict) else {"data": raw})
         payload = getattr(event, "data", event)
         if isinstance(payload, dict):
             payload = payload.get("content")
@@ -990,9 +1018,12 @@ async def _t379_run(
                 },
                 __user__={"id": "u1", "valves": Pipe.UserValves()},
                 __request__=None,
-                __event_emitter__=_emit,
+                __event_emitter__=_emit if event_emitter is _EMITTER_UNSET else event_emitter,
                 __event_call__=None,
-                __metadata__={"model": {"id": model}},
+                __metadata__={
+                    "model": {"id": model},
+                    **({"chat_id": chat_id} if chat_id else {}),
+                },
                 __tools__=None,
                 __task__=task,
                 __task_body__=None,

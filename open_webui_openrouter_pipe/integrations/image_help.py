@@ -294,11 +294,14 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         "best_known_for": (
             "Black Forest Labs' flagship FLUX.2 model — pure-image-only with "
             "strong photorealism and prompt adherence. Best for high-quality "
-            "deliverables. Supports seed for deterministic generation."
+            "deliverables. Supports seed for regeneration from the same prompt."
         ),
         "tips_and_pitfalls": [
             "PURE-image-only — does NOT output text.",
-            "Seed support enables deterministic regeneration with same prompt + seed.",
+            (
+                "Seed support lets you ask for a regeneration with the same prompt + seed. OpenRouter says a "
+                "repeat should come back the same and does not guarantee that for every provider."
+            ),
             "No Sourceful-only or Gemini-only extensions.",
         ],
     },
@@ -311,7 +314,7 @@ _IMAGE_PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         ),
         "tips_and_pitfalls": [
             "PURE-image-only — does NOT output text.",
-            "Seed enables deterministic regeneration.",
+            "Seed lets you ask for a regeneration from the same prompt.",
             "Use for finals only.",
         ],
     },

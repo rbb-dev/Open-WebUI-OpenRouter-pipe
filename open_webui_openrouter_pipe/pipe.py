@@ -30,7 +30,7 @@ import traceback
 import uuid
 import weakref
 from collections import Counter
-from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Mapping
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast, no_type_check
@@ -106,7 +106,12 @@ except ImportError:
     aioredis = None  # type: ignore
 
 # Timing instrumentation
-from .core.timing_logger import clear_timing_events, timed, timing_mark
+from .core.timing_logger import (
+    clear_timing_context,
+    clear_timing_events,
+    timed,
+    timing_mark,
+)
 from .storage.persistence import _detect_redis_config, _RedisClient
 
 try:
@@ -131,7 +136,7 @@ from .core.config import (
 )
 
 # Import error handling
-from .core.error_formatter import ErrorFormatter
+from .core.error_formatter import ErrorFormatter, _admission_error_response
 from .core.errors import (
     OpenRouterAPIError,
     RequiredInternalFileError,
@@ -171,6 +176,7 @@ from .models.registry import (
 
 # Import request handling
 from .requests import NonStreamingAdapter, TaskModelAdapter
+from .requests.orchestrator import _is_api_caller
 from .storage.multimodal import MultimodalHandler
 from .storage.owui_files import OwuiFileGateway
 from .storage.persistence import ArtifactStore
@@ -195,6 +201,12 @@ def _consume_background_task_exception(task: asyncio.Task) -> None:
     """Silently consume exceptions from background tasks to avoid 'Task exception was never retrieved' warnings."""
     with contextlib.suppress(asyncio.CancelledError, Exception):
         task.exception()
+
+
+def _detached_task(
+    loop: asyncio.AbstractEventLoop, coro: Coroutine[Any, Any, Any], name: str
+) -> asyncio.Task:
+    return loop.create_task(coro, name=name, context=contextvars.Context())
 
 
 _LIFECYCLE_REGISTRY_KEY = "_openrouter_pipe_lifecycle"
@@ -691,7 +703,7 @@ class Pipe:
 
         self._startup_checks_started = True
         self._startup_checks_pending = False
-        self._startup_task = loop.create_task(self._run_startup_checks(), name="openrouter-warmup")
+        self._startup_task = _detached_task(loop, self._run_startup_checks(), "openrouter-warmup")
 
     @timed
     def _maybe_start_log_worker(self) -> None:
@@ -741,9 +753,10 @@ class Pipe:
                     if pipe._log_queue is None:
                         pipe._log_queue = asyncio.Queue(maxsize=1000)
                         SessionLogger.set_log_queue(pipe._log_queue)
-                    pipe._log_worker_task = loop.create_task(
+                    pipe._log_worker_task = _detached_task(
+                        loop,
                         Pipe._log_worker_loop(pipe._log_queue),
-                        name="openrouter-log-worker",
+                        "openrouter-log-worker",
                     )
             except Exception:
                 pipe.logger.debug("Log worker startup task failed", exc_info=True)
@@ -751,7 +764,9 @@ class Pipe:
         prev_start_task = self._log_worker_start_task
         if prev_start_task and not prev_start_task.done():
             prev_start_task.cancel()
-        self._log_worker_start_task = loop.create_task(_ensure_worker(), name="openrouter-log-worker-start")
+        self._log_worker_start_task = _detached_task(
+            loop, _ensure_worker(), "openrouter-log-worker-start"
+        )
         self._log_worker_start_task.add_done_callback(_consume_background_task_exception)
 
     async def _stored_user_valves(self, __user__: dict[str, Any]) -> Any:
@@ -922,7 +937,9 @@ class Pipe:
         self._redis_loop = loop
         if self._redis_ready_task and not self._redis_ready_task.done():
             return
-        self._redis_ready_task = loop.create_task(self._init_redis_client(), name="openrouter-redis-init")
+        self._redis_ready_task = _detached_task(
+            loop, self._init_redis_client(), "openrouter-redis-init"
+        )
 
     @timed
     def _refresh_redis_candidate(self) -> None:
@@ -941,9 +958,10 @@ class Pipe:
             return
         if self._cleanup_task and self._cleanup_task.done():
             self._cleanup_task = None
-        self._cleanup_task = loop.create_task(
+        self._cleanup_task = _detached_task(
+            loop,
             self._artifact_store._artifact_cleanup_worker(),
-            name="openrouter-artifact-cleanup",
+            "openrouter-artifact-cleanup",
         )
 
     @classmethod
@@ -1537,7 +1555,7 @@ class Pipe:
         __tools__: list[dict[str, Any]] | dict[str, Any] | None,
         __task__: Any = None,
         __task_body__: Any = None,
-    ) -> AsyncGenerator[dict[str, Any] | str, None] | dict[str, Any] | str | None | JSONResponse:
+    ) -> AsyncGenerator[dict[str, Any] | str, None] | dict[str, Any] | str | StreamingResponse | None | JSONResponse:
         if self._draining or self._closing:
             raise RuntimeError(
                 "This pipe instance has been superseded by a newer version; please retry."
@@ -1613,10 +1631,12 @@ class Pipe:
         *,
         counter_state: dict[str, bool] | None = None,
         timing_holder: list[tuple[ContextVar[Any], Token[Any]]] | None = None,
-    ) -> AsyncGenerator[dict[str, Any] | str, None] | dict[str, Any] | str | None | JSONResponse:
+    ) -> AsyncGenerator[dict[str, Any] | str, None] | dict[str, Any] | str | StreamingResponse | None | JSONResponse:
         """Entry point that enqueues work and awaits the isolated job result."""
         safe_event_emitter = None
         owui_chat_id_token = OWUI_CHAT_ID.set(str((__metadata__ or {}).get("chat_id") or ""))
+        _enqueued = False
+        _early_request_id = ""
 
         try:
             from .core.timing_logger import set_timing_context, timing_mark
@@ -1777,7 +1797,14 @@ class Pipe:
                         done=True,
                     )
                 SessionLogger.cleanup()
+                if not wants_stream and not __task__ and _is_api_caller(__metadata__):
+                    escape = _admission_error_response(
+                        503, "Server busy (503)", request=__request__
+                    )
+                    if escape is not None:
+                        return escape
                 return self._degraded_result(__task__, "Server busy (503)")
+            _enqueued = True
         except Exception:
             self.logger.exception("Pre-enqueue setup failed")
             if safe_event_emitter:
@@ -1798,6 +1825,11 @@ class Pipe:
         finally:
             with contextlib.suppress(Exception):
                 OWUI_CHAT_ID.reset(owui_chat_id_token)
+            if not _enqueued:
+                with contextlib.suppress(Exception):
+                    clear_timing_events(_early_request_id)
+                with contextlib.suppress(Exception):
+                    clear_timing_context()
 
         if wants_stream and stream_queue is not None:
             @timed
@@ -3617,7 +3649,8 @@ class Pipe:
         timeout = ask_user_window if ask_user_window is not None else float(context.timeout)
 
         origin_name = str(item.tool_cfg.get("origin_name") or tool_name)
-        declared = ((item.tool_cfg.get("spec") or {}).get("parameters") or {}).get("properties") or {}
+        wire = item.tool_cfg.get("spec_wire") or item.tool_cfg.get("spec") or {}
+        declared = ((wire.get("parameters") or {}).get("properties") or {})
         call_args = (
             {key: value for key, value in item.args.items() if key in declared} if isinstance(item.args, dict) else {}
         )
@@ -3674,13 +3707,16 @@ class Pipe:
                 return _fallback_tool_text(raw_result), [], [], []
 
         deadline = asyncio.timeout(timeout)
+        tool_raised = False
         try:
             timing_mark(f"tool_run:{tool_name}:executing")
             async with deadline:
+                tool_raised = True
                 result = await self._call_tool_callable(
                     await self._ensure_tool_executor()._with_current_chat(fn_to_call, item.tool_cfg, context),
                     call_args,
                 )
+            tool_raised = False
             unreachable = _reports_transport_failure(result)
             text, files, embeds, pictures = await _process_and_emit(result)
             if unreachable or _tool_result_failed(text):
@@ -3702,9 +3738,11 @@ class Pipe:
                 and "not connected" in str(exc)
             )
             argument_binding_failure = isinstance(exc, TypeError) and not _tool_body_raised(exc, fn_to_call)
+            process_control = tool_raised and self._ensure_tool_executor().is_process_control(exc)
             if (breaker is not None and not mcp_disconnected
                     and not (timed_out and ask_user_window is not None)
-                    and not argument_binding_failure):
+                    and not argument_binding_failure
+                    and not process_control):
                 breaker.record_tool_failure(
                     context.user_id, tool_type, breaker_key
                 )

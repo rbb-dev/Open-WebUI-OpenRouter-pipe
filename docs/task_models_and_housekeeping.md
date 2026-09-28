@@ -39,7 +39,7 @@ The pipe extracts housekeeping task output text from:
 - `output[].type == "message"` items containing `content[].type == "output_text"`, concatenated with newlines.
 - Fallback: a top-level `output_text` string (some providers return a collapsed field).
 
-If the provider returns no usable text, the pipe returns a safe placeholder error string to Open WebUI rather than raising an exception.
+If the provider returns no usable text, the pipe does not raise. The failure is routed through `_task_refusal_result`: a kind Open WebUI persists (`title_generation`, `tags_generation`, `follow_up_generation`) gets a contextual card naming the task, the model, the attempt count, the error class and the error id; every other kind gets `""`, because Open WebUI hands that return value straight to a consumer that displays it. A warning toast carrying the same card is emitted on the one channel that is still open -- once per chat-or-user and model within the notification window.
 
 ### How many requests a failing task makes
 
@@ -79,9 +79,8 @@ figures, and a `status` is appended to its status history and stored with it.
 
 For housekeeping tasks the pipe closes all four of those channels for the whole
 job, from the moment the task is recognised through to the reply. A task that
-fails still returns the parseable JSON stub Open WebUI expects — a title, a tag
-list, an empty follow-up list — and the answer on screen is left exactly as the
-model wrote it. The refusal paths are the exception, and deliberately so: a task
+fails returns a contextual card for a persisted kind and the empty string for
+every other, and the answer on screen is left exactly as the model wrote it. The refusal paths are the exception, and deliberately so: a task
 the pipe refuses before it enqueues the job — an open circuit breaker, a failed
 warmup, a missing or full request queue, a setup exception — gets the refusal
 sentence rather than a stub, for every kind. The same holds for the three refusals
@@ -95,9 +94,21 @@ suggestion — and the sentence would be shown as one. A stub is a write, not
 a no-op: Open WebUI parses the reply and persists it, naming the chat from the
 returned `title`, **replacing** the stored tag list, and storing the follow-ups, so
 a stub handed back during an outage would overwrite the user's own title and tags
-with no retry. A sentence does not parse, so the stored title, tags and follow-ups
-are left untouched. Toast notifications are the one channel still open, because
-Open WebUI shows those beside the conversation rather than inside a message.
+with no retry. A value that does not parse leaves the stored tags and follow-ups
+untouched, because those two writes sit inside the `try` that wraps the parse.
+The title is different: `update_chat_title_by_id` sits outside it, and Open
+WebUI's own `if not title:` fallback renames the chat to the user's first
+message on *any* title parse failure — for the card, for `""` and for an
+outage that happened without this pipe at all. That is Open WebUI's behaviour
+for its own failed title generation, the pipe follows it rather than returning a
+stub, and the alternative would be renaming the chat to the literal placeholder
+"Chat". Toast notifications are the one channel still open, because Open WebUI
+shows those beside the conversation rather than inside a message.
+
+The adapter's failure tail follows the same rule: a persisted kind gets the card,
+every other kind gets `""`, and the toast carries the text. `str(last_error)`
+never reaches the returned string — for `query_generation` it would be sent to a
+search provider, and for `context_compaction` stored as the chat's summary.
 
 MOA merged-response synthesis is a visible answer rather than housekeeping, so
 none of this applies to it.
@@ -133,9 +144,9 @@ If you need tasks to be as fast as possible, reduce `TASK_MODEL_REASONING_EFFORT
 
 | Symptom | Likely cause | What to check |
 |---|---|---|
-| Tasks often return `[Task error] ...` | Provider errors or repeated request failures in the housekeeping task adapter | Check backend logs for `Task model attempt ... failed` (DEBUG gives full stack traces). |
+| A housekeeping task failed | Provider errors or repeated request failures in the housekeeping task adapter | A warning toast names the task, the model, the attempt count, the error class and the error id; the same id is on the `Task model '<task>' failed after N attempt(s)` **ERROR** record, which carries the model id, the error class and the request id. The per-attempt `Task model attempt %d/%d failed` records are WARNING and do not carry the id; DEBUG adds full stack traces (except on an auth failure, where `exc_info` is deliberately withheld at `task_model_adapter.py:267`). The toast is emitted once per chat-or-user and model per window, so a long outage toasts once rather than on every dispatch. |
 | Task outputs are overly verbose | Housekeeping prompt/model configuration encourages long-form responses | Tune the task prompt/model configuration for short outputs; consider lowering `TASK_MODEL_REASONING_EFFORT`. |
-| A task returns `[Task error]` and the model is one that thinks | The task's cap is below what the model needs for thinking | Two halves: the pipe's is `budget = min(budget, cap - 64)` on Gemini 2.5, and under `cap < 65` it asks for no bounded budget at all; the other half is the cap itself, which the pipe must not raise. Raise `task.model.params.max_tokens` (4 for the emoji task, 1000 for a title) or point the task at a different model. |
+| A task fails and the model is one that thinks | The task's cap is below what the model needs for thinking | Two halves: the pipe's is `budget = min(budget, cap - 64)` on Gemini 2.5, and under `cap < 65` it asks for no bounded budget at all; the other half is the cap itself, which the pipe must not raise. Raise `task.model.params.max_tokens` (4 for the emoji task, 1000 for a title) or point the task at a different model. |
 | Housekeeping is running up unexpected spend | Housekeeping runs on every chat, so the task model it targets and the length of what that model produces both drive the total | Confirm the configured task model and review `usage`/cost snapshots (if enabled). What a model charges is on OpenRouter's pricing page. |
 | Housekeeping tasks bypass the model allowlist unexpectedly | The request is using the housekeeping task adapter path | Treat this as expected behavior; if you need strict enforcement, control task model selection at the Open WebUI admin/config level. |
 | MOA ignores housekeeping task settings | `moa_response_generation` now uses normal chat semantics | This is expected; MOA keeps the selected chat model and normal chat features. |

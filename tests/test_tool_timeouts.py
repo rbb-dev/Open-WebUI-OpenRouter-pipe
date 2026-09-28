@@ -184,8 +184,27 @@ async def _run(pipe, monkeypatch, registry, calls, *, timeout=60.0, batch_timeou
     Returns the outputs by call_id and how many (virtual) seconds the turn took. `drain` keeps the workers for that many
     more (virtual) seconds after the calls return, as the rest of a request does.
     """
+    return await _run_with(
+        pipe, monkeypatch, registry, calls,
+        maxsize=50, workers=5, batch_cap=4,
+        timeout=timeout, batch_timeout=batch_timeout, idle_timeout=idle_timeout,
+        on_complete=on_complete, event_emitter=event_emitter,
+        card_carries_the_result=card_carries_the_result, drain=drain,
+    )
+
+
+async def _run_with(pipe, monkeypatch, registry, calls, *, maxsize=50, workers=5, batch_cap=4, timeout=60.0,
+                    batch_timeout=120.0, idle_timeout=None, on_complete=None, event_emitter=None,
+                    card_carries_the_result=False, drain=0.0, queue=None):
+    """`_run` with the queue's maxsize, the worker count and the batch cap as parameters.
+
+    The enqueue at the end of `_execute_function_calls` blocks on `queue.put`, so a question about
+    whether the idle allowance is charged for that wait needs a queue small enough to actually fill
+    and few enough workers to be busy. No valve sets the queue's maxsize, so the only way to say so
+    is to pass one; every existing caller keeps `_run`'s values.
+    """
     context = _ToolExecutionContext(
-        queue=asyncio.Queue(maxsize=50),
+        queue=queue if queue is not None else asyncio.Queue(maxsize=maxsize),
         per_request_semaphore=asyncio.Semaphore(5),
         global_semaphore=None,
         timeout=timeout,
@@ -193,12 +212,12 @@ async def _run(pipe, monkeypatch, registry, calls, *, timeout=60.0, batch_timeou
         idle_timeout=idle_timeout,
         user_id="user-1",
         event_emitter=event_emitter,
-        batch_cap=4,
+        batch_cap=batch_cap,
     )
     context.on_complete = on_complete
     context.carded_calls = {str(call.get("call_id")) for call in calls} if card_carries_the_result else set()
     executor = pipe._ensure_tool_executor()
-    context.workers.extend(asyncio.create_task(executor._tool_worker_loop(context)) for _ in range(5))
+    context.workers.extend(asyncio.create_task(executor._tool_worker_loop(context)) for _ in range(workers))
     token = pipe._TOOL_CONTEXT.set(context)
     loop = asyncio.get_running_loop()
     started = loop.time()
@@ -1775,3 +1794,17 @@ async def _wait_for(predicate, *, seconds: float, what: str) -> None:
         if _real_time.monotonic() >= deadline:
             raise AssertionError(what)
         await asyncio.sleep(0.01)
+
+
+# --- the idle allowance starts when the round does, not when the enqueue does -----------------------
+#
+# The clock was armed after the parse/refusal loop and after the enqueue, and the parse loop's one
+# inline `await` is `_notify_tool_breaker`, a real emit to the user's browser. A slow emitter
+# therefore stretched the round past the very limit the round was supposed to be held to. The fix
+# moves the origin of the clock to the top of the round and charges the enqueue wait against the
+# allowance, so the wait for results is one bounded wait for the round either way.
+
+
+def _never_returns(**_kwargs):
+    """A tool that never returns, so what ends it is a limit or a teardown, never itself."""
+    return asyncio.sleep(NEVER)

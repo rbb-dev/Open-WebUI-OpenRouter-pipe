@@ -37,6 +37,7 @@ from ..integrations.image_types import (
 )
 from ..integrations.provider_options import CHAT_PROVIDER_KEYS
 from ..models.registry import sanitize_model_id
+from .video_filter_renderer import _SEED_MEANING
 
 
 def sanitize_image_filter_id(model_id: str) -> str:
@@ -436,10 +437,7 @@ _IMAGE_KNOB_TITLE_OVERRIDES = {
     "n": ("Number of images", "How many images this request asks for."),
     "seed": (
         "Seed",
-        (
-            "This model supports seeding. OpenRouter publishes no range for it, and does "
-            "not promise the same seed repeats an image."
-        ),
+        f"{_SEED_MEANING} OpenRouter publishes no range for it.",
     ),
     "background": ("Background", "Background treatment."),
     "quality": ("Quality", "Rendering quality tier."),

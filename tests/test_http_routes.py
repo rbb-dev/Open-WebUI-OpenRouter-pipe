@@ -143,25 +143,6 @@ def test_route_forbidden_flows_through(monkeypatch):
     assert r.status_code == 403
 
 
-def test_register_action_route_replaces_stale(monkeypatch):
-    routes: list = []
-
-    def _add(path, fn, methods=None):
-        routes.append(SimpleNamespace(path=path))
-
-    fake_app = SimpleNamespace(add_api_route=Mock(side_effect=_add), routes=routes)
-    monkeypatch.setattr(http_routes, "get_owui_app", lambda: fake_app)
-    http_routes._registered_paths.clear()
-    assert http_routes.register_action_route() is True
-    assert http_routes.register_action_route() is True
-    # Replace-semantics: the stale route is removed before re-adding, so
-    # exactly ONE route remains at the path (never a duplicate serving a
-    # previous generation's closure).
-    assert sum(1 for r in routes if r.path == http_routes._ACTION_PATH) == 1
-    assert fake_app.add_api_route.call_count == 2
-    http_routes._registered_paths.clear()
-
-
 def test_register_action_route_degrades_closed(monkeypatch):
     monkeypatch.setattr(http_routes, "get_owui_app", lambda: None)
     http_routes._registered_paths.clear()

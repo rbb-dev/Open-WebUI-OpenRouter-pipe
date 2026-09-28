@@ -550,14 +550,10 @@ _VALID_FRAME_DEFAULTS = ("first", "last")
 _VALID_CONFIRM_MODES = ("always", "on_reference", "low_confidence", "never")
 
 
-_SEED_OPENING = (
+_SEED_MEANING = (
     "A number that fixes the random draw, so the same prompt and the same number should "
-    "make the same clip again."
-)
-
-_SEED_NOT_GUARANTEED = (
-    "OpenRouter asks for it but does not guarantee it: whether a repeat comes back "
-    "identical is up to the company running the model."
+    "come back the same again. OpenRouter asks for it but does not guarantee it: whether "
+    "a repeat comes back identical is up to the company running the model."
 )
 
 _SEED_UNDECLARED = (
@@ -574,7 +570,7 @@ def _seed_meaning(declared: bool) -> str:
     will. Three of the sixteen go further and publish nothing at all about the flag.
     """
     tail = "" if declared else f" {_SEED_UNDECLARED}"
-    return f"{_SEED_OPENING} {_SEED_NOT_GUARANTEED}{tail} 0 leaves it random."
+    return f"{_SEED_MEANING}{tail} 0 leaves it random."
 
 
 _FRAME_MODE_MEANINGS: dict[str, str] = {

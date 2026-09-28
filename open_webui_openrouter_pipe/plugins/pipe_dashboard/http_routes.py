@@ -254,7 +254,6 @@ def ensure_route_before_spa(app: Any) -> None:
 
 
 def register_action_route() -> bool:
-    """Register the action route on the OWUI app, replacing any existing route at the path."""
     with _registration_lock:
         app = get_owui_app()
         if app is None:
@@ -262,10 +261,9 @@ def register_action_route() -> bool:
         try:
             for route in list(getattr(app, "routes", []) or []):
                 if getattr(route, "path", None) == _ACTION_PATH:
-                    try:
-                        app.routes.remove(route)
-                    except ValueError:
-                        pass
+                    _registered_paths.add(_ACTION_PATH)
+                    ensure_route_before_spa(app)
+                    return True
             app.add_api_route(_ACTION_PATH, _action_route, methods=["POST"])
             ensure_route_before_spa(app)
         except Exception:

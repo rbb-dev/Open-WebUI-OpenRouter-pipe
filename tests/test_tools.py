@@ -2730,6 +2730,7 @@ class _DummyWorker:
     _tool_worker_loop = ToolExecutor._tool_worker_loop
     _can_batch_tool_calls = ToolExecutor._can_batch_tool_calls
     _args_reference_call = ToolExecutor._args_reference_call
+    _cancelled_tool_output = ToolExecutor._cancelled_tool_output
 
 
 def _make_queued(
@@ -3064,8 +3065,15 @@ class TestToolWorkerLoop:
         assert context.timeout_error is None
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("timeout_error", [None, "Tool batch 'tool_a' exceeded 600s and was cancelled."])
-    async def test_a_batch_interrupted_by_shutdown_tells_its_unfinished_calls_why(self, timeout_error) -> None:
+    async def test_a_batch_interrupted_by_shutdown_tells_its_unfinished_calls_why(self) -> None:
+        """A batch cut by shutdown tells its unfinished calls why, in the same words for all of them.
+
+        The row that used to be parametrised with a `context.timeout_error` already set is retired.
+        That field is request-scoped and describes whichever batch wrote it, so handing it to a
+        call that never ran that tool told the model about a limit that never touched it. The
+        wording for a batch cut by its own deadline is unchanged and still delivered by
+        `_execute_tool_batch`; what retired is only the claim that shutdown reuses it.
+        """
         worker = _DummyWorker()
         worker.execution_delay = 0.5
         loop = asyncio.get_running_loop()
@@ -3073,7 +3081,7 @@ class TestToolWorkerLoop:
         calls = [_make_queued(loop, "call-1", "tool_a"), _make_queued(loop, "call-2", "tool_a")]
         await queue.put(calls)
         context = _make_context(queue)
-        context.timeout_error = timeout_error
+        context.timeout_error = None
 
         task = asyncio.create_task(worker._tool_worker_loop(context))
         await asyncio.sleep(0.05)
@@ -3081,7 +3089,7 @@ class TestToolWorkerLoop:
         with pytest.raises(asyncio.CancelledError):
             await task
 
-        expected = timeout_error or "Tool execution cancelled"
+        expected = "Tool execution cancelled"
         assert [call.future.result() for call in calls] == [
             {"call_id": "call-1", "status": "cancelled", "message": expected},
             {"call_id": "call-2", "status": "cancelled", "message": expected},
@@ -4080,6 +4088,7 @@ class _DummyWorker2:
     _tool_worker_loop = ToolExecutor._tool_worker_loop
     _can_batch_tool_calls = ToolExecutor._can_batch_tool_calls
     _args_reference_call = ToolExecutor._args_reference_call
+    _cancelled_tool_output = ToolExecutor._cancelled_tool_output
 
 
 def _make_queued(loop, call_id: str, name: str, *, allow_batch: bool = True, args=None):

@@ -53,14 +53,27 @@ EXPECTED_LATCHES = {
     "_warned_stale_valves",
     "_warned_storage_provider",
     "_warned_system_resources",
+    "_warned_task_failure",
     "_warned_timing_file",
     "_warned_user_valves",
     "_warned_video_catalog",
     "_warned_video_provider_keys",
 }
 
+# `OrderedDict()` is a fourth admitted shape, not a fourth kind of latch: the
+# bounded latch in `integrations/video.py` (`_intent_failure_notified_chats`, a
+# per-instance `self.` attribute this module-level regex never matched, and not
+# in the inventory below) and this batch's task-failure latch are an
+# `OrderedDict` because they need `move_to_end` + `popitem(last=False)` to stay
+# bounded. An `OrderedDict` is a `dict`, so conftest's autouse sweep --
+# which filters on `isinstance(value, (set, dict, list))` -- already clears it;
+# only this source scan missed it, and it missed it silently: the inventory row
+# below read `only in expected: ['_warned_task_failure']` and nobody traced it
+# back to the regex. Excluding the shape would reintroduce exactly the drift
+# this file exists to prevent.
 _LATCH_RE = re.compile(
-    r"^(_warned[A-Za-z0-9_]*)\s*(?::[^=]+)?=\s*(?:set\(\)|dict\(\)|\{\}|\[\])", re.M
+    r"^(_warned[A-Za-z0-9_]*)\s*(?::[^=]+)?=\s*(?:set\(\)|dict\(\)|OrderedDict\(\)|\{\}|\[\])",
+    re.M,
 )
 
 

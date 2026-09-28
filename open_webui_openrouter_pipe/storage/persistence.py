@@ -35,7 +35,17 @@ from typing import TYPE_CHECKING, Any, cast
 
 # External dependencies
 from cryptography.fernet import Fernet, InvalidToken
-from sqlalchemy import JSON, Boolean, Column, DateTime, Engine, Index, String, text
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Column,
+    DateTime,
+    Engine,
+    Index,
+    String,
+    func,
+    text,
+)
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.exc import IdentifierError, SQLAlchemyError
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
@@ -2268,18 +2278,22 @@ class ArtifactStore:
             functools.partial(self._cleanup_sync, cutoff),
         )
 
+    def _expired_row_id_bounds(
+        self, session: Session, model: Any, cutoff: datetime.datetime
+    ) -> tuple[Any, Any]:
+        row = (
+            session.query(func.min(model.id), func.max(model.id))
+            .filter(model.created_at < cutoff)
+            .one()
+        )
+        return (None, None) if row is None else (row[0], row[1])
+
     @timed
     def _cleanup_sync(self, cutoff: datetime.datetime) -> None:
         if not (self._session_factory and self._item_model):
             return
         with _db_session(self._session_factory) as session:
-            doomed = [
-                str(row_id or "")
-                for (row_id,) in session.query(self._item_model.id)
-                .filter(self._item_model.created_at < cutoff)
-                .all()
-            ]
-            doomed = [row_id for row_id in doomed if row_id]
+            ulid_lo, ulid_hi = self._expired_row_id_bounds(session, self._item_model, cutoff)
             deleted = (
                 session.query(self._item_model)
                 .filter(self._item_model.created_at < cutoff)
@@ -2300,8 +2314,8 @@ class ArtifactStore:
                     "(ulid_range=%s..%s)",
                     deleted,
                     cutoff,
-                    min(doomed) if doomed else None,
-                    max(doomed) if doomed else None,
+                    ulid_lo,
+                    ulid_hi,
                 )
 
 

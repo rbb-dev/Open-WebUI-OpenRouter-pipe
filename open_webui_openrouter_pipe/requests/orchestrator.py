@@ -1397,6 +1397,7 @@ class RequestOrchestrator:
                     pipe_identifier,
                     responses_body.model,
                 ),
+                event_emitter=__event_emitter__,
             )
             return result
 

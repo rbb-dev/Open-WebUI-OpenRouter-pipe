@@ -27,6 +27,7 @@ from ..core.warn_latch import warn_level
 
 _OWUI_RESULT_WARN_COOLDOWN_S = 300.0
 from ..storage.persistence import generate_item_id
+from .tool_schema import _strictify_schema
 
 if TYPE_CHECKING:
     from starlette.requests import Request
@@ -217,6 +218,29 @@ def is_builtin_ask_user(tool_cfg: Any) -> bool:
     )
 
 
+def _idle_allowance(
+    context: _ToolExecutionContext,
+    pending: list[tuple[int, dict[str, Any], asyncio.Future, float | None]],
+) -> float | None:
+    allowance = context.idle_timeout
+    if allowance:
+        for _index, _call, _future, window in pending:
+            if window is not None:
+                allowance = max(allowance, window)
+    return allowance
+
+
+def _idle_deadline(
+    allowance: float | None,
+    started_at: float,
+    pre_enqueue_at: float,
+    now: float,
+) -> float | None:
+    if not allowance:
+        return None
+    return now + (allowance - (pre_enqueue_at - started_at))
+
+
 class ToolExecutor:
     """Orchestrates tool execution and direct tool server integration."""
 
@@ -257,6 +281,10 @@ class ToolExecutor:
         return json.dumps(
             {"error": str(exc) or type(exc).__name__}, indent=2, ensure_ascii=False
         )
+
+    @staticmethod
+    def is_process_control(exc: BaseException) -> bool:
+        return isinstance(exc, (SystemExit, KeyboardInterrupt, GeneratorExit))
 
     @staticmethod
     async def _with_current_chat(fn: Any, tool_cfg: dict[str, Any], context: _ToolExecutionContext) -> Any:
@@ -449,6 +477,7 @@ class ToolExecutor:
             )
 
         loop = asyncio.get_running_loop()
+        started_at = loop.time()
         pending: list[tuple[int, dict[str, Any], asyncio.Future, float | None]] = []
         batches: list[list[_QueuedToolCall]] = []
         slots: list[dict[str, Any] | None] = [None] * len(calls)
@@ -569,17 +598,14 @@ class ToolExecutor:
                     self.logger.debug("Enqueued tool %s (batch=%s)", call.get("name"), allow_batch)
                 pending.append((index, call, future, self._ask_user_window(tool_cfg, args)))
 
+            pre_enqueue_at = loop.time()
             for batch in batches:
                 await context.queue.put(batch)
 
-            allowance = context.idle_timeout
-            if allowance:
-                for _index, _call, _future, window in pending:
-                    if window is not None:
-                        allowance = max(allowance, window)
+            allowance = _idle_allowance(context, pending)
             collected: dict[int, Any] = {}
             notified: set[int] = set()
-            deadline = asyncio.get_running_loop().time() + allowance if allowance else None
+            deadline = _idle_deadline(allowance, started_at, pre_enqueue_at, loop.time())
             for pending_index, (index, call, future, _window) in enumerate(pending):
                 await _flush_deferred(index)
                 try:
@@ -716,6 +742,9 @@ class ToolExecutor:
                         props = parameters.get("properties")
                         if isinstance(props, dict):
                             allowed_params = {k for k in props if isinstance(k, str)}
+                        advertised = _strictify_schema(parameters).get("properties")
+                        if isinstance(advertised, dict):
+                            allowed_params |= {k for k in advertised if isinstance(k, str)}
 
                     spec_payload = dict(spec)
                     spec_payload["name"] = name
@@ -828,6 +857,9 @@ class ToolExecutor:
             return url
         return stored if isinstance(stored, str) and stored else url
 
+    def _cancelled_tool_output(self, call: dict[str, Any]) -> dict[str, Any]:
+        return self._build_tool_output(call, "Tool execution cancelled", status="cancelled")
+
     @timed
     async def _tool_worker_loop(self, context: _ToolExecutionContext) -> None:
         """Process queued tool calls with batching/timeouts."""
@@ -840,13 +872,7 @@ class ToolExecutor:
             finally:
                 for leftover in batch or ():
                     if not leftover.future.done():
-                        leftover.future.set_result(
-                            self._build_tool_output(
-                                leftover.call,
-                                context.timeout_error or "Tool execution cancelled",
-                                status="cancelled",
-                            )
-                        )
+                        leftover.future.set_result(self._cancelled_tool_output(leftover.call))
                 context.queue.task_done()
 
     def _can_batch_tool_calls(self, first: _QueuedToolCall, candidate: _QueuedToolCall) -> bool:

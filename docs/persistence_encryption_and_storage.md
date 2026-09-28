@@ -146,6 +146,7 @@ Retention has multiple layers:
 - A periodic cleanup worker deletes persisted rows older than `ARTIFACT_CLEANUP_DAYS` (as measured from `created_at`, which is refreshed on every read, database or cache).
 - Each sweep also deletes every row a temporary chat left behind, whatever its age.
 - Cleanup cadence is controlled by `ARTIFACT_CLEANUP_INTERVAL_HOURS` (with jitter).
+- A sweep reports the id range it removed (`ulid_range=<lo>..<hi>`) and takes it as a SQL `min`/`max` aggregate, so it holds a constant amount of memory rather than one id per expired row. A sweep that matched nothing reports no id range and logs no `Retention removed` line; a sweep that only reaped temporary-chat rows still logs those separately.
 
 ### Reasoning retention policy (`PERSIST_REASONING_TOKENS`)
 Reasoning retention controls whether replayed reasoning artifacts are deleted after use:

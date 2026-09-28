@@ -893,6 +893,8 @@ async def resolve_intent(
             timeout_s=timeout_s,
             logger=logger,
             outcome=_outcome,
+            attempts_per_candidate=2,
+            repair_messages=_video_intent_repair_turns,
         )
         _latency_ms = int((time.monotonic() - _t0) * 1000)
 
@@ -921,6 +923,21 @@ async def resolve_intent(
         if _t0 is not None:
             fallback.task_model_latency_ms = int((time.monotonic() - _t0) * 1000)
         return fallback
+
+
+def _video_intent_repair_turns(previous_output: str) -> list[dict[str, Any]]:
+    return [
+        {"role": "assistant", "content": previous_output},
+        {
+            "role": "user",
+            "content": (
+                "That reply could not be parsed: it was not a single JSON object "
+                "matching the schema. Reply again with ONLY one JSON object "
+                "matching the schema, per the Output rules. No prose, no markdown, "
+                "no fences."
+            ),
+        },
+    ]
 
 
 def _build_conversation(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

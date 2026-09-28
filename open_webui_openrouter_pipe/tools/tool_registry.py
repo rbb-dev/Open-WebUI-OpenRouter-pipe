@@ -9,6 +9,7 @@ Ensures collision-safe tool names and builds execution registry for dispatcher.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import itertools
 import logging
@@ -20,7 +21,7 @@ from ..core.timing_logger import timed
 from ..storage.owui_files import is_linkable_chat
 
 # Import tool schema functions
-from .tool_schema import _strictify_schema
+from .tool_schema import _root_was_wrapped, _strictify_schema
 
 # Import runtime dependencies
 if TYPE_CHECKING:
@@ -302,6 +303,9 @@ def _build_collision_safe_tool_specs_and_registry(
                 "origin_name": origin_name,
                 "spec": spec,
                 "tool_cfg": tool_cfg,
+                "pre_strictify_parameters": (
+                    raw_tool.get("parameters") if isinstance(raw_tool.get("parameters"), dict) else None
+                ),
                 "origin_key": f"owui_request::{origin_name}",
             }
         )
@@ -378,6 +382,9 @@ def _build_collision_safe_tool_specs_and_registry(
                 "origin_name": origin_name,
                 "spec": spec,
                 "tool_cfg": tool_cfg,
+                "pre_strictify_parameters": (
+                    raw_tool.get("parameters") if isinstance(raw_tool.get("parameters"), dict) else None
+                ),
                 "origin_key": f"extra::{origin_name}",
             }
         )
@@ -435,6 +442,11 @@ def _build_collision_safe_tool_specs_and_registry(
         cfg["origin_source"] = c["origin_source"]
         cfg["origin_name"] = origin_name
         cfg["exposed_name"] = exposed_name
+        cfg["spec_wire"] = copy.deepcopy(spec)
+        _pre = (tool_cfg.get("spec") or {}).get("parameters")
+        if not isinstance(_pre, dict):
+            _pre = c.get("pre_strictify_parameters")
+        cfg["spec_is_envelope"] = _root_was_wrapped(_pre if isinstance(_pre, dict) else {})
         cfg_spec = cfg.get("spec")
         if isinstance(cfg_spec, dict):
             updated_spec = dict(cfg_spec)

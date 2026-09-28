@@ -119,6 +119,18 @@ def _cost_segment(cost: Any, *, use_icons: bool, icon_cost: str) -> str | None:
     return f"Cost ${cost_str}"
 
 
+def _admission_error_response(
+    status: int, message: str, *, request: Any
+) -> StreamingResponse | None:
+    if _is_anthropic_endpoint(_request_path(request)):
+        return None
+    return StreamingResponse(
+        iter([json.dumps({"error": {"message": message, "code": status}}).encode("utf-8")]),
+        status_code=status,
+        media_type="application/json",
+    )
+
+
 def _api_caller_error_response(
     exc: OpenRouterAPIError, *, stream: bool, path: str
 ) -> StreamingResponse | None:

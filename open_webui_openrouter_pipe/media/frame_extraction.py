@@ -65,6 +65,7 @@ class VideoMetadata:
     height: int
     fps: float
     has_audio: bool
+    duration_is_stream: bool = False
 
 
 @dataclass
@@ -118,10 +119,12 @@ def _probe_video_sync(path: Path) -> VideoMetadata:
     try:
         meta = iio.immeta(str(path), exclude_applied=False)  # type: ignore[no-any-return]
         duration = float(meta.get("duration", 0.0) or 0.0)
+        duration_is_stream = False
         if duration > 0:
             probed = _ffprobe_stream_duration(path)
             if probed is not None:
                 duration = probed
+                duration_is_stream = True
         fps_raw = meta.get("fps") or meta.get("fps_in_av") or 0.0
         fps = float(fps_raw) if fps_raw else 24.0
         size = meta.get("size") or (0, 0)
@@ -134,6 +137,7 @@ def _probe_video_sync(path: Path) -> VideoMetadata:
             height=height,
             fps=fps if fps > 0 else 24.0,
             has_audio=has_audio,
+            duration_is_stream=duration_is_stream,
         )
     except Exception as exc:
         raise FrameExtractionError(f"probe_video failed: {exc}") from exc
@@ -443,9 +447,11 @@ async def extract_frame(
             resolved_target = "first_frame"
         else:
             resolved_target = "last_frame"
-            if meta is not None and meta.duration_seconds > 0:
+            if meta is not None and meta.duration_seconds > 0 and (
+                meta.duration_is_stream or not meta.has_audio
+            ):
                 actual_ts = _index_end(meta, "last")
-            elif meta is None or meta.duration_seconds <= 0:
+            else:
                 actual_ts = float("nan")
                 logger.debug(
                     "probe failed or duration unmeasurable: rescue frame position is "

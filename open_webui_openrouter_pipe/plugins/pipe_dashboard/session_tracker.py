@@ -275,12 +275,39 @@ class SessionTracker:
         if len(self._recent) > _ST_RECENT_CAP:
             self._recent = self._recent[-_ST_RECENT_CAP:]
 
+    def _is_stale(self, entry: dict[str, Any], cutoff: float) -> bool:
+        return (entry.get("seen", entry.get("started") or 0.0) or 0.0) < cutoff
+
+    def _pop_if_stale(self, request_id: str, cutoff: float) -> dict[str, Any] | None:
+        with self._lock:
+            self._stream_stamps.pop(request_id, None)
+            entry = self._active.get(request_id)
+            if entry is None or not self._is_stale(entry, cutoff):
+                return None
+            self._active.pop(request_id, None)
+            entry["status"] = "failed"
+            entry["done"] = time.time()
+            entry["current_tool"] = None
+            entry["savings"] = self._cache_savings(entry)
+            self._fold_task_into_parent(entry)
+            self._recent.append(entry)
+            self._trim_recent_locked()
+            return dict(entry)
+
     def sweep(self) -> None:
         cutoff = time.time() - _ST_ABANDON_S
         with self._lock:
-            stale = [rid for rid, item in self._active.items() if (item.get("seen", item.get("started") or 0.0) or 0.0) < cutoff]
+            stale = [rid for rid, item in self._active.items() if self._is_stale(item, cutoff)]
         for rid in stale:
-            self.finalize(rid, None, "failed")
+            row = self._pop_if_stale(rid, cutoff)
+            if row is None:
+                continue
+            callback = self.on_finalize
+            if callback is not None:
+                try:
+                    callback(row)
+                except Exception:
+                    logger.debug("finalize callback failed", exc_info=True)
 
     def live_sessions(self) -> list[dict[str, Any]]:
         with self._lock:

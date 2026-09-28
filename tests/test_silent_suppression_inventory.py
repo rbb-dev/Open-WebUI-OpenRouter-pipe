@@ -122,7 +122,12 @@ _EXPECTED: dict[str, int] = {
     # served, so the close is the last thing allowed to fail silently. Same reason as
     # the pooled session closes above: the caller is already on its way out and there
     # is nothing left to serve.
-    "pipe.py": 30,
+    # 31st and 32nd: the two resets in `_pipe_impl`'s `finally` for a request that was never
+    # enqueued (`clear_timing_events` for its early request id, `clear_timing_context`).
+    # Same reason as the 25th: the request has already been answered with a degraded
+    # result, the resets are bookkeeping on this task's own timing state, and a failure
+    # there must not replace the answer the caller is receiving.
+    "pipe.py": 32,
     "storage/persistence.py": 3,
     # 1st: the caller-supplied fallback in `_emit_templated_error_event`. It is reached only because the
     # admin's own template already failed to render, and the generic card below it is the answer if the

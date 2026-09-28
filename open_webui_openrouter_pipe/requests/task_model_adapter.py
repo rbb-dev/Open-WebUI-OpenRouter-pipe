@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import OrderedDict
 from typing import TYPE_CHECKING, Any, Literal
 
 import aiohttp
@@ -19,13 +20,62 @@ from ..api.transforms import (
 )
 from ..core.config import EncryptedStr
 from ..core.costs import maybe_dump_costs_snapshot
-from ..core.errors import OpenRouterAPIError, is_sign_in_failure
+from ..core.errors import OpenRouterAPIError, _inline_span, is_sign_in_failure
 from ..core.logging_system import SessionLogger
 from ..core.timing_logger import timed
+from ..core.utils import _render_error_template
 from ..models.registry import OpenRouterModelRegistry
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
+
+
+_TASK_FAILURE_NOTIFIED_WINDOW = 300
+
+_warned_task_failure: OrderedDict[str, None] = OrderedDict()
+
+_TASK_FAILURE_CARD_TEMPLATE = (
+    "### ⚠️ Task model failed\n\n"
+    "- **Task**: {task}\n"
+    "- **Model**: {model}\n"
+    "- **Attempts**: {attempts} attempt(s)\n"
+    "- **Error**: {error_class}\n"
+    "- **Error ID**: {error_id}\n"
+)
+
+
+def _task_failure_card(
+    task_type: str,
+    model_id: str,
+    attempts: int,
+    error_class: str,
+    error_id: str,
+) -> str:
+    values = {
+        "task": _inline_span(str(task_type or "")),
+        "model": _inline_span(str(model_id or "")),
+        "attempts": int(attempts),
+        "error_class": _inline_span(str(error_class or "")),
+        "error_id": _inline_span(str(error_id or "")),
+    }
+    stripped = {name: str(value).replace("{", "").replace("}", "") for name, value in values.items()}
+    rendered = _render_error_template(_TASK_FAILURE_CARD_TEMPLATE, stripped)
+    return rendered.replace("{", "").replace("}", "")
+
+
+def _task_failure_latch_key(task_type: str, model_id: str, scope: str) -> str:
+    return f"{model_id}\x1f{scope or '__no_chat_or_user__'}"
+
+
+def _task_failure_was_notified(key: str) -> bool:
+    return key in _warned_task_failure
+
+
+def _task_failure_note_notified(key: str) -> None:
+    _warned_task_failure[key] = None
+    _warned_task_failure.move_to_end(key)
+    while len(_warned_task_failure) > _TASK_FAILURE_NOTIFIED_WINDOW:
+        _warned_task_failure.popitem(last=False)
 
 
 class TaskModelAdapter:
@@ -104,6 +154,7 @@ class TaskModelAdapter:
         user_obj: Any | None = None,
         pipe_id: str | None = None,
         snapshot_model_id: str | None = None,
+        event_emitter: Any | None = None,
     ) -> str:
         task_body = dict(body or {})
         source_model_id = task_body.get("model", "")
@@ -131,6 +182,7 @@ class TaskModelAdapter:
         _drop_include_reasoning_for_unsupported_fallbacks(task_body, self.logger)
 
         attempts = 2
+        made_attempts = 0
         delay_seconds = 0.2
         last_error: Exception | None = None
 
@@ -139,6 +191,7 @@ class TaskModelAdapter:
 
         last_endpoint = endpoint_override
         for attempt in range(1, attempts + 1):
+            made_attempts = attempt
             try:
                 response: dict[str, Any] = {}
                 async for event in self._pipe.send_openrouter_nonstreaming_request_as_events(
@@ -221,8 +274,12 @@ class TaskModelAdapter:
                     delay_seconds = min(delay_seconds * 2, 0.8)
 
         task_type = self._task_name(task_context) or "task"
+        error_id, _context = self._pipe._ensure_error_formatter()._build_error_context()
+        error_class = type(last_error).__name__ if last_error is not None else "NoneType"
         error_message = (
-            f"Task model '{task_type}' failed after {attempts} attempt(s): {last_error}"
+            f"Task model '{task_type}' failed after {made_attempts} attempt(s): {last_error} "
+            f"[model={source_model_id} error_class={error_class} "
+            f"error_id={error_id} request_id={SessionLogger.request_id.get() or ''}]"
         )
         self.logger.error(error_message, exc_info=last_error)
         await self._pipe._dispatch_plugin_event(
@@ -233,4 +290,24 @@ class TaskModelAdapter:
             metadata=owui_metadata or {},
             task=task_type,
         )
-        return f"[Task error] Unable to generate {task_type}. Please retry later."
+        card = _task_failure_card(task_type, source_model_id, made_attempts, error_class, error_id)
+        latch_key = _task_failure_latch_key(
+            task_type,
+            str(source_model_id or ""),
+            str((owui_metadata or {}).get("chat_id") or "") or str(identifier_user_id or ""),
+        )
+        if _task_failure_was_notified(latch_key):
+            self.logger.debug(
+                "task-failure toast suppressed: %s task=%s", latch_key, task_type
+            )
+        else:
+            delivered = await self._pipe._event_emitter_handler._emit_notification(
+                event_emitter, card, level="warning"
+            )
+            if delivered:
+                _task_failure_note_notified(latch_key)
+            else:
+                self.logger.debug(
+                    "task-failure toast not delivered; latch left open: %s", latch_key
+                )
+        return self._pipe._task_refusal_result(task_context, card)

@@ -30,6 +30,7 @@ from sqlalchemy import case, func, tuple_
 
 from ..core.timing_logger import timed
 from ..core.warn_latch import warn_level
+from ..integrations.video_intent_prompts import INTENT_SCHEMA_NAME
 from ..storage.persistence import _db_session
 
 logger = logging.getLogger(__name__)
@@ -268,8 +269,16 @@ _TASK_QUALIFIERS = frozenset(
         "autocomplete_generation",
         "function_calling",
         "moa_response_generation",
+        "context_compaction",
+        "memory_review",
+        "context_summary",
+        INTENT_SCHEMA_NAME,
     }
 )
+
+
+def _known_task_names() -> frozenset[str]:
+    return _TASK_QUALIFIERS
 
 
 def _split_archive_key(message_id: str) -> tuple[str, str]:

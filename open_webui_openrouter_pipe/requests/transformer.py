@@ -20,10 +20,10 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 from ..core.config import (
-    _MARKDOWN_IMAGE_RE,
     _NON_REPLAYABLE_TOOL_ARTIFACTS,
     _RAW_REPLAYED_SERVER_TOOLS,
     OPENAI_EMPTY_USER_TURN_FALLBACK,
+    markdown_image_destinations,
 )
 
 # Import status messages
@@ -751,13 +751,7 @@ async def transform_messages_to_input(
 
     def _markdown_images_from_text(text: str) -> list[str]:
         """Extract inline Markdown image URLs from a text block."""
-        if not isinstance(text, str):
-            return []
-        return [
-            match.group("url").strip()
-            for match in _MARKDOWN_IMAGE_RE.finditer(text)
-            if match.group("url").strip()
-        ]
+        return markdown_image_destinations(text)
 
     def _is_old_turn(turn_index: int | None, *, threshold: int | None) -> bool:
         """Return True when a message turn falls outside the retention window."""
