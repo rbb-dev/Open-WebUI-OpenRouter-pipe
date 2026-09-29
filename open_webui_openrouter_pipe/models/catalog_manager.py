@@ -25,6 +25,7 @@ from urllib.parse import quote
 import aiohttp
 
 from ..core.timing_logger import timed
+from ..core.warn_latch import warn_level
 
 try:
     from open_webui.models.models import ModelForm
@@ -174,6 +175,8 @@ def _warn_on_empty_read(
 
 
 _ROW_NOT_FETCHED = object()
+
+_warned_video_gen_filter_ensure: set[str] = set()
 
 
 async def _read_model_rows(ids: list[str], logger: Any) -> dict[str, Any] | None:
@@ -362,7 +365,9 @@ def _apply_list_filter_ids(
             meta_dict, record_key=prune_key, owned=None, attaching=False
         ):
             return True
-        if attaching and previous_ids and previous_ids != list(filter_function_ids):
+        if attaching and _record_needs_repair(
+            previous_ids, filter_function_ids, attaching=attaching
+        ):
             _record_ownership(
                 meta_dict,
                 record_key=prune_key,
@@ -469,7 +474,7 @@ def _apply_single_id_filter_ids(
             keep_legacy=keep_legacy,
         ):
             return True
-        if attaching and owned_id and owned_id != offered_id:
+        if attaching and _record_needs_repair(owned_id, [offered_id], attaching=attaching):
             _record_ownership(
                 meta_dict, record_key=record_key, owned=offered_id, attaching=True
             )
@@ -1791,7 +1796,8 @@ class ModelCatalogManager:
                         await self._pipe._ensure_filter_manager().ensure_openrouter_video_gen_filter_function_ids(models)
                     )
                 except Exception as exc:
-                    self.logger.warning(
+                    self.logger.log(
+                        warn_level(_warned_video_gen_filter_ensure, f"video_gen:{type(exc).__name__}"),
                         "OpenRouter Video Gen filter ensure failed: %s", exc, exc_info=True
                     )
                     video_gen_filter_function_ids = {}

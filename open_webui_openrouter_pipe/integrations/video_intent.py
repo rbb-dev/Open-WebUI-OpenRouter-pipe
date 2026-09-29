@@ -31,7 +31,7 @@ from ..core.utils import (
 from ..requests.fusion_engine import latest_user_text
 from ..storage.owui_files import is_temporary_chat
 from ..structured_task import (
-    build_response_format,
+    build_response_format_for_model,
     call_with_candidates,
     merge_task_model_params,
     read_task_model_params,
@@ -870,12 +870,6 @@ async def resolve_intent(
             )
             return fallback
 
-        response_format = build_response_format(
-            name=INTENT_SCHEMA_NAME, schema=INTENT_JSON_SCHEMA, strict=True,
-        )
-        supported_params = video_model.get("supported_parameters") if isinstance(video_model, dict) else None
-        del supported_params  # unused for now — task-model spec lookup is future work
-
         task_model_params = await read_task_model_params()
 
         def _build_form_data(model_id: str) -> dict[str, Any]:
@@ -888,7 +882,11 @@ async def resolve_intent(
                     ],
                     "temperature": 0,
                     "stream": False,
-                    "response_format": response_format,
+                    "response_format": build_response_format_for_model(
+                        name=INTENT_SCHEMA_NAME,
+                        schema=INTENT_JSON_SCHEMA,
+                        model_id=model_id,
+                    ),
                     "metadata": {"task": INTENT_SCHEMA_NAME, "chat_id": chat_id},
                 },
                 task_model_params,
@@ -1104,10 +1102,30 @@ def _user_facing_downgrade_message(code: str) -> str:
     return "A non-critical step was skipped."
 
 
+_CLARIFICATION_CAPPED_CODE = "clarification_capped_max_reached"
+
+
+def _prompt_text_was_rewritten(
+    intent_prompt: str, person_prompt_text: str | None
+) -> bool:
+    if person_prompt_text is None or not intent_prompt:
+        return False
+    return " ".join(intent_prompt.split()) != " ".join(person_prompt_text.split())
+
+
+def _clarification_was_capped(intent: VideoIntentResult) -> bool:
+    return any(
+        isinstance(code, str)
+        and re.sub(r"_\d+", "", code) == _CLARIFICATION_CAPPED_CODE
+        for code in intent.downgrades
+    )
+
+
 def should_emit_confirmation_footer(
     intent: VideoIntentResult,
     *,
     confirm_mode: str,
+    person_prompt_text: str | None = None,
 ) -> bool:
     """Decide whether to render the Intent Disclosure block based on the
     `VIDEO_INTENT_CONFIRM_MODE` valve.
@@ -1120,12 +1138,15 @@ def should_emit_confirmation_footer(
       as low-confidence — the user gets to verify the guess.
     - `never`: never render.
 
-    Empty frame_plans never render regardless of mode (nothing to disclose).
     Unknown mode strings fall through to `on_reference` semantics.
     """
-    if not intent.frame_plan:
-        return False
     if confirm_mode == "never":
+        return False
+    if _prompt_text_was_rewritten(intent.prompt, person_prompt_text):
+        return True
+    if _clarification_was_capped(intent):
+        return True
+    if not intent.frame_plan:
         return False
     if confirm_mode == "always":
         return True
@@ -1144,10 +1165,8 @@ def render_intent_disclosure_block(
     """Render the markdown intent-disclosure block.
 
     Hidden markers wrap a visible blockquote with thumbnails + cleaned prompt.
-    Only renders when `intent.frame_plan` is non-empty. Returns empty string on
-    any rendering failure (defense-in-depth — never crashes the pipe).
     """
-    if not intent.frame_plan:
+    if not (intent.frame_plan or intent.prompt or intent.downgrades):
         return ""
 
     try:

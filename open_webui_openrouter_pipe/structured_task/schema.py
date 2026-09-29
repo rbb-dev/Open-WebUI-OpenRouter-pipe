@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..models.registry import ModelFamily
+
 
 def build_response_format(
     *,
@@ -53,3 +55,12 @@ def downgrade_strict_for_provider(
     inner = dict(response_format.get("json_schema") or {})
     inner["strict"] = False
     return {"type": response_format.get("type", "json_schema"), "json_schema": inner}
+
+
+def build_response_format_for_model(
+    *, name: str, schema: dict[str, Any], model_id: str
+) -> dict[str, Any]:
+    return downgrade_strict_for_provider(
+        build_response_format(name=name, schema=schema, strict=True),
+        supported_parameters=ModelFamily.supported_parameters(model_id),
+    )

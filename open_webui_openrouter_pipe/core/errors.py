@@ -16,6 +16,7 @@ import concurrent.futures
 import re
 from typing import Any
 
+import aiohttp
 import httpx
 
 from .config import (
@@ -234,6 +235,12 @@ class OpenRouterAPIError(RuntimeError):
             context=context,
         )
         return _render_error_template(template or DEFAULT_OPENROUTER_ERROR_TEMPLATE, replacements)
+
+
+class EmptyAnswerError(OpenRouterAPIError, aiohttp.ClientError):
+    def __init__(self, message: str, *, requested_model: str | None = None) -> None:
+        super().__init__(status=400, reason=message, requested_model=requested_model)
+        Exception.__init__(self, message)
 
 
 # Error Helper Functions

@@ -2552,7 +2552,15 @@ async def test_responses_nonstreaming_injects_anthropic_toplevel_cache_control(p
 
     def _callback(url, **kwargs):
         captured.update(kwargs)
-        return CallbackResult(status=200, payload={"output": [], "usage": {"input_tokens": 5, "output_tokens": 1}})
+        return CallbackResult(
+            status=200,
+            payload={
+                "output": [
+                    {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Hi"}]}
+                ],
+                "usage": {"input_tokens": 5, "output_tokens": 1},
+            },
+        )
 
     with aioresponses() as mock_http:
         mock_http.post("https://openrouter.ai/api/v1/responses", callback=_callback)

@@ -103,14 +103,13 @@ def _sanitised_excerpt(text: str) -> str:
 def _with_repair(
     form_data: dict[str, Any], repair: list[dict[str, Any]] | None
 ) -> dict[str, Any]:
-    if not repair:
-        return form_data
     repaired = dict(form_data)
-    messages = list(form_data.get("messages") or [])
-    messages.extend(repair)
-    repaired["messages"] = messages
-    if repaired.get("temperature") == 0:
-        repaired["temperature"] = _REPAIR_TEMPERATURE
+    if repair:
+        messages = list(form_data.get("messages") or [])
+        messages.extend(repair)
+        repaired["messages"] = messages
+        if repaired.get("temperature") == 0:
+            repaired["temperature"] = _REPAIR_TEMPERATURE
     return repaired
 
 

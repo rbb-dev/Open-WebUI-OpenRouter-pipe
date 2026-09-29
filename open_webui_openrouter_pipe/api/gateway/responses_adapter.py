@@ -26,6 +26,7 @@ from ...core.config import (
     _select_openrouter_http_referer,
 )
 from ...core.errors import (
+    EmptyAnswerError,
     OpenRouterAPIError,
     UpstreamBodyUnreadable,
     _build_openrouter_api_error,
@@ -796,6 +797,12 @@ class ResponsesAdapter:
                         if "output" not in payload:
                             raise aiohttp.ClientPayloadError(
                                 "OpenRouter returned 200 with no output on /responses"
+                            )
+                        output_items = payload["output"]
+                        if output_items is None or (isinstance(output_items, list) and not output_items):
+                            raise EmptyAnswerError(
+                                "The model returned an empty answer (no output items) on /responses",
+                                requested_model=request_params.get("model"),
                             )
                         return payload
         self.logger.error("Responses API call completed without yielding a response body; returning empty payload.")

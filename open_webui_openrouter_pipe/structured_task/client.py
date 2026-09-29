@@ -19,7 +19,7 @@ _DEFAULT_MAX_HOLD_BYTES = 4 * _TASK_RESPONSE_MAX_BYTES
 def _content_part_text(item: Any) -> str | None:
     if not isinstance(item, dict):
         return str(item)
-    if "text" in item and (item["text"] is not None or "content" not in item):
+    if item.get("text") is not None:
         return str(item["text"])
     if "content" in item:
         return str(item["content"])
@@ -221,6 +221,10 @@ async def read_task_model_response_json(response: Any) -> dict[str, Any]:
         raise TaskModelFault("task_model_empty_response")
     if isinstance(content_value, list):
         content_value = normalise_model_content(content_value)
+    if isinstance(content_value, dict) and (
+        "text" in content_value or "content" in content_value
+    ):
+        content_value = _content_part_text(content_value) or ""
     if isinstance(content_value, dict):
         try:
             measured = len(json.dumps(content_value, ensure_ascii=False, default=str))

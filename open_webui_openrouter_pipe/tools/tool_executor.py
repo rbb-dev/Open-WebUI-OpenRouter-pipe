@@ -34,7 +34,7 @@ _OWUI_RESULT_WARN_COOLDOWN_S = 300.0
 _OWUI_RESULT_WARN_CAP = 256
 from ..storage.owui_files import is_linkable_chat
 from ..storage.persistence import generate_item_id
-from .tool_schema import _root_was_wrapped, _strictify_schema
+from .tool_schema import _advertised_root_params
 
 if TYPE_CHECKING:
     from starlette.requests import Request
@@ -203,6 +203,7 @@ class _ToolExecutionContext:
     user: dict[str, Any] | None = None
     resolved_user: Any = None
     resolved_user_done: bool = False
+    resolved_user_error: BaseException | None = None
     resolved_user_task: Any = None
     resolved_user_waiters: int = 0
     metadata: dict[str, Any] | None = None
@@ -229,12 +230,20 @@ async def _read_user_row(context: _ToolExecutionContext) -> Any:
 
 async def _resolved_user_obj(context: _ToolExecutionContext) -> Any:
     if context.resolved_user_done:
+        if context.resolved_user_error is not None:
+            raise context.resolved_user_error
         return context.resolved_user
     if context.resolved_user_task is None:
         context.resolved_user_task = asyncio.ensure_future(_read_user_row(context))
     context.resolved_user_waiters += 1
     try:
         user_obj = await asyncio.shield(context.resolved_user_task)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        context.resolved_user_error = exc
+        context.resolved_user_done = True
+        raise
     finally:
         context.resolved_user_waiters -= 1
         if context.resolved_user_waiters <= 0 and not context.resolved_user_done:
@@ -832,13 +841,7 @@ class ToolExecutor:
                     allowed_params: set[str] = set()
                     parameters = spec.get("parameters")
                     if isinstance(parameters, dict):
-                        props = parameters.get("properties")
-                        if isinstance(props, dict):
-                            allowed_params = {k for k in props if isinstance(k, str)}
-                        if strictify and _root_was_wrapped(parameters):
-                            wrapped = _strictify_schema(parameters).get("properties")
-                            if isinstance(wrapped, dict):
-                                allowed_params = {k for k in wrapped if isinstance(k, str)}
+                        allowed_params = _advertised_root_params(parameters, strictify=strictify)
 
                     spec_payload = dict(spec)
                     spec_payload["name"] = name

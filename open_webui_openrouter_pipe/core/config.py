@@ -1776,7 +1776,7 @@ class Valves(BaseModel):
     CONNECTION_ERROR_TEMPLATE: str = Field(
         default=DEFAULT_CONNECTION_ERROR_TEMPLATE,
         description=(
-            "Markdown template a chat reply shows, once the retries are spent, when its connection to OpenRouter fails before any of the answer arrives: the connection cannot be opened or drops, or, on every attempt, OpenRouter closes the stream without sending anything or sends frames the pipe cannot read, or a non-streamed 200 answers on /responses with no `output` key or on /chat/completions with no `choices`. A connection that fails before the first byte is a temporary failure: the request is re-sent up to TRANSIENT_RETRY_MAX_ATTEMPTS extra times (three attempts in all by default) and is counted once against the breaker however many attempts it took. Picture-only image models, video models and the panel, judge and final-answer calls inside internal Fusion report failures in their own way. A timeout uses NETWORK_TIMEOUT_TEMPLATE instead, and once part of the answer has arrived, STREAM_INTERRUPTED_TEMPLATE is used and nothing is retried. A reply that arrives on an accepted status but whose body is not a JSON object is not a connection failure: the connection worked, and SERVICE_ERROR_TEMPLATE reports it; a well-formed object that carries no answer on either route is a different thing and is reported here. Available variables: {error_id}, {error_type}, {timestamp}, {session_id}, {user_id}, {support_email}, {support_url}. Supports Handlebars-style conditionals: wrap a section in {{#if variable}}...{{/if}} to show it only when that value is set."
+            "Markdown template a chat reply shows, once the retries are spent, when its connection to OpenRouter fails before any of the answer arrives: the connection cannot be opened or drops, or, on every attempt, OpenRouter closes the stream without sending anything or sends frames the pipe cannot read, or a non-streamed 200 answers on /responses with no `output` key at all or on /chat/completions with no `choices`. A connection that fails before the first byte is a temporary failure: the request is re-sent up to TRANSIENT_RETRY_MAX_ATTEMPTS extra times (three attempts in all by default) and is counted once against the breaker however many attempts it took. Picture-only image models, video models and the panel, judge and final-answer calls inside internal Fusion report failures in their own way. A timeout uses NETWORK_TIMEOUT_TEMPLATE instead, and once part of the answer has arrived, STREAM_INTERRUPTED_TEMPLATE is used and nothing is retried. A reply that arrives on an accepted status but whose body is not a JSON object is not a connection failure: the connection worked, and SERVICE_ERROR_TEMPLATE reports it; a well-formed object that carries no answer on either route because the key is absent is a different thing and is reported here. A non-streamed 200 on /responses whose `output` is present but empty or null is neither: the connection worked and the model returned nothing, so it is retried on the same TRANSIENT_RETRY_MAX_ATTEMPTS budget and then reported by OPENROUTER_ERROR_TEMPLATE, whose reason says the model returned an empty answer. Available variables: {error_id}, {error_type}, {timestamp}, {session_id}, {user_id}, {support_email}, {support_url}. Supports Handlebars-style conditionals: wrap a section in {{#if variable}}...{{/if}} to show it only when that value is set."
         )
     )
 
@@ -2097,7 +2097,7 @@ class Valves(BaseModel):
     )
     AUTO_ATTACH_WEB_TOOLS_FILTER: bool = Field(
         default=True,
-        description="Automatically attach the OpenRouter Web Tools per-chat switch to every pipe model that is not an image-output, a video-generation or a Fusion model (so the toggle appears in the Integrations menu). Turning this off detaches the filters the pipe attached, and also releases the default the pipe seeded for them; a filter id an admin attached by hand is left alone, and so is a Default Filter ticked by hand in the model editor, which this valve never seeds (seeding a default is the separate AUTO_DEFAULT_WEB_TOOLS_FILTER setting). This relies on the ownership record the pipe writes when it attaches, so a model already carrying the panel has nothing recorded until the pipe next attaches it; run one sync with the valve on, after the panel is detached, and only then does turning this off detach it.",
+        description="Automatically attach the OpenRouter Web Tools per-chat switch to every pipe model that is not an image-output, a video-generation or a Fusion model (so the toggle appears in the Integrations menu). Turning this off detaches the filters the pipe attached, and also releases the default the pipe seeded for them; a filter id an admin attached by hand is left alone, and so is a Default Filter ticked by hand in the model editor, which this valve never seeds (seeding a default is the separate AUTO_DEFAULT_WEB_TOOLS_FILTER setting). This relies on the ownership record the pipe writes, which it keeps up to date on every pass where the pipe attaches it, so a record that has drifted is repaired on the next sync. A model carrying the panel with no record -- one attached before this build wrote records -- is not given one: detach the panel by hand once and the next sync records the current one.",
     )
     AUTO_DEFAULT_WEB_TOOLS_FILTER: bool = Field(
         default=False,
@@ -2197,7 +2197,13 @@ class Valves(BaseModel):
     )
     ENABLE_OPENROUTER_FUSION: bool = Field(
         default=True,
-        description="Master switch for OpenRouter Fusion support. When enabled, the pipe installs the 'OpenRouter Fusion' filter and attaches it to the fusion models automatically.",
+        description=(
+            "Master switch for OpenRouter Fusion support. When enabled, the pipe installs the 'OpenRouter Fusion' filter and attaches it to the fusion models automatically."
+            + _PIPE_OFF_COMES_BACK
+            + " Turning it off deactivates the installed filter on the next model-list refresh;"
+            + " turning it back on re-activates the one the pipe itself switched off, whether or not"
+            + " AUTO_INSTALL_FUSION_FILTER is on."
+        ),
     )
     AUTO_INSTALL_FUSION_FILTER: bool = Field(
         default=True,
@@ -2325,7 +2331,11 @@ class Valves(BaseModel):
             "user is told that a copy may already be there whether or not this is on. "
             "Retention is given per host: when a second copy does land on the other one, "
             "the notice names that host with its own retention, so a copy on the "
-            "self-deleting host is not described as permanent."
+            "self-deleting host is not described as permanent. "
+            "With the fallback taken, the correction naming the host that keeps the file "
+            "is a precondition too, so while TELL_USERS_ABOUT_THE_FILE_HOST is on a chat "
+            "that will not accept it gets the request failed and an error naming the host "
+            "that took the file."
         ),
     )
     MEDIA_FILE_HOST_MAX_SIZE_MB: int = Field(
@@ -2371,7 +2381,10 @@ class Valves(BaseModel):
             "Warn in the chat before a user's attachment is uploaded to the file host. Their "
             "own media leaves this server, so they are warned by default -- and while this is "
             "on, an upload that could not be announced does not happen: the request fails "
-            "instead of publishing the file unannounced. That includes a warning with no "
+            "instead of publishing the file unannounced. That holds for every publication, "
+            "a fallback to a second host included: the second host is announced before it "
+            "receives anything, and a chat that refuses that one is refused the same way. "
+            "That includes a warning with no "
             "words to give, so an empty notice below stops the upload too. Switch it off if "
             "you have told your users another way. Either way the finished message keeps a "
             "written record of what was uploaded and where; only this advance warning is "
@@ -2390,7 +2403,7 @@ class Valves(BaseModel):
             "you do not want, "
             "but keep enough that a sentence is left: an empty or blank setting leaves the "
             "warning nothing to say, and while the setting above is on, a warning that "
-            "cannot be said stops the upload instead -- turn "
+            "cannot be said stops the upload, or the request, instead -- turn "
             "TELL_USERS_ABOUT_THE_FILE_HOST off if you want no warning at all. "
             "{kind} and {retention} are written in English, so if you are writing this in "
             "another language, say those parts yourself rather than using the placeholders. "
@@ -2532,7 +2545,9 @@ class Valves(BaseModel):
             "every generation; 'on_reference' (default) = only when a prior video's frame is reused "
             "or more than one frame is combined; a lone attached image on its own does not "
             "trigger it; 'low_confidence' = only when classifier confidence is low; "
-            "'never' = no confirmation."
+            "'never' = no confirmation. A rewritten prompt, or a best-guess turn once "
+            "the clarifying question limit is reached, shows the block in every mode "
+            "except 'never'."
         ),
     )
     VIDEO_INTENT_MAX_CALLS_PER_CHAT: int = Field(
@@ -2601,7 +2616,9 @@ class Valves(BaseModel):
             "the user provider routing list together, so a long list here spends that budget first; a correctly "
             "spelled slug past the 50th keeps the provider data from the last cycle, its routing entry offers fewer "
             "providers, and the log names it. "
-            "Leave empty to disable admin provider routing filters."
+            "Leave empty to disable admin provider routing filters. This is a per-model list: "
+            "clicking Global on one of its rows in Workspace > Functions would apply that model's "
+            "preferences to every model, and the pipe reverts the click on the next model-list refresh."
             + _ROUTING_ADMIN_OFF_STAYS_OFF
         ),
     )
@@ -2615,7 +2632,9 @@ class Valves(BaseModel):
             "the admin provider routing list together, so a long admin list spends that budget before this one is "
             "reached; a correctly spelled slug past the 50th keeps the provider data from the last cycle, its routing "
             "entry offers fewer providers, and the log names it. "
-            "Leave empty to disable user provider routing filters."
+            "Leave empty to disable user provider routing filters. This is a per-model list: "
+            "clicking Global on one of its rows in Workspace > Functions would apply that model's "
+            "preferences to every model, and the pipe reverts the click on the next model-list refresh."
             + _ROUTING_ADMIN_OFF_STAYS_OFF
         ),
     )

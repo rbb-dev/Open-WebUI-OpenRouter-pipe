@@ -1271,7 +1271,9 @@ def _render_purpose_built_fields(spec: VideoFilterSpec) -> list[str]:
                 'always = show for every video. on_reference = only show when a prior '
                 "video's frame is reused, or when more than one frame is combined; a "
                 'single attached image on its own does not trigger it. low_confidence = only '
-                'show when the chat was unsure of its choice. never = hide entirely."\n'
+                'show when the chat was unsure of its choice. never = hide entirely. '
+                'A rewritten prompt, or a best-guess turn once the clarifying question '
+                'limit is reached, shows the block in every mode except never."\n'
                 '            ),\n'
                 '        )'
             )

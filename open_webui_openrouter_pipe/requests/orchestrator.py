@@ -213,6 +213,11 @@ _SERVER_TOOL_TYPE_OVERRIDES = {
 
 _IMAGE_GENERATION_TOOL_TYPE = "openrouter:image_generation"
 
+_ENDPOINT_OVERRIDE_CONFLICT_REFUSAL = (
+    "Endpoint Override Conflict: the pipe refused this member before sending it, "
+    "because the request needs an OpenRouter endpoint this model cannot use."
+)
+
 _SERVER_TOOL_SWITCHES = {
     "openrouter:web_search": "ENABLE_WEB_SEARCH",
     "openrouter:web_fetch": "ENABLE_WEB_FETCH",
@@ -983,6 +988,10 @@ class RequestOrchestrator:
             if requires_chat:
                 selected, forced = self._pipe._streaming_handler._select_llm_endpoint_with_forced(body.get("model") or "", valves=valves)
                 if forced and selected == "responses":
+                    if outcome_sink is not None:
+                        outcome_sink["member_refusal_reason"] = (
+                            _ENDPOINT_OVERRIDE_CONFLICT_REFUSAL
+                        )
                     return await self._pipe._ensure_error_formatter()._emit_templated_error(
                         __event_emitter__,
                         template=valves.ENDPOINT_OVERRIDE_CONFLICT_TEMPLATE,
@@ -1010,6 +1019,10 @@ class RequestOrchestrator:
         if preset and endpoint_override is None:
             selected, forced = self._pipe._streaming_handler._select_llm_endpoint_with_forced(body.get("model") or "", valves=valves)
             if forced and selected == "responses":
+                if outcome_sink is not None:
+                    outcome_sink["member_refusal_reason"] = (
+                        _ENDPOINT_OVERRIDE_CONFLICT_REFUSAL
+                    )
                 shown = await self._pipe._ensure_error_formatter()._emit_templated_error(
                     __event_emitter__,
                     template=valves.ENDPOINT_OVERRIDE_CONFLICT_TEMPLATE,
@@ -1364,6 +1377,10 @@ class RequestOrchestrator:
         fusion_model = is_fusion_model(responses_body.model)
         if fusion_model and fusion_enabled:
             if self._endpoint_is_valve_forced(responses_body.model, valves, "chat_completions"):
+                if outcome_sink is not None:
+                    outcome_sink["member_refusal_reason"] = (
+                        _ENDPOINT_OVERRIDE_CONFLICT_REFUSAL
+                    )
                 shown = await self._pipe._ensure_error_formatter()._emit_templated_error(
                     __event_emitter__,
                     template=valves.ENDPOINT_OVERRIDE_CONFLICT_TEMPLATE,

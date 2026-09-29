@@ -327,6 +327,8 @@ async def test_a_failing_filter_install_is_reported_once_across_repeated_pipes_c
     def _explode(*_args, **_kwargs):
         raise RuntimeError("filter table is read-only")
 
+    _real_filter_manager = pipe._ensure_filter_manager
+
     cast(Any, pipe)._ensure_filter_manager = _explode
 
     # The three sites the filter-manager stub alone never reaches. Without these the
@@ -486,6 +488,37 @@ async def test_a_failing_filter_install_is_reported_once_across_repeated_pipes_c
                 for _ in range(3):
                     await pipe.pipes()
 
+            # Fifth phase: the hoisted narrow read. It is fetched LAZILY, from inside
+            # `_deactivate_switched_off_filters`, and only once the wide read has
+            # succeeded -- so the phases above, where the wide read fails, never reach
+            # it. Here the wide read returns an empty table and only `active_only=True`
+            # raises, which is the one combination that isolates this site. The filter
+            # manager is un-stubbed first, since the stub would fail the wide read too.
+            cast(Any, pipe)._ensure_filter_manager = _real_filter_manager
+
+            async def _explode_narrow_only(
+                type: str, active_only: bool = False, db: Any = None
+            ) -> list[Any]:
+                if active_only:
+                    raise RuntimeError("active filter table is read-only")
+                return []
+
+            _owui_functions.Functions.get_functions_by_type = staticmethod(_explode_narrow_only)
+            pipe_module._warned_pipes_maintenance.discard("filter_rows_active:RuntimeError")
+            with aioresponses() as http:
+                http.get(
+                    "https://openrouter.ai/api/v1/models",
+                    exception=RuntimeError("catalog endpoint down"),
+                    repeat=True,
+                )
+                http.get(
+                    "https://openrouter.ai/api/v1/endpoints/zdr",
+                    exception=RuntimeError("ZDR endpoint down"),
+                    repeat=True,
+                )
+                for _ in range(3):
+                    await pipe.pipes()
+
             emitted = _warnings()
             armed = {c.split(":", 1)[0] for c in pipe_module._warned_pipes_maintenance}
     finally:
@@ -542,6 +575,7 @@ async def test_a_failing_filter_install_is_reported_once_across_repeated_pipes_c
         "enforcement_base_not_allowed", "enforcement_base_unnormalized",
         "chat_catalog_refresh", "metadata_sync", "web_tools_repair",
         "api_key_resolution",
+        "filter_rows", "filter_rows_active",
     }
     from tests.warn_latch_census import UNRESOLVABLE_MESSAGE
 

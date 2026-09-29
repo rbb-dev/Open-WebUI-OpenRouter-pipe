@@ -25,12 +25,17 @@ from .orchestrator import (
     resolve_task_model_candidates,
 )
 from .retry import call_with_candidates
-from .schema import build_response_format, downgrade_strict_for_provider
+from .schema import (
+    build_response_format,
+    build_response_format_for_model,
+    downgrade_strict_for_provider,
+)
 
 __all__ = [
     "TaskModelFallback",
     "TaskModelMode",
     "build_response_format",
+    "build_response_format_for_model",
     "call_with_candidates",
     "consume_sse_line",
     "downgrade_strict_for_provider",

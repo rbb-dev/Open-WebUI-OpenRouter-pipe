@@ -1242,7 +1242,17 @@ valve back on to let it update.
 
 While `AUTO_ATTACH_IMAGE_FILTERS` is on, each model's panel is attached to that
 model, and a panel that no longer applies is detached again — which is what
-happens if a model stops producing images, or if a panel is renamed.
+happens if a model stops producing images, or if a panel is renamed. Both the
+attachment and the detaching are scoped to an *ownership record* the pipe keeps
+in the model's `openrouter_pipe` metadata, naming the panel ids this pipe
+attached; every attaching pass keeps that record current, so a model whose
+record has drifted is repaired on the next sync rather than drifting forever.
+An id that record does not name — one you attached by hand — is never detached.
+The one case the record cannot cover is a model upgraded from a release that
+never wrote one, with a superseded panel still attached from before: with no
+record there is nothing to scope the release to, and adopting the id instead
+would make the drift permanent. Detach that panel once by hand and the next
+sync records the current one.
 `AUTO_DEFAULT_IMAGE_FILTERS` additionally starts each new chat with the panel
 already switched on.
 

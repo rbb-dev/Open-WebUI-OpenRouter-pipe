@@ -793,6 +793,7 @@ class VideoGenerationAdapter:
                     )
                     if should_emit_confirmation_footer(
                         intent_result, confirm_mode=confirm_mode,
+                        person_prompt_text=prompt,
                     ):
                         disclosure_block = render_intent_disclosure_block(
                             intent=intent_result,
@@ -2274,12 +2275,12 @@ class VideoGenerationAdapter:
             for entry in accepted:
                 _skip(entry.file_id, "audio-alone", _AUDIO_NEEDS_A_COMPANION)
             return []
-        disclosed = await self._disclose_the_file_host(
+        await self._disclose_the_file_host(
             valves,
             {entry.family for entry in accepted if entry.via_file_host},
             event_emitter,
+            self._relay_hosts(valves)[0],
         )
-        used: set[tuple[str, str]] = set()
         relay_deadline = time.monotonic() + MAX_RELAY_SECONDS_PER_REQUEST
         async with contextlib.AsyncExitStack() as relay_stack:
             relay_session: Any = None
@@ -2293,11 +2294,11 @@ class VideoGenerationAdapter:
                         valves, entry.blob, filename=entry.filename,
                         mime=entry.mime, family=entry.family,
                         deadline=relay_deadline, session=relay_session,
+                        event_emitter=event_emitter,
                     )
                     encoded.append({"type": entry.kind, entry.kind: {"url": link}})
                     if vetted is not None:
                         vetted[link] = True
-                    used.add((entry.family, host))
                     if relayed is not None:
                         relayed.add((entry.family, host))
                     continue
@@ -2307,8 +2308,6 @@ class VideoGenerationAdapter:
                         entry.kind: {"url": f"data:{entry.mime};base64,{entry.b64}"},
                     }
                 )
-        if used and used != disclosed:
-            await self._emit_file_host_notice(valves, used, event_emitter)
         return encoded
 
     @staticmethod
@@ -2334,13 +2333,11 @@ class VideoGenerationAdapter:
         return [chosen] + [name for name in RELAY_HOSTS if name != chosen]
 
     async def _disclose_the_file_host(
-        self, valves: Any, families: set[str], event_emitter: Any
+        self, valves: Any, families: set[str], event_emitter: Any, host: str
     ) -> set[tuple[str, str]]:
         if not families:
             return set()
-        planned = {
-            (family, self._relay_hosts(valves)[0]) for family in families
-        }
+        planned = {(family, host) for family in families}
         said, cause = await self._emit_file_host_notice(valves, planned, event_emitter)
         if not said:
             self.logger.warning(
@@ -2547,6 +2544,7 @@ class VideoGenerationAdapter:
     async def _relay_reference(
         self, valves: Any, payload: str | bytes, *, filename: str, mime: str,
         family: str, deadline: float, session: aiohttp.ClientSession | None = None,
+        event_emitter: Any = None,
     ) -> tuple[str, str]:
         if isinstance(payload, (bytes, bytearray)):
             blob = bytes(payload)
@@ -2567,6 +2565,10 @@ class VideoGenerationAdapter:
                 )
             for host in hosts:
                 try:
+                    if host != hosts[0]:
+                        await self._disclose_the_file_host(
+                            valves, {family}, event_emitter, host
+                        )
                     link = await relay_to_public_url(
                         http,
                         blob,

@@ -572,7 +572,13 @@ class TestDisclosureBlock:
         )
 
     def test_empty_frame_plan_returns_empty_string(self):
+        # An empty plan alone is no longer the gate: a rewritten prompt or a
+        # best-guess note has to render on a turn that reuses no frame (B268b,
+        # user decision N8). What still renders nothing is a turn with nothing
+        # to disclose -- no frame, no prompt, no downgrade.
         r = self._result(frame_plan=[])
+        r.prompt = ""
+        r.downgrades = []
         assert render_intent_disclosure_block(r, thumb_urls=[]) == ""
 
     def test_includes_block_start_and_end_markers(self):

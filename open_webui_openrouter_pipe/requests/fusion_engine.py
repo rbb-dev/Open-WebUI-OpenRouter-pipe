@@ -24,12 +24,8 @@ from ..core.fusion_defaults import (
 )
 from ..core.logging_system import SessionLogger
 from ..core.utils import CONTINUED_REPLY, merge_usage_stats
-from ..models.registry import ModelFamily
 from ..storage.owui_files import is_temporary_chat
-from ..structured_task.schema import (
-    build_response_format,
-    downgrade_strict_for_provider,
-)
+from ..structured_task.schema import build_response_format_for_model
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +49,10 @@ def _member_failure_reason(exc: Exception) -> str:
     if isinstance(exc, (TypeError, ValueError)):
         return "the model response could not be processed"
     return "the model call failed before completing"
+
+
+def _member_refused_before_send() -> str:
+    return "the model declined to answer"
 
 
 def _inner_metadata(metadata: Any) -> dict[str, Any]:
@@ -280,11 +280,15 @@ async def run_fusion_member(
                     f"{content}\n\n{rendered_files}" if content.strip() else rendered_files
                 )
         if "error_occurred" not in sink:
+            logger.warning(
+                "fusion member %s was refused before its request was sent; the rendered "
+                "card was: %s", model, content,
+            )
             narrowed = sink.get("member_refusal_reason")
-            preview = narrowed or content.strip().replace("\n", " ")[:160]
             return FusionMemberResult(
                 model=model, content="", usage=collector.usage, failed=True,
-                fail_reason=preview or "rejected before send",
+                fail_reason=narrowed if isinstance(narrowed, str) and narrowed
+                else _member_refused_before_send(),
                 sources=tuple(collector.sources),
             )
         empty_result = not content.strip() or content == NO_CONTENT_AFTER_TOOLS_FALLBACK
@@ -391,9 +395,8 @@ ANALYSIS_SCHEMA: dict[str, Any] = {
 
 
 def build_analysis_response_format(judge_model: str) -> dict[str, Any]:
-    rf = build_response_format(name="fusion_analysis", schema=ANALYSIS_SCHEMA, strict=True)
-    return downgrade_strict_for_provider(
-        rf, supported_parameters=ModelFamily.supported_parameters(judge_model)
+    return build_response_format_for_model(
+        name="fusion_analysis", schema=ANALYSIS_SCHEMA, model_id=judge_model
     )
 
 

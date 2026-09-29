@@ -321,12 +321,25 @@ class TestRunFusionMemberReentry:
     async def test_restriction_rejects_without_bypass(
         self, orchestrator_and_pipe, monkeypatch
     ):
+        """The refusal reads as a sentence, not as the rendered card behind it.
+
+        This arm has no provider failure to report: the member never got out, so what
+        `process_request` returned is an error card -- markdown heading, bold emphasis,
+        and whatever the template was given. A reason built from that string reaches the
+        panel item, the judge and the synthesiser, so the reason is the pipe's own
+        sentence and the card is named in the log instead.
+        """
         result, captured = await self._run(
             orchestrator_and_pipe, monkeypatch,
             bypass=False, enforced={"other/model"}, catalog={"other/model"},
         )
         assert result.failed is True
         assert captured == []
+        reason = result.fail_reason or ""
+        assert reason, "a refused member is reported as failed with no reason at all"
+        assert "###" not in reason, f"the reason is still a rendered card: {reason!r}"
+        assert "**" not in reason, f"the reason is still a rendered card: {reason!r}"
+        assert reason == reason.strip() and "\n" not in reason, repr(reason)
 
     @pytest.mark.asyncio
     async def test_request_id_restored_and_snapshots_suppressed(

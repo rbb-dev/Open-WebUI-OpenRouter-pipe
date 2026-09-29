@@ -10,9 +10,9 @@ The feature is on by default (`ENABLE_VIDEO_GENERATION=True`). If you want
 to disable it, set that valve to `False` in Admin → Functions → OpenRouter
 pipe → Valves. That also deactivates every installed per-model video
 filter row on the next `pipes()` call, and turning the valve back on
-re-activates the ones still in the catalogue. The rows are identified by
-their source, so a copy you made by hand of one of these filters' source
-is switched off too.
+re-activates the ones the pipe itself switched off. The rows are
+identified by their source, so a copy you made by hand of one of these
+filters' source is switched off too.
 
 ## Table of contents
 
@@ -2037,7 +2037,7 @@ Functions → OpenRouter pipe → Valves; the per-model filter ones live on each
 
 | Valve | Default | Range | Purpose |
 |-------|---------|-------|---------|
-| `ENABLE_VIDEO_GENERATION` | `True` | bool | Master kill switch. False removes all video models from `pipes()` output and deactivates all installed per-model video filter rows at the next model-list refresh; the rows are identified by their source, so a hand-made copy of one of these filters' source is switched off too. Turning it back on re-activates the ones still in the catalogue, whether or not `AUTO_INSTALL_VIDEO_FILTERS` is on. |
+| `ENABLE_VIDEO_GENERATION` | `True` | bool | Master kill switch. False removes all video models from `pipes()` output and deactivates all installed per-model video filter rows at the next model-list refresh; the rows are identified by their source, so a hand-made copy of one of these filters' source is switched off too. Turning it back on re-activates the ones the pipe itself switched off, whether or not `AUTO_INSTALL_VIDEO_FILTERS` is on. |
 | `AUTO_INSTALL_VIDEO_FILTERS` | `True` | bool | Install per-model filter rows in OWUI Functions table on `pipes()`. A model whose catalogue entry publishes no video contract is left as it is: any filter it already has is kept, and none is installed for it. With this off, an installed row whose stored source is out of date is logged but never rewritten, so every fix to that filter stays undelivered until it is on. Turning this off retires the rows the pipe installed for it - switched off, not deleted, so their settings survive - and turning it back on brings them back; a copy an admin installed by hand carries no such record and is left alone. |
 | `AUTO_ATTACH_VIDEO_FILTERS` | `True` | bool | Attach each filter to its corresponding video model row. |
 | `AUTO_DEFAULT_VIDEO_FILTERS` | `True` | bool | Keep per-model filter enabled by default per chat (**re-asserted on every catalog metadata sync** — admins who manually disable a filter will see it re-defaulted on the next sync; set to `False` to opt out). |
@@ -2224,8 +2224,13 @@ pipe()
         ensure_openrouter_video_gen_filter_function_ids(available_models)
           ├─ one settings row per video model, built from its own contract
           ├─ a model with no published contract gets none
-          ├─ each install in own try/except — partial failures isolated
-          └─ no retirement step: the video path never had fixed variants
+          └─ each install in own try/except — partial failures isolated
+
+  └─ if not ENABLE_VIDEO_GENERATION:
+        (from _deactivate_switched_off_filters, before any install)
+        _retire_variant_video_filters() switches off every active per-model video
+        filter row this pipe owns, and marks it pipe-owned, so
+        ENABLE_VIDEO_GENERATION=True brings it back
 ```
 
 Key invariant: **exactly one `_emit_completion` per dedupe key** — the

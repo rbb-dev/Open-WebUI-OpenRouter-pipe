@@ -201,7 +201,12 @@ def _capture(store, body, ctype):
 
 
 _RESP_SSE = (_sse({"type": "response.completed", "response": {"output": [], "usage": {}}}) + "data: [DONE]\n\n").encode()
-_RESP_JSON = json.dumps({"output": [], "usage": {}}).encode()
+_RESP_JSON = json.dumps(
+    {
+        "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "hi"}]}],
+        "usage": {},
+    }
+).encode()
 _CHAT_SSE = (
     _sse({"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]})
     + _sse({"choices": [{"delta": {}, "finish_reason": "stop"}]})

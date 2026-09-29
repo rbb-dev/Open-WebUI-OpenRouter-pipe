@@ -189,6 +189,7 @@ async def test_the_second_host_draws_on_what_the_first_one_already_spent(
     unreachable = aiohttp.ClientConnectorError(MagicMock(ssl=None), OSError(111, "refused"))
     pipe = MagicMock()
     pipe.logger = logging.getLogger("relay-clock")
+    pipe._event_emitter_handler._emit_notification = _AlwaysHeard()
     adapter = VideoGenerationAdapter(pipe=pipe, logger=pipe.logger)
     valves = Valves()
     valves.MEDIA_FILE_HOST = "litterbox"
@@ -210,7 +211,7 @@ async def test_the_second_host_draws_on_what_the_first_one_already_spent(
             link, host = await adapter._relay_reference(
                 valves, base64.b64encode(MP4).decode(), filename="c.mp4",
                 mime="video/mp4", family="video",
-                deadline=time.monotonic() + budget,
+                deadline=time.monotonic() + budget, event_emitter=object(),
             )
 
     assert host == "catbox" and link.endswith("second.mp4")

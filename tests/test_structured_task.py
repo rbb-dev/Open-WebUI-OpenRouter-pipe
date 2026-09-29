@@ -17,7 +17,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from open_webui_openrouter_pipe.structured_task.client import TaskModelFault
+from tests.log_capture import emitted
+
+from open_webui_openrouter_pipe.structured_task.client import (
+    TaskModelFault,
+    _content_part_text,
+)
 from open_webui_openrouter_pipe.structured_task.retry import _response_text
 from open_webui_openrouter_pipe.structured_task import (
     build_response_format,
@@ -169,7 +174,6 @@ class TestNormaliseModelContent:
         result = normalise_model_content({"content": "hello"})
         assert "hello" in result
 
-
 class TestConsumeSseLine:
     def test_done_marker_ignored(self):
         parts: list[str] = []
@@ -238,6 +242,11 @@ class TestReadTaskModelResponseJson:
             await read_task_model_response_json(
                 {"choices": [{"message": {"content": "not json at all"}}]}
             )
+
+    # ── H1399-3: a dict `message.content` that is a content-part envelope ──
+
+    _ENVELOPE_TEXT = '{"intent":"clarify","confidence":"high"}'
+    _ENVELOPE_ANSWER = {"intent": "clarify", "confidence": "high"}
 
 class TestCallWithCandidates:
     @pytest.mark.asyncio

@@ -718,7 +718,10 @@ def _adapter_with_files(records, reads, uploads):
     pipe._file_gateway.read_file_record_base64 = _read
     adapter = VideoGenerationAdapter(pipe=pipe, logger=logging.getLogger("relay-order"))
 
-    async def _relay(self, valves, b64, *, filename, mime, family, deadline, session=None):
+    async def _relay(
+        self, valves, b64, *, filename, mime, family, deadline, session=None,
+        event_emitter=None,
+    ):
         uploads.append((filename, mime, family))
         return f"https://files.example/{family}.bin", "litterbox"
 
@@ -920,7 +923,7 @@ async def test_the_second_file_host_is_tried_only_when_the_operator_turned_it_on
             with patch.object(media_relay.asyncio, "sleep", AsyncMock()):
                 link, used = await adapter._relay_reference(
                     valves, blob, filename="clip.mp4", mime="video/mp4", family="video",
-                    deadline=time.monotonic() + 30.0,
+                    deadline=time.monotonic() + 30.0, event_emitter=object(),
                 )
 
         assert used == other, f"the operator's fallback did not reach {other}"

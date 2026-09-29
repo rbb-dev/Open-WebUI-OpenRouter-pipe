@@ -137,6 +137,24 @@ def _root_was_wrapped(parameters: dict[str, Any]) -> bool:
     return isinstance(parameters, dict) and not _root_is_object(parameters)
 
 
+def _advertised_root_params(parameters: Any, *, strictify: bool = True) -> set[str]:
+    if not isinstance(parameters, dict):
+        return set()
+    props = parameters.get("properties")
+    names = {k for k in props if isinstance(k, str)} if isinstance(props, dict) else set()
+    if not strictify:
+        return names
+    if "$ref" in parameters or "allOf" in parameters:
+        strict = _strictify_schema(parameters)
+        advertised = strict.get("properties") if isinstance(strict, dict) else None
+        if isinstance(advertised, dict):
+            names |= {k for k in advertised if isinstance(k, str)}
+        return names
+    if not _root_is_object(parameters):
+        names.add("value")
+    return names
+
+
 def merge_schema_nodes(
     base: dict[str, Any], overlay: dict[str, Any]
 ) -> dict[str, Any]:

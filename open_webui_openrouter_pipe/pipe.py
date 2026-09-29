@@ -1268,6 +1268,48 @@ class Pipe:
         self._provider_routing_rows_probed = True
         return self._provider_routing_rows_may_exist_flag
 
+    async def _read_filter_rows(self, cache: list | None = None, *, fresh: bool = False):
+        from .filters.filter_manager import _FilterRows
+
+        if cache is not None and len(cache) == 1 and not fresh:
+            return cache[0]
+        try:
+            rows = await self._ensure_filter_manager()._filter_rows()
+        except Exception as exc:
+            level = warn_level(
+                _warned_pipes_maintenance, f"filter_rows:{type(exc).__name__}"
+            )
+            self.logger.log(
+                level,
+                "Could not enumerate OWUI filter functions; the model list is unaffected.",
+                exc_info=True,
+            )
+            return None
+        snapshot = _FilterRows(rows, None, rows is not None)
+        if cache is not None:
+            cache[:] = [snapshot]
+        return snapshot
+
+    async def _with_active_rows(self, snapshot: Any):
+        from .filters.filter_manager import _FilterRows
+
+        if snapshot.active_rows is not None:
+            return snapshot
+        try:
+            active = await self._ensure_filter_manager()._filter_rows(active_only=True)
+        except Exception as exc:
+            level = warn_level(
+                _warned_pipes_maintenance, f"filter_rows_active:{type(exc).__name__}"
+            )
+            self.logger.log(
+                level,
+                "Could not enumerate the active OWUI filter functions; the model list is "
+                "unaffected.",
+                exc_info=True,
+            )
+            return snapshot
+        return _FilterRows(snapshot.all_rows, active, snapshot.available)
+
     async def _run_routing_pass(
         self,
         admin_routing: str,
@@ -1275,6 +1317,7 @@ class Pipe:
         models: list[dict[str, Any]],
         *,
         install: bool,
+        rows=None,
     ) -> bool:
         try:
             catalog_manager = self._ensure_catalog_manager()
@@ -1290,6 +1333,7 @@ class Pipe:
                 provider_map,
                 models,
                 self.id,
+                rows,
                 not_fetched_slugs=catalog_manager.get_provider_overlay_skipped_slugs(),
             )
             return True
@@ -1368,7 +1412,7 @@ class Pipe:
                 continue
         return False
 
-    async def _deactivate_switched_off_filters(self) -> None:
+    async def _deactivate_switched_off_filters(self, pass_cache: list | None = None) -> Any:
         from .filters.filter_manager import (
             _OPENROUTER_FUSION_FILTER_MARKER,
             _OPENROUTER_FUSION_FILTER_PREFERRED_FUNCTION_ID,
@@ -1380,6 +1424,9 @@ class Pipe:
         )
 
         all_web_tools_disabled = every_web_tool_is_off(self.valves)
+        switch_rows: Any = await self._read_filter_rows(pass_cache)
+        if switch_rows is not None:
+            switch_rows = await self._with_active_rows(switch_rows)
         if all_web_tools_disabled:
             try:
                 from open_webui.models.functions import Functions as _Funcs
@@ -1419,10 +1466,21 @@ class Pipe:
                     self.logger.info("Disabled OpenRouter Fusion filter (ENABLE_OPENROUTER_FUSION=False)")
             except Exception:
                 self.logger.debug("Disabling OpenRouter Fusion filter failed", exc_info=True)
+        else:
+            try:
+                await self._ensure_filter_manager().reactivate_filters_by_marker(
+                    _OPENROUTER_FUSION_FILTER_MARKER, log_label="Fusion"
+                )
+            except Exception:
+                self.logger.debug(
+                    "Re-enabling OpenRouter Fusion filters failed", exc_info=True
+                )
         if not self.valves.ENABLE_IMAGE_GENERATION:
             try:
                 from open_webui.models.functions import Functions as _Funcs
-                _rows = await _Funcs.get_functions_by_type("filter", active_only=False)
+                _rows = switch_rows.all_rows if switch_rows is not None else None
+                if _rows is None:
+                    _rows = await _Funcs.get_functions_by_type("filter", active_only=False)
                 _picked = _newest_marked_row(
                     _rows,
                     _OPENROUTER_IMAGE_GEN_FILTER_MARKER,
@@ -1464,7 +1522,7 @@ class Pipe:
                 self.logger.debug("Retiring per-model video filters failed: %s", exc, exc_info=True)
         else:
             try:
-                await self._ensure_filter_manager().reactivate_video_gen_filters()
+                await self._ensure_filter_manager().reactivate_video_gen_filters(switch_rows)
             except Exception:
                 self.logger.debug("Re-enabling OpenRouter Video Generation filters failed", exc_info=True)
         try:
@@ -1483,6 +1541,7 @@ class Pipe:
                 )
         except Exception as exc:
             self.logger.debug("Legacy video filter cleanup failed: %s", exc, exc_info=True)
+        return switch_rows
 
     # ENTRY POINTS
 
@@ -1506,7 +1565,7 @@ class Pipe:
         self._web_tools_repair_started = time.monotonic()
         return ok
 
-    async def _keep_web_tools_filters_in_step(self) -> bool:
+    async def _keep_web_tools_filters_in_step(self, rows: Any = None) -> bool:
         ok = True
         if self.valves.AUTO_INSTALL_WEB_TOOLS_FILTER and not every_web_tool_is_off(self.valves):
             try:
@@ -1517,13 +1576,14 @@ class Pipe:
                     enable_advisor=self.valves.ENABLE_ADVISOR,
                     enable_subagent=self.valves.ENABLE_SUBAGENT,
                     enable_search_models=self.valves.ENABLE_SEARCH_MODELS,
+                    rows=rows,
                 )
             except Exception as exc:
                 ok = False
                 level = warn_level(_warned_pipes_maintenance, f"web_tools:{type(exc).__name__}")
                 self.logger.log(level, "AUTO_INSTALL_WEB_TOOLS_FILTER failed: %s", exc, exc_info=True)
         try:
-            if not await self._ensure_filter_manager().repair_web_tools_filters():
+            if not await self._ensure_filter_manager().repair_web_tools_filters(rows):
                 ok = False
         except Exception as exc:
             ok = False
@@ -1615,7 +1675,8 @@ class Pipe:
         if refresh_error and available_models:
             level = warn_level(_warned_pipes_maintenance, f"catalog_cached:{type(refresh_error).__name__}")
             self.logger.log(level, "Serving %d cached OpenRouter model(s) due to refresh failure.", len(available_models))
-        await self._deactivate_switched_off_filters()
+        pass_cache: list = []
+        switch_rows = await self._deactivate_switched_off_filters(pass_cache)
         if refresh_error and not available_models:
             return []
 
@@ -1638,28 +1699,37 @@ class Pipe:
         except Exception:
             self.logger.debug("Old OpenRouter Search filter cleanup failed", exc_info=True)
 
-        await self._keep_web_tools_filters_in_step()
+        install_rows = await self._read_filter_rows(pass_cache)
+        await self._keep_web_tools_filters_in_step(switch_rows)
         if self.valves.ENABLE_OPENROUTER_FUSION and self.valves.AUTO_INSTALL_FUSION_FILTER:
             try:
-                await self._ensure_filter_manager().ensure_openrouter_fusion_filter_function_id()
+                await self._ensure_filter_manager().ensure_openrouter_fusion_filter_function_id(
+                    install_rows
+                )
             except Exception as exc:
                 level = warn_level(_warned_pipes_maintenance, f"fusion:{type(exc).__name__}")
                 self.logger.log(level, "AUTO_INSTALL_FUSION_FILTER failed: %s", exc, exc_info=True)
         if self.valves.AUTO_INSTALL_IMAGE_GEN_FILTER and self.valves.ENABLE_IMAGE_GENERATION:
             try:
-                await self._ensure_filter_manager().ensure_openrouter_image_gen_filter_function_id()
+                await self._ensure_filter_manager().ensure_openrouter_image_gen_filter_function_id(
+                    install_rows
+                )
             except Exception as exc:
                 level = warn_level(_warned_pipes_maintenance, f"image_gen:{type(exc).__name__}")
                 self.logger.log(level, "AUTO_INSTALL_IMAGE_GEN_FILTER failed: %s", exc, exc_info=True)
         if self.valves.AUTO_INSTALL_VIDEO_FILTERS and self.valves.ENABLE_VIDEO_GENERATION:
             try:
-                await self._ensure_filter_manager().ensure_openrouter_video_gen_filter_function_ids(available_models)
+                await self._ensure_filter_manager().ensure_openrouter_video_gen_filter_function_ids(
+                    available_models, install_rows
+                )
             except Exception as exc:
                 level = warn_level(_warned_pipes_maintenance, f"video:{type(exc).__name__}")
                 self.logger.log(level, "AUTO_INSTALL_VIDEO_FILTERS per-model failed: %s", exc, exc_info=True)
         if self.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER:
             try:
-                await self._ensure_filter_manager().ensure_direct_uploads_filter_function_id()
+                await self._ensure_filter_manager().ensure_direct_uploads_filter_function_id(
+                    install_rows
+                )
             except Exception as exc:
                 level = warn_level(_warned_pipes_maintenance, f"direct_uploads:{type(exc).__name__}")
                 self.logger.log(level, "AUTO_INSTALL_DIRECT_UPLOADS_FILTER failed: %s", exc, exc_info=True)
@@ -1668,14 +1738,17 @@ class Pipe:
         selected_models = self._apply_model_filters(selected_models, self.valves)
         selected_models = self._expand_variant_models(selected_models, self.valves)
 
+        read_rows = await self._read_filter_rows(pass_cache, fresh=True)
         admin_routing = (self.valves.ADMIN_PROVIDER_ROUTING_MODELS or "").strip()
         user_routing = (self.valves.USER_PROVIDER_ROUTING_MODELS or "").strip()
         if admin_routing or user_routing:
-            if await self._run_routing_pass(admin_routing, user_routing, selected_models, install=True):
+            if await self._run_routing_pass(
+                admin_routing, user_routing, selected_models, install=True, rows=read_rows
+            ):
                 self._provider_routing_filters_installed = True
         elif self._provider_routing_filters_installed or await self._routing_rows_may_exist():
             self._provider_routing_filters_installed = False
-            await self._run_routing_pass("", "", selected_models, install=False)
+            await self._run_routing_pass("", "", selected_models, install=False, rows=read_rows)
 
         if not self._stale_filter_ids_pruned:
             self._stale_filter_ids_pruned = True
@@ -1701,7 +1774,7 @@ class Pipe:
                     ) or ""
                 else:
                     image_gen_filter_model = (
-                        await self._ensure_filter_manager().image_gen_filter_selected_model()
+                        await self._ensure_filter_manager().image_gen_filter_selected_model(read_rows)
                     ) or ""
             except Exception as exc:
                 level = warn_level(

@@ -66,6 +66,10 @@ EXPECTED_LATCHES = {
     "_warned_timing_file",
     "_warned_user_valves",
     "_warned_video_catalog",
+    # An unreadable Functions table now reaches the video-gen ensure as an exception on
+    # every pass, and that pass runs on every model list. Without a latch the operator
+    # gets the same WARNING for as long as the fault lasts; with it, once per state.
+    "_warned_video_gen_filter_ensure",
     "_warned_video_provider_keys",
     "_warned_write_refusals",
 }

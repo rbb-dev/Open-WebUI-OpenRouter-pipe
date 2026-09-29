@@ -3895,7 +3895,7 @@ async def test_pipes_auto_install_filters_handles_exceptions(monkeypatch, pipe_i
         called.append("web_tools")
         raise RuntimeError("fail")
 
-    async def _ok_direct() -> str:
+    async def _ok_direct(*_args: Any, **_kwargs: Any) -> str:
         called.append("direct")
         return "direct"
 
