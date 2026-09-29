@@ -162,6 +162,10 @@ publishes **no** models at all — the untilded entries in the catalog are dated
 exists as a `…-latest` entry. An operator whose allowlist is written without the tilde
 never reaches Fusion; one whose allowlist is narrower than the preset's panel sees the
 excluded members fail, each with a reason naming the control that refused it.
+The same tilde rule applies to the `MODEL_ID` glob arm, and it fails just as quietly: a `*`
+pattern does not cover a `~`-pinned alias, so `MODEL_ID=openai/*` publishes none of the
+three `general-high` members named above and every panel member fails. To remove one, exclude
+it as `!~openai/*`; to admit one, include it as `~openai/*` or `~*`.
 
 On the internal engine, every panel, judge and final-answer call is made as the chatting user's own call. Each one that fails at OpenRouter therefore counts toward that user's request breaker; when the run ends, the count, including that run's own failures, is cleared if the run finishes and any panel model answered, and kept if none did or the user stopped the run. The breaker never cuts off a run already under way; only the user's next request can be refused. Within each run, all of its models share one count per tool: once a tool fails `BREAKER_MAX_FAILURES` times in a row, it is skipped from then on, even after a quiet spell, unless a call to it that was already running succeeds. The user's own tool breaker for normal chats is left untouched. See [Concurrency Controls & Resilience](concurrency_controls_and_resilience.md).
 

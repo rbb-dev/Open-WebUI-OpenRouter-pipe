@@ -1509,6 +1509,11 @@ def _matches_any_model_pattern(model_id: str, patterns: list[str]) -> bool:
             return True
     return False
 
+
+def _is_model_glob(value: str) -> bool:
+    return any(ch in value for ch in "*?[")
+
+
 # Anthropic Reasoning Helpers
 
 _CLAUDE_REASONING_RE = re.compile(r"~?anthropic[./]claude-(opus|sonnet)-")

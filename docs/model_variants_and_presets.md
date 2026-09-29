@@ -222,7 +222,7 @@ Variant models work seamlessly with existing model selection:
 - If base model is selected, its configured variants are added automatically
 - Example: Selecting `gpt-4o` enables both "GPT-4o" and "GPT-4o Exacto"
 
-**By construction:** `MODEL_ID` matches catalogue rows by their normalized ID. A `base_id:tag` entry is therefore
+**By construction:** `MODEL_ID` matches catalogue rows by normalized id exactly, or by glob when the entry holds a `*`, `?` or `[`; a pattern is not run through the `:tag` / `@preset` resolution, and an exclusion runs after the includes and is not re-admitted by `VARIANT_MODELS`. A `!` entry is applied after the includes over the whole selection, so `!~openai/*` removes a `~`-pinned alias that `openai/*` never reached, and no base this list excludes is added as a variant. A `base_id:tag` entry is therefore
 matched on its exact normalized id: when the catalogue holds that tagged model as a row of its own it publishes
 that row - `openai/gpt-4o:free` publishes the `:free` model, not the paid base - and when it does not, it
 publishes the base instead. So an allowlist naming only `openai/gpt-4o:exacto` publishes `openai/gpt-4o` on any
@@ -308,13 +308,9 @@ Variant models inherit tool-calling capabilities:
    MODEL_ID = "anthropic/claude-sonnet-4.5"
    VARIANT_MODELS = "openai/gpt-4o:exacto"
    ```
-   **Issue:** Base GPT-4o is excluded because MODEL_ID lists only the Claude model — MODEL_ID matches exact IDs, not wildcards
+   **Issue:** Base GPT-4o is excluded because MODEL_ID lists only the Claude model — add `openai/*` (or the exact ID) so the pattern arm admits it
    **Solution:** Add the base model's exact ID to MODEL_ID (e.g. `anthropic/claude-sonnet-4.5, openai/gpt-4o`)
 
-   **Note:** this is a one-sided disagreement. A `VARIANT_MODELS` entry whose base is outside `MODEL_ID` still
-   enters the request-time allowlist, because variant expansion resolves against the whole catalogue — so the
-   pipe will serve `openai/gpt-4o:exacto` on the wire while the picker does not list it. The request-time gate
-   is the security boundary; the picker is a convenience, and here the two disagree.
 
 ### After a Model Rename
 
@@ -435,7 +431,7 @@ VARIANT_MODELS = "meta-llama/llama-3.2-3b-instruct:free,meta-llama/llama-3.2-1b-
 ```
 
 **Result:**
-- All models appear in catalog — `auto` imports everything; MODEL_ID matches exact IDs, not wildcards
+- All models appear in catalog — `auto` imports everything, and a pattern such as `openai/gpt-4o*` is matched as written
 - Free variants appear for configured models
 - Users can choose between paid and free versions
 

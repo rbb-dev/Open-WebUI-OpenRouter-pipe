@@ -318,11 +318,15 @@ async def test_a_failing_filter_install_is_reported_once_across_repeated_pipes_c
     pipe.valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER = True
     pipe.valves.ADMIN_PROVIDER_ROUTING_MODELS = "openrouter/test"
     pipe.valves.ZDR_MODELS_ONLY = True
-    # A model id and a variant base that the catalog does not hold: both are STABLE
-    # misconfigurations, so unlatched they warned on every /api/models request for
-    # the life of the worker -- the variant one once per bad entry.
-    pipe.valves.MODEL_ID = "does/not-exist"
-    pipe.valves.VARIANT_MODELS = "does/not-exist:nitro"
+    # Three STABLE misconfigurations, so unlatched they warned on every
+    # /api/models request for the life of the worker: an id the catalog does not
+    # hold, an include pattern that matches no row, and a variant the allowlist
+    # excludes. The third needs a base that IS admitted, otherwise the variant
+    # arm never reaches the exclusion -- the base-missing arm runs first and
+    # continues -- so the id that holds is listed and the pattern is the one that
+    # does not.
+    pipe.valves.MODEL_ID = "openrouter/test, does/not-exist, nomatch/*, !openrouter/test:nitro"
+    pipe.valves.VARIANT_MODELS = "does/not-exist:nitro, openrouter/test:nitro"
 
     def _explode(*_args, **_kwargs):
         raise RuntimeError("filter table is read-only")
@@ -415,8 +419,16 @@ async def test_a_failing_filter_install_is_reported_once_across_repeated_pipes_c
             # above deliberately keeps healthy so the later sites are reachable at all.
             # Same latch, same no-repeat rule, so it belongs in the same drive.
             # The refresh window has to be zeroed or phase 1's cache means no refetch
-            # happens and the error branch is never entered.
+            # happens and the error branch is never entered. The allowlist changes with
+            # it: the cached `openrouter/test` row is still served, so an exclusion
+            # that empties a non-empty selection is reachable here and nowhere else.
+            # `VARIANT_MODELS` drops back to the absent base, because the emptying
+            # valve publishes nothing and a variant on the row it just removed would
+            # arm a SECOND `variant_base_missing` -- a second warning, and the
+            # once-per-cause count would stop balancing.
             pipe.valves.MODEL_CATALOG_REFRESH_SECONDS = 0
+            pipe.valves.MODEL_ID = "openrouter/test, !openrouter/*"
+            pipe.valves.VARIANT_MODELS = "does/not-exist:nitro"
             with aioresponses() as http:
                 http.get(
                     "https://openrouter.ai/api/v1/models",
@@ -571,7 +583,8 @@ async def test_a_failing_filter_install_is_reported_once_across_repeated_pipes_c
         "image_gen_model",
         "video", "direct_uploads", "provider_routing", "provider_routing_probe", "stale_prune",
         "on_models",
-        "zdr_list_unavailable", "models_missing", "variant_base_missing",
+        "zdr_list_unavailable", "models_missing", "models_patterns_unmatched",
+        "models_excluded_everything", "variant_base_missing", "variant_excluded_by_model_id",
         "enforcement_base_not_allowed", "enforcement_base_unnormalized",
         "chat_catalog_refresh", "metadata_sync", "web_tools_repair",
         "api_key_resolution",

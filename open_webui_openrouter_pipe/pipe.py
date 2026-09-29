@@ -180,6 +180,9 @@ from .models.reasoning_config import ReasoningConfigManager
 from .models.registry import (
     ModelFamily,
     OpenRouterModelRegistry,
+    _is_model_glob,
+    _matches_any_model_pattern,
+    _parse_model_patterns,
     is_free_model,
     sanitize_model_id,
     supports_tool_calling,
@@ -423,6 +426,14 @@ _warned_timing_file: set[str] = set()
 
 def _admission_bound(max_concurrent_requests: int, queue_maxsize: int) -> int:
     return max_concurrent_requests + queue_maxsize + 2
+
+
+def _model_id_exclusions(filter_value: str, pipe_id: str | None) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    for entry in _parse_model_patterns(filter_value or ""):
+        if entry.startswith("!") and entry[1:].strip():
+            out.append((entry, ModelFamily.base_model(entry[1:].strip(), pipe_id)))
+    return out
 
 
 # Data Classes
@@ -4293,20 +4304,32 @@ class Pipe:
         if not filter_value or filter_value.lower() == "auto":
             return available_models
 
-        requested = {
-            ModelFamily.base_model(sanitize_model_id(model_id.strip()), self.id)
-            for model_id in filter_value.split(",")
-            if model_id.strip()
-        }
-        if not requested:
-            return available_models
+        entries = _parse_model_patterns(filter_value)
+        requested: set[str] = set()
+        includes: list[tuple[str, str]] = []
+        for entry in entries:
+            if entry.startswith("!"):
+                body = entry[1:].strip()
+                if body:
+                    continue
+                requested.add(ModelFamily.base_model(sanitize_model_id(entry), self.id))
+                continue
+            if entry.lower() == "auto":
+                continue
+            if _is_model_glob(entry):
+                includes.append((entry, ModelFamily.base_model(entry, self.id)))
+                continue
+            requested.add(ModelFamily.base_model(sanitize_model_id(entry), self.id))
+
+        include_all = not (requested or includes)
+        exclude_entries = _model_id_exclusions(filter_value, self.id)
+        exclude_keys = [key for _as_written, key in exclude_entries]
 
         present = {model["norm_id"] for model in available_models}
         base_resolved: set[str] = set()
         base_matches: set[str] = set()
-        for raw_entry in filter_value.split(","):
-            entry = raw_entry.strip()
-            if not entry:
+        for entry in entries:
+            if _is_model_glob(entry) or entry.startswith("!"):
                 continue
             base_id, sep, preset_part = entry.partition("@")
             if sep and preset_part.startswith("preset/"):
@@ -4325,8 +4348,23 @@ class Pipe:
             base_resolved.add(entry_norm)
             base_matches.add(base_norm)
 
-        allowed = requested | base_matches
-        selected = [model for model in available_models if model["norm_id"] in allowed]
+        matched_includes: set[str] = set()
+        if include_all:
+            selected = list(available_models)
+        else:
+            allowed = requested | base_matches
+            selected = []
+            for model in available_models:
+                norm_id = model["norm_id"]
+                if norm_id in allowed:
+                    selected.append(model)
+                    continue
+                for as_written, key in includes:
+                    if _matches_any_model_pattern(norm_id, [key]):
+                        matched_includes.add(as_written)
+                        selected.append(model)
+                        break
+
         missing = (requested - present) - base_resolved
         if missing:
             self.logger.log(
@@ -4334,6 +4372,33 @@ class Pipe:
                 "Requested models not found in OpenRouter catalog: %s",
                 ", ".join(sorted(missing)),
             )
+        unmatched = [as_written for as_written, _key in includes if as_written not in matched_includes]
+        if unmatched:
+            self.logger.log(
+                warn_level(
+                    _warned_pipes_maintenance,
+                    f"models_patterns_unmatched:{','.join(unmatched)}",
+                ),
+                "Model allowlist patterns matched no catalog row: %s",
+                ", ".join(unmatched),
+            )
+        if exclude_keys:
+            before_exclusions = selected
+            selected = [
+                model
+                for model in selected
+                if not _matches_any_model_pattern(model["norm_id"], exclude_keys)
+            ]
+            if before_exclusions and not selected:
+                names = ", ".join(as_written for as_written, _key in exclude_entries)
+                self.logger.log(
+                    warn_level(
+                        _warned_pipes_maintenance,
+                        f"models_excluded_everything:{names}",
+                    ),
+                    "Model allowlist exclusions removed every model the list selected: %s",
+                    names,
+                )
         return selected
 
     @timed
@@ -4441,6 +4506,8 @@ class Pipe:
         # Expand variants and presets
         expanded: list[dict[str, Any]] = list(models)
         _seen_published_ids = {m.get("id") for m in expanded}
+        model_id_exclusions = _model_id_exclusions(valves.MODEL_ID, self.id)
+        exclusion_keys = [key for _as_written, key in model_id_exclusions]
 
         for base_id, variant_tag, is_preset in variant_specs:
             # Find base model
@@ -4463,6 +4530,15 @@ class Pipe:
             published_id = f"{base_sanitized_id}:{variant_tag}"
             variant_model["id"] = published_id
 
+            if exclusion_keys:
+                full = ModelFamily.base_model(published_id, self.id)
+                if _matches_any_model_pattern(full, exclusion_keys):
+                    self.logger.log(
+                        warn_level(_warned_pipes_maintenance, f"variant_excluded_by_model_id:{full}"),
+                        "Model allowlist excludes %s; not publishing it as a variant",
+                        full,
+                    )
+                    continue
 
             # Update display name with tag
             base_name = variant_model.get("name", base_id)
@@ -4528,6 +4604,8 @@ class Pipe:
                 spec = spec.strip()
                 if not spec or spec.lower() == "auto":
                     continue
+                if spec.startswith("!") or _is_model_glob(spec):
+                    continue
                 if "@" in spec:
                     parts = spec.rsplit("@", 1)
                     base_id = parts[0].strip()
@@ -4583,6 +4661,8 @@ class Pipe:
         existing_norm_ids = {
             m["norm_id"] for m in allowlist_models if isinstance(m, dict) and m.get("norm_id")
         }
+        model_id_exclusions = _model_id_exclusions(valves.MODEL_ID, self.id)
+        exclusion_keys = [key for _as_written, key in model_id_exclusions]
 
         for base_id, variant_tag, is_preset in variant_specs:
             sanitized_base = sanitize_model_id(base_id)
@@ -4596,6 +4676,19 @@ class Pipe:
             full_norm_id = f"{base_norm_id}:{variant_tag}" if base_norm_id else ""
 
             if full_norm_id and full_norm_id in existing_norm_ids:
+                continue
+
+            if full_norm_id and exclusion_keys and _matches_any_model_pattern(
+                full_norm_id, exclusion_keys
+            ):
+                self.logger.log(
+                    warn_level(
+                        _warned_pipes_maintenance,
+                        f"variant_excluded_by_model_id:{full_norm_id}",
+                    ),
+                    "Model allowlist excludes %s; not adding it as a variant",
+                    full_norm_id,
+                )
                 continue
 
             if base_model is not None and not is_preset:
