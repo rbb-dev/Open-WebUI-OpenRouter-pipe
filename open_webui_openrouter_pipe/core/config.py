@@ -1604,7 +1604,7 @@ class Valves(BaseModel):
         default=200,
         ge=1,
         le=2000,
-        description="Maximum number of in-flight OpenRouter requests allowed per process. Takes effect without a restart, in both directions: a higher value admits more requests at once, and a lower one binds from the moment it is saved, counting the requests already running, which finish first. A request holds its slot until its own tool calls have finished cleanup, so a tool-bearing request occupies its slot a little longer than its answer; a request the person stopped, or one that failed before its request body ran, returns its slot immediately. The wait list behind this limit is bounded: the pipe queues further requests and sheds load once that queue is full — a chat caller sees a \"Server busy (503)\" card, and an API caller gets a 503 response carrying the same sentence.",
+        description="Maximum number of in-flight OpenRouter requests allowed per process. Takes effect without a restart, in both directions: a higher value admits more requests at once, and a lower one binds from the moment it is saved, counting the requests already running, which finish first. A request holds its slot until its own tool calls have finished cleanup, so a tool-bearing request occupies its slot a little longer than its answer; a request the person stopped, or one that failed before its request body ran, returns its slot immediately, and so does one the worker is shut down while it is still running — a code reload cancels it and gives the slot back before the new worker starts taking work. The wait list behind this limit is bounded: the pipe queues further requests and sheds load once that queue is full — a chat caller sees a \"Server busy (503)\" card, and an API caller gets a 503 response carrying the same sentence.",
     )
     SSE_WORKERS_PER_REQUEST: int = Field(
         default=4,
@@ -1770,7 +1770,7 @@ class Valves(BaseModel):
     CONNECTION_ERROR_TEMPLATE: str = Field(
         default=DEFAULT_CONNECTION_ERROR_TEMPLATE,
         description=(
-            "Markdown template a chat reply shows, once the retries are spent, when its connection to OpenRouter fails before any of the answer arrives: the connection cannot be opened or drops, or, on every attempt, OpenRouter closes the stream without sending anything. A connection that fails before the first byte is a temporary failure: the request is re-sent up to TRANSIENT_RETRY_MAX_ATTEMPTS extra times (three attempts in all by default) and is counted once against the breaker however many attempts it took. Picture-only image models, video models and the panel, judge and final-answer calls inside internal Fusion report failures in their own way. A timeout uses NETWORK_TIMEOUT_TEMPLATE instead, and once part of the answer has arrived, STREAM_INTERRUPTED_TEMPLATE is used and nothing is retried. A reply that arrives on an accepted status but whose body is not a JSON object is not a connection failure: the connection worked, and SERVICE_ERROR_TEMPLATE reports it. Available variables: {error_id}, {error_type}, {timestamp}, {session_id}, {user_id}, {support_email}, {support_url}. Supports Handlebars-style conditionals: wrap a section in {{#if variable}}...{{/if}} to show it only when that value is set."
+            "Markdown template a chat reply shows, once the retries are spent, when its connection to OpenRouter fails before any of the answer arrives: the connection cannot be opened or drops, or, on every attempt, OpenRouter closes the stream without sending anything or sends frames the pipe cannot read, or a non-streamed 200 answers on /responses with no `output` key or on /chat/completions with no `choices`. A connection that fails before the first byte is a temporary failure: the request is re-sent up to TRANSIENT_RETRY_MAX_ATTEMPTS extra times (three attempts in all by default) and is counted once against the breaker however many attempts it took. Picture-only image models, video models and the panel, judge and final-answer calls inside internal Fusion report failures in their own way. A timeout uses NETWORK_TIMEOUT_TEMPLATE instead, and once part of the answer has arrived, STREAM_INTERRUPTED_TEMPLATE is used and nothing is retried. A reply that arrives on an accepted status but whose body is not a JSON object is not a connection failure: the connection worked, and SERVICE_ERROR_TEMPLATE reports it; a well-formed object that carries no answer on either route is a different thing and is reported here. Available variables: {error_id}, {error_type}, {timestamp}, {session_id}, {user_id}, {support_email}, {support_url}. Supports Handlebars-style conditionals: wrap a section in {{#if variable}}...{{/if}} to show it only when that value is set."
         )
     )
 
@@ -2591,6 +2591,10 @@ class Valves(BaseModel):
             "Comma-separated list of model slugs (e.g., 'openai/gpt-4o, anthropic/claude-3.5-sonnet') for which "
             "to generate admin-only provider routing filters. These filters enforce provider preferences (order, "
             "only, ignore, sort, quantizations, etc.) that users cannot override or disable. "
+            "At most 50 of the listed models are fetched for provider data per sync, counted across this list and "
+            "the user provider routing list together, so a long list here spends that budget first; a correctly "
+            "spelled slug past the 50th keeps the provider data from the last cycle, its routing entry offers fewer "
+            "providers, and the log names it. "
             "Leave empty to disable admin provider routing filters."
             + _ROUTING_ADMIN_OFF_STAYS_OFF
         ),
@@ -2601,6 +2605,10 @@ class Valves(BaseModel):
             "Comma-separated list of model slugs (e.g., 'meta-llama/llama-3.2-3b-instruct') for which "
             "to generate user-configurable provider routing filters. Users can toggle these filters per-chat "
             "and configure their own provider preferences in their per-user settings. "
+            "At most 50 of the listed models are fetched for provider data per sync, counted across this list and "
+            "the admin provider routing list together, so a long admin list spends that budget before this one is "
+            "reached; a correctly spelled slug past the 50th keeps the provider data from the last cycle, its routing "
+            "entry offers fewer providers, and the log names it. "
             "Leave empty to disable user provider routing filters."
             + _ROUTING_ADMIN_OFF_STAYS_OFF
         ),

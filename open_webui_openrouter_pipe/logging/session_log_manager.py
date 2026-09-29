@@ -325,6 +325,19 @@ def _split_archive_key(message_id: str) -> tuple[str, str]:
     return message_id, ""
 
 
+def _preferred_request_id(segments: list[dict[str, Any]]) -> str:
+    for seg in segments:
+        if seg.get("type") == "session_log_segment_terminal":
+            rid = seg.get("request_id")
+            if isinstance(rid, str) and rid.strip():
+                return rid.strip()
+    for seg in segments:
+        rid = seg.get("request_id")
+        if isinstance(rid, str) and rid.strip():
+            return rid.strip()
+    return ""
+
+
 _MAX_KEY_CHARS = 64
 _MIN_HEAD_CHARS = 16
 
@@ -1280,14 +1293,10 @@ class SessionLogManager:
             return
 
         events: list[dict[str, Any]] = []
-        request_id = ""
+        request_id = _preferred_request_id(segments)
         resolved_status = ""
         resolved_reason = ""
         for seg in segments:
-            if not request_id:
-                rid = seg.get("request_id")
-                if isinstance(rid, str) and rid.strip():
-                    request_id = rid.strip()
             if seg.get("type") == "session_log_segment_terminal":
                 raw_status = seg.get("status")
                 if isinstance(raw_status, str) and raw_status.strip():
@@ -1300,6 +1309,7 @@ class SessionLogManager:
         if not events or not request_id:
             return
 
+        meta_message_id, meta_task = _split_archive_key(message_id)
         fallback_message_id = f"{message_id}.{request_id}"
         rescue_path = out_path.with_name(_archive_file_name(fallback_message_id))
         before_stat = None
@@ -1320,6 +1330,8 @@ class SessionLogManager:
                     created_at=time.time(),
                     log_format=self.valves.SESSION_LOG_FORMAT,
                     log_events=events,
+                    meta_message_id=meta_message_id,
+                    meta_task=meta_task,
                     status=resolved_status,
                     reason=resolved_reason,
                 )
@@ -1549,7 +1561,7 @@ class SessionLogManager:
 
         resolved_user_id = ""
         resolved_session_id = ""
-        preferred_request_id = ""
+        preferred_request_id = _preferred_request_id(segments)
         resolved_status = ""
         resolved_reason = ""
         merged_events: list[dict[str, Any]] = []
@@ -1564,9 +1576,6 @@ class SessionLogManager:
                 if isinstance(raw_sid, str) and raw_sid.strip():
                     resolved_session_id = raw_sid.strip()
             if seg.get("type") == "session_log_segment_terminal":
-                rid = seg.get("request_id")
-                if isinstance(rid, str) and rid.strip():
-                    preferred_request_id = rid.strip()
                 raw_status = seg.get("status")
                 if isinstance(raw_status, str) and raw_status.strip():
                     resolved_status = raw_status.strip()
@@ -1577,13 +1586,6 @@ class SessionLogManager:
                 for evt in events:
                     if isinstance(evt, dict):
                         merged_events.append(evt)
-
-        if not preferred_request_id:
-            for seg in segments:
-                rid = seg.get("request_id")
-                if isinstance(rid, str) and rid.strip():
-                    preferred_request_id = rid.strip()
-                    break
 
         def _event_ts(evt: dict[str, Any]) -> float:
             created = evt.get("created")

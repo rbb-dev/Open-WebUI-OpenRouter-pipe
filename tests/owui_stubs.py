@@ -84,8 +84,13 @@ def _install_open_webui_stubs() -> None:
             key = (chat_id, message_id)
             rows = _Chats._chat_files.setdefault(key, [])
 
-            existing = {r.file_id for r in rows}
-            if any(f in existing for f in file_ids if f):
+            linked = {
+                r.file_id
+                for other_rows in _Chats._chat_files.values()
+                for r in other_rows
+                if r.chat_id == chat_id
+            }
+            if any(f in linked for f in file_ids if f):
                 return None
 
             created = [

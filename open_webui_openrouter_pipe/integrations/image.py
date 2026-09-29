@@ -122,6 +122,8 @@ _LEGACY_PARAM_NAMES = {
 
 _warned_image_endpoints: set[str] = set()
 
+_ENDPOINT_FAILURE_BACKOFF_SECONDS = 30.0
+
 _warned_dropped_image_param: set[str] = set()
 
 _warned_image_cost_snapshot: set[str] = set()
@@ -202,6 +204,7 @@ class ImageGenerationAdapter:
         self._pipe = pipe
         self._logger = logger
         self._endpoint_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+        self._endpoint_failed_at: dict[str, float] = {}
 
     def _resolve_api_key(self, valves: Any) -> str:
         api_key, api_key_error = self._pipe._resolve_openrouter_api_key(valves)
@@ -569,6 +572,18 @@ class ImageGenerationAdapter:
         cached = self._endpoint_cache.get(api_model_id)
         if cached is not None and (time.monotonic() - cached[0]) < ttl:
             return self._select_endpoint(cached[1], requested)
+        failed_at = self._endpoint_failed_at.get(api_model_id)
+        if failed_at is not None and (time.monotonic() - failed_at) < _ENDPOINT_FAILURE_BACKOFF_SECONDS:
+            fallback, unserved = (
+                self._select_endpoint(cached[1], requested) if cached is not None else (None, "")
+            )
+            self._logger.debug(
+                "Image endpoint lookup for %r is inside its %.0fs failure window; %s",
+                api_model_id,
+                _ENDPOINT_FAILURE_BACKOFF_SECONDS,
+                _STALE_CONTRACT if fallback is not None else _NO_CONTRACT,
+            )
+            return fallback, unserved
         try:
             records = await self._client(
                 session, valves, user=user, owui_chat_id=owui_chat_id
@@ -579,6 +594,7 @@ class ImageGenerationAdapter:
             fallback, unserved = (
                 self._select_endpoint(cached[1], requested) if cached is not None else (None, "")
             )
+            self._endpoint_failed_at[api_model_id] = time.monotonic()
             self._logger.log(
                 warn_level(_warned_image_endpoints, f"{api_model_id}:{type(exc).__name__}"),
                 "Image endpoint lookup failed for %r (%s); %s",
@@ -592,6 +608,7 @@ class ImageGenerationAdapter:
             fallback, unserved = (
                 self._select_endpoint(cached[1], requested) if cached is not None else (None, "")
             )
+            self._endpoint_failed_at[api_model_id] = time.monotonic()
             self._logger.log(
                 warn_level(_warned_image_endpoints, f"{api_model_id}:empty"),
                 "OpenRouter returned no endpoint record for %r; %s",
@@ -600,6 +617,7 @@ class ImageGenerationAdapter:
             )
             return fallback, unserved
         self._endpoint_cache[api_model_id] = (time.monotonic(), records)
+        self._endpoint_failed_at.pop(api_model_id, None)
         return self._select_endpoint(records, requested)
 
     @staticmethod
@@ -763,6 +781,19 @@ class ImageGenerationAdapter:
         if isinstance(maximum, bool) or not isinstance(maximum, (int, float)):
             return None
         return int(maximum) if maximum >= 0 else None
+
+    @staticmethod
+    def _reference_floor(record: dict[str, Any] | None) -> int | None:
+        supported = (record or {}).get("supported_parameters")
+        if not isinstance(supported, dict):
+            return None
+        descriptor = supported.get("input_references")
+        if not isinstance(descriptor, dict):
+            return 0
+        minimum = descriptor.get("min")
+        if isinstance(minimum, bool) or not isinstance(minimum, (int, float)):
+            return None
+        return int(minimum) if minimum >= 0 else None
 
     @staticmethod
     def _input_references(responses_body: Any) -> list[dict[str, Any]]:
@@ -939,6 +970,16 @@ class ImageGenerationAdapter:
                     "refs-dropped",
                     "input_references",
                     f"dropped {offered - len(refs)} reference image(s), {kept}; {reason}",
+                )
+            )
+        floor = self._reference_floor(record)
+        if floor is not None and len(refs) < floor:
+            notes.append(
+                _Note(
+                    "refs-short",
+                    "input_references",
+                    f"this model wants at least {floor} reference image(s); "
+                    f"{len(refs)} sent, and the request is sent anyway",
                 )
             )
         return refs

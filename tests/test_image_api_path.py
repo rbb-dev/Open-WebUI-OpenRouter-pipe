@@ -2325,11 +2325,13 @@ async def test_upstream_text_cannot_size_the_failure_message(entry_count, key_le
 
 @pytest.mark.parametrize("mode", ["empty", "raises"])
 @pytest.mark.asyncio
-async def test_a_failing_endpoint_lookup_warns_once_per_model(mode, caplog):
+async def test_a_failing_endpoint_lookup_warns_once_per_model(mode, caplog, monkeypatch):
     import logging as _logging
     from open_webui_openrouter_pipe.integrations import image as image_module
 
     image_module._warned_image_endpoints.clear()
+    clock = [time.monotonic()]
+    monkeypatch.setattr(image_module.time, "monotonic", lambda: clock[0])
     adapter = ImageGenerationAdapter(
         pipe=cast(Any, _KeyPipe("sk-x")), logger=_logging.getLogger("test.image.endpoints")
     )
@@ -2345,6 +2347,12 @@ async def test_a_failing_endpoint_lookup_warns_once_per_model(mode, caplog):
     monkeypatch_client(adapter, _Empty() if mode == "empty" else _Raises())
     with caplog.at_level(_logging.DEBUG):
         await adapter._endpoint_record(None, _StubValves("sk-x"), "m/x")
+        # Inside the failure window a read is paced: it neither asks OpenRouter again
+        # nor touches the warn latch, so it contributes no line at all. The repeat
+        # lookup the latch's DEBUG is about therefore has to happen after the window,
+        # and the clock is driven rather than slept through.
+        await adapter._endpoint_record(None, _StubValves("sk-x"), "m/x")
+        clock[0] += image_module._ENDPOINT_FAILURE_BACKOFF_SECONDS + 1.0
         await adapter._endpoint_record(None, _StubValves("sk-x"), "m/x")
         await adapter._endpoint_record(None, _StubValves("sk-x"), "m/y")
 

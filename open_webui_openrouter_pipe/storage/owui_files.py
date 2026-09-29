@@ -746,6 +746,7 @@ class OwuiFileGateway:
         self._storage_user_cache = None
         self._storage_user_cache_email: str | None = None
         self._storage_user_lock = None
+        self._storage_user_lock_loop: asyncio.AbstractEventLoop | None = None
         self._storage_role_warning_emitted = False
         self._user_insert_param_names = None
 
@@ -1148,12 +1149,13 @@ class OwuiFileGateway:
                 )
             except Exception:
                 linked = False
-                self.logger.warning(
+                self.logger.debug(
                     "Chat-link raised for file %s; the upload itself succeeded", file_id, exc_info=True
                 )
             if not linked and is_linkable_chat(chat_id):
-                self.logger.warning(
-                    "File %s was not linked to chat %s; shared-chat viewers may not load it",
+                self.logger.debug(
+                    "File %s was not linked under this message in chat %s; Open WebUI "
+                    "enforces one chat_file row per (chat_id, file_id) and reports nothing",
                     file_id,
                     chat_id,
                 )
@@ -1239,12 +1241,13 @@ class OwuiFileGateway:
                 )
             except Exception:
                 linked = False
-                self.logger.warning(
+                self.logger.debug(
                     "Chat-link raised for file %s; the upload itself succeeded", file_id, exc_info=True
                 )
             if not linked and is_linkable_chat(chat_id):
-                self.logger.warning(
-                    "File %s was not linked to chat %s; shared-chat viewers may not load it",
+                self.logger.debug(
+                    "File %s was not linked under this message in chat %s; Open WebUI "
+                    "enforces one chat_file row per (chat_id, file_id) and reports nothing",
                     file_id,
                     chat_id,
                 )
@@ -1330,12 +1333,12 @@ class OwuiFileGateway:
                     target,
                 )
             except Exception:
-                self.logger.warning(
+                self.logger.debug(
                     "Chat-link failed for file %s (positional call)", file_id, exc_info=True
                 )
                 return False
         except Exception:
-            self.logger.warning("Chat-link failed for file %s", file_id, exc_info=True)
+            self.logger.debug("Chat-link failed for file %s", file_id, exc_info=True)
             return False
 
     async def resolve_storage_context(
@@ -1365,6 +1368,13 @@ class OwuiFileGateway:
         self.logger.debug("Using fallback storage user '%s' for upload.", fallback_user.email)
         return request, fallback_user
 
+    def _storage_user_transport_lock(self) -> asyncio.Lock:
+        running = asyncio.get_running_loop()
+        if self._storage_user_lock is None or self._storage_user_lock_loop is not running:
+            self._storage_user_lock = asyncio.Lock()
+            self._storage_user_lock_loop = running
+        return self._storage_user_lock
+
     @timed
     async def ensure_storage_user(self) -> Any | None:
         """Ensure the fallback storage user exists (lazy creation).
@@ -1383,10 +1393,7 @@ class OwuiFileGateway:
         ):
             return self._storage_user_cache
 
-        if self._storage_user_lock is None:
-            self._storage_user_lock = asyncio.Lock()
-
-        async with self._storage_user_lock:
+        async with self._storage_user_transport_lock():
             if (
                 self._storage_user_cache is not None
                 and self._storage_user_cache_email == fallback_email

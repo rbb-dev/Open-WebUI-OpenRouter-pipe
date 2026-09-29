@@ -334,8 +334,15 @@ async def test_a_generated_video_reaches_open_webui_on_the_channel_it_accumulate
     "usage",
     [None, {}],
 )
+@pytest.mark.parametrize("via", ["video-adapter", "shared-handler"])
 @pytest.mark.asyncio
-async def test_an_empty_usage_block_is_not_reported_as_usage(usage):
+async def test_an_empty_usage_block_is_not_reported_as_usage(via, usage):
+    """Both producers of a `chat:completion`, because only one of them used to care.
+
+    The video adapter normalises with `usage or None` on the way in, so driving it
+    proved nothing about the shared `EventEmitterHandler._emit_completion` every other
+    leg routes through -- and that one published `usage: {}` verbatim.
+    """
     pipe = Pipe()
     seen: list[dict[str, Any]] = []
 
@@ -343,15 +350,20 @@ async def test_an_empty_usage_block_is_not_reported_as_usage(usage):
         seen.append(event)
 
     try:
-        adapter = VideoGenerationAdapter(pipe=pipe, logger=_logger())
-        await adapter._emit_completion(_emitter, "hello", usage=usage)
+        if via == "video-adapter":
+            adapter = VideoGenerationAdapter(pipe=pipe, logger=_logger())
+            await adapter._emit_completion(_emitter, "hello", usage=usage)
+        else:
+            await pipe._event_emitter_handler._emit_completion(
+                _emitter, content="hello", usage=usage, done=True
+            )
     finally:
         await pipe.close()
 
     completions = [e for e in seen if e.get("type") == "chat:completion"]
     assert completions and "usage" not in completions[-1]["data"], (
-        "an absent cost is not a cost of zero; forwarding an empty block makes the UI draw a "
-        f"usage line for a generation that reported none. got {completions!r}"
+        f"{via}: an absent cost is not a cost of zero; forwarding an empty block makes the "
+        f"UI draw a usage line for a generation that reported none. got {completions!r}"
     )
 
 

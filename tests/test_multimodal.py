@@ -1128,11 +1128,11 @@ class TestTryLinkFileToChat:
         """An unlinkable file must be REPORTED unlinked, not reported as success.
 
         The result used to be discarded. Both upload call sites gate the operator
-        diagnostic on it -- `if not linked and is_linkable_chat(chat_id): warning(...)`
+        diagnostic on it -- `if not linked and is_linkable_chat(chat_id): debug(...)`
         -- so a `return True` here means the file is not linked, the upload reports
-        success, and the "shared-chat viewers may not load it" warning never fires.
-        Stated as a bool like every sibling in this class, so an import failure cannot
-        become the one path with its own notion of "failed".
+        success, and the "was not linked under this message" record never reaches the
+        log. Stated as a bool like every sibling in this class, so an import failure
+        cannot become the one path with its own notion of "failed".
         """
         chats_module = sys.modules.get("open_webui.models.chats")
 
@@ -4557,31 +4557,6 @@ class TestUploadToOwuiStorageFromPath:
         assert ("channel_id" in recording_handler["metadata"]) is carries_channel, recording_handler["metadata"]
         if carries_channel:
             assert recording_handler["metadata"]["channel_id"] == "abc", recording_handler["metadata"]
-
-    @pytest.mark.asyncio
-    async def test_a_refused_link_warns_but_keeps_the_file(
-        self, pipe_instance_async, mock_request, mock_user, tmp_path,
-        recording_handler, monkeypatch, caplog,
-    ):
-        import logging
-
-        async def _refuse(**_kw):
-            return False
-
-        monkeypatch.setattr(pipe_instance_async._file_gateway, "try_link_file_to_chat", _refuse)
-        src = tmp_path / "a.mp4"
-        src.write_bytes(b"x")
-
-        with caplog.at_level(logging.WARNING):
-            file_id = await pipe_instance_async._file_gateway.upload_to_owui_storage_from_path(
-                mock_request, mock_user, src, "a.mp4", "video/mp4",
-                chat_id="chat-1", message_id="msg-1", owui_user_id="user123",
-            )
-
-        assert file_id == "streamed-file-id", "a link failure discarded a stored file"
-        assert any("was not linked to chat" in m for m in caplog.messages), (
-            "the file is in storage but absent from the chat, and nothing says so"
-        )
 
     @pytest.mark.asyncio
     async def test_a_missing_source_file_is_refused(

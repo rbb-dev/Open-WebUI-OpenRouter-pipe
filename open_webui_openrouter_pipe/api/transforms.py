@@ -58,6 +58,7 @@ from ..core.utils import (
     strip_hidden_marker_lines,
     tool_output_text_and_pictures,
 )
+from ..core.warn_latch import warn_level
 from ..filters.fusion_filter_renderer import is_fusion_model
 from ..models.registry import ModelFamily
 from ..storage.owui_files import is_temporary_chat
@@ -66,6 +67,8 @@ from ..tools.tool_schema import _strictify_schema
 # Pydantic Body Classes
 
 logger = logging.getLogger(__name__)
+
+_warned_previous_response_id: set[str] = set()
 
 class CompletionsBody(BaseModel):
     """
@@ -443,7 +446,6 @@ ALLOWED_OPENROUTER_FIELDS = {
     "max_tool_calls",
     "modalities",
     "presence_penalty",
-    "previous_response_id",
     "prompt",
     "prompt_cache_key",
     "safety_identifier",
@@ -1869,6 +1871,13 @@ def _filter_openrouter_request(payload: dict[str, Any]) -> dict[str, Any]:
             text_value["verbosity"] = verbosity.strip()
         candidate["text"] = text_value
         candidate.pop("verbosity", None)
+    if candidate.pop("previous_response_id", None) is not None:
+        logger.log(
+            warn_level(_warned_previous_response_id, "previous_response_id"),
+            "Dropped previous_response_id: OpenRouter's /responses endpoint is stateless and "
+            "answers a non-null previous_response_id with a 400. The whole conversation is "
+            "sent in 'input' instead.",
+        )
     filtered: dict[str, Any] = {}
     for key, value in candidate.items():
         if key not in ALLOWED_OPENROUTER_FIELDS:

@@ -217,6 +217,8 @@ async def read_task_model_response_json(response: Any) -> dict[str, Any]:
         raise TaskModelFault("task_model_refusal")
 
     content_value = message.get("content")
+    if content_value is None:
+        raise TaskModelFault("task_model_empty_response")
     if isinstance(content_value, list):
         content_value = normalise_model_content(content_value)
     if isinstance(content_value, dict):

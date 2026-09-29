@@ -41,6 +41,7 @@ from open_webui_openrouter_pipe.api.transforms import (
     _apply_identifier_valves_to_payload,
     _strip_disable_model_settings_params,
     _filter_replayable_input_items,
+    ALLOWED_OPENROUTER_FIELDS,
 )
 
 
@@ -2990,7 +2991,6 @@ class TestFilterOpenrouterRequestResponsesExtensions:
         "max_tool_calls": 10,
         "modalities": ["text"],
         "presence_penalty": 0.3,
-        "previous_response_id": "resp_abc123",
         "prompt": "Hello world",
         "prompt_cache_key": "cache_xyz",
         "safety_identifier": "safe_001",
@@ -3008,7 +3008,7 @@ class TestFilterOpenrouterRequestResponsesExtensions:
         assert result[field] == value
 
     def test_all_new_fields_pass_together(self):
-        """All 14 new Responses-extension fields pass through in a single payload."""
+        """All 13 new Responses-extension fields pass through in a single payload."""
         payload = {"model": "openai/gpt-4o", "input": [], **self.NEW_RESPONSES_FIELDS}
         result = _filter_openrouter_request(payload)
         for field, value in self.NEW_RESPONSES_FIELDS.items():

@@ -1153,6 +1153,12 @@ A request carries at most 16 references. Where a model publishes a lower limit
 the lower one applies, and anything over the limit is dropped with a note saying
 how many and why.
 
+Where a model also publishes a floor — `recraft/recraft-v4-styles` and its three
+variants are the recorded models that ask for at least one reference — a request
+carrying fewer than the floor is still sent as it is, with a note naming the
+floor and how many references went. The pipe does not refuse the turn and does
+not substitute a picture to reach the count.
+
 Every reference OpenRouter would have to fetch is checked against the same
 address policy the pipe applies to any other outbound fetch, whether it was typed
 into the links box or arrived as a picture in the conversation. A `data:` URL
@@ -1725,6 +1731,10 @@ false`) and lists no `options` — and OpenRouter documents chat's
 own right. So on chat completions a provider setting the record does name
 stays inside `image_config`. A model whose contract is not in hand is left
 exactly as it arrived; a read that failed is not a contract that shrank.
+A read of one model's `/images/models/<id>/endpoints` that fails is paced
+for 30 seconds: the generations in that window make no request and get back
+exactly what the failed read returned, and a read that succeeds clears the
+window.
 
 Key files:
 

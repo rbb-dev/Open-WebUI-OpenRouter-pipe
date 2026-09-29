@@ -16,6 +16,7 @@ pytest.importorskip("open_webui_openrouter_pipe.plugins.pipe_dashboard")
 from open_webui_openrouter_pipe.plugins.pipe_dashboard import config_service as cs
 from typing import Any, cast
 
+from tests._config_tab_shared import _FIXTURES
 _ALL_FIELDS = list(Valves.model_fields.items())
 _IDS = [name for name, _ in _ALL_FIELDS]
 
@@ -275,9 +276,6 @@ _BACKTICKED = re.compile(r"`([^`]+)`")
 _HEADING = re.compile(r"^#{1,6}\s+(.*)$")
 _TITLE_KWARG = re.compile(r"""title=(?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)")""")
 _SHELL_TEXT = re.compile(r">([^<>{}]{2,60})<")
-
-_FIXTURES = Path(__file__).resolve().parent / "fixtures"
-
 # Names a detail cites that no screen of this pipe's own renders as a label. Each one is
 # real and each one is somebody else's, so nothing here can be resolved from a title the
 # pipe owns. They are named rather than pattern-matched, and an entry no detail cites any

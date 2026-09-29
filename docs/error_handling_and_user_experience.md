@@ -129,7 +129,7 @@ When a chat reply's call to OpenRouter fails without being rejected, or anything
 | Condition | Template valve |
 | --- | --- |
 | A timeout before any answer text has arrived | `NETWORK_TIMEOUT_TEMPLATE` |
-| A connection that cannot be opened or drops, or a stream that sent nothing on every attempt, before any answer text has arrived | `CONNECTION_ERROR_TEMPLATE` |
+| A connection that cannot be opened or drops, a stream that sent nothing the pipe could read on every attempt, or a non-streamed 200 carrying no `output` on `/responses` and no `choices` on `/chat/completions`, before any answer text has arrived | `CONNECTION_ERROR_TEMPLATE` |
 | An accepted status whose body is not a JSON object (a proxy, WAF or gateway rewrote the reply) | `SERVICE_ERROR_TEMPLATE` |
 | A timeout, a failed or dropped connection, or a stream that sent nothing, after answer text arrived earlier in the reply | `STREAM_INTERRUPTED_TEMPLATE`, appended after the kept text |
 | Any other exception | `INTERNAL_ERROR_TEMPLATE` |

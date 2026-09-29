@@ -11,7 +11,8 @@ Nothing here imports the dashboard plugin, its config service, or its save helpe
 door exercised is Open WebUI's own `POST /functions/id/{id}/valves/update`, reproduced
 literally: drop None, build `Valves(**form_data)`, persist `model_dump(exclude_unset=True)`.
 The plugin-path variants (merge_for_save, the CONFIG_META cross-check, persistence through
-the Config tab) stay in tests/test_config_tab.py, where they belong.
+the Config tab) stay in tests/test_config_tab.py and tests/test_config_tab_secret_clear.py,
+where they belong.
 """
 from __future__ import annotations
 

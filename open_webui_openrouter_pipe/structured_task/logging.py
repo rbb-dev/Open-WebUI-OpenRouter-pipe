@@ -31,7 +31,9 @@ def _fault_code(exc: BaseException | None) -> str:
             return code
         link = link.__cause__ or link.__context__
     cause = exc.__cause__
-    return type(cause).__name__ if cause is not None else type(exc).__name__
+    if cause is not None and not isinstance(exc, TimeoutError):
+        return type(cause).__name__
+    return type(exc).__name__
 
 
 def safe_log_payload(form_data: dict[str, Any]) -> dict[str, Any]:

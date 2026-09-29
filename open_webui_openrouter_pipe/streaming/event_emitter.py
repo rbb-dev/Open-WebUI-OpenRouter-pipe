@@ -261,6 +261,7 @@ class EventEmitterHandler:
                         "type": "chat:message:error",
                         "data": {"error": {"content": shown}, "done": True},
                     })
+                if shown:
                     completion["content"] = shown
                 await event_emitter({"type": "chat:completion", "data": completion})
             except Exception:
@@ -368,6 +369,7 @@ class EventEmitterHandler:
                     "type": "chat:message:error",
                     "data": {"error": {"content": shown}, "done": True},
                 })
+            if shown:
                 completion["content"] = shown
             await event_emitter({
                 "type": "chat:completion",
@@ -551,7 +553,7 @@ class EventEmitterHandler:
                         "content": content,
                         **({"output": output} if output is not None else {}),
                         **({"title": title} if title is not None else {}),
-                        **({"usage": usage} if usage is not None else {}),
+                        **({"usage": usage} if usage else {}),
                     }
                 }
             )

@@ -56,7 +56,6 @@ Before sending requests to OpenRouter, the pipe filters request bodies to the al
 | `max_tool_calls` | Limit the number of tool call iterations (OpenRouter extension). |
 | `modalities` | Output modalities (e.g. `["text"]`, `["text", "audio"]`). |
 | `presence_penalty` | Presence penalty for sampling (-2 to 2). |
-| `previous_response_id` | Chain a response to a previous response (conversation continuation). |
 | `prompt` | Direct prompt input (alternative to structured `input`). |
 | `prompt_cache_key` | Cache key for prompt caching (OpenRouter extension). |
 | `safety_identifier` | Safety configuration identifier (OpenRouter extension). |
@@ -70,6 +69,7 @@ Before sending requests to OpenRouter, the pipe filters request bodies to the al
 | `web_search_options` | Native web-search options (e.g. `search_context_size`). Forwarded on `/responses`; removed on **both** endpoints when `disable_native_websearch` is set. |
 
 Operational note:
+- `previous_response_id` is deliberately **not** forwarded. OpenRouter's `/responses` endpoint is stateless and answers a non-null `previous_response_id` with a 400, so the pipe drops it and sends the whole conversation in `input` instead; the first drop in a worker is logged as a WARNING naming the field and the substitute. A host running Open WebUI with `ENABLE_RESPONSES_API_STATEFUL=true` is relying on the field — that setting replaces the outgoing messages with the system message plus the prior output, so the history the host stopped sending is the history this pipe cannot recover. Leave stateful mode off against OpenRouter.
 - The pipe always constructs a canonical "Responses-style" request first, then converts it to a Chat Completions payload only when needed (forced endpoint selection or automatic fallback).
 - Some parameters are Chat-only (for example `stop`, `seed`, `logprobs`, `preset`, `max_completion_tokens`). These are ignored when calling `/responses`, but are preserved so they can be used if the request is sent via `/chat/completions`. The `/responses` spelling of the same cap is `max_output_tokens`, and only `max_output_tokens` is sent on that endpoint.
 - `service_tier` and `prompt_cache_key` are carried on **both** endpoints: whatever value the request carries is sent on `/responses` and on `/chat/completions`, unchanged, and the pipe neither substitutes nor validates it. A request that carries neither grows neither. `prompt_cache_key` is OpenRouter's sticky-routing cache key; it is only a fallback for `session_id` and `x-session-id`, so a `SEND_CACHE_SESSION_ID` install (the default) routes on `session_id` instead.

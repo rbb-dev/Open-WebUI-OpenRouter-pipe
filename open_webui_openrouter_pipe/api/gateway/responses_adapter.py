@@ -104,12 +104,24 @@ def _responses_event_is_user_visible(event: dict[str, Any]) -> bool:
     return etype not in _RESPONSES_INVISIBLE_EVENTS
 
 
-def _parse_or_none(data_blob: bytes) -> dict[str, Any]:
+_UNREADABLE = object()
+
+
+def _decode_frame(data_blob: bytes, logger: logging.Logger | None = None) -> Any:
     try:
-        parsed = json.loads(data_blob.decode("utf-8"))
+        return json.loads(data_blob.decode("utf-8"))
     except (RecursionError, UnicodeDecodeError, ValueError):
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
+        if logger is not None:
+            logger.log(
+                warn_level(
+                    _warned_responses_chunk_parse,
+                    "producer_frame_decode",
+                    cooldown_s=_RESPONSES_CHUNK_PARSE_WARN_COOLDOWN_S,
+                ),
+                "Producer frame parse failed; the affected event is discarded",
+                exc_info=True,
+            )
+        return _UNREADABLE
 
 
 def _is_ordered_object(event: Any) -> TypeGuard[dict[str, Any]]:
@@ -331,25 +343,12 @@ class ResponsesAdapter:
                 exc = retry_state.outcome.exception() if retry_state.outcome else None
                 return _should_retry_stream(delivered_any, exc)
 
-            def _probe_inband(data_blob: bytes) -> None:
-                try:
-                    parsed = json.loads(data_blob.decode("utf-8"))
-                except (RecursionError, UnicodeDecodeError, ValueError):
-                    return
+            def _probe_inband(parsed: Any) -> None:
                 if not isinstance(parsed, dict):
                     return
                 reported_error = _raise_in_band_error(parsed)
                 if reported_error is not None:
                     raise reported_error
-
-            def _visible(data_blob: bytes) -> bool:
-                try:
-                    parsed = json.loads(data_blob.decode("utf-8"))
-                except (RecursionError, UnicodeDecodeError, ValueError):
-                    return False
-                if not isinstance(parsed, dict):
-                    return False
-                return _responses_event_is_user_visible(parsed)
 
             retryer = _transient_retry_policy(effective_valves, retry=_retry_streaming)
             try:
@@ -362,13 +361,31 @@ class ResponsesAdapter:
                             event_data_parts: list[bytes] = []
                             stream_complete = False
                             held: list[bytes] = []
+                            first_event_queued = False
 
-                            async def _emit(data_blob: bytes, _held: list[bytes] = held) -> None:
+                            async def _dispatch(data_blob: bytes, _held: list[bytes] = held) -> bool:
+                                nonlocal queued_any, delivered_any, first_event_queued
+                                event_obj = _decode_frame(data_blob, self.logger)
+                                if event_obj is _UNREADABLE:
+                                    return False
+                                queued_any = True
+                                if not first_event_queued:
+                                    first_event_queued = True
+                                    timing_mark("producer_first_event_queued")
+                                if not delivered_any:  # noqa: B023 - shares the attempt's state by design
+                                    _probe_inband(event_obj)
+                                if _responses_event_is_user_visible(event_obj):
+                                    await _emit(data_blob, True, _held)
+                                else:
+                                    _held.append(data_blob)
+                                return True
+
+                            async def _emit(data_blob: bytes, visible: bool, _held: list[bytes] = held) -> None:
                                 nonlocal delivered_any
                                 for pending in _held:
                                     await _put_seq(pending)
                                 _held.clear()
-                                if _visible(data_blob):
+                                if visible:
                                     delivered_any = True
                                 await _put_seq(data_blob)
 
@@ -399,7 +416,6 @@ class ResponsesAdapter:
                                         )
 
                                     chunk_count = 0
-                                    first_event_queued = False
                                     async for chunk in resp.content.iter_chunked(4096):
                                         chunk_count += 1
                                         timing_mark(f"chunk_{chunk_count}_len_{len(chunk)}")
@@ -419,16 +435,7 @@ class ResponsesAdapter:
                                                         stream_complete = True
                                                         timing_mark("responses_stream_done")
                                                         break
-                                                    if not first_event_queued:
-                                                        first_event_queued = True
-                                                        timing_mark("producer_first_event_queued")
-                                                    queued_any = True
-                                                    if not delivered_any:
-                                                        _probe_inband(data_blob)
-                                                    if _visible(data_blob):
-                                                        await _emit(data_blob)
-                                                    else:
-                                                        held.append(data_blob)
+                                                    await _dispatch(data_blob)
                                                 continue
                                             if stripped.startswith(b":"):
                                                 continue
@@ -439,16 +446,7 @@ class ResponsesAdapter:
                                                         data_blob = b"\n".join(event_data_parts).strip()
                                                         event_data_parts.clear()
                                                         if data_blob and data_blob != _RESPONSES_SSE_DONE_SENTINEL:
-                                                            if not first_event_queued:
-                                                                first_event_queued = True
-                                                                timing_mark("producer_first_event_queued")
-                                                            queued_any = True
-                                                            if not delivered_any:
-                                                                _probe_inband(data_blob)
-                                                            if _visible(data_blob):
-                                                                await _emit(data_blob)
-                                                            else:
-                                                                held.append(data_blob)
+                                                            await _dispatch(data_blob)
                                                     stream_complete = True
                                                     timing_mark("responses_stream_done")
                                                     break
@@ -474,20 +472,7 @@ class ResponsesAdapter:
                                         for blob in (data_blob, *trailing):
                                             if not blob or blob == _RESPONSES_SSE_DONE_SENTINEL:
                                                 continue
-                                            try:
-                                                json.loads(blob.decode("utf-8"))
-                                            except (RecursionError, UnicodeDecodeError, ValueError):
-                                                continue
-                                            queued_any = True
-                                            if not first_event_queued:
-                                                first_event_queued = True
-                                                timing_mark("producer_first_event_queued")
-                                            if not delivered_any:
-                                                _probe_inband(blob)
-                                            if _visible(blob):
-                                                await _emit(blob)
-                                            else:
-                                                held.append(blob)
+                                            await _dispatch(blob)
                                 if not queued_any:
                                     raise aiohttp.ClientPayloadError("OpenRouter closed the stream before sending anything")
                             except Exception as producer_exc:
@@ -808,6 +793,10 @@ class ResponsesAdapter:
                         )
                         if reported_error is not None:
                             raise reported_error
+                        if "output" not in payload:
+                            raise aiohttp.ClientPayloadError(
+                                "OpenRouter returned 200 with no output on /responses"
+                            )
                         return payload
         self.logger.error("Responses API call completed without yielding a response body; returning empty payload.")
         return {}

@@ -32,6 +32,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
+import sys
 from typing import Any
 
 import aiohttp
@@ -46,6 +48,7 @@ import tenacity
 from aioresponses import aioresponses, CallbackResult
 
 from open_webui_openrouter_pipe import Pipe, OpenRouterAPIError
+from open_webui_openrouter_pipe.api.gateway import responses_adapter
 from open_webui_openrouter_pipe.api.gateway.responses_adapter import ResponsesAdapter
 
 

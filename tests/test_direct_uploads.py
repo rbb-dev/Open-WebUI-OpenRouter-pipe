@@ -1377,13 +1377,14 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_upload_warns_when_link_refused_but_keeps_the_file(
+async def test_upload_does_not_warn_for_temporary_chats(
     pipe_instance_async, mock_request, mock_user, monkeypatch, caplog
 ):
-    """A refused chat-link must be reported, and must not fail the upload.
+    """Temporary Chats ("local:" ids) have nothing to link: no record at any level.
 
-    OWUI returns None rather than raising, so without this the failure is
-    unobservable at every layer: orphaned blob, broken image in a shared chat.
+    The gate is `if not linked and is_linkable_chat(chat_id)`, so an unlinkable chat
+    must produce nothing at all -- not a debug record either, which is why this reads
+    `caplog` at DEBUG and asserts on every record.
     """
     import logging as _logging
 
@@ -1399,42 +1400,7 @@ async def test_upload_warns_when_link_refused_but_keeps_the_file(
 
     monkeypatch.setattr(owui_files, "upload_file_handler", upload_stub)
 
-    with caplog.at_level(_logging.WARNING):
-        file_id = await pipe_instance_async._file_gateway.upload_to_owui_storage(
-            request=mock_request,
-            user=mock_user,
-            file_data=b"data",
-            filename="generated.png",
-            mime_type="image/png",
-            chat_id="chat123",
-            message_id="msg123",
-            owui_user_id="user123",
-        )
-
-    assert file_id == "file123"          # the upload itself succeeded
-    assert any("was not linked to chat" in r.getMessage() for r in caplog.records)
-
-
-@pytest.mark.asyncio
-async def test_upload_does_not_warn_for_temporary_chats(
-    pipe_instance_async, mock_request, mock_user, monkeypatch, caplog
-):
-    """Temporary Chats ("local:" ids) have nothing to link — silence, not a warning."""
-    import logging as _logging
-
-    from open_webui.models.chats import Chats
-    from open_webui_openrouter_pipe.storage import owui_files
-
-    monkeypatch.setattr(Chats, "insert_chat_files", AsyncMock(return_value=None), raising=False)
-
-    async def upload_stub(*_args, **_kwargs):
-        mock_file = Mock()
-        mock_file.id = "file123"
-        return mock_file
-
-    monkeypatch.setattr(owui_files, "upload_file_handler", upload_stub)
-
-    with caplog.at_level(_logging.WARNING):
+    with caplog.at_level(_logging.DEBUG):
         file_id = await pipe_instance_async._file_gateway.upload_to_owui_storage(
             request=mock_request,
             user=mock_user,
@@ -1447,7 +1413,7 @@ async def test_upload_does_not_warn_for_temporary_chats(
         )
 
     assert file_id == "file123"
-    assert not any("was not linked to chat" in r.getMessage() for r in caplog.records)
+    assert not any("was not linked under this message" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.asyncio

@@ -21,7 +21,7 @@ import json
 import logging
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from ..core.config import (
@@ -3280,6 +3280,8 @@ class Filter:
         provider_map: dict[str, dict[str, list[str]]],
         models: list[dict[str, Any]],
         pipe_identifier: str,
+        *,
+        not_fetched_slugs: Iterable[str] = (),
     ) -> dict[str, str]:
         """Ensure provider routing filters exist for specified models.
 
@@ -3307,6 +3309,7 @@ class Filter:
         # Parse model lists
         admin_models = {m.strip() for m in admin_models_csv.split(",") if m.strip()}
         user_models = {m.strip() for m in user_models_csv.split(",") if m.strip()}
+        not_fetched = {s.strip() for s in not_fetched_slugs if s and s.strip()}
 
         current_hash = self.compute_provider_routing_hash(admin_models_csv, user_models_csv, provider_map)
         hash_unchanged = current_hash == self._provider_routing_state_hash
@@ -3391,8 +3394,11 @@ class Filter:
         undeliverable_slugs = {
             slug
             for slug in all_models
-            if not self._routing_controls(self.model_transport(slug))
-            or not (provider_map.get(slug) or {}).get("providers")
+            if slug not in not_fetched
+            and (
+                not self._routing_controls(self.model_transport(slug))
+                or not (provider_map.get(slug) or {}).get("providers")
+            )
         }
         stale_active = {
             slug
@@ -3465,6 +3471,16 @@ class Filter:
             prov_names: dict[str, str] = raw_prov_names if isinstance(raw_prov_names, dict) else {}
 
             if not providers:
+                if slug in not_fetched:
+                    skipped_id = getattr(existing_filters.get(slug), "id", "")
+                    if skipped_id and _row_owner(existing_filters.get(slug)) in ("", pipe_identifier):
+                        slug_to_filter_id[slug] = skipped_id
+                    self.logger.debug(
+                        "Provider routing slug %s was not fetched this cycle (endpoint cap); "
+                        "its existing filter row is left exactly as it is.",
+                        slug,
+                    )
+                    continue
                 undeliverable.append(slug)
                 self.logger.warning("Skipping filter for %s: no providers found in catalog (check slug spelling)", slug)
                 continue

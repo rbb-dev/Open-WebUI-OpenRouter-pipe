@@ -14,6 +14,7 @@ from typing import Any
 
 from ..core.errors import OpenRouterAPIError
 from ..core.logging_system import SessionLogger
+from ..core.warn_latch import warn_level
 from .client import (
     TaskModelFault,
     normalise_model_content,
@@ -23,6 +24,8 @@ from .logging import _fault_code, safe_log_payload
 
 _MIN_CANDIDATE_SLICE_S = 0.05
 _MIN_CANDIDATE_SHARE = 0.25
+_warned_task_candidate: dict[str, float] = {}
+_TASK_CANDIDATE_WARN_COOLDOWN_S = 3600.0
 
 _TASK_MODEL_FAULT_PREFIX = "task_model_"
 _REPAIR_OUTPUT_CHARS = 200
@@ -189,8 +192,13 @@ async def call_with_candidates(
                 raise
             except Exception as exc:  # noqa: BLE001 - the candidate loop absorbs every fault and reports the last one
                 attempt_error = exc
-                logger.warning(
-                    "structured_task candidate '%s' failed: %s", model_id, type(exc).__name__
+                logger.log(
+                    warn_level(
+                        _warned_task_candidate,
+                        f"{model_id}:{type(exc).__name__}",
+                        cooldown_s=_TASK_CANDIDATE_WARN_COOLDOWN_S,
+                    ),
+                    "structured_task candidate '%s' failed: %s", model_id, type(exc).__name__,
                 )
             if not _is_correctable(attempt_error):
                 last_error = attempt_error

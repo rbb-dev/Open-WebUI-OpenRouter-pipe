@@ -35,7 +35,7 @@ from collections import Counter
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Mapping
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast, no_type_check
+from typing import TYPE_CHECKING, Any, Literal, cast, no_type_check
 
 # Third-party imports
 import aiohttp
@@ -511,7 +511,6 @@ class Pipe:
         default=None,
     )
     _tool_pool: concurrent.futures.ThreadPoolExecutor | None = None
-    _active_jobs: ClassVar[set[asyncio.Task[None]]] = set()
 
     @timed
     def __init__(self):
@@ -623,6 +622,7 @@ class Pipe:
         self._video_user_lock_refs: dict[str, int] = {}
         self._video_user_active_counts: dict[str, int] = {}
         self._video_user_active_jobs: dict[str, set[str]] = {}
+        self._active_jobs: dict[asyncio.Task[None], _PipeJob] = {}
         self._video_message_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._video_message_lock_refs: dict[tuple[str, str], int] = {}
 
@@ -1277,7 +1277,8 @@ class Pipe:
         install: bool,
     ) -> bool:
         try:
-            provider_map = self._ensure_catalog_manager().get_cached_provider_map()
+            catalog_manager = self._ensure_catalog_manager()
+            provider_map = catalog_manager.get_cached_provider_map()
             if install:
                 if not provider_map:
                     return False
@@ -1289,6 +1290,7 @@ class Pipe:
                 provider_map,
                 models,
                 self.id,
+                not_fetched_slugs=catalog_manager.get_provider_overlay_skipped_slugs(),
             )
             return True
         except Exception as exc:
@@ -2316,6 +2318,24 @@ class Pipe:
             self._queue_worker_task = None
         self._abandon_request_queue()
 
+    @timed
+    async def _stop_active_jobs(self) -> None:
+        tasks = list(self._active_jobs)
+        running = asyncio.get_running_loop()
+        for task in tasks:
+            if task.get_loop() is running:
+                task.cancel()
+        awaitable = [task for task in tasks if task.get_loop() is running]
+        if awaitable:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(
+                    asyncio.gather(*awaitable, return_exceptions=True), timeout=5.0
+                )
+        for job in list(self._active_jobs.values()):
+            if not job.future.done():
+                with contextlib.suppress(RuntimeError):
+                    job.future.cancel()
+
     def _abandon_request_queue(self) -> None:
         queue = self._request_queue
         self._request_queue = None
@@ -2479,7 +2499,8 @@ class Pipe:
                     asyncio.gather(*pending_shutdown, return_exceptions=True),
                     timeout=5.0,
                 )
-        for drain in (self._stop_video_tasks, self._stop_request_worker, self._stop_log_worker):
+        for drain in (self._stop_video_tasks, self._stop_request_worker,
+                      self._stop_active_jobs, self._stop_log_worker):
             try:
                 await drain()
             except Exception:
@@ -2787,12 +2808,13 @@ class Pipe:
                 finally:
                     _clear_job_tc()
 
-                active = type(job.pipe)._active_jobs
-                active.add(task)
+                active = job.pipe._active_jobs
+                active[task] = job
 
-                def _mark_done(_task: asyncio.Task, q=queue, _active: set = active,
+                def _mark_done(_task: asyncio.Task, q=queue,
+                               _active: dict[asyncio.Task[None], _PipeJob] = active,
                                _rid: str = job.request_id) -> None:
-                    _active.discard(_task)
+                    _active.pop(_task, None)
                     q.task_done()
                     clear_timing_events(_rid)
 

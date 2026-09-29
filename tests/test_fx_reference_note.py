@@ -22,10 +22,10 @@ from tests.test_image_api_path import _adapter, _KeyPipe, _user_turn_with_images
 PIPE_KEY = "openrouter_pipe"
 
 
-def _record(limit: int | None) -> dict[str, Any]:
+def _record(limit: int | None, floor: int = 0) -> dict[str, Any]:
     supported: dict[str, Any] = {}
     if limit is not None:
-        supported["input_references"] = {"type": "range", "min": 0, "max": limit}
+        supported["input_references"] = {"type": "range", "min": floor, "max": limit}
     return {"provider_slug": "openai", "provider_tag": "openai", "supported_parameters": supported}
 
 

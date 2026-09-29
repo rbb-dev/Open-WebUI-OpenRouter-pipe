@@ -803,6 +803,10 @@ class ModelCatalogManager:
 
         self._cached_provider_map: dict[str, dict[str, Any]] = {}
         self._provider_overlay_failed_slugs: frozenset[str] = frozenset()
+        self._provider_overlay_skipped_slugs: frozenset[str] = frozenset()
+
+    def get_provider_overlay_skipped_slugs(self) -> frozenset[str]:
+        return self._provider_overlay_skipped_slugs
 
     def get_cached_provider_map(self) -> dict[str, dict[str, Any]]:
         """Return the cached provider map from the last frontend catalog fetch.
@@ -1355,13 +1359,22 @@ class ModelCatalogManager:
         overlay. Only the models named in the routing valves are fetched.
         """
         unique = sorted({(s or "").strip() for s in model_slugs if (s or "").strip()})
+        skipped: frozenset[str] = frozenset()
         if len(unique) > _PROVIDER_ROUTING_OVERLAY_MAX_MODELS:
+            skipped = frozenset(unique[_PROVIDER_ROUTING_OVERLAY_MAX_MODELS:])
+            named = ", ".join(sorted(skipped)[:5])
+            if len(skipped) > 5:
+                named = f"{named} and {len(skipped) - 5} more"
             self.logger.warning(
-                "Provider routing valve lists %d models; only the first %d (sorted) get endpoint data.",
+                "Provider routing valve lists %d models; only the first %d (sorted) get endpoint data. "
+                "Skipped for that cap, so they keep the provider data from the previous cycle "
+                "and their routing entry offers fewer providers: %s",
                 len(unique),
                 _PROVIDER_ROUTING_OVERLAY_MAX_MODELS,
+                named,
             )
             unique = unique[:_PROVIDER_ROUTING_OVERLAY_MAX_MODELS]
+        self._provider_overlay_skipped_slugs = skipped
         if not unique:
             return {}
 
@@ -1448,7 +1461,8 @@ class ModelCatalogManager:
                 cached_count = len((cached or {}).get("providers") or [])
                 if cached is not None and cached_count > fallback_count:
                     merged[slug] = dict(cached)
-                failed.append(slug)
+                if slug not in self._provider_overlay_skipped_slugs:
+                    failed.append(slug)
                 continue
 
             fallback = merged.get(slug) or {}
@@ -1942,6 +1956,7 @@ class ModelCatalogManager:
                             provider_map,
                             models,
                             pipe_identifier,
+                            not_fetched_slugs=self._provider_overlay_skipped_slugs,
                         )
                         if not isinstance(provider_routing_filter_map, dict):
                             provider_routing_filter_map = {}

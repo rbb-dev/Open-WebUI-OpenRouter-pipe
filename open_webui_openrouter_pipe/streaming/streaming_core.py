@@ -1871,6 +1871,13 @@ class StreamingHandler:
                     if _is_no_usable_member_event(event_source, etype, event):
                         fusion_no_usable_member = True
                         event = {k: v for k, v in event.items() if k != "no_usable_member"}
+                        if not fusion_armed and not assistant_message:
+                            assistant_message = str(event.get("text") or "")
+                            if event_emitter:
+                                await event_emitter(
+                                    {"type": "chat:message:delta",
+                                     "data": {"content": assistant_message}}
+                                )
 
                     if fusion_armed and fusion_state is not None and etype in ("response.created", "response.in_progress"):
                         fusion_state.record(event)
@@ -3926,7 +3933,7 @@ class StreamingHandler:
                 if terminal:
                     final_content = (
                         None
-                        if (emitted_response_output_items or open_webui_keeps_stored_output)
+                        if (body.stream and (emitted_response_output_items or open_webui_keeps_stored_output))
                         else assistant_message
                     )
                     final_output = None

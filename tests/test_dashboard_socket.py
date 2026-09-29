@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import concurrent.futures
 import contextlib
@@ -766,10 +767,12 @@ class TestBuildEmitPayload:
         assert payload["concurrency"]["active_requests"] == 5
 
     @pytest.mark.asyncio
-    async def test_redis_blip_uses_cached_workers_and_degrades(self):
+    async def test_redis_blip_uses_cached_workers_and_degrades(self, monkeypatch):
         pipe = _make_mock_pipe()
         client = Mock()
         client.set = AsyncMock()
+        clock = {"t": 1000.0}
+        monkeypatch.setattr(dashboard_publisher.time, "monotonic", lambda: clock["t"], raising=False)
 
         async def scan_boom(match=None, count=None):
             raise RuntimeError("redis down")
@@ -784,14 +787,14 @@ class TestBuildEmitPayload:
              "concurrency": {"active_requests": 2, "max_requests": 50, "active_tools": 0, "max_tools": 10},
              "queues": {}, "rate_limits": {}, "sessions": {"in_flight": 0}},
         ]
-        agg_state = {"workers": list(cached), "misses": 0, "set_at": time.monotonic()}
+        agg_state = {"workers": list(cached), "misses": 0, "set_at": clock["t"]}
         payload = await _build_emit_payload(pipe, client, "ns", "wk", 1, {}, agg_state)
         assert payload["degraded"] is True
         assert payload["worker_count"] == 3
         pids = {w["pid"] for w in payload["workers"]}
         assert {_A, _B}.issubset(pids)
 
-        agg_state = {"workers": list(cached), "misses": 2, "set_at": time.monotonic()}
+        agg_state = {"workers": list(cached), "misses": 2, "set_at": clock["t"]}
         payload = await _build_emit_payload(pipe, client, "ns", "wk", 2, {}, agg_state)
         # The replay is a fallback too, so it is a partial result and the banner must
         # say so. The set on screen is the last known one, not a live read.
@@ -820,10 +823,12 @@ class TestBuildEmitPayload:
         assert payload["health"]["redis_connected"] is False
 
     @pytest.mark.asyncio
-    async def test_slow_floor_uses_cache_within_interval(self):
+    async def test_slow_floor_uses_cache_within_interval(self, monkeypatch):
         pipe = _make_mock_pipe()
+        clock = {"t": 1000.0}
+        monkeypatch.setattr(dashboard_publisher.time, "monotonic", lambda: clock["t"], raising=False)
         cached = {"storage": {"connected": False}, "config": {"endpoint": "cached"}, "plugins": []}
-        slow_state = {"cache": cached, "at": time.monotonic()}
+        slow_state = {"cache": cached, "at": clock["t"]}
         with patch.object(dashboard_publisher, "collect_slow_stats") as mock_slow:
             payload = await _build_emit_payload(pipe, None, "ns", "wk", 0, slow_state)
         mock_slow.assert_not_called()
