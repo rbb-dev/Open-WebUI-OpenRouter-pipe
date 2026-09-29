@@ -29,7 +29,10 @@ from open_webui_openrouter_pipe.core.config import (
     _OPENROUTER_VIDEO_GEN_FILTER_MARKER,
     _OPENROUTER_WEB_TOOLS_FILTER_MARKER,
 )
-from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+from open_webui_openrouter_pipe.filters.filter_manager import (
+    _PIPE_INSTALLED_META_KEY,
+    FilterManager,
+)
 
 _STANDALONE_PATH = Path(__file__).resolve().parents[1] / "filters" / "openrouter_web_tools.py"
 
@@ -487,13 +490,21 @@ def _seed_filter_row(
     is_active: bool = True,
     is_global: bool = False,
     updated_at: int = 10,
+    owner: str = "",
 ) -> SimpleNamespace:
+    """A row in the Functions table.
+
+    `owner` is the `openrouter_pipe:installed_by` stamp the installer writes on every row
+    it creates or maintains. A row the pipe owns carries it; a row it does not -- an
+    admin's, or another copy of the pipe's -- does not, and the off-switches select on it
+    so they never write to a row that is not theirs.
+    """
     row = SimpleNamespace(
         id=row_id,
         type="filter",
         name=name,
         content=content,
-        meta={},
+        meta=({_PIPE_INSTALLED_META_KEY: owner} if owner else {}),
         is_active=is_active,
         is_global=is_global,
         updated_at=updated_at,

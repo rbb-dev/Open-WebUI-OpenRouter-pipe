@@ -33,6 +33,8 @@ from ..storage.owui_files import is_temporary_chat
 from ..structured_task import (
     build_response_format,
     call_with_candidates,
+    merge_task_model_params,
+    read_task_model_params,
     resolve_task_model_candidates,
 )
 from ..structured_task.logging import _fault_code
@@ -891,18 +893,23 @@ async def resolve_intent(
         supported_params = video_model.get("supported_parameters") if isinstance(video_model, dict) else None
         del supported_params  # unused for now — task-model spec lookup is future work
 
+        task_model_params = await read_task_model_params()
+
         def _build_form_data(model_id: str) -> dict[str, Any]:
-            return {
-                "model": model_id,
-                "messages": [
-                    {"role": "system", "content": INTENT_SYSTEM_PROMPT.strip()},
-                    {"role": "user", "content": json.dumps(task_payload, ensure_ascii=True)},
-                ],
-                "temperature": 0,
-                "stream": False,
-                "response_format": response_format,
-                "metadata": {"task": INTENT_SCHEMA_NAME, "chat_id": chat_id},
-            }
+            return merge_task_model_params(
+                {
+                    "model": model_id,
+                    "messages": [
+                        {"role": "system", "content": INTENT_SYSTEM_PROMPT.strip()},
+                        {"role": "user", "content": json.dumps(task_payload, ensure_ascii=True)},
+                    ],
+                    "temperature": 0,
+                    "stream": False,
+                    "response_format": response_format,
+                    "metadata": {"task": INTENT_SCHEMA_NAME, "chat_id": chat_id},
+                },
+                task_model_params,
+            )
 
         if invoke_chat_completion is None:
             invoke_chat_completion = _make_default_invoke(request, user_obj)

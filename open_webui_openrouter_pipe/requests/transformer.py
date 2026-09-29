@@ -550,9 +550,11 @@ def _move_kept_outputs_after_their_calls(kept: list[Any]) -> list[Any]:
     ]
     if not misplaced:
         return kept
-    out: list[Any] = []
-    placed: set[int] = set()
+    by_call: dict[Any, list[Any]] = {}
+    for _source_index, source in misplaced:
+        by_call.setdefault(source.get("call_id"), []).append(source)
     drop = {index for index, _ in misplaced}
+    out: list[Any] = []
     for index, it in enumerate(kept):
         if index in drop:
             continue
@@ -560,13 +562,7 @@ def _move_kept_outputs_after_their_calls(kept: list[Any]) -> list[Any]:
         if isinstance(it, dict) and it.get("type") == "function_call":
             call_id = it.get("call_id")
             if call_id in first_call and first_call[call_id] == index:
-                for source_index, source in misplaced:
-                    if source.get("call_id") == call_id and source_index not in placed:
-                        placed.add(source_index)
-                        out.append(source)
-    for source_index, source in misplaced:
-        if source_index not in placed:
-            out.append(source)
+                out.extend(by_call.get(call_id, ()))
     return out
 
 
@@ -1690,7 +1686,7 @@ async def transform_messages_to_input(
                     )
                     return _empty_audio_block()
 
-            async def _to_input_video(block: dict) -> dict | ImageRefusal:
+            async def _to_input_video(block: dict) -> dict | ImageRefusal | None:
                 """Convert Open WebUI video blocks into Chat Completions video format.
 
                 Video Support by Provider (per OpenRouter docs):
@@ -1766,7 +1762,7 @@ async def transform_messages_to_input(
                             "Enable ALLOW_INSECURE_HTTP + ALLOW_INSECURE_HTTP_HOSTS to allow specific hosts.",
                             show_error_message=True,
                         )
-                        return {"type": "video_url", "video_url": {"url": ""}}
+                        return None
 
                     if url_scheme(url) == "data":
                         estimated_size_bytes = _inline_payload_bytes(url)
@@ -1803,7 +1799,7 @@ async def transform_messages_to_input(
                             else "Video URL blocked by security policy (private network)",
                             show_error_message=True
                         )
-                        return {"type": "video_url", "video_url": {"url": ""}}
+                        return None
                     else:
                         await pipe._event_emitter_handler._emit_status(
                             event_emitter,
@@ -1829,7 +1825,7 @@ async def transform_messages_to_input(
                         f"Video processing error: {exc}",
                         show_error_message=False
                     )
-                    return {"type": "video_url", "video_url": {"url": ""}}
+                    return None
 
             def _identity_block(b: dict[str, Any]) -> dict[str, Any]:
                 return b
@@ -1844,6 +1840,7 @@ async def transform_messages_to_input(
                 "input_audio": _to_input_audio,
                 "audio":      _to_input_audio,
                 "video_url":  _to_input_video,
+                "input_video": _to_input_video,
                 "video":      _to_input_video,
             }
 
@@ -1916,6 +1913,12 @@ async def transform_messages_to_input(
                                 refused_images.append(_unconverted)
                             else:
                                 refused_files.append(_unconverted)
+                            result = None
+                        elif (
+                            _void
+                            and isinstance(result, dict)
+                            and _unconverted_block_reason(result) is not None
+                        ):
                             result = None
                     if isinstance(result, ImageRefusal):
                         if not is_image_block:

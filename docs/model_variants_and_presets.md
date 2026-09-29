@@ -389,7 +389,7 @@ VARIANT_MODELS = "anthropic/claude-sonnet-4.5:extended,deepseek/deepseek-r1:thin
 **Catalog size:**
 - Each variant adds one entry to the catalog
 - 10 base models + 10 variants = 20 total entries
-- No significant performance impact (catalog is loaded once)
+- No significant performance impact: the catalog is loaded once, and the request-time expansion is O(V+C) in the variants and the catalog
 
 **Memory overhead:**
 - Variant models use shallow copy (minimal memory)

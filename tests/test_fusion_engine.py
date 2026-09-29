@@ -329,16 +329,6 @@ class TestRunFusionMemberReentry:
         assert captured == []
 
     @pytest.mark.asyncio
-    async def test_restriction_bypassed_for_preset_members(
-        self, orchestrator_and_pipe, monkeypatch
-    ):
-        result, _captured = await self._run(
-            orchestrator_and_pipe, monkeypatch,
-            bypass=True, enforced={"other/model"}, catalog={"other/model"},
-        )
-        assert result.failed is False
-
-    @pytest.mark.asyncio
     async def test_request_id_restored_and_snapshots_suppressed(
         self, orchestrator_and_pipe, monkeypatch
     ):

@@ -14,6 +14,13 @@ Every video follow-up that is not short-circuited makes **one small task-model c
 
 The classifier's model id is read from Open WebUI's **config table** — `task.model.default` and `task.model.external`, the two settings behind Settings → Tasks. A host that populates the older `app.state.config.TASK_MODEL` / `TASK_MODEL_EXTERNAL` shape instead is still read, as a fallback. This matters because Open WebUI 0.11.4 assigns no `app.state.config` at all, so a resolver that read only that attribute answered nothing on a stock host and every video follow-up degraded open with the classifier silently inert — no warning, just a plain text-to-video with no cross-turn context.
 
+The **third** setting behind Settings → Tasks, `task.model.params`, is read too, and applied to the pipe's own classifier call. Open WebUI applies it itself on its own housekeeping calls (`routers/tasks.py:202` applies the params before the pipe ever sees the request), but on this route the pipe builds the call and hands it to `generate_chat_completion`, which never applies them — so before this, an admin's `task.model.params.temperature` was not merely dropped but actively overridden. Two kinds of key in the row are deliberately **not** applied here, for the same reasons Open WebUI does not apply them:
+
+- **Keys the call already sets.** The classifier sends its own `temperature: 0` and a strict `response_format` carrying the JSON schema. A strict-JSON classifier that samples its own output cannot be trusted to hold the schema, so those stay. A `temperature` in the row cannot move it.
+- **Open WebUI's request-scoped keys** — `system`, `stream_response`, `stream_delta_chunk_size`, `function_calling`, `reasoning_tags`, `compact_token_threshold`, `note_id`, `tool_approval_mode`. These configure Open WebUI's own request plumbing, not a provider call; `system` in particular would otherwise replace the classifier's own system prompt, which is where the schema lives.
+
+`custom_params` is deep-merged after its string values are JSON-decoded, exactly as Open WebUI merges it. A params row that is absent, or is not a dict, leaves the outgoing payload exactly as it was.
+
 When the task model keeps failing, `classifier_failed` is set, the **60-second** intent breaker opens (so the next turns skip the call instead of retrying quietly forever), and a warning plus a toast say so. See "Failure modes" below.
 
 ## How it works

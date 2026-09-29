@@ -1304,7 +1304,9 @@ class Pipe:
     async def _deactivate_switched_off_filters(self) -> None:
         from .filters.filter_manager import (
             _OPENROUTER_FUSION_FILTER_MARKER,
+            _OPENROUTER_FUSION_FILTER_PREFERRED_FUNCTION_ID,
             _OPENROUTER_IMAGE_GEN_FILTER_MARKER,
+            _OPENROUTER_IMAGE_GEN_FILTER_PREFERRED_FUNCTION_ID,
             _newest_marked_row,
             switched_off_meta,
         )
@@ -1326,9 +1328,15 @@ class Pipe:
                 from open_webui.models.functions import Functions as _Funcs
                 _fusion_rows = await _Funcs.get_functions_by_type("filter", active_only=False)
                 _fusion_picked = _newest_marked_row(
-                    _fusion_rows, _OPENROUTER_FUSION_FILTER_MARKER, tie_break_id=True
+                    _fusion_rows,
+                    _OPENROUTER_FUSION_FILTER_MARKER,
+                    owner=self.id,
+                    tie_break_id=True,
                 )
-                _fid = str(getattr(_fusion_picked, "id", "") or "") or "openrouter_fusion"
+                _fid = (
+                    str(getattr(_fusion_picked, "id", "") or "")
+                    or _OPENROUTER_FUSION_FILTER_PREFERRED_FUNCTION_ID
+                )
                 ff = await _Funcs.get_function_by_id(_fid)
                 if ff and getattr(ff, "is_active", False):
                     await _Funcs.update_function_by_id(
@@ -1341,8 +1349,16 @@ class Pipe:
             try:
                 from open_webui.models.functions import Functions as _Funcs
                 _rows = await _Funcs.get_functions_by_type("filter", active_only=False)
-                _picked = _newest_marked_row(_rows, _OPENROUTER_IMAGE_GEN_FILTER_MARKER, tie_break_id=True)
-                _rid = str(getattr(_picked, "id", "") or "") or "openrouter_image_gen"
+                _picked = _newest_marked_row(
+                    _rows,
+                    _OPENROUTER_IMAGE_GEN_FILTER_MARKER,
+                    owner=self.id,
+                    tie_break_id=True,
+                )
+                _rid = (
+                    str(getattr(_picked, "id", "") or "")
+                    or _OPENROUTER_IMAGE_GEN_FILTER_PREFERRED_FUNCTION_ID
+                )
                 ig = await _Funcs.get_function_by_id(_rid)
                 if ig and getattr(ig, "is_active", False):
                     await _Funcs.update_function_by_id(
@@ -4112,10 +4128,10 @@ class Pipe:
                 if not tag_sep or not tag.strip():
                     continue
                 head = head.strip()
-            base_norm = ModelFamily.base_model(sanitize_model_id(head))
+            base_norm = ModelFamily.base_model(sanitize_model_id(head), self.id)
             if base_norm not in present:
                 continue
-            entry_norm = ModelFamily.base_model(sanitize_model_id(entry))
+            entry_norm = ModelFamily.base_model(sanitize_model_id(entry), self.id)
             if entry_norm in present:
                 continue
             base_resolved.add(entry_norm)
@@ -4369,6 +4385,12 @@ class Pipe:
             if norm_id:
                 catalog_by_norm[norm_id] = model
 
+        catalog_by_available_norm: dict[str, dict[str, Any]] = {}
+        for _model in available_models:
+            _norm = _model.get("norm_id") if isinstance(_model, dict) else None
+            if _norm and _norm not in catalog_by_available_norm:
+                catalog_by_available_norm[_norm] = _model
+
         expanded: list[dict[str, Any]] = list(allowlist_models)
         existing_norm_ids = {
             m["norm_id"] for m in allowlist_models if isinstance(m, dict) and m.get("norm_id")
@@ -4389,11 +4411,10 @@ class Pipe:
                 continue
 
             if base_model is not None and not is_preset:
-                for _m in available_models:
-                    if _m.get("norm_id") == full_norm_id:
-                        expanded.append(dict(_m))
-                        existing_norm_ids.add(full_norm_id)
-                        break
+                _hit = catalog_by_available_norm.get(full_norm_id)
+                if _hit is not None:
+                    expanded.append(dict(_hit))
+                    existing_norm_ids.add(full_norm_id)
                 if full_norm_id in existing_norm_ids:
                     continue
 

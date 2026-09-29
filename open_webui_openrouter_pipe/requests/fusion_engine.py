@@ -260,9 +260,9 @@ async def run_fusion_member(
             invocation.session,
             model,
             invocation.pipe_identifier,
-            set() if bypass_restrictions else set(invocation.allowlist_norm_ids),
-            set() if bypass_restrictions else set(invocation.enforced_norm_ids),
-            set() if bypass_restrictions else set(invocation.catalog_norm_ids),
+            set(invocation.allowlist_norm_ids),
+            set(invocation.enforced_norm_ids),
+            set(invocation.catalog_norm_ids),
             dict(invocation.features or {}),
             user_id=invocation.user_id,
             outcome_sink=sink,
@@ -280,7 +280,8 @@ async def run_fusion_member(
                     f"{content}\n\n{rendered_files}" if content.strip() else rendered_files
                 )
         if "error_occurred" not in sink:
-            preview = content.strip().replace("\n", " ")[:160]
+            narrowed = sink.get("member_refusal_reason")
+            preview = narrowed or content.strip().replace("\n", " ")[:160]
             return FusionMemberResult(
                 model=model, content="", usage=collector.usage, failed=True,
                 fail_reason=preview or "rejected before send",

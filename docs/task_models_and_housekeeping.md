@@ -36,6 +36,15 @@ The pipe treats a request as a task when the special `__task__` argument is pres
 
 A task's cap is the caller's: `tasks.py` applies `{'max_tokens': 4}` to the emoji task and 1000 to a title, and an admin can set `task.model.params.max_tokens` to anything. The pipe never raises, floors or drops it. What it does do is bound the thinking budget inside it, because reasoning tokens count against the cap: on Gemini 2.5 the budget becomes `min(budget, cap - 64)`. When the cap leaves no room for any thinking the pipe asks for no bounded budget at all and writes no off flag, so the model thinks at its own default and the cap still governs the answer.
 
+### Where `task.model.params` is applied, and where it is not
+
+`task.model.params` is an **admin setting, and the pipe treats it as one — but only for calls the pipe itself builds.** The boundary matters, because there are two kinds of task call and they get the params row by different routes:
+
+- **Open WebUI's own housekeeping calls** (titles, tags, emoji, autocomplete). Open WebUI reads the row itself and applies it in `routers/tasks.py:202` *before* the request reaches the pipe, so the pipe sees the effect already in the payload. The pipe neither re-reads nor re-applies the row on this path; it honours whatever arrives.
+- **The pipe's own structured-task call** (the video intent classifier). Here the pipe builds the payload and hands it to `generate_chat_completion`, which applies nothing. The pipe is the only place the row can be applied, so it is: the row is read once per turn and merged for keys the payload does not already set.
+
+Two kinds of key in the row are never applied on the pipe's own call, for the reasons Open WebUI gives for dropping them (`utils/payload.py:90-103`, `:118-122`). Keys the call already set stay set — the classifier's own `temperature: 0` and strict `response_format` are correctness constraints, not defaults, since a strict-JSON classifier that samples its own output cannot be relied on to hold the schema. And Open WebUI's request-scoped keys (`system`, `stream_response`, `stream_delta_chunk_size`, `function_calling`, `reasoning_tags`, `compact_token_threshold`, `note_id`, `tool_approval_mode`) are dropped: they configure Open WebUI's request plumbing rather than a provider call, and `system` in particular would replace the classifier's own system prompt, which is where its JSON schema lives. `custom_params` is deep-merged after its string values are JSON-decoded. An absent or non-dict row leaves the payload byte-identical. See [Video Intent Classifier](openrouter_video_intent_classifier.md).
+
 ---
 
 ## Housekeeping task behavior (what is different vs normal chat)
@@ -155,7 +164,7 @@ Housekeeping tasks run frequently. The safest approach is to configure housekeep
 
 - Low-latency for short outputs.
 - Configured to produce concise strings (titles/tags/summaries) rather than long prose.
-- Not dependent on external tools or plugins (task requests do not execute tool loops).
+- Not dependent on external tools or plugins (task requests do not execute tool loops, and a housekeeping request builds no tool specs at all).
 
 If you need tasks to be as fast as possible, reduce `TASK_MODEL_REASONING_EFFORT` (for example to `minimal` or `none`). `none` switches reasoning off where the model allows it; a model whose reasoning is mandatory answers at the lowest level its catalog entry lists other than `none` instead. If task quality is inadequate, increase it (for example `medium`).
 

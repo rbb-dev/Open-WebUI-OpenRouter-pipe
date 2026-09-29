@@ -8,6 +8,8 @@ features by default while excluding known-incompatible models.
 Blocklists are derived from empirical testing against the OpenRouter API.
 """
 
+import re
+
 # =============================================================================
 # DIRECT UPLOAD BLOCKLIST
 # =============================================================================
@@ -78,6 +80,11 @@ DIRECT_UPLOAD_BLOCKLIST: frozenset[str] = frozenset({
     "allenai/olmo-3-32b-think"      # Says "cannot access files" then describes them
 })
 
+_NORMALIZED_DIRECT_UPLOAD_BLOCKLIST: frozenset[str] = frozenset(
+    entry.strip().lower() for entry in DIRECT_UPLOAD_BLOCKLIST
+)
+_DATE_SUFFIX = re.compile(r"-\d{4}-\d{2}-\d{2}$")
+
 
 def is_direct_upload_blocklisted(model_id: str) -> bool:
     """Check if a model is on the direct uploads blocklist.
@@ -88,6 +95,15 @@ def is_direct_upload_blocklisted(model_id: str) -> bool:
     Returns:
         True if the model is blocklisted (should NOT receive direct file uploads).
     """
-    # Normalize: strip whitespace, lowercase for comparison
     normalized = model_id.strip().lower() if model_id else ""
-    return any(normalized == blocklisted.lower() for blocklisted in DIRECT_UPLOAD_BLOCKLIST)
+    candidate = normalized
+    while True:
+        if candidate in _NORMALIZED_DIRECT_UPLOAD_BLOCKLIST:
+            return True
+        undated = _DATE_SUFFIX.sub("", candidate)
+        if undated != candidate and undated in _NORMALIZED_DIRECT_UPLOAD_BLOCKLIST:
+            return True
+        base, separator, _tag = candidate.rpartition(":")
+        if not separator or not base:
+            return False
+        candidate = base

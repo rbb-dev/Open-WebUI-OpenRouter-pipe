@@ -11,6 +11,7 @@ deployment shapes.
 """
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Literal
 
@@ -20,6 +21,75 @@ TaskModelMode = Literal["internal", "external"]
 TaskModelFallback = Literal["none", "other_task_model"]
 
 _OWUI_TASK_MODEL_KEYS = ("task.model.default", "task.model.external")
+_OWUI_TASK_MODEL_PARAMS_KEY = "task.model.params"
+
+_OWUI_REQUEST_SCOPED_PARAM_KEYS = frozenset(
+    {
+        "stream_response",
+        "stream_delta_chunk_size",
+        "function_calling",
+        "reasoning_tags",
+        "compact_token_threshold",
+        "system",
+        "note_id",
+        "tool_approval_mode",
+    }
+)
+
+
+async def read_task_model_params() -> dict[str, Any]:
+    try:
+        from open_webui.models.config import Config as _OwuiConfig
+    except Exception:
+        logger.debug(
+            "structured_task: Open WebUI's config table is not importable",
+            exc_info=True,
+        )
+        return {}
+
+    try:
+        rows = await _OwuiConfig.get_many(_OWUI_TASK_MODEL_PARAMS_KEY)
+    except Exception:
+        logger.debug(
+            "structured_task: Open WebUI's Task Model params could not be read",
+            exc_info=True,
+        )
+        return {}
+
+    raw = rows.get(_OWUI_TASK_MODEL_PARAMS_KEY) if isinstance(rows, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    return {key: value for key, value in raw.items() if value is not None and value != ""}
+
+
+def merge_task_model_params(payload: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict) or not isinstance(params, dict) or not params:
+        return payload
+
+    mergeable = {
+        key: value
+        for key, value in params.items()
+        if key not in payload and key not in _OWUI_REQUEST_SCOPED_PARAM_KEYS
+    }
+    custom_params = mergeable.pop("custom_params", None)
+    if isinstance(custom_params, dict) and custom_params:
+        decoded: dict[str, Any] = {}
+        for key, value in custom_params.items():
+            if isinstance(value, str):
+                try:
+                    decoded[key] = json.loads(value)
+                except (TypeError, ValueError):
+                    decoded[key] = value
+            else:
+                decoded[key] = value
+        for key, value in decoded.items():
+            if key not in payload and key not in _OWUI_REQUEST_SCOPED_PARAM_KEYS:
+                payload[key] = value
+
+    for key, value in mergeable.items():
+        if value is not None:
+            payload[key] = value
+    return payload
 
 
 async def _owui_task_model_ids() -> dict[str, str] | None:

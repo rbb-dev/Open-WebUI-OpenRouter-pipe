@@ -215,7 +215,7 @@ def _probe_video_sync(path: Path) -> VideoMetadata:
             if probed is not None and probed > 0:
                 duration = probed
                 duration_is_stream = True
-        fps_raw = meta.get("fps") or meta.get("fps_in_av") or 0.0
+        fps_raw = meta.get("fps") or 0.0
         fps = float(fps_raw) if fps_raw else 24.0
         size = meta.get("size") or (0, 0)
         width = int(size[0]) if isinstance(size, (list, tuple)) and len(size) >= 1 else 0

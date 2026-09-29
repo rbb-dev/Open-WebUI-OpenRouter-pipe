@@ -1583,7 +1583,11 @@ async def test_a_fusion_turn_stops_calling_a_tool_that_keeps_timing_out_without_
     monkeypatch.setattr(
         pipe_mod.OpenRouterModelRegistry,
         "list_models",
-        lambda: [{"id": "openrouter/fusion", "name": "Fusion", "norm_id": "openrouter.fusion"}],
+        lambda: [{"id": "openrouter/fusion", "name": "Fusion", "norm_id": "openrouter.fusion"}]
+        + [
+            {"id": m, "name": m, "norm_id": ModelFamily._norm(m)}
+            for m in resolve_fusion_run(find_fusion_entry(None)).panel_models
+        ],
     )
     monkeypatch.setattr(FilterManager, "collect_installed_web_tools_config", no_web_tools)
     monkeypatch.setattr(ModelFamily, "supports", classmethod(lambda cls, capability, model: capability == "function_calling"))

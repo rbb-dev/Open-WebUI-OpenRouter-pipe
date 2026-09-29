@@ -78,9 +78,9 @@ the **valve** is the underlying `UserValves` field name).
 
 | Valve | UI title | Maps to | Notes |
 |-------|----------|---------|-------|
-| `FUSION_PRESET` | Preset | `preset` | `general-high` (frontier trio + frontier judge), `general-budget` (faster trio + frontier judge), or `general-fast` (that same faster trio + quicker judge). Empty = `general-high`. Explicit panel/judge below override a preset. |
-| `FUSION_ANALYSIS_MODELS` | Panel models (comma-separated) | `analysis_models` | 1–8 model IDs answering in parallel. More than 8 is rejected with a clear error. Empty = preset/default panel. |
-| `FUSION_JUDGE_MODEL` | Judge model | `model` | Model that reviews the panel and writes the analysis. Empty = the preset's judge. |
+| `FUSION_PRESET` | Preset | `preset` | `general-high` (frontier trio + frontier judge), `general-budget` (faster trio + frontier judge), or `general-fast` (that same faster trio + quicker judge). Empty = `general-high`. Explicit panel/judge below override a preset. **A preset member is subject to the operator's model allowlist and capability filters** (`MODEL_ID`, `FREE_MODEL_FILTER`, `TOOL_CALLING_FILTER`, `ZDR_MODELS_ONLY`); an excluded member appears as a **failed panel member** carrying the reason, and is never silently substituted or dropped. The `~` in `~anthropic/claude-opus-latest` is a **routing pin, not an exemption**: an excluded pinned member stays refused unless the admin allowlists it **with the tilde**. |
+| `FUSION_ANALYSIS_MODELS` | Panel models (comma-separated) | `analysis_models` | 1–8 model IDs answering in parallel. More than 8 is rejected with a clear error. Empty = preset/default panel. Subject to the same model restrictions as a preset member. |
+| `FUSION_JUDGE_MODEL` | Judge model | `model` | Model that reviews the panel and writes the analysis. Empty = the preset's judge. Subject to the same model restrictions as a preset member. |
 | `FUSION_MAX_TOOL_CALLS` | Max tool calls per model | `max_tool_calls` | Tool budget per inner model, 1–16 (`0` = default 8). On the OpenRouter engine this caps web-search/fetch steps; on the internal engine it is a hard per-model cap on individual tool invocations (knowledge bases, tool servers, web tools alike — excess calls are skipped) and also bounds tool rounds. |
 | `FUSION_FORCE_TOOL_CALL` | Always run Fusion | `tool_choice="required"` | **No effect on the fusion models** — the pipe already forces deliberation there. Matters only on non-fusion models an admin attached the filter to (see below). |
 
@@ -150,6 +150,16 @@ analysis. Preset rosters are engine constants: `general-high` = the self-updatin
 trio with the same judge; `general-fast` = that same faster trio with a Sonnet-class judge.
 Note: `FORCE_*` provider-glob valves match model IDs literally, so tilde aliases only
 match patterns written with the leading `~`.
+
+**Write preset members in `MODEL_ID` with the tilde, not without it.** A `~`-pinned member
+is compared as its own identity: `~anthropic/claude-opus-latest` is a different model from
+`anthropic/claude-opus-latest` for every allowlist comparison, and the tilde is what
+OpenRouter reads as "route to the latest release". So `MODEL_ID=anthropic/claude-opus-latest`
+publishes **no** models at all — the untilded entries in the catalog are dated
+(`anthropic/claude-opus-4`, `-4.1`, … `-4.8`), while only `~anthropic/claude-opus-latest`
+exists as a `…-latest` entry. An operator whose allowlist is written without the tilde
+never reaches Fusion; one whose allowlist is narrower than the preset's panel sees the
+excluded members fail, each with a reason naming the control that refused it.
 
 On the internal engine, every panel, judge and final-answer call is made as the chatting user's own call. Each one that fails at OpenRouter therefore counts toward that user's request breaker; when the run ends, the count, including that run's own failures, is cleared if the run finishes and any panel model answered, and kept if none did or the user stopped the run. The breaker never cuts off a run already under way; only the user's next request can be refused. Within each run, all of its models share one count per tool: once a tool fails `BREAKER_MAX_FAILURES` times in a row, it is skipped from then on, even after a quiet spell, unless a call to it that was already running succeeds. The user's own tool breaker for normal chats is left untouched. See [Concurrency Controls & Resilience](concurrency_controls_and_resilience.md).
 

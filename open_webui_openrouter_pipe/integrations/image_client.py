@@ -231,7 +231,10 @@ class OpenRouterImageClient:
         _utf8 = utf8_stream_decoder()
         try:
             async for chunk in resp.content.iter_any():
-                buffer += _utf8.decode(chunk)
+                piece = _utf8.decode(chunk)
+                buffer += piece
+                if "\n" not in piece:
+                    continue
                 while "\n" in buffer:
                     line, buffer = buffer.split("\n", 1)
                     await self._consume_stream_line(line, state, on_progress)

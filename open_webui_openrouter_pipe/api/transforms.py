@@ -1893,7 +1893,7 @@ def _filter_openrouter_request(payload: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(value, dict):
                 continue
             allowed_reasoning = {}
-            for field_name in ("effort", "max_tokens", "exclude", "enabled", "summary"):
+            for field_name in ("effort", "max_tokens", "exclude", "enabled", "summary", "context", "mode"):
                 if field_name in value:
                     allowed_reasoning[field_name] = value[field_name]
             if not allowed_reasoning:

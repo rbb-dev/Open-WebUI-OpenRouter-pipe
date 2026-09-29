@@ -119,7 +119,7 @@ class Filter:
         )
         DIRECT_AUDIO_FORMAT_ALLOWLIST: str = Field(
             default="wav,mp3,aiff,aac,ogg,flac,m4a,pcm16,pcm24",
-            description="Comma-separated audio format allowlist (derived from filename/MIME). Listing a format here lets a direct audio upload through even when it is outside the nine the pipe sends natively; the request is then normalised to `mp3` before it reaches the provider. A `webm` container is not diverted and stays on Open WebUI's path, because OpenRouter documents no `webm` format on either endpoint.",
+            description="Comma-separated audio format allowlist (derived from filename/MIME). Listing a format here lets a direct audio upload through even when it is outside the nine the pipe sends natively; the request is then normalised to `mp3` before it reaches the provider. Only the formats listed here are diverted; a `webm` container is never diverted, listed or not, and stays on Open WebUI's path, because OpenRouter documents no `webm` format on either endpoint; a cleared value diverts no audio at all.",
         )
         DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST: str = Field(
             default="wav,mp3",
@@ -390,7 +390,7 @@ class Filter:
                     warnings.append("Direct audio 'webm' is not sent directly: OpenRouter documents no 'webm' format, so the file stays on Open WebUI.")
                     retained.append(item)
                     continue
-                if not audio_format or (audio_formats_allowed and audio_format not in audio_formats_allowed):
+                if not audio_format or audio_format not in audio_formats_allowed:
                     retained.append(item)
                     continue
                 if size_bytes < 0:

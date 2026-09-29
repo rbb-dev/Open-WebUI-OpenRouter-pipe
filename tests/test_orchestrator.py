@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
@@ -13,6 +14,7 @@ import aiohttp
 from aioresponses import aioresponses
 
 from conftest import Pipe
+from log_capture import emitted
 from open_webui_openrouter_pipe.requests.orchestrator import RequestOrchestrator
 from open_webui_openrouter_pipe.core.errors import OpenRouterAPIError
 from open_webui_openrouter_pipe.filters.fusion_filter_renderer import is_fusion_model
@@ -460,63 +462,57 @@ class TestExtraToolsExceptionHandling:
 
 
 class TestToolRenameLogging:
+    """The ingest-time record of which advertised tool name is which origin name.
 
-    @pytest.mark.asyncio
-    async def test_tool_renames_logged_when_debug_enabled(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body):
-        orchestrator, pipe = orchestrator_and_pipe
+    Two tools from two servers that normalise to one wire name are advertised under
+    two names, so the model can tell them apart, and the map from the advertised name
+    back to the origin is what the execution path calls with. The DEBUG line below is
+    the only record the pipe leaves of that decision.
 
-        # Enable debug logging
-        orchestrator.logger.setLevel(logging.DEBUG)
+    The builder is not patched: the pairs in the log have to be pairs the pipe
+    actually decided on, so a test that handed the orchestrator a fabricated
+    `exposed_to_origin` would only prove that a dict formats. Both nodes drive a real
+    `process_request` and read the records back through `emitted`, because the pipe
+    logger does not propagate and a naive `caplog.records` read sees each one twice.
+    """
 
-        # Setup mocks
+    @staticmethod
+    async def _ingest(orchestrator, pipe, owui_registry, mock_valves, mock_session,
+                      base_request_body):
         pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
         pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
-
-        # Mock to return tools with renames
         pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
 
-        # Patch _build_collision_safe_tool_specs_and_registry to return renames
-        with patch("open_webui_openrouter_pipe.requests.orchestrator._build_collision_safe_tool_specs_and_registry") as mock_build:
-            # Return tools, registry, and exposed_to_origin with renames
-            mock_build.return_value = (
-                [{"type": "function", "function": {"name": "renamed_tool"}}],  # tools
-                {"renamed_tool": {"spec": {"name": "renamed_tool"}}},  # exec_registry
-                {"renamed_tool": "original_tool"},  # exposed_to_origin with rename
-            )
+        with patch("open_webui_openrouter_pipe.requests.orchestrator.ModelFamily") as mock_family:
+            mock_family.base_model.return_value = "openai/gpt-4o"
+            mock_family.supports.return_value = True
+            mock_family.capabilities.return_value = {}
+            mock_family.max_completion_tokens.return_value = None
 
-            with patch("open_webui_openrouter_pipe.requests.orchestrator.ModelFamily") as mock_family:
-                mock_family.base_model.return_value = "openai/gpt-4o"
-                mock_family.supports.return_value = True
-                mock_family.capabilities.return_value = {}
-                mock_family.max_completion_tokens.return_value = None
+            with patch("open_webui_openrouter_pipe.requests.orchestrator.OpenRouterModelRegistry") as mock_registry:
+                mock_registry.api_model_id.return_value = "openai/gpt-4o"
 
-                with patch("open_webui_openrouter_pipe.requests.orchestrator.OpenRouterModelRegistry") as mock_registry:
-                    mock_registry.api_model_id.return_value = "openai/gpt-4o"
-
-                    result = await orchestrator.process_request(
-                        body=base_request_body,
-                        __user__={"id": "user1"},
-                        __request__=None,
-                        __event_emitter__=None,
-                        __event_call__=None,
-                        __metadata__={},
-                        __tools__={"original_tool": {"spec": {"name": "original_tool"}}},
-                        __task__=None,
-                        __task_body__=None,
-                        valves=mock_valves,
-                        session=mock_session,
-                        openwebui_model_id="openai/gpt-4o",
-                        pipe_identifier="test-pipe",
-                        allowlist_norm_ids={"openai/gpt-4o"},
-                        enforced_norm_ids=set(),
-                        catalog_norm_ids=set(),
-                        features={},
-                    )
-
-                    assert result == "Test response"
-
+                return await orchestrator.process_request(
+                    body=base_request_body,
+                    __user__={"id": "user1"},
+                    __request__=None,
+                    __event_emitter__=None,
+                    __event_call__=None,
+                    __metadata__={},
+                    __tools__=owui_registry,
+                    __task__=None,
+                    __task_body__=None,
+                    valves=mock_valves,
+                    session=mock_session,
+                    openwebui_model_id="openai/gpt-4o",
+                    pipe_identifier="test-pipe",
+                    allowlist_norm_ids={"openai/gpt-4o"},
+                    enforced_norm_ids=set(),
+                    catalog_norm_ids=set(),
+                    features={},
+                )
 
 class TestInnerToolOriginDedup:
 

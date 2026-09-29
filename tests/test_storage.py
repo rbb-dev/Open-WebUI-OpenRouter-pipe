@@ -29,6 +29,7 @@ from open_webui_openrouter_pipe.storage import persistence as persistence_mod
 from open_webui_openrouter_pipe.storage.owui_files import temporary_chat_prefixes
 from open_webui_openrouter_pipe.storage.persistence import (
     ArtifactStore,
+    _delete_marker_value,
     _sanitize_table_fragment,
     generate_item_id,
     normalize_persisted_item,

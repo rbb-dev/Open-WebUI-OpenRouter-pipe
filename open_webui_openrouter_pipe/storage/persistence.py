@@ -95,6 +95,29 @@ _REDIS_FLUSH_CHANNEL = "db-flush"
 
 _REDIS_DELETE_MARKER_TTL_SECONDS = 86400
 
+_REDIS_DELETE_MARKER_ALL = "owui:dropped:all"
+_REDIS_DELETE_MARKER_KEEP = "owui:dropped:keep:"
+_LEGACY_REDIS_DELETE_MARKER_ALL = "1"
+
+
+def _delete_marker_value(keep_message_id: str | None) -> str:
+    if keep_message_id:
+        return f"{_REDIS_DELETE_MARKER_KEEP}{keep_message_id}"
+    return _REDIS_DELETE_MARKER_ALL
+
+
+def _marker_spares_row(marker: Any, message_id: Any) -> bool:
+    if not isinstance(marker, str) or not marker:
+        return False
+    if marker == _REDIS_DELETE_MARKER_ALL:
+        return False
+    if marker == _LEGACY_REDIS_DELETE_MARKER_ALL:
+        return False
+    if marker.startswith(_REDIS_DELETE_MARKER_KEEP):
+        return message_id == marker[len(_REDIS_DELETE_MARKER_KEEP):]
+    return message_id == marker
+
+
 _CANCEL_REQUEUE_POLL_SECONDS = 0.05
 _CANCEL_REQUEUE_POLL_ATTEMPTS = 40
 
@@ -2140,7 +2163,7 @@ class ArtifactStore:
                 pipe.setex(
                     self._redis_deleted_key(row_id),
                     _REDIS_DELETE_MARKER_TTL_SECONDS,
-                    keep_message_id or "1",
+                    _delete_marker_value(keep_message_id),
                 )
             await _await_if_needed(pipe.execute())
         except Exception as exc:
@@ -2191,7 +2214,7 @@ class ArtifactStore:
             deleted = [
                 row_id
                 for row_id, marker in zip(row_ids, markers or [])
-                if marker is not None and marker != owners.get(row_id)
+                if marker is not None and not _marker_spares_row(marker, owners.get(row_id))
             ]
             if deleted:
                 loop = asyncio.get_running_loop()

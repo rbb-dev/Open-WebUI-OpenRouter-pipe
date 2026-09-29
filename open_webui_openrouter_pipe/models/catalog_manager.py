@@ -871,8 +871,6 @@ class ModelCatalogManager:
         """Return access payload preserving existing model visibility semantics."""
         if supports_access_control:
             access_control = getattr(model_obj, "access_control", None)
-            if access_control is None:
-                return None
             if isinstance(access_control, dict):
                 return dict(access_control)
             return self._legacy_grants_to_access_control(

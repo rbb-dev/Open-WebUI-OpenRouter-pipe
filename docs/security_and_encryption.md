@@ -109,7 +109,7 @@ Operational impact:
 
 ## SSRF protection for remote downloads
 
-Remote picture and video URLs are security-sensitive because they can be used for SSRF (Server-Side Request Forgery).
+Remote picture and video URLs are security-sensitive because they can be used for SSRF (Server-Side Request Forgery). Every video spelling a caller can send — `video_url`, `input_video` and `video` alike — is security-sensitive in that same way, and is checked by the same gates before anything is forwarded.
 
 ### Supported URL schemes
 

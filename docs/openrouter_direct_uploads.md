@@ -90,13 +90,15 @@ These are used for:
 | Successful file processing | 239 (83.3%) |
 | Models needing blocklist | 29 |
 
-Rather than gating on incomplete upstream metadata, **`file_input` is now enabled by default** for all models except those in a known-incompatible blocklist.
+Rather than gating on incomplete upstream metadata, **`file_input` is now enabled by default** for all models except those in a known-incompatible blocklist. The blocklist names model *families*, not individual catalog rows: an entry blocks every variant form of that model, because a variant is the same weights behind a different provider.
 
 The blocklist (`open_webui_openrouter_pipe/models/blocklists.py`) includes:
 - Models that explicitly reject file input (HTTP 400)
 - Guard/classifier models not designed for chat
 - Models that claim they cannot process files
 - Models with broken/empty responses when given files
+
+One entry therefore covers the model under every spelling OpenRouter publishes it as: a routing suffix (`:nitro`, `:floor`, `:exacto`, `:online`), a catalog suffix (`:free`, `:batch`, `:thinking`, `:extended`), any combination of them, and a dated `-YYYY-MM-DD` snapshot. A `:free` twin of a blocklisted model is the same model, so it loses its Direct Uploads switch too.
 
 ### Audio and video input
 
@@ -233,7 +235,7 @@ These are configured on the **OpenRouter Direct Uploads** filter function (Admin
 | `DIRECT_FILE_MIME_ALLOWLIST` | `application/pdf,text/plain,text/markdown,application/json,text/csv` | Comma-separated MIME allowlist for diverted direct generic files. Non-allowlisted types are fail-open (left on normal OWUI RAG/Knowledge path). The pattern is matched with `fnmatch` against the declared type, so a wildcard admits declared values that are not media types at all; an attachment whose type is not a media type is refused before the request is sent. |
 | `DIRECT_AUDIO_MIME_ALLOWLIST` | `audio/*` | Comma-separated MIME allowlist for diverted direct audio files. |
 | `DIRECT_VIDEO_MIME_ALLOWLIST` | `video/mp4,video/mpeg,video/quicktime,video/webm` | Comma-separated MIME allowlist for diverted direct video files. The pattern is matched with `fnmatch` against the declared type, so a wildcard admits declared values that are not media types at all; such an attachment is not sent at all -- it is refused before the request leaves the pipe and the turn carries the `Direct Upload Issue` card. |
-| `DIRECT_AUDIO_FORMAT_ALLOWLIST` | `wav,mp3,aiff,aac,ogg,flac,m4a,pcm16,pcm24` | Comma-separated audio format allowlist (derived from filename/MIME). Listing a format lets a direct audio upload through even when it is outside the nine the pipe sends natively; the request is then normalised to `mp3`. A `webm` container is not diverted and stays on Open WebUI's path. |
+| `DIRECT_AUDIO_FORMAT_ALLOWLIST` | `wav,mp3,aiff,aac,ogg,flac,m4a,pcm16,pcm24` | Comma-separated audio format allowlist (derived from filename/MIME). Listing a format lets a direct audio upload through even when it is outside the nine the pipe sends natively; the request is then normalised to `mp3`. Only the formats listed here are diverted; a `webm` container is never diverted, listed or not, and stays on Open WebUI's path; a cleared value diverts no audio at all. |
 | `DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST` | `wav,mp3` | Comma-separated audio formats eligible for `/responses` `input_audio.format`. |
 
 A stored value from an older version of the pipe that no longer fits its field falls back to that field's default rather than failing the request, and every other stored value on the same row is kept.

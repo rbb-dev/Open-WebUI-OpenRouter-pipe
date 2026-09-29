@@ -1232,7 +1232,9 @@ def test_a_block_without_a_payload_is_not_charged_for_one() -> None:
     -- carries no bytes, so charging it the inline rate means a handful of them exceed
     a model's whole character budget and trip the futility guard with nothing inline
     anywhere in the request. A block whose payload key is present but *empty* is the
-    same case: `_to_input_video` emits `{"url": ""}` on five separate failure paths.
+    same case, and the table has to keep pricing it that way whatever produced it: no
+    arm manufactures a payload-less block any more, and the block loop drops one, but
+    the estimator reads whatever it is handed and a caller can still send this.
 
     A `file_id` is the same case, and this test has now asserted it in both directions.
     The reference really is inlined at dispatch, so the request will carry a document --

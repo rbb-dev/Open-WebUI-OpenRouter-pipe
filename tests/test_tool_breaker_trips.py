@@ -1519,7 +1519,12 @@ async def test_a_new_question_after_a_tool_round_is_still_refused_at_the_saved_c
 
 def _reach_fusion(monkeypatch, pipe) -> None:
     import open_webui_openrouter_pipe.pipe as pipe_mod
+    from open_webui_openrouter_pipe.core.fusion_defaults import (
+        find_fusion_entry,
+        resolve_fusion_run,
+    )
     from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
+    from open_webui_openrouter_pipe.models.registry import ModelFamily
 
     async def loaded(*_args: Any, **_kwargs: Any) -> None:
         return None
@@ -1527,6 +1532,9 @@ def _reach_fusion(monkeypatch, pipe) -> None:
     models = [
         {"id": "m1", "name": "Model m1", "norm_id": "m1"},
         {"id": "openrouter/fusion", "name": "Fusion", "norm_id": "openrouter.fusion"},
+    ] + [
+        {"id": m, "name": m, "norm_id": ModelFamily._norm(m)}
+        for m in resolve_fusion_run(find_fusion_entry(None)).panel_models
     ]
 
     async def no_web_tools(*_args: Any, **_kwargs: Any) -> None:

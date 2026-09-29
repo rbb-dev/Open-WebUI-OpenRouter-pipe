@@ -96,6 +96,8 @@ _BOOLEAN_PLACEHOLDER_RULE = (
 
 _DEFAULT_RESPONSES_AUDIO_FORMATS = frozenset({"mp3", "wav"})
 
+_UNMAPPABLE_AUDIO_FORMATS = frozenset({"webm"})
+
 # OpenRouter Web Tools filter
 _OPENROUTER_WEB_TOOLS_FILTER_MARKER = "openrouter_pipe:web_tools_filter:v1"
 _OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID = "openrouter_web_tools"
@@ -1039,7 +1041,7 @@ class Valves(BaseModel):
         default=100,
         ge=1,
         le=1000,
-        description="Maximum size in MB for inline (data:) video payloads and for stored videos re-read to extract frames. A base64 payload is measured as its decoded size; a token-free payload is measured as its own length, and is a real gate on it. Oversized videos are rejected/skipped; remote http(s) and YouTube video links are forwarded to the provider unmeasured.",
+        description="Maximum size in MB for inline (data:) video payloads and for stored videos re-read to extract frames. A base64 payload is measured as its decoded size; a token-free payload is measured as its own length, and is a real gate on it. An oversized video is not sent at all: the block is dropped from the turn and the refusal is reported; remote http(s) and YouTube video links are forwarded to the provider unmeasured.",
     )
     FALLBACK_STORAGE_EMAIL: str = Field(
         default=(os.getenv("OPENROUTER_STORAGE_USER_EMAIL") or "openrouter-pipe@system.local"),
@@ -1109,6 +1111,12 @@ class Valves(BaseModel):
             "A restricting list that matches nothing publishes nothing and refuses every request; "
             "the one exception is a value of only commas or spaces, which is read as blank and "
             "imports the whole catalog. "
+            "This list governs every model the pipe calls, including each Fusion panel member, "
+            "the Fusion judge and the final answer, and including preset members: one this list "
+            "excludes is a failed panel member carrying the reason, never silently substituted "
+            "or dropped. A `~` pin is part of a model's identity for this list, so "
+            "`~anthropic/claude-opus-latest` must be allowlisted with the tilde; written without "
+            "it, the entry matches nothing in the catalog. "
             "an '@preset/slug' entry resolves to the model before the '@'."
         ),
     )

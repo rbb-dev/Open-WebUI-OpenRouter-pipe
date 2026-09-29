@@ -3842,7 +3842,13 @@ async def test_pipes_returns_cached_models_on_refresh_error(monkeypatch, pipe_in
 
 # ── pipes() reconciles switched-off filters even with no usable catalog ─────
 
-from open_webui_openrouter_pipe.core.config import _OPENROUTER_VIDEO_GEN_FILTER_MARKER
+from open_webui_openrouter_pipe.core.config import (
+    _OPENROUTER_FUSION_FILTER_MARKER,
+    _OPENROUTER_IMAGE_GEN_FILTER_MARKER,
+    _OPENROUTER_VIDEO_GEN_FILTER_MARKER,
+    _OPENROUTER_WEB_TOOLS_FILTER_MARKER,
+)
+from open_webui_openrouter_pipe.filters.filter_manager import _PIPE_INSTALLED_META_KEY
 
 @pytest.mark.asyncio
 async def test_pipes_returns_empty_when_refresh_error_no_models(monkeypatch, pipe_instance_async) -> None:

@@ -336,16 +336,17 @@ async def test_a_remote_audio_url_is_refused_rather_than_read_as_base64(
 async def test_cleartext_video_urls_are_gated_however_the_scheme_is_typed(
     pipe_instance_async, monkeypatch, scheme, host, allow, hosts, forwarded
 ):
-    """The video branch reads its own copy of the cleartext test and emits an EMPTY
-    ``video_url`` when the gate refuses, so the tell was the forwarded url, not a missing
+    """The video branch reads its own copy of the cleartext test and used to emit an EMPTY
+    ``video_url`` when the gate refused, so the tell was the forwarded url, not a missing
     block. ``_is_safe_url`` is stubbed because it resolves DNS; the decision under test
     sits above it.
 
     The refused case no longer ships that empty ``video_url`` either -- a block with an
     empty url is a void attachment, and T433 stops void attachments from reaching the
-    provider. The gate's decision is still what is under test: a refused URL produces no
-    video block at all, and an allowed one forwards the URL unchanged. An allowed row
-    that stopped forwarding, or a refused row that started, would both show up here.
+    provider -- so a refused URL now produces no video block at all, on every turn and not
+    only on this one. The gate's decision is still what is under test: an allowed one
+    forwards the URL unchanged. An allowed row that stopped forwarding, or a refused row
+    that started, would both show up here.
     """
     pipe = _vision_pipe(pipe_instance_async, allow=allow, hosts=hosts)
     monkeypatch.setattr(pipe._multimodal_handler, "_is_safe_url", AsyncMock(return_value=True))

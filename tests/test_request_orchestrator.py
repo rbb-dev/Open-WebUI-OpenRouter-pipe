@@ -5334,9 +5334,19 @@ async def test_zdr_enforce_fail_closed_uses_distinct_restriction_reason_from_cap
 
 @pytest.mark.asyncio
 async def test_tool_renames_with_collisions(caplog):
-    """Test that tool renames are logged when there are collisions.
+    """Two origins that share a wire name are advertised under two distinct names.
 
-    Covers line 624: logging tool renames when renames dict is non-empty.
+    This is the HTTP seam rather than the log seam: the request is built for real and
+    the body that leaves for OpenRouter is the thing under assertion, so what is
+    pinned is that a collision is resolved BEFORE the wire, with both tools present
+    and neither shadowing the other. The log record of the same decision, and the
+    case where there is nothing to rename, are held by
+    `tests/test_orchestrator.py::TestToolRenameLogging`.
+
+    One tool named `web_search` cannot collide with itself, so the earlier version of
+    this row put one tool in a fixture called "collisions" and asserted only that a
+    request was made. Both origins now carry the same `origin_name` from two
+    different `origin_key`s, which is the branch that mints exposed names.
     """
     import logging
 
@@ -5353,11 +5363,18 @@ async def test_tool_renames_with_collisions(caplog):
         async def event_emitter(event):
             pass
 
-        # Two tools that might collide after sanitization
         tools = {
             "web_search": {
                 "spec": {"name": "web_search", "parameters": {}},
                 "callable": lambda x: x,
+            },
+            "web_search_from_another_server": {
+                "spec": {"name": "web_search", "parameters": {}},
+                "callable": lambda x: x,
+                "direct": True,
+                "origin_source": "tool_server",
+                "origin_name": "web_search",
+                "origin_key": "srvB::web_search",
             },
         }
 
@@ -5394,8 +5411,16 @@ async def test_tool_renames_with_collisions(caplog):
 
                 await _consume_stream(result)
 
-        # Check that request was made
-        assert len(captured_payloads) >= 1
+        assert len(captured_payloads) == 1, (
+            f"one chat request produced {len(captured_payloads)} calls to the responses "
+            f"endpoint, so this row is not measuring the payload of a single request"
+        )
+        advertised = [t["name"] for t in captured_payloads[0]["tools"]]
+        assert advertised == ["tool__web_search", "direct__web_search"], (
+            f"the two origins sharing the name web_search reached the model as "
+            f"{advertised}; they have to be advertised under two distinct names, both "
+            f"of them present, or one tool is unreachable for the whole turn"
+        )
 
     finally:
         await pipe.close()

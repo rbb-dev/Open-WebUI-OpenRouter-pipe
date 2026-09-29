@@ -26,7 +26,11 @@ from ..api.transforms import (
     _has_server_tool,
     apply_context_transforms,
 )
-from ..core.config import _DEFAULT_RESPONSES_AUDIO_FORMATS, _PIPE_METADATA_KEY
+from ..core.config import (
+    _DEFAULT_RESPONSES_AUDIO_FORMATS,
+    _PIPE_METADATA_KEY,
+    _UNMAPPABLE_AUDIO_FORMATS,
+)
 from ..core.context_budget import (
     build_futility_notice,
     default_output_reservation,
@@ -202,7 +206,6 @@ _NATIVE_AUDIO_FORMATS = frozenset(
     {"mp3", "wav", "flac", "m4a", "ogg", "aiff", "aac", "pcm16", "pcm24"}
 )
 
-_UNMAPPABLE_AUDIO_FORMATS = frozenset({"webm"})
 
 _SERVER_TOOL_TYPE_OVERRIDES = {
     "chat_search_models": "openrouter:experimental__search_models",
@@ -686,7 +689,8 @@ class RequestOrchestrator:
                     cleaned = dict(item)
                     cleaned["id"] = file_id
                     extracted[key].append(cleaned)
-            extracted = {k: v for k, v in extracted.items() if v}
+            presence_keys = ("responses_audio_format_allowlist", "audio_format_allowlist")
+            extracted = {k: v for k, v in extracted.items() if v or k in presence_keys}
             return extracted
 
         @timed
@@ -816,7 +820,6 @@ class RequestOrchestrator:
             allowed_for_responses = (
                 _csv_set(allowlist_csv) if allowlist_seen else set(_DEFAULT_RESPONSES_AUDIO_FORMATS)
             )
-            allowed_for_responses = _csv_set(allowlist_csv) if allowlist_seen else {"mp3", "wav"}
             operator_audio_key = "audio_format_allowlist"
             operator_audio_formats = (
                 _csv_set(attachments.get(operator_audio_key, ""))
@@ -1159,17 +1162,20 @@ class RequestOrchestrator:
             ]
 
         builtin_ask_user_names: set[str] = set()
-        tools, exec_registry, exposed_to_origin = _build_collision_safe_tool_specs_and_registry(
-            request_tool_specs=incoming_tools if incoming_tools else None,
-            owui_registry=owui_registry or None,
-            direct_registry=direct_registry or None,
-            builtin_registry=None,
-            extra_tools=merged_extra_tools or None,
-            strictify=strictify,
-            owui_tool_passthrough=owui_tool_passthrough,
-            logger=self.logger,
-            builtin_ask_user_names=builtin_ask_user_names,
-        )
+        if not use_task_model_adapter:
+            tools, exec_registry, exposed_to_origin = _build_collision_safe_tool_specs_and_registry(
+                request_tool_specs=incoming_tools if incoming_tools else None,
+                owui_registry=owui_registry or None,
+                direct_registry=direct_registry or None,
+                builtin_registry=None,
+                extra_tools=merged_extra_tools or None,
+                strictify=strictify,
+                owui_tool_passthrough=owui_tool_passthrough,
+                logger=self.logger,
+                builtin_ask_user_names=builtin_ask_user_names,
+            )
+        else:
+            tools, exec_registry, exposed_to_origin = [], {}, {}
         responses_body = await ResponsesBody.from_completions(
             completions_body=completions_body,
 
@@ -1454,15 +1460,21 @@ class RequestOrchestrator:
                 model_id_filter = valves.MODEL_ID
                 free_mode = valves.FREE_MODEL_FILTER
                 tool_mode = valves.TOOL_CALLING_FILTER
+                labels = ", ".join(
+                    self._pipe._model_restriction_labels(reasons, valves=valves)
+                ) or "restricted"
+                if outcome_sink is not None:
+                    outcome_sink["member_refusal_reason"] = (
+                        f"{responses_body.model} is not permitted by the pipe's model "
+                        f"restrictions ({labels}); ask your admin to allow it"
+                    )
                 return await self._pipe._ensure_error_formatter()._emit_templated_error(
                     __event_emitter__,
                     template=valves.MODEL_RESTRICTED_TEMPLATE,
                     variables={
                         "requested_model": responses_body.model,
                         "normalized_model_id": normalized_model_id,
-                        "restriction_reasons": ", ".join(
-                            self._pipe._model_restriction_labels(reasons, valves=valves)
-                        ) or "restricted",
+                        "restriction_reasons": labels,
                         "model_id_filter": model_id_filter if model_id_filter.lower() != "auto" else "",
                         "free_model_filter": free_mode if free_mode != "all" else "",
                         "tool_calling_filter": tool_mode if tool_mode != "all" else "",

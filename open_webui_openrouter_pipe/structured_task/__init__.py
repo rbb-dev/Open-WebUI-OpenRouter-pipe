@@ -20,6 +20,8 @@ from .logging import safe_log_payload
 from .orchestrator import (
     TaskModelFallback,
     TaskModelMode,
+    merge_task_model_params,
+    read_task_model_params,
     resolve_task_model_candidates,
 )
 from .retry import call_with_candidates
@@ -32,8 +34,10 @@ __all__ = [
     "call_with_candidates",
     "consume_sse_line",
     "downgrade_strict_for_provider",
+    "merge_task_model_params",
     "normalise_model_content",
     "read_model_response_content",
+    "read_task_model_params",
     "read_task_model_response_json",
     "resolve_task_model_candidates",
     "safe_log_payload",

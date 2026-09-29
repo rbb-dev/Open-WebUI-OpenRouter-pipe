@@ -53,7 +53,11 @@ PACKAGE = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 # 91 -> 92: B220 (H740-1) reads the pipe row's `updated_at` through a narrow select in
 # `read_config_rev` (plugins/pipe_dashboard/dashboard_socket.py), Open WebUI's own idiom: the lazy
 # `Functions` import became `get_async_db_context` + `Function`, inside the same guarded `try`.
-_EXPECTED_OWUI_IMPORTS = (25, 92)
+# 92 -> 93: `read_task_model_params` (structured_task/orchestrator.py) reads the admin's
+# `task.model.params` row from Open WebUI's config table lazily, beside the two-key
+# `_owui_task_model_ids` read beside it, so a host that cannot supply the table still runs
+# the classifier with the payload it would have sent.
+_EXPECTED_OWUI_IMPORTS = (25, 93)
 
 @pytest.mark.skipif(
     bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),

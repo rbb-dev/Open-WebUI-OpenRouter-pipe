@@ -952,14 +952,15 @@ class OpenRouterModelRegistry:
             } if isinstance(allowed_params, list) else set()
             pricing = item.get("pricing") if isinstance(item.get("pricing"), dict) else {}
             features = {"video_generation", "video_output"}
-            if accepts_frame_images:
+            if accepts_frame_images and not is_direct_upload_blocklisted(original_id):
                 features.update({"vision", "file_input"})
             features |= prior_features
 
             capabilities = dict(prior.get("capabilities") or {})
             for capability, value in {
                 "vision": True,
-                "file_upload": True,
+                "file_upload": accepts_frame_images
+                and not is_direct_upload_blocklisted(original_id),
                 "web_search": False,
                 "image_generation": True,
                 "video_generation": True,
@@ -989,11 +990,14 @@ class OpenRouterModelRegistry:
             full_model.update(dict(prior.get("full_model") or {}))
 
             new_id_map[cls._exact_norm(sanitized)] = original_id
+            row_name = full_model.get("name")
+            if not isinstance(row_name, str) or not row_name.strip():
+                row_name = None
             models_by_norm[cls._exact_norm(sanitized)] = {
                 "id": sanitized,
                 "norm_id": norm_id,
                 "original_id": original_id,
-                "name": item.get("name") or original_id,
+                "name": row_name or item.get("name") or original_id,
             }
             owned_video_norms.add(norm_id)
             new_specs[norm_id] = {
@@ -1237,7 +1241,7 @@ class OpenRouterModelRegistry:
             pricing = item.get("pricing") if isinstance(item.get("pricing"), dict) else {}
 
             features: set[str] = {"image_output", "image_gen_tool"}
-            if accepts_image_input:
+            if accepts_image_input and not is_direct_upload_blocklisted(original_id):
                 features.update({"vision", "file_input"})
 
             owned_image_norms.add(norm_id)
@@ -1252,7 +1256,8 @@ class OpenRouterModelRegistry:
                 "features": features,
                 "capabilities": {
                     "vision": accepts_image_input,
-                    "file_upload": True,
+                    "file_upload": accepts_image_input
+                    and not is_direct_upload_blocklisted(original_id),
                     "web_search": False,
                     "image_generation": True,
                     "video_generation": False,

@@ -348,7 +348,6 @@ class TestProbeVideo:
         with pytest.raises(FrameExtractionError):
             await probe_video(tmp_path / "nope.mp4")
 
-
 class TestExtractFrame:
     @pytest.mark.asyncio
     async def test_first_frame(self, synthetic_mp4):
