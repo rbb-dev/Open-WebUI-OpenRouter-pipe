@@ -136,18 +136,35 @@ def link_media_type(value: Any) -> str:
     return _r[1].partition(";")[0].strip()[:64]
 
 
-def split_base64_data_url(value: Any) -> tuple[str, str] | None:
-    if url_scheme(value) != "data" or not isinstance(value, str):
-        return None
-    header, sep, payload = value.partition(",")
-    if not sep:
-        return None
+def _base64_marker_end(header: str) -> int | None:
     lowered = header.lower()
     at = lowered.find(";base64")
     while at != -1:
         lowered_end = at + len(";base64")
         end = len(header) - (len(lowered) - lowered_end)
         if end == len(header) or header[end] == ";":
-            return header, payload
+            return end
         at = lowered.find(";base64", at + 1)
     return None
+
+
+def split_base64_data_url(value: Any) -> tuple[str, str] | None:
+    if url_scheme(value) != "data" or not isinstance(value, str):
+        return None
+    comma = value.find(",")
+    if comma == -1:
+        return None
+    if _base64_marker_end(value[:comma]) is None:
+        return None
+    return value[:comma], value[comma + 1:]
+
+
+def base64_data_url_payload_len(value: Any) -> int | None:
+    if not isinstance(value, str) or url_scheme(value) != "data":
+        return None
+    comma = value.find(",")
+    if comma == -1:
+        return None
+    if _base64_marker_end(value[:comma]) is None:
+        return None
+    return len(value) - comma - 1

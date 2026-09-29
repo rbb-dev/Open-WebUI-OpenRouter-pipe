@@ -368,7 +368,7 @@ async def run_usage_query(plugin: Any, pipe: Any, args: dict[str, Any]) -> dict[
     now = time.time()
     hit = _UQ_MEMO.get(memo_key)
     if hit is not None and now - hit[0] < _UQ_MEMO_TTL:
-        return copy.deepcopy(hit[1])
+        return await asyncio.get_running_loop().run_in_executor(None, copy.deepcopy, hit[1])
 
     executor = getattr(store, "_db_executor", None)
     session_factory = getattr(store, "_session_factory", None)
@@ -401,4 +401,4 @@ async def run_usage_query(plugin: Any, pipe: Any, args: dict[str, Any]) -> dict[
         if len(_UQ_MEMO) >= _UQ_MEMO_MAX:
             _UQ_MEMO.clear()
     _UQ_MEMO[memo_key] = (now, result)
-    return copy.deepcopy(result)
+    return await asyncio.get_running_loop().run_in_executor(None, copy.deepcopy, result)

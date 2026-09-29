@@ -2883,24 +2883,33 @@ async def test_db_fetch_handles_exception_returns_cache(monkeypatch, pipe_instan
 
 
 @pytest.mark.asyncio
-async def test_delete_artifacts_deletes_redis_cache(pipe_instance) -> None:
-    _install_fake_store(pipe_instance)
-    store = pipe_instance._artifact_store
-    store._redis_enabled = True
+@pytest.mark.parametrize("keep", [None, "m-earlier"])
+async def test_delete_artifacts_deletes_redis_cache(pipe_instance, keep) -> None:
+    """A delete invalidates exactly the cache entries of the rows it removed, and marks
+    every row it was told about, kept or not.
 
-    deleted: list[str] = []
+    Both halves are best-effort in production, so a double that lacks a command turns a
+    broken key or a lost marker into a swallowed `AttributeError` rather than a red test:
+    that is what the narrow fake this replaces did, and its `assert deleted` could not
+    have named a wrong key. The harness here really queues, really caches and really
+    holds what was written, so the assertions can be about the keys themselves.
+    """
+    with _write_behind_store(pipe_instance) as store:
+        ids_by_message = await _queued_rows(store)
+        ids = list(ids_by_message.values())
 
-    class _FakeRedis:
-        def delete(self, *keys):
-            deleted.extend(keys)
-            return len(keys)
+        await store._delete_artifacts([("chat", row_id) for row_id in ids], keep_message_id=keep)
 
-    store._redis_client = _FakeRedis()
-    store._delete_artifacts_sync = lambda _ids, _keep_message_id=None: set()  # type: ignore[assignment]
+        values = store._redis_client.values
+        cached = sorted(key for key in values if key.startswith(f"{store._redis_cache_prefix}:"))
+        assert cached == ([store._redis_cache_key("chat", ids_by_message["m-earlier"])] if keep else [])
 
-    await store._delete_artifacts([("chat", "id-1"), ("chat", "id-2")])
-
-    assert deleted
+        markers = sorted(key for key in values if key.startswith(f"{store._redis_namespace}:deleted:"))
+        assert markers == sorted(store._redis_deleted_key(row_id) for row_id in ids)
+        assert [values[key] for key in markers] == [_delete_marker_value(keep)] * len(ids)
+        assert {key: store._redis_client.deadlines[key] - _TestClock.now for key in markers} == {
+            key: 86400 for key in markers
+        }
 
 
 @pytest.mark.asyncio

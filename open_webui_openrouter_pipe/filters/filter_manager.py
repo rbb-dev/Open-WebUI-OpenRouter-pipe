@@ -48,6 +48,7 @@ from ..core.timing_logger import timed
 from ..core.utils import (
     _ADAPTER_CACHE,
     _KEEP_WHAT_STILL_FITS,
+    _clean_str,
 )
 from ..core.utils import OWUI_FUNCTION_ID_ILLEGAL_RE as _MODEL_FILTER_ID_RE
 from ..core.warn_latch import warn_level
@@ -252,12 +253,17 @@ def _row_owner(row: Any) -> str:
     content = getattr(row, "content", None)
     if not isinstance(content, str) or not content:
         return ""
-    for line in content.split("\n"):
-        if not line.startswith(_PROVIDER_ROUTING_OWNER_PREFIX):
-            continue
-        _, _, raw = line.partition("=")
-        return raw.strip().strip('"').strip("'")
-    return ""
+    start = 0
+    while True:
+        idx = content.find(_PROVIDER_ROUTING_OWNER_PREFIX, start)
+        if idx < 0:
+            return ""
+        if idx == 0 or content[idx - 1] == "\n":
+            end = content.find("\n", idx)
+            line = content[idx:] if end < 0 else content[idx:end]
+            _, _, raw = line.partition("=")
+            return raw.strip().strip('"').strip("'")
+        start = idx + 1
 
 
 def _is_pipe_video_filter_row(content: Any, row_id: Any) -> bool:
@@ -373,6 +379,52 @@ def _newest_marked_row(rows, marker, *, prefer_id=None, tie_break_id=False, owne
             int(getattr(row, "updated_at", 0) or 0),
         ) + ((str(getattr(row, "id", "") or ""),) if tie_break_id else ()),
     )
+
+
+def _sweep_candidate_index(
+    rows: list[Any], name: str
+) -> tuple[dict[str, list[Any]], list[Any]]:
+    prefix = f"{name} = "
+    index: dict[str, list[Any]] = {}
+    unindexed: list[Any] = []
+    for row in rows or []:
+        content = getattr(row, "content", None)
+        if not isinstance(content, str) or not content:
+            continue
+        at = content.find(prefix)
+        if at < 0:
+            continue
+        if at and content[at - 1] != "\n":
+            unindexed.append(row)
+            continue
+        end = content.find("\n", at)
+        key = (content[at:] if end < 0 else content[at:end]).rstrip()
+        raw = key[len(prefix) :]
+        try:
+            value = ast.literal_eval(raw) if key.startswith(prefix) and raw else None
+        except (ValueError, SyntaxError):
+            value = None
+        if isinstance(value, str) and f"{name} = {value!r}" == key:
+            index.setdefault(key, []).append(row)
+        else:
+            unindexed.append(row)
+    return index, unindexed
+
+
+def _sweep_candidates(
+    index: dict[str, list[Any]], unindexed: list[Any], *tokens: str
+) -> list[Any]:
+    candidates: list[Any] = []
+    for token in tokens:
+        candidates.extend(index.get(token, ()))
+    candidates.extend(unindexed)
+    return candidates
+
+
+def _kept_candidates(candidates: list[Any], matches_candidate: Callable[[str], bool]) -> list[Any]:
+    return [
+        row for row in candidates if matches_candidate(getattr(row, "content", ""))
+    ]
 
 
 class FilterManager:
@@ -632,6 +684,7 @@ class FilterManager:
         prefer_id: str | None = None,
         rows: list[Any] | None = None,
         tie_break_id: bool = False,
+        candidates: list[Any] | None = None,
     ) -> str | None:
         """Generic filter install/update lifecycle shared by all filter types.
 
@@ -673,7 +726,7 @@ class FilterManager:
         return await self._install_from_rows(
             filters, desired_source, desired_name, desired_meta, preferred_id,
             auto_install_valve, log_label, matches_candidate, primary_marker, prefer_id,
-            tie_break_id,
+            tie_break_id, candidates,
         )
 
     def _validate_before_write(self, desired_source: str, log_label: str) -> None:
@@ -694,10 +747,15 @@ class FilterManager:
         primary_marker: str | None,
         prefer_id: str | None = None,
         tie_break_id: bool = False,
+        candidates: list[Any] | None = None,
     ) -> str | None:
         from open_webui.models.functions import Functions  # type: ignore
 
-        candidates = [f for f in filters if matches_candidate(getattr(f, "content", ""))]
+        candidates = (
+            candidates
+            if candidates is not None
+            else [f for f in filters if matches_candidate(getattr(f, "content", ""))]
+        )
         chosen = None
         if candidates:
             effective_marker = ""
@@ -1777,6 +1835,7 @@ class FilterManager:
         rows = await self._filter_rows()
         if rows is None:
             return {}
+        index, unindexed = _sweep_candidate_index(rows, "VIDEO_MODEL_ID")
 
         installed: dict[str, str] = {}
         for model in models:
@@ -1795,11 +1854,15 @@ class FilterManager:
                 video_model = dict(model)
             original_id = model.get("original_id")
             canonical_id = original_id if isinstance(original_id, str) and original_id.strip() else model_id
+            video_spec_id = _clean_str(video_model.get("id")) or _clean_str(canonical_id)
             try:
                 function_id = await self._ensure_single_video_gen_filter_function_id(
                     model_id=canonical_id,
                     video_model=video_model,
                     rows=rows,
+                    candidates=_sweep_candidates(
+                        index, unindexed, f"VIDEO_MODEL_ID = {video_spec_id!r}"
+                    ),
                 )
             except Exception as exc:
                 self.logger.warning(
@@ -1819,6 +1882,7 @@ class FilterManager:
         model_id: str,
         video_model: dict[str, Any] | None,
         rows: list[Any] | None = None,
+        candidates: list[Any] | None = None,
     ) -> str | None:
         from .video_filter_renderer import build_video_filter_spec
 
@@ -1836,6 +1900,9 @@ class FilterManager:
             if not _is_video_gen_filter(content):
                 return False
             return model_id_token in (content or "")
+
+        if candidates is not None:
+            candidates = _kept_candidates(candidates, _matches)
 
         desired_source = self.render_openrouter_video_gen_filter_source(
             model_id=model_id,
@@ -1861,6 +1928,7 @@ class FilterManager:
             log_label=f"OpenRouter Video Generation filter for {spec.model_id}",
             matches_candidate=_matches,
             rows=rows,
+            candidates=candidates,
         )
 
 
@@ -1987,6 +2055,7 @@ class FilterManager:
         self._unresolved_image_filter_ids = frozenset()
         unresolved: set[str] = set()
         installed: dict[str, list[str]] = {}
+        index, unindexed = _sweep_candidate_index(rows, "IMAGE_FILTER_MODEL_ID")
 
         variant_ids_by_canonical: dict[str, set[str]] = {}
         for model in models:
@@ -2024,6 +2093,7 @@ class FilterManager:
             if not isinstance(image_model, dict):
                 image_model = dict(model)
             image_model = {**image_model, "id": sanitize_model_id(canonical_id)}
+            image_spec_id = str(image_model.get("id") or canonical_id or "").strip()
 
             self._write_not_installed = False
             try:
@@ -2034,6 +2104,12 @@ class FilterManager:
                     dedicated_image_api=uses_dedicated_image_api(spec),
                     rows=rows,
                     variant_ids=tuple(sorted(variant_ids_by_canonical.get(canonical_id, ()))),
+                    candidates=_sweep_candidates(
+                        index,
+                        unindexed,
+                        f"IMAGE_FILTER_MODEL_ID = {image_spec_id!r}",
+                        f"IMAGE_FILTER_MODEL_ID = {canonical_id!r}",
+                    ),
                 )
             except Exception as exc:
                 # One model's install failure costs that model its filter and nothing
@@ -2143,6 +2219,7 @@ class FilterManager:
         dedicated_image_api: bool,
         rows: list[Any] | None = None,
         variant_ids: tuple[str, ...] = (),
+        candidates: list[Any] | None = None,
     ) -> str | None:
         from .image_filter_renderer import build_image_model_filter_spec
 
@@ -2172,6 +2249,9 @@ class FilterManager:
                 return False
             return "class Filter" in content
 
+        if candidates is not None:
+            candidates = _kept_candidates(candidates, _matches)
+
         desired_source = self.render_openrouter_image_filter_source(
             model_id=model_id,
             image_model=image_model,
@@ -2200,6 +2280,7 @@ class FilterManager:
             matches_candidate=_matches,
             prefer_id=spec.function_id,
             rows=rows,
+            candidates=candidates,
         )
 
     # DIRECT UPLOADS FILTER

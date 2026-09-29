@@ -646,6 +646,8 @@ DEFAULT_STREAM_INTERRUPTED_TEMPLATE = (
 # EncryptedStr and Helper Functions
 
 _FERNET_MIN_BODY = 73
+_FERNET_VERSION_BYTE = 0x80
+_FERNET_VERSION_HEAD = base64.urlsafe_b64encode(bytes([_FERNET_VERSION_BYTE])).decode()[0]
 
 class EncryptedStr(str):
     """String wrapper that automatically encrypts/decrypts valve values."""
@@ -690,15 +692,12 @@ class EncryptedStr(str):
 
         Args:
             value: Ciphertext string, typically prefixed with ``encrypted:``.
-
-        Returns:
-            str: Decrypted plain text or the original value when keyless.
         """
         if not value or not value.startswith(cls._ENCRYPTION_PREFIX):
             return value
         key = cls._get_encryption_key()
         if not key:
-            return value[len(cls._ENCRYPTION_PREFIX) :]
+            return cls._undecryptable()
         try:
             encrypted_part = value[len(cls._ENCRYPTION_PREFIX) :]
             fernet = Fernet(key)
@@ -724,13 +723,18 @@ class EncryptedStr(str):
             raw = base64.urlsafe_b64decode(body)
         except (binascii.Error, ValueError):
             return False
-        return len(raw) >= _FERNET_MIN_BODY and raw[0] == 0x80 and (len(raw) - 57) % 16 == 0
+        return len(raw) >= _FERNET_MIN_BODY and raw[0] == _FERNET_VERSION_BYTE and (len(raw) - 57) % 16 == 0
+
+    @classmethod
+    def _looks_like_ciphertext(cls, value: str) -> bool:
+        body = value[len(cls._ENCRYPTION_PREFIX) :]
+        return bool(re.fullmatch(r"[A-Za-z0-9_-]+={0,2}", body)) and body.startswith(_FERNET_VERSION_HEAD)
 
     @classmethod
     def is_unreadable(cls, value: str) -> bool:
         if not value or not value.startswith(cls._ENCRYPTION_PREFIX):
             return False
-        if not cls._is_ciphertext(value):
+        if not cls._looks_like_ciphertext(value):
             return False
         key = cls._get_encryption_key()
         if key is None:
@@ -749,9 +753,8 @@ class EncryptedStr(str):
             return value
         if cls._get_encryption_key() is None:
             return None
-        if not cls._is_ciphertext(value):
-            return value
-        return cls.decrypt(value) or None
+        plain = cls.decrypt(value)
+        return plain or (None if cls._looks_like_ciphertext(value) else value)
 
     @classmethod
     def __get_pydantic_core_schema__(
@@ -1060,7 +1063,7 @@ class Valves(BaseModel):
     )
     ENABLE_SSRF_PROTECTION: bool = Field(
         default=True,
-        description="Enable SSRF (Server-Side Request Forgery) protection for remote URL downloads. When enabled, a remote address is fetched only if it is provably globally routable, so loopback, 10.x/172.16.x/192.168.x, link-local, carrier-grade NAT (100.64.0.0/10 -- also Tailscale's default range) and IPv6 site-local are all refused, as is any range the registries do not mark as globally routable. IPv6 addresses that wrap an IPv4 one (::ffff:, 6to4, Teredo, NAT64) are judged on the address they carry. A refused address is not sent either: the person sees `Images: skipped N (could not be fetched, so it was not sent).` A public `https://` link the pipe merely failed to download is still forwarded for the provider to fetch. It also gates every non-`data:` video link before it is passed on, whichever way it is written: the link is not downloaded, and the check is on the address the provider would reach, so a video link is refused when its host is not public and a link whose scheme is neither `http` nor `https` is refused outright. A failed download costs one further address check, so an unreachable resolver can add up to two `ADDRESS_CHECK_SECONDS` per picture, sequentially. The address checks run on a dedicated bounded thread pool, so a stalled resolver is bounded there rather than queued behind everything else the process does; with this valve on, a check that cannot start inside its own budget reaches no verdict at all: on a download or generation path that still sends no bytes, while a stalled re-check of a picture the pipe already holds no longer drops the stored copy. The pool's width follows `MAX_CONCURRENT_REQUESTS` and is re-made when that valve changes, in both directions. HTTP is disabled by default; see ALLOW_INSECURE_HTTP_* for explicit opt-in.",
+        description="Enable SSRF (Server-Side Request Forgery) protection for remote URL downloads. When enabled, a remote address is fetched only if it is provably globally routable, so loopback, 10.x/172.16.x/192.168.x, link-local, carrier-grade NAT (100.64.0.0/10 -- also Tailscale's default range) and IPv6 site-local are all refused, as is any range the registries do not mark as globally routable. IPv6 addresses that wrap an IPv4 one (::ffff:, 6to4, Teredo, NAT64) are judged on the address they carry. A refused address is not sent either: the person sees `Images: skipped N (could not be fetched, so it was not sent).` A public `https://` link the pipe merely failed to download is still forwarded for the provider to fetch. It also gates every non-`data:` video link before it is passed on, whichever way it is written: the link is not downloaded, and the check is on the address the provider would reach, so a video link is refused when its host is not public and a link whose scheme is neither `http` nor `https` is refused outright. A failed download costs one further address check, so an unreachable resolver can add up to two `ADDRESS_CHECK_SECONDS` per picture, sequentially. A turn's remote video links draw on the same request-wide `ADDRESS_CHECK_BUDGET_SECONDS` as its pictures, so a message with many links is bounded by that budget rather than by one check per link, and a video link that is left with no time is not sent. The address checks run on a dedicated bounded thread pool, so a stalled resolver is bounded there rather than queued behind everything else the process does; with this valve on, a check that cannot start inside its own budget reaches no verdict at all: on a download or generation path that still sends no bytes, while a stalled re-check of a picture the pipe already holds no longer drops the stored copy. The pool's width follows `MAX_CONCURRENT_REQUESTS` and is re-made when that valve changes, in both directions. HTTP is disabled by default; see ALLOW_INSECURE_HTTP_* for explicit opt-in.",
     )
     ALLOW_INSECURE_HTTP: bool = Field(
         default=False,
@@ -1386,7 +1389,7 @@ class Valves(BaseModel):
     )
     ARTIFACT_ENCRYPTION_KEY: EncryptedStr = Field(
         default_factory=_default_artifact_encryption_key,
-        description="Use at least 16 chars. Encrypt reasoning tokens (and optionally all persisted artifacts). Changing the key creates a new table; prior artifacts become inaccessible. Clearing it stops artifact encryption and returns the setting to its default, which is empty. Both the artifact table and the usage-history table are named from a hash of this key, so new writes after a clear go to a fresh, unencrypted pair of tables and everything already saved under the previous key is stranded there, unread. A value that cannot be read under the current WEBUI_SECRET_KEY cannot be used either: the pipe refuses to write artifacts while the key is unreadable rather than storing them in the clear, and the key must be re-entered here before writes resume. The cipher is rebuilt against the current key on every call, so a rotation never leaves the store using a retired one; a write already inside that cipher build when the change lands is still written under the previous key, cannot be read afterwards, and is dropped with a warning naming its artifact kind.",
+        description="Use at least 16 chars. Encrypt reasoning tokens (and optionally all persisted artifacts). Changing the key creates a new table; prior artifacts become inaccessible. Clearing it stops artifact encryption and returns the setting to its default, which is empty. Both the artifact table and the usage-history table are named from a hash of this key, so new writes after a clear go to a fresh, unencrypted pair of tables and everything already saved under the previous key is stranded there, unread. A value that cannot be read under the current WEBUI_SECRET_KEY cannot be used either, whether it was stored under a key that no longer decrypts or is a damaged row: the pipe refuses to write artifacts while the key is unreadable rather than storing them in the clear, and the key must be re-entered here before writes resume. A passphrase typed here that begins with encrypted: and continues with an all-base64 character body is read as a damaged stored value and refused the same way, so enter it without the prefix. The cipher is rebuilt against the current key on every call, so a rotation never leaves the store using a retired one; a write already inside that cipher build when the change lands is still written under the previous key, cannot be read afterwards, and is dropped with a warning naming its artifact kind.",
     )
     ENCRYPT_ALL: bool = Field(
         default=True,
@@ -1491,7 +1494,10 @@ class Valves(BaseModel):
             "Password used to encrypt session log zip files (AES-encrypted zip). "
             "Recommend using a long random passphrase and encrypting the value (requires WEBUI_SECRET_KEY). "
             "Clearing it stops all archive writing, and so does a stored value that cannot be read under "
-            "the current WEBUI_SECRET_KEY: no archive is written until a passphrase is re-entered here."
+            "the current WEBUI_SECRET_KEY, whether it was stored under a key that no longer decrypts or is a "
+            "damaged row: no archive is written until a passphrase is re-entered here. A passphrase typed here "
+            "that begins with encrypted: and continues with an all-base64 character body is read as a damaged "
+            "stored value and refused the same way, so enter it without the prefix."
         ),
     )
     SESSION_LOG_RETENTION_DAYS: int = Field(
@@ -1891,7 +1897,7 @@ class Valves(BaseModel):
     )
     ENABLE_REDIS_CACHE: bool = Field(
         default=True,
-        description="Buffer artifact writes through Redis when REDIS_URL and more than one worker are detected. It is re-read on each request, so flipping it applies to the next message with no restart. The valve is authoritative at the write in the very turn that turns it off, that turn's row goes straight to the database instead of Redis, and everything still buffered is drained to the database to completion before the Redis client is closed, and the same drain runs when the worker shuts down, before its Redis tasks are cancelled, so a row the drain cannot commit stays in the pending queue for another worker. It stays off until you turn it on again, and turning it back on brings it up on the next request without a restart, once the worker reconnects to Redis.",
+        description="Buffer artifact writes through Redis when REDIS_URL and more than one worker are detected. It is re-read on each request, so flipping it applies to the next message with no restart. The valve is authoritative at the write in the very turn that turns it off, that turn's row goes straight to the database instead of Redis, and everything still buffered is drained to the database to completion before the Redis client is closed, and the same drain runs when the worker shuts down, before its Redis tasks are cancelled, so a row the drain cannot commit stays in the pending queue for another worker. While it is off no artifact data is written to Redis, but a delete is not data and still runs: a cleanup in that window still writes its delete marker and still deletes the cache entries of the rows it was told to forget, and the drain uses its pending queue and flush lock only to empty the queue. It stays off until you turn it on again, and turning it back on brings it up on the next request without a restart, once the worker reconnects to Redis.",
     )
     REDIS_CACHE_TTL_SECONDS: int = Field(
         default=600,
@@ -2008,7 +2014,7 @@ class Valves(BaseModel):
     # Model metadata synchronization
     UPDATE_MODEL_IMAGES: bool = Field(
         default=True,
-        description="When enabled, automatically sync profile image URLs from OpenRouter's frontend catalog to Open WebUI model metadata, falling back to a model maker's logo. While the remembered source URL is unchanged the download is skipped, and for a model taking its maker's logo the maker's page is not re-fetched either. Disable to manage images manually.",
+        description="When enabled, automatically sync profile image URLs from OpenRouter's frontend catalog to Open WebUI model metadata, falling back to a model maker's logo when the catalog answered and has no icon for that model. A pass whose catalog read did not answer leaves every stored icon alone, whoever put it there, and the next pass that does answer applies the fallback. While the remembered source URL is unchanged the download is skipped, and for a model taking its maker's logo the maker's page is not re-fetched either. Disable to manage images manually.",
     )
     UPDATE_MODEL_CAPABILITIES: bool = Field(
         default=True,

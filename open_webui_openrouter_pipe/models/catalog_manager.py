@@ -19,7 +19,7 @@ import contextlib
 import logging
 import time
 from collections.abc import Callable, Iterable, Mapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeGuard
 from urllib.parse import quote
 
 import aiohttp
@@ -95,6 +95,11 @@ def _normalize_id_list(meta_dict: dict, key: str) -> list[str]:
 
 
 _MAKER_SOURCE_KIND = "maker"
+_FRONTEND_SOURCE_KIND = "frontend"
+
+
+def _frontend_catalog_answered(frontend_data: Any) -> TypeGuard[dict[str, Any]]:
+    return isinstance(frontend_data, dict) and isinstance(frontend_data.get("data"), list)
 
 
 def _ensure_pipe_meta(meta_dict: dict) -> dict:
@@ -126,7 +131,10 @@ def makers_needing_a_page(
     icon_mapping: dict[str, str],
     stored_icons: dict[str, tuple[str | None, str | None, bool, bool, str | None]],
     pipe_identifier: str,
+    frontend_answered: bool = True,
 ) -> tuple[set[str], dict[str, str]]:
+    if not frontend_answered:
+        return set(), {}
     stamps: dict[str, set[str]] = {}
     for model in models:
         original_id = model.get("original_id")
@@ -512,7 +520,10 @@ def _apply_single_id_default_filter_ids(
     *,
     owned_id: str,
     detached: set[str] | None = None,
+    hands_off: bool = False,
 ) -> bool:
+    if hands_off:
+        return False
     if not owned_id or owned_id not in (detached or set()):
         return False
     default_ids = _normalize_id_list(meta_dict, "defaultFilterIds")
@@ -1106,11 +1117,9 @@ class ModelCatalogManager:
     @timed
     def _build_icon_mapping(self, frontend_data: dict[str, Any] | None) -> dict[str, str]:
         """Build a slug -> icon URL mapping from the frontend catalog."""
-        if not isinstance(frontend_data, dict):
+        if not _frontend_catalog_answered(frontend_data):
             return {}
-        raw_items = frontend_data.get("data")
-        if not isinstance(raw_items, list):
-            return {}
+        raw_items = frontend_data["data"]
 
         icon_mapping: dict[str, str] = {}
         for item in raw_items:
@@ -1636,10 +1645,11 @@ class ModelCatalogManager:
 
             maker_mapping: dict[str, str] = {}
             stored_icons: dict[str, tuple[str | None, str | None, bool, bool, str | None]] = {}
+            frontend_answered = _frontend_catalog_answered(frontend_data)
             if valves.UPDATE_MODEL_IMAGES:
                 stored_icons = await _stored_profile_images(models, pipe_identifier, self.logger)
                 missing_makers, seeded_makers = makers_needing_a_page(
-                    models, icon_mapping, stored_icons, pipe_identifier
+                    models, icon_mapping, stored_icons, pipe_identifier, frontend_answered
                 )
                 maker_mapping = dict(seeded_makers)
                 if missing_makers:
@@ -1672,6 +1682,9 @@ class ModelCatalogManager:
                         continue
                     row = stored_icons.get(f"{pipe_identifier}.{model.get('id')}")
                     if row is not None and (row[2] or row[3]):
+                        continue
+                    if not frontend_answered and row is not None and row[4] == _FRONTEND_SOURCE_KIND and row[0]:
+                        stored_data_by_url[original_id] = row[0]
                         continue
                     icon_url = slug_to_icon_url.get(original_id)
                     if icon_url:
@@ -1737,9 +1750,10 @@ class ModelCatalogManager:
             _REFUSED_FILTER_WRITES.clear()
             web_valves = self._pipe.valves
             web_tools_filter_function_id: str | None = None
+            web_tools_panel_withheld = every_web_tool_is_off(web_valves)
             if (
                 web_valves.AUTO_ATTACH_WEB_TOOLS_FILTER or web_valves.AUTO_INSTALL_WEB_TOOLS_FILTER
-            ) and not every_web_tool_is_off(web_valves):
+            ) and not web_tools_panel_withheld:
                 try:
                     web_tools_filter_function_id = await self._pipe._ensure_filter_manager().ensure_openrouter_web_tools_filter_function_id(
                         enable_web_search=web_valves.ENABLE_WEB_SEARCH,
@@ -2068,7 +2082,7 @@ class ModelCatalogManager:
                             image_source_url = maker_to_image_url.get(maker_id)
                     if image_source_url:
                         image_source_kind = (
-                            "frontend"
+                            _FRONTEND_SOURCE_KIND
                             if image_source_url == slug_to_icon_url.get(original_id)
                             else _MAKER_SOURCE_KIND
                         )
@@ -2196,8 +2210,11 @@ class ModelCatalogManager:
                             capability_defaults=capability_defaults,
                             filter_function_id=web_tools_filter_function_id,
                             filter_supported=web_tools_supported,
-                            auto_attach_filter=web_tools_supported,
+                            auto_attach_filter=bool(
+                                web_tools_supported and valves.AUTO_ATTACH_WEB_TOOLS_FILTER
+                            ),
                             auto_default_filter=valves.AUTO_DEFAULT_WEB_TOOLS_FILTER,
+                            web_tools_panel_withheld=web_tools_panel_withheld,
                             direct_uploads_filter_function_id=direct_uploads_filter_function_id,
                             direct_uploads_filter_supported=native_supported,
                             auto_attach_direct_uploads_filter=auto_attach_direct_uploads,
@@ -2378,6 +2395,7 @@ class ModelCatalogManager:
         filter_supported: bool = False,
         auto_attach_filter: bool = False,
         auto_default_filter: bool = False,
+        web_tools_panel_withheld: bool = False,
         direct_uploads_filter_function_id: str | None = None,
         direct_uploads_filter_supported: bool = False,
         auto_attach_direct_uploads_filter: bool = False,
@@ -2613,7 +2631,7 @@ class ModelCatalogManager:
             blank_id_release = bool(
                 id_from_record
                 and not filter_function_id
-                and not auto_default_filter
+                and (not auto_default_filter or web_tools_panel_withheld)
                 and (
                     seeded_by_pipe
                     or pipe_meta.get("web_tools_seeded_id") == owned_id_str
@@ -2887,6 +2905,7 @@ class ModelCatalogManager:
 
             if _apply_single_id_default_filter_ids(
                 meta_dict, owned_id=direct_uploads_detached_id, detached=direct_uploads_detached,
+                hands_off="direct_uploads_filter_id" in hands_off,
             ):
                 meta_updated = True
 
@@ -2906,6 +2925,7 @@ class ModelCatalogManager:
 
             if _apply_single_id_default_filter_ids(
                 meta_dict, owned_id=image_gen_detached_id, detached=image_gen_detached,
+                hands_off="image_gen_filter_id" in hands_off,
             ):
                 meta_updated = True
 

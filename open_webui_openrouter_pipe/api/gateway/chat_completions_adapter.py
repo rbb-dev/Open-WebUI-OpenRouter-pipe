@@ -40,7 +40,7 @@ from ...requests.debug import (
 
 # Imports from storage
 from ...storage.owui_files import (
-    is_internal_file_url,
+    names_an_owui_file_path,
 )
 from ...storage.persistence import generate_item_id
 from ...streaming.nagle_coalescer import nagle_coalesce_stream
@@ -191,7 +191,7 @@ class ChatCompletionsAdapter:
                 if not isinstance(file_value, str) or not file_value.strip():
                     continue
                 file_value = file_value.strip()
-                if not is_internal_file_url(file_value):
+                if not names_an_owui_file_path(file_value):
                     continue
                 try:
                     inlined = await self._pipe._file_gateway.inline_internal_file_url(

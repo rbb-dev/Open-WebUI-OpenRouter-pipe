@@ -2782,12 +2782,27 @@ async def test_disable_image_updates_skips_profile_image_changes(pipe_instance_a
 
 @pytest.mark.asyncio
 async def test_disable_direct_uploads_auto_attach_skips_filter_ids(pipe_instance_async) -> None:
+    """The per-model opt-out is hands-off, and that includes the tick it never removed.
+
+    This test used to seed `meta={}` and assert `call_count == 0`, which was vacuous: with
+    an empty meta there is no recorded id, nothing is detached, and the release the
+    opt-out is supposed to suppress has nothing to release. It passed whatever the release
+    did. The seed below is the real shape -- the family's id attached, recorded, and
+    default-on -- so the release has something to do and the opt-out has something to
+    refuse to do.
+    """
     pipe = pipe_instance_async
     model_id = "open_webui_openrouter_pipe.openai.gpt-4o"
+    du = "openrouter_direct_uploads"
+    other = "openrouter_some_other_filter"
 
     existing = _make_existing_model(
         model_id,
-        meta={},
+        meta={
+            "filterIds": [du, other],
+            "defaultFilterIds": [du],
+            "openrouter_pipe": {"direct_uploads_filter_id": du},
+        },
         params={"disable_direct_uploads_auto_attach": True},
     )
     update_mock = AsyncMock()
@@ -2808,7 +2823,14 @@ async def test_disable_direct_uploads_auto_attach_skips_filter_ids(pipe_instance
             new_model_access_control="admins",
         )
 
+    written = existing.meta.model_dump()
     assert update_mock.call_count == 0
+    assert written["filterIds"] == [du, other], (
+        f"the opt-out must not touch the wiring: {written['filterIds']}"
+    )
+    assert written["defaultFilterIds"] == [du], (
+        f"the opt-out must not release a default it never detached: {written['defaultFilterIds']}"
+    )
 
 
 @pytest.mark.asyncio

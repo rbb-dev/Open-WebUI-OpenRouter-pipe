@@ -246,6 +246,10 @@ except Exception:
 _monotonic = time.monotonic
 
 
+def _reply_budget_key(chat_id: Any, message_id: Any) -> tuple[Any, Any]:
+    return ("" if is_temporary_chat(chat_id) else chat_id, message_id)
+
+
 def _citation_host(url: str) -> str:
     """Extract a display host from a citation URL, dropping a leading "www.".
 
@@ -555,7 +559,7 @@ class StreamingHandler:
         unhandled_citation_notified = False
         chat_id = metadata.get("chat_id")
         message_id = metadata.get("message_id")
-        reply_key = (chat_id, message_id)
+        reply_key = _reply_budget_key(chat_id, message_id)
         offered_function_names = {
             str(t.get("name"))
             for t in (body.tools or [])
@@ -3897,7 +3901,7 @@ class StreamingHandler:
                 and not error_occurred
                 and not was_cancelled
             ):
-                _finished_key = (chat_id, message_id)
+                _finished_key = reply_key
                 self._pipe._hand_back_counts.pop(_finished_key, None)
                 self._pipe._hand_back_seen.pop(_finished_key, None)
 

@@ -33,7 +33,7 @@ from yarl import URL
 
 from open_webui_openrouter_pipe import ModelFamily, Pipe
 from open_webui_openrouter_pipe.core.config import _select_openrouter_http_referer
-from open_webui_openrouter_pipe.core.errors import StatusMessages
+from open_webui_openrouter_pipe.core.errors import RequiredInternalFileError, StatusMessages
 from open_webui_openrouter_pipe.core.url_scheme import (
     HTTP_SCHEMES,
     is_cleartext_http_url,
@@ -152,6 +152,14 @@ def test_an_absolute_url_is_external_whatever_the_scheme_is_typed_as(scheme):
     ``RequiredInternalFileError: A referenced image (abc) could not be retrieved`` and
     killed the turn. It also exempted the url from the insecure-http gate at the image,
     file and video sites, all three of which read ``and not is_internal_file_url(...)``.
+
+    The historical narrative is superseded and the classification is not: the
+    classifier still answers ``False`` for an absolute URL, because that is what
+    "is this a relative spelling of our own path" means.  What changed is that no
+    site asks it that question any more -- every arm that can resolve a reference
+    reads ``names_an_owui_file_path`` instead, and resolves from local storage or
+    refuses.  See
+    ``test_a_foreign_url_carrying_the_owui_file_path_is_resolved_or_refused``.
     """
     absolute = f"{scheme}://cdn.example.test/api/v1/files/abc/content"
     assert is_internal_file_url(absolute) is False, (
@@ -239,41 +247,6 @@ async def test_cleartext_http_images_are_gated_however_the_scheme_is_typed(
         "outbound payload is fetched by OpenRouter over the network the operator "
         "disabled."
     )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("scheme", ["http", "HTTP", "Http"])
-@pytest.mark.parametrize(
-    ("allow", "hosts", "kept"),
-    [(False, "", False), (True, INSECURE_HOST, True)],
-)
-async def test_a_foreign_url_carrying_the_owui_file_path_is_still_a_foreign_url(
-    pipe_instance_async, monkeypatch, scheme, allow, hosts, kept
-):
-    """The two halves of the defect meet here, and fixing only one leaves it open.
-
-    All three cleartext gates read ``and not is_internal_file_url(url)``. With the
-    scheme test fixed but the classifier still case-sensitive, ``HTTP://host/api/v1/
-    files/abc/content`` scores as internal, skips the gate AND the download, and is then
-    fed to Open WebUI storage as file id ``abc`` -- which is where the measured
-    ``RequiredInternalFileError`` came from. The allowlisted row is the one that catches
-    it: an allowed URL must come back as a normal remote image, not as a lookup of
-    somebody's stored file.
-    """
-    pipe = _vision_pipe(pipe_instance_async, allow=allow, hosts=hosts)
-    inline = AsyncMock(return_value=None)
-    monkeypatch.setattr(pipe._file_gateway, "inline_owui_file_id", inline)
-    # As above: the allowlisted row is kept only because the download succeeded.
-    monkeypatch.setattr(
-        pipe._multimodal_handler, "_download_remote_url",
-        AsyncMock(return_value={"data": b"\x89PNG", "mime_type": "image/png"}),
-    )
-    url = f"{scheme}://{INSECURE_HOST}/api/v1/files/abc/content"
-
-    images = _images(await _transform_block(pipe, _image_block(url)))
-
-    assert bool(images) is kept, f"url={url} ALLOW_INSECURE_HTTP={allow}: got {images!r}"
-    inline.assert_not_awaited()
 
 
 # ── the audio path ────────────────────────────────────────────────────────────

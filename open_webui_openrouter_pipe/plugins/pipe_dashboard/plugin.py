@@ -464,6 +464,8 @@ class PipeDashboardPlugin(PluginBase):
         request_id = str(job_metadata.get("request_id") or "") if isinstance(job_metadata, dict) else ""
         if not request_id:
             return None
+        if not _dashboard_observability_needed(getattr(getattr(self, "ctx", None), "valves", None)):
+            return None
         tracker = self._tracker
 
         async def _wrapped(event: Any) -> Any:

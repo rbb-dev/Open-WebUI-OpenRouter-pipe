@@ -38,6 +38,7 @@ class CircuitBreaker:
     # Class-level auth failure tracking (shared across all instances)
     _AUTH_FAILURE_TTL_SECONDS = 60
     _AUTH_FAILURE_UNTIL: ClassVar[dict[str, float]] = {}
+    _AUTH_FAILURE_SWEPT_AT: ClassVar[float] = 0.0
     _AUTH_FAILURE_LOCK = threading.Lock()
 
     def __init__(self, *, threshold: int, window_seconds: float):
@@ -236,9 +237,11 @@ class CircuitBreaker:
         until = time.time() + ttl
         with cls._AUTH_FAILURE_LOCK:
             now = time.time()
-            expired = [key for key, expires in cls._AUTH_FAILURE_UNTIL.items() if expires <= now]
-            for key in expired:
-                cls._AUTH_FAILURE_UNTIL.pop(key, None)
+            if now - cls._AUTH_FAILURE_SWEPT_AT >= cls._AUTH_FAILURE_TTL_SECONDS:
+                cls._AUTH_FAILURE_SWEPT_AT = now
+                expired = [key for key, expires in cls._AUTH_FAILURE_UNTIL.items() if expires <= now]
+                for key in expired:
+                    cls._AUTH_FAILURE_UNTIL.pop(key, None)
             cls._AUTH_FAILURE_UNTIL[scope_key] = until
 
     @classmethod

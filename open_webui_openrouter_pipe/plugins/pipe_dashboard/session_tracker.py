@@ -156,6 +156,8 @@ class SessionTracker:
                     entry["status"] = "streaming"
 
     def mark_stream_alive(self, request_id: str) -> None:
+        if request_id not in self._active:
+            return
         if time.monotonic() - self._stream_stamps.get(request_id, 0.0) < _ST_STREAM_STAMP_COALESCE_S:
             return
         with self._lock:

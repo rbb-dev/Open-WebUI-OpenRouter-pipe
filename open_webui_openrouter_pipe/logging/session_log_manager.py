@@ -641,7 +641,7 @@ class SessionLogManager:
         if not password:
             self._warn_once(
                 "password",
-                "Session log storage is enabled but SESSION_LOG_ZIP_PASSWORD is not configured or cannot be decrypted with the current WEBUI_SECRET_KEY; skipping persistence.",
+                "Session log storage is enabled but SESSION_LOG_ZIP_PASSWORD is not configured or cannot be decrypted with the current WEBUI_SECRET_KEY; skipping persistence. The stored value looks like a ciphertext but does not decode: it may be damaged, or it may be a passphrase typed with the 'encrypted:' prefix.",
             )
             return None
 
@@ -725,7 +725,7 @@ class SessionLogManager:
         if not password:
             self._warn_once(
                 "password",
-                "Session log storage is enabled but SESSION_LOG_ZIP_PASSWORD is not configured or cannot be decrypted with the current WEBUI_SECRET_KEY; skipping persistence.",
+                "Session log storage is enabled but SESSION_LOG_ZIP_PASSWORD is not configured or cannot be decrypted with the current WEBUI_SECRET_KEY; skipping persistence. The stored value looks like a ciphertext but does not decode: it may be damaged, or it may be a passphrase typed with the 'encrypted:' prefix.",
             )
             return
 
@@ -796,14 +796,21 @@ class SessionLogManager:
         from ..storage.owui_files import is_temporary_chat
         from ..storage.persistence import generate_item_id
 
+        temporary = is_temporary_chat(chat_id)
         if not valves.SESSION_LOG_STORE_ENABLED:
             if self.logger.isEnabledFor(logging.DEBUG):
-                self.logger.debug(
-                    "Session log segment skipped (SESSION_LOG_STORE_ENABLED=false): chat_id=%s message_id=%s request_id=%s",
-                    chat_id,
-                    message_id,
-                    request_id,
-                )
+                if temporary:
+                    self.logger.debug(
+                        "Session log segment skipped (SESSION_LOG_STORE_ENABLED=false): request_id=%s",
+                        request_id,
+                    )
+                else:
+                    self.logger.debug(
+                        "Session log segment skipped (SESSION_LOG_STORE_ENABLED=false): chat_id=%s message_id=%s request_id=%s",
+                        chat_id,
+                        message_id,
+                        request_id,
+                    )
             return
         if not (user_id and request_id):
             if "ids" not in self._skip_info_emitted:
@@ -814,7 +821,7 @@ class SessionLogManager:
                     bool(request_id),
                 )
             return
-        if is_temporary_chat(chat_id):
+        if temporary:
             self._warn_temporary_chat_skip(
                 "segment", user_id, "Session log segment skipped (temporary chat): request_id=%s", request_id,
             )

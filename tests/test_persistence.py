@@ -1274,7 +1274,14 @@ async def test_run_cleanup_once_no_model(pipe_instance):
 
 @pytest.mark.asyncio
 async def test_run_cleanup_once_executes(pipe_instance):
-    """Test _run_cleanup_once executes cleanup (lines 1476-1479)."""
+    """_run_cleanup_once sweeps with the cutoff the retention valve names.
+
+    The cutoff is the arithmetic under test, so the window is pinned as a literal on
+    both sides rather than recomputed from the valve: an expectation built from the
+    valve cannot catch the valve being read wrong. `_cleanup_sync` stays stubbed
+    because it is the database boundary, and the wall clock is read around the call
+    instead of frozen, which makes the bracket the strongest claim available.
+    """
     _install_fake_store(pipe_instance)
     store = pipe_instance._artifact_store
 
@@ -1285,8 +1292,13 @@ async def test_run_cleanup_once_executes(pipe_instance):
 
     store._cleanup_sync = _fake_cleanup
 
+    object.__setattr__(pipe_instance.valves, "ARTIFACT_CLEANUP_DAYS", 7)
+    before = datetime.datetime.now(datetime.UTC)
     await store._run_cleanup_once()
+    after = datetime.datetime.now(datetime.UTC)
+
     assert len(cleanup_called) == 1
+    assert before - datetime.timedelta(days=7) <= cleanup_called[0] <= after - datetime.timedelta(days=7)
 
 
 def test_cleanup_sync_no_session_factory(pipe_instance):

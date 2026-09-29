@@ -479,9 +479,13 @@ def _reset_auth_failure_state():
     process, and while it holds, task-model calls are skipped. Without this reset a
     test that renders such a card silently changes what a later test's background
     task returns -- a title test reads the fallback title and fails, far from the
-    test that caused it.
+    test that caused it. The reap stamp goes with it: it says when the map was last
+    swept, so leaving it at one test's clock would suppress the next test's sweep --
+    and a test that walks its own clock backwards to expire a scope would then keep
+    every entry it meant to have dropped.
     """
     CircuitBreaker._AUTH_FAILURE_UNTIL.clear()
+    CircuitBreaker._AUTH_FAILURE_SWEPT_AT = 0.0
     yield
 
 

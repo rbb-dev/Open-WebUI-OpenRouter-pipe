@@ -647,7 +647,7 @@ def _referenced_file_ids(items: Any) -> dict[str, str]:
                 if not isinstance(raw, str) or not raw.strip():
                     continue
                 candidate = raw.strip()
-                if not is_internal_file_url(candidate):
+                if not names_an_owui_file_path(candidate):
                     continue
                 extracted = extract_internal_file_id(candidate)
                 if extracted:
@@ -991,7 +991,7 @@ class OwuiFileGateway:
 
         async def _inline_picture(part: dict[str, Any]) -> None:
             image_url = part.get("image_url")
-            if not (isinstance(image_url, str) and is_internal_file_url(image_url.strip())):
+            if not (isinstance(image_url, str) and names_an_owui_file_path(image_url.strip())):
                 return
             picture_id = extract_internal_file_id(image_url.strip())
             inlined = (
@@ -1033,18 +1033,26 @@ class OwuiFileGateway:
                 file_id = block.get("file_id")
 
                 internal_file_id: str | None = None
+                named_reference: str | None = None
 
                 if isinstance(file_id, str) and file_id.strip():
                     candidate_id = file_id.strip()
                     if candidate_id.startswith("file-"):
                         continue
                     internal_file_id = candidate_id
-                elif isinstance(file_data, str) and file_data.strip() and is_internal_file_url(file_data.strip()):
+                elif isinstance(file_data, str) and file_data.strip() and names_an_owui_file_path(file_data.strip()):
+                    named_reference = file_data.strip()
                     internal_file_id = extract_internal_file_id(file_data.strip())
-                elif isinstance(file_url, str) and file_url.strip() and is_internal_file_url(file_url.strip()):
+                elif isinstance(file_url, str) and file_url.strip() and names_an_owui_file_path(file_url.strip()):
+                    named_reference = file_url.strip()
                     internal_file_id = extract_internal_file_id(file_url.strip())
 
                 if not internal_file_id:
+                    if named_reference is not None:
+                        raise FileUnavailableError(
+                            f"A referenced file ({named_reference}) is no longer "
+                            f"available in Open WebUI storage.",
+                        )
                     continue
 
                 result = await self.inline_owui_file_id(
@@ -1063,7 +1071,11 @@ class OwuiFileGateway:
                 if result.filename and "filename" not in block:
                     block["filename"] = result.filename
                 block.pop("file_id", None)
-                if isinstance(file_url, str) and file_url.strip() and is_internal_file_url(file_url.strip()):
+                if (
+                    isinstance(file_url, str)
+                    and file_url.strip()
+                    and names_an_owui_file_path(file_url.strip())
+                ):
                     block.pop("file_url", None)
 
         return {**request_body, "input": working}

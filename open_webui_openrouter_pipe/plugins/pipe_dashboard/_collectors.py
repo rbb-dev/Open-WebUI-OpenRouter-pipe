@@ -222,11 +222,9 @@ def collect_rate_limits(pipe: Any) -> dict[str, Any]:
     auth_active = 0
     try:
         from ...core.circuit_breaker import CircuitBreaker
-        counted = 0
         with CircuitBreaker._AUTH_FAILURE_LOCK:
-            for until in CircuitBreaker._AUTH_FAILURE_UNTIL.values():
-                if now < until:
-                    counted += 1
+            deadlines = tuple(CircuitBreaker._AUTH_FAILURE_UNTIL.values())
+        counted = sum(1 for until in deadlines if now < until)
         auth_active = counted
     except (AttributeError, ImportError, RuntimeError, TypeError):
         _level = warn_level(_warned_collectors, 'auth_failures')

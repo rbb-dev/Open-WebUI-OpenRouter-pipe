@@ -32,6 +32,7 @@ from ..core.context_budget import inline_payload_bytes
 from ..core.errors import RequiredInternalFileError, StatusMessages
 from ..core.image_detail import image_detail_or_auto
 from ..core.url_scheme import (
+    base64_data_url_payload_len,
     first_n_non_whitespace,
     is_cleartext_http_url,
     is_http_or_https_url,
@@ -93,7 +94,6 @@ from ..storage.multimodal import (
 from ..storage.owui_files import (
     InlineFileTooLargeError,
     extract_internal_file_id,
-    is_internal_file_url,
     is_temporary_chat,
     names_an_owui_file_path,
 )
@@ -268,8 +268,23 @@ def _is_well_formed_base64(cleaned: str) -> bool:
     end = n - (n % _BASE64_SCAN_CHUNK) if n >= _BASE64_SCAN_CHUNK else n
     for i in range(0, end, _BASE64_SCAN_CHUNK):
         if not _base64_quantum_is_valid(cleaned[i : i + _BASE64_SCAN_CHUNK]):
-            return False
-    return _base64_quantum_is_valid(cleaned[end:]) if cleaned[end:] else True
+            return _is_valid_base64_as_a_whole(cleaned)
+    tail = cleaned[end:]
+    if not tail:
+        return True
+    return _base64_quantum_is_valid(tail) or _is_valid_base64_as_a_whole(cleaned)
+
+
+def _is_valid_base64_as_a_whole(cleaned: str) -> bool:
+    try:
+        base64.b64decode(cleaned, validate=True)
+    except (binascii.Error, ValueError):
+        return False
+    return True
+
+
+async def _validate_inline_payload(cleaned: str) -> bool:
+    return await asyncio.to_thread(_is_well_formed_base64, cleaned)
 
 
 class ImageRefusal(NamedTuple):
@@ -688,6 +703,10 @@ def _note_memo_use(
         _reuse_download_memo.move_to_end(memo_key)
 
 
+def _remaining_address_seconds(deadline: float) -> float:
+    return min(ADDRESS_CHECK_SECONDS, deadline - time.monotonic())
+
+
 async def _memo_hit_is_still_permitted(
     pipe: Pipe,
     memo_key: Any,
@@ -701,7 +720,7 @@ async def _memo_hit_is_still_permitted(
         if deadline is None:
             deadline = time.monotonic() + ADDRESS_CHECK_BUDGET_SECONDS
         permitted = await pipe._multimodal_handler._is_safe_url(
-            url, seconds=min(ADDRESS_CHECK_SECONDS, deadline - time.monotonic()),
+            url, seconds=_remaining_address_seconds(deadline),
         )
         if seen is not None:
             seen[url] = permitted
@@ -1130,9 +1149,11 @@ async def transform_messages_to_input(
                     if not url:
                         return None
 
+                    owui_internal = names_an_owui_file_path(url)
+
                     if (
                         is_cleartext_http_url(url)
-                        and not is_internal_file_url(url)
+                        and not owui_internal
                         and not pipe._multimodal_handler._is_insecure_http_allowed(url)
                     ):
                             return ImageRefusal(
@@ -1145,7 +1166,7 @@ async def transform_messages_to_input(
 
                     if not (
                         url_scheme(url) in ("data", "http", "https")
-                        or is_internal_file_url(url)
+                        or owui_internal
                     ):
                         return ImageRefusal(
                             "not a link the pipe can resolve into an image",
@@ -1154,31 +1175,31 @@ async def transform_messages_to_input(
                         )
 
                     if is_inline_data_url(url):
-                        url = "data:" + url[url.index(":") + 1:]
                         try:
-                            split = split_base64_data_url(url)
-                            if split is None:
+                            payload_chars = base64_data_url_payload_len(url)
+                            if payload_chars is None:
                                 return ImageRefusal(
                                     "a data URL that is not base64-encoded, which "
                                     "OpenRouter does not accept",
                                     "unencoded_inline",
                                     subject=loggable_link(url),
                                 )
-                            if (len(split[1]) * 3) // 4 > max_inline_bytes:
+                            if (payload_chars * 3) // 4 > max_inline_bytes:
                                 return ImageRefusal(
                                     f"larger than the {max_inline_bytes}-byte inline limit",
                                     "oversized_inline",
                                     subject=loggable_link(url),
                                 )
+                            url = "data:" + url[url.index(":") + 1:]
+                            split = split_base64_data_url(url)
+                            assert split is not None
                             _body = "".join(split[1].split())
                             if not _body:
                                 return ImageRefusal(
                                     "not decodable as base64", "undecodable_inline",
                                     subject=loggable_link(url),
                                 )
-                            if not await asyncio.to_thread(
-                                pipe._multimodal_handler._parse_data_url, url
-                            ):
+                            if not await _validate_inline_payload(_body):
                                 return ImageRefusal(
                                     "not decodable as base64", "undecodable_inline",
                                     subject=loggable_link(url),
@@ -1196,7 +1217,7 @@ async def transform_messages_to_input(
                                 subject=loggable_link(url),
                             )
 
-                    elif is_http_or_https_url(url) and not is_internal_file_url(url):
+                    elif is_http_or_https_url(url) and not owui_internal:
                         memo_key = (chat_id, url) if chat_id else None
                         remembered = (
                             request_memo.get(memo_key)
@@ -1288,7 +1309,12 @@ async def transform_messages_to_input(
                             url = f"data:{resolved_type};base64," + await asyncio.to_thread(
                                 _b64encode_ascii, downloaded["data"]
                             )
-                    owui_file_id = extract_internal_file_id(url) if is_internal_file_url(url) else None
+                    owui_file_id = extract_internal_file_id(url) if owui_internal else None
+                    if owui_internal and not owui_file_id:
+                        raise RequiredInternalFileError(
+                            "An image Open WebUI is serving cannot be read, so it was not sent.",
+                            kind="image",
+                        )
 
                     if owui_file_id:
                         try:
@@ -1362,8 +1388,8 @@ async def transform_messages_to_input(
                         subject=_image_subject(_source if isinstance(_source, str) else ""),
                     )
 
-            def _no_source_refusal(filename: Any = "") -> ImageRefusal:
-                return ImageRefusal("has no readable source", "no_source", subject=str(filename or "")[:64])
+            def _no_source_refusal() -> ImageRefusal:
+                return ImageRefusal("has no readable source", "no_source")
 
             async def _to_input_file(block: dict) -> dict | ImageRefusal | None:
                 """Convert Open WebUI file blocks into Responses API format.
@@ -1395,21 +1421,53 @@ async def transform_messages_to_input(
                     filename = source.get("filename")
                     file_url = source.get("file_url")
 
-                    if isinstance(file_url, str) and file_url.strip() and is_internal_file_url(file_url.strip()):
+                    if (
+                        isinstance(file_url, str)
+                        and file_url.strip()
+                        and names_an_owui_file_path(file_url.strip())
+                    ):
                         extracted = extract_internal_file_id(file_url.strip())
                         if extracted:
                             file_id = extracted
                             file_url = None
-                    if isinstance(file_data, str) and file_data.strip() and is_internal_file_url(file_data.strip()):
+                    if (
+                        isinstance(file_data, str)
+                        and file_data.strip()
+                        and names_an_owui_file_path(file_data.strip())
+                        and url_scheme(file_data.strip()) != "data"
+                    ):
                         extracted = extract_internal_file_id(file_data.strip())
                         if extracted:
                             file_id = extracted
                             file_data = None
+                    if (
+                        isinstance(file_url, str)
+                        and file_url.strip()
+                        and names_an_owui_file_path(file_url.strip())
+                    ):
+                        if not file_id:
+                            raise RequiredInternalFileError(
+                                "A file Open WebUI is serving cannot be read, so it was not sent.",
+                                kind="file",
+                            )
+                        file_url = None
+                    if (
+                        isinstance(file_data, str)
+                        and file_data.strip()
+                        and names_an_owui_file_path(file_data.strip())
+                        and url_scheme(file_data.strip()) != "data"
+                    ):
+                        if not file_id:
+                            raise RequiredInternalFileError(
+                                "A file Open WebUI is serving cannot be read, so it was not sent.",
+                                kind="file",
+                            )
+                        file_data = None
 
                     if (
                         isinstance(file_data, str)
                         and is_cleartext_http_url(file_data)
-                        and not is_internal_file_url(file_data)
+                        and not names_an_owui_file_path(file_data)
                         and not pipe._multimodal_handler._is_insecure_http_allowed(file_data)
                     ):
                         pipe.logger.error(
@@ -1430,7 +1488,7 @@ async def transform_messages_to_input(
                     if (
                         isinstance(file_url, str)
                         and is_cleartext_http_url(file_url)
-                        and not is_internal_file_url(file_url)
+                        and not names_an_owui_file_path(file_url)
                         and not pipe._multimodal_handler._is_insecure_http_allowed(file_url)
                     ):
                         pipe.logger.error(
@@ -1468,7 +1526,7 @@ async def transform_messages_to_input(
                         file_url = None
 
                     if not (file_id or file_data or file_url):
-                        return _no_source_refusal(filename)
+                        return _no_source_refusal()
 
                     if file_id:
                         result["file_id"] = file_id
@@ -1481,6 +1539,8 @@ async def transform_messages_to_input(
 
                     return result
 
+                except RequiredInternalFileError:
+                    raise
                 except Exception as exc:
                     pipe.logger.exception("Error in _to_input_file")
                     await pipe._ensure_error_formatter()._emit_error(
@@ -1488,7 +1548,7 @@ async def transform_messages_to_input(
                         f"File processing error: {exc}",
                         show_error_message=False
                     )
-                    return _no_source_refusal("")
+                    return _no_source_refusal()
 
             async def _to_input_audio(block: dict) -> dict | ImageRefusal | None:
                 """Convert Open WebUI audio blocks into Responses API format.
@@ -1589,7 +1649,7 @@ async def transform_messages_to_input(
                         cleaned = "".join(stripped.split())
                     if not cleaned:
                         return None
-                    if not _is_well_formed_base64(cleaned):
+                    if not await asyncio.to_thread(_is_well_formed_base64, cleaned):
                         return None
                     return cleaned
 
@@ -1835,7 +1895,9 @@ async def transform_messages_to_input(
                             StatusMessages.VIDEO_BASE64,
                             done=False
                         )
-                    elif not await pipe._multimodal_handler._is_safe_url(url):
+                    elif not await pipe._multimodal_handler._is_safe_url(
+                        url, seconds=_remaining_address_seconds(address_deadline)
+                    ):
                         pipe.logger.error(
                             "SSRF protection blocked video URL: %s", loggable_link(url)
                         )
@@ -2201,7 +2263,23 @@ async def transform_messages_to_input(
             else _extract_plain_text_content(raw_content)
         )
         is_old_message = _is_old_turn(msg_turn_index, threshold=prune_before_turn)
-        assistant_image_urls = _markdown_images_from_text(assistant_text)
+
+        scanned_text: list[str] = []
+        scanned_urls: list[str] = []
+
+        def _destinations(
+            text: str,
+            scanned_text: list[str] = scanned_text,
+            scanned_urls: list[str] = scanned_urls,
+        ) -> list[str]:
+            if scanned_text and scanned_text[0] is text:
+                return scanned_urls
+            found = markdown_image_destinations(text)
+            scanned_text[:] = [text]
+            scanned_urls[:] = found
+            return found
+
+        assistant_image_urls = _destinations(assistant_text)
         if assistant_image_urls:
             last_image_blocks = [
                 {"type": "image_url", "image_url": url, "detail": "auto"}
@@ -2217,7 +2295,7 @@ async def transform_messages_to_input(
                 return text
             lifted = [
                 url
-                for url in markdown_image_destinations(text)
+                for url in _destinations(text)
                 if is_inline_data_url(url) and split_base64_data_url(url)
             ]
             for url in lifted:

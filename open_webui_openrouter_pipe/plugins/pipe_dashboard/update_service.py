@@ -259,6 +259,7 @@ class UpdateService:
         self._get_pipe = get_pipe
         self._lock = asyncio.Lock()
         self._last_good: dict[str, Any] | None = None
+        self._installed_memo: tuple[Any, ...] | None = None
         self._last_error: dict[str, Any] | None = None
         self._last_error_repo: str | None = None
         self._auto_skip: dict[str, dict[str, Any]] = {}
@@ -322,6 +323,12 @@ class UpdateService:
                 exc_info=True,
             )
             return "0.0.0"
+
+    def _installed_state(self, row: Any) -> tuple[dict[str, Any], str]:
+        return (
+            self.detect_mode(getattr(row, "content", "") or ""),
+            self._installed_version(row),
+        )
 
     def detect_mode(self, content: str | None = None) -> dict[str, Any]:
         import re
@@ -437,8 +444,15 @@ class UpdateService:
         valves = await self._row_valves()
         pipe = self._pipe()
         row = await self._row()
-        mode = self.detect_mode(getattr(row, "content", "") or "")
-        installed_version = self._installed_version(row)
+        content = getattr(row, "content", "") or ""
+        key = (getattr(row, "updated_at", None), len(content))
+        installed_memo = self._installed_memo
+        if content and installed_memo is not None and installed_memo[0] == key:
+            mode, installed_version = installed_memo[1], installed_memo[2]
+        else:
+            mode, installed_version = await asyncio.to_thread(self._installed_state, row)
+            if content:
+                self._installed_memo = (key, mode, installed_version)
         now = _now()
 
         repo = ""

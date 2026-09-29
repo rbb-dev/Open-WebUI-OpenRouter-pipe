@@ -98,7 +98,7 @@ The pipe accepts the following Advanced Model Parameters:
 | `disable_description_updates` | `bool-ish` | Model metadata sync | Prevents overwriting the model description (`meta.description`). |
 | `disable_web_tools_auto_attach` | `bool-ish` | Model metadata sync | Prevents auto-attaching the **OR Web Tools** integration toggle (filter id) for this model. |
 | `disable_web_tools_default_on` | `bool-ish` | Model metadata sync | Prevents auto-enabling **OR Web Tools** by default for this model (prevents seeding `meta.defaultFilterIds`, and releases one the pipe had already seeded for it). |
-| `disable_direct_uploads_auto_attach` | `bool-ish` | Model metadata sync | Prevents auto-attaching the **Direct Uploads** integration toggle (filter id) for this model. |
+| `disable_direct_uploads_auto_attach` | `bool-ish` | Model metadata sync | Prevents auto-attaching the **Direct Uploads** integration toggle (filter id) for this model, and prevents removing it from `meta.defaultFilterIds`. |
 
 Notes:
 - “bool-ish” accepts JSON booleans (`true/false`) and common string/int forms (`"true"`, `"1"`, `"on"`, etc.).
@@ -289,6 +289,7 @@ This is a per-model “master kill switch” for the pipe’s Open WebUI model m
 - Custom param: `disable_direct_uploads_auto_attach` (bool-ish)
 - Pipe behavior (when truthy):
   - The pipe will not add/remove the Direct Uploads filter id in `meta.filterIds` for that model, even when `AUTO_ATTACH_DIRECT_UPLOADS_FILTER=True`.
+  - Nor will it remove the id from `meta.defaultFilterIds`: the opt-out is hands-off, so a default the pipe never detached stays ticked.
 
 ### 2.13 `disable_image_filter_auto_attach` → preserve the native image filter wiring
 - Custom param: `disable_image_filter_auto_attach` (bool-ish)
@@ -388,7 +389,7 @@ Key valves:
 Open WebUI stores additional per-model UI metadata (capabilities checkboxes and profile images) in its own Models table. This pipe can **automatically sync that metadata** for the OpenRouter models it exposes.
 
 What it syncs (best-effort):
-- `meta.profile_image_url`: downloads the model icon, converts it to **PNG**, and stores it as a `data:image/png;base64,...` data URL (Open WebUI does not process remote image URLs here). The source URL is stamped in the pipe's own metadata under `image_source_url`, alongside the `image_source_kind` recording which of the two sources it was — the frontend catalogue (`frontend`) or the maker's page (`maker`) — so an icon whose source URL has not changed is not downloaded again, and for a model taking its maker's logo the maker's page is not re-fetched either; a row stamped from the frontend catalogue is always re-fetched, so a model whose catalogue icon is retired still reaches its maker's logo. A change to the image at the same URL is therefore not picked up, and a card keeps its old icon — a hand-picked one included — until its source URL changes. On the first pass after upgrading from a version that did not record the kind, each maker's page is fetched once more and the rows converge again.
+- `meta.profile_image_url`: downloads the model icon, converts it to **PNG**, and stores it as a `data:image/png;base64,...` data URL (Open WebUI does not process remote image URLs here). The source URL is stamped in the pipe's own metadata under `image_source_url`, alongside the `image_source_kind` recording which of the two sources it was — the frontend catalogue (`frontend`) or the maker's page (`maker`) — so an icon whose source URL has not changed is not downloaded again, and for a model taking its maker's logo the maker's page is not re-fetched either; a row stamped from the frontend catalogue is always re-fetched, so a model whose catalogue icon is retired still reaches its maker's logo. A change to the image at the same URL is therefore not picked up, and a card keeps its old icon — a hand-picked one included — until its source URL changes. The other half of that promise is the catalogue read itself: a model whose catalogue icon is *unreadable this pass* keeps the icon it has, and no maker page is scraped on its behalf, so an outage neither overwrites a stored icon nor costs one scrape per maker. On the first pass after upgrading from a version that did not record the kind, each maker's page is fetched once more and the rows converge again.
   - SVG icons are rasterized to PNG (requires `cairosvg`).
   - Other images are converted to PNG (requires `Pillow`).
 - `meta.description`: writes the model’s user-facing description from OpenRouter’s `/models` catalog when present.
@@ -398,7 +399,7 @@ What it syncs (best-effort):
 Data sources / egress:
 - Fetches `https://openrouter.ai/api/frontend/v1/catalog/models` (no auth) to discover icons and descriptions.
 - When provider routing valves list models, fetches `https://openrouter.ai/api/v1/models/{author}/{slug}/endpoints` (no auth) for each listed model to build the full provider list for the routing filter dropdowns.
-- Downloads each icon URL (absolute or relative to `https://openrouter.ai`) and may fall back to a maker page OpenGraph image (`https://openrouter.ai/<maker>`); while the stamped source is unchanged, neither the page nor its image is fetched again.
+- Downloads each icon URL (absolute or relative to `https://openrouter.ai`) and may fall back to a maker page OpenGraph image (`https://openrouter.ai/<maker>`); while the stamped source is unchanged, neither the page nor its image is fetched again. The maker-page fallback is a fallback for a catalogue read that ANSWERED and had no icon for the model: a pass whose read did not answer scrapes no maker page at all and leaves stored icons as they are, so an outage does not turn into one request per maker per refresh window.
 
 All three of those fetches carry the `HTTP-Referer` attribution header, because each names an openrouter.ai host. An icon download is a different matter: its URL can name any host (a provider's favicon is fetched from a third-party CDN), so it carries none, and the vetted transport re-decides per redirect hop rather than replaying the header onto whatever a `Location` names.
 

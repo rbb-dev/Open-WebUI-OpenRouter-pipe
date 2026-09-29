@@ -1579,6 +1579,7 @@ class Pipe:
                     api_key=api_key_value,
                     cache_seconds=self.valves.MODEL_CATALOG_REFRESH_SECONDS,
                     logger=self.logger,
+                    valves=self.valves,
                     http_referer=_select_openrouter_http_referer(self.valves),
                 )
                 from .integrations.image_catalog import ensure_image_catalog_loaded

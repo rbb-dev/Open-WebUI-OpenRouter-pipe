@@ -258,6 +258,16 @@ def _retained_bytes(value: Any) -> int:
     return total
 
 
+def _copy_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _copy_payload(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_copy_payload(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_copy_payload(item) for item in value)
+    return value
+
+
 # ArtifactStore Class
 
 
@@ -283,6 +293,7 @@ class ReplyMemory:
         self._user_id = user_id or _current_user_id
         self._replies: OrderedDict[tuple[Any, Any, Any], tuple[float, dict[str, dict[str, Any]], int]] = OrderedDict()
         self._sweep: asyncio.TimerHandle | None = None
+        self._sweep_loop: asyncio.AbstractEventLoop | None = None
         self._lock = threading.RLock()
         self._logger = logger
         self._evict_warn: dict[str, float] = {}
@@ -301,14 +312,23 @@ class ReplyMemory:
             replies.pop(key, None)
 
     def _arm(self) -> None:
-        if self._sweep is not None or not self._replies:
-            return
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
+        if self._sweep is not None and self._sweep_loop is loop and not self._sweep.cancelled():
+            return
+        self._disarm()
+        if not self._replies:
+            return
         earliest = min(touched for touched, _rows, _size in self._replies.values())
         self._sweep = loop.call_later(max(0.0, earliest + self._idle_seconds - self._clock()), self._run_sweep_locked)
+        self._sweep_loop = loop
+
+    def _disarm(self) -> None:
+        sweep, self._sweep, self._sweep_loop = self._sweep, None, None
+        if sweep is not None:
+            sweep.cancel()
 
     def _run_sweep_locked(self) -> None:
         with self._lock:
@@ -316,12 +336,13 @@ class ReplyMemory:
 
     def _run_sweep(self) -> None:
         self._sweep = None
+        self._sweep_loop = None
         self._expire()
         self._arm()
 
     def rearm(self) -> None:
         with self._lock:
-            self._sweep = None
+            self._disarm()
             self._arm()
 
     def _touch(self, key: tuple[Any, Any, Any]) -> None:
@@ -411,7 +432,7 @@ class ReplyMemory:
         if key not in self._replies:
             return {}
         kept = self._replies[key][1]
-        found = {item_id: json.loads(json.dumps(kept[item_id])) for item_id in item_ids if item_id in kept}
+        found = {item_id: _copy_payload(kept[item_id]) for item_id in item_ids if item_id in kept}
         if found:
             self._touch(key)
         return found
@@ -530,7 +551,9 @@ class ArtifactStore:
             self.logger.warning(
                 "ARTIFACT_ENCRYPTION_KEY is set but cannot be decrypted with the current "
                 "WEBUI_SECRET_KEY; dropping %d artifact row(s) rather than storing them "
-                "unencrypted. Re-enter ARTIFACT_ENCRYPTION_KEY to resume storing artifacts.",
+                "unencrypted. Re-enter ARTIFACT_ENCRYPTION_KEY to resume storing artifacts. "
+                "The stored value looks like a ciphertext but does not decode: it may be "
+                "damaged, or it may be a passphrase typed with the 'encrypted:' prefix.",
                 len(rows),
             )
             self._artifact_key_warning_emitted = True
@@ -1775,7 +1798,7 @@ class ArtifactStore:
         if not (chat_id and item_ids):
             return {}
         if is_temporary_chat(chat_id):
-            return self._reply_memory.read(chat_id, reply_id, item_ids)
+            return await asyncio.to_thread(self._reply_memory.read, chat_id, reply_id, item_ids)
 
         cached: dict[str, dict] = {}
         if self._redis_enabled:
@@ -1837,8 +1860,9 @@ class ArtifactStore:
                     "Earlier tool results could not be loaded, so the model did not receive them.",
                     level="warning",
                 )
+        cache_hits = set(cache_hit_ids)
         await self._touch_cached(
-            chat_id, message_id, [item_id for item_id in cached if item_id in set(cache_hit_ids)]
+            chat_id, message_id, [item_id for item_id in cached if item_id in cache_hits]
         )
         return cached
 

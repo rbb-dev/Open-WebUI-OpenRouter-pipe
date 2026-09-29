@@ -158,7 +158,7 @@ def _api_caller_error_response(
     exc: OpenRouterAPIError, *, stream: bool, path: str
 ) -> StreamingResponse | None:
     return _transported_failure_response(
-        exc.upstream_message or exc.openrouter_message or exc.reason,
+        exc.openrouter_message or exc.reason,
         code=exc.status,
         stream=stream,
         path=path,

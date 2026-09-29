@@ -349,9 +349,10 @@ class OpenRouterModelRegistry:
 
     @classmethod
     def _key_changed(cls, api_key: str) -> bool:
-        return cls._zdr_attempted_key is not None and cls._zdr_attempted_key != _fingerprint(
-            api_key
-        )
+        fp = _fingerprint(api_key)
+        if fp in cls._zdr_rosters or fp in cls._zdr_settle:
+            return False
+        return cls._zdr_attempted_key is not None and cls._zdr_attempted_key != fp
 
     @classmethod
     def _credential_settle(cls, api_key: str) -> tuple[int, float] | None:
@@ -1178,7 +1179,7 @@ class OpenRouterModelRegistry:
         new_id_map = dict(cls._id_map)
 
         old_image_norms = (
-            set(cls._image_catalog_norms) - set(cls._chat_catalog_norms)
+            set(cls._image_catalog_norms)
             if isinstance(image_models, list) and not image_models
             else {
                 norm_id
@@ -1192,6 +1193,7 @@ class OpenRouterModelRegistry:
                 )
             }
         )
+        old_image_norms = old_image_norms - set(cls._chat_catalog_norms)
         if old_image_norms:
             for norm_id in old_image_norms:
                 new_specs.pop(norm_id, None)

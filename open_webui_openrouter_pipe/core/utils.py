@@ -1011,7 +1011,14 @@ _REDACTED_DATA_URL_MARKER = "[REDACTED]"
 
 _BARE_BASE64_KEYS = frozenset({"b64_json", "b64", "image_base64", "base64"})
 
-_MEDIA_URL_KEYS = frozenset({"image_url", "file_url", "video_url", "url", "file_data"})
+_MEDIA_URL_KEYS = frozenset({"image_url", "file_url", "video_url", "url", "file_data", "content_url"})
+
+
+def _payload_key(key: str) -> str:
+    return key.replace("_", "").casefold()
+
+
+_MEDIA_KEY_STEMS = frozenset(_payload_key(k) for k in _MEDIA_URL_KEYS)
 
 _BARE_BASE64_SHAPE = re.compile(r"[A-Za-z0-9+/_-]{1024,}={0,2}\Z")
 
@@ -1050,7 +1057,7 @@ def _redact_payload_blobs(value: Any, *, max_chars: int = 256) -> Any:
         if isinstance(obj, tuple):
             return tuple(_walk(v, key) for v in obj)
         if isinstance(obj, str):
-            if key in _MEDIA_URL_KEYS:
+            if _payload_key(key) in _MEDIA_KEY_STEMS:
                 return loggable_link(obj) or _REDACTED_DATA_URL_MARKER
             if key in _BARE_BASE64_KEYS or key.endswith("_b64"):
                 return _redact_bare_blob(obj)

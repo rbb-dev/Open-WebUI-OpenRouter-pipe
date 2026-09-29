@@ -27,6 +27,7 @@ import pytest_asyncio
 
 from open_webui_openrouter_pipe import Pipe
 from open_webui_openrouter_pipe.core.url_scheme import url_scheme
+from open_webui_openrouter_pipe.requests import transformer as transformer_module
 from open_webui_openrouter_pipe.requests.transformer import transform_messages_to_input
 from open_webui_openrouter_pipe.storage.multimodal import (
     MultimodalHandler,
@@ -3368,11 +3369,11 @@ class TestImageTransformer:
         is that no `input_image` block is produced, which is asserted over the whole
         message rather than by indexing the first element.
         """
-        parse_mock = Mock(side_effect=RuntimeError("boom"))
-        monkeypatch.setattr(pipe_instance._multimodal_handler, "_parse_data_url", parse_mock)
+        validator_mock = Mock(side_effect=RuntimeError("boom"))
+        monkeypatch.setattr(transformer_module, "_is_well_formed_base64", validator_mock)
         block = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
         content = await _transform_single_block(pipe_instance, block, mock_user)
-        parse_mock.assert_called_once()
+        validator_mock.assert_called_once()
         assert content is None or content.get("type") != "input_image", (
             f"the picture was forwarded unvalidated: {content!r}"
         )
@@ -3855,8 +3856,8 @@ class TestMultimodalIntegration:
         pipe_instance._multimodal_handler._is_safe_url = AsyncMock(return_value=True)
 
         remote_file_url = "https://example.com/manual.pdf"
-        parse_mock = Mock(side_effect=RuntimeError("boom"))
-        monkeypatch.setattr(pipe_instance._multimodal_handler, "_parse_data_url", parse_mock)
+        validator_mock = Mock(side_effect=RuntimeError("boom"))
+        monkeypatch.setattr(transformer_module, "_is_well_formed_base64", validator_mock)
 
         messages = [
             {
@@ -3873,7 +3874,7 @@ class TestMultimodalIntegration:
             event_emitter=None,
         )
 
-        parse_mock.assert_called_once()
+        validator_mock.assert_called_once()
         # Every block whose transform did not return an ImageRefusal, taken from the
         # WHOLE outgoing content list: a splice around the bad block would drop whatever
         # followed it, and a `content[:i]` / `content[i+1:]` loop would cut the wrong
