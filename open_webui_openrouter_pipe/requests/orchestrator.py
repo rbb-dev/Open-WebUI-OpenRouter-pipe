@@ -2102,7 +2102,7 @@ class RequestOrchestrator:
             code = getattr(exc, "status", None) or 502
             if _is_api_caller(__metadata__):
                 escape = _transported_failure_response(
-                    str(exc), code=code, stream=responses_body.stream,
+                    exc.evidence(), code=code, stream=responses_body.stream,
                     path=getattr(getattr(__request__, "url", None), "path", "") or "",
                 )
                 if escape is not None:
@@ -2123,7 +2123,7 @@ class RequestOrchestrator:
                 __event_emitter__,
                 template=valves.SERVICE_ERROR_TEMPLATE,
                 variables={"error_type": type(exc).__name__, "status_code": str(code),
-                           "reason": f"{getattr(exc, 'endpoint', 'The endpoint')} answered with a body that is not an OpenRouter response"},
+                           "reason": exc.evidence()},
                 log_message=f"Unexpected error in request loop: {exc}",
             )
             await self._pipe._dispatch_plugin_event(

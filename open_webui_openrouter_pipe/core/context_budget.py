@@ -135,13 +135,14 @@ def _payload_windows(raw: str) -> tuple[str, ...]:
 
 
 def _reads_as_text(
-    media_type: str, windows: tuple[str, ...] | None, filename: str = ""
+    media_type: str, payload: str | None, filename: str = ""
 ) -> bool:
     if media_type.startswith("text/"):
         return True
     if media_type in _TEXTUAL_MEDIA_TYPES or media_type.endswith(("+json", "+xml")):
         return True
     if media_type in _UNTYPED_DECLARATIONS or not media_type:
+        windows = _payload_windows(payload) if payload else ()
         if windows:
             first = _decode_window(windows[0])
             if first is not None and first.startswith(_BINARY_DOCUMENT_MAGICS):
@@ -163,9 +164,9 @@ def _reads_as_text(
 
 
 def _document_tokens(
-    n: int, media_type: str, windows: tuple[str, ...] | None = None, filename: str = ""
+    n: int, media_type: str, payload: str | None = None, filename: str = ""
 ) -> int:
-    if _reads_as_text(media_type, windows, filename):
+    if _reads_as_text(media_type, payload, filename):
         return n // _CHARS_PER_TOKEN_HEURISTIC
     return n // _DOCUMENT_BYTES_PER_TOKEN
 
@@ -306,7 +307,7 @@ def compute_prompt_limit_tokens(
     return context_length
 
 
-_NAMES_CONTENT: tuple[int, str, tuple[str, ...] | None] = (0, "", None)
+_NAMES_CONTENT: tuple[int, str, str | None] = (0, "", None)
 _LOCATOR_RE = re.compile(r"^(?!data:)[A-Za-z][A-Za-z0-9+.\-]*:")
 
 
@@ -325,21 +326,21 @@ def inline_payload_bytes(value: str) -> int:
     return len(raw)
 
 
-def _payload_bytes(value: Any) -> tuple[int, str, tuple[str, ...] | None] | None:
+def _payload_bytes(value: Any) -> tuple[int, str, str | None] | None:
     if isinstance(value, str):
         media_type = ""
-        payload_head: tuple[str, ...] | None = None
+        payload: str | None = None
         if url_scheme(value[:_DATA_URL_PREFIX_CHARS]) == "data":
             header, _, raw = value.partition(",")
             if header.startswith("data:"):
                 media_type = header[len("data:") :].split(";", 1)[0].strip().lower()
-                payload_head = _payload_windows(raw)
+                payload = raw
         elif _LOCATOR_RE.match(value):
             return _NAMES_CONTENT
         else:
             raw = value
         size = inline_payload_bytes(value)
-        return (size, media_type, payload_head) if size else None
+        return (size, media_type, payload) if size else None
     if isinstance(value, dict):
         for sub_key in ("url", "data"):
             if sub_key in value:
@@ -349,7 +350,7 @@ def _payload_bytes(value: Any) -> tuple[int, str, tuple[str, ...] | None] | None
 
 def _referenced_bytes(
     value: Any, referenced_sizes: Mapping[str, tuple[int, str, str]] | None
-) -> tuple[int, str, tuple[str, ...] | None] | None:
+) -> tuple[int, str, str | None] | None:
     if not referenced_sizes or not isinstance(value, str):
         return None
     entry = referenced_sizes.get(value)
@@ -378,7 +379,7 @@ def _budget_shape(
         spec = _OPAQUE_BLOCK_PAYLOADS.get(block_type) if isinstance(block_type, str) else None
         if spec is not None:
             payload_keys, rate = spec
-            sizes: dict[str, tuple[int, str, tuple[str, ...] | None]] = {}
+            sizes: dict[str, tuple[int, str, str | None]] = {}
             for key in payload_keys:
                 if key not in value:
                     continue
@@ -493,7 +494,10 @@ def _output_floor_chars(
         return _wire_chars(text)
     builder = build_stub or build_replayed_tool_omission_stub
     stub = builder(result_chars=len(text), remaining_tokens=0)
-    return min(_wire_chars(text), _wire_chars(stub))
+    stub_wire = _wire_chars(stub)
+    if len(text) >= stub_wire:
+        return stub_wire
+    return min(_wire_chars(text), stub_wire)
 
 
 def estimate_serialized_chars(

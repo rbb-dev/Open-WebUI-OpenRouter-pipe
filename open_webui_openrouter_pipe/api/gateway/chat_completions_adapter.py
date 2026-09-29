@@ -69,6 +69,7 @@ if TYPE_CHECKING:
 
 _CHAT_CHUNK_PARSE_WARN_COOLDOWN_S = 30.0
 _CHAT_SSE_DONE_SENTINEL = b"[DONE]"
+_ARGUMENTS_VALUE_TERMINATORS = frozenset('}]"0123456789eElL')
 _warned_chat_chunk_parse: dict[str, float] = {}
 
 
@@ -297,6 +298,21 @@ class ChatCompletionsAdapter:
                 return False
             return True
 
+        def _slot_is_open(slot: dict[str, Any]) -> bool:
+            arguments = slot.get("arguments")
+            if not isinstance(arguments, str):
+                return True
+            closed_at = slot.get("arguments_closed_at")
+            if closed_at is not None and len(arguments) == closed_at:
+                return False
+            stripped = arguments.rstrip()
+            if not stripped or stripped[-1] not in _ARGUMENTS_VALUE_TERMINATORS:
+                return True
+            if _arguments_parse(arguments):
+                slot["arguments_closed_at"] = len(arguments)
+                return False
+            return True
+
         def _match_open_tool_call(
             slots: dict[int, dict[str, Any]], raw_call: dict[str, Any]
         ) -> int:
@@ -308,16 +324,19 @@ class ChatCompletionsAdapter:
             matched = None
             if slots and has_raw_id:
                 for open_index, slot in slots.items():
-                    if slot.get("id") == raw_id and not _arguments_parse(slot.get("arguments")):
+                    if slot.get("id") == raw_id and _slot_is_open(slot):
                         matched = open_index
                         break
             if matched is None and slots and not has_raw_id and has_frame_name:
                 for open_index, slot in slots.items():
-                    if slot.get("name") == frame_name and not _arguments_parse(slot.get("arguments")):
+                    if slot.get("name") == frame_name and _slot_is_open(slot):
                         matched = open_index
                         break
-            if matched is None and slots and not has_raw_id and not has_frame_name and len(slots) == 1 and not _arguments_parse(slots[max(slots.keys())].get("arguments")):
-                matched = max(slots.keys())
+            if matched is None and slots and not has_raw_id and not has_frame_name:
+                for open_index in sorted(slots, reverse=True):
+                    if _slot_is_open(slots[open_index]):
+                        matched = open_index
+                        break
             if matched is None:
                 matched = max(slots.keys(), default=-1) + 1
             return matched

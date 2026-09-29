@@ -803,7 +803,7 @@ def _replay_block_is_usable(block: Any) -> bool:
         return _replay_payload_is_present(block.get("image_url"))
     if btype == "input_audio":
         return _replay_payload_is_present(block.get("input_audio"))
-    if btype == "video_url":
+    if btype in {"video_url", "input_video"}:
         return _replay_payload_is_present(block.get("video_url"))
     return True
 
@@ -816,7 +816,7 @@ def _replay_block_refusal(block: Any) -> str | None:
         return "an image carried no picture data"
     if btype == "input_audio":
         return "an audio clip carried no audio data"
-    if btype == "video_url":
+    if btype in {"video_url", "input_video"}:
         return "a video clip carried no video data"
     if btype in {"file", "input_file"}:
         return "a file carried no contents"

@@ -263,7 +263,10 @@ def test_the_closed_value_lists_match_the_recorded_request_format():
     These are the values the server-tool filter falls back to when a model publishes no
     list of its own. Hand-trimming them narrowed what users could ask for below what the
     API accepts -- `svg` vanished from every vectorising model, `auto` from every
-    background. The comparison runs against the recording so a literal cannot satisfy it.
+    background. The comparison runs against the recording so a literal cannot satisfy it;
+    the recording is only a recording, and the arm named
+    `test_the_recording_matches_the_published_image_enums` reads OpenRouter's own page to
+    stop it drifting away from the published format in silence.
     """
     recorded = RECORDED["image"]["enums"]
     assert recorded, "the enum recording is empty, so this gate asserts nothing"
@@ -530,3 +533,13 @@ def test_a_catalog_key_carrying_a_control_domain_is_not_quietly_shrugged_off():
         f"these keys publish a control domain but their gap reason never says why it cannot "
         f"be sent: {unexplained}"
     )
+
+
+"""Recorded contracts publishing no value list for at least one of the two controls.
+
+The sentence a user reads is the fallback's, and the fallback is what a model with no
+list of its own is given. One row per control that reaches it on the recorded fleet: the
+ratios are published by every contract but these four, the tiers by twelve, and a row that
+drew neither control would read nothing and pass. The first model publishes neither, so
+each of the others covers a control the first one does not.
+"""

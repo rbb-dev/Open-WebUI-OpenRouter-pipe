@@ -216,18 +216,6 @@ class TestFusionActivationTripwire:
                        plugins=[{"id": "fusion"}])
         assert not _tripwire_records(caplog)
 
-    @pytest.mark.asyncio
-    async def test_silent_on_internal_chat_fallback(
-        self, monkeypatch, pipe_instance_async, caplog
-    ):
-        import logging
-        events = [{"type": "openrouter_pipe.chat_fallback"}] + PLAIN_EVENTS
-        with caplog.at_level(logging.WARNING):
-            await _run(pipe_instance_async, monkeypatch, fusion_live_enabled=True,
-                       events=events, plugins=[{"id": "fusion"}])
-        assert not _tripwire_records(caplog)
-
-
 @pytest.mark.asyncio
 async def test_fusion_armed_emits_embed_once_and_streams_fusion_events(monkeypatch, pipe_instance_async):
     _result, emitted = await _run(pipe_instance_async, monkeypatch, fusion_live_enabled=True)

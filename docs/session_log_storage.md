@@ -240,7 +240,7 @@ Enable timing when diagnosing performance issues:
 
 ### The in-memory copy
 
-Alongside the file the logger keeps an in-memory copy of each request's events, so a running request can be read without parsing the file. That copy is a duplicate of a durable record and is released as soon as the request's job completes — the file is what persists, and only the file. `MAX_TIMING_REQUESTS` is the backstop for requests that end abnormally and never reach the release, not the normal retention path.
+Alongside the file the logger keeps an in-memory copy of each request's events, so a running request can be read without parsing the file. That copy is a duplicate of a durable record and is released as soon as the request's job completes — the file is what persists, and only the file. The timestamp index that says which requests are still in flight is released with that copy, and `SessionLogger.cleanup()`, which drops both maps for anything older than its one-hour cutoff, is the backstop for the index on a request that ends abnormally. `MAX_TIMING_REQUESTS` is the backstop for requests that end abnormally and never reach the release, not the normal retention path.
 
 ### Adding timing to new functions (for developers)
 

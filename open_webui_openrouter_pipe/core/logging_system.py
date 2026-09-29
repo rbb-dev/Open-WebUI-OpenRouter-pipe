@@ -101,19 +101,23 @@ _RECORD_SHAPE_RE = re.compile(
 )
 
 
+def _deformed_exception_text(text: str) -> tuple[str, bool]:
+    lines: list[str] = []
+    changed = False
+    for line in text.splitlines():
+        if _RECORD_SHAPE_RE.match(line):
+            lines.append(f" {line}")
+            changed = True
+        else:
+            subject = _data_url_log_subject(_neutralise_log_text(line))
+            lines.append(subject)
+            if subject != line:
+                changed = True
+    return "\n".join(lines), changed
+
+
 def _deform_exception_text(text: str) -> str:
-    shaped = [
-        f" {line}" if _RECORD_SHAPE_RE.match(line) else _data_url_log_subject(_neutralise_log_text(line))
-        for line in text.splitlines()
-    ]
-    return "\n".join(shaped)
-
-
-def _deforms_exception_text(text: str) -> bool:
-    return any(
-        _RECORD_SHAPE_RE.match(line) or _data_url_log_subject(_neutralise_log_text(line)) != line
-        for line in text.splitlines()
-    )
+    return _deformed_exception_text(text)[0]
 
 
 class _ShapedException(Exception):
@@ -412,13 +416,14 @@ class SessionLogger:
                     if raw_exc:
                         record.raw_exc_text = raw_exc  # type: ignore[attr-defined]
                         deformed = None
+                        changed = False
                         try:
-                            deformed = _deform_exception_text(raw_exc)
+                            deformed, changed = _deformed_exception_text(raw_exc)
                         except Exception:  # noqa: BLE001, S110 - logging Filter: self-log re-enters Logger.handle
                             pass
                         if deformed is not None:
                             record.exc_text = deformed  # type: ignore[attr-defined]
-                        if deformed is not None and _deforms_exception_text(raw_exc):
+                        if changed and deformed is not None:
                             shaped = None
                             try:
                                 shaped = _shaped_exc_info(record.exc_info, deformed)
@@ -572,6 +577,14 @@ class SessionLogger:
             for sid in stale:
                 cls.logs.pop(sid, None)
                 cls._session_last_seen.pop(sid, None)
+
+    @classmethod
+    def release(cls, request_id: str | None) -> None:
+        if not request_id:
+            return
+        with cls._state_lock:
+            cls.logs.pop(request_id, None)
+            cls._session_last_seen.pop(request_id, None)
 
 
 # Session Log Archive Writer

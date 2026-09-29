@@ -1245,9 +1245,6 @@ class ArtifactStore:
                 if not isinstance(payload, dict):
                     continue
                 if row.get("is_encrypted"):
-                    if "ciphertext" in payload:
-                        payload.setdefault("enc_v", _ENCRYPTED_PAYLOAD_VERSION)
-                        continue
                     stored_payload, row["is_encrypted"] = self._encrypt_if_needed("reasoning", payload)
                     row["payload"] = stored_payload
                 continue

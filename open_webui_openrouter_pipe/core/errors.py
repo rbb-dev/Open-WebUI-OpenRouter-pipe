@@ -89,15 +89,16 @@ class _ChatRetryWait(_RetryWait):
                 exc = retry_state.outcome.exception()
             except (concurrent.futures.CancelledError, TypeError):
                 exc = None
+        wait = base_delay
         if isinstance(exc, _RetryableHTTPStatusError):
             retry_after = exc.retry_after
             if isinstance(retry_after, (int, float)) and retry_after > 0:
-                return max(base_delay, min(float(retry_after), self._cap))
+                wait = max(base_delay, float(retry_after))
         if isinstance(exc, OpenRouterAPIError):
             retry_after = _resolve_retry_after_seconds(getattr(exc, "metadata", None))
             if retry_after is not None and retry_after > 0:
-                return max(base_delay, min(float(retry_after), self._cap))
-        return base_delay
+                wait = max(base_delay, float(retry_after))
+        return min(wait, self._cap) if self._cap is not None else wait
 
 
 class StatusMessages:
@@ -129,6 +130,12 @@ class UpstreamBodyUnreadable(RuntimeError):
         self.endpoint = endpoint
         self.body_excerpt = body_excerpt
         self.content_type = content_type
+
+    def evidence(self) -> str:
+        return (
+            f"{self.endpoint} answered with a body that is not an OpenRouter response "
+            f"(Content-Type: {self.content_type}): {self.body_excerpt[:200]}"
+        )
 
 
 class FileUnavailableError(RequiredInternalFileError, ValueError):
@@ -328,6 +335,11 @@ def _extract_openrouter_error_details(body_text: str | None) -> dict[str, Any]:
         metadata_dict.get("request_id")
         or (raw_details.get("request_id") if isinstance(raw_details, dict) else None)
         or (parsed.get("request_id") if isinstance(parsed, dict) else None)
+        or (
+            parsed.get("id")
+            if isinstance(parsed, dict) and parsed.get("status") == "failed"
+            else None
+        )
     )
 
     own_message = error_section.get("message")

@@ -944,7 +944,9 @@ class Valves(BaseModel):
             "TRANSIENT_RETRY_MAX_ATTEMPTS; otherwise, and once those tries are spent, its message is "
             "shown straight away, appended below whatever answer was already streamed. The retry is "
             "skipped for a model pinned by FORCE_RESPONSES_MODELS to /responses, and its error "
-            "surfaces; a model that merely sits on the responses default is still retried."
+            "surfaces; a model that merely sits on the responses default is still retried. A Fusion "
+            "model is not skipped: it is answered as a normal completion, without its Fusion panel, "
+            "and a warning names the model and the fallback."
         ),
     )
     API_KEY: EncryptedStr = Field(
@@ -1035,7 +1037,7 @@ class Valves(BaseModel):
         default=50,
         ge=1,
         le=500,
-        description="Maximum size in MB for inline files, images and audio. A base64 payload is measured as its decoded size; any other inline payload is measured as its own length. Larger payloads are dropped, to prevent memory issues and excessive HTTP request sizes: an uploaded payload is left out with a note, and a picture inside one generated-image reply is dropped from that reply and named in the chat, while the pictures in that reply that did fit are still delivered.",
+        description="Maximum size in MB for inline files, images and audio. A base64 payload is measured as its decoded size; any other inline payload is measured as its own length. Larger payloads are dropped, to prevent memory issues and excessive HTTP request sizes: an uploaded payload is left out with a note, and a picture inside one generated-image reply is dropped from that reply and named in the chat, while the pictures in that reply that did fit are still delivered. It bounds a tool's file result too, which is then neither stored nor shown.",
     )
     IMAGE_UPLOAD_CHUNK_BYTES: int = Field(
         default=1 * 1024 * 1024,
@@ -1592,8 +1594,8 @@ class Valves(BaseModel):
             "finished is folded in by that same pass, which writes the turn complete rather than sealing it again. That "
             "exposure is why the default is long. Each pass takes the oldest stranded bundles first and seals a "
             "bundle only if the sealed write succeeds, keeping the segments for a retry otherwise."
-            "The incomplete marker is written at most once per archive: a pass that finds the turn still stale leaves the single marker "
-            "in place rather than adding another, and a pass that finds the turn complete retires it. "
+            "The incomplete marker is written at most once per archive: a pass that finds the turn still stale re-stamps that one marker "
+            "rather than adding another - only its count is stable, and its timestamp is the last such pass - and a pass that finds the turn complete retires it. "
             "**Warning:** The minimum is `300` seconds (five minutes): a lower value is refused when the configuration is saved, and a stored one that no longer validates falls back to the default rather than being raised to it."
         ),
     )

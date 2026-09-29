@@ -112,7 +112,7 @@ ZDR endpoint, the same refusal when the endpoint list cannot be read at all, an
 endpoint-override conflict from a preset on a model forced to `/responses`, and the
 six sites inside `_handle_pipe_call` where the job itself fails — an artifact store
 that will not open, an API key that cannot be read, an active auth breaker, an
-unusable model catalog, and the catch-all tail. A task
+unusable model catalog, and the catch-all tail. One more sits outside `_handle_pipe_call` entirely: the `await future` arm of `_pipe_impl`, which refuses a job the pipe has already handed to the dispatch worker. A task
 on any of those gets the refusal card only if Open WebUI persists that kind's
 return value; every other kind gets the empty string, because Open WebUI hands that
 return value to a consumer that displays it — a search query, an emoji, a prompt
@@ -135,8 +135,9 @@ already rendered an error card into the chat do not toast as well — the card i
 the report, and a second rendering of the same failure is noise rather than
 information.
 
-The adapter's failure tail follows the same rule: a persisted kind gets the card,
-every other kind gets `""`, and the toast carries the text. `str(last_error)`
+The adapter's failure tail follows the same rule, as does the `await future` arm in
+`_pipe_impl`: a persisted kind gets the card, every other kind gets `""`, and the toast
+carries the text. `str(last_error)`
 never reaches the returned string — for `query_generation` it would be sent to a
 search provider, and for `context_compaction` stored as the chat's summary.
 

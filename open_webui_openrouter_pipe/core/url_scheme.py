@@ -27,6 +27,13 @@ def _scheme_prefix(url: str) -> str | None:
     return None
 
 
+_split_uncached = getattr(urlsplit, "__wrapped__", urlsplit)
+
+
+def _split(value: str) -> Any:
+    return _split_uncached(value) if _scheme_prefix(value) == "data" else urlsplit(value)
+
+
 def url_scheme(url: Any) -> str:
     if not isinstance(url, str):
         return ""
@@ -76,7 +83,7 @@ def url_site(value: Any) -> str:
     if not isinstance(value, str):
         return ""
     try:
-        parts = urlsplit(value)
+        parts = _split(value)
         port = parts.port
     except ValueError:
         return ""
@@ -90,7 +97,7 @@ def url_path(value: Any) -> str:
     if not isinstance(value, str):
         return ""
     try:
-        return urlsplit(value).path
+        return _split(value).path
     except ValueError:
         return value
 

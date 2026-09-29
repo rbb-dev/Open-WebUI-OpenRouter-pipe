@@ -745,15 +745,14 @@ class EventEmitterHandler:
             data: dict[str, Any] = raw_data if isinstance(raw_data, dict) else {}
 
             if isinstance(etype, str) and etype.startswith("response."):
-                await self._put_middleware_stream_item(job, stream_queue, event)
-                return
+                return await self._put_middleware_stream_item(job, stream_queue, event)
 
             if etype == "chat:message":
                 delta_text, answer_already_on_the_queue = middleware_message_delta(
                     answer_already_on_the_queue, data.get("delta"), data.get("content")
                 )
                 if isinstance(delta_text, str) and delta_text:
-                    await self._put_middleware_stream_item(
+                    return await self._put_middleware_stream_item(
                         job,
                         stream_queue,
                         openai_chat_chunk_message_template(model_id, delta_text),
@@ -762,16 +761,15 @@ class EventEmitterHandler:
 
             if etype == "chat:message:delta":
                 delta_text = data.get("content")
-                if (
-                    isinstance(delta_text, str)
-                    and delta_text
-                    and await self._put_middleware_stream_item(
+                if isinstance(delta_text, str) and delta_text:
+                    published = await self._put_middleware_stream_item(
                         job,
                         stream_queue,
                         openai_chat_chunk_message_template(model_id, delta_text),
                     )
-                ):
-                    answer_already_on_the_queue = answer_already_on_the_queue + delta_text
+                    if published:
+                        answer_already_on_the_queue = answer_already_on_the_queue + delta_text
+                    return published
                 return
 
             if etype == "chat:tool_calls":
@@ -814,37 +812,37 @@ class EventEmitterHandler:
                 return
 
             if etype == "chat:completion":
+                published = True
+                carried = False
                 completion_content = data.get("content")
-                delivered = True
                 if isinstance(completion_content, str):
-                    if await self._put_middleware_stream_item(
-                        job, stream_queue, {"event": event}
-                    ):
+                    carried = True
+                    if await self._put_middleware_stream_item(job, stream_queue, {"event": event}):
                         answer_already_on_the_queue = completion_content
                     else:
-                        delivered = False
+                        published = False
 
                 error = data.get("error")
-                if (
-                    isinstance(error, dict)
-                    and error
-                    and not await self._put_middleware_stream_terminal(
-                        job, stream_queue, {"error": error}
+                if isinstance(error, dict) and error:
+                    carried = True
+                    published = (
+                        await self._put_middleware_stream_terminal(
+                            job, stream_queue, {"error": error}
+                        )
+                        and published
                     )
-                ):
-                    delivered = False
 
                 usage = data.get("usage")
-                if (
-                    isinstance(usage, dict)
-                    and usage
-                    and not await self._put_middleware_stream_terminal(
-                        job, stream_queue, {"usage": usage}
+                if isinstance(usage, dict) and usage:
+                    carried = True
+                    published = (
+                        await self._put_middleware_stream_terminal(
+                            job, stream_queue, {"usage": usage}
+                        )
+                        and published
                     )
-                ):
-                    delivered = False
-                return delivered
+                return published if carried else None
 
-            await self._put_middleware_stream_item(job, stream_queue, {"event": event})
+            return await self._put_middleware_stream_item(job, stream_queue, {"event": event})
 
         return _emit

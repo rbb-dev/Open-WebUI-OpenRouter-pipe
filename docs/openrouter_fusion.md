@@ -71,7 +71,10 @@ If a `/responses` request falls back to `/chat/completions`, the pipe strips the
 Fusion on that endpoint returns a flattened text transcript with no structured events, so the fallback
 answers as a normal completion instead of billing an unrenderable deliberation. A fusion request that
 streams no deliberation events despite an active Fusion entry logs a warning naming the model — the
-tripwire for the next time OpenRouter's beta behavior shifts; the fallback path suppresses it.
+tripwire for the next time OpenRouter's beta behavior shifts. The fallback path is not exempt from it:
+the warning still fires there, and names the `/chat/completions` retry as the cause, so a panel that
+never opened because the endpoint switched is on the record rather than passing for a Fusion model
+that simply did not deliberate.
 
 ### Per-user options (UserValves)
 

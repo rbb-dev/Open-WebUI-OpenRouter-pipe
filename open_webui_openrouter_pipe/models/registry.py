@@ -339,6 +339,7 @@ class OpenRouterModelRegistry:
     )
     _next_refresh_after: float = 0.0
     _consecutive_failures: int = 0
+    _failure_counts: ClassVar[dict[str, int]] = {}
     _last_error: str | None = None
     _last_error_time: float = 0.0
     _name_map: ClassVar[dict[str, str] | None] = None
@@ -369,10 +370,10 @@ class OpenRouterModelRegistry:
         return 0.0
 
     @classmethod
-    def _record_settle(cls, api_key: str) -> None:
+    def _record_settle(cls, api_key: str, until: float) -> None:
         prior = cls._credential_settle(api_key)
         cls._zdr_settle[_fingerprint(api_key)] = (
-            (prior[0] if prior else 0) + 1, cls._next_refresh_after)
+            (prior[0] if prior else 0) + 1, until)
 
     @classmethod
     def _clear_settle(cls, api_key: str) -> None:
@@ -475,8 +476,8 @@ class OpenRouterModelRegistry:
                 )
             except Exception as exc:
                 cls._zdr_attempted_key = prior_attempt
-                cls._record_refresh_failure(exc, cache_seconds)
-                cls._record_settle(api_key)
+                cls._record_settle(
+                    api_key, cls._record_refresh_failure(exc, cache_seconds, api_key))
                 if not cls._models:
                     raise
                 if rotating:
@@ -489,7 +490,7 @@ class OpenRouterModelRegistry:
                 )
                 return
             cls._clear_settle(api_key)
-            cls._record_refresh_success(cache_seconds)
+            cls._record_refresh_success(cache_seconds, api_key)
 
     @classmethod
     @timed
@@ -669,27 +670,38 @@ class OpenRouterModelRegistry:
         ModelFamily.set_dynamic_specs(specs)
 
     @classmethod
-    def _record_refresh_success(cls, cache_seconds: int) -> None:
+    def _record_refresh_success(cls, cache_seconds: int, api_key: str | None = None) -> None:
         """Reset refresh backoff bookkeeping after a successful catalog fetch."""
         now = time.time()
         cls._last_fetch = now
         cls._next_refresh_after = now + max(5, cache_seconds)
         cls._consecutive_failures = 0
+        if api_key:
+            cls._failure_counts.pop(_fingerprint(api_key), None)
         cls._last_error = None
         cls._last_error_time = 0.0
 
     @classmethod
-    def _record_refresh_failure(cls, exc: Exception, cache_seconds: int) -> None:
+    def _record_refresh_failure(
+        cls, exc: Exception, cache_seconds: int, api_key: str | None = None
+    ) -> float:
         """Increase backoff delay and track the most recent catalog error."""
-        cls._consecutive_failures += 1
+        if api_key:
+            key = _fingerprint(api_key)
+            cls._failure_counts[key] = cls._failure_counts.get(key, 0) + 1
+            failures = cls._failure_counts[key]
+        else:
+            failures = cls._consecutive_failures + 1
+        cls._consecutive_failures = failures
         cls._last_error = str(exc)
         cls._last_error_time = time.time()
-        exponent = min(cls._consecutive_failures - 1, 5)
+        exponent = min(failures - 1, 5)
         base_backoff = 5.0
         raw_backoff = base_backoff * (2 ** exponent)
         capped_backoff = min(cache_seconds, raw_backoff)
         backoff_until = cls._last_error_time + max(base_backoff, capped_backoff)
         cls._next_refresh_after = max(cls._next_refresh_after, backoff_until)
+        return backoff_until
 
     @staticmethod
     def _derive_features(

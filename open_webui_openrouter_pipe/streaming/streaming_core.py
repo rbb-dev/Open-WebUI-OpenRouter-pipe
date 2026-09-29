@@ -309,6 +309,45 @@ def _tool_result_for_log(output: dict[str, Any]) -> str:
     return wrap_code_block(_data_url_log_subject(tool_output_text_and_pictures(output.get("output"))[0]))
 
 
+def _stored_citation_identity(entry: Any) -> str:
+    if isinstance(entry, dict):
+        source = entry.get("source")
+        if isinstance(source, dict):
+            url = source.get("url")
+            if isinstance(url, str) and url:
+                return url
+    return json.dumps(entry, sort_keys=True, default=str)
+
+
+def _stored_entry_identity(entry: Any) -> str:
+    return json.dumps(entry, sort_keys=True, default=str)
+
+
+def _merge_stored_field(stored: Any, fresh: Any, *, key_fn: Any) -> list[Any]:
+    merged: list[Any] = list(stored) if isinstance(stored, list) else []
+    seen = {key_fn(entry) for entry in merged}
+    for entry in fresh:
+        identity = key_fn(entry)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        merged.append(entry)
+    return merged
+
+
+_TURN_METADATA_FIELDS: tuple[tuple[str, str, str, Any], ...] = (
+    ("sources", "citations", "citations", _stored_citation_identity),
+    ("annotations", "annotations", "file annotations", _stored_entry_identity),
+    ("reasoning_details", "reasoning_details", "reasoning details", _stored_entry_identity),
+)
+
+
+def _joined_labels(labels: list[str]) -> str:
+    if len(labels) < 2:
+        return labels[0] if labels else ""
+    return ", ".join(labels[:-1]) + " or " + labels[-1]
+
+
 async def _aclose_quietly(it: AsyncGenerator[dict[str, Any], None]) -> None:
     await it.aclose()
 
@@ -3617,14 +3656,14 @@ class StreamingHandler:
                     event_emitter,
                     template=valves.SERVICE_ERROR_TEMPLATE,
                     variables={"error_type": type(e).__name__, "status_code": "502",
-                               "reason": f"{e.endpoint} answered with a body that is not an OpenRouter response "
-                                         f"(Content-Type: {e.content_type}): {e.body_excerpt[:200]}"},
+                               "reason": e.evidence()},
                     log_message=f"Unreadable upstream body from {e.endpoint}: {e}",
                     partial_answer=assistant_message,
                 )
                 if reported:
                     assistant_message = reported
             else:
+                handed_back_for_retry = True
                 _record_outcome()
                 raise
         except Exception as e:  # pragma: no cover - network errors
@@ -3779,17 +3818,24 @@ class StreamingHandler:
                 fusion_armed and fusion_state is not None
                 and fusion_state.fusion_index is None
                 and not was_cancelled and not error_occurred
-                and not fell_back_to_chat
                 and endpoint_override != "chat_completions"
                 and any(
                     isinstance(p, dict) and p.get("id") == "fusion" and p.get("enabled") is not False
                     for p in (body.plugins or [])
                 )
             ):
-                self.logger.warning(
-                    "No structured fusion events observed for fusion request model=%s",
-                    body.model,
-                )
+                if fell_back_to_chat:
+                    self.logger.warning(
+                        "No structured fusion events observed for fusion request model=%s: "
+                        "the request was retried on /chat/completions, which cannot carry the "
+                        "Fusion panel, so it did not run",
+                        body.model,
+                    )
+                else:
+                    self.logger.warning(
+                        "No structured fusion events observed for fusion request model=%s",
+                        body.model,
+                    )
 
             if (
                 fusion_armed and fusion_state is not None
@@ -3974,37 +4020,13 @@ class StreamingHandler:
 
             # Clear logs
             if request_id:
-                with SessionLogger._state_lock:
-                    SessionLogger.logs.pop(request_id, None)
+                SessionLogger.release(request_id)
                 clear_timing_events(request_id)
             SessionLogger.cleanup()
 
             chat_id = metadata.get("chat_id")
             message_id = metadata.get("message_id")
 
-            async def _persist_message_field(
-                field_key: str, data: Any, *, log_label: str, notify_label: str
-            ) -> None:
-                if (not was_cancelled) and (not handed_back_for_retry) and chat_id and message_id and data and Chats is not None:
-                    try:
-                        await Chats.upsert_message_to_chat_by_id_and_message_id(
-                            chat_id, message_id, {field_key: data}
-                        )
-                    except Exception as exc:
-                        self.logger.warning(
-                            "Failed to persist %s for chat_id=%s message_id=%s: %s",
-                            log_label, chat_id, message_id, exc,
-                            exc_info=True,
-                        )
-                        await self._pipe._event_emitter_handler._emit_notification(
-                            event_emitter,
-                            f"Unable to save {notify_label} for this response. Output was delivered successfully.",
-                            level="warning",
-                        )
-
-            await _persist_message_field(
-                "sources", emitted_citations, log_label="citations", notify_label="citations"
-            )
             assistant_annotations: list[Any] = []
             assistant_reasoning_details: list[Any] = []
             if final_response and isinstance(final_response.get("output"), list):
@@ -4022,13 +4044,61 @@ class StreamingHandler:
                     if isinstance(raw_reasoning_details, list) and raw_reasoning_details:
                         assistant_reasoning_details.extend(raw_reasoning_details)
 
-            await _persist_message_field(
-                "annotations", assistant_annotations, log_label="annotations", notify_label="file annotations"
-            )
-            await _persist_message_field(
-                "reasoning_details", assistant_reasoning_details,
-                log_label="reasoning_details", notify_label="reasoning details"
-            )
+            turn_values = {
+                "sources": emitted_citations,
+                "annotations": assistant_annotations,
+                "reasoning_details": assistant_reasoning_details,
+            }
+            payload: dict[str, Any] = {
+                field: turn_values[field]
+                for field, _log_label, _notify_label, _key_fn in _TURN_METADATA_FIELDS
+                if turn_values[field]
+            }
+            if (not was_cancelled) and (not handed_back_for_retry) and chat_id and message_id and payload and Chats is not None:
+                stored_message: dict[str, Any] = {}
+                try:
+                    chat_row = await Chats.get_chat_by_id(chat_id)
+                    stored_message = (
+                        (chat_row.chat or {}).get("history", {}).get("messages", {}).get(message_id, {})
+                        if chat_row is not None and isinstance(chat_row.chat, dict)
+                        else {}
+                    )
+                except Exception:
+                    self.logger.debug(
+                        "Could not read the stored message to merge this turn's fields into "
+                        "(chat_id=%s message_id=%s)",
+                        chat_id, message_id,
+                        exc_info=True,
+                    )
+                    stored_message = {}
+                if not isinstance(stored_message, dict):
+                    self.logger.debug(
+                        "Stored message for chat_id=%s message_id=%s is not an object; "
+                        "writing this turn's own values",
+                        chat_id, message_id,
+                    )
+                    stored_message = {}
+                for field, _log_label, _notify_label, key_fn in _TURN_METADATA_FIELDS:
+                    if field in payload:
+                        payload[field] = _merge_stored_field(
+                            stored_message.get(field), payload[field], key_fn=key_fn
+                        )
+                try:
+                    await Chats.upsert_message_to_chat_by_id_and_message_id(
+                        chat_id, message_id, payload
+                    )
+                except Exception as exc:
+                    self.logger.warning(
+                        "Failed to persist %s for chat_id=%s message_id=%s: %s",
+                        _joined_labels([log for _f, log, _n, _k in _TURN_METADATA_FIELDS if _f in payload]),
+                        chat_id, message_id, exc,
+                        exc_info=True,
+                    )
+                    await self._pipe._event_emitter_handler._emit_notification(
+                        event_emitter,
+                        f"Unable to save {_joined_labels([n for _f, _l, n, _k in _TURN_METADATA_FIELDS if _f in payload])} for this response. Output was delivered successfully.",
+                        level="warning",
+                    )
 
         _record_outcome()
         return assistant_message

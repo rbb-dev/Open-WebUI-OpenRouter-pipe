@@ -2116,19 +2116,27 @@ class Pipe:
                     clear_timing_context()
 
         if wants_stream and stream_queue is not None:
+            _NO_FRAME = object()
+
+            async def _next_stream_item() -> Any:
+                getter = asyncio.ensure_future(stream_queue.get())
+                try:
+                    await asyncio.wait({getter, future}, return_when=asyncio.FIRST_COMPLETED)
+                    if getter.done():
+                        return getter.result()
+                    return _NO_FRAME
+                finally:
+                    getter.cancel()
+
             @timed
             async def _stream() -> AsyncGenerator[dict[str, Any] | str, None]:
                 try:
                     while True:
                         if future.done() and stream_queue.empty():
                             break
-                        if stream_queue.maxsize > 0:
-                            try:
-                                item = await asyncio.wait_for(stream_queue.get(), timeout=0.25)
-                            except TimeoutError:
-                                continue
-                        else:
-                            item = await stream_queue.get()
+                        item = await _next_stream_item()
+                        if item is _NO_FRAME:
+                            continue
                         stream_queue.task_done()
                         if item is None:
                             break
@@ -2151,18 +2159,17 @@ class Pipe:
             raise
         except Exception:
             self.logger.exception("Pipe request failed (request_id=%s)", job.request_id)
+            detail = self._ensure_error_formatter()._safe_detail(
+                "Request failed. Please retry.",
+            )
             if safe_event_emitter:
                 await self._ensure_error_formatter()._emit_error(
                     safe_event_emitter,
-                    self._ensure_error_formatter()._safe_detail(
-                        "Request failed. Please retry.",
-                    ),
+                    detail,
                     show_error_message=True,
                     done=True,
                 )
-            return self._ensure_error_formatter()._safe_detail(
-                "Request failed. Please retry.",
-            )
+            return self._task_refusal_result(__task__, detail)
         finally:
             with contextlib.suppress(Exception):
                 OWUI_CHAT_ID.reset(await_future_token)
@@ -3094,6 +3101,7 @@ class Pipe:
             if semaphore_held and not permit_handed_to_manager:
                 with contextlib.suppress(Exception):
                     semaphore.release()
+            session_rid = SessionLogger.request_id.get() or ""
             try:
                 _drop_backlog_latch(job.request_id)
                 if stream_queue is not None:
@@ -3150,8 +3158,7 @@ class Pipe:
                                 True,
                                 exc_info=True,
                             )
-                        with SessionLogger._state_lock:
-                            SessionLogger.logs.pop(rid, None)
+                        SessionLogger.release(rid)
                     clear_timing_events(rid)
 
                 backstop_rid = job.request_id or SessionLogger.request_id.get() or ""
@@ -3182,6 +3189,7 @@ class Pipe:
                     with contextlib.suppress(Exception):
                         await session.close()
             finally:
+                SessionLogger.release(session_rid)
                 if job.counter_state is not None:
                     Pipe._release_stream_counter(job.pipe, job.counter_state)
 

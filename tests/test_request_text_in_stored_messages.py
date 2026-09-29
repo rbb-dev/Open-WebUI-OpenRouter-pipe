@@ -111,6 +111,8 @@ def test_an_empty_key_still_produces_something_to_point_at():
         "https://catbox.moe/\tb.mp4",
         "https://cat\nbox.moe/c.mp4",
         "https://catbox.moe/d.mp4\n",
+        "HTTPS://catbox.moe/a.mp4",
+        "Http://files.catbox.moe/b.mp4",
     ],
 )
 def test_a_link_that_parses_as_one_string_and_reads_as_another_is_refused(injected):
@@ -120,6 +122,11 @@ def test_a_link_that_parses_as_one_string_and_reads_as_another_is_refused(inject
     consequences, both here: header injection into whatever fetches the link, and -- the
     third case -- an origin bypass, since `cat\\nbox.moe` is checked as `catbox.moe`.
     The link is marked vetted the moment it comes back, so nothing downstream looks again.
+
+    The last two are the same invariant without a control character: `urlsplit` lowercases
+    the scheme, so `HTTPS://` passes the scheme and origin checks on its own and only the
+    round-trip refuses it. An uppercase *host* round-trips equal and is accepted, which is
+    the other half of the property -- see the acceptance rows below.
     """
     body = json.dumps({"data": {"url": injected}})
 

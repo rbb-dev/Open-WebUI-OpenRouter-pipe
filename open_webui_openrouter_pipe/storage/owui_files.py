@@ -32,7 +32,12 @@ from starlette.datastructures import Headers
 from ..core.config import _INTERNAL_FILE_ID_PATTERN
 from ..core.errors import FileUnavailableError, RequiredInternalFileError
 from ..core.timing_logger import timed
-from ..core.url_scheme import is_absolute_url, media_type_or_empty, url_path
+from ..core.url_scheme import (
+    is_absolute_url,
+    is_inline_data_url,
+    media_type_or_empty,
+    url_path,
+)
 from ..core.warn_latch import warn_level
 
 try:
@@ -614,7 +619,7 @@ _INTERNAL_FILE_SUBSTRING = "/api/v1/files/"
 
 
 def names_an_owui_file_path(url: Any) -> bool:
-    if not isinstance(url, str):
+    if not isinstance(url, str) or is_inline_data_url(url):
         return False
     if _INTERNAL_FILE_PATH_RE.search(url_path(url).casefold()) is not None:
         return True

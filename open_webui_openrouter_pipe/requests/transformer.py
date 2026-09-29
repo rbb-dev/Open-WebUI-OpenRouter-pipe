@@ -1943,7 +1943,11 @@ async def transform_messages_to_input(
                         f"Video processing error: {exc}",
                         show_error_message=False
                     )
-                    return None
+                    return ImageRefusal(
+                        "a video clip that could not be prepared, so it was not sent",
+                        "video_conversion_error",
+                        subject="video",
+                    )
 
             def _carries_url(value: Any) -> bool:
                 if isinstance(value, str):
@@ -1987,7 +1991,7 @@ async def transform_messages_to_input(
             dropped_images = 0
             refused_images: list[str] = []
             refused_files: list[str] = []
-            carded_files: list[str] = []
+            status_files: list[str] = []
             encountered_user_images = False
             reusable_image_blocks: list[dict[str, Any]] = []
             vision_warning_sent = False
@@ -2055,6 +2059,7 @@ async def transform_messages_to_input(
                                 refused_images.append(_unconverted)
                             else:
                                 refused_files.append(_unconverted)
+                                status_files.append(_unconverted)
                             result = None
                     if isinstance(result, ImageRefusal):
                         if not is_image_block:
@@ -2069,8 +2074,8 @@ async def transform_messages_to_input(
                                 result.reason,
                             )
                             refused_files.append(result.reason)
-                            if result.severity == "error":
-                                carded_files.append(result.reason)
+                            if result.severity != "error":
+                                status_files.append(result.reason)
                             continue
                         if result.severity == "fatal":
                             raise RequiredInternalFileError(
@@ -2208,7 +2213,6 @@ async def transform_messages_to_input(
                     f"dropped {dropped_images} over the limit of {image_limit}"
                 )
             notices = ["Images: " + "; ".join(image_notices) + "."] if image_notices else []
-            status_files = [r for r in refused_files if r not in carded_files]
             if status_files:
                 notices.append(f"Files: skipped {len(status_files)} ({'; '.join(status_files)}).")
             if notices and (
