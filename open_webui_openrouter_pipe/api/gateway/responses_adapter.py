@@ -274,7 +274,7 @@ class ResponsesAdapter:
         effective_valves = valves or self._pipe.valves
         chunk_size = effective_valves.IMAGE_UPLOAD_CHUNK_BYTES
         max_bytes = effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024
-        await self._pipe._file_gateway.inline_internal_responses_input_files_inplace(
+        request_body = await self._pipe._file_gateway.inline_internal_responses_input_files(
             request_body,
             chunk_size=chunk_size,
             max_bytes=max_bytes,
@@ -747,7 +747,7 @@ class ResponsesAdapter:
         effective_valves = valves or self._pipe.valves
         chunk_size = effective_valves.IMAGE_UPLOAD_CHUNK_BYTES
         max_bytes = effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024
-        await self._pipe._file_gateway.inline_internal_responses_input_files_inplace(
+        request_params = await self._pipe._file_gateway.inline_internal_responses_input_files(
             request_params,
             chunk_size=chunk_size,
             max_bytes=max_bytes,

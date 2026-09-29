@@ -739,15 +739,18 @@ def _normalize_string_list(value: Any) -> list[str]:
 
 
 def _parse_model_fallback_csv(value: Any) -> list[str]:
-    """Parse a comma-separated model list into a normalized array (order-preserving)."""
-    if not isinstance(value, str):
-        return []
-    raw = value.strip()
-    if not raw:
+    if isinstance(value, (list, tuple)):
+        parts = [entry if isinstance(entry, str) else "" for entry in value]
+    elif isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return []
+        parts = raw.split(",")
+    else:
         return []
     models: list[str] = []
     seen: set[str] = set()
-    for part in raw.split(","):
+    for part in parts:
         candidate = part.strip()
         if not candidate:
             continue

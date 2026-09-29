@@ -894,6 +894,11 @@ async def transform_messages_to_input(
     def _withheld(turn_index: int | None) -> bool:
         return not active_valves.PERSIST_TOOL_RESULTS and turn_index is not None and turn_index < total_turns - 1
 
+    def _tool_round_withheld(turn_index: int | None) -> bool:
+        if active_valves.PERSIST_TOOL_RESULTS:
+            return False
+        return turn_index is None or _withheld(turn_index)
+
     prune_before_turn: int | None = None
     if pruning_turns > 0 and total_turns > pruning_turns:
         prune_before_turn = total_turns - pruning_turns
@@ -991,7 +996,7 @@ async def transform_messages_to_input(
             if is_picture_output(tool_content):
                 last_image_blocks, last_image_turn = [], None
 
-            if _withheld(msg_turn_index):
+            if _tool_round_withheld(msg_turn_index):
                 if not _is_ask_user_name(round_name, ask_user_names):
                     tool_content_text = unretained_tool_result(_tool_result_failed(tool_content_text))
                 tool_pictures = []
@@ -1907,18 +1912,15 @@ async def transform_messages_to_input(
                         _void = result is None or (
                             isinstance(result, dict) and not _block_is_usable(result)
                         )
-                        _unconverted = _unconverted_block_reason(block) if _void else None
+                        _unconverted = (
+                            (_unconverted_block_reason(result) if isinstance(result, dict) else None)
+                            or _unconverted_block_reason(block)
+                        ) if _void else None
                         if _unconverted is not None:
                             if block.get("type") in {"input_image", "image_url", "image"}:
                                 refused_images.append(_unconverted)
                             else:
                                 refused_files.append(_unconverted)
-                            result = None
-                        elif (
-                            _void
-                            and isinstance(result, dict)
-                            and _unconverted_block_reason(result) is not None
-                        ):
                             result = None
                     if isinstance(result, ImageRefusal):
                         if not is_image_block:
@@ -2253,7 +2255,7 @@ async def transform_messages_to_input(
                             or (idx in window_armed_at and not is_picture_output(item.get("output")))
                         ):
                             last_image_blocks, last_image_turn = [], None
-                        if _withheld(msg_turn_index):
+                        if _tool_round_withheld(msg_turn_index):
                             withheld_items = _without_tool_result(
                                 item, replay_round_name, ask_user_names
                             )
@@ -2312,7 +2314,7 @@ async def transform_messages_to_input(
                         args_text = json.dumps(arguments or {}, ensure_ascii=False)
                     except (TypeError, ValueError):
                         args_text = "{}"
-                if _withheld(msg_turn_index) and not _is_ask_user_name(name, ask_user_names):
+                if _tool_round_withheld(msg_turn_index) and not _is_ask_user_name(name, ask_user_names):
                     args_text = "{}"
 
                 openai_input.append(

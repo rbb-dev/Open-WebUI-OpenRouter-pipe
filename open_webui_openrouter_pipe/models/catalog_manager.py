@@ -165,6 +165,38 @@ def _warn_on_empty_read(
     return {}
 
 
+_ROW_NOT_FETCHED = object()
+
+
+async def _read_model_rows(ids: list[str], logger: Any) -> dict[str, Any] | None:
+    from open_webui.models.models import Models
+
+    try:
+        rows = await Models.get_models_by_ids(ids)
+    except Exception as exc:
+        logger.warning(
+            "Stored model row read failed; every model will be read on its own: %s",
+            exc,
+            exc_info=True,
+        )
+        return None
+    if not rows:
+        logger.warning(
+            "Stored model row read returned no rows for %d ids; "
+            "every model will be read on its own",
+            len(ids),
+        )
+        return None
+
+    stored: dict[str, Any] = {}
+    for row in rows:
+        model_id = getattr(row, "id", None)
+        if not isinstance(model_id, str) or not model_id:
+            continue
+        stored[model_id] = row
+    return stored
+
+
 async def _stored_profile_images(
     models: list[dict[str, Any]],
     pipe_identifier: str,
@@ -2127,21 +2159,6 @@ class ModelCatalogManager:
                         pr_filter_id,
                     )
 
-                if (
-                    not capabilities
-                    and not description
-                    and not profile_image_url
-                    and not web_tools_supported
-                    and not pipe_capabilities
-                    and not auto_attach_direct_uploads
-                    and not auto_attach_video_gen
-                    and not auto_attach_image_filter
-                    and not auto_attach_fusion
-                    and not pr_filter_id
-                    and not image_gen_filter_function_id
-                ):
-                    return
-
                 async with semaphore:
                     try:
                         await self._update_or_insert_model_with_metadata(
@@ -2199,6 +2216,11 @@ class ModelCatalogManager:
                             description=description,
                             update_descriptions=valves.UPDATE_MODEL_DESCRIPTIONS,
                             new_model_access_control=valves.NEW_MODEL_ACCESS_CONTROL,
+                            existing=(
+                                model_rows.get(openwebui_model_id, _ROW_NOT_FETCHED)
+                                if model_rows is not None
+                                else _ROW_NOT_FETCHED
+                            ),
                         )
                     except Exception as exc:
                         sync_failures.append(openwebui_model_id)
@@ -2208,6 +2230,15 @@ class ModelCatalogManager:
                             exc,
                             exc_info=True,
                         )
+
+            model_rows = await _read_model_rows(
+                [
+                    f"{pipe_identifier}.{model['id']}"
+                    for model in models
+                    if isinstance(model.get("id"), str) and model["id"]
+                ],
+                self.logger,
+            )
 
             apply_results = await asyncio.gather(
                 *(_apply(model) for model in models), return_exceptions=True
@@ -2356,6 +2387,7 @@ class ModelCatalogManager:
         image_source_kind: str | None = None,
         update_descriptions: bool = False,
         new_model_access_control: str,
+        existing: Any = _ROW_NOT_FETCHED,
     ):
         """Safely update existing model or insert new overlay with metadata, never touching owner."""
         from open_webui.models.models import ModelForm, ModelMeta, ModelParams, Models
@@ -2366,7 +2398,8 @@ class ModelCatalogManager:
             return
         name = (name or "").strip() or openwebui_model_id
 
-        existing = await Models.get_model_by_id(openwebui_model_id)
+        if existing is _ROW_NOT_FETCHED:
+            existing = await Models.get_model_by_id(openwebui_model_id)
 
         disable_model_metadata_sync = False
         disable_capability_updates = False

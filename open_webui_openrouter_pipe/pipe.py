@@ -1308,6 +1308,7 @@ class Pipe:
             _OPENROUTER_IMAGE_GEN_FILTER_MARKER,
             _OPENROUTER_IMAGE_GEN_FILTER_PREFERRED_FUNCTION_ID,
             _newest_marked_row,
+            _write_function,
             switched_off_meta,
         )
 
@@ -1316,10 +1317,13 @@ class Pipe:
             try:
                 from open_webui.models.functions import Functions as _Funcs
                 wt = await _Funcs.get_function_by_id("openrouter_web_tools")
-                if wt and getattr(wt, "is_active", False):
-                    await _Funcs.update_function_by_id(
-                        "openrouter_web_tools", {"is_active": False, "meta": switched_off_meta(wt)}
-                    )
+                if wt and getattr(wt, "is_active", False) and await _write_function(
+                    _Funcs,
+                    "openrouter_web_tools",
+                    {"is_active": False, "meta": switched_off_meta(wt)},
+                    "disabling the OpenRouter Web Tools filter while every web tool is disabled",
+                    self.logger,
+                ):
                     self.logger.info("Disabled OpenRouter Web Tools filter (all tools disabled)")
             except Exception:
                 self.logger.debug("Disabling OpenRouter Web Tools filter failed", exc_info=True)
@@ -1338,10 +1342,13 @@ class Pipe:
                     or _OPENROUTER_FUSION_FILTER_PREFERRED_FUNCTION_ID
                 )
                 ff = await _Funcs.get_function_by_id(_fid)
-                if ff and getattr(ff, "is_active", False):
-                    await _Funcs.update_function_by_id(
-                        _fid, {"is_active": False, "meta": switched_off_meta(ff)}
-                    )
+                if ff and getattr(ff, "is_active", False) and await _write_function(
+                    _Funcs,
+                    _fid,
+                    {"is_active": False, "meta": switched_off_meta(ff)},
+                    "disabling the OpenRouter Fusion filter ENABLE_OPENROUTER_FUSION switched off",
+                    self.logger,
+                ):
                     self.logger.info("Disabled OpenRouter Fusion filter (ENABLE_OPENROUTER_FUSION=False)")
             except Exception:
                 self.logger.debug("Disabling OpenRouter Fusion filter failed", exc_info=True)
@@ -1360,10 +1367,13 @@ class Pipe:
                     or _OPENROUTER_IMAGE_GEN_FILTER_PREFERRED_FUNCTION_ID
                 )
                 ig = await _Funcs.get_function_by_id(_rid)
-                if ig and getattr(ig, "is_active", False):
-                    await _Funcs.update_function_by_id(
-                        _rid, {"is_active": False, "meta": switched_off_meta(ig)}
-                    )
+                if ig and getattr(ig, "is_active", False) and await _write_function(
+                    _Funcs,
+                    _rid,
+                    {"is_active": False, "meta": switched_off_meta(ig)},
+                    "disabling the OpenRouter Image Generation filter ENABLE_IMAGE_GENERATION switched off",
+                    self.logger,
+                ):
                     self.logger.info("Disabled OpenRouter Image Generation filter (ENABLE_IMAGE_GENERATION=False)")
             except Exception:
                 self.logger.debug("Disabling OpenRouter Image Generation filter failed", exc_info=True)
@@ -1543,11 +1553,19 @@ class Pipe:
 
         try:
             from open_webui.models.functions import Functions as _Funcs
+
+            from .filters.filter_manager import _write_function
+
             old_ors = await _Funcs.get_function_by_id("openrouter_search")
             if old_ors and getattr(old_ors, "is_active", False):
                 content = getattr(old_ors, "content", "") or ""
-                if "openrouter_pipe:ors_filter:" in content:
-                    await _Funcs.update_function_by_id("openrouter_search", {"is_active": False})
+                if "openrouter_pipe:ors_filter:" in content and await _write_function(
+                    _Funcs,
+                    "openrouter_search",
+                    {"is_active": False},
+                    "disabling the superseded OpenRouter Search filter",
+                    self.logger,
+                ):
                     self.logger.info("Disabled old OpenRouter Search filter (replaced by OpenRouter Web Tools)")
         except Exception:
             self.logger.debug("Old OpenRouter Search filter cleanup failed", exc_info=True)
@@ -2873,7 +2891,8 @@ class Pipe:
             if not job.future.done():
                 job.future.cancel()
             if stream_queue is not None:
-                self._event_emitter_handler._try_put_middleware_stream_nowait(
+                await self._event_emitter_handler._put_middleware_stream_terminal(
+                    job,
                     stream_queue,
                     None,
                 )
@@ -2883,7 +2902,8 @@ class Pipe:
             if reached_openrouter and not job.task:
                 self._circuit_breaker.record_failure(job.user_id)
             if stream_queue is not None and not job.future.cancelled():
-                self._event_emitter_handler._try_put_middleware_stream_nowait(
+                await self._event_emitter_handler._put_middleware_stream_terminal(
+                    job,
                     stream_queue,
                     {"error": {
                         "detail": self._ensure_error_formatter()._safe_detail(
@@ -2900,7 +2920,9 @@ class Pipe:
             try:
                 _drop_backlog_latch(job.request_id)
                 if stream_queue is not None:
-                    self._event_emitter_handler._try_put_middleware_stream_nowait(stream_queue, None)
+                    await self._event_emitter_handler._put_middleware_stream_terminal(
+                        job, stream_queue, None
+                    )
                 if tool_context:
                     await self._shutdown_tool_context(tool_context)
 

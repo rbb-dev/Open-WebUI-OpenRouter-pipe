@@ -85,7 +85,7 @@ The pipe **skips persistence** when any of the following are true:
 
 If persistence is skipped, the request still completes normally; the archive is simply not written.
 
-Each skip names itself at the level the code uses for it. On the segment-persist path the missing-id and valve-off skips are at `INFO`, the store-disabled, no-events and archive-settings-unavailable skips at `DEBUG`, and the passphrase, log-directory and `pyzipper` skips at `WARNING`. The enqueue path records the archive-settings skips at `WARNING` and the missing-id and valve-off skips at `INFO`, but records nothing at all when storage is off or when the request produced no captured log lines. The temporary-chat skips on the three archive paths (enqueue, segment persist, bundle assembly) warn once per path and warn again after a five-minute cooldown.
+Each skip names itself at the level the code uses for it. On the segment-persist path the missing-id and valve-off skips are at `INFO`, the store-disabled, no-events and archive-settings-unavailable skips at `DEBUG`, and the passphrase, log-directory and `pyzipper` skips at `WARNING`. The enqueue path records the archive-settings skips at `WARNING` and the missing-id and valve-off skips at `INFO`, but records nothing at all when storage is off or when the request produced no captured log lines. The temporary-chat skips on the three archive paths (enqueue, segment persist, bundle assembly) warn again after a five-minute cooldown, each on the scope it can actually tell apart: the enqueue and segment-persist skips are keyed on the user, so they warn once per person, and the bundle-assembly skip is called with a chat id and a message id and no user at all, so it warns once per worker process.
 
 ### Assembly timing
 

@@ -349,7 +349,9 @@ class TestToolResponses:
             {"role": "tool", "tool_call_id": "call_123", "content": "Tool output text."}
         ]
 
-        result = await transform_messages_to_input(pipe_instance, messages)
+        result = await transform_messages_to_input(
+            pipe_instance, messages, valves=pipe_instance.valves.model_copy(update={"PERSIST_TOOL_RESULTS": True})
+        )
 
         assert len(result) == 1
         assert result[0]["type"] == "function_call_output"
@@ -363,7 +365,9 @@ class TestToolResponses:
             {"role": "tool", "tool_call_id": "call_456", "content": {"result": "success", "value": 42}}
         ]
 
-        result = await transform_messages_to_input(pipe_instance, messages)
+        result = await transform_messages_to_input(
+            pipe_instance, messages, valves=pipe_instance.valves.model_copy(update={"PERSIST_TOOL_RESULTS": True})
+        )
 
         assert result[0]["type"] == "function_call_output"
         assert '"result": "success"' in result[0]["output"]
@@ -376,7 +380,9 @@ class TestToolResponses:
             {"role": "tool", "tool_call_id": "call_789", "content": None}
         ]
 
-        result = await transform_messages_to_input(pipe_instance, messages)
+        result = await transform_messages_to_input(
+            pipe_instance, messages, valves=pipe_instance.valves.model_copy(update={"PERSIST_TOOL_RESULTS": True})
+        )
 
         assert result[0]["output"] == ""
 
@@ -2683,7 +2689,9 @@ class TestToolResponseSerialization:
             {"role": "tool", "tool_call_id": "call_list", "content": [1, 2, 3, "four"]}
         ]
 
-        result = await transform_messages_to_input(pipe_instance, messages)
+        result = await transform_messages_to_input(
+            pipe_instance, messages, valves=pipe_instance.valves.model_copy(update={"PERSIST_TOOL_RESULTS": True})
+        )
 
         assert result[0]["output"] == '[1, 2, 3, "four"]'
 
@@ -2698,7 +2706,9 @@ class TestToolResponseSerialization:
             {"role": "tool", "tool_call_id": "call_ns", "content": NonSerializable()}
         ]
 
-        result = await transform_messages_to_input(pipe_instance, messages)
+        result = await transform_messages_to_input(
+            pipe_instance, messages, valves=pipe_instance.valves.model_copy(update={"PERSIST_TOOL_RESULTS": True})
+        )
 
         assert "NonSerializable object" in result[0]["output"]
 

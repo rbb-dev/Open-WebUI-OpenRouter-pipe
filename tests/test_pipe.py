@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import queue
+import re
 import threading
 import time
 from decimal import Decimal
@@ -5877,9 +5878,34 @@ class _FakeEngine:
     dialect = _FakeDialect()
 
 
+def _rows_from_insert(stmt: Any) -> list[dict[str, Any]] | None:
+    """The rows a chunked dialect ``INSERT`` carries, or ``None`` for any other statement.
+
+    ``_db_persist_sync`` writes a chunk through a conflict-tolerant insert on sqlite and
+    postgresql, and ``_try_acquire_lock_sync`` through a single-row one; both reach this
+    stand-in's ``execute``. Only the chunked form is recognised: it compiles to one flat
+    parameter dict whose keys carry a ``_m<N>`` row suffix, which is what this reassembles.
+    A single-row ``values(**kwargs)`` has no such suffix and is left to the caller's
+    default, so the lock path keeps reporting one row acquired.
+    """
+    compiled = getattr(stmt, "compile", lambda: None)()
+    params = getattr(compiled, "params", None)
+    if not isinstance(params, dict) or not params:
+        return None
+    if not any(re.search(r"_m\d+$", name) for name in params):
+        return None
+    rows: dict[int, dict[str, Any]] = {}
+    for name, value in params.items():
+        row_index = int(name.rsplit("_m", 1)[1])
+        rows.setdefault(row_index, {})[name[: -len(f"_m{row_index}")]] = value
+    return [rows[index] for index in sorted(rows)]
+
+
 class _FakeResult:
     """Fake SQLAlchemy result for execute() calls."""
-    rowcount = 1  # Lock acquired by default
+
+    def __init__(self, rowcount: int = 1) -> None:
+        self.rowcount = rowcount  # Lock acquired by default
 
 
 class _FakeModel:
@@ -6063,8 +6089,11 @@ class _FakeSession:
         return None
 
     def execute(self, stmt):
-        """Handle INSERT statements for _try_acquire_lock_sync."""
-        return _FakeResult()
+        """Handle INSERT statements for _try_acquire_lock_sync and _db_persist_sync."""
+        rows = _rows_from_insert(stmt)
+        if rows is not None:
+            self._rows.extend(_FakeModel(**row) for row in rows)
+        return _FakeResult(rowcount=len(rows) if rows is not None else 1)
 
     def query(self, *fields):
         if not fields:

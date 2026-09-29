@@ -1345,7 +1345,10 @@ class Valves(BaseModel):
         description=(
             "Where to execute tools. 'Pipeline' executes tool calls inside this pipe "
             "(with its own batching, failure limits, and special tool handling). 'Open-WebUI' hands a streamed reply's "
-            "tool calls back rather than running them here, so Open WebUI executes them and renders the native tool UI; "
+            "tool calls back rather than running them here, so Open WebUI executes them and renders the native tool UI, "
+            "until the reply's hand-back budget of `MAX_FUNCTION_CALL_LOOPS` turns is spent; after that the pipe runs the "
+            "remaining round itself with the tools it advertised, save for Open WebUI's own builtins and browser-run "
+            "tools, which stay Open WebUI's. "
             "the pipe runs a non-streamed reply's calls and a Fusion panel model's calls in either mode. A tool the "
             "request itself declared with nothing behind it goes back to its sender instead. With 'ask' tool approval, "
             "a streamed saved chat hands every call to Open WebUI in both modes. With legacy function calling, no "
@@ -1360,7 +1363,7 @@ class Valves(BaseModel):
     PERSIST_TOOL_RESULTS: bool = Field(
         default=False,
         title="Keep tool results",
-        description="Give the model the full arguments and results of tool calls from earlier turns. When disabled, the model sees each tool call from an earlier turn as its name and a short note on whether it succeeded (the built-in ask_user question and the person's answer always go back), and relies on its own earlier answers or runs the tool again. Each round is judged by its own call, so two rounds that happen to share one call id are kept or withheld separately, and one round's exemption never carries to another behind it. The setting applies in both tool execution modes and decides what the model is handed, not whether results are stored: a shown tool card keeps the full result in the message, and the pipe's own copy of each tool round keeps the full call and result, pictures included, encrypted only while ARTIFACT_ENCRYPTION_KEY is set and ENCRYPT_ALL is on. A temporary chat stores none of its tool rounds or thinking; in Open-WebUI tool mode the rounds and thinking of a streamed reply are held in memory for that reply only, and dropped when the pipe answers its last call back, or when the provider refuses a call-back the pipe was waiting for, or when the reply is stopped, or after 15 minutes unused. A user setting the pipe cannot read (an undecodable stored row, after a WEBUI_SECRET_KEY rotation) falls back to that field's own per-user default, whichever side of this site-wide value that default sits on, and never to the value set here. A call that carries no chat_id has its tool records held in memory for the length of that request only and never written to the database (see API_CALL_ARTIFACT_MEMORY), so an API call's records last for the request, not the conversation.",
+        description="Give the model the full arguments and results of tool calls from earlier turns. When disabled, the model sees each tool call from an earlier turn, and each round that arrived before the chat's first turn -- an API caller, an imported or reordered chat, or a filter posts one -- as its name and a short note on whether it succeeded (the built-in ask_user question and the person's answer always go back), and relies on its own earlier answers or runs the tool again. Each round is judged by its own call, so two rounds that happen to share one call id are kept or withheld separately, and one round's exemption never carries to another behind it. The setting applies in both tool execution modes and decides what the model is handed, not whether results are stored: a shown tool card keeps the full result in the message, and the pipe's own copy of each tool round keeps the full call and result, pictures included, encrypted only while ARTIFACT_ENCRYPTION_KEY is set and ENCRYPT_ALL is on. A temporary chat stores none of its tool rounds or thinking; in Open-WebUI tool mode the rounds and thinking of a streamed reply are held in memory for that reply only, and dropped when the pipe answers its last call back, or when the provider refuses a call-back the pipe was waiting for, or when the reply is stopped, or after 15 minutes unused. A user setting the pipe cannot read (an undecodable stored row, after a WEBUI_SECRET_KEY rotation) falls back to that field's own per-user default, whichever side of this site-wide value that default sits on, and never to the value set here. A call that carries no chat_id has its tool records held in memory for the length of that request only and never written to the database (see API_CALL_ARTIFACT_MEMORY), so an API call's records last for the request, not the conversation.",
     )
     API_CALL_ARTIFACT_MEMORY: bool = Field(
         default=True,
@@ -1408,6 +1411,9 @@ class Valves(BaseModel):
             "Any root that is not an object is wrapped this way - a number, a boolean, an `enum`/`const`, a "
             "`oneOf`/`anyOf`, or a schema that declares no `properties`. A root carried by `$ref` or `allOf` is "
             "resolved and its properties advertised, as far as the resolver's depth and budget reach. "
+            "Annotations and definitions a node carries are kept, not only its resolved properties: a single-`$ref` "
+            "`allOf` unwrap leaves the node's own `title` and `description` in place, and a definition a nested node "
+            "carries is reachable from the document root and strictified in place. "
             "Tools are also sent with `strict: true` on `/chat/completions`, nested under each `function`; "
             "a provider that does not support strict tool calling there will reject the request. "
             "On the Responses route the registry and direct-tool specs the pipe advertises also carry "
@@ -1430,6 +1436,8 @@ class Valves(BaseModel):
             "write a final answer, and, with tool cards on, each skipped call is shown in the "
             "transcript as a failed call card rather than being dropped silently. "
             "The model always gets at least one generation turn, so 0 and below are stored as 1. "
+            "A reply Open WebUI re-asks carries a hand-back budget of this many turns, and once it is spent the pipe "
+            "runs the remaining round itself with the tools it advertised. "
             "Has no effect on the calls Open WebUI runs, where the round limit is managed by Open WebUI."
         )
     )
@@ -1446,7 +1454,7 @@ class Valves(BaseModel):
             "Archives capture the full OpenRouter request/response (prompts, model output, tool calls, provider errors) plus request identifiers — treat as sensitive conversation data at rest. "
             "One zip is written per message turn, plus one for each housekeeping task Open WebUI dispatches on that turn, named <message_id>.<task>.zip. Open WebUI defines nine task types in its TASKS enum plus three more named inline (context_compaction, memory_review, context_summary), so a turn that triggers all of them produces up to thirteen archives. "
             "Persistence needs a user_id and a request_id; with it on, a call that carries no usable chat_id or message_id is archived under "
-            "`api/api-<request_id>.zip` (see SESSION_LOG_ARCHIVE_API_CALLS), and every temporary chat is still dropped; that drop is logged as a warning on each of the three archive paths, once per path and again after a five-minute cooldown. Only the segment-persist path runs for a request today, so that is the one that warns. "
+            "`api/api-<request_id>.zip` (see SESSION_LOG_ARCHIVE_API_CALLS), and every temporary chat is still dropped; that drop is logged as a warning on each of the three archive paths and again after a five-minute cooldown, once per person on the two paths that run and once per worker process on bundle assembly, which is called without a user. Only the segment-persist path runs for a request today, so that is the one that warns. "
             "A task invocation that resolves to no message id is skipped the same way, which includes every Fusion panel member — those carry no message id at all, so they are not archived. "
             "Turning this off also stops the retention sweep, leaving every archive already on disk untouched until it is re-enabled and the retention window passes."
         ),
@@ -1657,6 +1665,7 @@ class Valves(BaseModel):
         ge=0,
         description=(
             "Maximum number of per-request items buffered for the Open WebUI layer that streams the reply to the browser. "
+            "The cap bounds incremental items: the item that reports a turn's failure and the item that ends the turn are put past it on a ceiling of their own. "
             "0=unbounded (default behavior)."
         ),
     )
@@ -1665,6 +1674,8 @@ class Valves(BaseModel):
         ge=0,
         description=(
             "When MIDDLEWARE_STREAM_QUEUE_MAXSIZE>0, maximum seconds to wait while adding one item to that buffer before dropping that single item and continuing the stream. "
+            "A dropped item is not recorded as sent, so the next snapshot re-derives the text this one would have carried. "
+            "This wait covers incremental items only: the item that reports a turn's failure and the item that ends the turn are put past that valve on a ceiling of their own, which 0 does not remove. "
             "0 disables the timeout (not recommended; a stalled browser can hold up the pipe indefinitely)."
         ),
     )
@@ -1749,7 +1760,7 @@ class Valves(BaseModel):
     NETWORK_TIMEOUT_TEMPLATE: str = Field(
         default=DEFAULT_NETWORK_TIMEOUT_TEMPLATE,
         description=(
-            "Markdown template a chat reply shows, once the retries are spent, when its call to OpenRouter times out before any of the answer arrives. A timeout before the first byte is a temporary failure: the request is re-sent up to TRANSIENT_RETRY_MAX_ATTEMPTS extra times (three attempts in all by default) and is counted once against the breaker however many attempts it took. Picture-only image models, video models and the panel, judge and final-answer calls inside internal Fusion report failures in their own way. {timeout_seconds} is the limit that ran out: HTTP_CONNECT_TIMEOUT_SECONDS while connecting, HTTP_SOCK_READ_SECONDS while waiting for data, or HTTP_TOTAL_TIMEOUT_SECONDS for the whole request. Once part of the answer has arrived, STREAM_INTERRUPTED_TEMPLATE is used instead and nothing is retried. Available variables: {error_id}, {timeout_seconds}, {timestamp}, {session_id}, {user_id}, {support_email}, {support_url}. Supports Handlebars-style conditionals: wrap a section in {{#if variable}}...{{/if}} to show it only when that value is set."
+            "Markdown template a chat reply shows, once the retries are spent, when its call to OpenRouter times out before any of the answer arrives. A timeout before the first byte is a temporary failure: the request is re-sent up to TRANSIENT_RETRY_MAX_ATTEMPTS extra times (three attempts in all by default) and is counted once against the breaker however many attempts it took. Picture-only image models, video models and the panel, judge and final-answer calls inside internal Fusion report failures in their own way. {timeout_seconds} is the limit that ran out: HTTP_CONNECT_TIMEOUT_SECONDS while connecting, HTTP_SOCK_READ_SECONDS while waiting for data, or HTTP_TOTAL_TIMEOUT_SECONDS for the whole request. Once part of the answer has arrived, STREAM_INTERRUPTED_TEMPLATE is used instead and nothing is retried; a tool call the model has already named closes that window on its own, with no answer text of its own. Available variables: {error_id}, {timeout_seconds}, {timestamp}, {session_id}, {user_id}, {support_email}, {support_url}. Supports Handlebars-style conditionals: wrap a section in {{#if variable}}...{{/if}} to show it only when that value is set."
         )
     )
 
@@ -1790,7 +1801,7 @@ class Valves(BaseModel):
     STREAM_INTERRUPTED_TEMPLATE: str = Field(
         default=DEFAULT_STREAM_INTERRUPTED_TEMPLATE,
         description=(
-            "Markdown template appended to the assistant message when a reply's stream stops before its final event: the stream closes early or, after answer text has arrived, its connection fails, drops or times out. Any partial content is kept, with this notice after it. The panel, judge and final-answer calls inside internal Fusion never get this notice. When none of the answer has arrived, NETWORK_TIMEOUT_TEMPLATE is used instead for a timeout, and CONNECTION_ERROR_TEMPLATE for a failed connection or a stream that sent nothing. Available variables: {model}, {timestamp}, {support_email}, {support_url}."
+            "Markdown template appended to the assistant message when a reply's stream stops before its final event: the stream closes early or, after answer text has arrived or the model has named the tool it is calling, its connection fails, drops or times out. Any partial content is kept, with this notice after it. The panel, judge and final-answer calls inside internal Fusion never get this notice. When none of the answer has arrived, NETWORK_TIMEOUT_TEMPLATE is used instead for a timeout, and CONNECTION_ERROR_TEMPLATE for a failed connection or a stream that sent nothing. Available variables: {model}, {timestamp}, {support_email}, {support_url}."
         ),
     )
 
@@ -2658,14 +2669,16 @@ class UserValves(BaseModel):
     PERSIST_TOOL_RESULTS: bool = Field(
         default=False,
         title="Remember tool and search results",
-        description="Let the AI reuse outputs from tools (for example pages it fetched or other apps) later in the conversation, using more tokens on long chats. When off, the AI relies on its own summaries and can re-run tools as needed, but a question the AI's built-in ask_user tool asked you and your answer always go back to it. Each round is judged by its own call, so two rounds that happen to share one call id are kept or withheld separately. A temporary chat stores none of its tool results. Tool cards in the chat, while shown, still show every result. A setting the pipe cannot read (an undecodable stored row, after a WEBUI_SECRET_KEY rotation) falls back to this valve's own per-user default rather than to the administrator's site-wide value.",
+        description="Let the AI reuse outputs from tools (for example pages it fetched or other apps) later in the conversation, using more tokens on long chats. When off, the AI relies on its own summaries and can re-run tools as needed, but a question the AI's built-in ask_user tool asked you and your answer always go back to it. A round that arrived before the chat's first turn counts as earlier too. Each round is judged by its own call, so two rounds that happen to share one call id are kept or withheld separately. A temporary chat stores none of its tool results. Tool cards in the chat, while shown, still show every result. A setting the pipe cannot read (an undecodable stored row, after a WEBUI_SECRET_KEY rotation) falls back to this valve's own per-user default rather than to the administrator's site-wide value.",
     )
     TOOL_EXECUTION_MODE: Literal["Pipeline", "Open-WebUI"] = Field(
         default="Pipeline",
         title="Tool execution mode",
         description=(
             "Where to execute tools. 'Pipeline' executes tool calls inside this pipe. "
-            "'Open-WebUI' hands a streamed reply's tool calls to Open WebUI to run instead."
+            "'Open-WebUI' hands a streamed reply's tool calls to Open WebUI to run instead, until the reply's hand-back "
+            "budget of `MAX_FUNCTION_CALL_LOOPS` turns is spent; after that the pipe runs the remaining round itself "
+            "with the tools it advertised, save for Open WebUI's own builtins and browser-run tools."
         ),
     )
     SHOW_TOOL_CARDS: bool = Field(

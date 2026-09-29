@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import inspect
 import io
 import logging
@@ -953,14 +954,14 @@ class OwuiFileGateway:
         )
 
     @timed
-    async def inline_internal_responses_input_files_inplace(
+    async def inline_internal_responses_input_files(
         self,
         request_body: dict[str, Any],
         *,
         chunk_size: int,
         max_bytes: int,
         user: Any = None,
-    ) -> None:
+    ) -> dict[str, Any]:
         """Inline any Open WebUI internal file URLs referenced by /responses input_file blocks.
 
         OpenRouter providers cannot fetch Open WebUI internal URLs. This converts internal
@@ -978,7 +979,7 @@ class OwuiFileGateway:
         """
         input_items = request_body.get("input")
         if not isinstance(input_items, list) or not input_items:
-            return
+            return request_body
 
         async def _inline_picture(part: dict[str, Any]) -> None:
             image_url = part.get("image_url")
@@ -998,7 +999,8 @@ class OwuiFileGateway:
                 )
             part["image_url"] = inlined.data_url
 
-        for item in input_items:
+        working = copy.deepcopy(input_items)
+        for item in working:
             if not isinstance(item, dict):
                 continue
             if item.get("type") == "function_call_output" and isinstance(item.get("output"), list):
@@ -1055,6 +1057,8 @@ class OwuiFileGateway:
                 block.pop("file_id", None)
                 if isinstance(file_url, str) and file_url.strip() and is_internal_file_url(file_url.strip()):
                     block.pop("file_url", None)
+
+        return {**request_body, "input": working}
 
     @timed
     async def upload_to_owui_storage(

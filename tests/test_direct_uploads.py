@@ -1252,10 +1252,10 @@ async def test_inline_internal_responses_input_files_inplace_rewrites_internal_u
         return_value=InlinedFile(data_url="data:application/pdf;base64,SGVsbG8=", filename="example.pdf")
     )
 
-    await pipe._file_gateway.inline_internal_responses_input_files_inplace(payload, chunk_size=1024, max_bytes=1024 * 1024)
+    sent = await pipe._file_gateway.inline_internal_responses_input_files(payload, chunk_size=1024, max_bytes=1024 * 1024)
     pipe._file_gateway.inline_owui_file_id.assert_awaited_once_with("abc123", chunk_size=1024, max_bytes=1024 * 1024, user=None)
 
-    block = cast(dict, payload["input"][0]["content"][0])
+    block = cast(dict, sent["input"][0]["content"][0])
     assert block.get("file_data", "").startswith("data:application/pdf;base64,")
     assert "file_url" not in block
 

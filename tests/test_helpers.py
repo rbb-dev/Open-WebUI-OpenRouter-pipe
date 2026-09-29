@@ -330,10 +330,11 @@ class TestParseModelFallbackCsv:
         assert _parse_model_fallback_csv("   ") == []
 
     def test_non_string(self):
-        """Non-string input returns empty list."""
+        """Non-string, non-sequence input returns empty list; a list is read."""
         assert _parse_model_fallback_csv(None) == []
         assert _parse_model_fallback_csv(123) == []
-        assert _parse_model_fallback_csv(["a", "b"]) == []
+        assert _parse_model_fallback_csv({"a": 1}) == []
+        assert _parse_model_fallback_csv(["a", "b"]) == ["a", "b"]
 
 
 # -----------------------------------------------------------------------------

@@ -212,9 +212,8 @@ class ChatCompletionsAdapter:
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Send /chat/completions and adapt streaming output into Responses-style events."""
         effective_valves = valves or self._pipe.valves
-        responses_payload = dict(responses_request_body or {})
-        await self._pipe._file_gateway.inline_internal_responses_input_files_inplace(
-            responses_payload,
+        responses_payload = await self._pipe._file_gateway.inline_internal_responses_input_files(
+            responses_request_body or {},
             chunk_size=effective_valves.IMAGE_UPLOAD_CHUNK_BYTES,
             max_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
             user=user,
@@ -306,7 +305,6 @@ class ChatCompletionsAdapter:
                 matched = max(slots.keys(), default=-1) + 1
             return matched
 
-        emitted_any = False
         received_any = False
         delivered_any = False
         saw_choice_chunk = False
@@ -381,28 +379,8 @@ class ChatCompletionsAdapter:
                     out.append(clean)
             return out
 
-        def _chat_chunk_is_user_visible(chunk_obj: Any) -> bool:
-            if not isinstance(chunk_obj, dict):
-                return False
-            choices = chunk_obj.get("choices")
-            if not isinstance(choices, list) or not choices:
-                return False
-            choice0 = choices[0] if isinstance(choices[0], dict) else {}
-            delta = choice0.get("delta") if isinstance(choice0, dict) else None
-            if not isinstance(delta, dict):
-                return False
-            for key in ("content", "refusal", "reasoning", "reasoning_content"):
-                value = delta.get(key)
-                if isinstance(value, str) and value.strip():
-                    return True
-            for key in ("tool_calls", "reasoning_details"):
-                value = delta.get(key)
-                if isinstance(value, list) and value:
-                    return True
-            return False
-
         def _consume_blob(data_blob: bytes):
-            nonlocal emitted_any, received_any, latest_usage, reasoning_item_id, reasoning_text_seen, \
+            nonlocal received_any, latest_usage, reasoning_item_id, reasoning_text_seen, \
                 reasoning_summary_text, latest_message_annotations, image_item_id, \
                 image_output_item, images_emitted, refusal_text_seen, tool_calls_completed, \
                 truncating_reason, delivered_any, saw_choice_chunk, assistant_text_seen
@@ -427,7 +405,6 @@ class ChatCompletionsAdapter:
             if reported_error is not None:
                 raise reported_error
             received_any = True
-            emitted_any = emitted_any or _chat_chunk_is_user_visible(chunk_obj)
 
             if isinstance(chunk_obj, dict) and isinstance(chunk_obj.get("usage"), dict):
                 latest_usage = dict(chunk_obj["usage"])
@@ -636,7 +613,6 @@ class ChatCompletionsAdapter:
                     if not isinstance(index, int):
                         index = _match_open_tool_call(tool_calls_by_index, raw_call)
                     current = tool_calls_by_index.setdefault(index, {})
-                    delivered_any = True
                     raw_id = raw_call.get("id")
                     if isinstance(raw_id, str) and raw_id.strip():
                         current["id"] = raw_id
@@ -645,14 +621,15 @@ class ChatCompletionsAdapter:
                         name = function.get("name")
                         if isinstance(name, str) and name:
                             current["name"] = name
+                            delivered_any = True
                         args_delta = function.get("arguments")
                         if isinstance(args_delta, str) and args_delta:
                             _append_text_field(current, "arguments", args_delta)
+                            delivered_any = True
 
                     if index not in tool_call_added:
                         tool_call_added.add(index)
                         call_id = _ensure_tool_call_id(index, current)
-                        delivered_any = True
                         yield {
                             "type": "response.output_item.added",
                             "item": {
@@ -693,7 +670,6 @@ class ChatCompletionsAdapter:
                         seen_citation_urls.clear()
                         latest_message_annotations = []
                         images_emitted = False
-                        emitted_any = False
                         received_any = False
                         saw_choice_chunk = False
                         cut_off = False
@@ -915,9 +891,8 @@ class ChatCompletionsAdapter:
     ) -> dict[str, Any]:
         """Send /chat/completions with stream=false and return the JSON payload."""
         effective_valves = valves or self._pipe.valves
-        responses_payload = dict(responses_request_body or {})
-        await self._pipe._file_gateway.inline_internal_responses_input_files_inplace(
-            responses_payload,
+        responses_payload = await self._pipe._file_gateway.inline_internal_responses_input_files(
+            responses_request_body or {},
             chunk_size=effective_valves.IMAGE_UPLOAD_CHUNK_BYTES,
             max_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
             user=user,
@@ -1063,6 +1038,10 @@ class ChatCompletionsAdapter:
                         yield pending
                     responses_buffer.clear()
                 yield event
+            if responses_buffer and not responses_emitted_user_visible:
+                for pending in responses_buffer:
+                    yield pending
+                responses_buffer.clear()
 
         @timed
         async def _run_chat() -> AsyncGenerator[dict[str, Any], None]:

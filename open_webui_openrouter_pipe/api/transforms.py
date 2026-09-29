@@ -1458,11 +1458,6 @@ def _drop_include_reasoning_for_unsupported_fallbacks(
 
 
 def _apply_model_fallback_to_payload(payload: dict[str, Any], *, logger: logging.Logger = logger) -> None:
-    """Map OWUI custom `model_fallback` (CSV string) to OpenRouter `models` (array).
-
-    OpenRouter supports `model` plus `models` where `models` is treated as the fallback list.
-    This helper never prepends `model` into `models`.
-    """
     if not isinstance(payload, dict):
         return
     raw_fallback = payload.pop("model_fallback", None)

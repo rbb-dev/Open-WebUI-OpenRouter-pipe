@@ -1491,14 +1491,14 @@ class FilterManager:
                 continue
             if not getattr(row, "is_active", False):
                 continue
-            try:
-                await Functions.update_function_by_id(
-                    str(getattr(row, "id", "") or ""),
-                    {"is_active": False, "meta": switched_off_meta(row)},
-                )
+            if await _write_function(
+                Functions,
+                str(getattr(row, "id", "") or ""),
+                {"is_active": False, "meta": switched_off_meta(row)},
+                "disabling a Video Generation filter ENABLE_VIDEO_GENERATION switched off",
+                self.logger,
+            ):
                 self.logger.info("Disabled OpenRouter Video Generation filter %r (ENABLE_VIDEO_GENERATION=False)", row.id)
-            except Exception:
-                self.logger.debug("Disabling Video Generation filter %s failed", row.id, exc_info=True)
 
     async def reactivate_video_gen_filters(self) -> None:
         if not self.valves.ENABLE_VIDEO_GENERATION:
@@ -1533,16 +1533,14 @@ class FilterManager:
                 continue
             if not _switched_off_by_pipe(row):
                 continue
-            try:
-                await Functions.update_function_by_id(
-                    str(getattr(row, "id", "") or ""),
-                    {"is_active": True, "meta": _merged_meta(row, {}, off_by_pipe=False)},
-                )
+            if await _write_function(
+                Functions,
+                str(getattr(row, "id", "") or ""),
+                {"is_active": True, "meta": _merged_meta(row, {}, off_by_pipe=False)},
+                f"re-enabling a {log_label} filter the pipe had switched off",
+                self.logger,
+            ):
                 self.logger.info("Re-enabled OpenRouter %s filter %r", log_label, row.id)
-            except Exception:
-                self.logger.debug(
-                    "Re-enabling %s filter %s failed", log_label, row.id, exc_info=True
-                )
 
     # OPENROUTER FUSION FILTER
 
@@ -1926,11 +1924,14 @@ class FilterManager:
                 function_id = str(getattr(row, "id", "") or "")
                 if not function_id:
                     continue
-                await Functions.update_function_by_id(
+                if await _write_function(
+                    Functions,
                     function_id,
                     {"is_active": False, "meta": switched_off_meta(row)},
-                )
-                self.logger.info("Switched off %s filter %r (%s is off)", valve, function_id, valve)
+                    f"retiring a {valve} filter whose install valve is off",
+                    self.logger,
+                ):
+                    self.logger.info("Switched off %s filter %r (%s is off)", valve, function_id, valve)
 
     async def _filter_rows(self) -> list[Any] | None:
         try:
@@ -2114,12 +2115,13 @@ class FilterManager:
             row_id = getattr(row, "id", "")
             if not _is_pipe_video_filter_row(content, row_id):
                 continue
-            try:
-                await Functions.update_function_by_id(row_id, {"is_active": False})
-            except Exception as exc:
-                self.logger.warning(
-                    "Could not retire video filter %r: %s", row_id, exc, exc_info=True
-                )
+            if not await _write_function(
+                Functions,
+                row_id,
+                {"is_active": False},
+                "retiring a superseded per-model video filter",
+                self.logger,
+            ):
                 continue
             self.logger.info(
                 "Deactivated per-model video filter %r; video generation is off.", row_id

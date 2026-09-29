@@ -39,6 +39,8 @@ EventEmitter = Callable[[dict[str, Any]], Awaitable[bool | None]]
 if TYPE_CHECKING:
     from ..pipe import _PipeJob
 
+_TERMINAL_PUT_CEILING_SECONDS = 1.0
+
 _owui_template_cached: Callable[..., dict[str, Any]] | None = None
 
 
@@ -647,6 +649,34 @@ class EventEmitterHandler:
             return
 
 
+    async def _put_middleware_stream_terminal(
+        self,
+        job: _PipeJob,
+        stream_queue: asyncio.Queue[dict[str, Any] | str | None],
+        item: dict[str, Any] | str | None,
+    ) -> bool:
+        if job.future.cancelled():
+            self._try_put_middleware_stream_nowait(stream_queue, item)
+            return True
+
+        if stream_queue.maxsize <= 0:
+            await stream_queue.put(item)
+            return True
+
+        try:
+            await asyncio.wait_for(
+                stream_queue.put(item), timeout=_TERMINAL_PUT_CEILING_SECONDS
+            )
+        except (TimeoutError, asyncio.CancelledError):
+            self.logger.warning(
+                "Middleware stream queue enqueue gave up on a terminal item (request_id=%s, maxsize=%s).",
+                job.request_id,
+                stream_queue.maxsize,
+            )
+            return False
+        return True
+
+
     async def _put_middleware_stream_item(
         self,
         job: _PipeJob,
@@ -730,13 +760,16 @@ class EventEmitterHandler:
 
             if etype == "chat:message:delta":
                 delta_text = data.get("content")
-                if isinstance(delta_text, str) and delta_text:
-                    answer_already_on_the_queue = answer_already_on_the_queue + delta_text
-                    await self._put_middleware_stream_item(
+                if (
+                    isinstance(delta_text, str)
+                    and delta_text
+                    and await self._put_middleware_stream_item(
                         job,
                         stream_queue,
                         openai_chat_chunk_message_template(model_id, delta_text),
                     )
+                ):
+                    answer_already_on_the_queue = answer_already_on_the_queue + delta_text
                 return
 
             if etype == "chat:tool_calls":
@@ -780,18 +813,35 @@ class EventEmitterHandler:
 
             if etype == "chat:completion":
                 completion_content = data.get("content")
+                delivered = True
                 if isinstance(completion_content, str):
-                    answer_already_on_the_queue = completion_content
-                    await self._put_middleware_stream_item(job, stream_queue, {"event": event})
+                    if await self._put_middleware_stream_item(
+                        job, stream_queue, {"event": event}
+                    ):
+                        answer_already_on_the_queue = completion_content
+                    else:
+                        delivered = False
 
                 error = data.get("error")
-                if isinstance(error, dict) and error:
-                    await self._put_middleware_stream_item(job, stream_queue, {"error": error})
+                if (
+                    isinstance(error, dict)
+                    and error
+                    and not await self._put_middleware_stream_terminal(
+                        job, stream_queue, {"error": error}
+                    )
+                ):
+                    delivered = False
 
                 usage = data.get("usage")
-                if isinstance(usage, dict) and usage:
-                    await self._put_middleware_stream_item(job, stream_queue, {"usage": usage})
-                return
+                if (
+                    isinstance(usage, dict)
+                    and usage
+                    and not await self._put_middleware_stream_terminal(
+                        job, stream_queue, {"usage": usage}
+                    )
+                ):
+                    delivered = False
+                return delivered
 
             await self._put_middleware_stream_item(job, stream_queue, {"event": event})
 

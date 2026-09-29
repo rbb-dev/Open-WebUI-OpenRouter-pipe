@@ -686,31 +686,6 @@ class TestBuildCollisionSafeToolSpecsAndRegistry:
         # The spec name should be the origin name
         assert cfg_spec.get("name") == "param_test"
 
-    def test_passthrough_mode_skips_registry_population(self):
-        """In passthrough mode, exec_registry is not populated."""
-        request_tools = [{"type": "function", "name": "pass_tool", "description": "test"}]
-        owui_registry = {
-            "pass_tool": {
-                "spec": {"name": "pass_tool", "description": "test"},
-                "callable": lambda: "result",
-            }
-        }
-        tools, registry, exposed_to_origin = _build_collision_safe_tool_specs_and_registry(
-            request_tool_specs=request_tools,
-            owui_registry=owui_registry,
-            direct_registry=None,
-            builtin_registry=None,
-            extra_tools=None,
-            strictify=False,
-            owui_tool_passthrough=True,  # Passthrough mode
-            logger=None,
-        )
-        # Tools should be present
-        assert len(tools) == 1
-        # But registry should be empty (passthrough means no pipeline execution)
-        assert registry == {}
-        assert "pass_tool" in exposed_to_origin
-
     def test_tool_cfg_without_callable_not_in_registry(self):
         """Tool cfg without callable is not added to exec_registry (line 372 coverage)."""
         # Create a scenario where tool_cfg exists but has no callable
@@ -1224,34 +1199,6 @@ class TestAdditionalCoverage:
         # The tool is offered and nothing can run it
         assert [t["name"] for t in tools] == ["test_tool"]
         assert registry == {}
-
-    def test_passthrough_with_valid_tool_cfg_skips_registry(self):
-        """In passthrough mode, even valid tool_cfg is not added to registry (line 369-370)."""
-        request_tools = [{"type": "function", "name": "pass_tool", "description": "test"}]
-        owui_registry = {
-            "pass_tool": {
-                "spec": {"name": "pass_tool", "description": "test"},
-                "callable": lambda: "result",
-            }
-        }
-
-        tools, registry, exposed_to_origin = _build_collision_safe_tool_specs_and_registry(
-            request_tool_specs=request_tools,
-            owui_registry=owui_registry,
-            direct_registry={},
-            builtin_registry=None,
-            extra_tools=None,
-            strictify=False,
-            owui_tool_passthrough=True,  # Passthrough enabled
-            logger=None,
-        )
-
-        # Tool should be in output
-        assert len(tools) == 1
-        assert tools[0]["name"] == "pass_tool"
-        # But registry should be empty (passthrough skips registry population)
-        assert registry == {}
-        assert "pass_tool" in exposed_to_origin
 
     def test_direct_entry_with_passthrough_includes_without_callable(self):
         """Direct entries without callable are included in passthrough mode."""

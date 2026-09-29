@@ -86,7 +86,7 @@ The pipe accepts the following Advanced Model Parameters:
 
 | Advanced param | Type | Applies to | What it does |
 | --- | --- | --- | --- |
-| `model_fallback` | `str` (CSV) | Requests | Convenience mapping for OpenRouter fallbacks: converts a CSV list into the OpenRouter `models` array (order-preserving, de-duplicated). |
+| `model_fallback` | `str` (CSV) or a JSON array | Requests | Convenience mapping for OpenRouter fallbacks: converts a CSV list or a JSON array into the OpenRouter `models` array (order-preserving, de-duplicated). Open WebUI JSON-parses a custom param before the pipe sees it, so the two admin spellings produce one behaviour. |
 | `openrouter_trace` | `str` (JSON) | Requests | Convenience mapping for OpenRouter Broadcast observability: parses a JSON object and writes it as the OpenRouter `trace` field. See §2.4. |
 | `disable_native_websearch` | `bool-ish` | Requests | Prevents OpenRouter native web search from being used for this model by stripping OpenRouter web search server tools and related request fields. |
 | `openrouter_provider_ignore` | `str` (CSV) | Requests | Comma-separated provider slugs to exclude from routing. Maps to `provider.ignore`. See §2.5. |
@@ -107,18 +107,27 @@ Notes:
 ### 2.3 `model_fallback` → OpenRouter `models`
 OpenRouter supports a primary `model` plus a fallback list `models` (array). Open WebUI does not expose a first-class UI for OpenRouter’s `models` field, so this pipe supports a convenience parameter:
 
-- Custom param: `model_fallback` (CSV string)
+- Custom param: `model_fallback` (a CSV string or a JSON array)
 - Pipe behavior:
-  - Parses the CSV into a de-duplicated list (order-preserving).
+  - Reads the value as a list of model ids, whether it arrived as a CSV string or as an array. Each element is trimmed, skipped if it is not a string, and de-duplicated (order-preserving), exactly as a CSV part is.
   - Merges with any existing `models` list in the request (existing entries first).
   - Writes the final list to `models` (fallback list only).
   - Removes `model_fallback` from the outgoing OpenRouter payload.
 
-Example Open WebUI custom parameter value:
+Open WebUI JSON-parses a custom param before the pipe sees it, so both of these admin spellings
+reach the pipe as a list and produce the same `models` array:
 
 ```text
 openai/gpt-5,openai/gpt-5.1,anthropic/claude-sonnet-4.5
 ```
+
+```json
+["openai/gpt-5", "openai/gpt-5.1", "anthropic/claude-sonnet-4.5"]
+```
+
+An entry that is not a string is skipped rather than stringified, so a typo inside the array
+cannot become a model id. A value that is neither a string nor a list or tuple (a number, or a
+JSON object) is ignored.
 
 ### 2.4 `openrouter_trace` → OpenRouter `trace` (Broadcast / Observability)
 

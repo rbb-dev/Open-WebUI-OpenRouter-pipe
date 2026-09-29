@@ -24,6 +24,8 @@ _STRICT_SCHEMA_CACHE_SIZE = 512
 
 _FREE_FORM_ITEMS_KEY = "_pipe_free_form_items"
 
+_DEFS_CONTAINER_KEYS = ("$defs", "definitions")
+
 _STRICT_UNSUPPORTED_KEYS = (
     "default",
     "$schema",
@@ -74,8 +76,9 @@ def _inline_allof_once(
         and not any(key in node for key in structural_keys)
     ):
         replacement = dict(dict_branches[0])
-        node.clear()
-        node.update(replacement)
+        node.pop("allOf", None)
+        for key, value in replacement.items():
+            node.setdefault(key, value)
         return
     resolved_branches: list[dict[str, Any]] = []
     for branch in dict_branches:
@@ -158,6 +161,61 @@ def merge_schema_nodes(
                 continue
         merged[key] = copy.deepcopy(value)
     return merged
+
+
+def _nested_def_containers(node: Any):
+    if not isinstance(node, dict):
+        return
+    properties = node.get("properties")
+    if isinstance(properties, dict):
+        for child in properties.values():
+            yield child
+            yield from _nested_def_containers(child)
+    items = node.get("items")
+    if isinstance(items, dict):
+        yield items
+        yield from _nested_def_containers(items)
+    elif isinstance(items, list):
+        for child in items:
+            if isinstance(child, dict):
+                yield child
+                yield from _nested_def_containers(child)
+    for key in ("anyOf", "oneOf", "allOf"):
+        branches = node.get(key)
+        if isinstance(branches, list):
+            for branch in branches:
+                if isinstance(branch, dict):
+                    yield branch
+                    yield from _nested_def_containers(branch)
+    for defs_key in _DEFS_CONTAINER_KEYS:
+        defs = node.get(defs_key)
+        if isinstance(defs, dict):
+            for definition in defs.values():
+                if isinstance(definition, dict):
+                    yield definition
+                    yield from _nested_def_containers(definition)
+
+
+def _hoist_nested_definitions(schema: dict[str, Any]) -> None:
+    for node in list(_nested_def_containers(schema)):
+        if not isinstance(node, dict):
+            continue
+        for defs_key in _DEFS_CONTAINER_KEYS:
+            defs = node.get(defs_key)
+            if not isinstance(defs, dict):
+                continue
+            root_defs = schema.get(defs_key)
+            if not isinstance(root_defs, dict):
+                root_defs = {}
+                schema[defs_key] = root_defs
+            for def_name, def_body in list(defs.items()):
+                if def_name in root_defs:
+                    continue
+                root_defs[def_name] = def_body
+                defs.pop(def_name, None)
+                logger.debug("Hoisted nested %s/%s to the document root.", defs_key, def_name)
+            if not defs:
+                node.pop(defs_key, None)
 
 
 def _resolve_root_refs(
@@ -247,8 +305,9 @@ def _strictify_schema_impl(schema: dict[str, Any]) -> dict[str, Any]:
 
     This defensive type inference ensures schemas are valid for OpenAI strict mode.
     """
+    _hoist_nested_definitions(schema)
     defs_lookup: dict[str, Any] = {}
-    for defs_key in ("$defs", "definitions"):
+    for defs_key in _DEFS_CONTAINER_KEYS:
         defs = schema.get(defs_key)
         if isinstance(defs, dict):
             for def_name, def_body in defs.items():
@@ -286,9 +345,11 @@ def _strictify_schema_impl(schema: dict[str, Any]) -> dict[str, Any]:
 
         _inline_allof(node, defs_lookup, resolve_budget)
         if "$ref" in node:
+            if node.pop(_FREE_FORM_ITEMS_KEY, None) is not None:
+                logger.debug("Dropped the free-form marker from a node the unwrap turned into a $ref.")
             continue
 
-        for defs_key in ("$defs", "definitions"):
+        for defs_key in _DEFS_CONTAINER_KEYS:
             defs = node.get(defs_key)
             if isinstance(defs, dict):
                 for definition in defs.values():

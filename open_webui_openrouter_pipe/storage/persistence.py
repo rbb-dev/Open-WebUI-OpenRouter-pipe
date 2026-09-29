@@ -366,8 +366,9 @@ class ReplyMemory:
             payload = json.loads(json.dumps(row.get("payload"), default=str))
             item_id = row.setdefault("id", generate_item_id())
             _touched, kept, size = self._replies[key]
+            replaced = _retained_bytes(kept[item_id]) if item_id in kept else 0
             kept[item_id] = payload
-            self._replies[key] = (self._clock(), kept, size + _retained_bytes(payload))
+            self._replies[key] = (self._clock(), kept, size - replaced + _retained_bytes(payload))
             self._replies.move_to_end(key)
             held.append(item_id)
         for key in {self._key(row.get("chat_id"), row.get("message_id")) for row in rows}:
@@ -1166,6 +1167,28 @@ class ArtifactStore:
             raise ValueError("Unable to decrypt payload (invalid token).") from exc
         return self._decode_payload_bytes(plaintext)
 
+    def _row_readable_under_current_key(self, row: dict[str, Any]) -> bool:
+        if not row.get("is_encrypted"):
+            return True
+        fernet = self._get_fernet()
+        if fernet is None:
+            return False
+        payload = row.get("payload")
+        if isinstance(payload, dict):
+            ciphertext = payload.get("ciphertext", "") or ""
+        elif isinstance(payload, str):
+            ciphertext = payload
+        else:
+            ciphertext = ""
+        try:
+            fernet.decrypt(ciphertext.encode("utf-8"))
+        except (InvalidToken, TypeError, ValueError):
+            return False
+        return True
+
+    def _rows_readable_under_current_key(self, rows: list[dict[str, Any]]) -> list[bool]:
+        return [self._row_readable_under_current_key(row) for row in rows]
+
     def _encrypt_if_needed(self, item_type: str, payload: dict[str, Any]) -> tuple[Any, bool]:
         """Optionally encrypt ``payload`` depending on the item type."""
         if not self._should_encrypt(item_type):
@@ -1270,6 +1293,38 @@ class ArtifactStore:
                 present.append(identifier)
         return present
 
+    def _conflict_tolerant_insert(self, instances: list[Any]) -> Any:
+        if self._engine is None:
+            return None
+        table = getattr(self._item_model, "__table__", None)
+        if table is None:
+            return None
+        dialect_name = self._engine.dialect.name
+        if dialect_name not in ("postgresql", "sqlite"):
+            return None
+        values = [
+            {
+                "id": instance.id,
+                "chat_id": instance.chat_id,
+                "message_id": instance.message_id,
+                "model_id": instance.model_id,
+                "item_type": instance.item_type,
+                "payload": instance.payload,
+                "is_encrypted": instance.is_encrypted,
+                "created_at": instance.created_at,
+            }
+            for instance in instances
+        ]
+        if not values:
+            return None
+        if dialect_name == "postgresql":
+            from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+            return pg_insert(table).values(values).on_conflict_do_nothing(index_elements=["id"])
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+        return sqlite_insert(table).values(values).on_conflict_do_nothing(index_elements=["id"])
+
     @timed
     def _db_persist_sync(self, rows: list[dict[str, Any]]) -> list[str]:
         """Persist prepared rows once; intentionally no automatic retry logic."""
@@ -1348,9 +1403,23 @@ class ArtifactStore:
                 if not instances:
                     continue
 
-                with _db_session(self._session_factory) as session:
-                    session.add_all(instances)
-                    session.commit()
+                statement = self._conflict_tolerant_insert(instances)
+                if statement is None:
+                    with _db_session(self._session_factory) as session:
+                        session.add_all(instances)
+                        session.commit()
+                else:
+                    with _db_session(self._session_factory) as session:
+                        result = session.execute(statement)
+                        session.commit()
+                    rowcount = getattr(result, "rowcount", -1)
+                    if rowcount < len(instances):
+                        self.logger.warning(
+                            "Artifact persist: %d of %d row(s) were already in the artifact "
+                            "table and were not written again.",
+                            len(instances) - rowcount,
+                            len(instances),
+                        )
 
                 for row in persisted_rows:
                     row["_persisted"] = True
@@ -2044,6 +2113,54 @@ class ArtifactStore:
                     self.logger.warning("Discarded %d malformed artifact(s) from Redis pending queue.", malformed)
                 if not entries_by_row:
                     return
+
+                partition = await asyncio.to_thread(
+                    functools.partial(
+                        self._rows_readable_under_current_key,
+                        [row for _entry, row in entries_by_row],
+                    )
+                )
+                discarded = [
+                    row
+                    for (_entry, row), readable in zip(entries_by_row, partition)
+                    if not readable
+                ]
+                if discarded:
+                    entries_by_row = [
+                        (entry, row)
+                        for (entry, row), readable in zip(entries_by_row, partition)
+                        if readable
+                    ]
+                    self.logger.warning(
+                        "Discarded %d artifact(s) sealed under a retired ARTIFACT_ENCRYPTION_KEY "
+                        "rather than writing them into this key's table, where they could never "
+                        "be read (item_types=%s). Markers referencing them are permanently "
+                        "dangling.",
+                        len(discarded),
+                        sorted({str(row.get("item_type", "unknown")) for row in discarded}),
+                    )
+                    keys = [
+                        key
+                        for key in (
+                            self._redis_cache_key(row.get("chat_id"), row.get("id"))
+                            for row in discarded
+                        )
+                        if key
+                    ]
+                    if keys and self._redis_client:
+                        try:
+                            await _await_if_needed(self._redis_client.delete(*keys))
+                        except Exception as exc:
+                            self.logger.warning(
+                                "Redis cache invalidation of discarded artifacts failed (best-effort): %s",
+                                exc, exc_info=True,
+                            )
+                    if not entries_by_row:
+                        self.logger.debug(
+                            "✅ Successfully flushed 0 artifacts to DB; every entry in this "
+                            "batch was unreadable under the current ARTIFACT_ENCRYPTION_KEY"
+                        )
+                        return
 
                 rows = [row for _entry, row in entries_by_row]
                 self.logger.debug("Flushing %d artifact(s) from Redis pending queue to DB (table: %s)", len(rows), self._artifact_table_name or "unknown")

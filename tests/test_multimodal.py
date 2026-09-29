@@ -727,7 +727,7 @@ class TestInlineInternalResponsesInputFilesInplace:
     async def test_does_nothing_for_empty_input(self, pipe_instance_async):
         """Should do nothing when input is empty."""
         body = {"input": []}
-        await pipe_instance_async._file_gateway.inline_internal_responses_input_files_inplace(
+        await pipe_instance_async._file_gateway.inline_internal_responses_input_files(
             body, chunk_size=1024, max_bytes=1024 * 1024
         )
         assert body == {"input": []}
@@ -736,7 +736,7 @@ class TestInlineInternalResponsesInputFilesInplace:
     async def test_does_nothing_for_non_list_input(self, pipe_instance_async):
         """Should do nothing when input is not a list."""
         body = {"input": "not a list"}
-        await pipe_instance_async._file_gateway.inline_internal_responses_input_files_inplace(
+        await pipe_instance_async._file_gateway.inline_internal_responses_input_files(
             body, chunk_size=1024, max_bytes=1024 * 1024
         )
         assert body == {"input": "not a list"}
@@ -745,7 +745,7 @@ class TestInlineInternalResponsesInputFilesInplace:
     async def test_skips_non_dict_items(self, pipe_instance_async):
         """Should skip non-dict items in input."""
         body = {"input": ["string item", 123]}
-        await pipe_instance_async._file_gateway.inline_internal_responses_input_files_inplace(
+        await pipe_instance_async._file_gateway.inline_internal_responses_input_files(
             body, chunk_size=1024, max_bytes=1024 * 1024
         )
         assert body == {"input": ["string item", 123]}
@@ -754,7 +754,7 @@ class TestInlineInternalResponsesInputFilesInplace:
     async def test_skips_items_without_content(self, pipe_instance_async):
         """Should skip items without content."""
         body = {"input": [{"role": "user"}]}
-        await pipe_instance_async._file_gateway.inline_internal_responses_input_files_inplace(
+        await pipe_instance_async._file_gateway.inline_internal_responses_input_files(
             body, chunk_size=1024, max_bytes=1024 * 1024
         )
         assert body == {"input": [{"role": "user"}]}
@@ -767,7 +767,7 @@ class TestInlineInternalResponsesInputFilesInplace:
                 "content": [{"type": "text", "text": "hello"}]
             }]
         }
-        await pipe_instance_async._file_gateway.inline_internal_responses_input_files_inplace(
+        await pipe_instance_async._file_gateway.inline_internal_responses_input_files(
             body, chunk_size=1024, max_bytes=1024 * 1024
         )
         assert body["input"][0]["content"][0]["type"] == "text"
@@ -783,7 +783,7 @@ class TestInlineInternalResponsesInputFilesInplace:
                 }]
             }]
         }
-        await pipe_instance_async._file_gateway.inline_internal_responses_input_files_inplace(
+        await pipe_instance_async._file_gateway.inline_internal_responses_input_files(
             body, chunk_size=1024, max_bytes=1024 * 1024
         )
         assert body["input"][0]["content"][0]["file_id"] == "file-abc123"
@@ -800,7 +800,7 @@ class TestInlineInternalResponsesInputFilesInplace:
             }]
         }
 
-        await pipe_instance_async._file_gateway.inline_internal_responses_input_files_inplace(
+        await pipe_instance_async._file_gateway.inline_internal_responses_input_files(
             body, chunk_size=1024, max_bytes=1024 * 1024
         )
 
@@ -828,14 +828,14 @@ class TestInlineInternalResponsesInputFilesInplace:
             }]
         }
 
-        await pipe_instance_async._file_gateway.inline_internal_responses_input_files_inplace(
+        sent = await pipe_instance_async._file_gateway.inline_internal_responses_input_files(
             body, chunk_size=1024, max_bytes=1024 * 1024
         )
 
         expected_b64 = base64.b64encode(test_content).decode("ascii")
         expected_data_url = f"data:application/pdf;base64,{expected_b64}"
 
-        block = body["input"][0]["content"][0]
+        block = sent["input"][0]["content"][0]
         assert block["file_data"] == expected_data_url
         assert "file_id" not in block
 
@@ -861,11 +861,11 @@ class TestInlineInternalResponsesInputFilesInplace:
             }]
         }
 
-        await pipe_instance_async._file_gateway.inline_internal_responses_input_files_inplace(
+        sent = await pipe_instance_async._file_gateway.inline_internal_responses_input_files(
             body, chunk_size=1024, max_bytes=1024 * 1024
         )
 
-        block = body["input"][0]["content"][0]
+        block = sent["input"][0]["content"][0]
         assert block["file_data"].startswith("data:")
 
     @pytest.mark.asyncio
@@ -890,11 +890,11 @@ class TestInlineInternalResponsesInputFilesInplace:
             }]
         }
 
-        await pipe_instance_async._file_gateway.inline_internal_responses_input_files_inplace(
+        sent = await pipe_instance_async._file_gateway.inline_internal_responses_input_files(
             body, chunk_size=1024, max_bytes=1024 * 1024
         )
 
-        block = body["input"][0]["content"][0]
+        block = sent["input"][0]["content"][0]
         assert block["file_data"].startswith("data:")
         assert "file_url" not in block
 
@@ -918,7 +918,7 @@ class TestInlineInternalResponsesInputFilesInplace:
         }
 
         with pytest.raises(ValueError, match="A referenced file .* is no longer available"):
-            await pipe_instance_async._file_gateway.inline_internal_responses_input_files_inplace(
+            await pipe_instance_async._file_gateway.inline_internal_responses_input_files(
                 body, chunk_size=1024, max_bytes=1024 * 1024
             )
 
@@ -930,7 +930,7 @@ class TestInlineInternalResponsesInputFilesInplace:
                 "content": "not a list"
             }]
         }
-        await pipe_instance_async._file_gateway.inline_internal_responses_input_files_inplace(
+        await pipe_instance_async._file_gateway.inline_internal_responses_input_files(
             body, chunk_size=1024, max_bytes=1024 * 1024
         )
         assert body["input"][0]["content"] == "not a list"
@@ -943,7 +943,7 @@ class TestInlineInternalResponsesInputFilesInplace:
                 "content": ["string block", 123, None]
             }]
         }
-        await pipe_instance_async._file_gateway.inline_internal_responses_input_files_inplace(
+        await pipe_instance_async._file_gateway.inline_internal_responses_input_files(
             body, chunk_size=1024, max_bytes=1024 * 1024
         )
         assert body["input"][0]["content"] == ["string block", 123, None]
@@ -3526,7 +3526,9 @@ class TestAudioTransformer:
         audio_block = await _transform_single_block(pipe_instance, block, mock_user)
         assert audio_block is not None
         assert audio_block["type"] == "input_text"
-        assert audio_block["text"] == "[The user sent an empty message.]"
+        assert audio_block["text"] == (
+            "[An attached item was not sent: an audio clip carried no audio data.]"
+        )
 
     @pytest.mark.asyncio
     async def test_audio_data_url_supported(

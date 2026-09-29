@@ -2449,33 +2449,6 @@ class TestBuildCollisionSafeToolSpecsAndRegistry:
         assert cfg["exposed_name"] == "tool"
         assert isinstance(cfg["spec"], dict)
 
-    def test_passthrough_mode_skips_exec_registry(self):
-        """Test that passthrough mode doesn't populate exec_registry."""
-        async def callable_fn(**kwargs):
-            return "result"
-
-        owui_registry = {
-            "tool": {
-                "spec": {"name": "tool", "description": "Tool"},
-                "callable": callable_fn,
-            }
-        }
-
-        tools, exec_reg, origin_map = _build_collision_safe_tool_specs_and_registry(
-            request_tool_specs=None,
-            owui_registry=owui_registry,
-            direct_registry=None,
-            builtin_registry=None,
-            extra_tools=None,
-            strictify=False,
-            owui_tool_passthrough=True,
-            logger=None,
-        )
-
-        assert len(tools) == 1
-        assert exec_reg == {}
-        assert "tool" in origin_map
-
     def test_pick_executor_preference_builtin(self):
         """Test that _pick_executor prefers builtin entries first."""
         async def builtin_fn(**kwargs):
@@ -3601,7 +3574,7 @@ def test_strictify_unwraps_single_element_allof():
         "$defs": {"Cfg": {"type": "object", "properties": {"x": {"type": "integer"}}}},
     }
     out = _strictify_schema(schema)
-    assert out["properties"]["cfg"] == {"$ref": "#/$defs/Cfg"}
+    assert out["properties"]["cfg"] == {"$ref": "#/$defs/Cfg", "description": "c"}
     cfg = out["$defs"]["Cfg"]
     assert cfg["additionalProperties"] is False
     assert cfg["required"] == ["x"]

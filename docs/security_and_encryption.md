@@ -95,6 +95,7 @@ The artifact table name includes a short hash derived from `(ARTIFACT_ENCRYPTION
 Operational impact:
 - Key rotation can intentionally reduce historical artifact replay (older marker references will not resolve unless you restore the prior key).
 - A rotation takes effect for writes already in flight. The cipher is rebuilt against the current key on every call, so the store is never left holding a retired one, but a write that was already inside that cipher build when the change landed is still written under the previous key and cannot be read afterwards; that one row is dropped and a warning in the pipe’s log names its artifact kind (never its content).
+- A rotation also reaches rows still waiting in the Redis pending queue. A row that was buffered under the previous key and has not been written yet is discarded at the next flush rather than written into the new key's table, where nothing could ever read it; a warning names its artifact kind and count. The row is never written at all, so it will not be in the new table to look for.
 - Plan rotations as an operational change and communicate the impact to users if you rely on long-lived artifact replay.
 
 ### Recommended configurations (security vs operational cost)

@@ -77,6 +77,7 @@ Operational implications:
 - Changing `ARTIFACT_ENCRYPTION_KEY` causes the pipe to write to a different table name.
   - Existing artifacts are not “deleted” automatically, but they will not be read by the pipe unless you restore the prior key (and therefore the prior table name).
   - The cipher is rebuilt against the current key on every call, so a rotation never leaves the store using a retired one.
+  - A row still buffered in the Redis pending queue when the key changes is dropped at the next flush with a warning naming its `item_type`, rather than being written into the new table where it could never be read.
 
 ### Stored columns (high level)
 Persisted rows include:
@@ -104,7 +105,7 @@ Artifact encryption is controlled by these system valves:
 ### When encryption is not active
 - If `ARTIFACT_ENCRYPTION_KEY` is empty/unset, payloads are stored as normal JSON objects and `is_encrypted=False`.
 
-**Operator note:** If you store secret valve values using Open WebUI encryption (`EncryptedStr`), configure `WEBUI_SECRET_KEY` (see [Security & Encryption](security_and_encryption.md)). If `WEBUI_SECRET_KEY` is changed later, encrypted valve values may decrypt differently, which effectively behaves like a key rotation for artifact storage. The cipher is rebuilt against the current key on every call, so such a rotation never leaves the store using a retired one.
+**Operator note:** If you store secret valve values using Open WebUI encryption (`EncryptedStr`), configure `WEBUI_SECRET_KEY` (see [Security & Encryption](security_and_encryption.md)). If `WEBUI_SECRET_KEY` is changed later, encrypted valve values may decrypt differently, which effectively behaves like a key rotation for artifact storage. The cipher is rebuilt against the current key on every call, so such a rotation never leaves the store using a retired one. Rows still buffered in the Redis pending queue at that moment are discarded unreadable; draining the queue before rotating avoids it.
 
 ---
 

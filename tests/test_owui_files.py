@@ -9,6 +9,7 @@ module helpers (auth, size, containment, mime, base64) and the
 from __future__ import annotations
 
 import base64
+import copy
 import importlib
 import logging
 from pathlib import Path
@@ -868,10 +869,10 @@ async def test_inplace_converts_internal_file_id_block(
             {"content": [{"type": "input_file", "file_id": "internal-77"}]}
         ]
     }
-    await gateway.inline_internal_responses_input_files_inplace(
+    sent = await gateway.inline_internal_responses_input_files(
         body, chunk_size=1024, max_bytes=1024
     )
-    block = body["input"][0]["content"][0]
+    block = sent["input"][0]["content"][0]
     assert block["file_data"] == "data:application/pdf;base64,UERG"
     assert block["filename"] == "doc.pdf"
     assert "file_id" not in block
@@ -884,7 +885,7 @@ async def test_inplace_skips_provider_file_id(gateway: OwuiFileGateway, monkeypa
     inline = AsyncMock()
     monkeypatch.setattr(gateway, "inline_owui_file_id", inline)
     body = {"input": [{"content": [{"type": "input_file", "file_id": "file-openai-abc"}]}]}
-    await gateway.inline_internal_responses_input_files_inplace(
+    await gateway.inline_internal_responses_input_files(
         body, chunk_size=1024, max_bytes=1024
     )
     assert body["input"][0]["content"][0]["file_id"] == "file-openai-abc"
@@ -905,10 +906,10 @@ async def test_inplace_converts_internal_file_url_and_pops_it(
             {"content": [{"type": "input_file", "file_url": "/api/v1/files/abc-9/content"}]}
         ]
     }
-    await gateway.inline_internal_responses_input_files_inplace(
+    sent = await gateway.inline_internal_responses_input_files(
         body, chunk_size=1024, max_bytes=1024
     )
-    block = body["input"][0]["content"][0]
+    block = sent["input"][0]["content"][0]
     assert block["file_data"] == "data:application/pdf;base64,UERG"
     assert "file_url" not in block
     inline.assert_awaited_once_with("abc-9", chunk_size=1024, max_bytes=1024, user=None)
@@ -927,7 +928,7 @@ async def test_inplace_raises_on_inline_failure(gateway: OwuiFileGateway, monkey
     monkeypatch.setattr(gateway, "inline_owui_file_id", AsyncMock(return_value=None))
     body = {"input": [{"content": [{"type": "input_file", "file_id": "internal-77"}]}]}
     with pytest.raises(FileUnavailableError) as raised:
-        await gateway.inline_internal_responses_input_files_inplace(
+        await gateway.inline_internal_responses_input_files(
             body, chunk_size=1024, max_bytes=1024
         )
     assert isinstance(raised.value, RequiredInternalFileError)
@@ -946,7 +947,7 @@ async def test_inplace_propagates_required_error(gateway: OwuiFileGateway, monke
     )
     body = {"input": [{"content": [{"type": "input_file", "file_id": "internal-77"}]}]}
     with pytest.raises(RequiredInternalFileError):
-        await gateway.inline_internal_responses_input_files_inplace(
+        await gateway.inline_internal_responses_input_files(
             body, chunk_size=1024, max_bytes=1024
         )
 
@@ -957,10 +958,32 @@ async def test_inplace_noop_without_input(gateway: OwuiFileGateway, monkeypatch:
     inline = AsyncMock()
     monkeypatch.setattr(gateway, "inline_owui_file_id", inline)
     body: dict[str, Any] = {"model": "x"}
-    await gateway.inline_internal_responses_input_files_inplace(
+    await gateway.inline_internal_responses_input_files(
         body, chunk_size=1024, max_bytes=1024
     )
     inline.assert_not_awaited()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 11b. one body, two senders
+# ─────────────────────────────────────────────────────────────────────────────
+
+ALICE_BYTES = b"SALARY-SLIDE-ALICE"
+ALICE = SimpleNamespace(id="alice", role="user")
+INTERNAL_FILE_ID = "9f1c2d3e-4b5a-6c7d-8e9f-0a1b2c3d4e5f"
+def _owned_record() -> SimpleNamespace:
+    return _file_obj(
+        id=INTERNAL_FILE_ID,
+        user_id="alice",
+        filename="slides.pdf",
+        mime_type="application/pdf",
+        meta={"name": "slides.pdf", "size": len(ALICE_BYTES)},
+        data={"b64": base64.b64encode(ALICE_BYTES).decode()},
+    )
+
+
+def _body(block: dict[str, Any]) -> dict[str, Any]:
+    return {"model": "m", "input": [{"role": "user", "content": [{"type": "input_file", **block}]}]}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

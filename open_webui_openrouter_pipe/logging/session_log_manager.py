@@ -220,6 +220,8 @@ _DEAD_MANAGER_DRAIN_WARNINGS: dict[str, float] = {}
 _INCOMPLETE_MARKER_PREFIX = "Session log finalized as incomplete"
 _INCOMPLETE_MARKER_FUNC = "_assemble_and_write_bundle"
 
+_TEMPORARY_CHAT_PROCESS_SCOPE = "process"
+
 class _LockContended:
 
     __slots__ = ()
@@ -481,7 +483,7 @@ class SessionLogManager:
             self.logger.log(warn_level(self._warned, cause), message)
 
     def _warn_temporary_chat_skip(
-        self, site: str, user_id: str, message: str, *args: object
+        self, site: str, scope: str, message: str, *args: object
     ) -> None:
         cooldown_s = 300.0
         now = time.monotonic()
@@ -495,7 +497,7 @@ class SessionLogManager:
             self.logger.log(
                 warn_level(
                     self._warned_temporary_chat,
-                    f"temporary_chat:{site}:{user_id}" if user_id else f"temporary_chat:{site}",
+                    f"temporary_chat:{site}:{scope}",
                     cooldown_s=cooldown_s,
                 ),
                 message,
@@ -1450,7 +1452,8 @@ class SessionLogManager:
             return False
         if is_temporary_chat(chat_id):
             self._warn_temporary_chat_skip(
-                "assembly", "", "Session log assembly skipped (temporary chat): message_id=%s", message_id,
+                "assembly", _TEMPORARY_CHAT_PROCESS_SCOPE,
+                "Session log assembly skipped (temporary chat): message_id=%s", message_id,
             )
             return False
         model, session_factory = self._db_handles()

@@ -1729,6 +1729,10 @@ class RequestOrchestrator:
 
         records = _image_model_records(_image_model)
         resolved_tool_names = _resolved_tool_names(owui_registry, direct_registry)
+        resolved_tool_names |= frozenset(
+            exposed for exposed, origin in (exposed_to_origin or {}).items()
+            if origin in resolved_tool_names
+        )
         tools_before_pipe_metadata = list(responses_body.tools or [])
 
         superseded = _apply_server_tools_metadata(

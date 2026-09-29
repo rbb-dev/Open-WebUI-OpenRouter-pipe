@@ -447,9 +447,10 @@ def _build_collision_safe_tool_specs_and_registry(
             builtin_ask_user_names.add(exposed_name)
 
         tool_cfg = c.get("tool_cfg")
-        if owui_tool_passthrough:
-            continue
         if not isinstance(tool_cfg, dict) or tool_cfg.get("callable") is None:
+            continue
+        if owui_tool_passthrough and (tool_cfg.get("direct") is True or tool_cfg.get("type") == "builtin"):
+            log.debug("Skipping registry entry %s (Open WebUI runs this one).", exposed_name)
             continue
         cfg = dict(tool_cfg)
         cfg["origin_source"] = c["origin_source"]

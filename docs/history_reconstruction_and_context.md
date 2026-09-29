@@ -220,7 +220,9 @@ only through the card Open WebUI keeps for it in the browser, and none with card
 - Where the pipe replays OpenRouter's own item for a server tool unchanged (the advisor, the subagent or model
   search, with results kept), that item
   wins over the card pair Open WebUI saved for it.
-- An earlier turn's results are withheld by the same rule whichever copy carries them: with `PERSIST_TOOL_RESULTS` off
+- An earlier turn's results are withheld by the same rule whichever copy carries them, and so is a round that arrived before the chat's
+  first turn -- which is what an API caller, an imported or reordered chat, or a filter posts -- since such a
+  round is never the current turn. With `PERSIST_TOOL_RESULTS` off
   the model gets `{}` in place of the arguments and a placeholder result -- `[tool result not retained]`, or
   `[tool call failed; result not retained]` when the call did not complete. A round of Open WebUI's built-in
   `ask_user` is the exception: its question and the person's typed answer are always handed over, since the answer

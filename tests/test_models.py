@@ -4881,6 +4881,15 @@ class TestTagScannerIsDisabledOnEveryModelRow:
         assert (value is not False) is False
 
 
+def _owned_record(family: str, owned: str):
+    """The family's ownership record, in the shape that family writes it.
+
+    image/fusion store a list (`_apply_list_filter_ids` writes `list(filter_function_ids)`);
+    the four single-id families store a string.
+    """
+    return [owned] if family in ("image", "fusion") else owned
+
+
 # -----------------------------------------------------------------------------
 # Single-flight: the video catalogue refresh
 # -----------------------------------------------------------------------------
