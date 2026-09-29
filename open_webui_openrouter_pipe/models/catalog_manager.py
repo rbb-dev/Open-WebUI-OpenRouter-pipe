@@ -311,6 +311,14 @@ def _write_settled_filter_ids(
     return True
 
 
+def _record_needs_repair(previous, offered, *, attaching: bool) -> bool:
+    if not attaching or not previous:
+        return False
+    if isinstance(previous, str):
+        previous = [previous]
+    return _dedupe_preserve_order(list(previous)) != _dedupe_preserve_order(list(offered))
+
+
 def _apply_list_filter_ids(
     meta_dict: dict,
     *,
@@ -2746,6 +2754,13 @@ class ModelCatalogManager:
             )
 
             if wanted == had:
+                if _record_needs_repair(
+                    recorded_id, [provider_routing_filter_id], attaching=True
+                ):
+                    pipe_meta = _ensure_pipe_meta(meta_dict)
+                    pipe_meta["provider_routing_filter_id"] = provider_routing_filter_id
+                    meta_dict[_PIPE_METADATA_KEY] = pipe_meta
+                    return True
                 self.logger.debug("PR attach: wanted==had, no change needed")
                 return False
 

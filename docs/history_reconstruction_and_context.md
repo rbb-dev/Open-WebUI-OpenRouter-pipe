@@ -49,7 +49,7 @@ Messages with `role` of `system` or `developer` are preserved as separate messag
 
 ## 3. User messages (content blocks → `input_*`)
 
-User messages are converted into a single `type: "message"` item with a `content` list. The pipe transforms certain known block types; unknown block types are left unchanged.
+User messages are converted into a single `type: "message"` item with a `content` list. The pipe transforms certain known block types; unknown block types pass through unchanged, except that a network or internal-storage URL they carry is treated as untrusted input and the block is dropped.
 
 ### 3.1 Text
 Open WebUI may provide user content as a string or as block objects. Text is normalized into:

@@ -119,6 +119,9 @@ class _Publisher:
                 )
 
 
+_REQUEST = object()
+
+
 def _valves(**overrides):
     valves = Valves()
     valves.SEND_MEDIA_VIA_FILE_HOST = True
@@ -553,6 +556,11 @@ async def test_generate_puts_back_what_was_withheld_when_it_resumes_a_running_jo
     )
     monkeypatch.setattr(pipe._file_gateway, "upload_to_owui_storage_from_path", _upload)
 
+    async def _resolved(_request, _user_obj):
+        return "req", SimpleNamespace(id="u-1", email="u@example.com", name="u")
+
+    monkeypatch.setattr(pipe._file_gateway, "resolve_storage_context", _resolved)
+
     try:
         answered = await adapter.generate(
             body={"messages": [{"role": "user", "content": "make a video"}]},
@@ -562,7 +570,7 @@ async def test_generate_puts_back_what_was_withheld_when_it_resumes_a_running_jo
             metadata={"chat_id": "chat-1", "message_id": "msg-1", "user_id": "user-1"},
             user={"id": "user-1"},
             request=None,
-            user_obj={"id": "user-1"},
+            user_obj=SimpleNamespace(id="user-1", email="u@example.com", name="u"),
             normalized_model_id="openai.sora-2-pro",
             api_model_id="openai/sora-2-pro",
             valves=pipe.valves,

@@ -52,7 +52,8 @@ is switched off too.
    exposes parameter knobs for that model.
 4. (Optional) Click the per-model filter's settings icon to set
    per-message overrides — duration, aspect ratio, resolution, audio,
-   negative prompt, etc.
+   negative prompt, etc. Which of them appear depends on the model:
+   each filter draws only the controls that model publishes.
 5. (Optional) Attach one or two images. The first image becomes the
    `first_frame`, and if you attach two and the model supports
    `last_frame`, the second becomes the closing frame.
@@ -1808,9 +1809,9 @@ ones that arrived are still delivered rather than the whole job being
 thrown away.
 
 A job where some clips did not arrive says so, below the ones that
-did, naming the step that lost them — a clip OpenRouter never served
-could not be fetched, and a clip Open WebUI's storage refused could
-not be saved to storage:
+did, naming every step that lost one, with its count — a clip OpenRouter
+never served could not be fetched, and a clip Open WebUI's storage
+refused could not be saved to storage:
 
 ```markdown
 [openrouter:v1:videojob:<job_id>]: #
@@ -1822,6 +1823,21 @@ not be saved to storage:
 
 1 of the 3 clips this job delivered could not be fetched and are not
 shown above.
+```
+
+When both steps lost a clip, the sentence names both and says how many
+each took, and the leading number is still the total that went missing:
+
+```markdown
+[openrouter:v1:videojob:<job_id>]: #
+[openrouter:v1:videomodel:<model_id>]: #
+
+<video>
+/api/v1/files/<owui_file_id_1>/content
+</video>
+
+2 of the 3 clips this job delivered could not be fetched (1) or saved
+to storage (1) and are not shown above.
 ```
 
 Both numbers in that sentence are counted from the clips the pipe

@@ -1338,8 +1338,8 @@ def _build_dashboard_shell(dash_id: str) -> str:
       var ws = rl.window_s || 0;
       var tt = rl.tool_tracked || 0, tf = rl.tool_with_failures || 0, tp = rl.tool_tripped || 0;
       var aa = rl.auth_failures_active || 0;
-      var SEEN_REQ_TITLE = 'users holding a breaker record; a record is created by a failure and dropped when that user\\'s next request succeeds, when a later check finds its window empty, or on the next breaker write once its newest failure is older than the breaker window \\u2014 so a tripped user who stops sending requests does not keep one for the life of the process.';
-      var SEEN_TOOL_TITLE = 'user+tool pairs holding a breaker record; a pair is dropped when that user next invokes that tool and the call succeeds, when a later check finds the window empty, or on the next breaker write once its newest failure is older than the window \\u2014 a tripped pair for a tool never invoked again is released too.';
+      var SEEN_REQ_TITLE = 'users whose newest breaker failure is inside the breaker window \\u2014 the same thing the Users w/ fail column counts, so the two agree by construction. The RECORD is a separate thing: it is created by a failure and released when that user\\'s next request succeeds, when a later check finds its window empty, or on the next breaker write once its newest failure is older than the window, so a tripped user who stops sending requests keeps a record nobody is counting until then.';
+      var SEEN_TOOL_TITLE = 'user+tool pairs whose newest breaker failure is inside the breaker window \\u2014 the same thing the Users w/ fail column counts, so the two agree by construction. The RECORD is a separate thing: it is released when that user next invokes that tool and the call succeeds, when a later check finds the window empty, or on the next breaker write once its newest failure is older than the window, so a tripped pair for a tool never invoked again keeps a record nobody is counting until then.';
       var h = '<div class="tbl-wrap"><table class="tbl"><thead><tr>' +
         '<th>Type</th><th class="r">Seen</th>' +
         '<th class="r">Users w/ fail</th>' +

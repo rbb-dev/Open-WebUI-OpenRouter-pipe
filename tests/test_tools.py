@@ -4528,7 +4528,14 @@ class TestEventEmitterFilesEmbeds:
 
 
 class TestProcessToolResultSafe:
-    """Tests for _process_tool_result_safe crash safety."""
+    """The no-context / seam-unavailable fallback arm of `_process_tool_result_safe`.
+
+    All five pass `context=None`, which is exactly the gate at `tool_executor.py:469`:
+    with no context the seam is never reached and the result is rendered by `str()`. They
+    pin that rendering -- a string, `None`, a dict, a list, an object that refuses to be
+    stringified -- on every deployment where `open_webui.utils.middleware` failed to import.
+    The arm that reaches the seam is `TestProcessToolResultSafeThroughOpenWebui` below.
+    """
 
     @pytest.mark.asyncio
     async def test_simple_string_result(self):

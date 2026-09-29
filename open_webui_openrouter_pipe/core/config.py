@@ -935,10 +935,13 @@ class Valves(BaseModel):
         description=(
             "When True, retry the request against /chat/completions if /responses fails with an "
             "endpoint/model support error before any streaming output is produced. A failure OpenRouter "
-            "reports inside a reply is retried first if nothing has streamed yet, and shown only "
-            "once content has been shown. The retry is skipped for a model pinned by "
-            "FORCE_RESPONSES_MODELS to /responses, and its error surfaces; a model that merely "
-            "sits on the responses default is still retried."
+            "reports inside a reply already under way is not retried against /chat/completions - the "
+            "endpoint is not the problem once a reply has started. If it is a temporary failure (a 429 "
+            "or 5xx) and nothing has been shown yet, it is re-sent on the same endpoint, governed by "
+            "TRANSIENT_RETRY_MAX_ATTEMPTS; otherwise, and once those tries are spent, its message is "
+            "shown straight away, appended below whatever answer was already streamed. The retry is "
+            "skipped for a model pinned by FORCE_RESPONSES_MODELS to /responses, and its error "
+            "surfaces; a model that merely sits on the responses default is still retried."
         ),
     )
     API_KEY: EncryptedStr = Field(
@@ -1812,7 +1815,10 @@ class Valves(BaseModel):
         description=(
             "Global ceiling for simultaneously executing tool calls; Open WebUI's ask_user takes no slot. "
             "Takes effect without a restart, in both directions: a higher value admits more calls at once, "
-            "and a lower one binds from the moment it is saved, counting the calls already running, which finish first."
+            "and a lower one binds from the moment it is saved, counting the calls already running, which finish first. "
+            "It also sizes the pool of threads a tool written as a plain function runs on, up to a fixed cap of 8, so a blocking one "
+            "cannot consume the threads Open WebUI's own requests and this pipe's storage work use; raising it above 8 admits no "
+            "further plain-function tool concurrency, and a tool written as `async def` never takes a thread at all."
         ),
     )
     MAX_PARALLEL_TOOLS_PER_REQUEST: int = Field(
@@ -1984,7 +1990,7 @@ class Valves(BaseModel):
         description=(
             "Controls which images are forwarded to the provider. "
             "'user_turn_only' restricts inputs to the images supplied with the current user message. "
-            "'user_then_assistant' falls back to the most recent image already in the conversation, from either side, when the user did not attach any; a tool round ends the window for pictures from before it, so nothing older is reused after one whether or not it returned a picture. A round that asked you a question is not a media round and does not end the window, and neither does a picture the model shows you in its own reply to a round. It also governs a picture the model wrote into an earlier reply: that picture is re-sent as a picture rather than as the base64 text it sits in, and 'user_turn_only' sends it to nobody."
+            "'user_then_assistant' falls back to the most recent image already in the conversation, from either side, when the user did not attach any; a tool round ends the window for pictures from before it, so nothing older is reused after one whether or not it returned a picture. A round that asked you a question is not a media round and does not end the window, and neither does a picture the model shows you in its own reply to a round. It also governs a picture the model wrote into an earlier reply: that picture is re-sent as a picture where the reuse window can still reach it, and is otherwise left in the reply as the base64 text it was written as; 'user_turn_only' sends it to nobody."
         ),
     )
     IMAGE_REUSE_MAX_TURNS: int = Field(
@@ -2310,7 +2316,10 @@ class Valves(BaseModel):
             "way for anyone here to remove it. Turn it on only if you would rather the "
             "request succeed. This valve decides only whether a second copy is ever made: "
             "when a host's answer leaves it possible that it stored the file anyway, the "
-            "user is told that a copy may already be there whether or not this is on."
+            "user is told that a copy may already be there whether or not this is on. "
+            "Retention is given per host: when a second copy does land on the other one, "
+            "the notice names that host with its own retention, so a copy on the "
+            "self-deleting host is not described as permanent."
         ),
     )
     MEDIA_FILE_HOST_MAX_SIZE_MB: int = Field(
@@ -2370,7 +2379,9 @@ class Valves(BaseModel):
         description=(
             "The wording of that advance warning. Rewrite it in your own words or your own "
             "language. {kind} becomes clip, sound file or picture; {host} names the file "
-            "host; {retention} says how long it stays there. Leave out any you do not want, "
+            "host; {retention} says how long each host named keeps the file, and where two "
+            "of them keep files for different lengths of time it names both. Leave out any "
+            "you do not want, "
             "but keep enough that a sentence is left: an empty or blank setting leaves the "
             "warning nothing to say, and while the setting above is on, a warning that "
             "cannot be said stops the upload instead -- turn "
@@ -2477,8 +2488,13 @@ class Valves(BaseModel):
             "When a requested moment in a prior video runs past the end the pipe can "
             "measure, which frame - 'first' or 'last' - is substituted for it. It also "
             "decides the frame when the seek to an in-range moment comes back empty, "
-            "and the frame the pixel cap makes the pipe substitute for a refused one. "
-            "A request that names a first or last frame directly gets that frame. "
+            "and the frame the pixel cap makes the pipe substitute for a refused one: "
+            "that substitute is a smaller copy of the frame the cap would not decode, "
+            "and the disclosure footer says so. "
+            "A request that names a first or last frame directly gets that frame - "
+            "except on a damaged clip whose length the host cannot measure, where no "
+            "end-seek window reads a frame at all and the file's first frame is "
+            "substituted for the one asked for, which the disclosure footer says. "
             "'last' matches 'continue this scene' intent. On a model that accepts only a "
             "first frame the pipe has no choice and uses the first one, whatever moment "
             "was asked for, and says so in the disclosure footer."

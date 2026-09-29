@@ -39,6 +39,19 @@ def _result(
     )
 
 
+_REQUEST = object()
+_STORAGE_FALLBACK_USER = SimpleNamespace(id="fallback-storage-user")
+
+
+async def _resolve_storage_context(request: Any, user_obj: Any) -> tuple[Any, Any]:
+    """The real `OwuiFileGateway.resolve_storage_context` contract: no request resolves
+    to no pair, a request and a user resolve to that pair, and a request with no user
+    falls back to the storage account."""
+    if request is None:
+        return None, None
+    return request, user_obj if user_obj is not None else _STORAGE_FALLBACK_USER
+
+
 def _adapter():
     from open_webui_openrouter_pipe.integrations.video import (
         VideoGenerationAdapter,

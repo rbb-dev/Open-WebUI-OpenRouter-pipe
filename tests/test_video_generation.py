@@ -51,6 +51,7 @@ from open_webui_openrouter_pipe.models.registry import ModelFamily, OpenRouterMo
 from open_webui_openrouter_pipe.storage.video_persistence import VideoPersistence
 from open_webui_openrouter_pipe.integrations.video_intent import VideoIntentResult
 from open_webui_openrouter_pipe.integrations import video as video_module
+from open_webui_openrouter_pipe.storage import owui_files as owui_files_module
 import pytest_asyncio
 
 
@@ -461,6 +462,9 @@ async def test_video_lifecycle_removes_temp_directory(monkeypatch):
     monkeypatch.setattr(pipe, "_create_http_session", lambda *_args, **_kwargs: _FakeSession([]))
     monkeypatch.setattr(pipe._multimodal_handler, "_download_remote_url_streaming", fake_streaming_download)
     monkeypatch.setattr(pipe._file_gateway, "upload_to_owui_storage_from_path", fake_upload_from_path)
+    monkeypatch.setattr(
+        pipe._file_gateway, "resolve_storage_context", _resolved_storage_identity
+    )
 
     semaphore = asyncio.Semaphore(1)
     await semaphore.acquire()
@@ -1225,6 +1229,9 @@ async def test_video_adapter_pending_marker_resumes_without_submit(monkeypatch, 
     monkeypatch.setattr(pipe, "_create_http_session", lambda *_args, **_kwargs: _FakeSession([]))
     monkeypatch.setattr(pipe._multimodal_handler, "_download_remote_url_streaming", fake_streaming_download)
     monkeypatch.setattr(pipe._file_gateway, "upload_to_owui_storage_from_path", fake_upload_from_path)
+    monkeypatch.setattr(
+        pipe._file_gateway, "resolve_storage_context", _resolved_storage_identity
+    )
 
     result = await adapter.generate(
         body={"messages": [{"role": "user", "content": "make a video"}]},
@@ -1234,7 +1241,7 @@ async def test_video_adapter_pending_marker_resumes_without_submit(monkeypatch, 
         metadata={"chat_id": "chat-1", "message_id": "msg-1", "user_id": "user-1"},
         user={"id": "user-1"},
         request=None,
-        user_obj={"id": "user-1"},
+        user_obj=SimpleNamespace(id="user-1", email="u@example.com", name="u"),
         normalized_model_id="openai.sora-2-pro",
         api_model_id="openai/sora-2-pro",
         valves=pipe.valves,
@@ -5053,6 +5060,9 @@ async def test_a_clip_that_cannot_be_downloaded_is_declared_to_the_user(
     monkeypatch.setattr(
         pipe._file_gateway, "upload_to_owui_storage_from_path", fake_upload_from_path
     )
+    monkeypatch.setattr(
+        pipe._file_gateway, "resolve_storage_context", _resolved_storage_identity
+    )
 
     result = await adapter.generate(
         body={"messages": [{"role": "user", "content": "make a video"}]},
@@ -5062,7 +5072,7 @@ async def test_a_clip_that_cannot_be_downloaded_is_declared_to_the_user(
         metadata={"chat_id": "chat-1", "message_id": "msg-1"},
         user={"id": "user-1"},
         request=None,
-        user_obj={"id": "user-1"},
+        user_obj=SimpleNamespace(id="user-1", email="u@example.com", name="u"),
         normalized_model_id="openai.sora-2-pro",
         api_model_id="openai/sora-2-pro",
         valves=pipe.valves,
@@ -5186,6 +5196,9 @@ async def test_a_clip_that_cannot_be_stored_is_logged_and_declared_to_the_user(
     monkeypatch.setattr(
         pipe._file_gateway, "upload_to_owui_storage_from_path", fake_upload_from_path
     )
+    monkeypatch.setattr(
+        pipe._file_gateway, "resolve_storage_context", _resolved_storage_identity
+    )
 
     try:
         result = await adapter.generate(
@@ -5196,7 +5209,7 @@ async def test_a_clip_that_cannot_be_stored_is_logged_and_declared_to_the_user(
             metadata={"chat_id": "chat-1", "message_id": "msg-1"},
             user={"id": "user-1"},
             request=None,
-            user_obj={"id": "user-1"},
+            user_obj=SimpleNamespace(id="user-1", email="u@example.com", name="u"),
             normalized_model_id="openai.sora-2-pro",
             api_model_id="openai/sora-2-pro",
             valves=pipe.valves,
@@ -5297,6 +5310,9 @@ async def test_every_output_of_a_multi_clip_job_is_downloaded_and_rendered(
     monkeypatch.setattr(
         pipe._file_gateway, "upload_to_owui_storage_from_path", fake_upload_from_path
     )
+    monkeypatch.setattr(
+        pipe._file_gateway, "resolve_storage_context", _resolved_storage_identity
+    )
 
     result = await adapter.generate(
         body={"messages": [{"role": "user", "content": "make a video"}]},
@@ -5306,7 +5322,7 @@ async def test_every_output_of_a_multi_clip_job_is_downloaded_and_rendered(
         metadata={"chat_id": "chat-1", "message_id": "msg-1"},
         user={"id": "user-1"},
         request=None,
-        user_obj={"id": "user-1"},
+        user_obj=SimpleNamespace(id="user-1", email="u@example.com", name="u"),
         normalized_model_id="openai.sora-2-pro",
         api_model_id="openai/sora-2-pro",
         valves=pipe.valves,
@@ -5711,6 +5727,9 @@ async def test_the_video_lifecycle_records_its_cost_on_every_terminal_path(
         pipe._multimodal_handler, "_download_remote_url_streaming", download
     )
     monkeypatch.setattr(pipe._file_gateway, "upload_to_owui_storage_from_path", upload)
+    monkeypatch.setattr(
+        pipe._file_gateway, "resolve_storage_context", _resolved_storage_identity
+    )
 
     semaphore = asyncio.Semaphore(1)
     await semaphore.acquire()
@@ -5728,7 +5747,7 @@ async def test_the_video_lifecycle_records_its_cost_on_every_terminal_path(
             normalized_model_id="openai.sora-2-pro",
             event_emitter=emitter,
             user={"id": "user-1"},
-            user_obj={"id": "user-1"},
+            user_obj=SimpleNamespace(id="user-1", email="u@example.com", name="u"),
             chat_id="chat-cost",
             message_id="msg-cost",
             request=None,
@@ -5837,6 +5856,9 @@ async def test_the_download_loop_never_turns_more_often_than_the_ceiling(
         pipe._multimodal_handler, "_download_remote_url_streaming", fake_streaming_download
     )
     monkeypatch.setattr(pipe._file_gateway, "upload_to_owui_storage_from_path", fake_upload_from_path)
+    monkeypatch.setattr(
+        pipe._file_gateway, "resolve_storage_context", _resolved_storage_identity
+    )
 
     semaphore = asyncio.Semaphore(1)
     await semaphore.acquire()
@@ -5853,7 +5875,7 @@ async def test_the_download_loop_never_turns_more_often_than_the_ceiling(
         normalized_model_id="openai.sora-2-pro",
         event_emitter=emitter,
         user={"id": "user-1"},
-        user_obj={"id": "user-1"},
+        user_obj=SimpleNamespace(id="user-1", email="u@example.com", name="u"),
         chat_id="chat-ceiling",
         message_id="msg-ceiling",
         request=None,
@@ -6610,6 +6632,9 @@ async def test_a_generation_whose_later_clips_fail_keeps_the_ones_it_already_has
     async def fake_upload_from_path(*_args, **_kwargs):
         stored.append("file")
         return f"file-{len(stored)}"
+    monkeypatch.setattr(
+        pipe._file_gateway, "resolve_storage_context", _resolved_storage_identity
+    )
 
     monkeypatch.setattr(
         "open_webui_openrouter_pipe.integrations.video.OpenRouterVideoClient", FakeClient
@@ -6635,7 +6660,7 @@ async def test_a_generation_whose_later_clips_fail_keeps_the_ones_it_already_has
         normalized_model_id="openai.sora-2-pro",
         event_emitter=emitter,
         user={"id": "user-1"},
-        user_obj={"id": "user-1"},
+        user_obj=SimpleNamespace(id="user-1", email="u@example.com", name="u"),
         chat_id="chat-partial",
         message_id="msg-partial",
         request=None,
@@ -7649,3 +7674,23 @@ def test_the_offered_closed_domains_are_the_ones_on_the_record():
 
 def _collect(video_meta):
     return collect_attachments_from_video_meta(video_meta)
+
+
+# ============================================================== H695-1 ======
+# `user=user_obj or user` handed Open WebUI's upload handler a `__user__` dict, and
+# the handler reads `user.email` / `user.id` / `user.name` by attribute. Every test
+# here drives the real lifecycle, so the arm that matters is the one that runs the
+# real `_file_gateway.upload_to_owui_storage_from_path` with a transcribed handler.
+
+
+async def _resolved_storage_identity(_request: Any, _user_obj: Any) -> tuple[Any, Any]:
+    """The `(request, user)` the gateway hands back for an upload, for tests that stub it.
+
+    A lifecycle resolves the storage identity before it uploads, so a test that only
+    stubs the upload leaves the real resolver to run against a `request=None` it was
+    never given. No Open WebUI path passes `None` here -- `chat_completed`, `tools`,
+    `middleware` and `generate_function_chat_completion` all hand over a real `Request`
+    -- so a stub that returns the argument it was given would only preserve the fixture
+    artefact. The request is therefore a real stand-in, not the caller's `None`.
+    """
+    return "req", SimpleNamespace(id="u-1", email="u@example.com", name="u", role="user")

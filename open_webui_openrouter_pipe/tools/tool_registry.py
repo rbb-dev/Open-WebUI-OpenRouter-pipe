@@ -176,6 +176,18 @@ def _provider_tool_name(wanted: str, digest: str, used_names: set[str]) -> str:
     raise AssertionError("unreachable")
 
 
+def _advertised_wire_is_admissible(cfg_spec: Any, advertised_from: Any, advertised: Any) -> bool:
+    if not isinstance(cfg_spec, dict) or not isinstance(advertised, dict):
+        return False
+    entry_params = cfg_spec.get("parameters")
+    if not isinstance(entry_params, dict) or not isinstance(advertised_from, dict):
+        return False
+    advertised_params = advertised.get("parameters")
+    if not isinstance(advertised_params, dict):
+        return False
+    return advertised_from == entry_params and isinstance(advertised_params.get("properties"), dict)
+
+
 def _advertised_names_for_replayed_calls(items: Any, exposed_to_origin: dict[str, str] | None) -> None:
     if not isinstance(items, list):
         return
@@ -462,6 +474,8 @@ def _build_collision_safe_tool_specs_and_registry(
             _pre = c.get("pre_strictify_parameters")
         cfg["spec_is_envelope"] = _root_was_wrapped(_pre if isinstance(_pre, dict) else {})
         cfg_spec = cfg.get("spec")
+        if not _advertised_wire_is_admissible(cfg_spec, c["spec"].get("parameters"), spec):
+            cfg["spec_wire"] = copy.deepcopy(cfg_spec) if isinstance(cfg_spec, dict) else cfg["spec_wire"]
         if isinstance(cfg_spec, dict):
             updated_spec = dict(cfg_spec)
             updated_spec["name"] = origin_name

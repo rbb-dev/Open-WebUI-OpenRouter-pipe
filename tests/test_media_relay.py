@@ -9,12 +9,14 @@ the rules below are what keep that from happening by accident.
 from __future__ import annotations
 
 import asyncio
+import base64
 import io
 import json
 import logging
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Literal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp

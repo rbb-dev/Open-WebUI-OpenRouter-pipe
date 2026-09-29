@@ -266,3 +266,11 @@ def test_a_missing_status_is_persisted_as_completed():
         "a statusless function_call_output is no longer defaulted to 'completed' -- "
         "the failure stubs' explicit status may no longer be load-bearing"
     )
+
+
+def _statuses(events: list[dict[str, Any]]) -> list[str]:
+    return [
+        e.get("data", {}).get("description", "")
+        for e in events
+        if e.get("type") == "status"
+    ]

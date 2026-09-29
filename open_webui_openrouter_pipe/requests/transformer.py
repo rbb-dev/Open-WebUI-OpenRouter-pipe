@@ -113,6 +113,9 @@ _TOOL_OUTPUT_PRUNE_MIN_LENGTH = 800
 _TOOL_OUTPUT_PRUNE_HEAD_CHARS = 256
 _TOOL_OUTPUT_PRUNE_TAIL_CHARS = 128
 
+_PROSE_KEYS = frozenset({"text", "input_text", "output_text", "summary_text", "content"})
+_INTERNAL_FILE_PATH = "/api/v1/files/"
+
 def _strip_reasoning_anchor_keys(item: dict[str, Any]) -> dict[str, Any]:
     """Return *item* without the internal anchor keys used only for replay
     ordering; they must never reach the provider on the reasoning block."""
@@ -196,8 +199,8 @@ class _ReuseDownloadMemo(OrderedDict):
         self.held: int = 0
 
     @staticmethod
-    def _value_bytes(value: tuple[bytes, str]) -> int:
-        return len(value[0])
+    def _value_bytes(value: tuple[str | None, bytes, str]) -> int:
+        return len(value[1])
 
     def __setitem__(self, key, value) -> None:
         old = self.get(key)
@@ -663,9 +666,14 @@ def _tool_images_message(pictures: list[str]) -> dict[str, Any]:
     ]}
 
 
+def _memo_owner_key(user_obj: Any | None) -> str | None:
+    raw = getattr(user_obj, "id", None)
+    return raw.strip() if isinstance(raw, str) and raw.strip() else None
+
+
 def _note_memo_use(
     memo_key: Any,
-    remembered: tuple[bytes, str] | None,
+    remembered: tuple[str | None, bytes, str] | None,
     *,
     mode: str,
     temporary_chat: bool,
@@ -780,7 +788,10 @@ async def transform_messages_to_input(
             role = (msg.get("role") or "").lower()
             turn_idx: int | None = None
 
-            if role == "user" and position and is_tool_image_handoff(messages[position - 1], msg):
+            if role == "user" and position and (
+                is_tool_image_handoff(messages[position - 1], msg)
+                or _handoff_back(messages, position)
+            ):
                 turn_idx = current_turn if current_turn >= 0 else None
             elif role == "user":
                 if last_dialog_role != "user":
@@ -876,6 +887,7 @@ async def transform_messages_to_input(
         and turn_indices[position] == total_turns - 1
         and not (position and is_tool_image_handoff(messages[position - 1], message))
     ]
+    last_person_position = current_turn_people[-1] if current_turn_people else -1
     tool_handoff_positions = [
         position
         for position, message in enumerate(messages)
@@ -886,7 +898,8 @@ async def transform_messages_to_input(
     last_tool_handoff_index = tool_handoff_positions[-1] if tool_handoff_positions else -1
     person_images_this_turn = False
     temporary_chat = is_temporary_chat(chat_id)
-    request_memo: dict[tuple[str, str], tuple[bytes, str]] = {}
+    memo_owner = _memo_owner_key(user_obj)
+    request_memo: dict[tuple[str, str], tuple[str | None, bytes, str]] = {}
     address_verdicts: dict[str, bool | None] = {}
     address_deadline = time.monotonic() + ADDRESS_CHECK_BUDGET_SECONDS
     tool_name_at, issuer_at = _tool_names_by_position(messages)
@@ -920,6 +933,10 @@ async def transform_messages_to_input(
             if isinstance(raw_tool_calls, list) and raw_tool_calls
             else []
         )
+
+        if role != "tool" and _deferred_tool_pictures:
+            openai_input.append(_tool_images_message(_deferred_tool_pictures))
+            _deferred_tool_pictures.clear()
 
         if role in {"system", "developer"}:
             blocks: list[dict[str, Any]] = []
@@ -961,10 +978,6 @@ async def transform_messages_to_input(
                     }
                 )
             continue
-
-        if role != "tool" and _deferred_tool_pictures:
-            openai_input.append(_tool_images_message(_deferred_tool_pictures))
-            _deferred_tool_pictures.clear()
 
         if role == "tool":
             call_id = msg.get("tool_call_id") or msg.get("id") or msg.get("call_id")
@@ -1167,6 +1180,8 @@ async def transform_messages_to_input(
                                 if memo_key is not None
                                 else None
                             )
+                        if remembered is not None and remembered[0] != memo_owner:
+                            remembered = None
                         _note_memo_use(
                             memo_key, remembered,
                             mode=mode, temporary_chat=temporary_chat,
@@ -1179,7 +1194,7 @@ async def transform_messages_to_input(
                             remembered = None
                         try:
                             downloaded = (
-                                {"data": remembered[0], "mime_type": remembered[1]}
+                                {"data": remembered[1], "mime_type": remembered[2]}
                                 if remembered is not None
                                 else await pipe._multimodal_handler._download_remote_url(url)
                             )
@@ -1216,6 +1231,7 @@ async def transform_messages_to_input(
                                 )
                             if mode == "reuse" and memo_key is not None:
                                 request_memo[memo_key] = (
+                                    memo_owner,
                                     downloaded["data"],
                                     downloaded.get("mime_type") or "",
                                 )
@@ -1236,6 +1252,7 @@ async def transform_messages_to_input(
                                     _reuse_download_memo.popitem(last=False)
                                     held = _reuse_download_memo.held
                                 _reuse_download_memo[memo_key] = (
+                                    memo_owner,
                                     downloaded["data"],
                                     downloaded.get("mime_type") or "",
                                 )
@@ -1703,10 +1720,6 @@ async def transform_messages_to_input(
                     - Remote URLs: YouTube links, direct video URLs
                     - Data URLs: data:video/mp4;base64,... (rarely used due to size)
 
-                Internal OWUI file URLs are never forwarded or base64-inlined
-                (videos can reach VIDEO_MAX_SIZE_MB); they hard-fail via
-                ``RequiredInternalFileError`` so the internal URL never leaks.
-
                 Chat Completions Video Format:
                     {
                         "type": "video_url",
@@ -1832,11 +1845,31 @@ async def transform_messages_to_input(
                     )
                     return None
 
-            def _identity_block(b: dict[str, Any]) -> dict[str, Any]:
+            def _carries_url(value: Any) -> bool:
+                if isinstance(value, str):
+                    return (
+                        value.startswith(("http://", "https://", "ftp://", "gopher://", "//"))
+                        or _INTERNAL_FILE_PATH in value
+                    )
+                if isinstance(value, dict):
+                    return any(
+                        key not in _PROSE_KEYS and _carries_url(item)
+                        for key, item in value.items()
+                    )
+                if isinstance(value, (list, tuple)):
+                    return any(_carries_url(item) for item in value)
+                return False
+
+            def _identity_block(b: dict[str, Any]) -> dict[str, Any] | None:
+                if _carries_url(b):
+                    nonlocal dropped_unknown_block
+                    dropped_unknown_block = True
+                    return None
                 return b
 
             block_transform = {
                 "text":       lambda b: {"type": "input_text",  "text": b.get("text", "")},
+                "input_text": lambda b: {"type": "input_text",  "text": b.get("text", "")},
                 "image_url":  _to_input_image,
                 "input_image": _to_input_image,
                 "image":      _to_input_image,
@@ -1858,6 +1891,7 @@ async def transform_messages_to_input(
             encountered_user_images = False
             reusable_image_blocks: list[dict[str, Any]] = []
             vision_warning_sent = False
+            dropped_unknown_block = False
             latest_user_message = role == "user" and idx in current_turn_people
             is_last_current_turn_person = bool(current_turn_people) and idx == current_turn_people[-1]
             include_user_images = (
@@ -1967,6 +2001,15 @@ async def transform_messages_to_input(
                     if result is None:
                         if is_image_block and is_last_current_turn_person:
                             encountered_user_images = True
+                        if dropped_unknown_block:
+                            dropped_unknown_block = False
+                            pipe.logger.warning(
+                                "Dropping unsupported %s content block at index %d of the %s message %s",
+                                type(block).__name__,
+                                block_idx,
+                                role,
+                                msg_id,
+                            )
                         continue
                     if isinstance(result, dict):
                         text_value = result.get("text")
@@ -1989,7 +2032,7 @@ async def transform_messages_to_input(
                         f"Block transformation error for '{block_type}': {exc}",
                         show_error_message=False
                     )
-                    if not is_image_block:
+                    if not is_image_block and not _carries_url(block):
                         converted_blocks.append(block)
 
             if (
@@ -2131,8 +2174,8 @@ async def transform_messages_to_input(
 
         appended_text_chunks: list[dict[str, Any]] = []
 
-        def _lift_text_borne_pictures(text: str) -> str:
-            if selection_mode != "user_then_assistant":
+        def _lift_text_borne_pictures(text: str, at: int = idx) -> str:
+            if selection_mode != "user_then_assistant" or at >= last_person_position:
                 return text
             lifted = [
                 url

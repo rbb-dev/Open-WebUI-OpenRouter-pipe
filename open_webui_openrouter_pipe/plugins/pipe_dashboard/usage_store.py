@@ -335,8 +335,12 @@ class UsageStore:
 
     def _persist_sync(self, rows: list[dict[str, Any]]) -> None:
         store = self._store
+        if store is None:
+            return
+        if not self.ensure(store):
+            return
         model = self._model
-        if store is None or model is None:
+        if model is None:
             return
         session_factory = getattr(store, "_session_factory", None)
         if session_factory is None:

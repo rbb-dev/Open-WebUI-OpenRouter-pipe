@@ -30,8 +30,10 @@ otherwise still be the answer the next one sees. The reset seam is conftest's au
 from __future__ import annotations
 
 import json
+import logging
 import sys
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -39,6 +41,8 @@ from open_webui_openrouter_pipe.storage import owui_files
 from open_webui_openrouter_pipe.storage.owui_files import (
     _UNLINKABLE_CHAT_PREFIXES,
     _unlinkable_chat_prefixes,
+    channel_id_for_chat,
+    is_channel_chat,
     is_linkable_chat,
     is_temporary_chat,
     temporary_chat_prefixes,

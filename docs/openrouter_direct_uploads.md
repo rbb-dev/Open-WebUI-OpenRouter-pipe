@@ -143,6 +143,7 @@ To make Direct Uploads behave consistently, the companion filter therefore:
 - **Direct Uploads ON**
   - Diverted uploads are removed from `files[]`/`metadata.files`, so OWUI File Context will not inject their extracted content (even if File Context is enabled for the model).
   - Diverted uploads are forwarded to OpenRouter as direct inputs by the pipe (see next sections).
+  - A diverted upload that Open WebUI has already processed — a document its RAG pass extracted, a voice note its speech-to-text pass transcribed — is forwarded as the **stored file's own bytes** under its recorded type, and the extraction is never substituted for them. The text is served only for a record Open WebUI stored no file for.
   - Any non-diverted uploads (unsupported type, allowlist mismatch, user valve off, etc.) remain on the normal OWUI path and may still be processed by File Context when enabled.
 
 ### 2) Pipe injection (the outer request and every internal-Fusion stage)

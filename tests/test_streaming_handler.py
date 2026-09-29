@@ -10419,6 +10419,11 @@ class TestMaterializeImageFromStr:
         spellings run and every one of them must reach the downloader -- a production
         edit that downloads nothing, or one that downloads unconditionally, cannot
         satisfy this alongside `test_materialize_data_url_invalid_returns_none` above.
+
+        The `chat_id` below is what puts the request in a chat that can hold the file,
+        which is the property under test: a linkable chat re-hosts the generated image
+        rather than leaving it on the provider's CDN. A chat with no row to hold it is a
+        different case, pinned separately where the hoist that draws the line lives.
         """
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
@@ -10451,7 +10456,7 @@ class TestMaterializeImageFromStr:
             body,
             pipe.valves,
             None,
-            metadata={"model": {"id": "test"}},
+            metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"},
             tools={},
             session=cast(Any, object()),
             user_id="user-123",

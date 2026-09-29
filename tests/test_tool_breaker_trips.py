@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from types import SimpleNamespace
 from typing import Any
 
 import aiohttp
@@ -984,7 +985,9 @@ async def _media_turn(pipe, model: str, prompt: str = "a lighthouse at dusk") ->
     result = await pipe.pipe(
         body={"model": norm_id, "messages": [{"role": "user", "content": prompt}], "stream": False},
         __user__={"id": "user-1", "role": "user"},
-        __request__=None,
+        # a real chat turn carries a Request; with none the storage context cannot
+        # resolve and the clip is refused before the upload
+        __request__=_REQUEST,
         __event_emitter__=None,
         __event_call__=None,
         __metadata__={"chat_id": "chat-1", "message_id": f"message-{model}-{prompt[:8]}", "model": {"id": norm_id}},
@@ -1089,6 +1092,19 @@ class _VideoMemoryPersistence:
         return ""
 
 
+_STORAGE_FALLBACK_USER = SimpleNamespace(id="fallback-storage-user")
+_REQUEST = SimpleNamespace(app=SimpleNamespace(url_path_for=lambda *a, **k: "/x"))
+
+
+async def _resolve_storage_context(request: Any, user_obj: Any) -> tuple[Any, Any]:
+    """The real `OwuiFileGateway.resolve_storage_context` contract: no request resolves
+    to no pair, a request and a user resolve to that pair, and a request with no user
+    falls back to the storage account."""
+    if request is None:
+        return None, None
+    return request, user_obj if user_obj is not None else _STORAGE_FALLBACK_USER
+
+
 def _answer_videos_with(monkeypatch, pipe, outcome: str) -> list[str]:
     """Stand in for OpenRouter's video endpoints: a submit that drops, a job that fails, one still running, or one that finishes."""
     from typing import cast
@@ -1132,6 +1148,7 @@ def _answer_videos_with(monkeypatch, pipe, outcome: str) -> list[str]:
     monkeypatch.setattr("open_webui_openrouter_pipe.integrations.video.OpenRouterVideoClient", _VideoReplies)
     monkeypatch.setattr(pipe._multimodal_handler, "_download_remote_url_streaming", downloaded)
     monkeypatch.setattr(pipe._file_gateway, "upload_to_owui_storage_from_path", stored)
+    monkeypatch.setattr(pipe._file_gateway, "resolve_storage_context", _resolve_storage_context)
     pipe.valves = pipe.valves.model_copy(
         update={
             "VIDEO_INTENT_ENABLED": False,

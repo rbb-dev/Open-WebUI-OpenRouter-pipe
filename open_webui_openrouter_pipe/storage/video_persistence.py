@@ -68,7 +68,9 @@ class VideoPersistence:
         content = getattr(message, "content", None)
         if not isinstance(content, str) or not _iter_kind_marker_spans(content, kind="videojob"):
             return False
-        channel_id = str(chat_id).strip().removeprefix("channel:")
+        from .owui_files import channel_id_for_chat
+
+        channel_id = channel_id_for_chat(chat_id) or ""
         return str(getattr(message, "channel_id", "") or "") == channel_id
 
     async def _load_channel_message(self, chat_id: str, message_id: str) -> Any | None:

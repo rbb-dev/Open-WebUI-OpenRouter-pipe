@@ -776,11 +776,18 @@ class FilterManager:
                 self.logger,
             ):
                 self._write_not_installed = True
+                self.logger.log(
+                    warn_level(_warned_stale_filter_rows, f"not_activated:{candidate_id}"),
+                    "OpenRouter %s filter %r was not activated; treating it as not installed",
+                    log_label,
+                    candidate_id,
+                )
                 removed = await Functions.delete_function_by_id(candidate_id)
                 if not removed:
                     self.logger.warning(
                         "Open WebUI refused to remove the inert %s %r this pass created; it stays "
-                        "switched off and the next pass re-activates it.",
+                        "switched off and the pipe leaves it off, so switch it on in "
+                        "Workspace > Functions to get it back.",
                         log_label, candidate_id,
                     )
                 return None
@@ -950,7 +957,7 @@ class FilterManager:
             '        SERVER_TOOLS_MAX_COST_USD: float = Field(\n'
             '            default=0.0,\n'
             '            ge=0,\n'
-            '            description="Cap cumulative server-tool loop cost per request in USD. 0 means no cap. The cap is sent only while an openrouter: server tool is on the request.",\n'
+            '            description="Cap cumulative server-tool loop cost per request in USD. 0 means no cap. The cap is sent only while an openrouter: server tool is on the request. One request is one call the pipe makes, and an internal Fusion turn is one call per panel member plus the judge and the synthesis, each sent the whole cap, so the ceiling for the turn is that multiple.",\n'
             '        )'
         )
 
@@ -3606,8 +3613,9 @@ class Filter:
                             if not removed:
                                 self.logger.warning(
                                     "Open WebUI refused to remove the inert provider routing "
-                                    "filter %r; it stays switched off and the next pass "
-                                    "re-activates it.",
+                                    "filter %r; it stays switched off and the pipe leaves it "
+                                    "off, so switch it on in Workspace > Functions to get it "
+                                    "back.",
                                     candidate_id,
                                 )
 

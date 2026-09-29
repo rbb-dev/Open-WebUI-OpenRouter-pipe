@@ -980,10 +980,6 @@ def _install_tenacity_stub() -> None:
     tenacity_mod.wait_exponential = _passthrough
 
 
-# Shared Fixtures
-
-
-
 _ensure_pydantic_backports()
 _install_pydantic_core_stub()
 _install_open_webui_stubs()

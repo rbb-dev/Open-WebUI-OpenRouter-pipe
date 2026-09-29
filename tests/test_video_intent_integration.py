@@ -19,6 +19,7 @@ import re
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -388,6 +389,19 @@ class TestStreamingResponseBranch:
 # _materialise_frame_plan integration tests
 # -----------------------------------------------------------------------------
 
+_REQUEST = object()
+_STORAGE_FALLBACK_USER = SimpleNamespace(id="fallback-storage-user")
+
+
+async def _resolve_storage_context(request: Any, user_obj: Any) -> tuple[Any, Any]:
+    """The real `OwuiFileGateway.resolve_storage_context` contract: no request resolves
+    to no pair, a request and a user resolve to that pair, and a request with no user
+    falls back to the storage account."""
+    if request is None:
+        return None, None
+    return request, user_obj if user_obj is not None else _STORAGE_FALLBACK_USER
+
+
 class TestMaterialiseFramePlan:
     def _make_adapter_with_mocks(self):
         from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
@@ -395,6 +409,9 @@ class TestMaterialiseFramePlan:
         pipe.valves.VIDEO_MAX_SIZE_MB = 500
         pipe.valves.ALLOW_UNKNOWN_SIZE_CLOUD_READS = False
         pipe._file_gateway.upload_to_owui_storage = AsyncMock(return_value="uploaded_id")
+        pipe._file_gateway.resolve_storage_context = AsyncMock(
+            side_effect=_resolve_storage_context
+        )
         adapter = VideoGenerationAdapter(pipe=pipe, logger=logging.getLogger("test"))
         return adapter, pipe
 
@@ -431,7 +448,7 @@ class TestMaterialiseFramePlan:
             video_meta: dict = {}
             await adapter._materialise_frame_plan(
                 intent=intent, video_meta=video_meta,
-                request=None, user_obj=SimpleNamespace(id="u1"),
+                request=_REQUEST, user_obj=SimpleNamespace(id="u1"),
                 chat_id="c1", message_id="m1",
             )
         # (those are hard-anchor slots in OR's API).
@@ -450,7 +467,7 @@ class TestMaterialiseFramePlan:
         video_meta: dict = {}
         await adapter._materialise_frame_plan(
             intent=intent, video_meta=video_meta,
-            request=None, user_obj=SimpleNamespace(id="u1"),
+            request=_REQUEST, user_obj=SimpleNamespace(id="u1"),
             chat_id="c1", message_id="m1",
         )
         assert "frame_images" not in video_meta or video_meta.get("frame_images") == []
@@ -467,7 +484,7 @@ class TestMaterialiseFramePlan:
             video_meta: dict = {}
             await adapter._materialise_frame_plan(
                 intent=intent, video_meta=video_meta,
-                request=None, user_obj=SimpleNamespace(id="u1"),
+                request=_REQUEST, user_obj=SimpleNamespace(id="u1"),
                 chat_id="c1", message_id="m1",
             )
         # Downgrade added, NO raw exception text in the downgrade code
@@ -483,7 +500,7 @@ class TestMaterialiseFramePlan:
             with pytest.raises(asyncio.CancelledError):
                 await adapter._materialise_frame_plan(
                     intent=intent, video_meta={},
-                    request=None, user_obj=SimpleNamespace(id="u1"),
+                    request=_REQUEST, user_obj=SimpleNamespace(id="u1"),
                     chat_id="c1", message_id="m1",
                 )
 
@@ -498,7 +515,7 @@ class TestMaterialiseFramePlan:
             video_meta: dict = {}
             await adapter._materialise_frame_plan(
                 intent=intent, video_meta=video_meta,
-                request=None, user_obj=SimpleNamespace(id="u_unauthorized"),
+                request=_REQUEST, user_obj=SimpleNamespace(id="u_unauthorized"),
                 chat_id="c1", message_id="m1",
             )
         assert "frame_images" not in video_meta or video_meta.get("frame_images") == []
@@ -520,7 +537,7 @@ class TestMaterialiseFramePlan:
              ))):
             await adapter._materialise_frame_plan(
                 intent=intent, video_meta={},
-                request=None, user_obj=SimpleNamespace(id="u1"),
+                request=_REQUEST, user_obj=SimpleNamespace(id="u1"),
                 chat_id="c1", message_id="m1",
             )
         assert not real_temp.exists(), "prior-video temp leaked; _materialise_frame_plan must unlink it"

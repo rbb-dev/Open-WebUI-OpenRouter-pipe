@@ -183,11 +183,22 @@ def collect_rate_limits(pipe: Any) -> dict[str, Any]:
 
     # Request breakers
     records = getattr(cb, "_breaker_records", {})
-    tracked = len(records)
+    tracked = 0
     with_failures = 0
     tripped = 0
     for dq in records.values():
-        recent = sum(1 for ts in dq if ts > cutoff) if cutoff else len(dq)
+        if dq and (not cutoff or dq[-1] > cutoff):
+            tracked += 1
+        if cutoff:
+            recent = 0
+            for recent, ts in enumerate(reversed(dq), start=1):
+                if ts <= cutoff:
+                    recent -= 1
+                    break
+                if recent >= threshold:
+                    break
+        else:
+            recent = len(dq)
         if recent > 0:
             with_failures += 1
         if recent >= threshold:
@@ -201,8 +212,8 @@ def collect_rate_limits(pipe: Any) -> dict[str, Any]:
     for user_tools in tool_breakers.values():
         for dq in user_tools.values():
             tool_count = counted_tool_failures(dq, now, window)
-            tool_tracked += 1
             if tool_count > 0:
+                tool_tracked += 1
                 tool_with_failures += 1
             if tool_count >= threshold:
                 tool_tripped += 1

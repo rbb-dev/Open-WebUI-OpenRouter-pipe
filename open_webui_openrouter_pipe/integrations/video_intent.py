@@ -1036,8 +1036,8 @@ _DOWNGRADE_USER_MESSAGES: dict[str, str] = {
         "The requested moment could not be read from the previous video; used its last frame instead."
     ),
     "frame_damaged_used_last_decodable_frame": (
-        "The previous video is damaged past the requested time; used its nearest "
-        "decodable frame instead."
+        "The previous video is damaged past the requested time; used a decodable "
+        "frame from later on instead."
     ),
     "frame_damaged_used_first_frame": (
         "The previous video is damaged; used its first frame instead."
@@ -1051,6 +1051,14 @@ _DOWNGRADE_USER_MESSAGES: dict[str, str] = {
     "frame_source_mismatch_used_first_frame": (
         "This model accepts only a first frame, so the previous video's final frame was "
         "replaced by its opening frame."
+    ),
+    "frame_pixel_cap_used_scaled_frame": (
+        "The previous video's frame was too large to use at full size; a smaller "
+        "version of it was used instead."
+    ),
+    "frame_pixel_cap_refused_no_frame": (
+        "The previous video is too large for the pipe to read, so no frame was used "
+        "from it."
     ),
     "prior_video_download_failed": "Previous video could not be loaded.",
     "prior_video_index_unresolvable": "Referenced previous video not found.",

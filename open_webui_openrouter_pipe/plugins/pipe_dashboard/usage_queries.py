@@ -22,7 +22,7 @@ USAGE_RANGES: dict[str, tuple[int, int]] = {
     "30d": (2592000, 14400),
 }
 
-_UQ_MEMO: dict[tuple[str, bool, int], tuple[float, dict[str, Any]]] = {}
+_UQ_MEMO: dict[tuple[str | None, str, bool, int], tuple[float, dict[str, Any]]] = {}
 _UQ_MEMO_TTL = 30.0
 _UQ_MEMO_MAX = 256
 
@@ -363,7 +363,7 @@ async def run_usage_query(plugin: Any, pipe: Any, args: dict[str, Any]) -> dict[
         reason = f"storage unavailable ({warm_error})" if warm_error else "storage unavailable"
         return {"available": False, "reason": reason, "meta": base_meta}
 
-    memo_key = (range_key, include_tasks, tz_offset_min)
+    memo_key = (usage_store._table_name, range_key, include_tasks, tz_offset_min)
     now = time.time()
     hit = _UQ_MEMO.get(memo_key)
     if hit is not None and now - hit[0] < _UQ_MEMO_TTL:

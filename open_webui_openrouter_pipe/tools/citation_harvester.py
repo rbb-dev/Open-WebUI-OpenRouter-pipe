@@ -23,6 +23,7 @@ UNCITED_TOOLS = frozenset({"search_web"})
 logger = logging.getLogger(__name__)
 
 _MAX_INPUT_CHARS = 1_000_000
+_MAX_FIELD_SCAN_CHARS = 8_192
 _MAX_SOURCES = 15
 _MAX_DEPTH = 8
 _MAX_NODES = 2000
@@ -36,20 +37,17 @@ _TITLE_KEYS = ("title", "name")
 _SNIPPET_KEYS = ("text", "snippet", "description", "content")
 _SEARCH_BLOCK_DELIMITER = "\n\n---\n\n"
 _URL_LINE_RE = re.compile(r"URL:\s*(\S+)\s*\Z")
+_DROPPED_CHARS: dict[int, str | None] = {
+    code: None for code in (*range(0x20), *range(0x7F, 0xA0), *range(0xD800, 0xE000))
+}
+_DROPPED_CHARS[0x09] = "\t"
+_DROPPED_CHARS[0x0A] = "\n"
 
 
 def _sanitize_text(value: Any, limit: int) -> str:
     if not isinstance(value, str) or not value:
         return ""
-    cleaned_chars: list[str] = []
-    for ch in value:
-        code = ord(ch)
-        if 0xD800 <= code <= 0xDFFF:
-            continue
-        if ch not in "\n\t" and (code < 0x20 or 0x7F <= code <= 0x9F):
-            continue
-        cleaned_chars.append(ch)
-    return "".join(cleaned_chars).strip()[:limit]
+    return value[:_MAX_FIELD_SCAN_CHARS].translate(_DROPPED_CHARS).strip()[:limit]
 
 
 def _valid_url(value: Any) -> str:

@@ -1064,6 +1064,7 @@ class RequestOrchestrator:
                 __metadata__,
                 event_call=__event_call__,
                 event_emitter=__event_emitter__,
+                strictify=bool(valves.ENABLE_STRICT_TOOL_CALLING),
             )
         except Exception:
             self.logger.warning(
@@ -1759,8 +1760,9 @@ class RequestOrchestrator:
                 await adapter._report_notes(
                     notes, api_model_id=drawn_by, event_emitter=__event_emitter__
                 )
+        tools_before_pipe_metadata_ids = {id(x) for x in tools_before_pipe_metadata}
         pipe_server_tool_ids = frozenset(
-            id(t) for t in (responses_body.tools or []) if id(t) not in {id(x) for x in tools_before_pipe_metadata}
+            id(t) for t in (responses_body.tools or []) if id(t) not in tools_before_pipe_metadata_ids
         )
         stripped_tools = _fusion_server_tools_stripped(
             responses_body.model,

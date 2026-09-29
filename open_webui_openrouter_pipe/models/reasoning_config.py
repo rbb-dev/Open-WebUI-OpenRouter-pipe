@@ -176,6 +176,14 @@ class ReasoningConfigManager:
             self._set_include_reasoning(responses_body, False)
             return None
 
+        if valves.GEMINI_THINKING_BUDGET == 0:
+            mandatory = self._model_requires_reasoning(responses_body.model)
+            off = {**cfg, "effort": _NO_EFFORT} if mandatory else {"effort": _NO_EFFORT}
+            off, refused = self._refuse_off_on_mandatory_model(responses_body.model, off)
+            responses_body.reasoning = off
+            self._set_include_reasoning(responses_body, None)
+            return responses_body.model if refused else None
+
         requested_budget = cfg.get("max_tokens")
         if (
             honour_existing_budget
@@ -189,13 +197,6 @@ class ReasoningConfigManager:
             self._set_include_reasoning(responses_body, None)
             return None
 
-        if valves.GEMINI_THINKING_BUDGET == 0:
-            mandatory = self._model_requires_reasoning(responses_body.model)
-            off = {**cfg, "effort": _NO_EFFORT} if mandatory else {"effort": _NO_EFFORT}
-            off, refused = self._refuse_off_on_mandatory_model(responses_body.model, off)
-            responses_body.reasoning = off
-            self._set_include_reasoning(responses_body, None)
-            return responses_body.model if refused else None
         effort = _normalised_effort(cfg) or valves.REASONING_EFFORT
         budget = _map_effort_to_gemini_budget(effort, valves.GEMINI_THINKING_BUDGET)
         if not budget:

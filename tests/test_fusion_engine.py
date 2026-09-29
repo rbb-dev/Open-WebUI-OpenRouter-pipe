@@ -644,6 +644,30 @@ class TestRunInternalFusion:
         synth_calls = [c for c in calls if "BACKGROUND MATERIAL" in str(c.get("messages"))]
         assert synth_calls
 
+    @staticmethod
+    def _prompt_text(call):
+        """The prompt a member was actually sent, read out of the content parts.
+
+        `str(call["messages"])` would repr-escape the newlines, and every offset in the
+        strings below is computed against the real ones -- a test written against the repr
+        passes on a correctly built prompt and fails on a broken one, backwards.
+        """
+        content = call["messages"][-1]["content"]
+        if isinstance(content, str):
+            return content
+        return "".join(part["text"] for part in content)
+
+    @staticmethod
+    def _blocks(prompt, label, *, before_analysis=False):
+        """`(model id, body)` for every `label`-delimited block, in the order they appear."""
+        if before_analysis:
+            prompt = prompt.split("\n\n## ANALYSIS\n\n", 1)[0]
+        chunks = prompt.split(label)[1:]
+        return [
+            (chunk.split("\n", 1)[0].strip(), chunk.split("\n", 1)[1].strip())
+            for chunk in chunks
+        ]
+
     @pytest.mark.asyncio
     async def test_all_members_fail_skips_judge(self, monkeypatch, pipe_instance_async):
         events, calls = await self._collect(pipe_instance_async, monkeypatch,

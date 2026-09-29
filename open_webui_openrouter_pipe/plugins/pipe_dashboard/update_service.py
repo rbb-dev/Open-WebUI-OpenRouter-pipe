@@ -631,9 +631,27 @@ class UpdateService:
         except Exception as exc:
             _restore_module_state(before, before_meta_path)
             try:
-                await self._functions().update_function_by_id(pipe_id, {"is_active": True})
+                repaired = await self._functions().update_function_by_id(
+                    pipe_id, {"is_active": True}
+                )
             except Exception:
                 logger.warning("update: is_active repair failed", exc_info=True)
+                repaired = None
+            refused = repaired is None
+            logger.warning(
+                "update: %r did not load; the database %s its is_active repair, so the "
+                "function row is switched %s in Open WebUI",
+                pipe_id,
+                "refused" if refused else "accepted",
+                "off" if refused else "on",
+            )
+            if refused:
+                raise UpdateError(
+                    "exec_failed_inactive",
+                    f"the new code did not load and the database refused to switch the "
+                    f"pipe back on, so {pipe_id} is switched off in Open WebUI; switch it "
+                    f"on in Workspace > Functions",
+                ) from exc
             raise UpdateError("exec_failed", str(exc)) from exc
         return instance, dict(frontmatter or {}), content, _restorer(
             before, before_meta_path
@@ -834,7 +852,8 @@ class UpdateService:
             await _cleanup_failed_insert()
             raise _storage_unavailable("snapshot record insert was rejected")
 
-        keep = int(getattr(self._valves(), "PIPE_DASHBOARD_UPDATE_SNAPSHOT_KEEP", 3) or 3)
+        row_valves = await self._row_valves()
+        keep = int(row_valves.get("PIPE_DASHBOARD_UPDATE_SNAPSHOT_KEEP", 3) or 3)
         survivors = records + [
             {"file_id": ids[slot], "slot": slot, "path": path, "sha256": sha,
              "version": from_version, "size": len(data), "ts": entry["ts"], "actor": actor}

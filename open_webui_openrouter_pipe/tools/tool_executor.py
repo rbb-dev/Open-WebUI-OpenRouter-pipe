@@ -34,7 +34,7 @@ _OWUI_RESULT_WARN_COOLDOWN_S = 300.0
 _OWUI_RESULT_WARN_CAP = 256
 from ..storage.owui_files import is_linkable_chat
 from ..storage.persistence import generate_item_id
-from .tool_schema import _strictify_schema
+from .tool_schema import _root_was_wrapped, _strictify_schema
 
 if TYPE_CHECKING:
     from starlette.requests import Request
@@ -271,6 +271,17 @@ _DATA_ENTRY_EXTENSIONS = {
 def _entry_file_name(mime_type: str) -> str:
     normalised = (mime_type or "").split(";")[0].strip().lower()
     return "tool_result" + _DATA_ENTRY_EXTENSIONS.get(normalised, ".bin")
+
+
+_DATA_ENTRY_DECODE_QUANTUM = (65536 // 3) * 4
+
+
+async def _decode_data_entry(payload: str) -> bytes:
+    raw = bytearray()
+    for offset in range(0, len(payload), _DATA_ENTRY_DECODE_QUANTUM):
+        raw += base64.b64decode(payload[offset : offset + _DATA_ENTRY_DECODE_QUANTUM], validate=True)
+        await asyncio.sleep(0)
+    return bytes(raw)
 
 
 def _idle_allowance(
@@ -755,6 +766,7 @@ class ToolExecutor:
         *,
         event_call: Callable[[dict[str, Any]], Awaitable[Any]] | None,
         event_emitter: EventEmitter | None,
+        strictify: bool = True,
     ) -> dict[str, dict[str, Any]]:
         direct_registry: dict[str, dict[str, Any]] = {}
 
@@ -823,9 +835,10 @@ class ToolExecutor:
                         props = parameters.get("properties")
                         if isinstance(props, dict):
                             allowed_params = {k for k in props if isinstance(k, str)}
-                        advertised = _strictify_schema(parameters).get("properties")
-                        if isinstance(advertised, dict):
-                            allowed_params |= {k for k in advertised if isinstance(k, str)}
+                        if strictify and _root_was_wrapped(parameters):
+                            wrapped = _strictify_schema(parameters).get("properties")
+                            if isinstance(wrapped, dict):
+                                allowed_params = {k for k in wrapped if isinstance(k, str)}
 
                     spec_payload = dict(spec)
                     spec_payload["name"] = name
@@ -953,7 +966,7 @@ class ToolExecutor:
         if not self._pipe._file_gateway.validate_base64_size(payload):
             return None
         try:
-            raw = base64.b64decode(payload, validate=True)
+            raw = await _decode_data_entry(payload)
         except (binascii.Error, ValueError):
             return None
         stored = await self._upload_data_entry_safe(raw, mime_type, context)

@@ -95,7 +95,7 @@ async def read_model_response_content(
     """
     if hasattr(response, "body_iterator"):
         content_parts: list[str] = []
-        held = 0
+        content_bytes = 0
         buffer = ""
         _utf8 = utf8_stream_decoder()
         async for chunk in response.body_iterator:
@@ -107,15 +107,21 @@ async def read_model_response_content(
                 buffer += _utf8.decode(bytes(chunk))
             else:
                 buffer += str(chunk)
-            held = len(buffer) + sum(len(part) for part in content_parts)
+            held = len(buffer) + content_bytes
             if max_hold_bytes is not None and held > max_hold_bytes:
                 raise TaskModelFault("task_model_response_too_large", f"{held}")
-            while "\n" in buffer:
-                raw_line, buffer = buffer.split("\n", 1)
-                consume_sse_line(raw_line, content_parts)
-                held = len(buffer) + sum(len(part) for part in content_parts)
+            pos = 0
+            while (nl := buffer.find("\n", pos)) != -1:
+                before = len(content_parts)
+                consume_sse_line(buffer[pos:nl], content_parts)
+                for piece in content_parts[before:]:
+                    content_bytes += len(piece)
+                pos = nl + 1
+                held = (len(buffer) - pos) + content_bytes
                 if max_hold_bytes is not None and held > max_hold_bytes:
                     raise TaskModelFault("task_model_response_too_large", f"{held}")
+            if pos:
+                buffer = buffer[pos:]
         buffer += _utf8.decode(b"", True)
         if buffer:
             consume_sse_line(buffer, content_parts)

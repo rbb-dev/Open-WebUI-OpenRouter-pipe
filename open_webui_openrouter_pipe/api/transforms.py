@@ -1062,6 +1062,15 @@ def _responses_input_to_chat_messages(
                 if isinstance(raw_content, list) and raw_content:
                     blocks_out = _replay_blocks_or_note(blocks_out, raw_content, role=role)
 
+                if (
+                    not blocks_out
+                    and role == "assistant"
+                    and not msg_annotations
+                    and not msg_reasoning_details
+                    and not pending_reasoning_details
+                ):
+                    continue
+
                 if not blocks_out:
                     msg: dict[str, Any] = {"role": role, "content": ""}
                     if msg_annotations:

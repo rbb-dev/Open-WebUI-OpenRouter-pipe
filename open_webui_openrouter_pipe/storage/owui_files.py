@@ -187,7 +187,13 @@ def copy_to_private_temp(contained_path: Path, *, suffix: str = "") -> Path:
     """Copy a contained provider-cache file to a request-unique temp path the pipe owns."""
     with tempfile.NamedTemporaryFile(prefix="orpipe-read-", suffix=suffix, delete=False) as tmp:
         temp_path = Path(tmp.name)
-    shutil.copyfile(contained_path, temp_path)
+    try:
+        shutil.copyfile(contained_path, temp_path)
+    except OSError as exc:
+        temp_path.unlink(missing_ok=True)
+        raise RequiredInternalFileError(
+            "A referenced file could not be copied out of storage."
+        ) from exc
     return temp_path
 
 
@@ -357,13 +363,10 @@ def channel_id_for_chat(chat_id: Any) -> str | None:
     if not isinstance(chat_id, str):
         return None
     normalized = chat_id.strip()
-    if normalized.startswith("channel:"):
-        return normalized.removeprefix("channel:") or None
+    prefix = _channel_chat_prefix()
+    if normalized.startswith(prefix):
+        return normalized.removeprefix(prefix) or None
     return None
-
-
-def _is_channel_chat(chat_id: Any) -> bool:
-    return channel_id_for_chat(chat_id) is not None
 
 
 def _upload_identity(user: Any, owui_user_id: str | None) -> str | None:
@@ -814,23 +817,6 @@ class OwuiFileGateway:
                 raise InlineFileTooLargeError("File exceeds BASE64_MAX_SIZE_MB limit")
             return base64.b64encode(raw).decode("ascii")
 
-        data_field = getattr(file_obj, "data", None)
-        if isinstance(data_field, dict):
-            for key in ("b64", "base64", "data"):
-                inline_value = data_field.get(key)
-                if isinstance(inline_value, str) and inline_value.strip():
-                    if _estimate_base64_bytes(inline_value) > max_bytes:
-                        raise InlineFileTooLargeError("File exceeds BASE64_MAX_SIZE_MB limit")
-                    if not self.validate_base64_size(inline_value):
-                        raise InlineFileTooLargeError("Stored base64 payload exceeds configured limit")
-                    return inline_value.strip()
-            blob_value = data_field.get("bytes")
-            if isinstance(blob_value, (bytes, bytearray)):
-                return _from_bytes(bytes(blob_value))
-            content_value = data_field.get("content")
-            if isinstance(content_value, str) and content_value:
-                return _from_bytes(content_value.encode("utf-8"))
-
         if real:
             if getattr(file_obj, "path", None):
                 temp_path = await materialize_owui_file_to_temp(
@@ -859,6 +845,27 @@ class OwuiFileGateway:
                 if not path.exists():
                     continue
                 return await encode_file_path_base64(path, chunk_size, max_bytes)
+
+        data_field = getattr(file_obj, "data", None)
+        if isinstance(data_field, dict):
+            for key in ("b64", "base64", "data"):
+                inline_value = data_field.get(key)
+                if isinstance(inline_value, str) and inline_value.strip():
+                    if _estimate_base64_bytes(inline_value) > max_bytes:
+                        raise InlineFileTooLargeError("File exceeds BASE64_MAX_SIZE_MB limit")
+                    if not self.validate_base64_size(inline_value):
+                        raise InlineFileTooLargeError("Stored base64 payload exceeds configured limit")
+                    return inline_value.strip()
+            blob_value = data_field.get("bytes")
+            if isinstance(blob_value, (bytes, bytearray)):
+                return _from_bytes(bytes(blob_value))
+            content_value = data_field.get("content")
+            if (
+                isinstance(content_value, str)
+                and content_value
+                and not getattr(file_obj, "path", None)
+            ):
+                return _from_bytes(content_value.encode("utf-8"))
 
         raw_bytes = None
         for attr in ("content", "blob", "data"):

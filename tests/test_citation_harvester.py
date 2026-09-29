@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from open_webui_openrouter_pipe.tools import citation_harvester
 from open_webui_openrouter_pipe.tools.citation_harvester import (
     BUILTIN_CITATION_TOOLS,
     harvest_tool_citations,

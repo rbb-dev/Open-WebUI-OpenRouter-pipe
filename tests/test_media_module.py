@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -772,3 +773,7 @@ def _declared(path: Path) -> tuple[object, ...] | None:
     """The size the container's header claims, read straight from imageio."""
     size = iio.immeta(str(path), exclude_applied=False).get("size")
     return tuple(size) if isinstance(size, (list, tuple)) else None
+
+
+_REQUEST = object()
+_STORAGE_FALLBACK_USER = SimpleNamespace(id="fallback-storage-user")

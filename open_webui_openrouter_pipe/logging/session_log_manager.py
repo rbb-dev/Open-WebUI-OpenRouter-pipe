@@ -1503,6 +1503,7 @@ class SessionLogManager:
         try:
             payloads = self._artifact_store._db_fetch_sync(chat_id, message_id, ids)
         except Exception:
+            _truncate_latch(self._read_fault_warnings, _MAX_DRAIN_LATCH_KEYS)
             self.logger.log(
                 warn_level(
                     self._read_fault_warnings,
@@ -1528,6 +1529,7 @@ class SessionLogManager:
                 readable_ids.append(item_id)
 
         if len(readable_ids) != len(ids):
+            _truncate_latch(self._read_fault_warnings, _MAX_DRAIN_LATCH_KEYS)
             self.logger.log(
                 warn_level(
                     self._read_fault_warnings,

@@ -102,7 +102,7 @@ The Health tab tracks the pipe's live load:
 
 - **Concurrency** — active requests and tools, in-flight calls, and active video generations when the video pool is configured.
 - **Queues** — pending requests and the log and archive queue depths, each with its bound.
-- **User Circuit Breakers** — request, tool, and auth breaker counts. "Seen" counts records currently held, and the two rows mean different things: the Requests row counts users holding a request-breaker record, and the Tools row counts user+tool pairs holding a tool-breaker record. A record is created by a failure. The Requests row's record is dropped when that user's next request succeeds, when a later check finds its window empty, or on the next breaker write once its newest failure is older than the breaker window — so a tripped user who stops sending requests does not keep one for the life of the process. A Tools record is dropped the same way: when that user next invokes that tool and the call succeeds, when a later check finds the window empty, or on the next breaker write once its newest failure is older than the window — a tripped pair for a tool never invoked again is released too. "Users w/ fail" counts users with recent failures, so the two numbers converge while a user's window still holds failures.
+- **User Circuit Breakers** — request, tool, and auth breaker counts. "Seen" counts the request-breaker records whose newest failure is inside the breaker window (the Tools row counts the same for user+tool pairs), and a record is created by a failure. The RECORD is a separate thing from the count: the Requests row's record is released when that user's next request succeeds, when a later check finds its window empty, or on the next breaker write once its newest failure is older than the breaker window, so a tripped user who stops sending requests keeps a record that is no longer counted until then. A Tools record is released the same way: when that user next invokes that tool and the call succeeds, when a later check finds the window empty, or on the next breaker write once its newest failure is older than the window — a tripped pair for a tool never invoked again lingers the same way. "Users w/ fail" counts records with recent failures, which after that change is the same set, so on each row the two numbers are equal.
 - **Models** — the model catalog with a per-type breakdown (text, image, video), the ZDR-capable count, and per-type fetch clocks. The status badge tracks the chat-catalog fetch loop.
 
 ### System
@@ -154,7 +154,9 @@ builds — forks inherit the release workflow, so assets, digests, and the chang
   version), snapshots the current code, exec-validates the new bundle through Open WebUI's own
   loader, and only then writes the function row — and verifies the database accepted the write,
   failing the update loudly instead of reporting a success that did not persist. A load failure
-  surfaces the real error in the tab and the pipe keeps serving the old code, and a **refused write of the
+  surfaces the real error in the tab and the pipe keeps serving the old code — except when the database also
+  refuses the write that puts the row back, in which case the tab reports `exec_failed_inactive` and tells
+  you to switch the pipe on in Workspace > Functions. And a **refused write of the
   newly loaded code** is the same: the freshly loaded bundle is un-installed from the running process
   (every `sys.modules` key and `sys.meta_path` entry the loader touched is put back to its pre-attempt
   state, including the keys the compressed bundle deletes), the serving instance is rebuilt from the

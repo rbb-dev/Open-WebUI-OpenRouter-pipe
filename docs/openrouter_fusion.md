@@ -19,10 +19,12 @@ thinking into the live panel as it works. And where hosted Fusion loses the enti
 dropped stream, the built-in engine marks the failed panelist and completes the run.
 
 > **Fan-out:** Fusion runs every underlying call — roughly **4–5× a single completion**, and
-> it scales with panel size. What a model charges is on OpenRouter's pricing page. Image
-> generation fans out to every panel member and to the synthesis call too — up to
-> `MAX_FUSION_PANEL_MODELS` (8) billed image calls on one turn — and is cost-attributed like any
-> other tool.
+> it scales with panel size. The Web Tools filter's `SERVER_TOOLS_MAX_COST_USD` rides the same
+> fan-out: it is a per-request cap, every call above is its own request and is sent the whole
+> cap, so one turn's tool ceiling is that multiple of it. What a model charges is on OpenRouter's
+> pricing page. Image generation fans out to every panel member and to the synthesis call too —
+> up to `MAX_FUSION_PANEL_MODELS` (8) billed image calls on one turn — and is cost-attributed
+> like any other tool.
 
 ## The "OpenRouter Fusion" filter
 

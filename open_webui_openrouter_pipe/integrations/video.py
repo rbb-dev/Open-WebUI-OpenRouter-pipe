@@ -168,9 +168,13 @@ def _attachment_position(entry: dict[str, Any]) -> int:
 
 
 def _shortfall_note(missing: int, attempted: int, fetched: int) -> str:
-    if attempted - fetched > 0:
+    never_fetched = max(attempted - fetched, 0)
+    unstored = max(missing - never_fetched, 0)
+    if never_fetched and unstored:
+        cause = f"could not be fetched ({never_fetched}) or saved to storage ({unstored})"
+    elif never_fetched:
         cause = "could not be fetched"
-    elif fetched - attempted + missing > 0:
+    elif unstored:
         cause = "could not be saved to storage"
     else:
         cause = "could not be shown"
@@ -767,7 +771,7 @@ class VideoGenerationAdapter:
                         intent=intent_result,
                         video_meta=video_meta_pre,
                         request=request,
-                        user_obj=user_obj or user,
+                        user_obj=user_obj,
                         chat_id=chat_id if isinstance(chat_id, str) else "",
                         message_id=message_id if isinstance(message_id, str) else "",
                         reused_frame_index=reused_frame_pref,
@@ -1249,11 +1253,22 @@ class VideoGenerationAdapter:
                     "Generated video could not be downloaded from OpenRouter."
                 )
             file_ids: list[str] = []
+            storage_request, storage_user = await self._pipe._file_gateway.resolve_storage_context(
+                request, user_obj
+            )
+            if isinstance(user_obj, dict) or not storage_request or not storage_user:
+                self.logger.warning(
+                    "Video job %s has no resolved storage identity; the clip was not uploaded",
+                    job_id,
+                )
+                raise VideoGenerationError(
+                    "Generated video could not be stored in Open WebUI; the upload failed."
+                )
             for index, clip in enumerate(downloads):
                 suffix = "" if len(downloads) == 1 else f"-{index}"
                 stored = await self._pipe._file_gateway.upload_to_owui_storage_from_path(
-                    request=request,
-                    user=user_obj or user,
+                    request=storage_request,
+                    user=storage_user,
                     source_path=clip.path,
                     filename=(
                         f"openrouter-video-{job_id}{suffix}"
@@ -2402,7 +2417,9 @@ class VideoGenerationAdapter:
                 template.format(
                     kind=cls._relay_kinds_spoken(pairs),
                     host=host,
-                    retention=cls._relay_retention_words(valves, host),
+                    retention=cls._relay_retention_words(
+                        valves, host, plural=len(cls._relay_kinds_named(pairs)) > 1
+                    ),
                 )
                 for host, pairs in groups
             )
@@ -2847,6 +2864,16 @@ class VideoGenerationAdapter:
             intent.downgrades.append("frame_plan_dropped_temporary_chat")
             return ["" for _entry in intent.frame_plan]
 
+        storage_request, storage_user = await self._pipe._file_gateway.resolve_storage_context(
+            request, user_obj
+        )
+        if isinstance(user_obj, dict) or not storage_request or not storage_user:
+            self.logger.warning(
+                "No resolved storage identity for the frame plan; the frames were not uploaded"
+            )
+            intent.downgrades.append("frame_plan_dropped_no_storage_identity")
+            return ["" for _entry in intent.frame_plan]
+
         materialised: dict[str, Path] = {}
         try:
             for position, entry in enumerate(intent.frame_plan):
@@ -2859,7 +2886,7 @@ class VideoGenerationAdapter:
 
                 try:
                     file_id = await self._resolve_prior_video_file_id(
-                        entry, intent=intent, user_obj=user_obj,
+                        entry, intent=intent, user_obj=storage_user,
                     )
                     if not file_id:
                         intent.downgrades.append(
@@ -2871,7 +2898,7 @@ class VideoGenerationAdapter:
                     tmp_path = materialised.get(file_id)
                     if tmp_path is None:
                         tmp_path = await self._resolve_owui_file_path(
-                            file_id=file_id, request=request, user_obj=user_obj,
+                            file_id=file_id, request=storage_request, user_obj=storage_user,
                         )
                         if tmp_path is not None:
                             materialised[file_id] = tmp_path
@@ -2929,6 +2956,9 @@ class VideoGenerationAdapter:
                                 )
                             except FrameExtractionError:
                                 raise exc
+                            intent.downgrades.append(
+                                f"frame_pixel_cap_used_scaled_frame_idx_{entry.source_index}_at_{position}"
+                            )
                             if frame.downgrade_note:
                                 intent.downgrades.append(frame.downgrade_note)
                         elif getattr(exc, "byte_budget", False):
@@ -2961,8 +2991,8 @@ class VideoGenerationAdapter:
                             continue
 
                     frame_file_id = await self._pipe._file_gateway.upload_to_owui_storage(
-                        request=request,
-                        user=user_obj,
+                        request=storage_request,
+                        user=storage_user,
                         file_data=frame.image_bytes,
                         filename=f"intent-frame-{entry.source}-{entry.source_index}.png",
                         mime_type="image/png",
@@ -2979,9 +3009,7 @@ class VideoGenerationAdapter:
                     intent.frames_extracted += 1
 
                     if entry.target in ("first_frame", "last_frame"):
-                        extracted = getattr(frame, "resolved_target", entry.target)
-                        if extracted not in ("first_frame", "last_frame"):
-                            extracted = entry.target
+                        extracted = entry.target
                         fi_list = video_meta.setdefault("frame_images", [])
                         if isinstance(fi_list, list):
                             fi_list.append({
@@ -3002,8 +3030,8 @@ class VideoGenerationAdapter:
                     try:
                         thumb = await asyncio.to_thread(make_thumbnail, frame.image_bytes)
                         thumb_file_id = await self._pipe._file_gateway.upload_to_owui_storage(
-                            request=request,
-                            user=user_obj,
+                            request=storage_request,
+                            user=storage_user,
                             file_data=thumb.image_bytes,
                             filename=f"intent-thumb-{entry.source}-{entry.source_index}.jpg",
                             mime_type="image/jpeg",
@@ -3032,7 +3060,14 @@ class VideoGenerationAdapter:
                     self.logger.warning(
                         "_materialise_frame_plan entry failed (degrade-open): %s", exc, exc_info=True
                     )
-                    intent.downgrades.append("materialise_failed")
+                    if isinstance(exc, FrameExtractionError) and getattr(
+                        exc, "pixel_cap", False
+                    ):
+                        intent.downgrades.append(
+                            f"frame_pixel_cap_refused_no_frame_idx_{entry.source_index}_at_{position}"
+                        )
+                    else:
+                        intent.downgrades.append("materialise_failed")
                     thumb_urls.append("")
         finally:
             for path in materialised.values():

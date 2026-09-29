@@ -27,6 +27,7 @@ _FFMPEG_TIMEOUT_S = 30.0
 _PROBE_TIMEOUT_S = 10.0
 _END_SEEK_WINDOWS = ("-1", "-5", "-30")
 _RETRYABLE_FFMPEG_EXITS = frozenset({69})
+_TRACK_LENGTH_TOLERANCE_S = 0.5
 _MAX_SEEK_SECONDS = 1e12
 _VIDEO_HEAD = re.compile(r"Video:")
 _STREAM_INDEX = re.compile(r"Stream #\d+:(\d+)")
@@ -34,6 +35,26 @@ _MATROSKA_DURATION = re.compile(r"DURATION\s*:\s*(\d+):(\d+):([\d.]+)")
 _MOV_DURATION = re.compile(r"Processing st:\s*(\d+),[^\n]*duration:\s*(\d+)")
 _TIME_BASE = re.compile(r"1/(\d+)\s*:")
 _PICTURE_CODEC = re.compile(r"Video:\s*(?:png|mjpeg|bmp|gif|webp|tiff)\b")
+_INPUT_DEMUXER: dict[str, str] = {
+    ".mp4": "mov",
+    ".m4v": "mov",
+    ".mov": "mov",
+    ".mkv": "matroska",
+    ".webm": "matroska",
+    ".avi": "avi",
+    ".h264": "h264",
+    ".264": "h264",
+    ".h265": "hevc",
+    ".265": "hevc",
+    ".hevc": "hevc",
+}
+_PLAYLIST_MAGIC: tuple[bytes, ...] = (
+    b"ffconcat version",
+    b"#EXTM3U",
+    b"#EXT-X-",
+    b"<?xml",
+)
+_PLAYLIST_HEAD_BYTES = 64
 
 
 class FrameExtractionError(Exception):
@@ -66,6 +87,22 @@ def _ffmpeg_pixel_cap_refusal(width: int, height: int) -> FrameExtractionError:
         f"ffmpeg output {width}x{height} exceeds pixel cap",
         pixel_cap=True,
     )
+
+
+def _refuse_unsafe_input(path: Path) -> str:
+    if str(path).startswith("-"):
+        raise FrameExtractionError("refusing path starting with '-' (argv injection guard)")
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(_PLAYLIST_HEAD_BYTES)
+    except OSError:
+        head = b""
+    for magic in _PLAYLIST_MAGIC:
+        if head.startswith(magic):
+            raise FrameExtractionError(
+                "refusing input that is a playlist naming a second file"
+            )
+    return _INPUT_DEMUXER.get(path.suffix.lower(), "")
 
 
 @dataclass
@@ -198,10 +235,55 @@ def _ffmpeg_video_stream_duration(path: Path, binary: str) -> float | None:
     return None
 
 
+def _last_time_seconds(stderr: str) -> float | None:
+    for line in reversed(stderr.splitlines()):
+        marker = line.rfind("time=")
+        if marker < 0:
+            continue
+        token = line[marker + len("time="):].split(" ", 1)[0].strip()
+        sign = -1.0 if token.startswith("-") else 1.0
+        parts = token.lstrip("-").split(":")
+        if len(parts) != 3:
+            continue
+        try:
+            hours, minutes, seconds = (float(part) for part in parts)
+        except ValueError:
+            continue
+        total = hours * 3600.0 + minutes * 60.0 + seconds
+        if math.isfinite(total):
+            return sign * total
+    return None
+
+
+def _video_track_seconds_sync(path: Path) -> float | None:
+    try:
+        _refuse_unsafe_input(path)
+    except FrameExtractionError:
+        return None
+    binary = _ffmpeg_binary()
+    if binary is None:
+        return None
+    try:
+        proc = subprocess.run(
+            [binary, "-hide_banner", "-nostats", "-protocol_whitelist", "file",
+             "-i", str(path), "-map", "0:v:0", "-c", "copy", "-f", "null", "-"],
+            capture_output=True, text=True, timeout=_PROBE_TIMEOUT_S, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    measured = _last_time_seconds(proc.stderr or "")
+    return measured if measured is not None and measured > 0 else None
+
+
+async def _video_track_seconds(path: Path) -> float | None:
+    return await asyncio.to_thread(_video_track_seconds_sync, path)
+
+
 def _probe_video_sync(path: Path) -> VideoMetadata:
     """Blocking video probe. Caller wraps in to_thread."""
-    if str(path).startswith("-"):
-        raise FrameExtractionError("refusing path starting with '-' (argv injection guard)")
+    _refuse_unsafe_input(path)
     try:
         meta = iio.immeta(str(path), exclude_applied=False)  # type: ignore[no-any-return]
         duration = float(meta.get("duration", 0.0) or 0.0)
@@ -241,6 +323,15 @@ async def probe_video(path: Path) -> VideoMetadata:
     return await asyncio.to_thread(_probe_video_sync, path)
 
 
+async def _container_length_is_the_pictures(meta: VideoMetadata, path: Path) -> bool:
+    if meta.duration_is_stream or not meta.has_audio:
+        return True
+    video_s = await _video_track_seconds(path)
+    if video_s is None:
+        return True
+    return meta.duration_seconds - video_s <= _TRACK_LENGTH_TOLERANCE_S
+
+
 # -----------------------------------------------------------------------------
 # Frame extraction
 # -----------------------------------------------------------------------------
@@ -272,6 +363,7 @@ def _scale_to_max_width(img: Image.Image) -> Image.Image:
 
 
 def _declared_size(path: Path) -> tuple[int, int] | None:
+    _refuse_unsafe_input(path)
     try:
         meta = iio.immeta(str(path), exclude_applied=False)
         size = meta.get("size")
@@ -298,6 +390,7 @@ def _extract_frame_imageio_sync(
     """Extract a single frame at the given index via imageio. Returns
     (png_bytes, width, height). Raises FrameExtractionError on failure or
     on decompression-bomb-sized output."""
+    _refuse_unsafe_input(path)
     try:
         declared = _declared_size(path)
         if declared is not None and _over_pixel_cap(*declared):
@@ -330,16 +423,11 @@ async def _extract_frame_ffmpeg(
     """
     del logger
     path_str = str(path)
-    if path_str.startswith("-"):
-        raise FrameExtractionError("refusing path starting with '-' (argv injection guard)")
+    input_format = _refuse_unsafe_input(path)
 
-    ffmpeg_bin = shutil.which("ffmpeg")
+    ffmpeg_bin = _ffmpeg_binary()
     if ffmpeg_bin is None:
-        try:
-            import imageio_ffmpeg  # type: ignore[import-untyped]
-            ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
-        except Exception as exc:
-            raise FrameExtractionError(f"ffmpeg unavailable: {exc}") from exc
+        raise FrameExtractionError("ffmpeg unavailable")
 
     if from_end:
         # Input-seeking with -ss past the last frame returns 0 bytes, so to grab
@@ -357,6 +445,7 @@ async def _extract_frame_ffmpeg(
             ffmpeg_bin,
             "-protocol_whitelist", "file",
             *seek_args,
+            *(("-f", input_format) if input_format else ()),
             "-i", path_str,
             "-frames:v", "1",
             "-vf", vf,
@@ -488,6 +577,7 @@ async def _extract_frame_with_budget(
     logger = logger or logging.getLogger(__name__)
     if not path.exists():
         raise FrameExtractionError(f"video file not found: {path}")
+    _refuse_unsafe_input(path)
     if target == "at_timestamp" and not _is_finite_non_negative(timestamp_seconds):
         raise FrameExtractionError(
             "at_timestamp requires a finite non-negative timestamp_seconds"
@@ -515,7 +605,7 @@ async def _extract_frame_with_budget(
                 # No probe -> can't compute a duration-based timestamp. Input
                 # seeking past EOF returns 0 bytes, so seek from the end instead
                 # (an -ss sentinel would just produce an empty frame and fail).
-                actual_ts = 0.0
+                actual_ts = float("nan")
                 use_end_seek = True
             resolved_target = "last_frame"
         else:
@@ -577,7 +667,7 @@ async def _extract_frame_with_budget(
         elif not downgrade_note and overshoot_measured:
             downgrade_note = overshoot_downgrade
     except FrameExtractionError as exc:
-        if use_end_seek and exc.no_frame:
+        if use_end_seek and (exc.no_frame or exc.returncode in _RETRYABLE_FFMPEG_EXITS):
             return await _imageio_last_resort(
                 path, requested_ts=requested_ts, downgrade_note=downgrade_note,
                 logger=logger, max_frame_bytes=max_frame_bytes,
@@ -643,7 +733,7 @@ async def _extract_frame_with_budget(
         else:
             resolved_target = "last_frame"
             if meta is not None and meta.duration_seconds > 0 and (
-                meta.duration_is_stream or not meta.has_audio
+                await _container_length_is_the_pictures(meta, path)
             ):
                 actual_ts = _index_end(meta, "last")
             else:
@@ -652,7 +742,10 @@ async def _extract_frame_with_budget(
                     "probe failed or duration unmeasurable: rescue frame position is "
                     "unmeasurable",
                 )
-        walked_past_damage = bool(ladder_saw_damage and ladder_saw_damage[0])
+        walked_past_damage = bool(
+            (direct_saw_damage and direct_saw_damage[0])
+            or (ladder_saw_damage and ladder_saw_damage[0])
+        )
         if walked_past_damage and not rescue_first and not downgrade_note:
             downgrade_note = "frame_damaged_used_last_decodable_frame"
         elif not downgrade_note and target == "at_timestamp" and overshoot_measured:

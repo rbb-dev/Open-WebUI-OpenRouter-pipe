@@ -36,6 +36,10 @@ from open_webui_openrouter_pipe import Pipe
 from open_webui_openrouter_pipe.core.errors import RequiredInternalFileError
 from open_webui_openrouter_pipe.core.utils import OPEN_WEBUI_TOOL_IMAGES_TEXT
 from open_webui_openrouter_pipe.storage.owui_files import InlinedFile
+from open_webui_openrouter_pipe.requests.fusion_engine import (
+    FusionMemberResult,
+    build_judge_input,
+)
 from open_webui_openrouter_pipe.requests.transformer import (
     transform_messages_to_input,
     _TOOL_OUTPUT_PRUNE_MIN_LENGTH,
@@ -63,6 +67,34 @@ def _forwarded_block(result: list[dict[str, Any]], btype: str) -> dict[str, Any]
         if isinstance(block, dict) and block.get("type") == btype:
             return block
     return None
+
+
+_NETWORK_URL_PREFIXES = ("http://", "https://", "ftp://", "gopher://", "//")
+_STORAGE_PATH = "/api/v1/files/"
+
+
+def _urls(node: Any) -> list[str]:
+    """Every string in the transformed input that a provider would fetch.
+
+    The assertion is deliberately about the whole subtree rather than one key: a fix
+    that empties the offending value but leaves a copy of the reference under a sibling
+    key has not closed anything, and neither has one that moves it.
+    """
+    found: list[str] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, str):
+            if value.startswith(_NETWORK_URL_PREFIXES) or _STORAGE_PATH in value:
+                found.append(value)
+        elif isinstance(value, dict):
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                walk(item)
+
+    walk(node)
+    return found
 
 
 @pytest.fixture
@@ -4189,6 +4221,8 @@ class TestBlockTransformExceptionNonImage:
         """File block exception preserves original block (lines 1159-1160)."""
         # _to_input_file catches its own failures and reports them; only a failure of
         # that report reaches the block loop, which then keeps the original block.
+        # The block carries no URL: this test is about the exception route, and a raw
+        # block carrying a network reference is dropped on that route by design.
         reports: list[tuple] = []
 
         async def report_fails_once(*args, **kwargs):
@@ -4198,20 +4232,18 @@ class TestBlockTransformExceptionNonImage:
 
         pipe_instance._ensure_error_formatter()._emit_error = report_fails_once
 
-        def raise_in_gate(_url):
-            raise RuntimeError("Simulated failure")
-
-        pipe_instance._multimodal_handler._is_insecure_http_allowed = raise_in_gate
-
-        file_block = {"type": "input_file", "file_data": "http://example.com/notes.txt"}
+        file_block = {"type": "input_file", "file_data": "inline notes payload"}
         messages = [
             {"role": "user", "content": [
                 {"type": "text", "text": "text first"},
                 file_block,
             ]}
         ]
-
-        result = await transform_messages_to_input(pipe_instance, messages)
+        with patch(
+            "open_webui_openrouter_pipe.requests.transformer._inline_payload_bytes",
+            side_effect=RuntimeError("Simulated failure"),
+        ):
+            result = await transform_messages_to_input(pipe_instance, messages)
 
         assert result[0]["content"] == [{"type": "input_text", "text": "text first"}, file_block]
         assert len(reports) == 2
@@ -5165,7 +5197,7 @@ class TestImageReuseRegister:
             "evict the ones it is holding"
         )
         held = sum(
-            len(data) for data, _ in transformer_module._reuse_download_memo.values()
+            len(_b) for _, _b, _m in transformer_module._reuse_download_memo.values()
         )
         assert held <= 1_000, (
             f"the memo holds {held} bytes against its own 1,000 byte cap"

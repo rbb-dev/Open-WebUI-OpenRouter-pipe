@@ -18,6 +18,7 @@ import asyncio
 import concurrent.futures
 import contextlib
 import contextvars
+import functools
 import inspect
 import json
 import logging
@@ -250,6 +251,19 @@ def _is_content_consumed_task_kind(task: Any) -> bool:
 
 _VALVE_DRAIN_MAX_FLUSHES = 64
 
+_TOOL_THREAD_CAP: int = 8
+
+
+def _tool_thread_workers(handler: Any) -> int:
+    limit: Any = getattr(
+        getattr(handler, "valves", None), "MAX_PARALLEL_TOOLS_GLOBAL", None
+    )
+    try:
+        bound = int(limit)
+    except (TypeError, ValueError):
+        bound = 200
+    return max(1, min(_TOOL_THREAD_CAP, bound))
+
 
 def _task_visible_channel_emitter(
     emitter: EventEmitter | None, task: Any
@@ -401,6 +415,7 @@ _warned_plugin_dispatch: set[str] = set()
 _warned_pipes_maintenance: set[str] = set()
 
 _WEB_TOOLS_REPAIR_COOLDOWN_S = 300.0
+_LEGACY_VIDEO_FILTER_ID = "openrouter_video_openrouter_video"
 _WARMUP_RETRY_SECONDS = 300.0
 _warned_user_valves: set[str] = set()
 _warned_timing_file: set[str] = set()
@@ -495,6 +510,7 @@ class Pipe:
         "openrouter_tool_context",
         default=None,
     )
+    _tool_pool: concurrent.futures.ThreadPoolExecutor | None = None
     _active_jobs: ClassVar[set[asyncio.Task[None]]] = set()
 
     @timed
@@ -1168,6 +1184,33 @@ class Pipe:
             )
         return self._tool_executor
 
+    def _ensure_tool_pool(self) -> concurrent.futures.ThreadPoolExecutor:
+        size = _tool_thread_workers(self)
+        pool = getattr(self, "_tool_pool", None)
+        if pool is not None and getattr(pool, "_max_workers", None) == size:
+            return pool
+        if pool is not None:
+            self._tool_pool = None
+            pool.shutdown(wait=False)
+        pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=size, thread_name_prefix="or-tool"
+        )
+        self._tool_pool = pool
+        return pool
+
+    async def _run_sync_tool(self, fn: Any, args: dict[str, Any]) -> Any:
+        ctx = contextvars.copy_context()
+        return await asyncio.get_running_loop().run_in_executor(
+            self._ensure_tool_pool(), functools.partial(ctx.run, fn, **args)
+        )
+
+    def _stop_tool_pool(self) -> None:
+        pool = getattr(self, "_tool_pool", None)
+        if pool is None:
+            return
+        self._tool_pool = None
+        pool.shutdown(wait=False)
+
     def _ensure_responses_adapter(self) -> ResponsesAdapter:
         if self._responses_adapter is None:
             from .api.gateway.responses_adapter import ResponsesAdapter
@@ -1301,6 +1344,28 @@ class Pipe:
             self._plugin_registry.init_plugins(self)
         return self._plugin_registry
 
+    def _legacy_video_id_is_still_live(self) -> bool:
+        from .filters.video_filter_renderer import sanitize_video_filter_id
+
+        try:
+            models = OpenRouterModelRegistry.list_models()
+        except Exception:  # noqa: BLE001 - a catalogue read must never delete a live row
+            return True
+        if not models:
+            return True
+        for model in models:
+            try:
+                mid = model.get("id")
+                if not isinstance(mid, str) or not mid:
+                    continue
+                if ModelFamily.supports("video_generation", mid) and (
+                    sanitize_video_filter_id(mid) == _LEGACY_VIDEO_FILTER_ID
+                ):
+                    return True
+            except (AttributeError, TypeError):
+                continue
+        return False
+
     async def _deactivate_switched_off_filters(self) -> None:
         from .filters.filter_manager import (
             _OPENROUTER_FUSION_FILTER_MARKER,
@@ -1408,11 +1473,11 @@ class Pipe:
             self.logger.debug("Retiring filters whose install valve is off failed: %s", exc, exc_info=True)
         try:
             from open_webui.models.functions import Functions as _Funcs
-            legacy = await _Funcs.get_function_by_id("openrouter_video_openrouter_video")
-            if legacy is not None:
-                await _Funcs.delete_function_by_id("openrouter_video_openrouter_video")
+            legacy = await _Funcs.get_function_by_id(_LEGACY_VIDEO_FILTER_ID)
+            if legacy is not None and self._legacy_video_id_is_still_live() is False:
+                await _Funcs.delete_function_by_id(_LEGACY_VIDEO_FILTER_ID)
                 self.logger.info(
-                    "Removed legacy generic OpenRouter Video Generation filter row 'openrouter_video_openrouter_video'"
+                    "Removed legacy generic OpenRouter Video Generation filter row %r", _LEGACY_VIDEO_FILTER_ID
                 )
         except Exception as exc:
             self.logger.debug("Legacy video filter cleanup failed: %s", exc, exc_info=True)
@@ -2214,6 +2279,7 @@ class Pipe:
         self._schedule_close()
 
     def shutdown(self) -> list[Any]:
+        self._stop_tool_pool()
         pending: list[Any] = []
         plugin_registry = getattr(self, "_plugin_registry", None)
         if plugin_registry is not None:
@@ -2274,6 +2340,10 @@ class Pipe:
                 Pipe._release_stream_counter(abandoned.pipe, state)
             with contextlib.suppress(ValueError):
                 queue.task_done()
+        if drained:
+            self.logger.warning(
+                "Discarded %d queued request(s) bound to a replaced request queue", drained
+            )
 
     @timed
     async def _stop_log_worker(self) -> None:
@@ -3977,7 +4047,7 @@ class Pipe:
         """Call a tool callable (sync or async)."""
         if inspect.iscoroutinefunction(fn):
             return await fn(**args)
-        result = await asyncio.to_thread(fn, **args)
+        result = await self._run_sync_tool(fn, args)
         if inspect.isawaitable(result):
             return await result
         return result

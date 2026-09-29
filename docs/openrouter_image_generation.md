@@ -1305,12 +1305,29 @@ card rather than the fallback.
 A picture that arrives on the chat route is saved to Open WebUI's file
 store and shown inline, exactly as one from a dedicated image model is.
 Both end at the same stored file and the same message. Anything larger
-than `BASE64_MAX_SIZE_MB` is rejected rather than stored.
+than `BASE64_MAX_SIZE_MB` is rejected rather than stored. In a
+temporary, legacy-temporary or channel chat there is no row to hold the
+file, so nothing is stored there at all: the picture stays in the
+message itself, as its own `data:` URL where the provider sent the bytes
+and as the provider's own link where it sent a URL, and it is rendered
+the same way. This is stricter than Open WebUI's own chat path, which
+uploads in a temporary chat and only declines the link
+(`.external/open-webui/backend/open_webui/routers/images.py:520`); a
+deployment that turns on Open WebUI's
+`ENABLE_CHAT_RESPONSE_BASE64_IMAGE_URL_CONVERSION` (off by default, and
+never set by the pipe) will still convert a long inline picture into a
+stored file one layer up.
 
 The rendered message looks like:
 
 ```markdown
 ![Generated image](/api/v1/files/01HX2K3D5N4P9F8GZQ2WV3R5BC/content)
+```
+
+and, where nothing was stored, like this:
+
+```markdown
+![Generated image](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...)
 ```
 
 A reply with more than one image numbers them in the order they are
@@ -1327,8 +1344,14 @@ gap: three generated, two stored, is `1` and `2` — never `2` and `3`.
 The count of what could not be saved is reported in the same message, on the line below the images; the labels count what is shown.
 
 OWUI displays the image inline with a download/copy/view-fullsize
-context menu. The file is registered in OWUI's `Files` table linked to
-the chat, surviving page reload.
+context menu. In a saved chat the file is registered in OWUI's `Files`
+table linked to the chat, surviving page reload. In a chat with no row
+to hold it there is no such file: the picture travels inside the
+message, so it is shown and redrawn from the message for as long as
+Open WebUI keeps that message, and it is not in the `Files` table at
+all. A call that carries no `chat_id` at all — the plain API route — is
+the same case, and its picture comes back inline rather than as a
+`/api/v1/files/.../content` link.
 
 ---
 

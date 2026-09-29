@@ -183,11 +183,11 @@ class TestCollectFastStats:
         pipe._circuit_breaker._breaker_records = {
             "user1": deque([now - 10, now - 5, now - 2, now - 1, now]),  # 5 = threshold
             "user2": deque([now - 3]),  # 1 failure
-            "user3": deque([now - 200]),  # Outside window (60s)
+            "user3": deque([now - 200]),  # 1 failure, outside the 60s window: excluded
         }
         stats = collect_fast_stats(pipe)
         rl = stats["rate_limits"]
-        assert rl["tracked_users"] == 3
+        assert rl["tracked_users"] == 2
         assert rl["users_with_failures"] == 2  # user1 + user2 have recent
         assert rl["tripped_users"] == 1  # user1 at threshold
 

@@ -9,11 +9,13 @@ from its own conversation.
 from __future__ import annotations
 
 import logging
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
 
+from open_webui_openrouter_pipe.core.utils import _serialize_kind_marker
 from open_webui_openrouter_pipe.storage.video_persistence import (
     VideoPersistence,
     is_local_chat_id,

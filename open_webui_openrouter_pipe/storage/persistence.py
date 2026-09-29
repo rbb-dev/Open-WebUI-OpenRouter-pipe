@@ -362,6 +362,14 @@ class ReplyMemory:
         for row in rows:
             key = self._key(row.get("chat_id"), row.get("message_id"))
             if key not in self._replies:
+                logging.getLogger(__name__).warning(
+                    "A row was offered to a reply the memory no longer holds and was dropped: "
+                    "chat_id=%s message_id=%s id=%s item_type=%s",
+                    row.get("chat_id"),
+                    row.get("message_id"),
+                    row.get("id"),
+                    row.get("item_type"),
+                )
                 continue
             payload = json.loads(json.dumps(row.get("payload"), default=str))
             item_id = row.setdefault("id", generate_item_id())
@@ -1561,6 +1569,14 @@ class ArtifactStore:
                 len(rows),
                 sorted({str(r.get("item_type")) for r in rows if isinstance(r, dict)}),
             )
+            context = self._TOOL_CONTEXT.get() if self._TOOL_CONTEXT else None
+            if self._emit_notification:
+                await self._emit_notification(
+                    context.event_emitter if context else None,
+                    "Some stored items for this turn could not be written to the "
+                    "database; they will be missing from later turns.",
+                    level="warning",
+                )
             return []
 
     @timed

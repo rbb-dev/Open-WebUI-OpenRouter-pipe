@@ -81,9 +81,10 @@ The pipe starts helper workers lazily:
 - **Artifact cleanup loop** (when persistence is available): periodically deletes old rows based on retention valves.
 - **Redis workers** (when enabled and prerequisites are met): write-behind flush and pub/sub listeners for multi-worker cache behavior. Whatever is still in the pending queue is drained before these tasks are cancelled.
 - **Session log writer/cleanup threads** (when enabled): writes encrypted session log archives and prunes old archives.
+- **Plain-function tool pool** (started on the first sync tool call): a `ThreadPoolExecutor` `min(MAX_PARALLEL_TOOLS_GLOBAL, 8)` threads wide that plain-`def` tool bodies run on, so a user-supplied blocking tool cannot take the threads Open WebUI's own requests and this pipe's storage work use. Its width is recomputed on every call, so a valve change resizes it without a restart, and a teardown or a resize never cancels work already admitted to it.
 
 **State ownership:**
-- **Instance-level**: request queue, log queue, worker tasks, and locks are owned by each Pipe instance (prevents event loop contamination across async contexts).
+- **Instance-level**: request queue, log queue, worker tasks, and locks are owned by each Pipe instance (prevents event loop contamination across async contexts). The plain-function tool pool belongs here as well, not to the class-level half below.
 - **Class-level**: rate-limiting semaphores (`_global_semaphore`, `_tool_global_semaphore`) are shared across all instances in the same process to enforce global concurrency limits.
 
 ---

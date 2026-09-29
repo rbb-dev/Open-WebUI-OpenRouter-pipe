@@ -178,7 +178,7 @@ def _is_no_usable_member_event(event_source: Any, etype: Any, event: Any) -> boo
 
 # Imports from storage.persistence
 from ..storage.multimodal import _guess_image_mime_type, image_extension_for_mime
-from ..storage.owui_files import _is_channel_chat, is_temporary_chat
+from ..storage.owui_files import is_channel_chat, is_linkable_chat, is_temporary_chat
 from ..storage.persistence import generate_item_id, normalize_persisted_item
 from ..tools.citation_harvester import (
     BUILTIN_CITATION_TOOLS,
@@ -493,6 +493,7 @@ class StreamingHandler:
         emitted_tool_output_items: set[str] = set()
         committed_call_rows: set[str] = set()
         committed_output_rows: set[str] = set()
+        stubbed_call_ids: set[str] = set()
         executed_tool_call_ids: set[tuple[str, str, str]] = set()
         emitted_response_output_items = False
         emitted_output_items: list[dict[str, Any]] = []
@@ -723,6 +724,8 @@ class StreamingHandler:
 
             @timed
             async def _persist_generated_image(data: bytes, mime_type: str) -> str | None:
+                if not is_linkable_chat(chat_id):
+                    return None
                 upload_request, upload_user = await _get_storage_context()
                 if not upload_request or not upload_user:
                     return None
@@ -750,9 +753,11 @@ class StreamingHandler:
                         if stored:
                             await self._pipe._event_emitter_handler._emit_status(event_emitter, StatusMessages.IMAGE_BASE64_SAVED, done=False)
                             return f"/api/v1/files/{stored}/content"
-                        return None
+                        return text
                     return None
                 if is_http_or_https_url(text):
+                    if not is_linkable_chat(chat_id):
+                        return text
                     downloaded = await self._pipe._multimodal_handler._download_remote_url(text)
                     if downloaded:
                         stored = await _persist_generated_image(downloaded["data"], downloaded["mime_type"])
@@ -779,7 +784,7 @@ class StreamingHandler:
                 if stored:
                     await self._pipe._event_emitter_handler._emit_status(event_emitter, StatusMessages.IMAGE_BASE64_SAVED, done=False)
                     return f"/api/v1/files/{stored}/content"
-                return None
+                return f"data:{mime_type};base64,{cleaned}"
 
             @timed
             async def _materialize_image_entry(entry: Any) -> str | None:
@@ -821,7 +826,7 @@ class StreamingHandler:
                             if stored:
                                 await self._pipe._event_emitter_handler._emit_status(event_emitter, StatusMessages.IMAGE_BASE64_SAVED, done=False)
                                 return f"/api/v1/files/{stored}/content"
-                            return None
+                            return f"data:{mime_type};base64,{cleaned}"
                     nested_result = entry.get("result")
                     if nested_result is not None:
                         return await _materialize_image_entry(nested_result)
@@ -3173,6 +3178,7 @@ class StreamingHandler:
                         committed_call_rows.clear()
                         committed_output_rows.clear()
                         calls_carded_this_round.clear()
+                        stubbed_before_this_round: set[str] = set()
 
                         if emitter_supplied:
                             try:
@@ -3208,8 +3214,10 @@ class StreamingHandler:
                                     limit, limit, len(call_items),
                                 )
                             function_outputs = []
+                            stubbed_before_this_round = set(stubbed_call_ids)
                             for call in call_items:
                                 call_id = _extract_call_id(call) or f"call-{uuid.uuid4().hex}"
+                                stubbed_call_ids.add(call_id)
                                 function_outputs.append(
                                     {
                                         "type": "function_call_output",
@@ -3222,26 +3230,24 @@ class StreamingHandler:
                                         "status": "incomplete",
                                     }
                                 )
-                            if loop_index > max_loops:
-                                if emitter_supplied:
-                                    try:
-                                        for output in function_outputs:
-                                            result_str, pictures = tool_output_text_and_pictures(
-                                                output.get("output")
-                                            )
-                                            await _emit_tool_result(
-                                                call_id=_extract_call_id(output) or "",
-                                                result_text=result_str,
-                                                files=output.get("files") or None,
-                                                embeds=output.get("embeds") or None,
-                                                status=str(output.get("status") or "completed"),
-                                                pictures=pictures,
-                                            )
-                                    except Exception as exc:
-                                        self.logger.warning(
-                                            "Failed to emit the skipped tool cards: %s", exc, exc_info=True
+                            if loop_index > max_loops and emitter_supplied:
+                                try:
+                                    for output in function_outputs:
+                                        result_str, pictures = tool_output_text_and_pictures(
+                                            output.get("output")
                                         )
-                                break
+                                        await _emit_tool_result(
+                                            call_id=_extract_call_id(output) or "",
+                                            result_text=result_str,
+                                            files=output.get("files") or None,
+                                            embeds=output.get("embeds") or None,
+                                            status=str(output.get("status") or "completed"),
+                                            pictures=pictures,
+                                        )
+                                except Exception as exc:
+                                    self.logger.warning(
+                                        "Failed to emit the skipped tool cards: %s", exc, exc_info=True
+                                    )
                         else:
                             fresh_calls = [
                                 call for call in call_items
@@ -3459,6 +3465,8 @@ class StreamingHandler:
                         output_rows: list[dict[str, Any]] = []
                         for output in all_function_outputs if persist_message_id else []:
                             cid = _extract_call_id(output)
+                            if cid in stubbed_before_this_round:
+                                continue
                             call = call_by_id.get(cid) if cid else None
                             if not call:
                                 continue
@@ -3480,6 +3488,8 @@ class StreamingHandler:
                             if thinking_tasks:
                                 cancel_thinking()
                             self.logger.debug("Received tool result\n%s", _tool_result_for_log(output))
+                        if loop_index > max_loops:
+                            break
                         body.input.extend(budgeted_outputs)
                         shipped_budget = _sanitize_request_input(self._pipe, body)
                         await _warn_if_futile(shipped_budget)
@@ -3924,7 +3934,7 @@ class StreamingHandler:
                         final_content is None
                         and terminal_output
                         and isinstance(chat_id, str)
-                        and _is_channel_chat(chat_id)
+                        and is_channel_chat(chat_id)
                     ):
                         final_output = terminal_output
                     await self._pipe._event_emitter_handler._emit_completion(

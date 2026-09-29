@@ -74,6 +74,7 @@ UPDATE_TAB_JS = """
       'unknown action': 'The server does not recognise this action \\u2014 the pipe was probably updated. Reload the dashboard.',
       'request unavailable': 'The server could not process this action \\u2014 reload the dashboard and try again.',
       exec_failed: 'The new code failed to load, so the pipe still runs the previous version. Nothing is broken.',
+      exec_failed_inactive: 'The new code failed to load AND the pipe is now switched off in Open WebUI, so no OpenRouter model is listed. Switch it on in Workspace > Functions to get it back.',
       unavailable: 'The update service is not ready on this worker yet.',
       forbidden: 'This action needs an Open WebUI admin account.',
       internal: 'Something unexpected went wrong and nothing was changed. Details are in the server log.'

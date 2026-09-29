@@ -168,7 +168,7 @@ Tools are executed between Responses calls (after a run completes and `function_
 
 - per-request tool queue is bounded (maxsize `50`),
 - per-request concurrency is limited by `MAX_PARALLEL_TOOLS_PER_REQUEST` (default `5`),
-- global tool concurrency is limited by `MAX_PARALLEL_TOOLS_GLOBAL` (default `200`),
+- global tool concurrency is limited by `MAX_PARALLEL_TOOLS_GLOBAL` (default `200`), which also sizes the thread pool a tool written as a plain function runs on, up to a cap of 8, so an admitted blocking tool cannot take the threads the rest of the process shares,
 - per-call timeout by `TOOL_TIMEOUT_SECONDS`, batch timeout by `TOOL_BATCH_TIMEOUT_SECONDS` (also the ceiling on how long one response may spend queueing its calls), optional idle timeout by `TOOL_IDLE_TIMEOUT_SECONDS`,
 - limited retries for tool calls are applied.
 

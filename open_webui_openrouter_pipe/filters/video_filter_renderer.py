@@ -1263,10 +1263,12 @@ def _render_purpose_built_fields(spec: VideoFilterSpec) -> list[str]:
                 f'            default={spec.intent_confirm_mode_default!r},\n'
                 '            title="Show what was reused",\n'
                 '            description=(\n'
-                '                "When a previous video or image is reused, the chat can show '
-                'a small thumbnail confirming which one — so you can stop and retry if the '
-                'wrong thing was picked. always = show for every video. on_reference '
-                '= only show when something was actually reused. low_confidence = only '
+                "                \"When a prior video's frame is reused, or more than one "
+                'frame is combined, the chat can show a small thumbnail confirming '
+                'which one — so you can stop and retry if the wrong thing was picked. '
+                'always = show for every video. on_reference = only show when a prior '
+                "video's frame is reused, or when more than one frame is combined; a "
+                'single attached image on its own does not trigger it. low_confidence = only '
                 'show when the chat was unsure of its choice. never = hide entirely."\n'
                 '            ),\n'
                 '        )'
