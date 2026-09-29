@@ -1274,7 +1274,9 @@ def _render_purpose_built_fields(spec: VideoFilterSpec) -> list[str]:
                 'single attached image on its own does not trigger it. low_confidence = only '
                 'show when the chat was unsure of its choice. never = hide entirely. '
                 'A rewritten prompt, or a best-guess turn once the clarifying question '
-                'limit is reached, shows the block in every mode except never."\n'
+                'limit is reached, shows the block in every mode except never. A turn '
+                'where the classifier changed what is sent is shown whichever mode you '
+                'pick, except never."\n'
                 '            ),\n'
                 '        )'
             )

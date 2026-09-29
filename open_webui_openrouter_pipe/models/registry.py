@@ -23,6 +23,7 @@ import time
 import weakref
 from contextvars import ContextVar
 from decimal import Decimal, InvalidOperation
+from functools import lru_cache
 from typing import Any, ClassVar
 
 import aiohttp
@@ -197,8 +198,15 @@ class ModelFamily:
     @classmethod
     def _lookup_spec(cls, model_id: str) -> dict[str, Any]:
         """Return the stored spec for ``model_id`` or an empty dict."""
-        norm = cls.base_model(model_id, _NO_PIPE_ID)
-        return cls._DYNAMIC_SPECS.get(cls._resolve_spec_key(norm, cls._DYNAMIC_SPECS)) or {}
+        specs = cls._DYNAMIC_SPECS
+        norm = _norm_for_lookup(model_id, _NO_PIPE_ID)
+        pipe_id = cls._PIPE_ID.get()
+        for candidate in _lookup_candidates(
+            norm, _NO_PIPE_ID if pipe_id is None else pipe_id
+        ):
+            if candidate in specs:
+                return specs[candidate] or {}
+        return {}
 
     @classmethod
     def catalog_norm_id(cls, model_id: str) -> str:
@@ -242,6 +250,32 @@ class ModelFamily:
 
 def _catalog_norm(model_id: str) -> str:
     return ModelFamily.base_model(sanitize_model_id(model_id), _NO_PIPE_ID)
+
+
+@lru_cache(maxsize=4096)
+def _norm_for_lookup(model_id: str, pipe_id: str | None | object) -> str:
+    return ModelFamily._normalize_catalog_id(model_id, pipe_id)
+
+
+def _undated_for_lookup(norm: str, pipe_id: str | None | object) -> str:
+    name, separator, suffix = (norm or "").rpartition(":")
+    if not separator or not suffix:
+        return ModelFamily._DATE_RE.sub("", _norm_for_lookup(norm or "", pipe_id))
+    return f"{ModelFamily._DATE_RE.sub('', _norm_for_lookup(name, pipe_id))}:{suffix}"
+
+
+@lru_cache(maxsize=4096)
+def _lookup_candidates(norm: str, pipe_id: str | None | object) -> tuple[str, ...]:
+    candidates = [norm]
+    base, _, _tag = norm.rpartition(":")
+    if base:
+        candidates.append(base)
+        if ModelFamily._DATE_RE.search(base):
+            candidates.append(ModelFamily._DATE_RE.sub("", base))
+    undated = _undated_for_lookup(norm, pipe_id)
+    if undated not in candidates:
+        candidates.append(undated)
+    return tuple(candidates)
 
 
 _PHASE_SUPPORTED_MODELS_BASE = frozenset(

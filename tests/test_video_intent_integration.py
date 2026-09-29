@@ -16,7 +16,6 @@ import io
 import json
 import logging
 import re
-import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -56,8 +55,8 @@ def _make_valves(**overrides) -> SimpleNamespace:
         VIDEO_INTENT_TIMEOUT_S=5,
         VIDEO_INTENT_SKIP_WHEN_EMPTY_CHAT=True,
         VIDEO_INTENT_LOG_DECISIONS=False,
-        VIDEO_INTENT_MAX_CALLS_PER_CHAT=0,
-        VIDEO_INTENT_MAX_CALLS_PER_USER_DAY=0,
+        VIDEO_INTENT_MAX_TURNS_PER_CHAT=0,
+        VIDEO_INTENT_MAX_TURNS_PER_USER_DAY=0,
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -229,7 +228,7 @@ class TestShortCircuit:
         adapter = self._make_adapter()
         adapter._intent_call_counts_per_chat[_hash_chat_id("chat1")] = 5
         assert not adapter._intent_classifier_should_run(
-            valves=_make_valves(VIDEO_INTENT_MAX_CALLS_PER_CHAT=5),
+            valves=_make_valves(VIDEO_INTENT_MAX_TURNS_PER_CHAT=5),
             persisted_content="", prompt="hi",
             body={"messages": [{}, {}]}, video_meta={}, chat_id="chat1",
         )
@@ -247,7 +246,7 @@ class TestShortCircuit:
         both.
         """
         adapter = self._make_adapter()
-        valves = _make_valves(VIDEO_INTENT_MAX_CALLS_PER_CHAT=cap)
+        valves = _make_valves(VIDEO_INTENT_MAX_TURNS_PER_CHAT=cap)
 
         def _ask():
             return adapter._intent_classifier_should_run(
@@ -276,7 +275,7 @@ class TestShortCircuit:
     def test_the_per_user_day_budget_is_filled_by_the_calls_that_were_made(self, cap):
         """The same counter question for the per-user daily cap, which is keyed by date."""
         adapter = self._make_adapter()
-        valves = _make_valves(VIDEO_INTENT_MAX_CALLS_PER_USER_DAY=cap)
+        valves = _make_valves(VIDEO_INTENT_MAX_TURNS_PER_USER_DAY=cap)
 
         allowed = 0
         for _turn in range(cap + 2):
@@ -301,7 +300,7 @@ class TestShortCircuit:
     def test_one_chats_calls_are_not_charged_to_another(self):
         """The counters are per chat and per user; sharing one would close both together."""
         adapter = self._make_adapter()
-        valves = _make_valves(VIDEO_INTENT_MAX_CALLS_PER_CHAT=2)
+        valves = _make_valves(VIDEO_INTENT_MAX_TURNS_PER_CHAT=2)
         for chat_id in ("chat-a", "chat-a", "chat-b"):
             adapter._intent_classifier_should_run(
                 valves=valves,

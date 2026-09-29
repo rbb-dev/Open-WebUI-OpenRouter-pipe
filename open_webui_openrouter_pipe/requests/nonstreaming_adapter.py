@@ -13,13 +13,21 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import aiohttp
 
-from ..api.transforms import _filter_openrouter_request, _parse_url_citation_annotations
+from ..api.transforms import (
+    _filter_openrouter_request,
+    _parse_url_citation_annotations,
+    _unhandled_citation_types,
+)
 from ..core.timing_logger import timed
 from ..storage.persistence import generate_item_id
 
 if TYPE_CHECKING:
     from ..api.gateway.chat_completions_adapter import ChatCompletionsAdapter
     from ..pipe import Pipe
+
+
+class TaskProviderRefusal(RuntimeError):
+    pass
 
 
 def _chat_completions_adapter() -> type[ChatCompletionsAdapter]:
@@ -163,6 +171,7 @@ class NonStreamingAdapter:
                 message = choices[0].get("message")
                 finish_reason = choices[0].get("finish_reason")
             message_obj = message if isinstance(message, dict) else {}
+            unhandled_citations_signalled = False
 
             usage = chat_response.get("usage") if isinstance(chat_response, dict) else None
             latest_usage = dict(usage) if isinstance(usage, dict) else {}
@@ -250,6 +259,13 @@ class NonStreamingAdapter:
 
             annotations = message_obj.get("annotations")
             if isinstance(annotations, list) and annotations:
+                unhandled_types = _unhandled_citation_types(annotations)
+                if unhandled_types and not unhandled_citations_signalled:
+                    unhandled_citations_signalled = True
+                    yield {
+                        "type": "openrouter_pipe.unhandled_citations",
+                        "types": sorted(unhandled_types),
+                    }
                 seen_urls: set[str] = set()
                 for url, title, content in _parse_url_citation_annotations(annotations):
                     if url in seen_urls:
@@ -329,6 +345,8 @@ class NonStreamingAdapter:
 
             assistant_text = _extract_chat_message_text(message_obj)
             refusal_text = message_obj.get("refusal")
+            if task_request and isinstance(refusal_text, str) and refusal_text.strip():
+                raise TaskProviderRefusal("task_model_refusal")
             if isinstance(refusal_text, str) and refusal_text.strip():
                 refusal_text = refusal_text.strip()
                 assistant_text = (

@@ -240,8 +240,8 @@ class TestExplicitAttachmentsRetarget:
         valves = SimpleNamespace(
             VIDEO_INTENT_ENABLED=True,
             VIDEO_INTENT_SKIP_WHEN_EMPTY_CHAT=True,
-            VIDEO_INTENT_MAX_CALLS_PER_CHAT=0,
-            VIDEO_INTENT_MAX_CALLS_PER_USER_DAY=0,
+            VIDEO_INTENT_MAX_TURNS_PER_CHAT=0,
+            VIDEO_INTENT_MAX_TURNS_PER_USER_DAY=0,
         )
         # short-circuit (so the classifier can read "use this as the last frame")
         assert adapter._intent_classifier_should_run(

@@ -66,7 +66,12 @@ PACKAGE = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 # `open_webui.events` lazily, inside the one helper both share, exactly as the
 # `register_valve_event_sink` above takes `EVENT_SINKS` lazily -- so a host whose events
 # module is absent still runs the write, it just announces nothing.
-_EXPECTED_OWUI_IMPORTS = (25, 95)
+# 95 -> 96: `stored_gate_valves` (plugins/pipe_dashboard/config_service.py) reads the
+# persisted valve row lazily, inside the broad guard, for the three gate predicates that
+# must answer the row rather than the in-memory copy. `config_service` cannot import
+# `actions` (the cycle `dashboard_socket` forbids), so the reader cannot reuse
+# `actions._read_stored_valves` and does the guarded import itself.
+_EXPECTED_OWUI_IMPORTS = (25, 96)
 
 @pytest.mark.skipif(
     bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),

@@ -437,17 +437,22 @@ async def test_relative_icon_path_is_vetted_after_it_is_absolutised(pipe_instanc
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "url",
+    "url, payload_len",
     [
-        "data:image/png;base64,AAAA",
-        "data:image/gif;base64,R0lGODlhAQABAAAAACw=",
+        ("data:image/png;base64,AAAA", 3),
+        ("data:image/gif;base64,R0lGODlhAQABAAAAACw=", 14),
     ],
 )
-async def test_data_url_icon_needs_no_address_check(pipe_instance_async, url):
+async def test_data_url_icon_needs_no_address_check(pipe_instance_async, url, payload_len):
     """An inline data URL has no address, so it must not pay for a resolution.
 
-    Two distinct URLs, and the assertion is `result == url`: a constant return value
-    satisfies one row and fails the other.
+    Two distinct URLs rather than one, because a constant answer satisfies a single row
+    for the wrong reason. Both are refused, and both for a reason of their own: `AAAA` is
+    three zero bytes that are not a picture, and the GIF is fourteen bytes -- a header, a
+    logical screen descriptor and one byte of an image descriptor that is not there. The
+    conversion tail refuses both for what they are rather than passing either through,
+    which is the property; the re-encode of a picture that IS one is
+    `test_an_inline_icon_keeps_the_mime_the_bytes_say_not_the_head` below.
 
     The RESOURCE is counted -- `getaddrinfo` calls -- rather than a named method, because
     the previous version spied on `_prepare_pinned_request`, which this path stopped
@@ -475,10 +480,17 @@ async def test_data_url_icon_needs_no_address_check(pipe_instance_async, url):
     finally:
         handler._hop_is_refused = original
 
-    assert result == url
+    assert result is None, (
+        f"{payload_len} bytes that are not a whole picture were stored as an icon: "
+        f"{result!r}"
+    )
     assert lookups == [], lookups
     assert hops == [], hops
     assert session.requested == [], session.requested
+
+
+def _inline(payload: bytes, declared: str = "image/png") -> str:
+    return f"data:{declared};base64," + base64.b64encode(payload).decode()
 
 
 @pytest.mark.asyncio

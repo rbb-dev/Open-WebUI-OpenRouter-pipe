@@ -614,6 +614,10 @@ def is_internal_file_url(url: str) -> bool:
     return "/api/v1/files/" in url
 
 
+def owui_file_content_url(file_id: str) -> str:
+    return f"{_INTERNAL_FILE_SUBSTRING}{file_id}/content"
+
+
 _INTERNAL_FILE_PATH_RE = re.compile(r"/api/v1/files/[^/?#\s]*", re.IGNORECASE)
 _INTERNAL_FILE_SUBSTRING = "/api/v1/files/"
 

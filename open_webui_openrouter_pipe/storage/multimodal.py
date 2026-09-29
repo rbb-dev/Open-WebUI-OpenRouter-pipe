@@ -693,6 +693,25 @@ def _extract_openrouter_og_image(html: str) -> str | None:
 
 # MultimodalHandler Class
 
+class _VettedTransport:
+    __slots__ = ("holders", "loop", "protection", "retired", "session")
+
+    def __init__(
+        self,
+        session: aiohttp.ClientSession,
+        *,
+        protection: bool | None,
+        loop: asyncio.AbstractEventLoop | None,
+        holders: int = 0,
+        retired: bool = False,
+    ) -> None:
+        self.session = session
+        self.protection = protection
+        self.loop = loop
+        self.holders = holders
+        self.retired = retired
+
+
 class MultimodalHandler:
     """Manages multimodal content operations.
 
@@ -711,6 +730,9 @@ class MultimodalHandler:
     - YouTube URL handling
     - SSRF protection with IP address validation (HTTP disabled by default)
     """
+
+    _vetted_transport: _VettedTransport | None = None
+    _vetted_draining: _VettedTransport | None = None
 
     def __init__(
         self,
@@ -742,15 +764,32 @@ class MultimodalHandler:
         self._warned_missing_imaging: set[str] = set()
         self._warned_dns_failures: dict[str, float] = {}
         self._warned_blocked_hosts: dict[str, float] = {}
-        self._vetted_http_session: aiohttp.ClientSession | None = None
+        self._vetted_transport = None
+        self._vetted_draining = None
         self._decode_pool: ThreadPoolExecutor | None = None
         self._address_pool: ThreadPoolExecutor | None = None
         self._icon_sweep_address_pool: ThreadPoolExecutor | None = None
         self._transport_closed = False
-        self._vetted_protection: bool | None = None
-        self._vetted_loop: asyncio.AbstractEventLoop | None = None
         self._vetted_lock: asyncio.Lock | None = None
         self._vetted_lock_loop: asyncio.AbstractEventLoop | None = None
+
+    @property
+    def _vetted_http_session(self) -> aiohttp.ClientSession | None:
+        transport = self._vetted_transport
+        return None if transport is None else transport.session
+
+    @_vetted_http_session.setter
+    def _vetted_http_session(self, session: aiohttp.ClientSession | None) -> None:
+        if session is None:
+            self._vetted_transport = None
+            return
+        previous = self._vetted_transport
+        self._vetted_transport = _VettedTransport(
+            session,
+            protection=None if previous is None else previous.protection,
+            loop=None if previous is None else previous.loop,
+            holders=0 if previous is None else previous.holders,
+        )
 
     @property
     def valves(self) -> Any:
@@ -1423,7 +1462,8 @@ class MultimodalHandler:
         return self._build_pinned_request(url, ips[0])
 
     def _vetted_loop_is_stale(self) -> bool:
-        bound = self._vetted_loop
+        transport = self._vetted_transport
+        bound = None if transport is None else transport.loop
         if bound is None:
             return False
         if bound.is_closed():
@@ -1434,19 +1474,31 @@ class MultimodalHandler:
             return False
 
     async def _retire_vetted_session(self) -> None:
-        session = self._vetted_http_session
-        bound = self._vetted_loop
-        self._vetted_http_session = None
-        self._vetted_loop = None
-        if session is None or session.closed:
+        transport = self._vetted_transport
+        self._vetted_transport = None
+        if transport is None or transport.session.closed:
             return
+        bound = transport.loop
         if bound is not None and not bound.is_closed():
             try:
                 if bound is not asyncio.get_running_loop():
                     return
             except RuntimeError:
                 return
-        await session.close()
+        if transport.holders:
+            transport.retired = True
+            self._vetted_draining = transport
+            return
+        await transport.session.close()
+
+    async def _release_vetted(self, transport: _VettedTransport) -> None:
+        if transport.holders > 0:
+            transport.holders -= 1
+        if transport.holders or not transport.retired:
+            return
+        if self._vetted_draining is transport:
+            self._vetted_draining = None
+        await transport.session.close()
 
     def _vetted_transport_lock(self) -> asyncio.Lock:
         running = asyncio.get_running_loop()
@@ -1455,20 +1507,21 @@ class MultimodalHandler:
             self._vetted_lock_loop = running
         return self._vetted_lock
 
-    async def _vetted_session(self, url: str = "") -> aiohttp.ClientSession:
+    async def _acquire_vetted(self, url: str = "") -> _VettedTransport:
         async with self._vetted_transport_lock():
             if self._transport_closed:
                 raise UnfetchableAddress(url)
             protection = bool(self.valves.ENABLE_SSRF_PROTECTION)
-            session = self._vetted_http_session
+            transport = self._vetted_transport
             if (
-                session is not None
-                and not session.closed
+                transport is not None
+                and not transport.session.closed
                 and not self._vetted_loop_is_stale()
-                and (self._vetted_protection is None or protection == self._vetted_protection)
+                and (transport.protection is None or protection == transport.protection)
             ):
-                self._vetted_protection = protection
-                return session
+                transport.protection = protection
+                transport.holders += 1
+                return transport
             await self._retire_vetted_session()
             connector = aiohttp.TCPConnector(
                 resolver=_VettedResolver(self, protection),
@@ -1476,11 +1529,17 @@ class MultimodalHandler:
                 limit_per_host=_VETTED_CONNECTION_LIMIT_PER_HOST,
                 ttl_dns_cache=_VETTED_DNS_CACHE_SECONDS,
             )
-            session = aiohttp.ClientSession(connector=connector)
-            self._vetted_http_session = session
-            self._vetted_protection = protection
-            self._vetted_loop = asyncio.get_running_loop()
-            return session
+            transport = _VettedTransport(
+                aiohttp.ClientSession(connector=connector),
+                protection=protection,
+                loop=asyncio.get_running_loop(),
+                holders=1,
+            )
+            self._vetted_transport = transport
+            return transport
+
+    async def _vetted_session(self, url: str = "") -> aiohttp.ClientSession:
+        return (await self._acquire_vetted(url)).session
 
     def _hop_is_openrouter(self, url: str, openrouter_host: str) -> bool:
         if not openrouter_host:
@@ -1543,7 +1602,8 @@ class MultimodalHandler:
                     and self._hop_is_openrouter(target, openrouter_host)
                 ):
                     hop_headers["HTTP-Referer"] = referer
-                session = await self._vetted_session(target)
+                transport = await self._acquire_vetted(target)
+                session = transport.session
                 connected = False
                 try:
                     async with session.get(
@@ -1567,6 +1627,8 @@ class MultimodalHandler:
                     if connected or not isinstance(exc.os_error, _AddressRefused):
                         raise
                     raise UnfetchableAddress(target) from exc
+                finally:
+                    await self._release_vetted(transport)
         raise UnfetchableAddress(target)
 
     async def _run_decode(self, func: Callable[..., Any], *args: Any) -> Any:
@@ -1588,7 +1650,12 @@ class MultimodalHandler:
     async def aclose(self) -> None:
         async with self._vetted_transport_lock():
             self._transport_closed = True
-            await self._retire_vetted_session()
+            current, self._vetted_transport = self._vetted_transport, None
+            draining, self._vetted_draining = self._vetted_draining, None
+            for transport in (current, draining):
+                if transport is None or transport.session.closed:
+                    continue
+                await transport.session.close()
         for attr in ("_decode_pool", "_address_pool", "_icon_sweep_address_pool"):
             pool = getattr(self, attr, None)
             setattr(self, attr, None)
@@ -1668,7 +1735,7 @@ class MultimodalHandler:
         if not url:
             return None
         if url.startswith("data:image"):
-            return url
+            return await self._inline_icon_as_data_url(url)
         if url.startswith("//"):
             url = f"https:{url}"
         elif url.startswith("/"):
@@ -1706,6 +1773,45 @@ class MultimodalHandler:
         finally:
             _icon_sweep_address_check.reset(_sweep_token)
 
+        return await self._icon_bytes_to_data_url(data, content_type, url)
+
+    async def _inline_icon_as_data_url(self, url: str) -> str | None:
+        parsed = split_base64_data_url(url)
+        if parsed is None:
+            self.logger.debug(
+                "Skipping model icon that is not a base64 data URL (url=%s)",
+                loggable_link(url),
+            )
+            return None
+        _header, payload = parsed
+        padding = len(payload) - len(payload.rstrip("="))
+        if (len(payload) * 3) // 4 - padding > _MAX_MODEL_PROFILE_IMAGE_BYTES:
+            self.logger.debug(
+                "Skipping model icon over %d bytes (url=%s)",
+                _MAX_MODEL_PROFILE_IMAGE_BYTES,
+                loggable_link(url),
+            )
+            return None
+        try:
+            data = base64.b64decode(payload, validate=True)
+        except (binascii.Error, ValueError):
+            self.logger.debug(
+                "Skipping model icon that is not base64 (url=%s)",
+                loggable_link(url),
+            )
+            return None
+        if len(data) > _MAX_MODEL_PROFILE_IMAGE_BYTES:
+            self.logger.debug(
+                "Skipping model icon over %d bytes (url=%s)",
+                _MAX_MODEL_PROFILE_IMAGE_BYTES,
+                loggable_link(url),
+            )
+            return None
+        return await self._icon_bytes_to_data_url(data, None, loggable_link(url))
+
+    async def _icon_bytes_to_data_url(
+        self, data: bytes, content_type: str | None, url: str
+    ) -> str | None:
         mime = _guess_image_mime_type(url, content_type, data)
         if not mime:
             self.logger.debug(

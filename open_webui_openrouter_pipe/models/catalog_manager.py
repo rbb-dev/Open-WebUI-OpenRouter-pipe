@@ -25,6 +25,7 @@ from urllib.parse import quote
 import aiohttp
 
 from ..core.timing_logger import timed
+from ..core.url_scheme import url_scheme
 from ..core.warn_latch import warn_level
 
 try:
@@ -110,6 +111,12 @@ def _ensure_pipe_meta(meta_dict: dict) -> dict:
     pipe_meta = {}
     meta_dict[_PIPE_METADATA_KEY] = pipe_meta
     return pipe_meta
+
+
+def _stampable_icon_source(url: str | None) -> str | None:
+    if not isinstance(url, str) or url_scheme(url) == "data":
+        return None
+    return url
 
 
 def _covered_icon(row: Any, icon_url: str) -> str | None:
@@ -224,7 +231,7 @@ async def _stored_profile_images(
     ids = [
         f"{pipe_identifier}.{model['id']}"
         for model in models
-        if isinstance(model.get("id"), str) and model["id"]
+        if isinstance(model.get("id"), str) and model["id"].strip()
     ]
     if not ids:
         return {}
@@ -2025,7 +2032,7 @@ class ModelCatalogManager:
             async def _apply(model: dict[str, Any]) -> None:
                 openrouter_id = model.get("id")
                 name = model.get("name")
-                if not isinstance(openrouter_id, str) or not openrouter_id:
+                if not isinstance(openrouter_id, str) or not openrouter_id.strip():
                     return
                 if not isinstance(name, str) or not name:
                     name = openrouter_id
@@ -2087,12 +2094,16 @@ class ModelCatalogManager:
                 ):
                     profile_image_url = icon_data_mapping.get(original_id)
                     if profile_image_url:
-                        image_source_url = slug_to_icon_url.get(original_id)
+                        image_source_url = _stampable_icon_source(
+                            slug_to_icon_url.get(original_id)
+                        )
                     if not profile_image_url:
                         maker_id = original_id.split("/", 1)[0]
                         profile_image_url = maker_data_mapping.get(maker_id)
                         if profile_image_url:
-                            image_source_url = maker_to_image_url.get(maker_id)
+                            image_source_url = _stampable_icon_source(
+                                maker_to_image_url.get(maker_id)
+                            )
                     if image_source_url:
                         image_source_kind = (
                             _FRONTEND_SOURCE_KIND
@@ -2288,7 +2299,7 @@ class ModelCatalogManager:
                 [
                     f"{pipe_identifier}.{model['id']}"
                     for model in models
-                    if isinstance(model.get("id"), str) and model["id"]
+                    if isinstance(model.get("id"), str) and model["id"].strip()
                 ],
                 self.logger,
             )

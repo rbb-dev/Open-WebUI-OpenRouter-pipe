@@ -240,7 +240,7 @@ class SessionTracker:
     def _cache_savings(self, entry: dict[str, Any]) -> float:
         discount = float(entry.get("discount") or 0.0)
         if discount:
-            return abs(discount)
+            return max(discount, 0.0)
         cached = int(entry.get("tcached") or 0)
         if not cached or self._pricing_fn is None:
             return 0.0

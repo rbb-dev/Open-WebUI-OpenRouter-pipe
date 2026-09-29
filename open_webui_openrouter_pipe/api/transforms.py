@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from ..pipe import Pipe
 
 from ..core.config import (
+    _EMPTY_TOOL_SCHEMA,
     _MAX_OPENROUTER_ID_CHARS,
     _MAX_OPENROUTER_METADATA_KEY_CHARS,
     _MAX_OPENROUTER_METADATA_PAIRS,
@@ -43,6 +44,7 @@ from ..core.config import (
 from ..core.fusion_defaults import _REQUIRED_TOOL_CHOICE, has_active_fusion_entry
 from ..core.image_detail import image_detail_or_auto
 from ..core.timing_logger import timed
+from ..core.url_scheme import loggable_link
 from ..core.utils import (
     OPEN_WEBUI_TOOL_IMAGES_TEXT,
     _coerce_bool,
@@ -69,6 +71,7 @@ from ..tools.tool_schema import _strictify_schema
 logger = logging.getLogger(__name__)
 
 _warned_previous_response_id: set[str] = set()
+_warned_store: set[str] = set()
 
 class CompletionsBody(BaseModel):
     """
@@ -333,9 +336,9 @@ class ResponsesBody(BaseModel):
             # slider allows values below that; forwarding one earns a 400 that reads as
             # the pipe's fault, so anything outside the documented range is sent as no
             # cap at all.
-            requested_max = completions_dict["max_tokens"]
-            if isinstance(requested_max, int) and requested_max >= 1:
-                sanitized_params["max_output_tokens"] = requested_max
+            cap = _coerced_token_cap(completions_dict["max_tokens"])
+            if cap is not None and cap >= 1:
+                sanitized_params["max_output_tokens"] = cap
 
         if "max_completion_tokens" in completions_dict:
             requested_completion_max = completions_dict["max_completion_tokens"]
@@ -510,7 +513,6 @@ ALLOWED_OPENROUTER_CHAT_FIELDS = {
     "modalities",
     "transforms",
     "stop_server_tools_when",
-    "thinking_config",
 }
 
 
@@ -632,8 +634,7 @@ def _chat_tools_to_responses_tools(tools: Any) -> list[dict[str, Any]]:
         spec: dict[str, Any] = {"type": "function", "name": name}
         if isinstance(description, str) and description.strip():
             spec["description"] = description.strip()
-        if isinstance(parameters, dict):
-            spec["parameters"] = parameters
+        spec["parameters"] = parameters if isinstance(parameters, dict) else _EMPTY_TOOL_SCHEMA
         if isinstance(tool.get("cache_control"), dict):
             spec["cache_control"] = tool["cache_control"]
         _strict = fn.get("strict") if isinstance(fn, dict) else tool.get("strict")
@@ -665,6 +666,19 @@ def _responses_tool_choice_to_chat_tool_choice(value: Any) -> Any:
 
 
 # Response Format Transforms
+
+def _coerced_token_cap(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if not isinstance(value, (float, str)):
+        return None
+    try:
+        return round(float(value))
+    except (OverflowError, ValueError):
+        return None
+
 
 def _chat_response_format_to_responses_text_format(value: Any) -> dict[str, Any] | None:
     """Convert Chat Completions `response_format` -> Responses `text.format`."""
@@ -793,6 +807,13 @@ def _replay_payload_is_present(value: Any) -> bool:
     return False
 
 
+def _image_file_payload(block: dict[str, Any]) -> dict[str, Any] | None:
+    file_id = block.get("file_id")
+    if not isinstance(file_id, str) or not file_id.strip():
+        return None
+    return {"type": "file", "file": {"file_id": file_id.strip()}}
+
+
 def _replay_block_is_usable(block: Any) -> bool:
     if not isinstance(block, dict):
         return True
@@ -805,11 +826,14 @@ def _replay_block_is_usable(block: Any) -> bool:
             return any(payload.get(key) for key in ("file_id", "file_data", "file_url"))
         return any(block.get(key) for key in ("file_id", "file_data", "file_url"))
     if btype in {"image_url", "input_image"}:
-        return _replay_payload_is_present(block.get("image_url"))
+        return _replay_payload_is_present(block.get("image_url")) or _image_file_payload(block) is not None
     if btype == "input_audio":
         return _replay_payload_is_present(block.get("input_audio"))
     if btype in {"video_url", "input_video"}:
-        return _replay_payload_is_present(block.get("video_url"))
+        video = block.get("video_url")
+        return _replay_payload_is_present(
+            video if video is not None else block.get("url")
+        )
     return True
 
 
@@ -834,20 +858,27 @@ def _replay_blocks_or_note(
     *,
     role: str = "user",
 ) -> list[Any]:
-    if any(_replay_block_is_usable(b) for b in blocks):
-        return [b for b in blocks if _replay_block_is_usable(b)]
-    refusals = [r for r in (_replay_block_refusal(b) for b in (siblings or blocks)) if r]
+    originals = siblings or blocks
+    survivors = [b for b in blocks if _replay_block_is_usable(b)]
+    refusals = [
+        r
+        for r in (
+            _replay_block_refusal(b) for b in originals if not _replay_block_is_usable(b)
+        )
+        if r
+    ]
+    note = [
+        {"type": "text", "text": f"[An attached item was not sent: {'; '.join(refusals)}.]"}
+    ] if refusals else []
+    if survivors:
+        return survivors + note
     if not refusals:
         if role != "user":
             return blocks
-        originals = siblings or blocks
         if any(_replay_block_is_usable(b) for b in originals):
             return [b for b in originals if _replay_block_is_usable(b)]
         return [{"type": "text", "text": OPENAI_EMPTY_USER_TURN_FALLBACK}]
-    return [{
-        "type": "text",
-        "text": f"[An attached item was not sent: {'; '.join(refusals)}.]",
-    }]
+    return note
 
 
 def _responses_input_to_chat_messages(
@@ -878,12 +909,23 @@ def _responses_input_to_chat_messages(
     pending_reasoning_details: list[Any] = []
 
     def _hand_over_tool_pictures() -> None:
-        if tool_pictures:
-            messages.append({"role": "user", "content": [
-                {"type": "text", "text": OPEN_WEBUI_TOOL_IMAGES_TEXT},
-                *({"type": "image_url", "image_url": {"url": url}} for url in tool_pictures),
-            ]})
-            tool_pictures.clear()
+        from ..requests.transformer import _tool_picture_gate
+
+        if not tool_pictures:
+            return
+        kept, refused = _tool_picture_gate(tool_pictures)
+        for url, reason, cause in refused:
+            logger.warning(
+                "Not forwarding a tool's picture (%s): %s [cause=%s]",
+                loggable_link(url), reason, cause,
+            )
+        tool_pictures.clear()
+        if not kept:
+            return
+        messages.append({"role": "user", "content": [
+            {"type": "text", "text": OPEN_WEBUI_TOOL_IMAGES_TEXT},
+            *({"type": "image_url", "image_url": {"url": url}} for url in kept),
+        ]})
 
     def _flush_pending_reasoning() -> None:
         if not pending_reasoning_details:
@@ -1018,6 +1060,10 @@ def _responses_input_to_chat_messages(
                                 image_url_obj: dict[str, Any] = {"url": url.strip()}
                                 image_url_obj["detail"] = image_detail_or_auto(block.get("detail"))
                                 blocks_out.append({"type": "image_url", "image_url": image_url_obj})
+                                continue
+                            payload = _image_file_payload(block)
+                            if payload is not None:
+                                blocks_out.append(payload)
                             continue
                         if btype == "image_url":
                             image_url_val = block.get("image_url")
@@ -1040,6 +1086,8 @@ def _responses_input_to_chat_messages(
                             continue
                         if btype == "input_video":
                             video = block.get("video_url")
+                            if video is None:
+                                video = block.get("url")
                             if isinstance(video, str) and video.strip():
                                 blocks_out.append({"type": "video_url", "video_url": {"url": video.strip()}})
                             elif isinstance(video, dict) and video.get("url"):
@@ -1137,6 +1185,10 @@ def _responses_input_to_chat_messages(
                         transformed["image_url"] = image_url_obj
                         if image_url_obj["url"]:
                             blocks_out.append(transformed)
+                            continue
+                        payload = _image_file_payload(block)
+                        if payload is not None:
+                            blocks_out.append(payload)
                         continue
 
                     if btype == "image_url":
@@ -1436,10 +1488,21 @@ def _responses_payload_to_chat_completions_payload(
                 else:
                     system_msg["content"] = instructions
             elif isinstance(existing_content, list):
-                prepend_blocks = [{"type": "text", "text": instructions}]
-                if existing_content:
-                    prepend_blocks.append({"type": "text", "text": ""})
-                system_msg["content"] = prepend_blocks + list(existing_content)
+                merged_blocks: list[dict[str, Any]] = [{"type": "text", "text": instructions}]
+                folded = False
+                for block in existing_content:
+                    if (
+                        not folded
+                        and isinstance(block, dict)
+                        and block.get("type") == "text"
+                        and isinstance(block.get("text"), str)
+                        and block["text"].strip()
+                    ):
+                        merged_blocks[0] = {**block, "text": f"{instructions}\n\n{block['text']}"}
+                        folded = True
+                        continue
+                    merged_blocks.append(block)
+                system_msg["content"] = merged_blocks
             else:
                 system_msg["content"] = instructions
         else:
@@ -1895,6 +1958,15 @@ def _filter_openrouter_request(payload: dict[str, Any]) -> dict[str, Any]:
         if value is None:
             continue
 
+        if key == "store":
+            if value is not False:
+                logger.log(
+                    warn_level(_warned_store, "store"),
+                    "Forced store=false: OpenRouter's /responses endpoint is stateless and "
+                    "answers store=true with a 400.",
+                )
+            value = False
+
         if key == "top_k":
             coerced = _coerce_openrouter_int(value)
             if coerced is None:
@@ -1941,6 +2013,7 @@ def _filter_replayable_input_items(
     from ..requests.transformer import _as_replayed
 
     filtered: list[dict[str, Any]] = []
+    changed = False
     for idx, item in enumerate(items):
         if not isinstance(item, dict):
             filtered.append(item)
@@ -1953,15 +2026,17 @@ def _filter_replayable_input_items(
                 idx,
                 item.get("id"),
             )
+            changed = True
             continue
         if item_type.startswith("openrouter:"):
-            filtered.extend(_as_replayed(item))
+            parts = _as_replayed(item)
+            if len(parts) != 1 or parts[0] is not item:
+                changed = True
+            filtered.extend(parts)
             continue
         filtered.append(item)
 
-    if len(filtered) != len(items):
-        return filtered
-    return items
+    return filtered if changed else items
 
 
 def apply_context_transforms(responses_body: ResponsesBody, *, auto_context_trimming: bool) -> None:

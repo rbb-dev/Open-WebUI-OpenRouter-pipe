@@ -31,6 +31,9 @@ from tests.test_storage import _install_internal_db
 MODEL = "anthropic/claude-opus-4.8"
 LABELS = ("BEFORE-A", "AFTER-A", "BEFORE-B", "AFTER-B", "THINK-A", "THINK-B", "THINK-0")
 
+# Four of the five shapes below have a round whose reasoning stands with no tool call beside it, so those blocks
+# take the text anchor -- the fallback arm, taken whenever no call anchor applies. `tools-then-tools` is the
+# control: every one of its reasoning blocks sits beside a call, and it is the only shape that carries none.
 SHAPES = {
     "tools-then-tools": (
         [("call", "BEFORE-A", "call-a"), ("answer", "AFTER-A", "Part one.")],
@@ -57,6 +60,8 @@ SHAPES = {
     ),
     # The first generation stopped after thinking, before any text (Stop during thinking, or a length cut), so the
     # continued turn ends on reasoning: the continuation's thinking goes after its own text, never beside THINK-A.
+    # That no-text ending is what is unique to this shape; the text anchor is not, because it is the fallback
+    # every round with no call beside it takes (see the note above SHAPES).
     "thinking-then-answer": (
         [("answer", "THINK-A", "")],
         [("answer", "THINK-B", "Part two.")],
@@ -240,6 +245,7 @@ async def _continued_turn_replay(pipe, monkeypatch, *, first_rounds, second_roun
 
 
 def _assert_replays_exactly_and_apart(replay: list[dict[str, Any]], expected: list[str]) -> None:
+    """The order assertion is what pins the anchor: a wrong anchor yields the labels in the wrong order."""
     order = [_label(item) for item in replay]
     assert not _has_consecutive_reasoning(replay), order
     assert order == expected, order

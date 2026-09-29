@@ -1808,11 +1808,15 @@ class TestNormalizeResponsesFunctionToolSpec:
         assert result["parameters"]["additionalProperties"] is False
 
     def test_normalize_without_parameters(self):
-        """Test normalization without parameters."""
+        """A tool declaring no parameters is advertised with the zero-argument schema.
+
+        OpenRouter types `parameters` on a `/responses` function tool as a required
+        object, so omitting the key leaves the turn advertising a malformed tool.
+        """
         tool = {"type": "function", "name": "simple_tool"}
         result = _normalize_responses_function_tool_spec(tool, strictify=False)
         assert result is not None
-        assert "parameters" not in result
+        assert result["parameters"] == {"type": "object", "properties": {}}
 
     def test_normalize_with_empty_description(self):
         """Test that empty description is not included."""
@@ -1831,14 +1835,6 @@ class TestNormalizeResponsesFunctionToolSpec:
         tool = {"type": "function", "name": "tool", "description": "  A description  "}
         result = _normalize_responses_function_tool_spec(tool, strictify=False)
         assert result["description"] == "A description"
-
-    def test_normalize_non_dict_parameters_ignored(self):
-        """Test that non-dict parameters are ignored."""
-        tool = {"type": "function", "name": "tool", "parameters": "invalid"}
-        result = _normalize_responses_function_tool_spec(tool, strictify=False)
-        assert result is not None
-        assert "parameters" not in result
-
 
 class TestResponsesSpecFromOwuiToolCfg:
     """Tests for the _responses_spec_from_owui_tool_cfg function."""

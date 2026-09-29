@@ -9,7 +9,10 @@ from unittest.mock import AsyncMock
 import pytest
 
 from open_webui_openrouter_pipe import Pipe
-from open_webui_openrouter_pipe.requests.transformer import transform_messages_to_input
+from open_webui_openrouter_pipe.requests.transformer import (
+    NO_AUDIO_DATA,
+    transform_messages_to_input,
+)
 from open_webui_openrouter_pipe.storage.owui_files import InlinedFile
 
 

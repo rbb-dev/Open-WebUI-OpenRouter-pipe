@@ -232,14 +232,16 @@ def test_force_sets_required_even_when_other_tools_present():
     assert out["tool_choice"] == "required"
 
 
-@pytest.mark.parametrize("body_extra", [
-    {"function_call": {"name": "x"}},   # legacy caller tool selection
-    {"tool_choice": "auto"},            # caller already chose
-    {"tool_choice": ""},                # explicit (falsy) caller value must still block
+@pytest.mark.parametrize(("body_extra", "expected"), [
+    ({"function_call": {"name": "x"}}, {"function_call": {"name": "x"}}),
+    ({"tool_choice": "auto"}, {"tool_choice": "auto"}),
+    ({"tool_choice": ""}, {"tool_choice": ""}),   # explicit (falsy) caller value must still block
 ])
-def test_force_not_applied_when_caller_set_tool_choice_or_function_call(body_extra):
+def test_force_not_applied_when_caller_set_tool_choice_or_function_call(body_extra, expected):
     out = _inlet({"model": FUSION, **body_extra}, valves={"FUSION_FORCE_TOOL_CALL": True})
-    assert out.get("tool_choice") != "required"   # caller's choice preserved
+    for key, value in expected.items():
+        assert out.get(key) == value, "the caller's own choice must survive byte for byte"
+    assert out.get("tool_choice") != "required"
 
 
 def test_force_not_applied_when_any_fusion_plugin_disabled():

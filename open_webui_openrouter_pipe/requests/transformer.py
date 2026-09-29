@@ -34,6 +34,7 @@ from ..core.image_detail import image_detail_or_auto
 from ..core.url_scheme import (
     base64_data_url_payload_len,
     first_n_non_whitespace,
+    is_absolute_url,
     is_cleartext_http_url,
     is_http_or_https_url,
     is_inline_data_url,
@@ -306,6 +307,46 @@ async def _validate_inline_payload(cleaned: str) -> bool:
     return await asyncio.to_thread(_is_well_formed_base64, cleaned)
 
 
+AUDIO_FORMAT_MAP: dict[str, str] = {
+    "audio/mpeg": "mp3",
+    "audio/mp3": "mp3",
+    "audio/wav": "wav",
+    "audio/wave": "wav",
+    "audio/x-wav": "wav",
+    "audio/flac": "flac",
+    "audio/x-flac": "flac",
+    "audio/mp4": "m4a",
+    "audio/m4a": "m4a",
+    "audio/x-m4a": "m4a",
+    "audio/ogg": "ogg",
+    "audio/aiff": "aiff",
+    "audio/x-aiff": "aiff",
+    "audio/aac": "aac",
+}
+
+SUPPORTED_AUDIO_FORMATS: frozenset[str] = frozenset(
+    {"mp3", "wav", "flac", "m4a", "ogg", "aiff", "aac", "pcm16", "pcm24"}
+)
+
+
+def _map_audio_format(mime: str | None) -> str | None:
+    if not isinstance(mime, str) or not mime.strip():
+        return "mp3"
+    return AUDIO_FORMAT_MAP.get(mime.lower())
+
+
+def _normalize_audio_format(
+    explicit_format: str | None,
+    mime_hint: str | None,
+) -> str | None:
+    if isinstance(explicit_format, str) and explicit_format.strip():
+        normalized = explicit_format.strip().lower()
+        if normalized in SUPPORTED_AUDIO_FORMATS:
+            return normalized
+        return None
+    return _map_audio_format(mime_hint)
+
+
 class ImageRefusal(NamedTuple):
     reason: str
     cause: str
@@ -348,6 +389,10 @@ def _block_is_usable(block: dict[str, Any]) -> bool:
     return _unconverted_block_reason(block) is None
 
 
+NO_AUDIO_DATA = "an audio clip carried no audio data"
+NO_VIDEO_DATA = "a video clip carried no video data"
+
+
 def _unconverted_block_reason(block: dict[str, Any]) -> str | None:
     btype = block.get("type")
     if btype in {"input_image", "image_url", "image"}:
@@ -355,11 +400,11 @@ def _unconverted_block_reason(block: dict[str, Any]) -> str | None:
             block.get("image_url", block.get("url"))
         ) else None
     if btype in {"input_audio", "audio"}:
-        return "an audio clip carried no audio data" if not _payload_is_present(
+        return NO_AUDIO_DATA if not _payload_is_present(
             block.get("input_audio", block.get("audio", block.get("data")))
         ) else None
     if btype in {"video_url", "video"}:
-        return "a video clip carried no video data" if not _payload_is_present(
+        return NO_VIDEO_DATA if not _payload_is_present(
             block.get("video_url", block.get("url"))
         ) else None
     if btype in {"input_file", "file"}:
@@ -550,6 +595,15 @@ _TRANSPORT_ONLY_KEYS = (
 _LIFTED_TEXT_IMAGE_PLACEHOLDER = "image"
 
 
+def _source_url_of(block: dict[str, Any]) -> str:
+    payload = block.get("image_url")
+    candidate: Any = payload.get("url") if isinstance(payload, dict) else payload
+    if not isinstance(candidate, str) or not candidate:
+        fallback = block.get("url")
+        candidate = fallback if isinstance(fallback, str) else ""
+    return candidate
+
+
 def _from_pipe_storage(item: dict[str, Any]) -> dict[str, Any]:
     kind = str(item.get("type") or "")
     if kind in ("function_call", "function_call_output") or kind.startswith("openrouter:"):
@@ -634,7 +688,9 @@ def _one_copy_per_round(region: list[Any]) -> list[Any]:
     pictures: list[str] = []
     for it in region:
         if pictures and not (isinstance(it, dict) and it.get("type") == "function_call_output"):
-            kept.append(_tool_images_message(pictures))
+            message = _tool_images_message(pictures)
+            if message is not None:
+                kept.append(message)
             pictures = []
         replayed_pictures = (
             isinstance(it, dict)
@@ -661,10 +717,18 @@ def _one_copy_per_round(region: list[Any]) -> list[Any]:
         if replayed_pictures:
             text, shown = tool_output_text_and_pictures(it["output"])
             it = {**it, "output": text}
-            pictures.extend(shown)
+            kept_shown, refused_shown = _tool_picture_gate(shown)
+            for url, reason, cause in refused_shown:
+                logger.warning(
+                    "Not replaying a stored tool's picture (%s): %s [cause=%s]",
+                    loggable_link(url), reason, cause,
+                )
+            pictures.extend(kept_shown)
         kept.append(it)
     if pictures:
-        kept.append(_tool_images_message(pictures))
+        message = _tool_images_message(pictures)
+        if message is not None:
+            kept.append(message)
     return _move_kept_outputs_after_their_calls(kept)
 
 
@@ -698,10 +762,84 @@ def _handoff_back(messages: list[dict[str, Any]], position: int) -> bool:
     return is_tool_image_handoff_for_round(results, messages[position])
 
 
-def _tool_images_message(pictures: list[str]) -> dict[str, Any]:
+def _tool_picture_gate(
+    pictures: list[str],
+    *,
+    max_inline_bytes: int | None = None,
+    allow_insecure: Callable[[str], bool] | None = None,
+) -> tuple[list[str], list[tuple[str, str, str]]]:
+    kept: list[str] = []
+    refused: list[tuple[str, str, str]] = []
+    for url in pictures:
+        if (
+            is_cleartext_http_url(url)
+            and not names_an_owui_file_path(url)
+            and not (allow_insecure is not None and allow_insecure(url))
+        ):
+            refused.append((url, ("served over plain HTTP, which is blocked by security policy; "
+                                  "set ALLOW_INSECURE_HTTP and list the host in "
+                                  "ALLOW_INSECURE_HTTP_HOSTS to permit it"), "insecure_http"))
+            continue
+        if not (url_scheme(url) in ("data", "http", "https") or names_an_owui_file_path(url)):
+            refused.append((url, "not a link the pipe can resolve into an image", "unusable_link"))
+            continue
+        if is_inline_data_url(url):
+            split = split_base64_data_url(url)
+            if split is None:
+                refused.append((url, ("a data URL that is not base64-encoded, which OpenRouter "
+                                      "does not accept"), "unencoded_inline"))
+                continue
+            if max_inline_bytes is not None and (len(split[1]) * 3) // 4 > max_inline_bytes:
+                refused.append((url, f"larger than the {max_inline_bytes}-byte inline limit",
+                                "oversized_inline"))
+                continue
+        kept.append(url)
+    return kept, refused
+
+
+async def _tool_picture_gate_with_address(
+    pipe: Pipe,
+    pictures: list[str],
+    *,
+    max_inline_bytes: int | None = None,
+) -> tuple[list[str], list[tuple[str, str, str]]]:
+    kept, refused = _tool_picture_gate(
+        pictures,
+        max_inline_bytes=max_inline_bytes,
+        allow_insecure=pipe._multimodal_handler._is_insecure_http_allowed,
+    )
+    admitted: list[str] = []
+    for url in kept:
+        if (
+            is_http_or_https_url(url)
+            and not names_an_owui_file_path(url)
+            and await pipe._multimodal_handler._is_safe_url(url) is not True
+        ):
+            refused.append((url, "could not be fetched, so it was not sent", "remote_unfetched"))
+            continue
+        admitted.append(url)
+    return admitted, refused
+
+
+def _tool_picture_notice(refusals: list[tuple[str, str, str]]) -> str:
+    return "Images: skipped {count} ({reasons}).".format(
+        count=len(refusals),
+        reasons="; ".join(reason for _url, reason, _cause in refusals),
+    )
+
+
+def _tool_images_message(
+    pictures: list[str], *, max_inline_bytes: int | None = None,
+    allow_insecure: Callable[[str], bool] | None = None,
+) -> dict[str, Any] | None:
+    kept, _refused = _tool_picture_gate(
+        pictures, max_inline_bytes=max_inline_bytes, allow_insecure=allow_insecure,
+    )
+    if not kept:
+        return None
     return {"type": "message", "role": "user", "content": [
         {"type": "input_text", "text": OPEN_WEBUI_TOOL_IMAGES_TEXT},
-        *({"type": "input_image", "image_url": url, "detail": "auto"} for url in pictures),
+        *({"type": "input_image", "image_url": url, "detail": "auto"} for url in kept),
     ]}
 
 
@@ -810,7 +948,10 @@ async def transform_messages_to_input(
     last_image_blocks: list[dict[str, Any]] = []
     last_image_turn: int | None = None
     window_armed_at: set[int] = set()
+    lift_candidates: list[tuple[dict[str, Any], list[str]]] = []
+    pictures_in_request: set[str] = set()
     _deferred_tool_pictures: list[str] = []
+    _deferred_tool_refusals: list[tuple[str, str, str]] = []
 
     def _message_identifier(entry: dict[str, Any]) -> str | None:
         """Return the most specific identifier available on ``entry``."""
@@ -943,6 +1084,17 @@ async def transform_messages_to_input(
     temporary_chat = is_temporary_chat(chat_id)
     memo_owner = _memo_owner_key(user_obj)
     request_memo: dict[tuple[str, str], tuple[str | None, bytes, str]] = {}
+    remote_limit: list[int] = []
+
+    async def _remote_limit_bytes() -> int:
+        if not remote_limit:
+            remote_limit.append(
+                await pipe._multimodal_handler._get_effective_remote_file_limit_mb()
+                * 1024
+                * 1024
+            )
+        return remote_limit[0]
+
     address_verdicts: dict[str, bool | None] = {}
     address_deadline = time.monotonic() + ADDRESS_CHECK_BUDGET_SECONDS
     tool_name_at, issuer_at = _tool_names_by_position(messages)
@@ -992,6 +1144,14 @@ async def transform_messages_to_input(
                 logger.warning("Artifact loader failed for chat_id=%s message_id=%s", chat_id, group_id, exc_info=True)
                 artifact_groups[group_id] = {}
 
+    normalized_rows: dict[int, Any] = {}
+
+    def _normalized_row(row: Any) -> Any:
+        key = id(row)
+        if key not in normalized_rows:
+            normalized_rows[key] = normalize_persisted_item(row)
+        return normalized_rows[key]
+
     recorded_rounds: set[tuple[str, str]] = set()
     builtin_rounds: set[tuple[str, str]] = set()
     for entry in messages:
@@ -1013,7 +1173,7 @@ async def transform_messages_to_input(
             payload = batch.get(segment["marker"])
             if payload is None:
                 continue
-            stored = normalize_persisted_item(payload)
+            stored = _normalized_row(payload)
             if not isinstance(stored, dict) or stored.get("type") != "function_call":
                 continue
             if BUILTIN_ASK_USER_ROUND_KEY not in stored:
@@ -1044,15 +1204,31 @@ async def transform_messages_to_input(
         )
 
         if role != "tool" and _deferred_tool_pictures:
-            openai_input.append(_tool_images_message(_deferred_tool_pictures))
+            message = _tool_images_message(
+                _deferred_tool_pictures,
+                max_inline_bytes=max_inline_bytes,
+                allow_insecure=pipe._multimodal_handler._is_insecure_http_allowed,
+            )
+            if message is not None:
+                openai_input.append(message)
             _deferred_tool_pictures.clear()
+        if role != "tool" and _deferred_tool_refusals:
+            for url, reason, refusal_cause in _deferred_tool_refusals:
+                pipe.logger.warning(
+                    "Not forwarding a tool's picture (%s): %s [cause=%s]",
+                    loggable_link(url), reason, refusal_cause,
+                )
+            await pipe._event_emitter_handler._emit_status(
+                event_emitter, _tool_picture_notice(_deferred_tool_refusals), done=False,
+            )
+            _deferred_tool_refusals.clear()
 
         if role in {"system", "developer"}:
             blocks: list[dict[str, Any]] = []
 
             if isinstance(raw_content, str):
                 cleaned = _sanitize_free_text(raw_content)
-                if cleaned or raw_content == "":
+                if cleaned:
                     blocks.append({"type": "input_text", "text": cleaned})
             elif isinstance(raw_content, list):
                 for entry in raw_content:
@@ -1135,7 +1311,11 @@ async def transform_messages_to_input(
                 _prune_tool_output(tool_item, marker=None, turn_index=msg_turn_index, retention_turns=pruning_turns)
             openai_input.append(tool_item)
             if tool_pictures and not _handoff_ahead(messages, idx):
-                _deferred_tool_pictures.extend(tool_pictures)
+                admitted, tool_refusals = await _tool_picture_gate_with_address(
+                    pipe, tool_pictures, max_inline_bytes=max_inline_bytes,
+                )
+                _deferred_tool_refusals.extend(tool_refusals)
+                _deferred_tool_pictures.extend(admitted)
             continue
 
         if role == "user":
@@ -1317,6 +1497,17 @@ async def transform_messages_to_input(
                             downloaded = None
                         if downloaded and not downloaded.get("data"):
                             downloaded = None
+                        if (
+                            remembered is not None
+                            and memo_key is not None
+                            and len(remembered[1]) > await _remote_limit_bytes()
+                        ):
+                            _reuse_download_memo.pop(memo_key, None)
+                            return _refuse(
+                                "could not be fetched, so it was not sent",
+                                "remote_unfetched",
+                                subject=loggable_link(url),
+                            )
                         if not downloaded and not await pipe._multimodal_handler._is_safe_url(url):
                             return _refuse(
                                 "could not be fetched, so it was not sent",
@@ -1570,12 +1761,57 @@ async def transform_messages_to_input(
                                 subject="file_url",
                             )
 
+                    def _is_inline_payload(name: str, value: str) -> bool:
+                        scheme = url_scheme(value)
+                        return scheme == "data" or (name == "file_data" and not scheme)
+
+                    def _is_provider_fetched_link(name: str, value: Any) -> bool:
+                        if not isinstance(value, str) or not value:
+                            return False
+                        if _is_inline_payload(name, value):
+                            return False
+                        return bool(url_scheme(value)) or (
+                            name == "file_url" and is_absolute_url(value)
+                        )
+
+                    _gate_fields = (("file_data", file_data), ("file_url", file_url))
+                    for _name, _value in _gate_fields:
+                        if not isinstance(_value, str) or not _is_provider_fetched_link(
+                            _name, _value
+                        ):
+                            continue
+                        if not await pipe._multimodal_handler._is_safe_url(_value):
+                            pipe.logger.error(
+                                "Blocked %s file link by security policy: %s",
+                                _name,
+                                loggable_link(_value),
+                            )
+                            if not is_http_or_https_url(_value):
+                                _reason = (
+                                    "served from a link that is neither http nor https, "
+                                    "which is blocked by security policy"
+                                )
+                                _cause = "unsupported_scheme_file"
+                            else:
+                                _reason = (
+                                    "served from a link on a private, link-local or unresolvable "
+                                    "address, which is blocked by security policy; set "
+                                    "ENABLE_SSRF_PROTECTION to False to permit it"
+                                )
+                                _cause = "private_network_file"
+                            if not file_id:
+                                return ImageRefusal(_reason, _cause, subject=_name)
+                            if _name == "file_data":
+                                file_data = None
+                            else:
+                                file_url = None
+
                     oversized = {
                         name: value
                         for name, value in (("file_data", file_data), ("file_url", file_url))
                         if isinstance(value, str)
                         and value
-                        and (url_scheme(value) == "data" or (name == "file_data" and not url_scheme(value)))
+                        and _is_inline_payload(name, value)
                         and _inline_payload_bytes(value) > max_inline_bytes
                     }
                     if oversized and not file_id:
@@ -1648,37 +1884,11 @@ async def transform_messages_to_input(
                     - audio/ogg -> "ogg"; audio/aiff, audio/x-aiff -> "aiff"; audio/aac -> "aac"
                     - An explicit format already in the supported set (mp3, wav,
                       flac, m4a, ogg, aiff, aac, pcm16, pcm24) is preserved as-is.
-                    - Unknown types default to "mp3"
 
                 Note:
                     All errors are caught and logged with status emissions.
                     Failed processing returns minimal valid block rather than crashing.
                 """
-                format_map = {
-                    "audio/mpeg": "mp3",
-                    "audio/mp3": "mp3",
-                    "audio/wav": "wav",
-                    "audio/wave": "wav",
-                    "audio/x-wav": "wav",
-                    "audio/flac": "flac",
-                    "audio/x-flac": "flac",
-                    "audio/mp4": "m4a",
-                    "audio/m4a": "m4a",
-                    "audio/x-m4a": "m4a",
-                    "audio/ogg": "ogg",
-                    "audio/aiff": "aiff",
-                    "audio/x-aiff": "aiff",
-                    "audio/aac": "aac",
-                }
-                supported_formats = {
-                    "mp3", "wav", "flac", "m4a", "ogg", "aiff", "aac", "pcm16", "pcm24",
-                }
-
-                def _map_format(mime: str | None) -> str:
-                    if not isinstance(mime, str):
-                        return "mp3"
-                    return format_map.get(mime.lower(), "mp3")
-
                 def _refuse_audio(why: str, cause: str) -> ImageRefusal:
                     return ImageRefusal(why, cause, subject="audio")
 
@@ -1741,16 +1951,6 @@ async def transform_messages_to_input(
                                 return stripped
                     return None
 
-                def _normalize_format(
-                    explicit_format: str | None,
-                    mime_hint: str | None,
-                ) -> str:
-                    if isinstance(explicit_format, str):
-                        normalized = explicit_format.strip().lower()
-                        if normalized in supported_formats:
-                            return normalized
-                    return _map_format(mime_hint)
-
                 def _build_audio_block(data: str, audio_format: str) -> dict[str, Any]:
                     return {
                         "type": "input_audio",
@@ -1774,7 +1974,18 @@ async def transform_messages_to_input(
                                 "an audio clip was not valid base64",
                                 "audio_not_base64",
                             )
-                        audio_format = _normalize_format(audio_payload.get("format"), _resolved_mime_hint(audio_payload))
+                        hint = _resolved_mime_hint(audio_payload)
+                        audio_format = _normalize_audio_format(audio_payload.get("format"), hint)
+                        if audio_format is None:
+                            pipe.logger.warning(
+                                "Audio payload rejected: format %r, mime hint %r.",
+                                audio_payload.get("format"),
+                                hint,
+                            )
+                            return _refuse_audio(
+                                "an audio clip was in a format the pipe will not rename",
+                                "audio_unsupported_format",
+                            )
                         return _build_audio_block(cleaned, audio_format)
 
                     if isinstance(audio_payload, dict):
@@ -1790,7 +2001,19 @@ async def transform_messages_to_input(
                                     "audio_not_base64",
                                 )
                             mime_hint = _resolved_mime_hint(audio_payload)
-                            audio_format = _normalize_format(audio_payload.get("format"), mime_hint)
+                            audio_format = _normalize_audio_format(
+                                audio_payload.get("format"), mime_hint
+                            )
+                            if audio_format is None:
+                                pipe.logger.warning(
+                                    "Audio payload rejected: format %r, mime hint %r.",
+                                    audio_payload.get("format"),
+                                    mime_hint,
+                                )
+                                return _refuse_audio(
+                                    "an audio clip was in a format the pipe will not rename",
+                                    "audio_unsupported_format",
+                                )
                             return _build_audio_block(cleaned, audio_format)
 
                     if isinstance(audio_payload, str):
@@ -1813,13 +2036,22 @@ async def transform_messages_to_input(
                                     "an audio clip was not an audio data URL",
                                     "audio_bad_data_url",
                                 )
-                            audio_format = _map_format(parsed.get("mime_type"))
+                            audio_format = _map_audio_format(parsed.get("mime_type"))
                             audio_b64 = "".join(str(parsed.get("b64", "")).split())
                             if not audio_b64:
                                 pipe.logger.warning("Audio payload rejected: invalid base64 data.")
                                 return _refuse_audio(
                                     "an audio clip was not valid base64",
                                     "audio_not_base64",
+                                )
+                            if audio_format is None:
+                                pipe.logger.warning(
+                                    "Audio payload rejected: mime type %r.",
+                                    parsed.get("mime_type"),
+                                )
+                                return _refuse_audio(
+                                    "an audio clip was in a format the pipe will not rename",
+                                    "audio_unsupported_format",
                                 )
                             return _build_audio_block(audio_b64, audio_format)
 
@@ -1832,7 +2064,15 @@ async def transform_messages_to_input(
                             )
 
                         mime_type = _resolved_mime_hint()
-                        audio_format = _map_format(mime_type)
+                        audio_format = _map_audio_format(mime_type)
+                        if audio_format is None:
+                            pipe.logger.warning(
+                                "Audio payload rejected: mime hint %r.", mime_type
+                            )
+                            return _refuse_audio(
+                                "an audio clip was in a format the pipe will not rename",
+                                "audio_unsupported_format",
+                            )
                         return _build_audio_block(cleaned, audio_format)
 
                     # Invalid/empty
@@ -2190,6 +2430,7 @@ async def transform_messages_to_input(
                     if is_image_block and result:
                         user_images_used += 1
                         encountered_user_images = True
+                        pictures_in_request.add(_source_url_of(block))
                     converted_blocks.append(result)
                 except RequiredInternalFileError:
                     raise
@@ -2233,7 +2474,10 @@ async def transform_messages_to_input(
                                 transformed.cause,
                             )
                             refused_images.append(transformed.reason)
+                            if transformed.cause == "oversized_inline":
+                                pictures_in_request.add(_source_url_of(source_block))
                         elif transformed is not None:
+                            pictures_in_request.add(_source_url_of(source_block))
                             fallback_blocks.append(transformed)
                     except RequiredInternalFileError as exc:
                         pipe.logger.log(
@@ -2357,27 +2601,17 @@ async def transform_messages_to_input(
 
         appended_text_chunks: list[dict[str, Any]] = []
 
-        def _lift_text_borne_pictures(text: str, at: int = idx) -> str:
-            if selection_mode != "user_then_assistant" or at >= last_person_position:
-                return text
-            lifted = [
-                url
-                for url in _destinations(text)
-                if is_inline_data_url(url) and split_base64_data_url(url)
-            ]
-            for url in lifted:
-                text = text.replace(url, _LIFTED_TEXT_IMAGE_PLACEHOLDER)
-            return text
-
         def _append_assistant_text_chunks(
             text: str,
             appended: list[dict[str, Any]] = appended_text_chunks,
             msg_annotations: list[Any] = msg_annotations,
             msg_reasoning_details: list[Any] = msg_reasoning_details,
+            at: int = idx,
+            destinations: list[str] = assistant_image_urls,
         ) -> None:
             chunk_items: list[dict[str, Any]] = []
             for phase_chunk in split_text_by_phase_markers(text):
-                cleaned_text = _lift_text_borne_pictures(phase_chunk["text"]).strip()
+                cleaned_text = phase_chunk["text"].strip()
                 if not cleaned_text:
                     continue
                 item_out: dict[str, Any] = {
@@ -2388,6 +2622,8 @@ async def transform_messages_to_input(
                 if phase_supported and phase_chunk.get("phase_present"):
                     item_out["phase"] = phase_chunk.get("phase")
                 chunk_items.append(item_out)
+                if selection_mode == "user_then_assistant" and at < last_person_position:
+                    lift_candidates.append((item_out, destinations))
 
             if not chunk_items:
                 return
@@ -2399,16 +2635,21 @@ async def transform_messages_to_input(
             markers = [seg["marker"] for seg in segments if seg.get("type") == "marker"]
 
             db_artifacts: dict[str, dict] = {}
+            replayable: dict[str, dict[str, Any]] = {}
             orphaned_call_ids: set[str] = set()
             orphaned_output_ids: set[str] = set()
             if artifact_loader and chat_id and openwebui_model_id and markers:
                 batch = artifact_groups.get(msg_id) or {}
                 db_artifacts = {marker: batch[marker] for marker in markers if marker in batch}
+                for marker, row in db_artifacts.items():
+                    normalized = _normalized_row(row)
+                    if normalized is not None:
+                        replayable[marker] = normalized
                 (
                     _,
                     orphaned_call_ids,
                     orphaned_output_ids,
-                ) = _classify_function_call_artifacts(db_artifacts)
+                ) = _classify_function_call_artifacts(replayable)
                 if orphaned_call_ids:
                     logger.debug(
                         "Dropping %d persisted function_call artifact(s) missing outputs (chat_id=%s message_id=%s call_ids=%s)",
@@ -2439,7 +2680,7 @@ async def transform_messages_to_input(
                         and chat_id
                     ):
                         replayed_reasoning_refs.append((chat_id, segment["marker"]))
-                    item = normalize_persisted_item(artifact_payload)
+                    item = replayable.get(segment["marker"])
                     if item is not None:
                         item_type = ((item.get("type") or "").lower())
                         if item_type in _NON_REPLAYABLE_TOOL_ARTIFACTS:
@@ -2563,8 +2804,24 @@ async def transform_messages_to_input(
                 )
 
     if _deferred_tool_pictures:
-        openai_input.append(_tool_images_message(_deferred_tool_pictures))
+        message = _tool_images_message(
+            _deferred_tool_pictures,
+            max_inline_bytes=max_inline_bytes,
+            allow_insecure=pipe._multimodal_handler._is_insecure_http_allowed,
+        )
+        if message is not None:
+            openai_input.append(message)
         _deferred_tool_pictures.clear()
+    if _deferred_tool_refusals:
+        for url, reason, cause in _deferred_tool_refusals:
+            pipe.logger.warning(
+                "Not forwarding a tool's picture (%s): %s [cause=%s]",
+                loggable_link(url), reason, cause,
+            )
+        await pipe._event_emitter_handler._emit_status(
+            event_emitter, _tool_picture_notice(_deferred_tool_refusals), done=False,
+        )
+        _deferred_tool_refusals.clear()
 
     if missing_artifact_markers:
         distinct_missing = sorted(set(missing_artifact_markers))
@@ -2576,6 +2833,13 @@ async def transform_messages_to_input(
             chat_id,
             distinct_missing,
         )
+
+    for item_out, destinations in lift_candidates:
+        for destination in destinations:
+            if destination in pictures_in_request:
+                item_out["content"][0]["text"] = item_out["content"][0]["text"].replace(
+                    destination, _LIFTED_TEXT_IMAGE_PLACEHOLDER
+                )
 
     openai_input = _reinterleave_reasoning_by_anchor(openai_input)
 

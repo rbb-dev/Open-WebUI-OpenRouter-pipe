@@ -151,7 +151,9 @@ class PipeDashboardPlugin(PluginBase):
                 "closed, including auto-update. The tab also refuses when the stored valve set "
                 "cannot be read at all — the database is unreachable, or the stored set will "
                 "not decrypt under the server's `WEBUI_SECRET_KEY` — and says so rather than "
-                "reporting an admin disable."
+                "reporting an admin disable. It also refuses when the update service is not up "
+                "on this worker yet; the tab says so and retries by itself, and that is not an "
+                "admin disable."
             ),
         )),
         "PIPE_DASHBOARD_UPDATE_SNAPSHOT_KEEP": (int, Field(

@@ -308,7 +308,8 @@ def find_fusion_entry(plugins: Any) -> dict[str, Any] | None:
 
 
 def has_active_fusion_entry(plugins: Any) -> bool:
-    return find_fusion_entry(plugins) is not None
+    entry = find_fusion_entry(plugins)
+    return entry is not None and entry.get("enabled") is not False
 
 
 def resolve_fusion_run(entry: dict[str, Any] | None) -> FusionRunPlan:

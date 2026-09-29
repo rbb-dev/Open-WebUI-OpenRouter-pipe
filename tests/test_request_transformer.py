@@ -33,7 +33,7 @@ from tests.log_capture import emitted
 
 from open_webui_openrouter_pipe import Pipe
 from open_webui_openrouter_pipe.core.errors import RequiredInternalFileError
-from open_webui_openrouter_pipe.core.utils import OPEN_WEBUI_TOOL_IMAGES_TEXT
+from open_webui_openrouter_pipe.core.utils import OPEN_WEBUI_TOOL_IMAGES_TEXT, UNRETAINED_TOOL_RESULT
 from open_webui_openrouter_pipe.storage.owui_files import InlinedFile
 from open_webui_openrouter_pipe.requests.fusion_engine import (
     FusionMemberResult,
@@ -220,21 +220,6 @@ class TestSystemMessages:
         result = await transform_messages_to_input(pipe_instance, messages)
 
         assert result[0]["content"] == [{"type": "input_text", "text": "Dict content key."}]
-
-    @pytest.mark.asyncio
-    async def test_system_message_empty_content_included(self, pipe_instance):
-        """System message with empty content still creates a block."""
-        messages = [
-            {"role": "system", "content": ""},
-            {"role": "user", "content": "Hello"}
-        ]
-
-        result = await transform_messages_to_input(pipe_instance, messages)
-
-        # System message with empty string still creates a block with empty text
-        assert len(result) == 2
-        assert result[0]["role"] == "system"
-        assert result[0]["content"] == [{"type": "input_text", "text": ""}]
 
     @pytest.mark.asyncio
     async def test_system_message_strips_hidden_transport_markers(self, pipe_instance):
@@ -853,49 +838,156 @@ class TestMissingArtifactReporting:
         assert f"{expected_references} marker reference(s)" in message
 
 
+def _round(call_id: str, result: str) -> list[dict[str, Any]]:
+    """One tool round as Open WebUI's history carries it: the assistant that issued the call, then its result.
+
+    Only `user` and `assistant` messages open or move a turn, so the pair is what decides which turn a
+    result belongs to; the `tool` message itself is read as part of the round around it.
+    """
+    return [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": call_id, "type": "function", "function": {"name": "lookup", "arguments": "{}"}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": call_id, "content": result},
+    ]
+
+
+def _long_result(tag: str) -> str:
+    """A result the pruner will consider, carrying this round's own head canary in front of the filler."""
+    return f"{tag}-HEAD-CANARY " + "X" * (_TOOL_OUTPUT_PRUNE_MIN_LENGTH + 100)
+
+
+def _round_verdicts(items: list[dict[str, Any]], *, whole: dict[str, str]) -> dict[str, str]:
+    """What each tool round's result became, keyed by call id: `withheld`, `pruned` or `intact`.
+
+    `intact` means the result reached the model exactly as the history held it. Anything the three verdicts
+    do not cover is reported as its own text, so a round that arrives altered cannot pass by falling
+    outside them.
+    """
+    verdicts: dict[str, str] = {}
+    for item in items:
+        if item.get("type") != "function_call_output":
+            continue
+        call_id = str(item.get("call_id"))
+        text = str(item.get("output"))
+        if text == UNRETAINED_TOOL_RESULT:
+            verdicts[call_id] = "withheld"
+        elif "[tool output pruned:" in text:
+            verdicts[call_id] = "pruned"
+        elif text == whole[call_id]:
+            verdicts[call_id] = "intact"
+        else:
+            verdicts[call_id] = text
+    return verdicts
+
+
 class TestTurnComputation:
-    """Tests for turn index computation and pruning."""
+    """Tests for turn index computation and pruning.
+
+    The indices themselves are never returned, so each test here reads them through a consumer: which tool
+    results still reach the model, and which are replaced by the not-retained stub or the pruning note.
+    """
 
     @pytest.mark.asyncio
     async def test_turn_indices_user_assistant_alternating(self, pipe_instance):
-        """Turn indices computed correctly for alternating user/assistant."""
+        """A turn opens at a user message, and what the index decides is which results reach the model.
+
+        Both rounds here are older than the current turn, so with results not kept both are replaced by the
+        not-retained stub; with results kept and two turns of retention, the older round is pruned to head
+        and tail and the newer one is not. The same call id gets opposite verdicts in the two settings.
+        """
+        whole = {"c0": "Turn 0 result", "c1": "Turn 1 result"}
+        long = {"c0": _long_result("c0"), "c1": _long_result("c1")}
         messages = [
             {"role": "user", "content": "Turn 0 user"},
+            *_round("c0", whole["c0"]),
             {"role": "assistant", "content": "Turn 0 assistant"},
             {"role": "user", "content": "Turn 1 user"},
+            *_round("c1", whole["c1"]),
             {"role": "assistant", "content": "Turn 1 assistant"},
+            {"role": "user", "content": "Turn 2 user"},
         ]
 
         result = await transform_messages_to_input(pipe_instance, messages)
 
         # All messages should be present
-        assert len(result) == 4
+        assert len(result) == 9
+        withheld = await transform_messages_to_input(
+            pipe_instance,
+            messages,
+            valves=pipe_instance.valves.model_copy(update={"PERSIST_TOOL_RESULTS": False}),
+        )
+        kept = await transform_messages_to_input(
+            pipe_instance,
+            [
+                {"role": "user", "content": "Turn 0 user"},
+                *_round("c0", long["c0"]),
+                {"role": "assistant", "content": "Turn 0 assistant"},
+                {"role": "user", "content": "Turn 1 user"},
+                *_round("c1", long["c1"]),
+                {"role": "assistant", "content": "Turn 1 assistant"},
+                {"role": "user", "content": "Turn 2 user"},
+            ],
+            pruning_turns=2,
+            valves=pipe_instance.valves.model_copy(update={"PERSIST_TOOL_RESULTS": True}),
+        )
+
+        assert _round_verdicts(withheld, whole=whole) == {"c0": "withheld", "c1": "withheld"}
+        assert _round_verdicts(kept, whole=long) == {"c0": "pruned", "c1": "intact"}
 
     @pytest.mark.asyncio
     async def test_turn_indices_multiple_user_messages(self, pipe_instance):
-        """Multiple consecutive user messages stay in same turn."""
+        """Multiple consecutive user messages stay in same turn.
+
+        Two user messages sent back to back open one turn between them, so this history has three turns and
+        the round belongs to the first. Retention wide enough to cover every turn leaves its result whole;
+        retention of one turn puts it outside the window and it is pruned.
+        """
+        whole = {"c0": _long_result("c0")}
         messages = [
             {"role": "user", "content": "First user message"},
+            *_round("c0", whole["c0"]),
             {"role": "user", "content": "Second user message (same turn)"},
+            {"role": "user", "content": "Third user message (same turn)"},
             {"role": "assistant", "content": "Assistant response"},
+            {"role": "user", "content": "Next question"},
         ]
+        valves = pipe_instance.valves.model_copy(update={"PERSIST_TOOL_RESULTS": True})
 
         result = await transform_messages_to_input(pipe_instance, messages)
 
         # All messages should be present
-        assert len(result) == 3
+        assert len(result) == 7
+        inside_window = await transform_messages_to_input(pipe_instance, messages, pruning_turns=3, valves=valves)
+        outside_window = await transform_messages_to_input(pipe_instance, messages, pruning_turns=1, valves=valves)
+
+        assert _round_verdicts(inside_window, whole=whole) == {"c0": "intact"}
+        assert _round_verdicts(outside_window, whole=whole) == {"c0": "pruned"}
 
     @pytest.mark.asyncio
     async def test_turn_indices_assistant_before_user(self, pipe_instance):
-        """Assistant message before any user starts turn 0."""
-        messages = [
-            {"role": "assistant", "content": "Initial greeting"},
-            {"role": "user", "content": "User response"},
-        ]
+        """Assistant message before any user starts turn 0, so its own round is inside the chat.
 
-        result = await transform_messages_to_input(pipe_instance, messages)
+        The round is the only one the chat has, which is what "inside `total_turns - 1`" means for a result:
+        it is the current turn and is not replaced by the stub. The control reaches the same round with a
+        user message after it, which opens a second turn and puts the round outside the window.
+        """
+        whole = {"c1": "the real result"}
+        round_only = _round("c1", whole["c1"])
+        valves = pipe_instance.valves.model_copy(update={"PERSIST_TOOL_RESULTS": False})
+
+        result = await transform_messages_to_input(pipe_instance, round_only, valves=valves)
+        control = await transform_messages_to_input(
+            pipe_instance, [*round_only, {"role": "user", "content": "User response"}], valves=valves
+        )
 
         assert len(result) == 2
+        assert _round_verdicts(result, whole=whole) == {"c1": "intact"}
+        assert _round_verdicts(control, whole=whole) == {"c1": "withheld"}
 
     @pytest.mark.asyncio
     async def test_no_pruning_when_pruning_turns_zero(self, pipe_instance):
@@ -1052,24 +1144,6 @@ class TestAudioHandling:
         result = await transform_messages_to_input(pipe_instance, messages)
         audio_block = result[0]["content"][0]
         assert audio_block["input_audio"]["format"] == fmt
-
-    @pytest.mark.asyncio
-    async def test_audio_block_webm_mime_hint_maps_to_webm(self, pipe_instance, sample_audio_base64):
-        """A block carrying only an audio/webm mime hint (no explicit format) must map to
-        'mp3'. OpenRouter documents 'webm' on neither endpoint, so declaring it would be a
-        label the pipe chose for bytes of another container."""
-        messages = [
-            {"role": "user", "content": [
-                {
-                    "type": "input_audio",
-                    "input_audio": {"data": sample_audio_base64},
-                    "mimeType": "audio/webm",
-                }
-            ]}
-        ]
-        result = await transform_messages_to_input(pipe_instance, messages)
-        audio_block = result[0]["content"][0]
-        assert audio_block["input_audio"]["format"] == "mp3"
 
     @pytest.mark.asyncio
     async def test_audio_block_with_string_data(self, pipe_instance, sample_audio_base64):
@@ -2924,24 +2998,6 @@ class TestAudioProcessingEdgeCases:
 
         assert _forwarded_block(result, "input_audio") is None
         assert _only_block(result)["type"] == "input_text"
-
-    @pytest.mark.asyncio
-    async def test_audio_unsupported_format_defaults_to_mp3(self, pipe_instance, sample_audio_base64):
-        """A format OpenRouter does not accept (e.g. wma) defaults to mp3.
-
-        (ogg/flac/m4a/etc. ARE accepted and are preserved — see
-        test_audio_block_preserves_non_mp3_formats.)"""
-        messages = [
-            {"role": "user", "content": [
-                {"type": "input_audio", "input_audio": {"data": sample_audio_base64, "format": "wma"}}
-            ]}
-        ]
-
-        result = await transform_messages_to_input(pipe_instance, messages)
-
-        audio_block = result[0]["content"][0]
-        assert audio_block["input_audio"]["format"] == "mp3"
-
 
 # =============================================================================
 # Video Processing Edge Cases

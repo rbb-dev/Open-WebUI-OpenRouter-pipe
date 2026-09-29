@@ -2469,12 +2469,14 @@ class ArtifactStore:
 
         try:
             pipe = client.pipeline()
+            serialized_by_id: dict[str, str] = {}
             for row in rows:
                 serialized = json.dumps(row, ensure_ascii=False)
+                serialized_by_id[row["id"]] = serialized
                 pipe.rpush(self._redis_pending_key, serialized)
             await _await_if_needed(pipe.execute())
 
-            await self._redis_cache_rows(rows)
+            await self._redis_cache_rows(rows, serialized=serialized_by_id)
             await _await_if_needed(client.publish(_REDIS_FLUSH_CHANNEL, "flush"))
 
             self.logger.debug("Enqueued %d artifacts to Redis pending queue", len(rows))
@@ -2486,7 +2488,13 @@ class ArtifactStore:
             return await self._db_persist_direct(rows)
 
     @timed
-    async def _redis_cache_rows(self, rows: list[dict[str, Any]], *, chat_id: str | None = None) -> None:
+    async def _redis_cache_rows(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        chat_id: str | None = None,
+        serialized: dict[str, str] | None = None,
+    ) -> None:
         if not self._redis_admits_writes():
             return
         client = self._redis_client
@@ -2498,8 +2506,10 @@ class ArtifactStore:
                 cache_key = self._redis_cache_key(row.get("chat_id") or chat_id, row.get("id"))
                 if not cache_key:
                     continue
+                value = (serialized or {}).get(row.get("id", "")) if "payload" in row else None
                 pipe.setex(
-                    cache_key, self.valves.REDIS_CACHE_TTL_SECONDS, json.dumps(row_payload, ensure_ascii=False)
+                    cache_key, self.valves.REDIS_CACHE_TTL_SECONDS,
+                    value if value is not None else json.dumps(row_payload, ensure_ascii=False),
                 )
             await _await_if_needed(pipe.execute())
         except Exception as exc:

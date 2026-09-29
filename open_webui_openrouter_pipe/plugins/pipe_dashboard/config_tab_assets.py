@@ -441,6 +441,7 @@ function refuseSave(btn, names, detail, err){
   if(detail===STORE_UNREADABLE) showConflict(STORE_UNREADABLE_TEXT);
   else if(typeof detail==="string"&&detail.indexOf(STORE_UNREADABLE_KEY)===0) showConflict(STORE_UNREADABLE_KEY_TEXT);
   else if(err) toast("Save failed: nothing was saved — "+(detail||err));
+  else if(detail) toast("Save failed: nothing was saved — "+(typeof detail==="string"?detail:"the server rejected the request"));
   else showConflict();
 }
 function commitSave(){
@@ -457,11 +458,11 @@ function commitSave(){
     const vals=(r.values&&typeof r.values==="object")?r.values:{};
     const notSaved=Array.isArray(r.not_saved)?r.not_saved:[];
     const sec=(r.secrets&&typeof r.secrets==="object")?r.secrets:{};
-    names.forEach(n=>{ const v=byName[n]; if(v&&v.secret){v.secret_set=(edits[n]===null&&v.secret_stored)?v.secret_set:(edits[n]!==null&&notSaved.indexOf(n)<0); const fl=sec[n]; if(fl){v.secret_set=!!fl.set;v.secret_stored=!!fl.stored;}} else if(v){baseline[n]=Object.prototype.hasOwnProperty.call(vals,n)?vals[n]:edits[n];} delete edits[n]; });
+    names.forEach(n=>{ const v=byName[n]; if(v&&v.secret){const fl=sec[n]; if(fl){v.secret_set=!!fl.set;v.secret_stored=!!fl.stored;} else {v.secret_set=(edits[n]===null&&v.secret_stored)?v.secret_set:(edits[n]!==null&&notSaved.indexOf(n)<0);}} else if(v){baseline[n]=Object.prototype.hasOwnProperty.call(vals,n)?vals[n]:edits[n];} delete edits[n]; });
     if(r.rev!=null){REV=r.rev;lastSeenRev=r.rev;}
     inflightSave=false;
     paintDriftNote($("#driftnote"),{drift:driftCache,reset:r.reset});
-    renderResetNote(r.post_reset||[]);
+    renderResetNote(r.reset||[]);
     invalid.clear(); $("#modal").classList.remove("show"); updateBar();
     if(SEL&&byName[SEL])renderDetail(byName[SEL]); buildTree();
     const savedN=(typeof r.saved==="number")?r.saved:names.length;

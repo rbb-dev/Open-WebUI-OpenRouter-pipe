@@ -1046,6 +1046,14 @@ _DOWNGRADE_USER_MESSAGES: dict[str, str] = {
     "frame_over_byte_budget": (
         "One frame of the previous video was too large to send and was left out."
     ),
+    "frame_reencoded_image_jpeg": (
+        "One frame of the previous video was sent as JPEG instead of PNG, because the allowed "
+        "frame image types leave PNG out."
+    ),
+    "frame_reencoded_image_webp": (
+        "One frame of the previous video was sent as WebP instead of PNG, because the allowed "
+        "frame image types leave PNG out."
+    ),
     "dropped_invalid_timestamp": (
         "One requested moment could not be read from the previous video and was left out."
     ),
@@ -1088,17 +1096,77 @@ _DOWNGRADE_USER_MESSAGES: dict[str, str] = {
     ),
     "prior_video_download_failed": "Previous video could not be loaded.",
     "prior_video_index_unresolvable": "Referenced previous video not found.",
-    "prior_video_unauthorized": "Cannot access referenced video (different user).",
     "frame_upload_failed": "Frame could not be uploaded.",
     "thumbnail_generation_failed": "A preview picture for this frame could not be made.",
     "thumbnail_upload_failed": "A preview picture for this frame could not be stored.",
-    "input_reference_target_skipped": "Style reference skipped (not supported by model yet).",
+    "dropped_input_reference_no_frame_support_for_model": (
+        "Style reference skipped (not supported by model yet)."
+    ),
+    "dropped_uploaded_attachment_index": (
+        "That attachment is not on this turn, so the frame it was to supply was left out."
+    ),
+    "retarget_skipped_invalid_index": (
+        "That attachment was no longer on the turn, so its frame was not used."
+    ),
+    "retarget_skipped_non_image_frame": (
+        "That attachment is not a picture, so no frame could be taken from it."
+    ),
+    "dropped_invalid_prior_video_index": (
+        "That previous video is not in this chat, so no frame was taken from it."
+    ),
+    "dropped_first_frame_no_frame_support_for_model": (
+        "This model takes no frames at all, so the first frame you asked for was not used."
+    ),
+    "dropped_last_frame_no_frame_support_for_model": (
+        "This model takes no frames at all, so the last frame you asked for was not used."
+    ),
+    "downgraded_unsupported_target_first_frame_to_input_reference": (
+        "This model cannot take the first frame as an anchor, so it was sent as a "
+        "style reference instead."
+    ),
+    "downgraded_unsupported_target_last_frame_to_input_reference": (
+        "This model cannot take the last frame as an anchor, so it was sent as a "
+        "style reference instead."
+    ),
+    "deduped_duplicate_first_frame_target": (
+        "You asked for the first frame twice, and it is used once."
+    ),
+    "deduped_duplicate_last_frame_target": (
+        "You asked for the last frame twice, and it is used once."
+    ),
     "materialise_failed": "A non-critical step was skipped.",
-    "discarded_classifier_plan_explicit_attachments_present": "Used your uploaded frame instead of an inferred one.",
+    "dropped_prior_video_entries_explicit_attachments_present": (
+        "The frames asked of the previous video were dropped, and your attachments were "
+        "used instead."
+    ),
     "intent_downgraded_due_to_explicit_attachments": "Used your uploaded frame instead of an inferred one.",
+    "image_to_video_without_attachment_downgraded_to_text": (
+        "The attachment this turn was to animate was not there, so the video was made "
+        "from your words alone."
+    ),
+    "forced_empty_frame_plan_for_text_to_video": (
+        "The frames you asked for were not used, so the video was made from your words "
+        "alone."
+    ),
+    "modify_prior_video_dropped_to_text_no_frame_support": (
+        "Your request to change the previous video had no frame left to work from, so "
+        "the new video was made from your words alone."
+    ),
+    "continue_prior_video_dropped_to_text_no_frame_support": (
+        "Your request to continue the previous video had no frame left to work from, so "
+        "the new video was made from your words alone."
+    ),
+    "ambiguous_without_clarification_downgraded_to_text": (
+        "No reference was chosen and no clarifying question was asked, so the video was "
+        "made from your words alone."
+    ),
     "clarification_capped_max_reached": "Proceeding with best-effort interpretation.",
     "frame_plan_dropped_temporary_chat": (
         "This chat cannot hold files, so the previous video's frame was not used."
+    ),
+    "frame_plan_dropped_no_storage_identity": (
+        "This turn has nowhere to store files, so no frame from the previous video was "
+        "used."
     ),
     "frame_plan_capped": (
         f"This request can use at most {_FRAME_PLAN_MAX} reference frames; the rest of "
@@ -1171,6 +1239,8 @@ def should_emit_confirmation_footer(
     if _prompt_text_was_rewritten(intent.prompt, person_prompt_text):
         return True
     if _clarification_was_capped(intent):
+        return True
+    if intent.downgrades:
         return True
     if not intent.frame_plan:
         return False

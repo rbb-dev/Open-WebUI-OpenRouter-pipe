@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -28,6 +29,8 @@ _MAX_CONCURRENT_EXTRACTIONS = 4
 _FFMPEG_TIMEOUT_S = 30.0
 _PROBE_TIMEOUT_S = 10.0
 _END_SEEK_WINDOWS = ("-1", "-5", "-30")
+_END_SEEK_HOP_SECONDS = 1.0
+_END_SEEK_BUDGET_SECONDS = 2 * _FFMPEG_TIMEOUT_S
 _RETRYABLE_FFMPEG_EXITS = frozenset({69})
 _TRACK_LENGTH_TOLERANCE_S = 0.5
 _MAX_SEEK_SECONDS = 1e12
@@ -174,6 +177,16 @@ def _seek_seconds(timestamp_seconds: float) -> str:
     if not math.isfinite(timestamp_seconds):
         return "0"
     return f"{min(max(0.0, timestamp_seconds), _MAX_SEEK_SECONDS):.6f}"
+
+
+def _end_seek_hop_argv() -> list[list[str]]:
+    reach = max(abs(float(w)) for w in _END_SEEK_WINDOWS)
+    hops = math.ceil(reach / _END_SEEK_HOP_SECONDS)
+    return [
+        ["-sseof", f"-{_seek_seconds(k * _END_SEEK_HOP_SECONDS)}",
+         "-t", _seek_seconds(_END_SEEK_HOP_SECONDS)]
+        for k in range(1, hops + 1)
+    ]
 
 
 # -----------------------------------------------------------------------------
@@ -488,14 +501,18 @@ async def _extract_frame_ffmpeg(
         # Input-seeking with -ss past the last frame returns 0 bytes, so to grab
         # the true last frame we seek a short window before EOF, scale, then
         # reverse it — frame 1 of the reversed tail is the last decodable frame.
-        seek_arg_sets = [["-sseof", window] for window in _END_SEEK_WINDOWS]
+        seek_arg_sets = _end_seek_hop_argv()
+        deadline = time.monotonic() + _END_SEEK_BUDGET_SECONDS
         vf = f"scale='min({_MAX_FRAME_WIDTH},iw)':-2,reverse"
     else:
         seek_arg_sets = [["-ss", _seek_seconds(timestamp_seconds)]]
+        deadline = None
         vf = f"scale='min({_MAX_FRAME_WIDTH},iw)':-2"
     last_no_frame: FrameExtractionError | None = None
     walked_past_damage = False
     for seek_args in seek_arg_sets:
+        if deadline is not None and time.monotonic() >= deadline:
+            break
         cmd = [
             ffmpeg_bin,
             "-protocol_whitelist", "file",

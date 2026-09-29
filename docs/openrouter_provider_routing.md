@@ -39,6 +39,8 @@ Provider routing filters support **two visibility modes** that control who can c
 | **User-configurable** | Users (UserValves) | Yes (`toggle=True`) | Let users choose preferences |
 | **Both** | Both (user overrides admin) | Yes | Admin defaults + user choice |
 
+An admin-only row carries `toggle=False`, and Open WebUI runs a filter whose module has no truthy `toggle` on *every* model on the instance rather than only the ones you listed. So a per-slug row that an admin ticks Global stops being per-slug: its provider preferences would apply to every model in the workspace. The pipe writes `is_global: False` on every update to a row it owns, so a Global tick on a routing entry is undone on the next model-list refresh.
+
 When a model appears in **both** `ADMIN_PROVIDER_ROUTING_MODELS` and `USER_PROVIDER_ROUTING_MODELS`, the filter has both `Valves` (admin defaults) and `UserValves` (user overrides), with user settings taking precedence.
 
 Precedence is over *presence*, not value: a user who explicitly sets a switch off, or a ceiling to `0`, overrides the admin's setting rather than being read as "no preference". A value nobody set is simply not sent, so the admin's setting applies.
@@ -109,7 +111,7 @@ Together > OpenAI > Azure
 Together > Azure > OpenAI
 ```
 
-The dropdown labels use provider display names (from OpenRouter's catalog), while the underlying API call uses provider slugs.
+The dropdown labels use provider display names (from OpenRouter's catalog), while the underlying API call uses provider slugs. When two of a model's provider slugs sanitise to the same display name, the later one is shown as `Name (slug)`, so each dropdown entry names exactly one provider.
 
 ### Provider selection
 
@@ -305,11 +307,16 @@ providers is detached and disabled the same way, and is not re-advertised on a l
 pass. The row is not deleted either, so settings survive if providers come back. A
 deactivation the pipe itself performs comes back by itself when providers return; only an
 admin's own hand-switch-off survives the same cycle, and for that one switch it back on in
-the Functions list.
+the Functions list. Such a re-enable is the operator taking the row back: while the model
+is still in the routing valves the row stays on and the pipe writes nothing to it, neither
+`is_active: False` nor a new switch-off stamp, and it holds there on every later pass. Take
+the model out of the routing valves and the pipe retires the row again on the next
+model-list refresh, exactly as it would have done without the re-enable.
 
 Note that the entry may still be visible in the model's filter list while it is inactive.
 Open WebUI applies only the active entries, so a listed-but-inactive provider routing entry
-does nothing until it is switched on again.
+does nothing until it is switched on again. An entry an admin left Global stays in every
+model's Integrations list until the next model-list refresh repairs it.
 
 A row the pipe could not switch on is named in the log with its id, is not attached while it
 is off, and is retried on the next catalog refresh. The retry stops once it succeeds, so a
@@ -349,6 +356,14 @@ carries none. Turning an `AUTO_INSTALL_*` valve off retires only the rows whose 
 names this pipe, so a recordless row is claimed on the first refresh **on which its valve
 is on** and retired only from that refresh on. A copy an admin installed by hand keeps
 no record either, and is never retired.
+
+A row stamped with a *previous* id of this pipe — the pipe function was renamed or
+re-created, so the id changed while the rows kept the old one — is not retired either, and
+nothing on the row says which install wrote it. The refresh names that row and the id it
+carries in the log, once per process, so it can be found; re-publish the model with its
+valve **on** and the row is re-claimed under this copy's id, and the valve then holds on it
+from that refresh on. A second live copy of the pipe produces the same log line, and that
+is expected: the two are the same string on the row.
 ---
 
 ## Troubleshooting

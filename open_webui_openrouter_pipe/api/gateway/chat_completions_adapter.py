@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING, Any, Literal
 
 import aiohttp
@@ -51,6 +51,7 @@ from ..transforms import (
     _filter_openrouter_request,
     _parse_url_citation_annotations,
     _responses_payload_to_chat_completions_payload,
+    _unhandled_citation_types,
 )
 from .responses_adapter import (
     _body_not_an_object,
@@ -70,6 +71,7 @@ if TYPE_CHECKING:
 _CHAT_CHUNK_PARSE_WARN_COOLDOWN_S = 30.0
 _CHAT_SSE_DONE_SENTINEL = b"[DONE]"
 _ARGUMENTS_VALUE_TERMINATORS = frozenset('}]"0123456789eElL')
+_DISC_PREFIX = "pos:"
 _warned_chat_chunk_parse: dict[str, float] = {}
 
 
@@ -89,7 +91,11 @@ def _append_text_field(item: dict, key: str, value: str) -> None:
     item[key] = text
 
 
-def _reasoning_detail_key(detail: dict[str, Any], order_length: int) -> tuple[str, str] | None:
+def _reasoning_detail_key(
+    detail: dict[str, Any],
+    order_length: int,
+    order: Sequence[tuple[str, str]] | None = None,
+) -> tuple[str, str] | None:
     dtype = detail.get("type")
     if not isinstance(dtype, str) or not dtype:
         return None
@@ -99,8 +105,17 @@ def _reasoning_detail_key(detail: dict[str, Any], order_length: int) -> tuple[st
         disc = f"idx:{idx}"
     elif isinstance(did, str) and did.strip():
         disc = did.strip()
+    elif order is None:
+        disc = f"{_DISC_PREFIX}{order_length}"
     else:
-        disc = f"pos:{order_length}"
+        open_key = next(
+            (k for k in reversed(order) if k[0] == dtype and k[1].startswith(_DISC_PREFIX)),
+            None,
+        )
+        disc = (
+            open_key[1] if open_key is not None
+            else f"{_DISC_PREFIX}{order_length}"
+        )
     return (dtype, disc)
 
 
@@ -264,12 +279,14 @@ class ChatCompletionsAdapter:
         assistant_text_parts: list[str] = []
         latest_usage: dict[str, Any] = {}
         seen_citation_urls: set[str] = set()
+        unhandled_citations_signalled = False
         latest_message_annotations: list[dict[str, Any]] = []
         recorded_annotation_urls: set[str] = set()
         recorded_annotation_keys: set[str] = set()
         reasoning_item_id: str | None = None
         reasoning_text_parts: list[str] = []
         reasoning_text_seen = False
+        reasoning_details_seen = False
         reasoning_summary_parts: dict[tuple[str, str], str] = {}
         reasoning_summary_order: list[tuple[str, str]] = []
         reasoning_details_by_key: dict[tuple[str, str], dict[str, Any]] = {}
@@ -430,10 +447,12 @@ class ChatCompletionsAdapter:
 
         def _consume_blob(data_blob: bytes):
             nonlocal received_any, latest_usage, reasoning_item_id, reasoning_text_seen, \
+                reasoning_details_seen, \
                 latest_message_annotations, image_item_id, \
                 image_output_item, images_emitted, refusal_text_seen, provider_refusal_full, \
                 tool_calls_completed, \
-                truncating_reason, delivered_any, saw_choice_chunk, assistant_text_seen
+                truncating_reason, delivered_any, saw_choice_chunk, assistant_text_seen, \
+                unhandled_citations_signalled
             try:
                 chunk_obj = json.loads(data_blob.decode("utf-8"))
             except (RecursionError, UnicodeDecodeError, ValueError) as exc:
@@ -472,6 +491,7 @@ class ChatCompletionsAdapter:
                 for entry in delta_reasoning_details:
                     if not isinstance(entry, dict):
                         continue
+                    reasoning_details_seen = True
                     detail_key = _record_reasoning_detail(entry)
                     rtype = entry.get("type")
                     if not isinstance(rtype, str) or not rtype:
@@ -556,7 +576,11 @@ class ChatCompletionsAdapter:
                     annotations.extend(message_annotations)
                     _record_message_annotations(message_annotations)
                 message_reasoning_details = message_obj.get("reasoning_details")
-                if isinstance(message_reasoning_details, list) and message_reasoning_details:
+                if (
+                    not reasoning_details_seen
+                    and isinstance(message_reasoning_details, list)
+                    and message_reasoning_details
+                ):
                     for entry in message_reasoning_details:
                         if isinstance(entry, dict):
                             _record_reasoning_detail(entry)
@@ -633,6 +657,14 @@ class ChatCompletionsAdapter:
                         images_emitted = True
 
             if annotations:
+                if not unhandled_citations_signalled:
+                    unhandled_types = _unhandled_citation_types(annotations)
+                    if unhandled_types:
+                        unhandled_citations_signalled = True
+                        yield {
+                            "type": "openrouter_pipe.unhandled_citations",
+                            "types": sorted(unhandled_types),
+                        }
                 for url, title, content in _parse_url_citation_annotations(annotations):
                     if url in seen_citation_urls:
                         continue
@@ -721,6 +753,7 @@ class ChatCompletionsAdapter:
                         reasoning_summary_order.clear()
                         reasoning_details_by_key.clear()
                         reasoning_details_order.clear()
+                        reasoning_details_seen = False
                         seen_citation_urls.clear()
                         latest_message_annotations = []
                         recorded_annotation_urls.clear()
@@ -761,6 +794,7 @@ class ChatCompletionsAdapter:
                             )
 
                         buf = bytearray()
+                        scanned = 0
                         event_data_parts: list[bytes] = []
                         done = False
 
@@ -787,7 +821,8 @@ class ChatCompletionsAdapter:
                                 first_chunk_received = True
                                 timing_mark("chat_first_chunk")
                             buf.extend(chunk)
-                            for stripped in _split_sse_lines(buf):
+                            sse_lines, scanned = _split_sse_lines(buf, scanned)
+                            for stripped in sse_lines:
 
                                 if not stripped:
                                     if not event_data_parts:

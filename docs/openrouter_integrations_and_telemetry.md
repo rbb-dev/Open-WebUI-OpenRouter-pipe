@@ -21,7 +21,7 @@ This document covers behaviors that are specific to the OpenRouter Responses API
 ## 2. Request shaping and schema enforcement
 
 ### 2.1 Allowed request fields (OpenRouter Responses allowlist)
-Before sending requests to OpenRouter, the pipe filters request bodies to the allowlist below (`ALLOWED_OPENROUTER_FIELDS`). Any keys not in this list are dropped. Explicit `null` values are also dropped because OpenRouter rejects `null` for optional fields.
+Before sending requests to OpenRouter, the pipe filters request bodies to the allowlist below (`ALLOWED_OPENROUTER_FIELDS`). Any keys not in this list are dropped. Explicit `null` values are also dropped because OpenRouter rejects `null` for optional fields. A key that is on the list can still be rewritten rather than forwarded: `store` is the one such key, and the pipe forces it to `false` (see its row).
 
 | Field | Purpose / notes |
 | --- | --- |
@@ -60,7 +60,7 @@ Before sending requests to OpenRouter, the pipe filters request bodies to the al
 | `prompt_cache_key` | Cache key for prompt caching (OpenRouter extension). |
 | `safety_identifier` | Safety configuration identifier (OpenRouter extension). |
 | `service_tier` | Service tier selection (default: `"auto"`). |
-| `store` | Privacy signal — send `false` to tell the provider not to store your prompt/completion data. OpenRouter only accepts `false` for this field. |
+| `store` | Privacy signal — send `false` to tell the provider not to store your prompt/completion data. OpenRouter only accepts `false` for this field, so the pipe **forces** it: any other value a request body carries is rewritten to `false` before the request is sent, and the first such rewrite in a worker is logged at WARNING naming the field and the substitute. A body that never mentions `store` does not grow the key. |
 | `top_logprobs` | Number of top log probabilities to return (0–20). |
 | `provider` | Provider routing preferences — `only`, `ignore` and `order`. The pipe builds this dict itself from the `openrouter_provider_only` / `_ignore` / `_order` custom parameters described in §2.5. |
 | `route` | Routing strategy, forwarded to OpenRouter. |
@@ -390,7 +390,7 @@ Key valves:
 Open WebUI stores additional per-model UI metadata (capabilities checkboxes and profile images) in its own Models table. This pipe can **automatically sync that metadata** for the OpenRouter models it exposes.
 
 What it syncs (best-effort):
-- `meta.profile_image_url`: downloads the model icon, converts it to **PNG**, and stores it as a `data:image/png;base64,...` data URL (Open WebUI does not process remote image URLs here). The source URL is stamped in the pipe's own metadata under `image_source_url`, alongside the `image_source_kind` recording which of the two sources it was — the frontend catalogue (`frontend`) or the maker's page (`maker`) — so an icon whose source URL has not changed is not downloaded again, and for a model taking its maker's logo the maker's page is not re-fetched either; a row stamped from the frontend catalogue is always re-fetched, so a model whose catalogue icon is retired still reaches its maker's logo. A change to the image at the same URL is therefore not picked up, and a card keeps its old icon — a hand-picked one included — until its source URL changes. The other half of that promise is the catalogue read itself: a model whose catalogue icon is *unreadable this pass* keeps the icon it has, and no maker page is scraped on its behalf, so an outage neither overwrites a stored icon nor costs one scrape per maker. On the first pass after upgrading from a version that did not record the kind, each maker's page is fetched once more and the rows converge again.
+- `meta.profile_image_url`: downloads the model icon — or reads it inline when the catalogue serves it as a `data:` URL, in which case nothing is downloaded — converts it to **PNG**, and stores it as a `data:image/png;base64,...` data URL (Open WebUI does not process remote image URLs here). Either way the icon must be within 2 MiB decoded and 25 Mpx to be stored; an icon over either bound is skipped with a `debug` log. The source URL is stamped in the pipe's own metadata under `image_source_url`, alongside the `image_source_kind` recording which of the two sources it was — the frontend catalogue (`frontend`) or the maker's page (`maker`) — so an icon whose source URL has not changed is not downloaded again, and for a model taking its maker's logo the maker's page is not re-fetched either; a row stamped from the frontend catalogue is always re-fetched, so a model whose catalogue icon is retired still reaches its maker's logo. A change to the image at the same URL is therefore not picked up, and a card keeps its old icon — a hand-picked one included — until its source URL changes. The other half of that promise is the catalogue read itself: a model whose catalogue icon is *unreadable this pass* keeps the icon it has, and no maker page is scraped on its behalf, so an outage neither overwrites a stored icon nor costs one scrape per maker. On the first pass after upgrading from a version that did not record the kind, each maker's page is fetched once more and the rows converge again.
   - SVG icons are rasterized to PNG (requires `cairosvg`).
   - Other images are converted to PNG (requires `Pillow`).
 - `meta.description`: writes the model’s user-facing description from OpenRouter’s `/models` catalog when present.
@@ -472,7 +472,7 @@ Summed:
 | `cost`, `total_cost`, `input_cost`, `output_cost`, `prompt_cost`, `completion_cost` | Per-call money quantities. |
 | `prompt_tokens`, `completion_tokens` | The OpenRouter spellings of the first two, summed on their own account. |
 | `input_tokens_details`, `output_tokens_details`, `prompt_tokens_details`, `completion_tokens_details` | The `*_tokens_details` maps are merged key by key and their numbers added -- this is what makes `cached_tokens` and `reasoning_tokens` cumulative. |
-| `cache_discount` | A per-response money quantity, not a rate. The pipe reads it from the *merged* accumulator, so dropping it would under-report the Usage tab's `cache_savings` card by construction. |
+| `cache_discount` | A per-response money quantity, not a rate, and **signed**: a provider that reports a cache *write* sends a negative value, because the write costs more than a plain prompt. Nothing downstream may take its absolute value — the Usage tab floors this at zero, so the charge appears once, in `cost`, and never as a saving. The pipe reads it from the *merged* accumulator, so dropping it would under-report the Usage tab's `cache_savings` card by construction. |
 | `turn_count`, `function_call_count` | Written once per generation before the merge; summing them gives the turn's generation and tool-call counts. |
 
 Last-wins (the incoming value replaces the accumulated one):

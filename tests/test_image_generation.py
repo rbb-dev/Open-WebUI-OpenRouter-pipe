@@ -16,9 +16,10 @@ import inspect
 import json
 import re
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
-from typing import Any, get_args
+from typing import Any, Iterator, get_args
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import logging
@@ -1801,7 +1802,7 @@ def test_every_control_the_filter_shows_is_a_control_that_writes(fixture, model_
 
     A passthrough the renderer knows published values for is drawn as a choice list, not
     a text box, so the value put through it has to come from that list. Free text was
-    typed here for every passthrough alike, which the six OpenAI models drop on the floor
+    typed here for every passthrough alike, which the eight OpenAI models drop on the floor
     as the invalid choice it is -- reading like a filter that ignores its own control.
     """
     from open_webui_openrouter_pipe.filters.image_filter_renderer import (

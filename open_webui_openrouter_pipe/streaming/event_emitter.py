@@ -748,16 +748,19 @@ class EventEmitterHandler:
                 return await self._put_middleware_stream_item(job, stream_queue, event)
 
             if etype == "chat:message":
-                delta_text, answer_already_on_the_queue = middleware_message_delta(
+                delta_text, next_on_queue = middleware_message_delta(
                     answer_already_on_the_queue, data.get("delta"), data.get("content")
                 )
-                if isinstance(delta_text, str) and delta_text:
-                    return await self._put_middleware_stream_item(
-                        job,
-                        stream_queue,
-                        openai_chat_chunk_message_template(model_id, delta_text),
-                    )
-                return
+                if not (isinstance(delta_text, str) and delta_text):
+                    return None
+                if await self._put_middleware_stream_item(
+                    job,
+                    stream_queue,
+                    openai_chat_chunk_message_template(model_id, delta_text),
+                ):
+                    answer_already_on_the_queue = next_on_queue
+                    return True
+                return False
 
             if etype == "chat:message:delta":
                 delta_text = data.get("content")

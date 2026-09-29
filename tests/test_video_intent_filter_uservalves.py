@@ -394,8 +394,8 @@ class TestConsumerWiring:
         base = dict(
             VIDEO_INTENT_ENABLED=True,
             VIDEO_INTENT_SKIP_WHEN_EMPTY_CHAT=True,
-            VIDEO_INTENT_MAX_CALLS_PER_CHAT=0,
-            VIDEO_INTENT_MAX_CALLS_PER_USER_DAY=0,
+            VIDEO_INTENT_MAX_TURNS_PER_CHAT=0,
+            VIDEO_INTENT_MAX_TURNS_PER_USER_DAY=0,
         )
         base.update(kw)
         return SimpleNamespace(**base)

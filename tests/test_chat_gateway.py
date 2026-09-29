@@ -3723,11 +3723,18 @@ def test_responses_payload_to_chat_preserves_cache_control() -> None:
     assert chat["model"] == payload["model"]
     assert chat["stream"] is True
     assert chat["messages"][0]["role"] == "system"
-    assert chat["messages"][0]["content"][0]["type"] == "text"
-    assert chat["messages"][0]["content"][0]["text"] == "SYSTEM INSTRUCTIONS"
-    assert chat["messages"][0]["content"][2]["type"] == "text"
-    assert chat["messages"][0]["content"][2]["text"] == "HUGE TEXT BODY"
-    assert chat["messages"][0]["content"][2]["cache_control"] == {"type": "ephemeral"}
+    content = chat["messages"][0]["content"]
+    assert content[0]["type"] == "text"
+    # The instructions fold into the first usable text block rather than preceding it as
+    # a block of their own, so the cached block is content[0] and the caller's text is
+    # the folded head of it. Located BY CONTENT, not by index: the index moved when the
+    # empty separator block went away, and a renumbering here would pin the numbering
+    # rather than the property.
+    assert content[0]["text"] == "SYSTEM INSTRUCTIONS\n\nHUGE TEXT BODY"
+    cached = next(b for b in content if b.get("cache_control"))
+    assert cached["type"] == "text"
+    assert cached["text"] == "SYSTEM INSTRUCTIONS\n\nHUGE TEXT BODY"
+    assert cached["cache_control"] == {"type": "ephemeral"}
 
 
 def test_responses_payload_to_chat_rounds_top_k_for_chat_completions() -> None:

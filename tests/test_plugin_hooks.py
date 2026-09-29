@@ -357,6 +357,17 @@ async def test_a_failing_filter_install_is_reported_once_across_repeated_pipes_c
         raise RuntimeError("catalog table is read-only")
 
     cast(Any, catalog_mgr).prune_stale_openrouter_filter_ids = _explode_async
+
+    # `_keep_web_tools_filters_in_step` answers its own filter-manager failures (the
+    # web_tools and web_tools_repair sites), so the pipes() arm around it only runs when
+    # the pass itself raises. The real pass runs first, so those two sites stay driven.
+    _real_in_step = pipe._keep_web_tools_filters_in_step
+
+    async def _in_step_then_raise(*args, **kwargs):
+        await _real_in_step(*args, **kwargs)
+        raise RuntimeError("filter table is read-only")
+
+    cast(Any, pipe)._keep_web_tools_filters_in_step = _in_step_then_raise
     cast(Any, pipe)._stale_filter_ids_pruned = False
 
     # The routing row probe opens its own handle on the filter table (it has to see
@@ -579,7 +590,8 @@ async def test_a_failing_filter_install_is_reported_once_across_repeated_pipes_c
     # observed one, so the check passes and proves nothing. Discovery is still used --
     # below -- to catch a site ADDED without a driver, which a literal cannot see.
     expected_sites = {
-        "catalog_refresh", "catalog_cached", "web_tools", "web_tools_repair", "fusion", "image_gen",
+        "catalog_refresh", "catalog_cached", "web_tools", "web_tools_repair", "web_tools_in_step",
+        "fusion", "image_gen",
         "image_gen_model",
         "video", "direct_uploads", "provider_routing", "provider_routing_probe", "stale_prune",
         "on_models",

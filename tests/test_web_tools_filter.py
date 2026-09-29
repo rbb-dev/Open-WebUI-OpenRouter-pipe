@@ -14,7 +14,10 @@ import ast
 import asyncio
 import logging
 import re
+import contextvars
+import gc
 import sys
+import weakref
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -23,16 +26,22 @@ import aiohttp
 import pytest
 from aioresponses import aioresponses
 
+from open_webui_openrouter_pipe.core import timing_logger
 from open_webui_openrouter_pipe.core.config import (
     _OPENROUTER_FUSION_FILTER_MARKER,
     _OPENROUTER_IMAGE_GEN_FILTER_MARKER,
     _OPENROUTER_VIDEO_GEN_FILTER_MARKER,
     _OPENROUTER_WEB_TOOLS_FILTER_MARKER,
+    OWUI_CHAT_ID,
+    OWUI_REQUEST,
 )
+from open_webui_openrouter_pipe.core.logging_system import SessionLogger
+from open_webui_openrouter_pipe.core.utils import CONTINUED_REPLY
 from open_webui_openrouter_pipe.filters.filter_manager import (
     _PIPE_INSTALLED_META_KEY,
     FilterManager,
 )
+from open_webui_openrouter_pipe.models.registry import ModelFamily, OpenRouterModelRegistry
 
 _STANDALONE_PATH = Path(__file__).resolve().parents[1] / "filters" / "openrouter_web_tools.py"
 

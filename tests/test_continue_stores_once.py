@@ -75,7 +75,7 @@ def _answer_steps(text: str) -> list[tuple[float, dict[str, Any]]]:
 
 async def _published(
     pipe, monkeypatch, *, continued: bool, steps, body_input, open_webui_runs_tools=False, on_event=None,
-    handing_back=False,
+    handing_back=False, expect_publish: bool = True,
 ):
     clock = _install_clock(monkeypatch)
     monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_timed_stream(steps, clock))
@@ -108,6 +108,11 @@ async def _published(
     if handing_back:
         assert not completions, "a response that hands its calls to Open WebUI published a closing record"
         return emitted
+    if not expect_publish:
+        # The shape, not a skip: a turn whose terminal output is empty emits no closing record at all, so a
+        # `completions[-1]` read here would be the one thing this arm exists to show does not happen.
+        assert completions == [], "a turn that published no terminal output still emitted a closing record"
+        return []
     assert completions, "the turn published no terminal output"
     return (completions[-1].get("response") or {}).get("output") or []
 
@@ -476,9 +481,19 @@ async def _pipeline_generation_with_a_persisted_tool_round(pipe, monkeypatch, pe
 async def test_a_continue_keeps_the_stored_answer_when_the_pipes_own_tool_results_replay_into_the_request(
     monkeypatch, pipe_instance_async
 ):
-    """A Continue replaces the stored output with what the pipe publishes, so the pipe must still
-    publish the stored answer when the request carries tool results the stored output lacks because they came back
-    from the pipe's own rows rather than from an Open WebUI tool round."""
+    """The pipe republishes nothing here; the stored answer survives because Open WebUI puts it back.
+
+    A Continue is saved as `full_output(prior_output, output)`, which concatenates the
+    stored items with whatever the pipe publishes. Every earlier item therefore survives
+    whatever the pipe sends, and the pipe must not send it: republishing would fold
+    `"Part one."` onto itself. The `"Part one."` these assertions find arrives through the
+    `stored` the test handed the fake, not through the pipe.
+
+    The request here carries tool results the stored output lacks, because with cards off
+    the round was hidden from the user and came back from the pipe's own rows rather than
+    from an Open WebUI tool round. That changes what the request carries, not who
+    republishes the answer.
+    """
     pipe = pipe_instance_async
     persisted: dict[str, dict] = {}
     _select_open_webui(monkeypatch, stored=[])
@@ -506,6 +521,11 @@ async def test_a_continue_keeps_the_stored_answer_when_the_pipes_own_tool_result
     _select_open_webui(monkeypatch, stored=stored)
     published = await _published(
         pipe, monkeypatch, continued=True, steps=_answer_steps("Part two."), body_input=continue_input
+    )
+
+    assert "Part one." not in _texts(published), (
+        f"the pipe republished the stored answer: {published}. Open WebUI folds the stored "
+        "prefix back in itself on a continue, so this turn's published items are its own"
     )
 
     after: list[dict[str, Any]] = _stored_after_one_call(stored, published, continued=True)

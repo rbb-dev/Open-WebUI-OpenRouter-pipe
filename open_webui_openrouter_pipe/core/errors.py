@@ -270,7 +270,7 @@ def _classify_retryable_openrouter_error(exc: BaseException | None) -> tuple[boo
     if not isinstance(status, int) or isinstance(status, bool):
         return False, None
     if status >= 500 or status == 429:
-        if is_sign_in_failure(exc):
+        if _carries_a_content_decision(exc):
             return False, None
         return True, _resolve_retry_after_seconds(getattr(exc, "metadata", None))
     return False, None
@@ -483,6 +483,15 @@ def _is_content_decision(metadata: Any) -> bool:
     return any(meta.get(marker) for marker in _CONTENT_DECISION_MARKERS)
 
 
+def _carries_a_content_decision(exc: Any) -> bool:
+    metadata = getattr(exc, "metadata", None) or {}
+    return bool(
+        getattr(exc, "moderation_reasons", None)
+        or getattr(exc, "flagged_input", None)
+        or _is_content_decision(metadata)
+    )
+
+
 def _resolved_error_status(
     code: Any,
     error_type: str,
@@ -635,12 +644,7 @@ def is_sign_in_failure(exc: Any) -> bool:
         return True
     if status != 403:
         return False
-    metadata = getattr(exc, "metadata", None) or {}
-    if (
-        getattr(exc, "moderation_reasons", None)
-        or getattr(exc, "flagged_input", None)
-        or _is_content_decision(metadata)
-    ):
+    if _carries_a_content_decision(exc):
         return False
     kind = (getattr(exc, "openrouter_error_type", None) or "").strip().lower()
     if kind:

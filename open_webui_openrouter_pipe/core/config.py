@@ -158,17 +158,19 @@ _RAW_REPLAYED_SERVER_TOOLS = frozenset(
     }
 )
 
+_EMPTY_TOOL_SCHEMA: dict[str, Any] = {"type": "object", "properties": {}}
+
 _REMOTE_FILE_MAX_SIZE_DEFAULT_MB = 50
 _REMOTE_FILE_MAX_SIZE_MAX_MB = 500
 _INTERNAL_FILE_ID_PATTERN = re.compile(r"/files/([A-Za-z0-9-]+)(?:/|\\?|$)")
 _MARKDOWN_IMAGE_RE = re.compile(
-    r"!\[[^\]]*\]\(\s*(?:<(?P<angled>[^<>\n]*)>|(?P<bare>(?:(?!\n[\"'(])[^ \t()])*(?:\((?:(?!\n[\"'(])[^ \t()])*\)(?:(?!\n[\"'(])[^ \t()])*)*))"
+    r"!\[[^\]]*+\]\(\s*(?:<(?P<angled>[^<>\n]*)>|(?P<bare>(?:(?!\n[\"'(])[^ \t()])*(?:\((?:(?!\n[\"'(])[^ \t()])*\)(?:(?!\n[\"'(])[^ \t()])*)*))"
     r"(?:\s+(?:\"[^\"]*\"|'[^']*'|\([^()]*\)))?\s*\)"
 )
 
 
 def markdown_image_destinations(text: str) -> list[str]:
-    if not isinstance(text, str):
+    if not isinstance(text, str) or "](" not in text:
         return []
     return [
         destination
@@ -864,6 +866,11 @@ _ROUTING_ADMIN_OFF_STAYS_OFF = (
     "is listed again. A write Open WebUI itself refused is the one thing the pipe does "
     "retry, and only until it lands."
 )
+_ROUTING_ADMIN_RE_ENABLED_STAYS_ON = (
+    " An entry you switch back on in the same list while its model is still listed "
+    "stays on, and the pipe stops writing to it: no switching off, no re-stamping. "
+    "Take the model out of the routing lists and the pipe retires the entry again."
+)
 
 
 class Valves(BaseModel):
@@ -948,9 +955,11 @@ class Valves(BaseModel):
             "Comma-separated glob patterns of model ids that must use /chat/completions "
             "(e.g. 'anthropic/*, openai/gpt-4.1-mini'). Matches both slash and dotted model ids. "
             "Globs are literal about the `~` prefix; add '~anthropic/*' to cover router aliases. "
-            "A match on a Fusion model is not overridden: the valve holds and the request is refused "
-            "with the endpoint-conflict card, because the Fusion plugin entry cannot travel to "
-            "/chat/completions."
+            "A match on a Fusion model is not overridden: on the hosted OpenRouter backend the valve "
+            "holds and the request is refused with the endpoint-conflict card, because the Fusion "
+            "plugin entry cannot travel to /chat/completions. On the internal backend the Fusion panel "
+            "runs in the pipe and the model never reaches OpenRouter, so there is no conflict to refuse "
+            "and the turn runs."
         ),
     )
     FORCE_RESPONSES_MODELS: str = Field(
@@ -959,7 +968,9 @@ class Valves(BaseModel):
             "Comma-separated glob patterns of model ids that must use /responses "
             "(overrides FORCE_CHAT_COMPLETIONS_MODELS when both match). A model pinned "
             "here is not retried on /chat/completions when /responses fails; the error "
-            "surfaces instead."
+            "surfaces instead. Housekeeping task requests — chat titles, summaries, tags — "
+            "are exempt and still fall back, so a pinned model never turns a title into an "
+            "error string."
         ),
     )
     AUTO_FALLBACK_CHAT_COMPLETIONS: bool = Field(
@@ -973,7 +984,9 @@ class Valves(BaseModel):
             "TRANSIENT_RETRY_MAX_ATTEMPTS; otherwise, and once those tries are spent, its message is "
             "shown straight away, appended below whatever answer was already streamed. The retry is "
             "skipped for a model pinned by FORCE_RESPONSES_MODELS to /responses, and its error "
-            "surfaces; a model that merely sits on the responses default is still retried. A Fusion "
+            "surfaces; a model that merely sits on the responses default is still retried. Housekeeping "
+            "task requests — chat titles, summaries, tags — are exempt and still fall back, so a pinned "
+            "model never turns a title into an error string. A Fusion "
             "model is not skipped: it is answered as a normal completion, without its Fusion panel, "
             "and a warning names the model and the fallback."
         ),
@@ -1050,6 +1063,8 @@ class Valves(BaseModel):
             "How many extra tries a chat request to OpenRouter gets after a temporary failure "
             "(HTTP 429, HTTP 5xx, a 408 that names the provider-timeout kind, the same failure reported "
             "inside a reply, or a connection that drops or times out), on top of the first try. "
+            "A body carrying a content decision is the exception and is never retried, whatever status it "
+            "arrived on, because re-sending a prompt a guardrail declined cannot unblock it. "
             "2 means at most three requests in all. 0 makes a "
             "temporary failure final: the error is shown at once and nothing is retried. These are the "
             "chat request valves and are independent of the remote download valves above; one failed "
@@ -1072,13 +1087,13 @@ class Valves(BaseModel):
         default=_REMOTE_FILE_MAX_SIZE_DEFAULT_MB,
         ge=1,
         le=_REMOTE_FILE_MAX_SIZE_MAX_MB,
-        description="Maximum size in MB for downloading a picture from a link: one in the conversation, or one a model returns for a picture it generated. A picture over this limit is not downloaded. A file link a person attaches is passed on to the provider without being downloaded, so this limit does not apply to it. When Open WebUI RAG is enabled, the pipe also holds downloads to the cap the Open WebUI admin last saved under Admin > Settings > Documents > Max Upload Size. That setting is read from Open WebUI's own store, so changing it takes effect without restarting anything. Normally the smaller of the two wins, with one exception: this valve left at its 50 MB default gives way to a larger admin cap, clipped to the pipe's own 500 MB ceiling. Set it away from its default to keep full control in both directions; a valve off its default is never overridden. Clearing the admin's box lifts Open WebUI's cap, not the pipe's, so with this valve at its 50 MB default a cleared box still refuses anything over 50 MB. An environment variable set before Open WebUI first started is used only if that store cannot be read, so a RAG_FILE_MAX_SIZE value set after Open WebUI's first boot no longer has any effect: the stored admin value wins.",
+        description="Maximum size in MB for downloading a picture from a link: one in the conversation, or one a model returns for a picture it generated. A picture over this limit is not downloaded. A file link a person attaches is not downloaded, so this limit does not apply to it; it is passed on to the provider instead, subject to the SSRF valve and the plaintext-HTTP policy, which can refuse it first. When Open WebUI RAG is enabled, the pipe also holds downloads to the cap the Open WebUI admin last saved under Admin > Settings > Documents > Max Upload Size. That setting is read from Open WebUI's own store, so changing it takes effect without restarting anything. Normally the smaller of the two wins, with one exception: this valve left at its 50 MB default gives way to a larger admin cap, clipped to the pipe's own 500 MB ceiling. Set it away from its default to keep full control in both directions; a valve off its default is never overridden. Clearing the admin's box lifts Open WebUI's cap, not the pipe's, so with this valve at its 50 MB default a cleared box still refuses anything over 50 MB. An environment variable set before Open WebUI first started is used only if that store cannot be read, so a RAG_FILE_MAX_SIZE value set after Open WebUI's first boot no longer has any effect: the stored admin value wins.",
     )
     BASE64_MAX_SIZE_MB: int = Field(
         default=50,
         ge=1,
         le=500,
-        description="Maximum size in MB for inline files, images and audio. A base64 payload is measured as its decoded size; any other inline payload is measured as its own length. Larger payloads are dropped, to prevent memory issues and excessive HTTP request sizes: an uploaded payload is left out with a note, and a picture inside one generated-image reply is dropped from that reply and named in the chat, while the pictures in that reply that did fit are still delivered. It bounds a tool's file result too, which is then neither stored nor shown.",
+        description="Maximum size in MB for inline files, images and audio. A base64 payload is measured as its decoded size; any other inline payload is measured as its own length. Larger payloads are dropped, to prevent memory issues and excessive HTTP request sizes: an uploaded payload is left out with a note, and a picture inside one generated-image reply is dropped from that reply and named in the chat, while the pictures in that reply that did fit are still delivered. It bounds a tool's file result too, which is then neither stored nor shown. A picture a tool returns as an inline `data:` URL is capped here too, where a file link a person attaches is not: the pipe forwards such a picture as it stands rather than downloading it, so the cap is what stands between it and the request.",
     )
     IMAGE_UPLOAD_CHUNK_BYTES: int = Field(
         default=1 * 1024 * 1024,
@@ -1106,11 +1121,11 @@ class Valves(BaseModel):
     )
     ENABLE_SSRF_PROTECTION: bool = Field(
         default=True,
-        description="Enable SSRF (Server-Side Request Forgery) protection for remote URL downloads. When enabled, a remote address is fetched only if it is provably globally routable, so loopback, 10.x/172.16.x/192.168.x, link-local, carrier-grade NAT (100.64.0.0/10 -- also Tailscale's default range) and IPv6 site-local are all refused, as is any range the registries do not mark as globally routable. IPv6 addresses that wrap an IPv4 one (::ffff:, 6to4, Teredo, NAT64) are judged on the address they carry. A refused address is not sent either: the person sees `Images: skipped N (could not be fetched, so it was not sent).` A public `https://` link the pipe merely failed to download is still forwarded for the provider to fetch. It also gates every non-`data:` video link before it is passed on, whichever way it is written: the link is not downloaded, and the check is on the address the provider would reach, so a video link is refused when its host is not public and a link whose scheme is neither `http` nor `https` is refused outright. A failed download costs one further address check, so an unreachable resolver can add up to two `ADDRESS_CHECK_SECONDS` per picture, sequentially. A turn's remote video links draw on the same request-wide `ADDRESS_CHECK_BUDGET_SECONDS` as its pictures, so a message with many links is bounded by that budget rather than by one check per link, and a video link that is left with no time is not sent. The address checks run on a dedicated bounded thread pool, so a stalled resolver is bounded there rather than queued behind everything else the process does; with this valve on, a check that cannot start inside its own budget reaches no verdict at all: on a download or generation path that still sends no bytes, while a stalled re-check of a picture the pipe already holds no longer drops the stored copy. The pool's width follows `MAX_CONCURRENT_REQUESTS` and is re-made when that valve changes, in both directions. HTTP is disabled by default; see ALLOW_INSECURE_HTTP_* for explicit opt-in.",
+description="Enable SSRF (Server-Side Request Forgery) protection for remote URL downloads. When enabled, a remote address is fetched only if it is provably globally routable, so loopback, 10.x/172.16.x/192.168.x, link-local, carrier-grade NAT (100.64.0.0/10 -- also Tailscale's default range) and IPv6 site-local are all refused, as is any range the registries do not mark as globally routable. IPv6 addresses that wrap an IPv4 one (::ffff:, 6to4, Teredo, NAT64) are judged on the address they carry. A refused address is not sent either: the person sees `Images: skipped N (could not be fetched, so it was not sent).` A picture a tool result carries as a link is covered by that too: the address the provider would reach is checked before the link is forwarded, and a refused one is neither forwarded nor counted towards the turn's pictures. A public `https://` link the pipe merely failed to download is still forwarded for the provider to fetch. It also gates every non-`data:` video link before it is passed on, whichever way it is written: the link is not downloaded, and the check is on the address the provider would reach, so a video link is refused when its host is not public and a link whose scheme is neither `http` nor `https` is refused outright. Every link in `file_data` or `file_url` that the provider would have to fetch is gated the same way, in both fields, and it is not downloaded either: a file link on a non-public host is refused, the person sees `Files: skipped N (...).`, and a block that also carries a `file_id` keeps that id and drops only the refused field. An inline `data:` URL, raw base64 in `file_data` and an Open WebUI file path are not links and are never checked. Those file checks are not on the request-wide budget, so N attached links cost up to N x `ADDRESS_CHECK_SECONDS` serially, before the first byte goes upstream. A deployment whose users attach documents by link to an internal host is refused with this valve on, exactly as pictures and videos are; set it to False to restore the old forwarding, which also restores the plaintext exposure this valve exists to close. A failed download costs one further address check, so an unreachable resolver can add up to two `ADDRESS_CHECK_SECONDS` per picture, sequentially. A turn's remote video links draw on the same request-wide `ADDRESS_CHECK_BUDGET_SECONDS` as its pictures, so a message with many links is bounded by that budget rather than by one check per link, and a video link that is left with no time is not sent. The address checks run on a dedicated bounded thread pool, so a stalled resolver is bounded there rather than queued behind everything else the process does; with this valve on, a check that cannot start inside its own budget reaches no verdict at all: on a download or generation path that still sends no bytes, while a stalled re-check of a picture the pipe already holds no longer drops the stored copy. The pool's width follows `MAX_CONCURRENT_REQUESTS` and is re-made when that valve changes, in both directions. HTTP is disabled by default; see ALLOW_INSECURE_HTTP_* for explicit opt-in.",
     )
     ALLOW_INSECURE_HTTP: bool = Field(
         default=False,
-        description="Allow plaintext HTTP remote URLs when explicitly enabled. HTTP is disabled by default; only enable with a narrow allowlist in ALLOW_INSECURE_HTTP_HOSTS. A refused picture is reported once, as an 'Images: skipped N (...)' status naming both valves, and a turn whose only content was that picture is sent as a placeholder naming the reason.",
+        description="Allow plaintext HTTP remote URLs when explicitly enabled. HTTP is disabled by default; only enable with a narrow allowlist in ALLOW_INSECURE_HTTP_HOSTS. It covers a picture a tool result carries as a link in the same way as one the person attached. A refused picture is reported once, as an 'Images: skipped N (...)' status naming both valves, and a turn whose only content was that picture is sent as a placeholder naming the reason.",
     )
     ALLOW_INSECURE_HTTP_HOSTS: str = Field(
         default="",
@@ -1279,9 +1294,12 @@ class Valves(BaseModel):
         title="Thinking output",
         description=(
             "Controls where in-progress thinking is surfaced while a response is being generated. "
-            "'open_webui' streams reasoning in the Open WebUI reasoning box only; "
+            "'open_webui' streams reasoning in the Open WebUI reasoning box and nowhere else; "
             "'status' shows thinking only as status messages; "
-            "'both' enables both outputs."
+            "'both' enables both outputs. "
+            "The pipe's own short progress lines above a first reply - 'Thinking…' and the few that follow it - "
+            "are sent at every setting of this valve, in every mode: they are the pipe saying the model has "
+            "started, not a report of its thinking, and this valve does not move them."
         ),
     )
     ENABLE_ANTHROPIC_INTERLEAVED_THINKING: bool = Field(
@@ -1419,7 +1437,7 @@ class Valves(BaseModel):
             "the pipe runs a non-streamed reply's calls and a Fusion panel model's calls in either mode. A tool the "
             "request itself declared with nothing behind it goes back to its sender instead. With 'ask' tool approval, "
             "a streamed saved chat hands every call to Open WebUI in both modes. With legacy function calling, no "
-            "Open WebUI tool is offered. A model the catalogue rules out for tool use is sent no function tools."
+            "Open WebUI tool is offered. A model the catalogue rules out for tool use is sent none of the tools Open WebUI or this pipe added; a tool the request itself declared is the caller's and goes out as sent, with its `tool_choice` beside it."
         ),
     )
     SHOW_TOOL_CARDS: bool = Field(
@@ -1438,10 +1456,10 @@ class Valves(BaseModel):
         description=(
             "When True (default), the reasoning and tool records of a call that carries no `chat_id` are held in "
             "memory for the length of that request only, keyed on the request id, and are never written to the "
-            "database. Off by default it does nothing for existing callers, because such a call writes nothing "
+            "database. Off, it does nothing for existing callers, because such a call writes nothing "
             "either way; the difference is that on, the records exist for the request and are dropped when it ends. "
-            "The same idle and size limits apply as for a temporary chat's held reply (REPLY_MEMORY_IDLE_SECONDS, "
-            "REPLY_MEMORY_MAX_BYTES), and they are a separate pool, so the total memory ceiling is twice one pool. "
+            "The same limits apply as for a temporary chat's held reply - 15 minutes idle and 64 MiB per pool, "
+            "fixed rather than set here - and this is a pool of its own, so the total memory ceiling is twice one pool. "
             "A temporary chat never opens this bucket, a Fusion inner call never does either, and a call that sends "
             "`parent_id: null` is given a real chat id by Open WebUI, so that shape is not covered here. "
             "No marker line is ever added to the caller's response, so a program's bytes in and bytes out are "
@@ -1712,12 +1730,12 @@ class Valves(BaseModel):
     STREAMING_CHUNK_QUEUE_WARN_SIZE: int = Field(
         default=1000,
         ge=100,
-        description="Log a warning when the raw-chunk backlog reaches this many chunks, so an unbounded buffer is still watched. The minimum of 100 avoids flooding the log under sustained high load; raise it on busy servers.",
+        description="Log a warning when the raw-chunk backlog reaches this many chunks, so an unbounded buffer is still watched. What bounds those log records is time rather than this threshold: the queue logs one `WARNING` at the crossing and repeats it at `DEBUG` at most once every second while the backlog stays high, so a long turn costs a handful of lines instead of one per buffered chunk, and raising this threshold does not reduce that volume. The minimum of 100 keeps the crossing a sign of real pressure rather than of ordinary queue depth.",
     )
     STREAMING_EVENT_QUEUE_WARN_SIZE: int = Field(
         default=1000,
         ge=100,
-        description="Log a warning when the decoded-event backlog reaches this many events, so an unbounded buffer is still watched. The minimum of 100 avoids flooding the log under sustained high load; raise it on busy servers.",
+        description="Log a warning when the decoded-event backlog reaches this many events, so an unbounded buffer is still watched. What bounds those log records is time rather than this threshold: the queue logs one `WARNING` at the crossing and repeats it at `DEBUG` at most once every second while the backlog stays high, so a long turn costs a handful of lines instead of one per buffered event, and raising this threshold does not reduce that volume. The minimum of 100 keeps the crossing a sign of real pressure rather than of ordinary queue depth.",
     )
     STREAMING_DELTA_CHAR_LIMIT: int = Field(
         default=256,
@@ -1856,7 +1874,7 @@ class Valves(BaseModel):
     CONNECTION_ERROR_TEMPLATE: str = Field(
         default=DEFAULT_CONNECTION_ERROR_TEMPLATE,
         description=(
-            "Markdown template a chat reply shows, once the retries are spent, when its connection to OpenRouter fails before any of the answer arrives: the connection cannot be opened or drops, or, on every attempt, OpenRouter closes the stream without sending anything or sends frames the pipe cannot read, or a non-streamed 200 answers on /responses with no `output` key at all or on /chat/completions with no `choices`. A connection that fails before the first byte is a temporary failure: the request is re-sent up to TRANSIENT_RETRY_MAX_ATTEMPTS extra times (three attempts in all by default) and is counted once against the breaker however many attempts it took. Picture-only image models, video models and the panel, judge and final-answer calls inside internal Fusion report failures in their own way. A timeout uses NETWORK_TIMEOUT_TEMPLATE instead, and once part of the answer has arrived, STREAM_INTERRUPTED_TEMPLATE is used and nothing is retried. A reply that arrives on an accepted status but whose body is not a JSON object is not a connection failure: the connection worked, and SERVICE_ERROR_TEMPLATE reports it; a well-formed object that carries no answer on either route because the key is absent is a different thing and is reported here. A non-streamed 200 on /responses whose `output` is present but empty or null is neither: the connection worked and the model returned nothing, so it is retried on the same TRANSIENT_RETRY_MAX_ATTEMPTS budget and then reported by OPENROUTER_ERROR_TEMPLATE, whose reason says the model returned an empty answer. Available variables: {error_id}, {error_type}, {timestamp}, {session_id}, {user_id}, {support_email}, {support_url}. Supports Handlebars-style conditionals: wrap a section in {{#if variable}}...{{/if}} to show it only when that value is set."
+            "Markdown template a chat reply shows, once the retries are spent, when its connection to OpenRouter fails before any of the answer arrives: the connection cannot be opened or drops, or, on every attempt, OpenRouter closes the stream without sending anything or sends frames the pipe cannot read, or a non-streamed 200 answers on /responses with no `output` key at all, or with an `output` that is neither a list nor null, or on /chat/completions with no `choices`. A connection that fails before the first byte is a temporary failure: the request is re-sent up to TRANSIENT_RETRY_MAX_ATTEMPTS extra times (three attempts in all by default) and is counted once against the breaker however many attempts it took. Picture-only image models, video models and the panel, judge and final-answer calls inside internal Fusion report failures in their own way. A timeout uses NETWORK_TIMEOUT_TEMPLATE instead, and once part of the answer has arrived, or the model has named the tool it is calling, STREAM_INTERRUPTED_TEMPLATE is used and nothing is retried. A reply that arrives on an accepted status but whose body is not a JSON object is not a connection failure: the connection worked, and SERVICE_ERROR_TEMPLATE reports it; a well-formed object that carries no answer on either route because the key is absent is a different thing and is reported here. A non-streamed 200 on /responses whose `output` is present but empty or null is neither: the connection worked and the model returned nothing, so it is retried on the same TRANSIENT_RETRY_MAX_ATTEMPTS budget and then reported by OPENROUTER_ERROR_TEMPLATE, whose reason says the model returned an empty answer. Available variables: {error_id}, {error_type}, {timestamp}, {session_id}, {user_id}, {support_email}, {support_url}. Supports Handlebars-style conditionals: wrap a section in {{#if variable}}...{{/if}} to show it only when that value is set."
         )
     )
 
@@ -1920,7 +1938,7 @@ class Valves(BaseModel):
         ge=1,
         le=50,
         description=(
-            "Number of failures one user may accumulate before their requests are refused, a failing tool is skipped, or their database reads and writes are skipped; raise it for fewer trips in noisy environments. A request failure is a failed chat call to OpenRouter (an error reply; a connection that cannot be opened, drops or times out; an error reported inside a response; or a stream that stops before its final event). A request counts once however many attempts it took: a 429, a 5xx, a 408 that names the provider-timeout kind, or that failure reported inside a response before anything has been shown is retried first, up to TRANSIENT_RETRY_MAX_ATTEMPTS extra tries, and the request is a single failure whichever attempt gave up on it. A generation on a picture-only image model or a video model that fails after it was sent to OpenRouter is also a request failure, counted once. Request and database failures count within BREAKER_WINDOW_SECONDS. Raising or lowering the setting mid-session re-reads the failures already recorded: it does not discard them, and a lowered setting applies from the next request without evicting anything. Request failures clear when a request ends without an error (for a picture-only image model or a video model, only once its result is delivered; for an internal Fusion run, only if a panel model answered); a request the user stops clears no request failures. Housekeeping tasks such as title generation neither count nor clear; Open WebUI's merge-responses task counts but never clears. Database failures also clear when a database operation succeeds. The request breaker never refuses a request whose last message is a tool result, or is Open WebUI's own message that comes right after a tool result and hands the model a tool's images; a question or picture the user sends is refused like any other request. Each tool counts its failures in a row: errors it raises, per-call timeouts, running calls cut off by TOOL_BATCH_TIMEOUT_SECONDS, and calls whose tool server cannot be reached or answers with an HTTP error status; an ask_user timeout and a call to an MCP tool whose session has closed do not count. The count belongs to the tool the call resolved to, so a name the model padded with surrounding whitespace is the same tool and spends the same budget. A SystemExit, KeyboardInterrupt or GeneratorExit from a tool is shown as failed but is not a failure of that tool: it signals the process rather than the tool, and it never adds to the count or clears it. An error the tool reports in a result it returns normally is shown as failed but neither adds to the count nor clears it, whether the judgement is made by Open WebUI's own classifier or by the pipe's copy of it."
+            "Number of failures one user may accumulate before their requests are refused, a failing tool is skipped, or their database reads and writes are skipped; raise it for fewer trips in noisy environments. A request failure is a failed chat call to OpenRouter (an error reply; a connection that cannot be opened, drops or times out; an error reported inside a response; or a stream that stops before its final event). A request counts once however many attempts it took: a 429, a 5xx, a 408 that names the provider-timeout kind, or that failure reported inside a response before anything has been shown is retried first, up to TRANSIENT_RETRY_MAX_ATTEMPTS extra tries, and the request is a single failure whichever attempt gave up on it. A body carrying a content decision is the exception and is never retried, whatever status it arrived on. A generation on a picture-only image model or a video model that fails after it was sent to OpenRouter is also a request failure, counted once. Request and database failures count within BREAKER_WINDOW_SECONDS. Raising or lowering the setting mid-session re-reads the failures already recorded: it does not discard them, and a lowered setting applies from the next request without evicting anything. Request failures clear when a request ends without an error (for a picture-only image model or a video model, only once its result is delivered; for an internal Fusion run, only if a panel model answered); a request the user stops clears no request failures. Housekeeping tasks such as title generation neither count nor clear; Open WebUI's merge-responses task counts but never clears. Database failures also clear when a database operation succeeds. The request breaker never refuses a request whose last message is a tool result, or is Open WebUI's own message that comes right after a tool result and hands the model a tool's images; a question or picture the user sends is refused like any other request. Each tool counts its failures in a row: errors it raises, per-call timeouts, running calls cut off by TOOL_BATCH_TIMEOUT_SECONDS, and calls whose tool server cannot be reached or answers with an HTTP error status; an ask_user timeout and a call to an MCP tool whose session has closed do not count. The count belongs to the tool the call resolved to, so a name the model padded with surrounding whitespace is the same tool and spends the same budget. A SystemExit, KeyboardInterrupt or GeneratorExit from a tool is shown as failed but is not a failure of that tool: it signals the process rather than the tool, and it never adds to the count or clears it. An error the tool reports in a result it returns normally is shown as failed but neither adds to the count nor clears it, whether the judgement is made by Open WebUI's own classifier or by the pipe's copy of it."
         ),
     )
     BREAKER_WINDOW_SECONDS: int = Field(
@@ -1943,7 +1961,7 @@ class Valves(BaseModel):
         default=10,
         ge=0,
         description=(
-            "How many recent logical turns have their tool outputs sent in full. A turn runs from one user message to the next, including the assistant and tool responses in between. In older turns, long tool outputs are shortened to save tokens, whether they come from a saved tool card or the pipe's own storage; OpenRouter's own advisor, subagent and model-search items go back whole. Apart from answers given through ask_user, this matters only while tool results are kept across turns. Set to 0 to keep every tool output in full."
+            "How many recent logical turns have their tool outputs sent in full. A turn starts at a person's message that follows the assistant's reply and runs to the next such message; messages the person sends back to back belong to the same turn. In older turns, long tool outputs are shortened to save tokens, whether they come from a saved tool card or the pipe's own storage; OpenRouter's own advisor, subagent and model-search items go back whole. Apart from answers given through ask_user, this matters only while tool results are kept across turns. Set to 0 to keep every tool output in full."
         ),
     )
     TOOL_TIMEOUT_SECONDS: int = Field(
@@ -2027,7 +2045,7 @@ class Valves(BaseModel):
     )
     USE_MODEL_MAX_OUTPUT_TOKENS: bool = Field(
         default=False,
-        description="When enabled, and the request does not already set a limit, fill in an output allowance: the smaller of the model's advertised max_output_tokens and half its context window, or the advertised value alone when no context window is known. Models advertising neither are left unset. Disable to send no limit of the pipe's own. A routing variant such as base:nitro resolves through its base's catalog row, so it inherits the base's ceiling. This valve controls the automatic value, not yours: a max_tokens, max_output_tokens or max_completion_tokens that is an integer of 1 or above is forwarded unchanged. OpenRouter documents the parameters as 1 or above and Open WebUI's slider reaches -2, so a value below 1 is sent as no cap -- which means the automatic ceiling applies if this valve is on.",
+        description="When enabled, and the request does not already set a limit, fill in an output allowance: the smaller of the model's advertised max_output_tokens and half its context window, or the advertised value alone when no context window is known. Models advertising neither are left unset. Disable to send no limit of the pipe's own. A routing variant such as base:nitro resolves through its base's catalog row, so it inherits the base's ceiling. This valve controls the automatic value, not yours: a max_tokens, max_output_tokens or max_completion_tokens of 1 or above is forwarded as a whole number whatever its spelling. OpenRouter documents the parameters as 1 or above and Open WebUI's slider reaches -2, so a value below 1 is sent as no cap -- which means the automatic ceiling applies if this valve is on.",
     )
     SHOW_FINAL_USAGE_STATUS: bool = Field(
         default=True,
@@ -2069,14 +2087,14 @@ class Valves(BaseModel):
         default=5,
         ge=1,
         le=20,
-        description="Maximum number of images one of the person's messages forwards to the provider, counting a picture reused from earlier in the conversation. Pictures a tool returns are not counted: they are never cut by this limit. Whenever a tool round's result reaches the model, all of its pictures go with it, as in Open WebUI's own tool loop.",
+        description="Maximum number of images one of the person's messages forwards to the provider, counting a picture reused from earlier in the conversation. Pictures a tool returns are not counted: they are never cut by this limit. Whenever a tool round's result reaches the model, every one of its pictures that clears the tool-picture gate goes with it, as in Open WebUI's own tool loop: none of them is cut by this limit, and one the gate refuses is named in the chat rather than dropped silently.",
     )
     IMAGE_INPUT_SELECTION: Literal["user_turn_only", "user_then_assistant"] = Field(
         default="user_then_assistant",
         description=(
             "Controls which images are forwarded to the provider. "
             "'user_turn_only' restricts inputs to the images supplied with the current user message. "
-            "'user_then_assistant' falls back to the most recent image already in the conversation, from either side, when the user did not attach any; a tool round ends the window for pictures from before it, so nothing older is reused after one whether or not it returned a picture. A round that asked you a question is not a media round and does not end the window, and neither does a picture the model shows you in its own reply to a round. It also governs a picture the model wrote into an earlier reply: that picture is re-sent as a picture where the reuse window can still reach it, and is otherwise left in the reply as the base64 text it was written as; 'user_turn_only' sends it to nobody."
+            "'user_then_assistant' falls back to the most recent image already in the conversation, from either side, when the user did not attach any; a tool round ends the window for pictures from before it, so nothing older is reused after one whether or not it returned a picture. A round that asked you a question is not a media round and does not end the window, and neither does a picture the model shows you in its own reply to a round. It also governs a picture the model wrote into an earlier reply: that picture is re-sent as a picture where the reuse window can still reach it, and is otherwise left in the reply as the destination it was written as, which is a base64 data URL for a chat with nowhere to store a file and an Open WebUI file link for a saved one. The window cannot reach it when the reply is more than IMAGE_REUSE_MAX_TURNS turns back, when a tool round has closed the window, when you attach a picture of your own, when the model takes no image input, or when MAX_INPUT_IMAGES_PER_REQUEST has no room left for it. One picture is left in the reply neither way: one over BASE64_MAX_SIZE_MB, which the pipe has already refused to send, is reported and keeps its placeholder rather than riding along as the text it was written as; 'user_turn_only' sends it to nobody."
         ),
     )
     IMAGE_REUSE_MAX_TURNS: int = Field(
@@ -2085,9 +2103,11 @@ class Valves(BaseModel):
         le=50,
         description=(
             "How many turns an earlier picture stays available for reuse under "
-            "'user_then_assistant' when the user attaches nothing. Beyond this the "
-            "picture is forgotten, so a long text conversation stops paying to resend "
-            "an image nobody is talking about any more."
+            "'user_then_assistant' when the user attaches nothing. This is a budget on "
+            "the pixels the pipe resends: past it a picture is no longer sent again as "
+            "an image, and stays in the conversation as the text the model wrote it in, "
+            "so a long text conversation stops paying to resend an image nobody is "
+            "talking about any more."
         ),
     )
 
@@ -2539,7 +2559,7 @@ class Valves(BaseModel):
     )
     VIDEO_FRAME_IMAGE_MIME_ALLOWLIST: str = Field(
         default="image/jpeg,image/png,image/webp",
-        description="Comma-separated MIME allowlist for video generation frame images.",
+        description="Comma-separated MIME allowlist for video generation frame images. Frames the pipe itself extracts from a prior video are re-encoded to a type on this list before upload, so dropping image/png no longer breaks frame reuse.",
     )
     VIDEO_OUTPUT_MIME_ALLOWLIST: str = Field(
         default="video/mp4,video/webm",
@@ -2602,7 +2622,7 @@ class Valves(BaseModel):
             "and the disclosure footer says so. "
             "A request that names a first or last frame directly gets that frame - "
             "except on a damaged clip whose length the host cannot measure, where no "
-            "end-seek window reads a frame at all and the file's first frame is "
+            "end-seek hop reads a frame at all and the file's first frame is "
             "substituted for the one asked for, which the disclosure footer says. "
             "'last' matches 'continue this scene' intent. On a model that accepts only a "
             "first frame the pipe has no choice and uses the first one, whatever moment "
@@ -2637,29 +2657,34 @@ class Valves(BaseModel):
             "trigger it; 'low_confidence' = only when classifier confidence is low; "
             "'never' = no confirmation. A rewritten prompt, or a best-guess turn once "
             "the clarifying question limit is reached, shows the block in every mode "
-            "except 'never'."
+            "except 'never'. A turn where the classifier changed what is sent is "
+            "confirmed in every mode, 'never' excepted."
         ),
     )
-    VIDEO_INTENT_MAX_CALLS_PER_CHAT: int = Field(
+    VIDEO_INTENT_MAX_TURNS_PER_CHAT: int = Field(
         default=0,
         ge=0,
         description=(
-            "Cost guard: maximum task-model calls per chat session. 0 (default) = unlimited. "
-            "Admin sets a positive integer to enforce a per-chat ceiling. A call is charged "
-            "when it is admitted, so concurrent turns in one chat share the ceiling. The "
-            "tally is per worker process and in memory, keyed on a one-way SHA-256 prefix of "
-            "the chat id rather than the id itself, so no chat id is held in it; a temporary "
-            "chat is charged like any other. It keeps the most recent 300 chats, so a chat "
-            "pushed out of that window by other chats in between starts a fresh budget."
+            "Cost guard: maximum video turns per chat session that run the classifier. 0 "
+            "(default) = unlimited. Admin sets a positive integer to enforce a per-chat "
+            "ceiling. A turn is charged when it is admitted, so concurrent turns in one chat "
+            "share the ceiling; a turn costs one billable task-model call per candidate it "
+            "tries, so one to four at the shipped default. The tally is per worker process "
+            "and in memory, keyed on a one-way SHA-256 prefix of the chat id rather than the "
+            "id itself, so no chat id is held in it; a temporary chat is charged like any "
+            "other. It keeps the most recent 300 chats, so a chat pushed out of that window "
+            "by other chats in between starts a fresh budget."
         ),
     )
-    VIDEO_INTENT_MAX_CALLS_PER_USER_DAY: int = Field(
+    VIDEO_INTENT_MAX_TURNS_PER_USER_DAY: int = Field(
         default=0,
         ge=0,
         description=(
-            "Cost guard: maximum task-model calls per user per day. 0 (default) = unlimited. "
-            "Admin sets a positive integer to enforce a per-user-per-day ceiling. A call is "
-            "charged when it is admitted, so concurrent turns by one user share the ceiling."
+            "Cost guard: maximum video turns per user per day that run the classifier. 0 "
+            "(default) = unlimited. Admin sets a positive integer to enforce a "
+            "per-user-per-day ceiling. A turn is charged when it is admitted, so concurrent "
+            "turns by one user share the ceiling; a turn costs one billable task-model call "
+            "per candidate it tries, so one to four at the shipped default."
         ),
     )
     VIDEO_INTENT_LOG_DECISIONS: bool = Field(
@@ -2710,6 +2735,7 @@ class Valves(BaseModel):
             "clicking Global on one of its rows in Workspace > Functions would apply that model's "
             "preferences to every model, and the pipe reverts the click on the next model-list refresh."
             + _ROUTING_ADMIN_OFF_STAYS_OFF
+            + _ROUTING_ADMIN_RE_ENABLED_STAYS_ON
         ),
     )
     USER_PROVIDER_ROUTING_MODELS: str = Field(
@@ -2726,6 +2752,7 @@ class Valves(BaseModel):
             "clicking Global on one of its rows in Workspace > Functions would apply that model's "
             "preferences to every model, and the pipe reverts the click on the next model-list refresh."
             + _ROUTING_ADMIN_OFF_STAYS_OFF
+            + _ROUTING_ADMIN_RE_ENABLED_STAYS_ON
         ),
     )
     AUTO_DEFAULT_PROVIDER_ROUTING_FILTERS: bool = Field(

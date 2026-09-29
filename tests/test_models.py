@@ -669,20 +669,78 @@ async def test_sync_model_metadata_returns_early_no_pipe_identifier(pipe_instanc
 
 @pytest.mark.asyncio
 async def test_sync_model_metadata_skips_model_without_valid_id(pipe_instance_async) -> None:
-    """Skips models with invalid or missing id."""
+    """A row whose `id` is not a non-empty string is never asked about and never written.
+
+    Two gates carry that predicate, and both are observed here: the per-row guard that
+    skips the write, and the comprehension in front of the bulk read that keeps a
+    malformed row's id out of the query sent to Open WebUI. The spy calls through to the
+    real write, so the assertion ends at the table, not at the pipe's own seam.
+
+    The well-formed row rides in the same call. Without it the property would also be
+    satisfied by a pass that wrote nothing at all, by a valve that was off, or by an
+    early return -- so the control row is what makes the two assertions below mean
+    something.
+    """
     pipe = pipe_instance_async
     pipe._ensure_catalog_manager()
     pipe.valves.UPDATE_MODEL_CAPABILITIES = True
+    pipe.valves.UPDATE_MODEL_IMAGES = False
+    for valve in (
+        "AUTO_ATTACH_WEB_TOOLS_FILTER",
+        "AUTO_INSTALL_WEB_TOOLS_FILTER",
+        "AUTO_ATTACH_DIRECT_UPLOADS_FILTER",
+        "AUTO_INSTALL_DIRECT_UPLOADS_FILTER",
+        "AUTO_ATTACH_IMAGE_GEN_FILTER",
+        "AUTO_INSTALL_IMAGE_GEN_FILTER",
+    ):
+        setattr(pipe.valves, valve, False)
 
-    update_mock = Mock()
+    manager = pipe._catalog_manager
+    real_write = manager._update_or_insert_model_with_metadata
 
-    await pipe._ensure_catalog_manager()._sync_model_metadata_to_owui(
-        [{"id": None}, {"id": ""}, {"id": 123}],
-        pipe_identifier="test_pipe",
+    written: list[str] = []
+
+    async def _record_then_write(openwebui_model_id, *args, **kwargs):
+        written.append(openwebui_model_id)
+        await real_write(openwebui_model_id, *args, **kwargs)
+
+    manager._update_or_insert_model_with_metadata = _record_then_write  # type: ignore[method-assign]
+
+    asked: list[list[str]] = []
+
+    async def _read_rows(ids, db=None):
+        asked.append(list(ids))
+        return None
+
+    with patch("open_webui.models.models.Models.get_models_by_ids", new=_read_rows), patch(
+        "open_webui.models.models.Models.get_model_by_id", new=AsyncMock(return_value=None)
+    ), patch("open_webui.models.models.Models.insert_new_model", new=AsyncMock()), patch(
+        "open_webui.models.models.ModelForm", new=lambda **kw: SimpleNamespace(**kw)
+    ), patch(
+        "open_webui.models.models.ModelMeta", new=lambda **kw: dict(**kw)
+    ), patch(
+        "open_webui.models.models.ModelParams", new=lambda **kw: dict(**kw)
+    ):
+        await manager._sync_model_metadata_to_owui(
+            [
+                {"id": None},
+                {"id": ""},
+                {"id": 123},
+                {"id": ["a"]},
+                {"id": "acme/good-model"},
+            ],
+            pipe_identifier="test_pipe",
+        )
+
+    assert written == ["test_pipe.acme/good-model"], (
+        "the pass reached the write with a row whose id is not a non-empty string, or the "
+        f"pass never ran: the rows written were {written}, and the well-formed row is in "
+        "the same call, so an empty list here means the pass did nothing at all"
     )
-
-    # No updates should occur
-    assert update_mock.call_count == 0
+    assert asked == [["test_pipe.acme/good-model"]], (
+        "Open WebUI was asked to look up a row built from a malformed catalogue id: the "
+        f"bulk read was given {asked}"
+    )
 
 
 @pytest.mark.asyncio

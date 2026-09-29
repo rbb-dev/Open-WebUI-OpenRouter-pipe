@@ -23,6 +23,7 @@ from .config_service import (
     json_safe,
     merge_for_save_with_drops,
     readable_stored,
+    stored_gate_valves,
     stored_row_readable,
 )
 from .dashboard_socket import emit_config_changed, publish_valves_changed
@@ -188,11 +189,13 @@ def _audit(user: Any, name: str, outcome: str, client_ip: Any, args: Any = None)
     )
 
 
-def _dashboard_enabled(pipe: Any) -> bool:
-    valves = getattr(pipe, "valves", None)
-    if valves is None or not hasattr(valves, "PIPE_DASHBOARD_ENABLE"):
+async def _dashboard_enabled(pipe: Any) -> bool:
+    if pipe is None:
         return True
-    return bool(valves.PIPE_DASHBOARD_ENABLE)
+    merged, read_ok = await stored_gate_valves(getattr(pipe, "id", ""), getattr(pipe, "valves", None))
+    if not read_ok:
+        return False
+    return bool(merged.get("PIPE_DASHBOARD_ENABLE", True))
 
 
 async def dispatch_action(
@@ -220,7 +223,7 @@ async def dispatch_action(
     if entry.needs_request and request is None:
         _audit(user, name, "bad_args", client_ip)
         return 400, {"error": "request unavailable"}
-    if not _dashboard_enabled(pipe):
+    if not await _dashboard_enabled(pipe):
         _audit(user, name, "disabled", client_ip)
         return 404, {"error": "unknown action"}
     write = entry.permission == "write"
@@ -380,7 +383,7 @@ async def _saved_values(
     pipe: Any, names: Iterable[str]
 ) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
     wanted = set(names)
-    effective, reset, stored, read_ok = await _effective_valves_and_state(pipe)
+    effective, _reset, stored, read_ok = await _effective_valves_and_state(pipe)
     if not read_ok:
         logger.warning(
             "pipe_dashboard: the store became unreadable while echoing a completed save; "
@@ -402,7 +405,7 @@ async def _saved_values(
             for spec in snapshot["valves"]
             if spec["name"] in wanted and spec["secret"]
         },
-        list(reset),
+        [],
     )
 
 
@@ -471,26 +474,19 @@ async def _persist_config_edit(
         return {"saved": 0, "rev": current_rev}, False
     from open_webui.models.functions import Functions
 
-    current = await Functions.get_function_valves_by_id(getattr(pipe, "id", ""))
-    readable, reason = await stored_row_readable(getattr(pipe, "id", ""), current)
-    if not readable or current is None:
-        if current is None:
-            return {
-                "unreadable": reason
-                or "the stored configuration could not be read from the database",
-                "rev": current_rev,
-            }, False
+    current, stored_read_ok = await _read_stored_valves(getattr(pipe, "id", ""))
+    if not stored_read_ok or current is None:
+        return {
+            "unreadable": "the stored configuration could not be read from the database",
+            "rev": current_rev,
+        }, False
+    readable, _reason = await stored_row_readable(getattr(pipe, "id", ""), current)
+    if not readable:
         refused = _config_snapshot(pipe.valves)
         refused["conflict"] = True
         refused["rev"] = current_rev
         refused["config_unreadable"] = True
         return refused, False
-    _stored, stored_read_ok = await _read_stored_valves(getattr(pipe, "id", ""))
-    if not stored_read_ok:
-        return {
-            "unreadable": "the stored configuration could not be read from the database",
-            "rev": current_rev,
-        }, False
     to_save, dropped, not_saved, cleared = merge_for_save_with_drops(
         type(pipe.valves), current, edits
     )
@@ -519,9 +515,7 @@ async def _update_enabled(pipe: Any) -> tuple[bool, str]:
     """Gate on the PERSISTED valve, not the in-memory copy (which lags on idle workers)."""
     svc = _update_service_of(pipe)
     if svc is None:
-        return bool(
-            getattr(getattr(pipe, "valves", None), "PIPE_DASHBOARD_UPDATE_ENABLE", True)
-        ), "disabled"
+        return False, "service_unavailable"
     try:
         valves, stored_read_ok = await svc._row_valves_checked()
         if not stored_read_ok:
@@ -542,6 +536,32 @@ async def _update_enabled(pipe: Any) -> tuple[bool, str]:
         return False, "valve_unreadable"
 
 
+_UPDATE_UNAVAILABLE: dict[str, Any] = {
+    "error": "unavailable",
+    "message": "update service not initialized",
+}
+
+
+def _update_check_refusal(reason: str) -> dict[str, Any]:
+    return {"enabled": False, "reason": reason}
+
+
+def _update_write_refusal(reason: str) -> dict[str, Any]:
+    return {"error": reason}
+
+
+async def _update_gate(
+    pipe: Any, refusal: Callable[[str], dict[str, Any]]
+) -> tuple[Any, dict[str, Any] | None]:
+    svc = _update_service_of(pipe)
+    if svc is None:
+        return None, dict(_UPDATE_UNAVAILABLE)
+    enabled, reason = await _update_enabled(pipe)
+    if not enabled:
+        return None, refusal(reason)
+    return svc, None
+
+
 async def _run_update_call(coro: Awaitable[dict[str, Any]]) -> dict[str, Any]:
     try:
         return await coro
@@ -555,12 +575,9 @@ async def _run_update_call(coro: Awaitable[dict[str, Any]]) -> dict[str, Any]:
 
 @register_action("update_check", permission="read", schema={"force": optional(bool)})
 async def _update_check(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
-    enabled, reason = await _update_enabled(pipe)
-    if not enabled:
-        return {"enabled": False, "reason": reason}
-    svc = _update_service_of(pipe)
-    if svc is None:
-        return {"error": "unavailable", "message": "update service not initialized"}
+    svc, refused = await _update_gate(pipe, _update_check_refusal)
+    if refused is not None:
+        return refused
     force = bool(args.get("force", False)) and getattr(user, "role", None) == "admin"
     return await _run_update_call(svc.check(force=force))
 
@@ -573,12 +590,9 @@ async def _update_check(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
     admin_only=True,
 )
 async def _update_apply(pipe: Any, user: Any, args: Any, request: Any = None) -> dict[str, Any]:
-    enabled, reason = await _update_enabled(pipe)
-    if not enabled:
-        return {"error": reason}
-    svc = _update_service_of(pipe)
-    if svc is None:
-        return {"error": "unavailable", "message": "update service not initialized"}
+    svc, refused = await _update_gate(pipe, _update_write_refusal)
+    if refused is not None:
+        return refused
     actor = str(getattr(user, "id", "") or "admin")
     return await _run_update_call(
         svc.apply(dict(args), actor=actor, actor_id=actor, request=request, actor_user=user)
@@ -593,12 +607,9 @@ async def _update_apply(pipe: Any, user: Any, args: Any, request: Any = None) ->
     admin_only=True,
 )
 async def _update_restore(pipe: Any, user: Any, args: Any, request: Any = None) -> dict[str, Any]:
-    enabled, reason = await _update_enabled(pipe)
-    if not enabled:
-        return {"error": reason}
-    svc = _update_service_of(pipe)
-    if svc is None:
-        return {"error": "unavailable", "message": "update service not initialized"}
+    svc, refused = await _update_gate(pipe, _update_write_refusal)
+    if refused is not None:
+        return refused
     actor = str(getattr(user, "id", "") or "admin")
     return await _run_update_call(
         svc.restore(dict(args), actor=actor, actor_id=actor, request=request, actor_user=user)
@@ -612,10 +623,7 @@ async def _update_restore(pipe: Any, user: Any, args: Any, request: Any = None) 
     admin_only=True,
 )
 async def _update_snapshot_delete(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
-    enabled, reason = await _update_enabled(pipe)
-    if not enabled:
-        return {"error": reason}
-    svc = _update_service_of(pipe)
-    if svc is None:
-        return {"error": "unavailable", "message": "update service not initialized"}
+    svc, refused = await _update_gate(pipe, _update_write_refusal)
+    if refused is not None:
+        return refused
     return await _run_update_call(svc.snapshot_delete(dict(args)))

@@ -194,12 +194,6 @@ class TestNormalizeResponsesFunctionToolSpec:
         result = _normalize_responses_function_tool_spec(tool, strictify=False)
         assert "description" not in result
 
-    def test_normalize_non_dict_parameters_omitted(self):
-        """Non-dict parameters are omitted."""
-        tool = {"type": "function", "name": "test", "parameters": "invalid"}
-        result = _normalize_responses_function_tool_spec(tool, strictify=False)
-        assert "parameters" not in result
-
     def test_normalize_with_strictify(self):
         """Strictify transforms parameters schema."""
         tool = {

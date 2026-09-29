@@ -549,7 +549,7 @@ async def test_a_reference_the_chat_carries_meets_the_gate_the_typed_box_meets(b
         api_model_id="m/x",
     )
 
-    assert gate.seen == [blocked, allowed], "every reference OpenRouter would fetch is asked about"
+    assert gate.seen == [allowed, blocked], "every reference OpenRouter would fetch is asked about"
     assert [ref["image_url"]["url"] for ref in result.payload["input_references"]] == [allowed]
     assert blocked not in json.dumps(result.payload)
     assert "dropped 1 reference image" in _notifications(result), (
@@ -688,7 +688,7 @@ async def test_an_unreadable_contract_still_caps_the_reference_list(attached):
 
 @pytest.mark.parametrize("chosen", ["auto", "low"])
 def test_the_published_values_of_a_named_option_are_offered_as_choices(chosen):
-    """Delivered on the six OpenAI models that name it, as free text, so a typo went out
+    """Delivered on the eight OpenAI models that name it, as free text, so a typo went out
     as a moderation setting and came back as a rejection about something else."""
     from typing import get_args
 

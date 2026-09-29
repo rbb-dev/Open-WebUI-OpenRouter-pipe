@@ -75,8 +75,15 @@ def clear_routes_pipe_getter(instance: Any, name: str) -> None:
         _routes_get_pipe = None
 
 
-def _plugins_enabled(pipe: Any) -> bool:
-    return bool(getattr(getattr(pipe, "valves", None), "ENABLE_PLUGIN_SYSTEM", False))
+async def _plugins_enabled(pipe: Any) -> bool:
+    from .config_service import stored_gate_valves
+
+    merged, read_ok = await stored_gate_valves(
+        getattr(pipe, "id", ""), getattr(pipe, "valves", None)
+    )
+    if not read_ok:
+        return False
+    return bool(merged.get("ENABLE_PLUGIN_SYSTEM", False))
 
 
 def _audit_off(user: Any, action: str, client_ip: Any) -> None:
@@ -90,6 +97,13 @@ def _audit_off(user: Any, action: str, client_ip: Any) -> None:
         "pipe_dashboard action user=%s action=%s outcome=plugin_system_off ip=%s args=-",
         _scrub(uid), _scrub(action), _scrub(client_ip),
     )
+
+
+async def _dispatch_unavailable(
+    pipe: Any, user: Any, name: str, args: Any, *, client_ip: Any = None, request: Any = None
+) -> tuple[int, dict[str, Any]]:
+    _audit(user, name, "unavailable", client_ip, args)
+    return 503, {"error": "action unavailable"}
 
 
 def clear_fresh_dispatch(pipe: Any) -> None:
@@ -241,7 +255,7 @@ def _preferred_dispatch(action: str) -> Any:
         return _fresh_dispatch[0]
     if live is not None:
         return live
-    return _audit
+    return _dispatch_unavailable
 
 
 async def _current_dispatch(request: Any, user: Any, pipe: Any, fid: Any, action: str = "") -> tuple[Any, Any]:
@@ -269,7 +283,7 @@ async def _action_route(
 
     user = await bearer_user(request)
     pipe = _live_routes_get_pipe()
-    if not _plugins_enabled(pipe):
+    if not await _plugins_enabled(pipe):
         _audit_off(user, body.action, _client_ip(request))
         return JSONResponse({"error": "plugin_system_off"}, status_code=404)
     if _coarse_rate_limited(user.id):

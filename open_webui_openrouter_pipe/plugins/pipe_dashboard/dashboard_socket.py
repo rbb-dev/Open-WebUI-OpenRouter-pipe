@@ -35,13 +35,17 @@ _get_pipe: Any = None
 _warned_import_sites: set[str] = set()
 
 
-def _socket_dashboard_enabled(pipe: Any) -> bool:
-    if not bool(getattr(getattr(pipe, "valves", None), "ENABLE_PLUGIN_SYSTEM", False)):
+async def _socket_dashboard_enabled(pipe: Any) -> bool:
+    from .config_service import stored_gate_valves
+
+    merged, read_ok = await stored_gate_valves(
+        getattr(pipe, "id", ""), getattr(pipe, "valves", None)
+    )
+    if not read_ok:
         return False
-    valves = getattr(pipe, "valves", None)
-    if valves is None or not hasattr(valves, "PIPE_DASHBOARD_ENABLE"):
-        return True
-    return bool(valves.PIPE_DASHBOARD_ENABLE)
+    if not bool(merged.get("ENABLE_PLUGIN_SYSTEM", False)):
+        return False
+    return bool(merged.get("PIPE_DASHBOARD_ENABLE", True))
 
 
 def _current_pipe() -> Any:
@@ -80,7 +84,7 @@ async def _evict_every_viewer() -> None:
 async def _pipe_dashboard_sub(sid: str, _data: Any = None) -> None:
     global _resync
     pipe = _current_pipe()
-    if not _socket_dashboard_enabled(pipe):
+    if not await _socket_dashboard_enabled(pipe):
         logger.warning("pipe_dashboard: viewer sid=%s refused (dashboard disabled)", sid)
         try:
             from open_webui.socket.main import sio
@@ -165,7 +169,7 @@ class _ValveEventSink:
         subject = getattr(event, "subject", None)
         if not pipe_id or not isinstance(subject, dict) or subject.get("id") != pipe_id:
             return
-        if not _socket_dashboard_enabled(pipe):
+        if not await _socket_dashboard_enabled(pipe):
             await _evict_every_viewer()
         try:
             task = asyncio.create_task(_emit_config_rev(pipe_id))
@@ -298,7 +302,7 @@ def local_viewer_sids() -> list[str]:
 
 
 async def emit_dashboard(payload: dict[str, Any]) -> bool:
-    if not _socket_dashboard_enabled(_current_pipe()):
+    if not await _socket_dashboard_enabled(_current_pipe()):
         return False
     try:
         from open_webui.socket.main import sio
@@ -330,7 +334,7 @@ async def reauthorize_local_viewers() -> None:
             exc_info=True,
         )
         return
-    enabled = _socket_dashboard_enabled(pipe)
+    enabled = await _socket_dashboard_enabled(pipe)
     for sid in list(get_session_ids_from_room(VIEWERS_ROOM) or []):
         if not enabled:
             await _evict(sio, sid, "dashboard disabled")

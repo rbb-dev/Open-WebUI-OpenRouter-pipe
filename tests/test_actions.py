@@ -262,6 +262,9 @@ async def test_clearing_a_template_puts_the_original_back_in_the_config_box(fake
     )
     fake_functions.valves = fake_functions.saved
     assert await box_value() == factory
+    assert cleared["saved"] == 1, (
+        f"the box came back holding the built-in text, so the save landed and is counted: {cleared!r}"
+    )
     assert cleared["values"][name] == factory, (
         "the save response is the only thing the editor sees before it re-renders; without the "
         f"restored text in it the box goes blank and the admin thinks nothing happened: {cleared!r}"
@@ -335,6 +338,10 @@ async def test_clearing_several_templates_in_one_save_puts_every_original_back(
     assert await box_values() == factories, (
         "an admin who cleared these boxes in one save does not get all of them back; a box "
         "keeps the blank it was given, and the error it formats goes out empty"
+    )
+    assert cleared["saved"] == len(names), (
+        f"every box in the payload came back holding the built-in text, so the save landed "
+        f"once per box: {cleared!r}"
     )
     assert cleared["values"] == factories, (
         "the save response is the only thing the editor sees before it re-renders; a name "

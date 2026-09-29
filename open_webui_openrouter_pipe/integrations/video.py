@@ -5,6 +5,7 @@ import base64
 import binascii
 import contextlib
 import functools
+import io
 import logging
 import re
 import secrets
@@ -189,6 +190,47 @@ def _promotable_as_frame(entry: dict[str, Any], valves: Any = None) -> bool:
     raw = getattr(valves, "VIDEO_FRAME_IMAGE_MIME_ALLOWLIST", None) if valves is not None else None
     allowed = _csv_set("image/jpeg,image/png,image/webp") if raw is None else _csv_set(raw)
     return _clean_str(entry.get("content_type")).split(";", 1)[0].lower() in allowed
+
+
+_FRAME_MIME_PREFERENCE = ("image/jpeg", "image/webp", "image/png")
+_FRAME_MIME_EXTENSIONS = {"image/jpeg": "jpg", "image/webp": "webp", "image/png": "png"}
+
+
+def resolve_frame_mime(allowlist_csv: Any) -> tuple[str, ...]:
+    allowed = _csv_set(allowlist_csv) if allowlist_csv is not None else _csv_set(
+        "image/jpeg,image/png,image/webp"
+    )
+    return tuple(
+        mime for mime in _FRAME_MIME_PREFERENCE if mime in allowed
+    ) or _FRAME_MIME_PREFERENCE
+
+
+def _frame_bytes_allowed_as(
+    image_bytes: bytes, allowlist_csv: Any
+) -> tuple[bytes, str, str]:
+    candidates = resolve_frame_mime(allowlist_csv)
+    if "image/png" in candidates:
+        return image_bytes, "image/png", "png"
+
+    from PIL import Image
+
+    from ..media.image_conversion import composite_on_white
+
+    with Image.open(io.BytesIO(image_bytes)) as opened:
+        flattened = composite_on_white(opened)
+        for mime in candidates:
+            if mime == "image/png":
+                buffer = io.BytesIO()
+                flattened.save(buffer, "PNG")
+                return buffer.getvalue(), "image/png", "png"
+            pil_format = "JPEG" if mime == "image/jpeg" else "WEBP"
+            buffer = io.BytesIO()
+            try:
+                flattened.save(buffer, pil_format)
+            except (OSError, ValueError):
+                continue
+            return buffer.getvalue(), mime, _FRAME_MIME_EXTENSIONS[mime]
+    return image_bytes, "image/png", "png"
 
 
 def _host_entries(raw: Any) -> tuple[frozenset[str], frozenset[str]]:
@@ -385,8 +427,8 @@ def _spoken_duration(seconds: float) -> str:
 
 def _intent_counters_enabled(valves: Any) -> tuple[int, int]:
     return (
-        int(getattr(valves, "VIDEO_INTENT_MAX_CALLS_PER_CHAT", 0) or 0),
-        int(getattr(valves, "VIDEO_INTENT_MAX_CALLS_PER_USER_DAY", 0) or 0),
+        int(getattr(valves, "VIDEO_INTENT_MAX_TURNS_PER_CHAT", 0) or 0),
+        int(getattr(valves, "VIDEO_INTENT_MAX_TURNS_PER_USER_DAY", 0) or 0),
     )
 
 
@@ -776,6 +818,7 @@ class VideoGenerationAdapter:
                         reused_frame_index=reused_frame_pref,
                         frame_max_bytes=_frame_max_bytes(valves),
                         video_model=video_model,
+                        valves=valves,
                     )
                     if isinstance(metadata, dict):
                         pipe_meta = metadata.setdefault(_PIPE_METADATA_KEY, {})
@@ -2857,6 +2900,7 @@ class VideoGenerationAdapter:
         reused_frame_index: Literal["first", "last"] = "last",
         frame_max_bytes: int = _DEFAULT_FRAME_MAX_BYTES,
         video_model: Any = None,
+        valves: Any = None,
     ) -> list[str]:
         """For each prior_video_* entry in frame_plan, extract the frame from
         the prior video file, upload it as a new OWUI image, and inject into
@@ -3016,12 +3060,21 @@ class VideoGenerationAdapter:
                             thumb_urls.append("")
                             continue
 
+                    allowlist_raw = getattr(valves, "VIDEO_FRAME_IMAGE_MIME_ALLOWLIST", None)
+                    frame_bytes, frame_mime, frame_ext = await asyncio.to_thread(
+                        _frame_bytes_allowed_as, frame.image_bytes, allowlist_raw,
+                    )
+                    if frame_mime != "image/png":
+                        intent.downgrades.append(
+                            f"frame_reencoded_{frame_mime.replace('/', '_')}_idx_"
+                            f"{entry.source_index}_at_{position}"
+                        )
                     frame_file_id = await self._pipe._file_gateway.upload_to_owui_storage(
                         request=storage_request,
                         user=storage_user,
-                        file_data=frame.image_bytes,
-                        filename=f"intent-frame-{entry.source}-{entry.source_index}.png",
-                        mime_type="image/png",
+                        file_data=frame_bytes,
+                        filename=f"intent-frame-{entry.source}-{entry.source_index}.{frame_ext}",
+                        mime_type=frame_mime,
                         chat_id=chat_id or None,
                         message_id=message_id or None,
                     )
@@ -3041,16 +3094,16 @@ class VideoGenerationAdapter:
                             fi_list.append({
                                 "id": frame_file_id,
                                 "frame_type": extracted,
-                                "name": f"intent-frame-{extracted}.png",
-                                "content_type": "image/png",
+                                "name": f"intent-frame-{extracted}.{frame_ext}",
+                                "content_type": frame_mime,
                             })
                     elif entry.target == "input_reference":
                         ir_list = video_meta.setdefault(_reference_slot(video_meta), [])
                         if isinstance(ir_list, list):
                             ir_list.append({
                                 "id": frame_file_id,
-                                "name": "intent-frame-input_reference.png",
-                                "content_type": "image/png",
+                                "name": f"intent-frame-input_reference.{frame_ext}",
+                                "content_type": frame_mime,
                             })
 
                     try:

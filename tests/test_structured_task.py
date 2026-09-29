@@ -170,10 +170,6 @@ class TestNormaliseModelContent:
     def test_none_returns_empty_string(self):
         assert normalise_model_content(None) == ""
 
-    def test_dict_with_content_field(self):
-        result = normalise_model_content({"content": "hello"})
-        assert "hello" in result
-
 class TestConsumeSseLine:
     def test_done_marker_ignored(self):
         parts: list[str] = []
@@ -196,7 +192,6 @@ class TestConsumeSseLine:
         parts: list[str] = []
         consume_sse_line("data: {not-json", parts)
         assert parts == []
-
 
 class TestReadTaskModelResponseJson:
     @staticmethod

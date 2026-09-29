@@ -68,8 +68,12 @@ async def _stage_a(pipe, monkeypatch, valves, rounds, *, stream=True, emitter=No
                    real_row_builder=False, real_store=False,
                    chat_id: str = "c1", tool_name: str = "lookup", stop_in_round: int | None = None,
                    rows: dict[str, dict[str, Any]] | None = None, tool_result: Any = RESULT_CANARY,
-                   continues_after_marker: bool = False, builtin_ask_user: bool = False):
-    """Run one turn. Each round is ("calls", [call ids]), which reasons, writes and calls; ("quiet-calls", [call ids]),
+                   continues_after_marker: bool = False, builtin_ask_user: bool = False,
+                   params: dict[str, Any] | None = None):
+    """Run one turn. Each round is ("calls", [call ids]), which reasons, writes and calls; ("think-call", [call ids]),
+    which reasons and calls without writing a word of its own; ("think-write-think-call", [call ids]), which reasons,
+    writes, reasons again and calls; ("reused-thought-call", [call ids]), which re-sends the reasoning id a
+    "call-then-thought" round already deferred, with its own text, and calls; ("quiet-calls", [call ids]),
     which writes and calls without reasoning; ("silent-calls", [call ids]), which only calls; ("silent-search-then-calls",
     [call ids]) and ("think-silent-search-then-calls", [call ids]), which have OpenRouter run a web search and then call,
     writing nothing, the second reasoning first; ("search-then-calls", [call ids]), which reasons, has OpenRouter run a web
@@ -88,7 +92,8 @@ async def _stage_a(pipe, monkeypatch, valves, rounds, *, stream=True, emitter=No
     cancels the turn as Stop does, when that round's model call starts; pass ``rows`` to see what was stored by then.
     Rows are copied when they are written, as the database stores them: a change made to an item afterwards is not in
     its row. ``builtin_ask_user`` registers the round's tool as Open WebUI's real builtin ``ask_user`` rather than a
-    user's tool of the same name, which is the shape that earns the privacy exemption.
+    user's tool of the same name, which is the shape that earns the privacy exemption. ``params`` is Open WebUI's
+    own request params, which is where ``tool_approval_mode`` reaches the pipe.
 
     Returns the content the loop produced, the rows it persisted (ulid -> payload) and the events it emitted.
     """
@@ -184,9 +189,48 @@ async def _stage_a(pipe, monkeypatch, valves, rounds, *, stream=True, emitter=No
             yield {"type": "response.completed", "response": {"output": output, "usage": {}}}
             return
 
+        if kind == "think-write-think-call":
+            # Two thoughts with a stretch of prose between them, then the call: the shape
+            # where both boxes belong above the call. Written out rather than reached by
+            # composition, because the ordering is what the rows that use it assert.
+            yield thought("")
+            yield {"type": "response.output_text.delta", "delta": f"text {index} "}
+            yield thought("-after")
+            for call_id in value:
+                call = {"type": "function_call", "call_id": call_id, "name": tool_name,
+                        "arguments": json.dumps({"q": ARGUMENT_CANARY}), "status": "completed"}
+                yield {"type": "response.output_item.done", "item": call}
+                output.append(call)
+            yield {"type": "response.completed", "response": {"output": output, "usage": {}}}
+            return
+
+        if kind == "reused-thought-call":
+            # A later round that re-sends the reasoning id an earlier round already used,
+            # with its own text -- the ordinary shape of a tool turn with a reasoning
+            # model, and the one `deferred_reasoning_keys` records as "ever owed" rather
+            # than "still owed". The id is fixed rather than derived from the round so the
+            # reuse is the point; `call-then-thought` in the round before is what defers it.
+            reasoning_id = "rs-1"
+            yield {"type": "response.output_item.added", "output_index": 0,
+                   "item": {"type": "reasoning", "id": reasoning_id, "status": "in_progress"}}
+            yield {"type": "response.reasoning_text.delta", "item_id": reasoning_id,
+                   "delta": f"THOUGHT-AGAIN-{index} "}
+            output.append({"type": "reasoning", "id": reasoning_id, "status": "completed",
+                           "content": [{"type": "reasoning_text", "text": f"THOUGHT-AGAIN-{index}"}], "summary": []})
+            for call_id in value:
+                call = {"type": "function_call", "call_id": call_id, "name": tool_name,
+                        "arguments": json.dumps({"q": ARGUMENT_CANARY}), "status": "completed"}
+                yield {"type": "response.output_item.done", "item": call}
+                output.append(call)
+            yield {"type": "response.completed", "response": {"output": output, "usage": {}}}
+            return
+
         consulting = kind in ("advise-then-calls", "search-think-then-calls")
-        silent = kind in ("silent-calls", "silent-search-then-calls", "think-silent-search-then-calls")
-        if kind in ("calls", "search-then-calls", "think-silent-search-then-calls") or consulting or (
+        # "think-call" is in the silent set because it is the shape the deferral rule is
+        # about: a round that reasons and calls, writing no prose of its own, so nothing
+        # flushes its box before the round boundary.
+        silent = kind in ("silent-calls", "silent-search-then-calls", "think-silent-search-then-calls", "think-call")
+        if kind in ("calls", "search-then-calls", "think-silent-search-then-calls", "think-call") or consulting or (
             kind == "answer" and value
         ):
             yield thought("")
@@ -205,7 +249,7 @@ async def _stage_a(pipe, monkeypatch, valves, rounds, *, stream=True, emitter=No
             yield thought("-after")
         if not silent:
             yield {"type": "response.output_text.delta", "delta": f"text {index} "}
-        if kind in ("calls", "quiet-calls", "search-then-calls") or consulting or silent:
+        if kind in ("calls", "quiet-calls", "search-then-calls", "think-call") or consulting or silent:
             for call_id in value:
                 call = {"type": "function_call", "call_id": call_id, "name": tool_name,
                         "arguments": json.dumps({"q": ARGUMENT_CANARY}), "status": "completed"}
@@ -266,7 +310,8 @@ async def _stage_a(pipe, monkeypatch, valves, rounds, *, stream=True, emitter=No
         content = await runner(
             body, valves, capture if emitter is None else emitter,
             metadata={"model": {"id": MODEL}, "chat_id": chat_id, **({"message_id": message_id} if message_id else {}),
-                      **({"assistant_message_id": message_id} if continues_after_marker else {})},
+                      **({"assistant_message_id": message_id} if continues_after_marker else {}),
+                      **({"params": params} if params else {})},
             tools=registry, session=cast(Any, object()), user_id="u1",
         )
     finally:

@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..core.config import entry_data_url
 from ..core.timing_logger import timed, timing_mark
-from ..core.url_scheme import split_base64_data_url
+from ..core.url_scheme import loggable_link, split_base64_data_url
 from ..core.utils import (
     TOOL_CALL_STATUSES,
     parse_tool_arguments,
@@ -33,7 +33,7 @@ from ..core.warn_latch import warn_level
 
 _OWUI_RESULT_WARN_COOLDOWN_S = 300.0
 _OWUI_RESULT_WARN_CAP = 256
-from ..storage.owui_files import is_temporary_chat
+from ..storage.owui_files import is_temporary_chat, owui_file_content_url
 from ..storage.persistence import generate_item_id
 from .tool_schema import _advertised_root_params
 
@@ -938,18 +938,25 @@ class ToolExecutor:
     async def _tool_pictures_safe(
         self, files: list[dict[str, Any]], context: _ToolExecutionContext, *, tool_name: str = ""
     ) -> tuple[list[str], list[dict[str, Any]]]:
-        pictures: list[str] = []
+        from ..requests.transformer import (
+            _tool_picture_gate_with_address,
+            _tool_picture_notice,
+        )
+
+        pipe = self._pipe
+        max_inline_bytes = pipe.valves.BASE64_MAX_SIZE_MB * 1024 * 1024
+        candidates: list[str] = []
         shown: list[dict[str, Any]] = []
         unfiled: str | None = None
         for entry in files:
             url = entry.get("url") if isinstance(entry, dict) else None
             if isinstance(entry, dict) and entry.get("type") == "image" and isinstance(url, str) and url.startswith("data:"):
-                pictures.append(await self._stored_picture_safe(url, context))
+                candidates.append(await self._stored_picture_safe(url, context))
                 continue
             if isinstance(entry, dict) and entry_data_url(entry):
                 filed = await self._stored_data_entry_safe(entry, context)
                 if isinstance(filed, str):
-                    pictures.append(filed)
+                    candidates.append(filed)
                 elif filed is not None:
                     shown.append(filed)
                 else:
@@ -957,7 +964,19 @@ class ToolExecutor:
                 continue
             shown.append(entry)
             if isinstance(entry, dict) and entry.get("type") == "image" and isinstance(url, str) and url:
-                pictures.append(url)
+                candidates.append(url)
+        pictures, refused = await _tool_picture_gate_with_address(
+            pipe, candidates, max_inline_bytes=max_inline_bytes,
+        )
+        for refused_url, reason, cause in refused:
+            self.logger.warning(
+                "Not forwarding a tool's picture (%s): %s [cause=%s]",
+                loggable_link(refused_url), reason, cause,
+            )
+        if refused:
+            await pipe._event_emitter_handler._emit_status(
+                context.event_emitter, _tool_picture_notice(refused), done=False,
+            )
         if unfiled:
             await self._notify_unfiled_tool_file_safe(context, unfiled, tool_name)
         return pictures, shown
@@ -995,7 +1014,12 @@ class ToolExecutor:
         stored = await self._upload_data_entry_safe(raw, mime_type, context)
         if not isinstance(stored, str) or not stored or stored.startswith("data:"):
             return None
-        return {"type": "file", "url": stored, "name": _entry_file_name(mime_type)}
+        return {
+            "type": "file",
+            "id": stored,
+            "url": owui_file_content_url(stored),
+            "name": _entry_file_name(mime_type),
+        }
 
     async def _upload_data_entry_safe(
         self, raw: bytes, mime_type: str, context: _ToolExecutionContext

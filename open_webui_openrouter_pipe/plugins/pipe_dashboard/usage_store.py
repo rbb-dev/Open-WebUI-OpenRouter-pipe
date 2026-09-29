@@ -118,8 +118,10 @@ class UsageStore:
         self._model: Any = None
         self._table_name: str | None = None
         self._signature: tuple[Any, ...] | None = None
+        self._model_signature: tuple[Any, ...] | None = None
         self._reconcile_failed: tuple[Any, ...] | None = None
         self._reconcile_failed_at = 0.0
+        self._held: list[dict[str, Any]] = []
         self._queue: queue.Queue[dict[str, Any] | None] = queue.Queue(maxsize=queue_max)
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -154,7 +156,7 @@ class UsageStore:
             suffix = store.table_suffix()
             signature = (id(engine), suffix)
             if self._signature == signature:
-                if self._model is not None:
+                if self._model is not None and self._model_signature == signature:
                     return True
                 if (
                     self._reconcile_failed == signature
@@ -197,6 +199,7 @@ class UsageStore:
             self._model = model
             self._table_name = table_name
             self._signature = signature
+            self._model_signature = signature
             self._reconcile_failed = None
             self._reconcile_failed_at = 0.0
             return True
@@ -316,41 +319,71 @@ class UsageStore:
         self._thread.start()
 
     def _writer_loop(self) -> None:
-        while True:
-            batch: list[dict[str, Any]] = []
-            try:
-                item = self._queue.get(timeout=0.5)
-                if item is not None:
-                    batch.append(item)
-            except queue.Empty:
-                pass
-            try:
-                while len(batch) < _US_BATCH_MAX:
-                    extra = self._queue.get_nowait()
-                    if extra is not None:
-                        batch.append(extra)
-            except queue.Empty:
-                pass
-            if batch:
-                try:
-                    self._persist_sync(batch)
-                except Exception:
-                    logger.debug("usage batch persist failed", exc_info=True)
-            if self._stop_event.is_set() and self._queue.qsize() == 0:
-                break
+        while self._writer_pass():
+            pass
 
-    def _persist_sync(self, rows: list[dict[str, Any]]) -> None:
+    def _writer_pass(self) -> bool:
+        batch: list[dict[str, Any]] = []
+        try:
+            item = self._queue.get(timeout=0.5)
+            if item is not None:
+                batch.append(item)
+        except queue.Empty:
+            pass
+        try:
+            while len(batch) < _US_BATCH_MAX:
+                extra = self._queue.get_nowait()
+                if extra is not None:
+                    batch.append(extra)
+        except queue.Empty:
+            pass
+        if batch:
+            self._write_batch(batch)
+        if self._stop_event.is_set() and self._queue.qsize() == 0:
+            self._release_held()
+            return False
+        return True
+
+    def _write_batch(self, batch: list[dict[str, Any]]) -> None:
+        held, self._held = self._held, []
+        combined = held + batch
+        if len(combined) > _US_BATCH_MAX:
+            self._dropped += len(combined) - _US_BATCH_MAX
+            combined = combined[-_US_BATCH_MAX:]
+        if not self._write_now(combined):
+            self._held = combined
+
+    def _release_held(self) -> None:
+        held, self._held = self._held, []
+        if not held:
+            return
+        if self._write_now(held):
+            return
+        self._dropped += len(held)
+        logger.warning(
+            "usage writer stopped with %d rows it could not write; the usage table was not writable",
+            len(held),
+        )
+
+    def _write_now(self, rows: list[dict[str, Any]]) -> bool:
+        try:
+            return self._persist_sync(rows)
+        except Exception:
+            logger.debug("usage batch persist failed", exc_info=True)
+            return False
+
+    def _persist_sync(self, rows: list[dict[str, Any]]) -> bool:
         store = self._store
         if store is None:
-            return
+            return False
         if not self.ensure(store):
-            return
+            return False
         model = self._model
         if model is None:
-            return
+            return False
         session_factory = getattr(store, "_session_factory", None)
         if session_factory is None:
-            return
+            return False
         instances = []
         for row in rows:
             data = {key: row.get(key) for key in USAGE_ROW_FIELDS}
@@ -361,6 +394,7 @@ class UsageStore:
         with _db_session(session_factory) as session:
             session.add_all(instances)
             session.commit()
+        return True
 
     def start_purge_task(self, retention_days_fn: Callable[[], int]) -> None:
         """Start the jittered retention purge loop on the running loop."""

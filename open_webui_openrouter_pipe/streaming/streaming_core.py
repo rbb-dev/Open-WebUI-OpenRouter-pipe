@@ -628,6 +628,8 @@ class StreamingHandler:
         reasoning_stream_completed: set[str] = set()
         reasoning_display: dict[str, dict[str, Any]] = {}
         round_saw_function_call = 0
+        calls_in_this_round = 0
+        named_tool_call = False
         deferred_reasoning_keys: dict[str, int] = {}
         ordinal_by_url: dict[str, int] = {}
         emitted_citations: list[dict] = []
@@ -1059,6 +1061,10 @@ class StreamingHandler:
                     return published_item_ids.index(item_id)
                 published_item_ids.append(item_id if isinstance(item_id, str) and item_id else f"#{len(published_item_ids)}")
                 return len(published_item_ids) - 1
+
+            def _reserve_host_slot(call_id: str) -> None:
+                if call_id and call_id not in published_item_ids:
+                    published_item_ids.append(call_id)
 
             def _output_index_before_open_message(item: dict[str, Any]) -> int:
                 if open_message_id not in published_item_ids:
@@ -1767,6 +1773,28 @@ class StreamingHandler:
             handed_back_for_retry = False
             content_handed_back = False
 
+            def _round_annotations_and_reasoning(
+                response: dict[str, Any] | None,
+            ) -> tuple[list[Any], list[Any]]:
+                out_annotations: list[Any] = []
+                out_reasoning_details: list[Any] = []
+                if not response or not isinstance(response.get("output"), list):
+                    return out_annotations, out_reasoning_details
+                for item in response.get("output") or []:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("type") != "message":
+                        continue
+                    if item.get("role") != "assistant":
+                        continue
+                    raw_annotations = item.get("annotations")
+                    if isinstance(raw_annotations, list) and raw_annotations:
+                        out_annotations.extend(raw_annotations)
+                    raw_reasoning_details = item.get("reasoning_details")
+                    if isinstance(raw_reasoning_details, list) and raw_reasoning_details:
+                        out_reasoning_details.extend(raw_reasoning_details)
+                return out_annotations, out_reasoning_details
+
             def _record_outcome() -> None:
                 if outcome_sink is None:
                     return
@@ -1775,6 +1803,8 @@ class StreamingHandler:
                 outcome_sink["reason"] = session_log_reason or None
 
             final_response: dict[str, Any] | None = None
+            round_annotations: list[Any] = []
+            round_reasoning_details: list[Any] = []
             dispatched_metered_chars: int | None = None
             dispatched_model_id: str = ""
             _release_armed = False
@@ -1800,6 +1830,8 @@ class StreamingHandler:
                     reasoning_stream_buffers.pop("__reasoning__", None)
                     reasoning_stream_completed.discard("__reasoning__")
                     reasoning_display.pop("__reasoning__", None)
+                    calls_in_this_round = 0
+                    named_tool_call = False
                 if event_source is not None:
                     if loop_index > 0:
                         break
@@ -1891,6 +1923,14 @@ class StreamingHandler:
                     etype = event.get("type")
                     if etype == "openrouter_pipe.chat_fallback":
                         fell_back_to_chat = True
+                        continue
+
+                    if etype == "openrouter_pipe.unhandled_citations":
+                        raw_types = event.get("types")
+                        if isinstance(raw_types, list) and raw_types:
+                            await _notify_unhandled_citations(
+                                [{"type": entry} for entry in raw_types]
+                            )
                         continue
 
                     is_delta_event = bool(etype and etype.endswith(".delta"))
@@ -2128,6 +2168,7 @@ class StreamingHandler:
                                 include_name = call_id not in streamed_tool_call_name_sent
                                 if include_name:
                                     streamed_tool_call_name_sent.add(call_id)
+                                _reserve_host_slot(call_id)
                                 await _publish_turn_frame(
                                     {
                                         "type": "chat:tool_calls",
@@ -2165,6 +2206,7 @@ class StreamingHandler:
                                 include_name = call_id not in streamed_tool_call_name_sent
                                 if include_name:
                                     streamed_tool_call_name_sent.add(call_id)
+                                _reserve_host_slot(call_id)
                                 await _publish_turn_frame(
                                     {
                                         "type": "chat:tool_calls",
@@ -2296,6 +2338,8 @@ class StreamingHandler:
                             item_id = raw_item_id.strip() if isinstance(raw_item_id, str) else ""
                             raw_name = item.get("name")
                             tool_name = raw_name.strip() if isinstance(raw_name, str) else ""
+                            if tool_name:
+                                named_tool_call = True
                             if call_id:
                                 if item_id:
                                     tool_call_item_ids[item_id] = call_id
@@ -2338,8 +2382,9 @@ class StreamingHandler:
                                     await _emit_annotation_citations(content_part.get("annotations"))
                             await _emit_annotation_citations(item.get("annotations"))
                             phase_marker = _phase_marker_for_output_item(item)
-                            if phase_marker and not api_hold_key:
-                                assistant_message = await _append_assistant_hidden_markers(assistant_message, [phase_marker])
+                            if not api_hold_key:
+                                if phase_marker:
+                                    assistant_message = await _append_assistant_hidden_markers(assistant_message, [phase_marker])
                                 reasoning_anchor_state["text_chunks"] += 1
                                 reasoning_anchor_state["chars_at_last_chunk"] = len(
                                     assistant_message
@@ -2356,7 +2401,9 @@ class StreamingHandler:
                         elif item_type == "function_call":
                             should_persist = False
                             round_saw_function_call += 1
+                            calls_in_this_round += 1
                             if item.get("name"):
+                                named_tool_call = True
                                 reasoning_anchor_state["stream_calls"] += len(
                                     split_tool_argument_objects(
                                         _read_arguments_as_open_webui_reads_them(item)
@@ -2753,7 +2800,7 @@ class StreamingHandler:
                                 note_generation_activity()
                                 await _maybe_emit_reasoning_status(append)
                                 await _maybe_emit_reasoning_status("", force=True)
-                            if emitter_supplied and round_saw_function_call:
+                            if emitter_supplied and calls_in_this_round:
                                 _reasoning_display_state(key)
                                 deferred_reasoning_keys.setdefault(key, round_saw_function_call)
                             else:
@@ -2823,6 +2870,11 @@ class StreamingHandler:
                             if isinstance(_terminal_response, dict) and _terminal_response
                             else None
                         )
+                        _round_annotations, _round_reasoning_details = (
+                            _round_annotations_and_reasoning(final_response)
+                        )
+                        round_annotations.extend(_round_annotations)
+                        round_reasoning_details.extend(_round_reasoning_details)
                         response_completed_at = perf_counter()
                         if generation_started_at is not None:
                             generation_last_event_at = response_completed_at
@@ -3242,6 +3294,8 @@ class StreamingHandler:
                                         streamed_tool_call_ids.add(call_id)
                                         if suffix:
                                             streamed_tool_call_args[call_id] = f"{prev_args}{suffix}"
+                                        if owui_tool_passthrough:
+                                            _reserve_host_slot(call_id)
                                         await event_emitter(
                                             {
                                                 "type": "chat:tool_calls",
@@ -3593,6 +3647,8 @@ class StreamingHandler:
                                         tool_id=cid,
                                     )
                                     for source in citations:
+                                        if isinstance(source, dict):
+                                            emitted_citations.append(source)
                                         if event_emitter:
                                             await self._pipe._event_emitter_handler._emit_citation(event_emitter, source)
                                             self.logger.debug(
@@ -3784,7 +3840,7 @@ class StreamingHandler:
             session_log_reason = str(e)
             self.logger.exception("Unexpected error in streaming loop")
             if isinstance(e, (TimeoutError, aiohttp.ClientConnectionError, aiohttp.ClientPayloadError)):
-                if strip_hidden_marker_lines(assistant_message).strip():
+                if strip_hidden_marker_lines(assistant_message).strip() or named_tool_call:
                     template, variables = valves.STREAM_INTERRUPTED_TEMPLATE, {"model": body.model or ""}
                 elif isinstance(e, aiohttp.ConnectionTimeoutError):
                     template, variables = valves.NETWORK_TIMEOUT_TEMPLATE, {"timeout_seconds": valves.HTTP_CONNECT_TIMEOUT_SECONDS}
@@ -4142,27 +4198,10 @@ class StreamingHandler:
             chat_id = metadata.get("chat_id")
             message_id = metadata.get("message_id")
 
-            assistant_annotations: list[Any] = []
-            assistant_reasoning_details: list[Any] = []
-            if final_response and isinstance(final_response.get("output"), list):
-                for item in final_response.get("output", []):
-                    if not isinstance(item, dict):
-                        continue
-                    if item.get("type") != "message":
-                        continue
-                    if item.get("role") != "assistant":
-                        continue
-                    raw_annotations = item.get("annotations")
-                    if isinstance(raw_annotations, list) and raw_annotations:
-                        assistant_annotations.extend(raw_annotations)
-                    raw_reasoning_details = item.get("reasoning_details")
-                    if isinstance(raw_reasoning_details, list) and raw_reasoning_details:
-                        assistant_reasoning_details.extend(raw_reasoning_details)
-
             turn_values = {
                 "sources": emitted_citations,
-                "annotations": assistant_annotations,
-                "reasoning_details": assistant_reasoning_details,
+                "annotations": round_annotations,
+                "reasoning_details": round_reasoning_details,
             }
             payload: dict[str, Any] = {
                 field: turn_values[field]

@@ -16,7 +16,9 @@ its valves are still the source: a member's `openrouter:*` tools come from the a
 a toggle the user set in another chat governs the panel. A tool whose `ENABLE_*` valve is off is
 never sent to a member. Every call is cost-attributed. Each model streams its answer and its
 thinking into the live panel as it works. And where hosted Fusion loses the entire run to one
-dropped stream, the built-in engine marks the failed panelist and completes the run.
+dropped stream, the built-in engine marks the failed panelist and completes the run. The same
+holds for the final-answer stage: a synthesis call that dies mid-stream keeps the text it had
+already streamed and closes the turn with a degrade marker naming that failure.
 
 > **Fan-out:** Fusion runs every underlying call — roughly **4–5× a single completion**, and
 > it scales with panel size. The Web Tools filter's `SERVER_TOOLS_MAX_COST_USD` rides the same
@@ -130,11 +132,12 @@ controls, and final answer look identical on both.
 | Panel tools | OpenRouter web search + fetch only | The full Open WebUI tool surface, run inside the pipe in either outer mode: knowledge bases, tool servers, and the `openrouter:*` server tools. A member's `openrouter:*` tools come from the admin's `ENABLE_*` valves **and** the Web Tools filter's stored per-user toggles for the chatting user, so a per-chat toggle set on *another* chat governs the panel; a valve that is off sends no such tool. Image generation reaches every member and the synthesis call, cost-attributed like any other tool. **Known coupling, not a guarantee:** `collect_installed_web_tools_config` with a stored `{"WEB_SEARCH": false}` still returns a different tool set, so this row changes when the code half lands. Under `ask` approval a member is offered none of Open WebUI's tools |
 | Per-model dials | OpenRouter's own settings | Every pipe dial per member: ZDR/provider routing, reasoning effort, max output tokens, identity headers |
 | Cost attribution | One OpenRouter charge | Every inner call is cost-attributed to the user like a normal chat; the run's footer shows the aggregated total |
-| Failure behaviour | A dropped stream loses the whole run | One failed member degrades that card — a member that exhausts its own chat retries is a failed member, like any other failure — and the judge works from the survivors; a member refused before its request was sent reports a fixed short reason, never a copy of the rendered error card behind it, so nothing that card happened to quote reaches the panel, the judge or the synthesiser; the run completes. When *every* member fails the run still returns a well-formed answer — on a **Direct Connection** too, which gets the answer text and the error archive row but no panel, no `fusion:event` stream and no embed — and the session-log archive records that turn as an error. On *any* total panel failure the outer archive row reads the fixed string `Every Fusion panel member failed; this run has no deliberated answer.` — the provider status is on the inner per-member rows only only when no member answered at all |
+| Failure behaviour | A dropped stream loses the whole run | One failed member degrades that card — a member that exhausts its own chat retries is a failed member, like any other failure — and the judge works from the survivors; a member refused before its request was sent reports a fixed short reason, never a copy of the rendered error card behind it, so nothing that card happened to quote reaches the panel, the judge or the synthesiser; the run completes. A synthesis member that dies mid-stream is the same shape on the answer stage: its partial is kept (the user watched it stream in, and it is not retried) and a marker naming the final-answer failure is appended and streamed. That marker is **part of the stored reply**, not a transient toast — it is in every `response.output_text.delta`, in the string the turn returns, and in the assistant message Open WebUI persists. When *every* member fails the run still returns a well-formed answer — on a **Direct Connection** too, which gets the answer text and the error archive row but no panel, no `fusion:event` stream and no embed — and the session-log archive records that turn as an error. On *any* total panel failure the outer archive row reads the fixed string `Every Fusion panel member failed; this run has no deliberated answer.` — the provider status is on the inner per-member rows only only when no member answered at all |
 | Tool budget (`max_tool_calls`) | Caps web search/fetch steps; unset means OpenRouter's own default of `4` | Hard per-model cap on individual tool invocations, plus a bound on tool rounds; unset means this pipe's own default of `8` |
 
 Behaviour shared by both engines:
 
+- A panel member's **attachment refusals are not surfaced to the person**, before or after this change. `FusionCollector` has no branch for a status event, so a member's own `Files: skipped N (…)` is discarded inside the collector, and every member re-runs the whole transform on the raw messages, so a link the address gate refuses is re-checked once per member and the person is told nothing on a fusion turn. The same was already true of the cleartext and oversized rules; it is recorded here because the address gate is a rule a member can newly hit, and the fix for it must not be to card the refusal — that would surface once per member on a channel that today reports none of them.
 - Deliberation is **guaranteed** on fusion-model chats — the internal engine always
   deliberates; the OpenRouter engine is forced via `tool_choice: "required"`.
 - A caller-supplied `{"id": "fusion", "enabled": false}` plugins entry is an explicit
@@ -244,10 +247,12 @@ streaming panel deltas, the cards simply fill in at completion as before.
   so it is written only for a turn that shipped its answer.
 
 - Forces the `/responses` endpoint (the only one that emits the granular Fusion events). A
-  `FORCE_CHAT_COMPLETIONS_MODELS` match on the fusion model is **not** overridden: the valve holds and the turn
-  is refused with the endpoint-conflict card, because the Fusion plugin entry cannot travel to
-  `/chat/completions`. The pin is kept and the request does not run.
-- No effect on **Direct Connections** — Open WebUI does not deliver in-chat embeds on that path. A valve-pinned Fusion model is still refused there with the endpoint-conflict card, as it is anywhere else.
+  `FORCE_CHAT_COMPLETIONS_MODELS` match on the fusion model is **not** overridden: on the hosted OpenRouter backend
+  the valve holds and the turn is refused with the endpoint-conflict card, because the Fusion plugin entry cannot
+  travel to `/chat/completions`. The pin is kept and the request does not run. On the internal backend the panel runs
+  inside the pipe and the fusion model never reaches OpenRouter, so there is no endpoint conflict to refuse and the
+  turn runs the panel.
+- No effect on **Direct Connections** — Open WebUI does not deliver in-chat embeds on that path. A valve-pinned Fusion model is still refused there with the endpoint-conflict card, as it is anywhere else on the hosted backend.
 - Automatic on the fusion models — `openrouter/fusion`, `openrouter/fusion-flash` and their `:tag` / `@preset/…` forms — whenever Fusion is enabled — the master `ENABLE_OPENROUTER_FUSION` switch turns it off along with the rest of Fusion. Non-fusion models are never affected.
 
 ### Socket transport — network & CSP requirements (admin)

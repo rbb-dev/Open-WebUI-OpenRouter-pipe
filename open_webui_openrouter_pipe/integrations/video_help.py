@@ -783,12 +783,13 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
     "bytedance/seedance-2.0-mini": {
         "display_name": "ByteDance: Seedance 2.0 Mini",
         "best_known_for": (
-            "Seedance 2.0 Mini, the lightest tier of the Seedance family and the only model here "
-            "that takes all four input kinds — text, an image, a video clip and an audio track — "
-            "in the same request. Clips run 4 to 15 seconds at 480p or 720p, across seven "
-            "framings from 21:9 down to 9:21, and you can either pick a framing or pin exact pixel "
-            "dimensions from the thirteen sizes it publishes. It generates its own audio, honours "
-            "a seed, and anchors on a first frame, a last frame, or both. Supplying a reference "
+            "Seedance 2.0 Mini, the lightest tier of the Seedance family. Clips run 4 to 15 "
+            "seconds at 480p or 720p, across seven framings from 21:9 down to 9:21, and you "
+            "can either pick a framing or pin exact pixel dimensions from the thirteen sizes it "
+            "publishes. It generates its own audio, honours a seed, and anchors on a first "
+            "frame, a last frame, or both. Supplying a reference clip builds on footage you "
+            "already have rather than inventing the whole shot, and it reaches the model only "
+            "when your administrator has turned on sending media to a file host."
         ),
         "tips_and_pitfalls": [
             "Building on a clip you already have is the more controllable path — the model works from your footage instead of inventing the whole shot.",
@@ -1172,6 +1173,17 @@ def _canonical_model_id(model_id: str, model: dict[str, Any]) -> str:
     return ""
 
 
+def _zdr_capability_sentence(model_id: str) -> str:
+    from ..models.registry import OpenRouterModelRegistry
+
+    verdict = OpenRouterModelRegistry.is_zdr_capable(model_id)
+    if verdict is True:
+        return "This model is ZDR-capable."
+    if verdict is False:
+        return "This model is not ZDR-capable."
+    return "OpenRouter's ZDR list has not been read, so this is unverified."
+
+
 def _render_catalog_fallback(model_id: str, model: dict[str, Any]) -> str:
     raw_name = model.get("name")
     display = raw_name if isinstance(raw_name, str) else model_id
@@ -1179,6 +1191,7 @@ def _render_catalog_fallback(model_id: str, model: dict[str, Any]) -> str:
     description = raw_description if isinstance(raw_description, str) else ""
     frames = _format_frames_capability(model.get("supported_frame_images"))
     accepted = _format_accepted_inputs(model)
+    zdr = _zdr_capability_sentence(model_id)
     params = _format_csv(model.get("allowed_passthrough_parameters")) or "none listed"
     ratios = _format_csv(model.get("supported_aspect_ratios")) or "model default"
     durations = _format_csv(model.get("supported_durations")) or "model default"
@@ -1190,8 +1203,7 @@ def _render_catalog_fallback(model_id: str, model: dict[str, Any]) -> str:
         f"Frame controls: {frames}.\n\n"
         "Useful prompt patterns: Describe subject, action, setting, camera "
         "movement, visual style, and constraints in one clear shot.\n\n"
-        "Known limitations: This model is not ZDR-capable and exact continuity "
-        "can vary by generation.\n\n"
+        f"Known limitations: {zdr} Exact continuity can vary by generation.\n\n"
         f"Supported knobs: durations {durations}; aspect ratios {ratios}; "
         f"resolutions {resolutions}; provider parameters {params}."
     )

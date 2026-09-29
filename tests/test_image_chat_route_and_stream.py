@@ -519,9 +519,11 @@ def test_a_stream_is_asked_for_only_when_every_candidate_endpoint_publishes_one(
 ):
     """The model-level flag is a union and this is not.
 
-    Which endpoint serves a request is settled after it leaves, so a model whose one
-    streaming endpoint is joined by a non-streaming one would be asked to stream on a
-    request the other takes.
+    Which endpoint serves a request is settled by the provider block the pipe puts on
+    the wire -- the operator's pin, and the pipe's own narrowing alike -- so the set
+    that can serve is not always the published one. This drives the helper directly, so
+    the call site is what decides the set; see
+    `test_the_stream_decision_reads_the_endpoints_that_can_serve.py`.
     """
     assert ImageGenerationAdapter._every_endpoint_publishes_streaming(published) is asked
 

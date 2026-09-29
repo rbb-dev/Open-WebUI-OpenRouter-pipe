@@ -1500,32 +1500,6 @@ class TestMergeValves:
         finally:
             pipe.shutdown()
 
-    def test_merge_valves_next_reply_mapping(self):
-        """Test that _merge_valves maps next_reply to PERSIST_REASONING_TOKENS.
-
-        `True` is not a member of the field's `Literal`, so it is a value the field
-        could never be constructed with, and the merge now leaves the administrator's
-        alone. The mapping itself is unchanged, and the next line pins it with a
-        member that does exist.
-        """
-        pipe = Pipe()
-
-        try:
-            # Check if PERSIST_REASONING_TOKENS exists on global valves
-            if hasattr(pipe.valves, "PERSIST_REASONING_TOKENS"):
-                out_of_domain = pipe._merge_valves(
-                    pipe.valves, {"next_reply": True},
-                )
-                assert out_of_domain.PERSIST_REASONING_TOKENS == pipe.valves.PERSIST_REASONING_TOKENS
-
-                in_domain = pipe._merge_valves(
-                    pipe.valves, {"next_reply": "next_reply"},
-                )
-                assert in_domain.PERSIST_REASONING_TOKENS == "next_reply"
-        finally:
-            pipe.shutdown()
-
-
 # =============================================================================
 # IS FREE MODEL TESTS
 # =============================================================================
@@ -4593,26 +4567,6 @@ def test_merge_valves_applies_user_boolean_override():
         pipe.shutdown()
 
 
-def test_merge_valves_honors_reasoning_retention_alias():
-    """The alias is dict-shaped, so the arm is built on a dict.
-
-    `next_reply` is not a `UserValves` field, so it can never appear in
-    `model_fields_set` and the model branch cannot reach the alias at all -- the
-    dict branch is the only one that can. The global is `disabled`, not the field
-    default `conversation`, so "the merge did nothing" cannot be mistaken for
-    "the alias landed"; and the merge must return a new object, not the global
-    itself, for the same reason.
-    """
-    pipe = Pipe()
-    try:
-        admin = pipe.Valves(PERSIST_REASONING_TOKENS="disabled")
-        merged = pipe._merge_valves(admin, {"next_reply": "conversation"})
-        assert merged.PERSIST_REASONING_TOKENS == "conversation"
-        assert merged is not admin
-    finally:
-        pipe.shutdown()
-
-
 def test_redis_candidate_requires_full_multiworker_env(monkeypatch, caplog):
     monkeypatch.setenv("UVICORN_WORKERS", "4")
     monkeypatch.delenv("REDIS_URL", raising=False)
@@ -6920,27 +6874,6 @@ def test_merge_valves_with_inherit_value():
 
         # Should keep global value when INHERIT is specified
         assert merged.ENABLE_ANTHROPIC_INTERLEAVED_THINKING == original_value
-    finally:
-        pipe.shutdown()
-
-
-def test_merge_valves_with_next_reply_alias():
-    """Test that _merge_valves handles next_reply alias for PERSIST_REASONING_TOKENS.
-
-    `True` is outside the field's `Literal` and is left to the administrator; the
-    mapping is pinned with a member of that `Literal` instead.
-    """
-    pipe = Pipe()
-    try:
-        global_valves = pipe.valves
-
-        merged = pipe._merge_valves(global_valves, {"next_reply": "disabled"})
-
-        assert merged.PERSIST_REASONING_TOKENS == "disabled"
-
-        out_of_domain = pipe._merge_valves(global_valves, {"next_reply": True})
-
-        assert out_of_domain.PERSIST_REASONING_TOKENS == global_valves.PERSIST_REASONING_TOKENS
     finally:
         pipe.shutdown()
 

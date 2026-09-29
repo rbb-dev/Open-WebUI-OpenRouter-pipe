@@ -7899,38 +7899,6 @@ class TestStreamingCoreAdditionalCoverage:
         assert call_count[0] == 1
 
     @pytest.mark.asyncio
-    async def test_session_log_persist_exception(self, monkeypatch, pipe_instance_async, caplog):
-        """Test session log persist exception handling (lines 1711-1712)."""
-        pipe = pipe_instance_async
-        body = ResponsesBody(model="test/model", input=[], stream=True)
-
-        events = [
-            {"type": "response.output_text.delta", "delta": "Hello"},
-            {"type": "response.completed", "response": {"output": [], "usage": {}}},
-        ]
-
-        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
-
-        async def mock_persist_log_raising(*args, **kwargs):
-            raise Exception("DB error")
-
-        monkeypatch.setattr(pipe._session_log_manager, "persist_segment_to_db", mock_persist_log_raising)
-
-        import logging
-        with caplog.at_level(logging.DEBUG):
-            result = await pipe._streaming_handler._run_streaming_loop(
-                body,
-                pipe.valves,
-                None,
-                metadata={"model": {"id": "test"}},
-                tools={},
-                session=cast(Any, object()),
-                user_id="user-123",
-            )
-
-        assert result == "Hello"
-
-    @pytest.mark.asyncio
     async def test_chats_citation_persistence_exception(self, monkeypatch, pipe_instance_async, caplog):
         """Test Chats citation persistence exception (lines 1745-1751)."""
         pipe = pipe_instance_async
@@ -9597,49 +9565,6 @@ class TestFunctionCallRawTextConversion:
         assert "test_func()" in caplog.text or result is not None
 
 
-class TestSessionLogSegmentPersistException:
-    """Test for session log segment persist exception (lines 1711-1712)."""
-
-    @pytest.mark.asyncio
-    async def test_session_log_persist_exception_handled(self, monkeypatch, pipe_instance_async, caplog):
-        """Test that session log persist exception is caught (lines 1711-1712)."""
-        pipe = pipe_instance_async
-        body = ResponsesBody(model="test/model", input=[], stream=True)
-
-        events = [
-            {"type": "response.output_text.delta", "delta": "Hello"},
-            {"type": "response.completed", "response": {"output": [], "usage": {}}},
-        ]
-
-        monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
-
-        async def mock_persist_session_log(*args, **kwargs):
-            raise RuntimeError("Simulated session log persist failure")
-
-        monkeypatch.setattr(pipe._session_log_manager, "persist_segment_to_db", mock_persist_session_log)
-
-        emitted: list[dict] = []
-        async def emitter(event):
-            emitted.append(event)
-
-        import logging
-        with caplog.at_level(logging.DEBUG):
-            result = await pipe._streaming_handler._run_streaming_loop(
-                body,
-                pipe.valves,
-                emitter,
-                metadata={"model": {"id": "test"}, "chat_id": "chat-1", "message_id": "msg-1"},
-                tools={},
-                session=cast(Any, object()),
-                user_id="user-123",
-            )
-
-        assert result == "Hello"
-        # Check that the exception was logged
-        has_debug = any("Failed to persist session log segment" in record.message for record in caplog.records)
-        assert result == "Hello"
-
-
 class TestSegmentStatusCancelled:
     """Test for segment_status cancelled path (line 1687-1688)."""
 
@@ -11174,11 +11099,18 @@ class TestSessionLogSegmentStatus:
 
 
 class TestSessionLogPersistException:
-    """Tests for session log persist exception handling (lines 1711-1712)."""
+    """Tests for session log persist exception handling."""
 
     @pytest.mark.asyncio
     async def test_session_log_persist_exception_logged(self, monkeypatch, pipe_instance_async, caplog):
-        """Test session log persist exception is logged (lines 1711-1712)."""
+        """A failing segment persist is swallowed, reported once with a traceback, and the turn still ends.
+
+        The persist block is gated on a request id in `SessionLogger.request_id`, so it
+        has to be set here: without one the whole block, exception arm included, is
+        skipped and the stub below is never called. The "was attempted" assertion is the
+        load-bearing half -- without it the whole test would also pass on a run where
+        the block never executed.
+        """
         pipe = pipe_instance_async
         body = ResponsesBody(model="test/model", input=[], stream=True)
 
@@ -11189,25 +11121,52 @@ class TestSessionLogPersistException:
 
         monkeypatch.setattr(Pipe, "send_openrouter_streaming_request", _make_fake_stream(events))
 
-        # Make session log persistence fail
+        attempts: list[dict[str, Any]] = []
+
         async def failing_persist_session_log(valves, **kwargs):
+            attempts.append(kwargs)
             raise Exception("Simulated DB error")
 
         monkeypatch.setattr(pipe._session_log_manager, "persist_segment_to_db", failing_persist_session_log)
 
         import logging
-        with caplog.at_level(logging.DEBUG):
-            result = await pipe._streaming_handler._run_streaming_loop(
-                body,
-                pipe.valves,
-                None,
-                metadata={"model": {"id": "test"}},
-                tools={},
-                session=cast(Any, object()),
-                user_id="user-123",
-            )
+        request_token = SessionLogger.request_id.set("session-log-persist-exception-test")
+        try:
+            with caplog.at_level(logging.DEBUG):
+                result = await pipe._streaming_handler._run_streaming_loop(
+                    body,
+                    pipe.valves,
+                    None,
+                    metadata={"model": {"id": "test"}},
+                    tools={},
+                    session=cast(Any, object()),
+                    user_id="user-123",
+                )
+        finally:
+            SessionLogger.request_id.reset(request_token)
 
-        assert result == "Hello"
+        assert [attempt.get("request_id") for attempt in attempts] == [
+            "session-log-persist-exception-test"
+        ], (
+            "persist_segment_to_db was never called, so the except arm was not reached: "
+            "the block is gated on a request id in SessionLogger.request_id "
+            f"(it was called {len(attempts)} time(s))"
+        )
+        assert result == "Hello", (
+            "a failed session-log write replaced the turn's answer with an exception: "
+            f"the loop returned {result!r}"
+        )
+        records = [
+            record
+            for record in caplog.records
+            if "Failed to persist session log segment" in record.getMessage()
+        ]
+        assert len(records) == 1, (
+            "the failure was reported "
+            f"{len(records)} time(s) (or not at all); the turn is over and published, so "
+            "the swallowed write is reported exactly once, at DEBUG"
+        )
+        assert records[0].exc_info is not None, "the record carried no traceback"
 
 
 class TestDataUrlImagePersistence:
@@ -11739,23 +11698,6 @@ class TestRawArgumentsNonJsonNonString:
 
         # Should handle gracefully
         assert result is not None
-
-
-class TestSessionLogPersistExceptionCoverage:
-    """Tests for session log persist exception (lines 1711-1712).
-
-    Note: The session log persistence exception handler at lines 1711-1712
-    is covered by the existing TestSessionLogPersistException test class.
-    This class provides additional verification.
-    """
-
-    @pytest.mark.asyncio
-    async def test_session_log_persist_exception_path_exists(self, pipe_instance_async):
-        """Verify session log persist exception path exists (lines 1711-1712)."""
-        from open_webui_openrouter_pipe.streaming import streaming_core
-        import inspect
-        source = inspect.getsource(streaming_core.StreamingHandler._run_streaming_loop)
-        assert "Failed to persist session log segment" in source
 
 
 class TestExtractReasoningFromNonDictEvent:

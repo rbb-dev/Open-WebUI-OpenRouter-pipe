@@ -550,7 +550,7 @@ class UpdateService:
             "no_matching_asset": no_matching_asset,
             "snapshots": await self._payload_from(records),
             "snapshot_storage_error": snapshot_storage_error,
-            "checked_at": float(memo.get("at", 0.0)) if memo else None,
+            "checked_at": float(memo.get("at", 0.0)) if (cached and memo) else now,
             "cached": cached,
             "last_check_error": dict(self._last_error) if self._last_error else None,
             "auto": {
@@ -1035,12 +1035,28 @@ class UpdateService:
             valves = await self._pre_attempt_valves()
             row = await self._pre_attempt_row()
             if valves is not None:
-                revived.valves = type(revived).Valves(
-                    **{k: v for k, v in valves.items() if v is not None}
-                )
+                try:
+                    revived.valves = type(revived.valves)(
+                        **{k: v for k, v in valves.items() if v is not None}
+                    )
+                except Exception:
+                    logger.warning(
+                        "update: refused-write revival could not rebuild the stored valves; "
+                        "the revived instance is serving factory defaults",
+                        exc_info=True,
+                    )
+            self._install_revived_getters(revived)
             self._repair_function_cache(request, pipe_id, revived, row)
         except Exception:
             logger.warning("update: refused-write rollback failed", exc_info=True)
+
+    @staticmethod
+    def _install_revived_getters(revived: Any) -> None:
+        from .dashboard_socket import register_socket_handler
+        from .http_routes import set_pipe_getter
+
+        set_pipe_getter(lambda: revived)
+        register_socket_handler(lambda: revived)
 
     async def _pre_attempt_valves(self) -> Any | None:
         try:

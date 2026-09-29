@@ -78,6 +78,12 @@ video model returns a research-grounded model-specific help blurb covering:
 - Every filter knob exposed for this model and what it does
 - 3–4 tips and pitfalls
 
+A model OpenRouter has listed since the curated help was written has no entry of its
+own, and gets the fallback card instead. That card carries one retention line, and it
+reports the pipe's own answer in whichever of its three states applies: the model is
+ZDR-capable, it is not, or OpenRouter's ZDR list has not been read yet, so the pipe has
+not established this either way. The curated cards make no ZDR claim at all.
+
 It quotes no rates: what a model charges is on OpenRouter's pricing page.
 
 This is the fastest way to learn a model without leaving the chat. Try
@@ -1347,6 +1353,13 @@ generation job and returns the model's help blurb directly:
 - **Tips & pitfalls**: 3–4 practical bullets — what works, what fails,
   prompt patterns.
 
+A model the pipe has no curated blurb for gets the fallback card, which
+reads its capabilities from the catalog instead. That card also carries a
+retention line, and it is a fallback-only statement: it reports the same
+three-state answer the ZDR filter itself uses — ZDR-capable, not
+ZDR-capable, or not established, because OpenRouter's ZDR list has not been
+read yet. The curated cards say nothing about retention.
+
 The blurb quotes no rates. What a model charges is on OpenRouter's pricing
 page, which is the only copy of it that cannot go stale. What a particular
 generation was billed is reported on the status line when it finishes, as
@@ -1382,7 +1395,10 @@ Constraints (admin-tunable):
   all frames in one request.
 - **`VIDEO_FRAME_IMAGE_MIME_ALLOWLIST`** (default
   `image/jpeg,image/png,image/webp`): wrong-MIME images fail before
-  submission.
+  submission. A frame the pipe itself extracted from a prior video in
+  the chat is re-encoded to the first listed type it can write — JPEG,
+  then WebP, then PNG — before it is stored, so a list without
+  `image/png` no longer rejects the pipe's own frame.
 
 These three are strict for **frames**, because the clip was meant to be
 anchored on them: one that breaks a limit fails the whole request. The
@@ -1655,13 +1671,14 @@ motion between. It does not generate audio and does not honour a seed.
 
 > **id**: `bytedance/seedance-2.0-mini`
 
-The lightest tier of the Seedance family, and the only model here that
-takes all four input kinds — text, an image, a video clip and an audio
-track — in the same request. Clips run 4 to 15 seconds at 480p or 720p
-across seven framings from 21:9 down to 9:21, and you can either pick a
-framing or pin exact pixel dimensions from the thirteen sizes it
-publishes. It generates its own audio, honours a seed, and anchors on a
-first frame, a last frame, or both.
+The lightest tier of the Seedance family. Clips run 4 to 15 seconds at
+480p or 720p across seven framings from 21:9 down to 9:21, and you can
+either pick a framing or pin exact pixel dimensions from the thirteen
+sizes it publishes. It generates its own audio, honours a seed, and
+anchors on a first frame, a last frame, or both. Supplying a reference
+clip builds on footage you already have rather than inventing the whole
+shot, and it reaches the model only when your administrator has turned
+on sending media to a file host.
 
 **Tips & pitfalls**
 
@@ -2057,7 +2074,7 @@ Functions → OpenRouter pipe → Valves; the per-model filter ones live on each
 | `MAX_CONCURRENT_VIDEO_GENS_PER_USER` | `2` | 1–25 | Per-user concurrency cap. |
 | `VIDEO_FRAME_IMAGE_MAX_BYTES` | `12_582_912` (12 MB) | 65536–67108864 | Per-image decoded size cap. |
 | `VIDEO_FRAME_TOTAL_MAX_BYTES` | `52_428_800` (50 MB) | 65536–134217728 | Combined frame-bytes cap across one request. |
-| `VIDEO_FRAME_IMAGE_MIME_ALLOWLIST` | `image/jpeg,image/png,image/webp` | comma-list | Allowed MIMEs for frame images. |
+| `VIDEO_FRAME_IMAGE_MIME_ALLOWLIST` | `image/jpeg,image/png,image/webp` | comma-list | Allowed MIMEs for frame images. A frame extracted by the pipe from a prior video is re-encoded to the first listed type it can write (JPEG, then WebP, then PNG) before it is stored. |
 | `VIDEO_OUTPUT_MIME_ALLOWLIST` | `video/mp4,video/webm` | comma-list | Allowed MIMEs for downloaded video (header first; bytes consulted only when the header is unlisted). |
 | `VIDEO_REFERENCE_ALLOWED_DOMAINS` | `""` | comma-list | Hosts a per-user reference URL may name before this pipe forwards it. Applies to the filter's own reference fields **and** to any key under the free-text `provider.options` box, on the same check over every address in the built request. Exact-or-parent host match, case-insensitive; empty means unrestricted, which is the default. Additional to the `https://`/SSRF address check, which still runs either way; takes no `!` block entries and no CIDR ranges, and (unlike `ALLOW_INSECURE_HTTP_HOSTS`) a listed parent covers its subdomains. A link the media relay published for this request is recorded as the pipe's own and goes out whatever this holds; a host address a user typed is not recorded and is not exempt. |
 | `VIDEO_AIGC_WATERMARK` | `str` | `""` | passthrough `aigc_watermark` | `"aigc_watermark"` allowed | H3, H3 Max |
@@ -2134,6 +2151,12 @@ The attached image's content_type wasn't in
 `VIDEO_FRAME_IMAGE_MIME_ALLOWLIST`. The pipe sniffs MIME from the file
 record — if OWUI stored it with a generic content type, re-attach via
 the chat input rather than via URL ingestion.
+
+This error can only come from a **user-attached** frame. A frame the
+pipe extracted from a prior video in the chat is re-encoded before it
+is stored, so it is uploaded under a listed type; a list naming none
+of `image/jpeg`, `image/webp` and `image/png` is the one case where the
+extracted frame cannot be converted and this error is still honest.
 
 ### Generation status shows "expired"
 

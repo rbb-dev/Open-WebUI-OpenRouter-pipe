@@ -16,7 +16,7 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any
 
-from ..core.config import _PIPE_METADATA_KEY
+from ..core.config import _EMPTY_TOOL_SCHEMA, _PIPE_METADATA_KEY
 from ..core.timing_logger import timed
 from ..storage.owui_files import is_linkable_chat
 
@@ -114,6 +114,8 @@ def _normalize_responses_function_tool_spec(tool: Any, *, strictify: bool) -> di
     parameters = tool.get("parameters")
     if isinstance(parameters, dict):
         spec["parameters"] = _strictify_schema(parameters) if strictify else parameters
+    else:
+        spec["parameters"] = _EMPTY_TOOL_SCHEMA
     if isinstance(tool.get("cache_control"), dict):
         spec["cache_control"] = tool["cache_control"]
     _advertise_strict(spec, tool, strictify=strictify)

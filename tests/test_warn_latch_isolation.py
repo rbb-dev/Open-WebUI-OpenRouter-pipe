@@ -58,6 +58,13 @@ EXPECTED_LATCHES = {
     "_warned_chat_provider_keys",
     "_warned_ruled_out_tool_use",
     "_warned_queue_backlog",
+    # B437 H1742-2. The rate limit on the DEMOTED backlog repeats, keyed by the same
+    # `<queue>:<request_id>` cause and popped by the same `_drop_backlog_latch` teardown,
+    # so the DEBUG repeats a backed-up turn emits are bounded by time rather than by the
+    # number of items it dequeued. It is inventoried here for the same reason the latch
+    # it shadows is: without the per-test reset, the first test to trip it silently
+    # disarms every later assertion that the repeats exist.
+    "_warned_queue_backlog_sample",
     "_warned_reference_sizes",
     "_warned_reference_scope",
     "_warned_reference_scope_entry",
@@ -66,6 +73,7 @@ EXPECTED_LATCHES = {
     "_warned_stale_filter_rows",
     "_warned_stale_valves",
     "_warned_storage_provider",
+    "_warned_store",
     "_warned_system_resources",
     "_warned_task_candidate",
     "_warned_task_failure",

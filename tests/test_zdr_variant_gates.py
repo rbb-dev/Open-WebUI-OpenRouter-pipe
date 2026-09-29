@@ -182,6 +182,15 @@ _ZDR_GATES = {
         "process_request",
         "normalized_model_id",
     ),
+    # The video help card's retention sentence. It is a report, not a gate, but it
+    # asks the same question, so it answers the same way: `model_id` is the canonical
+    # id `render_video_help` resolved from the request or the catalogue row, handed
+    # over unstripped because `is_zdr_capable` does the suffix strip itself.
+    (
+        "open_webui_openrouter_pipe/integrations/video_help.py",
+        "_zdr_capability_sentence",
+        "model_id",
+    ),
 }
 
 

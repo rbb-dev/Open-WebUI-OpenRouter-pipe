@@ -2158,11 +2158,17 @@ class TestFetchImageAsDataUrl:
 
     @pytest.mark.asyncio
     async def test_returns_existing_data_url(self, pipe_instance_async):
-        """Should return existing data URL as-is."""
+        """A data URL is converted like any other source, and refused like any other.
+
+        `AAAA` decodes to three zero bytes, which are not a picture: an inline icon now
+        runs the same conversion tail a fetched one does, so this row is `None` rather
+        than the input handed straight back. A real picture under a `data:` head is
+        stored as PNG by `tests/test_model_icon_fetch.py`.
+        """
         async with aiohttp.ClientSession() as session:
             data_url = "data:image/png;base64,AAAA"
             result = await pipe_instance_async._multimodal_handler._fetch_image_as_data_url(data_url)
-            assert result == data_url
+            assert result is None
 
     @pytest.mark.asyncio
     async def test_prepends_https_for_protocol_relative_url(self, pipe_instance_async):
@@ -3054,12 +3060,18 @@ class TestRemoteFileLimitResolution:
     def _no_store(self, monkeypatch):
         """Force the store-unavailable fallback for the arms that exercise it.
 
-        `open_webui.models.config` is not stubbed in the harness (`owui_stubs.py:50-57`
-        and `:250-256` register only chats/models/files/users/functions), so
-        `from open_webui.models.config import Config` raises under pytest and the
-        accessor returns None whether or not this runs. It is patched anyway so the arm
-        keeps meaning what it says the day a store stub does exist, and so no arm can
-        reach the database by accident.
+        The harness *does* register a working `open_webui.models.config.Config`: its
+        `_Config` class in `owui_stubs.py`, with an async `get_many` over
+        module-global rows that a conftest sweep clears per test. So
+        `_get_open_webui_config_store()` hands back that stub, and `get_many` answers
+        `{}` for the two RAG keys -- a present-but-empty store, which the resolver
+        prefers over the start-up module values (`core/errors.py:689-694`).
+
+        Patching the accessor to `None` is therefore what makes these four arms reach
+        the start-up fallback at all. The patch is load-bearing: neuter it to a bare
+        `return` and `test_caps_to_rag_when_smaller` and `test_adopts_rag_when_default_and_larger`
+        go red, because the empty row shadows the module attributes and every arm would
+        read the bare valve.
         """
         from open_webui_openrouter_pipe.core import errors as ow_errors
 
@@ -3454,7 +3466,7 @@ class TestAudioTransformer:
             ("audio/wav", "wav"),
             ("audio/wave", "wav"),
             ("audio/x-wav", "wav"),
-            ("audio/unknown", "mp3"),
+            ("audio/unknown", None),
             (None, "mp3"),
         ],
     )
@@ -3466,13 +3478,30 @@ class TestAudioTransformer:
         mime_type,
         expected_format,
     ):
-        """Should correctly map MIME types to supported formats."""
+        """MIME types the table places are mapped; one it cannot place is refused.
+
+        `audio/unknown` declares a type, and a declared type the pipe cannot send is
+        left out of the request rather than renamed `mp3` -- nothing converts it, so
+        any other name on the wire is a claim about the bytes the pipe cannot support.
+        `None` declares nothing at all, which is a guess rather than a claim, so the
+        `mp3` default stands.
+        """
         block = {
             "type": "audio",
             "mimeType": mime_type,
             "data": sample_audio_base64,
         }
         audio_block = await _transform_single_block(pipe_instance, block, mock_user)
+        if expected_format is None:
+            assert audio_block is not None and audio_block["type"] == "input_text", (
+                f"a mime type the table cannot place went out as an audio block: "
+                f"{audio_block!r}"
+            )
+            assert "input_audio" not in str(audio_block), audio_block
+            assert "format the pipe will not rename" in audio_block["text"], (
+                f"the refusal did not reach the person: {audio_block!r}"
+            )
+            return
         assert audio_block is not None
         assert audio_block["input_audio"]["format"] == expected_format
 
@@ -4578,15 +4607,13 @@ class TestUploadToOwuiStorageFromPath:
         assert "bytes" not in recording_handler, "a nonexistent path was streamed anyway"
 
 
-"""How much of today's cost the windowed scan may spend on a 16 MiB whitespace-dense body.
+"""The narrowest read the bounded scan may make, in characters.
 
-The bound was 2.0, which sits inside the observed spread of a correct build on a shared-CPU
-box: two independent critic runs measured p50 1.57-1.59 with maxima of 1.8-2.9, and reds at
-2.0 in 12/40 and 14/200 samples. A false red on the batch's headline cost property is worse
-than no row, so the bound is 3.0 -- the measured p50 of the fix, with the spread above it.
-
-The row keeps its full discriminating power: MUST-FAIL MUTATION (4), the per-character Python
-loop, measures 1416 ms against today's 8 ms, 173x, so it is red at 3.0x with a 100x margin.
-Do not drop the row and do not revert to `"".join(body.split())` -- that removes the fix and
-the row together.
+The shipped window is 4096 characters (`core/url_scheme.py`), so this sits 16x below it:
+a scan that still moves 256 characters at a time has kept the bulk property that makes
+the fix worth having. Below it the work stops being bulk, and that is the failure the
+cost row exists for. MUST-FAIL MUTATION (4), the per-character Python loop the design
+first proposed, reads one character per step -- and in the form that loop actually takes
+(`for ch in text:`) it never reads the body at all, so the `reads` arm below is what
+catches it rather than this bound.
 """

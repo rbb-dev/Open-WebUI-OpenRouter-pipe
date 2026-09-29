@@ -165,7 +165,12 @@ _EXPECTED: dict[str, int] = {
     # artifact store's DB executor is never shut down -- and a drained-queue failure must
     # not stop the socket from being closed either, since the rows are then still in Redis
     # for another worker. The drain reports its own failures through the store's logging.
-    "pipe.py": 35,
+    # 34 after B288 (H1033-1): the terminal backstop's `suppress(Exception)` around
+    # `job.future.exception()`. The backstop now reads the pipeline's recorded terminal
+    # first and falls back to the future only where it recorded none, and that read is
+    # `_future_failed` -- a named predicate with its own narrow `except`, rather than a
+    # context manager that hid the whole status derivation from the census and from ruff.
+    "pipe.py": 34,
     "storage/persistence.py": 3,
     # 1st: the caller-supplied fallback in `_emit_templated_error_event`. It is reached only because the
     # admin's own template already failed to render, and the generic card below it is the answer if the

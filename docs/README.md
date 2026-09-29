@@ -77,6 +77,7 @@ See: [Model Variants & Presets](model_variants_and_presets.md).
 
 ### Remote pictures fail to load
 - Remote downloads are subject to SSRF filtering and size limits, with HTTPS-only defaults (HTTP allowlist available). Review your remote download settings in [Valves & Configuration Atlas](valves_and_configuration_atlas.md) and the deep-dive in [Multimodal Ingestion Pipeline](multimodal_ingestion_pipeline.md).
+- An attached file link is also SSRF-filtered, so `Files: skipped 1 (served from a link on a private, link-local or unresolvable address…)` means the *link's host* is not public — the pipe never downloaded the file, the provider was being asked to. Attach from a public host, or set `ENABLE_SSRF_PROTECTION` to `False` for a deployment that links documents from an internal host. See [Security & Encryption](security_and_encryption.md).
 
 ### Requests fail under load
 - Review concurrency limits, queueing behavior, and breaker controls in [Concurrency Controls & Resilience](concurrency_controls_and_resilience.md).

@@ -271,8 +271,9 @@ async def test_a_remote_audio_url_is_refused_rather_than_read_as_base64(
     whatever is left as audio bytes. The last row is the real base64 that must survive.
 
     For the four URL rows there is now nothing to inspect: the refusal yields an audio
-    block with no payload, T433 stops that block from being shipped, and the turn carries
-    the one line that says so. The base64 row is the control -- it must still arrive as
+    block with no payload, the pipe stops that block from being shipped, and the turn
+    carries the one line that names the refusal -- an attachment that did not go out, not
+    a person who said nothing. The base64 row is the control -- it must still arrive as
     audio, which is what keeps "refuse everything" from satisfying this row.
     """
     pipe = _vision_pipe(pipe_instance_async)

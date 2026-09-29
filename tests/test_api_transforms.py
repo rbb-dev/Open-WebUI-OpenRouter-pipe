@@ -535,17 +535,41 @@ class TestResponsesPayloadToChatCompletionsPayload:
         result = _responses_payload_to_chat_completions_payload(payload)
         assert result["verbosity"] == "verbose"
 
-    def test_instructions_prepended_to_existing_system(self):
-        """Test instructions prepended to existing system message."""
+    @pytest.mark.parametrize(
+        ("instructions", "existing", "expected"),
+        [
+            pytest.param("Be helpful", "Existing prompt", "Be helpful\n\nExisting prompt", id="plain"),
+            pytest.param("AAA-FIRST", "ZZZ-SECOND", "AAA-FIRST\n\nZZZ-SECOND", id="markers"),
+            pytest.param("Be helpful", "  Existing prompt \n", "Be helpful\n\nExisting prompt", id="stripped"),
+            pytest.param(
+                "Be helpful",
+                "First line\nSecond line",
+                "Be helpful\n\nFirst line\nSecond line",
+                id="two-lines",
+            ),
+            pytest.param("Be helpful", "   ", "Be helpful", id="blank"),
+        ],
+    )
+    def test_instructions_prepended_to_existing_system(self, instructions, existing, expected):
+        """The whole merged string is the contract, not the presence of two substrings.
+
+        Two `in` assertions cannot tell a prepend from an append, cannot see the
+        separator, and pass on any string that merely contains both halves, so each
+        row pins the exact bytes. `markers` is what makes that true: its halves appear
+        nowhere else in the file, so an implementation that hardcodes the `plain`
+        answer fails it. `stripped` pins the `.strip()` of the caller's text, `blank`
+        pins the guard that keeps whitespace-only text from appending a trailing blank
+        line, and `two-lines` pins that the whole text is carried, not just its head.
+        """
         payload = {
             "model": "gpt-4",
-            "instructions": "Be helpful",
-            "input": [{"type": "message", "role": "system", "content": "Existing prompt"}],
+            "instructions": instructions,
+            "input": [{"type": "message", "role": "system", "content": existing}],
         }
         result = _responses_payload_to_chat_completions_payload(payload)
-        # Instructions should be prepended
-        assert "Be helpful" in result["messages"][0]["content"]
-        assert "Existing prompt" in result["messages"][0]["content"]
+        content = result["messages"][0]["content"]
+        assert isinstance(content, str)
+        assert content == expected
 
     def test_instructions_prepended_to_list_content(self):
         """Test instructions prepended when system has list content."""
@@ -561,10 +585,12 @@ class TestResponsesPayloadToChatCompletionsPayload:
             ],
         }
         result = _responses_payload_to_chat_completions_payload(payload)
-        # Instructions should be prepended as text block
+        # Instructions should be prepended as text block, folded into the first usable
+        # text block with a real blank line -- the string arm's output, and not an empty
+        # separator block, which providers reject.
         content = result["messages"][0]["content"]
         assert isinstance(content, list)
-        assert content[0]["text"] == "Be helpful"
+        assert content[0]["text"] == "Be helpful\n\nExisting"
 
     def test_instructions_with_no_messages(self):
         """Test instructions create system message when no messages."""
@@ -594,11 +620,6 @@ class TestResponsesPayloadToChatCompletionsPayload:
         }
         result = _responses_payload_to_chat_completions_payload(payload)
         assert result["trace"] == {"trace_id": "abc123", "generation_name": "test"}
-
-
-# ============================================================================
-# Tool Conversion Tests
-# ============================================================================
 
 
 class TestResponsesToolsToChatTools:

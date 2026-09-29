@@ -112,7 +112,7 @@ Operational impact:
 
 ## SSRF protection for remote downloads
 
-Remote picture and video URLs are security-sensitive because they can be used for SSRF (Server-Side Request Forgery). Every video spelling a caller can send — `video_url`, `input_video` and `video` alike — is security-sensitive in that same way, and is checked by the same gates before anything is forwarded.
+Remote picture and video URLs are security-sensitive because they can be used for SSRF (Server-Side Request Forgery), and so is an attached file link: the pipe never fetches one, but the provider does, so the address it points at is checked before anything is forwarded. Every video spelling a caller can send — `video_url`, `input_video` and `video` alike — is security-sensitive in that same way, and is checked by the same gates before anything is forwarded.
 
 ### Supported URL schemes
 
@@ -129,10 +129,12 @@ When `ENABLE_SSRF_PROTECTION=True` (default):
 - IPv6 forms that carry an IPv4 address inside them are judged on the addresses they carry: `::ffff:`-mapped, 6to4 (`2002::/16`), Teredo (`2001::/32`) and the NAT64 well-known prefix (`64:ff9b::/96`). `2002:7f00:1::` is 6to4 for `127.0.0.1` and is refused for that reason; `2002:808:808::` carries a public address and is allowed. A form that carries more than one address is allowed only when EVERY address it carries would be allowed on its own: a Teredo address encodes the tunnel server as well as the client, both chosen by whoever wrote the address, so `2001:0:7f00:1::f7f7:f7f7` — server `127.0.0.1`, client `8.8.8.8` — is refused for the server.
 - Downloads that fail SSRF checks are rejected and logged; the pipe proceeds without crashing the request.
 - A video link the pipe never fetches is checked before it is passed on. Every non-`data:` `video_url` block — YouTube-shaped, schemeless, or a plain `http(s)` link — is put to the same address gate, and the provider is given the link only when the host resolves to a public address; a link whose scheme is neither `http` nor `https` is refused with `Video URL blocked by security policy (only http and https links are allowed)`. A refused link is not forwarded, and the person is told it was refused. Those checks draw on the same request-wide `ADDRESS_CHECK_BUDGET_SECONDS` as the picture ones, so a message carrying many video links is bounded by that budget rather than by one lookup's budget per link, and a link that gets no time left reaches no verdict and is not sent.
+- A file link the pipe never fetches is checked before it is passed on, the same way. Every `file_data` or `file_url` value the provider would have to fetch — in both fields, and in all three block spellings `input_file`, a flat `file` and a nested `{"type": "file", "file": {…}}` — is put to the same address gate, and the provider is given the value only when the host resolves to a public address; a link whose scheme is neither `http` nor `https` is refused in its own words, because nothing was resolved in that case. A refused link is not forwarded, and the person is told it was refused: `Files: skipped N (…)`, with the reason named. A block that also carries a `file_id` is not dropped — the id is still sent and only the refused field is removed, silently, because a report about a request that still carries the attachment is a duplicate. A value the provider would *not* fetch is not a link and is never checked: a `data:` URL in either field, raw base64 in `file_data`, and an Open WebUI file path, which is resolved from local storage instead. Unlike the video and picture checks, these are not drawn from `ADDRESS_CHECK_BUDGET_SECONDS`, so a turn with N attached links pays up to N x `ADDRESS_CHECK_SECONDS` serially, before the first byte goes upstream.
 - Address resolution runs on its own bounded thread pool, so a hostile or dead host — one whose nameserver never answers — cannot consume the threads serving media, thumbnails, file reads or Open WebUI's own endpoints. With `ENABLE_SSRF_PROTECTION=True` the pool is shared only with other address checks, so a stalled check reaches no verdict inside its budget rather than delaying anyone, and a queue behind a full pool reaches no verdict the same way; a download or a generation with no verdict still sends nothing, so that half is a refusal, and a picture the pipe already holds is served, because there the entry is being asked whether those bytes are still permitted and an answer that never arrived is not a denial. With `ENABLE_SSRF_PROTECTION=False` the vetted transport's own name resolution runs on a pool of the pipe's too, so the thread it occupies is bounded there; that path has no resolution budget, so a name that queues behind a full pool waits its turn and is charged to its reach's own hop budget rather than refused, and neither arm can interrupt a `getaddrinfo` already in flight — a refusal releases the caller, not the pool thread. It follows the pool its caller is using rather than choosing one: the model-icon fetch runs inside the background sweep and therefore draws on the narrower sweep pool, while the maker-profile fetch and the dashboard self-update draw on the wide one. Shutting the pipe down closes those pools, and a name resolution that races that teardown raises rather than answering — the same behaviour the gate-on path has always had. In practice that is an icon that does not appear, and a self-update that reports the update server as offline, rather than a leaked thread.
 
 When `ENABLE_SSRF_PROTECTION=False`:
 - The pipe may attempt to fetch internal URLs reachable from your Open WebUI environment. Only disable SSRF protection with a clear threat model and compensating controls.
+- The file arm goes back to forwarding a link with nothing resolved: an `https://` attachment by URL to an intranet share or an internal docs server is passed on byte for byte again, which is the escape hatch for a deployment whose users attach documents that way. It is also the exposure the valve exists to close, so it restores the whole thing rather than only the file arm. Two refusals on this arm are the plaintext policy's and are *not* restored by it: a cleartext `http://` link still needs `ALLOW_INSECURE_HTTP` and an allowlisted host, and a link whose scheme is neither `http` nor `https` is still refused.
 - A remote picture or file download resolves its host through the HTTP client rather than through the pipe's bounded address pool, so that one lookup still uses the event loop's default executor — the same pool media work and Open WebUI's own blocking endpoints share. This is recorded debt, not a design: the alternative is a `socket_factory` on the download client, which is a larger change to a path an operator has deliberately left unguarded.
 HTTPS-only defaults still apply even if SSRF protection is disabled.
 
@@ -174,11 +176,13 @@ then let the HTTP client resolve the name again:
   hop open, which would otherwise be how long the old setting lasted.
 - Turning `ENABLE_SSRF_PROTECTION` back on takes effect on the next hop, which is the
   next request or the rest of a redirect chain already under way. The transport is
-  REBUILT when the valve changes: the old session is closed and a new
-  connection pool, a new address cache and a new resolver are created together. Clearing
-  the address cache alone was not enough, because a keep-alive connection opened while
-  the gate was off is reused without consulting any resolver, and an answer from a lookup
-  that was already in flight lands in the cache after it has been cleared.
+  REBUILT when the valve changes: the retired session is never handed to a new hop and
+  is closed as soon as its last in-flight hop releases it, so a settings change never
+  truncates a download already under way, and a new connection pool, a new address cache
+  and a new resolver are created together. Clearing the address cache alone was not
+  enough, because a keep-alive connection opened while the gate was off is reused
+  without consulting any resolver, and an answer from a lookup that was already in
+  flight lands in the cache after it has been cleared.
 - The gate also re-runs on a **re-use**: an image a worker already downloaded is
   answered from its in-process memo on later turns, and the memo does not stand in for
   the gate. The memo is per-person: an entry is served only to the person whose own
@@ -191,7 +195,8 @@ then let the HTTP client resolve the name again:
   (TODO T569 in `tests/test_one_persons_reused_picture_is_never_sent_to_another.py`).
   Every turn re-checks the URL before those bytes are sent, and a URL the
   current valve values refuse is dropped from the memo and fetched through the gated
-  path instead. So every byte that reaches the provider passed the gate under the valve
+  path instead; the same is true of the remote-download size cap, so a picture memoised
+  while that cap was higher is released rather than reused once it is lowered. So every byte that reaches the provider passed the gate under the valve
   values in force at the moment it was sent, and tightening the valve or editing a host
   allowlist takes effect on the next turn rather than the next fetch. The re-check
   costs one address resolution and no download; a URL the check then refuses is fetched

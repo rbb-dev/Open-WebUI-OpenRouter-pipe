@@ -90,6 +90,7 @@ _warned_write_refusals: dict[str, float] = {}
 _PIPE_OFF_META_KEY = "openrouter_pipe:switched_off_by_pipe"
 _PIPE_OFF_STAMP_META_KEY = "openrouter_pipe:switched_off_at"
 _PIPE_INSTALLED_META_KEY = "openrouter_pipe:installed_by"
+_PIPE_OFF_LANDED_AT: dict[str, int] = {}
 
 
 class _FilterRows(NamedTuple):
@@ -119,6 +120,14 @@ def _installed_by(row: Any) -> str:
     return value if isinstance(value, str) else ""
 
 
+def _owned_by(row: Any, owner: str) -> bool:
+    return _installed_by(row) == owner
+
+
+def _claimable_by(row: Any, owner: str) -> bool:
+    return _installed_by(row) in ("", owner)
+
+
 def _merged_meta(
     row: Any,
     desired_meta: dict[str, Any],
@@ -142,11 +151,22 @@ def _pipe_owns_the_off(row: Any) -> bool:
     stamp = stored.get(_PIPE_OFF_STAMP_META_KEY)
     if not isinstance(stamp, int) or isinstance(stamp, bool):
         return True
-    return int(getattr(row, "updated_at", 0) or 0) <= stamp
+    updated_at = int(getattr(row, "updated_at", 0) or 0)
+    if updated_at <= stamp:
+        return True
+    return updated_at == _PIPE_OFF_LANDED_AT.get(str(getattr(row, "id", "") or ""))
 
 
 def _switch_on(row: Any) -> bool:
     return bool(getattr(row, "is_active", False)) or _pipe_owns_the_off(row)
+
+
+def _operator_re_enabled_the_pipe_off(row: Any) -> bool:
+    return (
+        bool(getattr(row, "is_active", False))
+        and _switched_off_by_pipe(row)
+        and not _pipe_owns_the_off(row)
+    )
 
 
 def switched_off_meta(row: Any) -> dict[str, Any]:
@@ -163,14 +183,14 @@ def _stored_source(row: Any) -> str:
 _REFUSED_FILTER_WRITES: set[str] = set()
 
 
-async def _write_function(Functions, function_id, updates, what, logger, raised=None) -> bool:
+async def _write_function(Functions, function_id, updates, what, logger, raised=None, *, settle: bool = True) -> bool:
     try:
-        landed = await Functions.update_function_by_id(function_id, updates) is not None
+        landed = await Functions.update_function_by_id(function_id, updates)
     except Exception as exc:  # noqa: BLE001 - a database driver's own error type is not enumerable here
         if raised is not None:
             raised.append(exc)
-        landed = False
-    if not landed:
+        landed = None
+    if landed is None:
         _REFUSED_FILTER_WRITES.add(str(function_id))
         logger.log(
             warn_level(_warned_write_refusals, f"refused:{function_id}", cooldown_s=3600),
@@ -178,7 +198,40 @@ async def _write_function(Functions, function_id, updates, what, logger, raised=
             function_id,
             what,
         )
-    return landed
+        return False
+    if settle:
+        await _settle_the_off_stamp(Functions, function_id, updates, landed, logger)
+    return True
+
+
+async def _settle_the_off_stamp(Functions, function_id, updates, landed, logger) -> None:
+    desired_meta = updates.get("meta") if isinstance(updates, dict) else None
+    if not isinstance(desired_meta, dict) or desired_meta.get(_PIPE_OFF_META_KEY) is not True:
+        return
+    stamp = desired_meta.get(_PIPE_OFF_STAMP_META_KEY)
+    if not isinstance(stamp, int) or isinstance(stamp, bool):
+        return
+    landed_at = int(getattr(landed, "updated_at", 0) or 0)
+    _PIPE_OFF_LANDED_AT[str(function_id)] = landed_at
+    if landed_at <= int(stamp):
+        return
+    landed_active = getattr(landed, "is_active", None)
+    if not isinstance(landed_active, bool):
+        landed_active = updates.get("is_active")
+    await _write_function(
+        Functions,
+        function_id,
+        {
+            "is_active": landed_active,
+            "meta": {
+                **_stored_meta(landed),
+                _PIPE_OFF_STAMP_META_KEY: landed_at,
+            },
+        },
+        f"settling the switch-off stamp on {function_id} to the second the write landed",
+        logger,
+        settle=False,
+    )
 
 
 def a_filter_write_was_refused(family_id: str = "") -> bool:
@@ -374,7 +427,8 @@ def _is_install_enumeration_failure(exc: BaseException) -> bool:
 def _newest_marked_row(rows, marker, *, prefer_id=None, tie_break_id=False, owner=None):
     candidates = [row for row in rows or [] if marker in (getattr(row, "content", "") or "")]
     if owner is not None:
-        candidates = [row for row in candidates if _installed_by(row) == owner]
+        owned = [row for row in candidates if _owned_by(row, owner)]
+        candidates = owned or [row for row in candidates if _claimable_by(row, owner)]
     if not candidates:
         return None
     return max(
@@ -800,6 +854,7 @@ class FilterManager:
                 if matches_candidate(_stored_source(existing)):
                     if getattr(existing, "is_active", False):
                         return str(getattr(existing, "id", "") or "")
+                    self._write_not_installed = True
                     return None
                 suffix += 1
                 candidate_id = f"{preferred_id}_{suffix}"
@@ -1425,22 +1480,22 @@ class FilterManager:
             from open_webui.models.functions import Functions  # type: ignore
         except ImportError:
             return True
-        except Exception:
+        except Exception as exc:
             self.logger.warning(
                 "open_webui.models.functions failed to import for a reason other than absence; "
                 "the Web Tools filters cannot be repaired",
                 exc_info=True,
             )
-            return False
+            raise _FilterEnumerationUnavailable(str(exc)) from exc
 
         try:
             if rows is not None and rows.active_rows is not None:
                 found = rows.active_rows
             else:
                 found = await Functions.get_functions_by_type("filter", active_only=True)
-        except Exception:
+        except Exception as exc:
             self.logger.warning("Could not list the installed Web Tools filters", exc_info=True)
-            return False
+            raise _FilterEnumerationUnavailable(str(exc)) from exc
         web_tools_rows = [
             row for row in found if _is_web_tools_filter(getattr(row, "content", ""))
         ]
@@ -1593,6 +1648,7 @@ class FilterManager:
     async def reactivate_filters_by_marker(
         self, marker: str, *, log_label: str, rows: _FilterRows | None = None
     ) -> None:
+        owner = self._install_owner()
         try:
             from open_webui.models.functions import Functions  # type: ignore
         except ImportError:
@@ -1620,6 +1676,8 @@ class FilterManager:
             if getattr(row, "is_active", False):
                 continue
             if not _switched_off_by_pipe(row):
+                continue
+            if not _claimable_by(row, owner):
                 continue
             if await _write_function(
                 Functions,
@@ -2033,7 +2091,19 @@ class FilterManager:
                     continue
                 if not getattr(row, "is_active", False):
                     continue
-                if _installed_by(row) != owner:
+                if not _owned_by(row, owner):
+                    function_id = str(getattr(row, "id", "") or "")
+                    if function_id:
+                        self.logger.log(
+                            warn_level(
+                                _warned_stale_filter_rows, f"foreign_stamp:{function_id}"
+                            ),
+                            "Left the %s filter %r active: its install record names %r, not "
+                            "this copy.",
+                            valve,
+                            function_id,
+                            _installed_by(row),
+                        )
                     continue
                 function_id = str(getattr(row, "id", "") or "")
                 if not function_id:
@@ -2429,7 +2499,7 @@ __KEEP_WHAT_STILL_FITS__
         )
         DIRECT_AUDIO_FORMAT_ALLOWLIST: str = Field(
             default="wav,mp3,aiff,aac,ogg,flac,m4a,pcm16,pcm24",
-            description="Comma-separated audio format allowlist (derived from filename/MIME). Listing a format here lets a direct audio upload through even when it is outside the nine the pipe sends natively; the request is then normalised to `mp3` before it reaches the provider. Only the formats listed here are diverted; a `webm` container is never diverted, listed or not, and stays on Open WebUI's path, because OpenRouter documents no `webm` format on either endpoint; a cleared value diverts no audio at all.",
+            description="Comma-separated audio format allowlist (derived from filename/MIME). Listing a format here lets a direct audio upload through even when it is outside the nine the pipe sends natively; naming an undocumented one here diverts the clip onto the pipe's path, and the pipe then leaves it out of the request rather than relabelling it `mp3` -- the clip comes back with a note on the chat's status line saying an audio clip was in a format the pipe will not rename. So listing a format the pipe does not send does not make it sendable; it makes the refusal visible. Only the formats listed here are diverted; a `webm` container is never diverted, listed or not, and stays on Open WebUI's path, because OpenRouter documents no `webm` format on either endpoint; a cleared value diverts no audio at all.",
         )
         DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST: str = Field(
             default="wav,mp3",
@@ -3185,10 +3255,16 @@ __KEEP_WHAT_STILL_FITS__
         prov_names = provider_names or {}
         provider_display_options: list[str] = []
         provider_slug_map_entries: list[str] = []
+        display_to_slug: dict[str, str] = {}
+        seen_labels: set[str] = set()
         for pslug in safe_providers:
             disp = prov_names.get(pslug, pslug.replace("-", " ").title())
             safe_disp = FilterManager.validate_provider_name(disp, slug=pslug)
+            if safe_disp in seen_labels:
+                safe_disp = f"{safe_disp} ({pslug})"
+            seen_labels.add(safe_disp)
             provider_display_options.append(safe_disp)
+            display_to_slug[safe_disp] = pslug
             provider_slug_map_entries.append(f'    {FilterManager.safe_literal_string(safe_disp)}: {FilterManager.safe_literal_string(pslug)}')
 
         no_pref = "(no preference)"
@@ -3200,8 +3276,6 @@ __KEEP_WHAT_STILL_FITS__
 
         order_display_options: list[str] = []
         order_map_entries: list[str] = []
-
-        display_to_slug = dict(zip(provider_display_options, safe_providers))
 
         if len(provider_display_options) <= _PROVIDER_ROUTING_ORDER_PERMUTATION_MAX:
             for perm in itertools.permutations(provider_display_options):
@@ -3283,10 +3357,10 @@ __KEEP_WHAT_STILL_FITS__
             _warn_stale_choice(info.field_name, value, kept)
             return kept
 ''' if guarded else ""
-        dropped = [
+        dropped = sorted(
             name for name in drawn
             if name not in guarded and name != "DATA_COLLECTION"
-        ]
+        )
         dropped_literal = ", ".join(json.dumps(name) for name in dropped)
         stale_value_guard = f'''
         @field_validator({dropped_literal}, mode="before")
@@ -3552,6 +3626,7 @@ class Filter:
             slug
             for slug in undeliverable_slugs
             if getattr(existing_filters.get(slug), "is_active", False)
+            and not _operator_re_enabled_the_pipe_off(existing_filters.get(slug))
         }
 
         orphaned_active = {
@@ -3816,6 +3891,8 @@ class Filter:
             if slug in undeliverable or slug not in all_models:
                 existing_id = getattr(existing, "id", "")
                 if existing_id and _row_owner(existing) in ("", pipe_identifier):
+                    if slug in all_models and _operator_re_enabled_the_pipe_off(existing):
+                        continue
                     if not getattr(existing, "is_active", False):
                         continue
                     deactivation = {

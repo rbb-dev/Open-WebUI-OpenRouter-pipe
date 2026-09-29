@@ -1295,9 +1295,8 @@ class RequestOrchestrator:
             # snapshot: a valve saved between the two reads left the request honouring
             # one for every other setting and the other for the privacy routing.
             if user_valves is None:
-                user_valves, rejected = await self._pipe._read_user_valves(__user__)
-            else:
-                rejected = rejected_user_valves or []
+                user_valves, rejected_user_valves = await self._pipe._read_user_valves(__user__)
+            rejected = rejected_user_valves or []
             # A rejected field is positive evidence: the row was read, REQUEST_ZDR was
             # in it, and it would not parse -- so the user's answer is genuinely lost
             # and routing without ZDR could break an opt-in they made.
@@ -1373,9 +1372,16 @@ class RequestOrchestrator:
                 responses_body.provider = {"zdr": True}
 
         is_direct = bool(getattr(getattr(__request__, "state", None), "direct", False))
-        fusion_enabled = bool(valves.ENABLE_OPENROUTER_FUSION) and _fusion_backend_openrouter(valves)
+        fusion_live = bool(valves.ENABLE_OPENROUTER_FUSION)
+        fusion_enabled = fusion_live and _fusion_backend_openrouter(valves)
         fusion_model = is_fusion_model(responses_body.model)
-        if fusion_model and fusion_enabled:
+        if fusion_model and fusion_live and not _fusion_internal_divert(
+            responses_body.model,
+            responses_body.plugins,
+            valves=valves,
+            is_task_request=use_task_model_adapter,
+            metadata=__metadata__,
+        ):
             if self._endpoint_is_valve_forced(responses_body.model, valves, "chat_completions"):
                 if outcome_sink is not None:
                     outcome_sink["member_refusal_reason"] = (
@@ -1414,7 +1420,7 @@ class RequestOrchestrator:
             )
         if (
             fusion_model
-            and fusion_enabled
+            and fusion_live
             and selected_endpoint == "chat_completions"
         ):
             self.logger.warning(

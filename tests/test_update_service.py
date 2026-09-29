@@ -816,7 +816,7 @@ async def test_check_failure_keeps_last_known_latest(svc, fake_functions, fake_h
     out = await svc.check(force=True)
     assert out["latest"]["version"] == "2.7.0"
     assert out["last_check_error"]["code"] == "repo_not_found"
-    assert out["checked_at"] == 10_000.0
+    assert out["checked_at"] == 10_120.0
 
 
 @pytest.mark.asyncio

@@ -10,6 +10,7 @@ import annotated_types as at
 from pydantic import ValidationError
 
 from ...core.config import EncryptedStr, _is_template_valve, _valve_schema
+from ...core.valve_salvage import carry_renamed_valves
 from ...storage.persistence import raw_valve_column_decodes
 from .config_meta import CONFIG_META
 
@@ -143,6 +144,7 @@ def drift(valves_cls: type) -> dict[str, list[str]]:
 
 
 def _split_stored(valves_cls: type, stored: dict[str, Any]) -> tuple[dict[str, Any], set[str]]:
+    stored = carry_renamed_valves(valves_cls, stored)
     present = {k: v for k, v in stored.items() if v is not None}
     unknown = {k for k in present if k not in valves_cls.model_fields}
     kept = {k: v for k, v in present.items() if k in valves_cls.model_fields}
@@ -217,6 +219,45 @@ async def stored_row_readable(pipe_id: str, stored: Any) -> tuple[bool, str]:
     return True, ""
 
 
+GATE_VALVE_KEYS = ("PIPE_DASHBOARD_ENABLE", "ENABLE_PLUGIN_SYSTEM")
+
+
+async def stored_gate_valves(pipe_id: Any, valves: Any) -> tuple[dict[str, Any], bool]:
+    stored: Any = None
+    try:
+        from open_webui.models.functions import Functions
+
+        from ...core.utils import _await_if_needed
+
+        stored = await _await_if_needed(
+            Functions.get_function_valves_by_id(str(pipe_id or ""))
+        )
+    except Exception:
+        logger.warning(
+            "pipe_dashboard: the stored valve read failed; a gate that needs a confirmed "
+            "setting is refusing rather than falling back to the in-memory copy, which "
+            "would let a failed read override an operator's switch",
+            exc_info=True,
+        )
+        return {}, False
+    readable, reason = await stored_row_readable(str(pipe_id or ""), stored)
+    if not readable:
+        logger.warning(
+            "pipe_dashboard: the stored valve set is unreadable (%s); a gate that needs a "
+            "confirmed setting is refusing rather than falling back to the in-memory copy",
+            reason,
+        )
+        return {}, False
+    merged: dict[str, Any] = {}
+    for key in GATE_VALVE_KEYS:
+        value = getattr(valves, key, None)
+        if value is not None:
+            merged[key] = value
+        if isinstance(stored, dict) and stored.get(key) is not None:
+            merged[key] = stored[key]
+    return merged, True
+
+
 def merge_for_save_with_drops(
     valves_cls: type, current: dict[str, Any], edits: dict[str, Any]
 ) -> tuple[dict[str, Any], list[str], set[str], set[str]]:
@@ -228,6 +269,7 @@ def merge_for_save_with_drops(
         )
     named = {k for k, v in edits.items() if v is not None and v != ""}
     cleared: set[str] = set()
+    applied: set[str] = set()
     merged = dict(stored)
     for key, value in edits.items():
         fld = valves_cls.model_fields.get(key)
@@ -237,6 +279,7 @@ def merge_for_save_with_drops(
             if _is_clear_edit(fld, value, merged):
                 merged.pop(key, None)
                 cleared.add(key)
+                applied.add(key)
                 continue
             if value == "":
                 continue
@@ -244,9 +287,11 @@ def merge_for_save_with_drops(
         if nullable and (value is None or (isinstance(value, str) and not value.strip())):
             merged.pop(key, None)
             cleared.add(key)
+            applied.add(key)
             continue
         _valve_schema(valves_cls)(**{key: value})
         merged[key] = value
+        applied.add(key)
     full = valves_cls(**merged).model_dump()
     defaults = valves_cls().model_dump()
     out: dict[str, Any] = {}
@@ -267,7 +312,7 @@ def merge_for_save_with_drops(
                 out[name] = full[name]
         elif full.get(name) != defaults.get(name):
             out[name] = full[name]
-    not_saved = {k for k in edits if k not in out and k not in cleared}
+    not_saved = set(edits) - applied
     return out, dropped, not_saved, cleared
 
 

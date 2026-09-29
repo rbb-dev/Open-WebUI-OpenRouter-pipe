@@ -316,6 +316,17 @@ class _LifecycleRegistry:
 _brings_tool_results = brings_tool_results
 
 
+def _future_failed(future: asyncio.Future[Any]) -> bool:
+    if future.cancelled():
+        return False
+    try:
+        return future.exception() is not None
+    except asyncio.CancelledError:
+        return False
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _reports_transport_failure(result: Any) -> bool:
     if not (isinstance(result, (tuple, list)) and len(result) == 2 and result[1] is None):
         return False
@@ -1440,9 +1451,7 @@ class Pipe:
     async def _deactivate_switched_off_filters(self, pass_cache: list | None = None) -> Any:
         from .filters.filter_manager import (
             _OPENROUTER_FUSION_FILTER_MARKER,
-            _OPENROUTER_FUSION_FILTER_PREFERRED_FUNCTION_ID,
             _OPENROUTER_IMAGE_GEN_FILTER_MARKER,
-            _OPENROUTER_IMAGE_GEN_FILTER_PREFERRED_FUNCTION_ID,
             _newest_marked_row,
             _write_function,
             switched_off_meta,
@@ -1476,11 +1485,14 @@ class Pipe:
                     owner=self.id,
                     tie_break_id=True,
                 )
-                _fid = (
-                    str(getattr(_fusion_picked, "id", "") or "")
-                    or _OPENROUTER_FUSION_FILTER_PREFERRED_FUNCTION_ID
-                )
-                ff = await _Funcs.get_function_by_id(_fid)
+                _fid = str(getattr(_fusion_picked, "id", "") or "")
+                if not _fid:
+                    self.logger.debug(
+                        "No OpenRouter Fusion filter row marked %r and installed by this copy; "
+                        "nothing to switch off.",
+                        _OPENROUTER_FUSION_FILTER_MARKER,
+                    )
+                ff = await _Funcs.get_function_by_id(_fid) if _fid else None
                 if ff and getattr(ff, "is_active", False) and await _write_function(
                     _Funcs,
                     _fid,
@@ -1512,11 +1524,14 @@ class Pipe:
                     owner=self.id,
                     tie_break_id=True,
                 )
-                _rid = (
-                    str(getattr(_picked, "id", "") or "")
-                    or _OPENROUTER_IMAGE_GEN_FILTER_PREFERRED_FUNCTION_ID
-                )
-                ig = await _Funcs.get_function_by_id(_rid)
+                _rid = str(getattr(_picked, "id", "") or "")
+                if not _rid:
+                    self.logger.debug(
+                        "No OpenRouter Image Generation filter row marked %r and installed by "
+                        "this copy; nothing to switch off.",
+                        _OPENROUTER_IMAGE_GEN_FILTER_MARKER,
+                    )
+                ig = await _Funcs.get_function_by_id(_rid) if _rid else None
                 if ig and getattr(ig, "is_active", False) and await _write_function(
                     _Funcs,
                     _rid,
@@ -1578,8 +1593,8 @@ class Pipe:
         started = self._web_tools_repair_started
         if started is not None and now - started < _WEB_TOOLS_REPAIR_COOLDOWN_S:
             return
-        self._web_tools_repair_task = asyncio.get_running_loop().create_task(
-            self._guarded_web_tools_repair(), name="openrouter-web-tools-repair"
+        self._web_tools_repair_task = _detached_task(
+            asyncio.get_running_loop(), self._guarded_web_tools_repair(), "openrouter-web-tools-repair",
         )
 
     async def _guarded_web_tools_repair(self) -> bool:
@@ -1591,6 +1606,8 @@ class Pipe:
         return ok
 
     async def _keep_web_tools_filters_in_step(self, rows: Any = None) -> bool:
+        from .filters.filter_manager import _is_install_enumeration_failure
+
         ok = True
         if self.valves.AUTO_INSTALL_WEB_TOOLS_FILTER and not every_web_tool_is_off(self.valves):
             try:
@@ -1607,6 +1624,8 @@ class Pipe:
                 ok = False
                 level = warn_level(_warned_pipes_maintenance, f"web_tools:{type(exc).__name__}")
                 self.logger.log(level, "AUTO_INSTALL_WEB_TOOLS_FILTER failed: %s", exc, exc_info=True)
+                if _is_install_enumeration_failure(exc):
+                    raise
         try:
             if not await self._ensure_filter_manager().repair_web_tools_filters(rows):
                 ok = False
@@ -1619,6 +1638,8 @@ class Pipe:
                 exc,
                 exc_info=True,
             )
+            if _is_install_enumeration_failure(exc):
+                raise
         return ok
 
     @timed
@@ -1725,7 +1746,17 @@ class Pipe:
             self.logger.debug("Old OpenRouter Search filter cleanup failed", exc_info=True)
 
         install_rows = await self._read_filter_rows(pass_cache)
-        await self._keep_web_tools_filters_in_step(switch_rows)
+        try:
+            await self._keep_web_tools_filters_in_step(switch_rows)
+        except Exception as exc:
+            level = warn_level(
+                _warned_pipes_maintenance, f"web_tools_in_step:{type(exc).__name__}"
+            )
+            self.logger.log(
+                level,
+                "Keeping the OpenRouter Web Tools filters in step failed; the model list is unaffected.",
+                exc_info=True,
+            )
         if self.valves.ENABLE_OPENROUTER_FUSION and self.valves.AUTO_INSTALL_FUSION_FILTER:
             try:
                 await self._ensure_filter_manager().ensure_openrouter_fusion_filter_function_id(
@@ -2650,7 +2681,6 @@ class Pipe:
     # UTILITY METHODS
 
     @staticmethod
-    @timed
     def _should_warn_event_queue_backlog(qsize: int, warn_size: int) -> bool:
         """Whether the backlog has reached the threshold worth reporting.
 
@@ -2853,6 +2883,16 @@ class Pipe:
 
 
     @staticmethod
+    def _put_missing_stream_terminator(job: _PipeJob) -> None:
+        stream_queue = job.stream_queue
+        if stream_queue is None:
+            return
+        try:
+            stream_queue.put_nowait(None)
+        except asyncio.QueueFull:
+            return
+
+    @staticmethod
     def _admission_failed(
         job: _PipeJob,
         queue: asyncio.Queue,
@@ -2862,6 +2902,7 @@ class Pipe:
     ) -> bool:
         if semaphore is not None:
             semaphore.release()
+        Pipe._put_missing_stream_terminator(job)
         queue.task_done()
         if cancel_future:
             job.future.cancel()
@@ -2885,6 +2926,7 @@ class Pipe:
                 if semaphore is None:
                     if not job.future.done():
                         job.future.set_exception(RuntimeError("Semaphore unavailable"))
+                    Pipe._put_missing_stream_terminator(job)
                     queue.task_done()
                     continue
                 try:
@@ -2944,6 +2986,7 @@ class Pipe:
         if semaphore is None:
             if not job.future.done():
                 job.future.set_exception(RuntimeError("Semaphore unavailable"))
+            Pipe._put_missing_stream_terminator(job)
             if job.counter_state is not None:
                 Pipe._release_stream_counter(job.pipe, job.counter_state)
             return
@@ -2955,6 +2998,7 @@ class Pipe:
         tool_token: contextvars.Token[_ToolExecutionContext | None] | None = None
         stream_queue = job.stream_queue
         reached_openrouter = False
+        outcome: dict[str, Any] = {}
         completed = False
         deferred_result: Any = None
         permit_handed_to_manager = False
@@ -3041,7 +3085,6 @@ class Pipe:
                         )
                     )
                 tool_token = self._TOOL_CONTEXT.set(tool_context)
-                outcome: dict[str, Any] = {}
                 try:
                     result = await self._handle_pipe_call(
                         job.body,
@@ -3178,11 +3221,10 @@ class Pipe:
                 if backstop_rid:
                     if job.future.cancelled():
                         backstop_status = "cancelled"
+                    elif _future_failed(job.future):
+                        backstop_status = "failed"
                     else:
                         backstop_status = "ok"
-                        with contextlib.suppress(Exception):
-                            if job.future.exception() is not None:
-                                backstop_status = "failed"
                     await self._dispatch_plugin_event(
                         "dispatch_on_generation_complete",
                         None,
@@ -5051,11 +5093,10 @@ class Pipe:
 
         mapped: dict[str, Any] = {}
         for key, value in overrides.items():
-            target_key = "PERSIST_REASONING_TOKENS" if key == "next_reply" else key
-            if target_key in _MERGEABLE_USER_VALVE_FIELDS:
-                mapped[target_key] = value
-                if not _value_fits_field(self.Valves.model_fields.get(target_key), value):
-                    del mapped[target_key]
+            if key in _MERGEABLE_USER_VALVE_FIELDS:
+                mapped[key] = value
+                if not _value_fits_field(self.Valves.model_fields.get(key), value):
+                    del mapped[key]
 
         if not mapped:
             return global_valves

@@ -16,6 +16,11 @@ OpenRouter exposes ZDR-capable endpoints via the `/api/v1/endpoints/zdr` list. T
 
 > Note: The ZDR endpoint list is endpoint‑level; a model is treated as ZDR‑capable if at least one endpoint for that model appears in the ZDR list.
 
+The video help card a person gets from `help` reports that same verdict in the same
+three states — ZDR-capable, not ZDR-capable, or not established because the list has
+never been read. It is a *report*, not a gate: it changes no routing and refuses
+nothing. Only the valves above do that.
+
 ---
 
 ## Admin valves (pipe)
@@ -31,7 +36,7 @@ Configure these in **Open WebUI → Admin → Functions → [OpenRouter pipe] �
   - Rejects requests for models without ZDR endpoints.
   - **What a failed read means.** A read that did not succeed carries the last read that did, so a `500`/`429` on `/models`, or an outage of `/endpoints/zdr`, no longer makes the pipe forget what it knew: a model that has been answering for an hour keeps its ZDR answer, and every enforced request still carries `provider.zdr=true`, which is what makes OpenRouter hold it to a no-retention endpoint. A request is refused outright only when **no ZDR list has ever been read** — that is what `zdr_list_available() is False` now means, and it is the cold-start path this behaviour deliberately does not weaken. The limit of the carry-forward is worth stating plainly: it can still prove a model is *not* ZDR-capable (and that stays refused), but a model that genuinely lost its ZDR endpoints is noticed only once a read succeeds.
   - Routing suffixes the pipe synthesises (`:nitro`, `:floor`, `:online`) are checked against their base model: if the base has ZDR endpoints, the variant is admitted and `provider.zdr=true` guarantees only ZDR endpoints are used. A suffix OpenRouter lists as a model in its own right — `:free`, `:thinking` — is answered for **itself**, not for its base, so a listed `:free` with no ZDR endpoint is refused here rather than routed. A `~`-prefixed `-latest` id is answered for the model its catalog `alias_target` names and for its own key, and only here: every other capability read still answers from the alias row.
-  - Video models are always rejected, with or without a variant suffix.
+  - Video models are answered from the same list as every other model, with or without a variant suffix: a video model whose ZDR endpoints are on the list is enforced like any other, and one that is off it is refused the same way.
   - `ZDR_MODELS_ONLY` matches against the suffix-stripped base id, the same rule `ZDR_ENFORCE` uses, so routing variants (`:nitro`, `:floor`, `:online`) of a ZDR-capable base are shown and allowed. A `~`-prefixed `-latest` id is answered for the model its catalog `alias_target` names and for its own key, and only here: every other capability read still answers from the alias row. It stays a catalog and request-admission filter: it never sends `provider.zdr: true`. It filters from the last ZDR list read successfully, so a later read that fails does not let non-ZDR models back into the picker; only a list that has *never* been read leaves filtering skipped. Video models are filtered like any other model.
 
 - **`ALLOW_USER_ZDR_OVERRIDE`**

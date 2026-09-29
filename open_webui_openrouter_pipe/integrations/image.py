@@ -905,10 +905,14 @@ class ImageGenerationAdapter:
         notes: list[_Note],
         seen: dict[str, bool] | None = None,
         deadline: float | None = None,
-    ) -> list[dict[str, Any]]:
+        *,
+        room: int | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
         kept: list[dict[str, Any]] = []
         refused = 0
-        for reference in attached:
+        for reference in reversed(attached):
+            if room is not None and len(kept) >= room:
+                break
             payload = reference.get("image_url")
             url = payload.get("url") if isinstance(payload, dict) else None
             if isinstance(url, str) and await self._fetchable(url, seen, deadline):
@@ -924,7 +928,8 @@ class ImageGenerationAdapter:
                     "would ask OpenRouter to fetch an address this deployment does not allow",
                 )
             )
-        return kept
+        kept.reverse()
+        return kept, refused
 
     async def _reference_payload(
         self,
@@ -950,7 +955,6 @@ class ImageGenerationAdapter:
             {"type": "image_url", "image_url": {"url": url}}
             for url in await self._vetted_reference_urls(chosen, seen, deadline)
         ]
-        attached = await self._vetted_attachments(attached, notes, seen, deadline)
         published = self._reference_limit(record)
         limit = (
             _SCHEMA_REFERENCE_CAP
@@ -959,9 +963,12 @@ class ImageGenerationAdapter:
         )
         room = max(0, limit - len(links))
         kept_links = links[:limit]
-        kept_attached = attached[-room:] if room else []
+        offered_attachments = len(attached)
+        kept_attached, refused = await self._vetted_attachments(
+            attached, notes, seen, deadline, room=room
+        )
         refs = kept_links + kept_attached
-        offered = len(chosen) + len(attached)
+        offered = len(chosen) + offered_attachments - refused
         if offered > len(refs):
             reason = (
                 f"this model accepts {limit}"
@@ -1317,14 +1324,15 @@ class ImageGenerationAdapter:
         if provider:
             payload["provider"] = provider
 
+        stream_candidates = self._reachable_records(records, provider) or records
+        if self._should_ask_for_a_stream(payload, stream_candidates):
+            payload["stream"] = True
+
         await self._vet_payload_addresses(payload, vetted, address_deadline)
 
         await self._report_notes(
             notes, api_model_id=api_model_id, event_emitter=event_emitter
         )
-
-        if self._should_ask_for_a_stream(payload, records):
-            payload["stream"] = True
 
         if event_emitter:
             await self._pipe._event_emitter_handler._emit_status(

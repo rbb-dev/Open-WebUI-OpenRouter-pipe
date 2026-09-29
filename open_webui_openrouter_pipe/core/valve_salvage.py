@@ -14,6 +14,29 @@ logger = logging.getLogger(__name__)
 _VALVE_SCHEMA_CACHE: dict[type, type] = {}
 _warned_stale_valves: dict[str, float] = {}
 _STALE_VALVES_WARN_EVERY_S = 300.0
+_RENAMED_VALVES = {
+    "VIDEO_INTENT_MAX_CALLS_PER_CHAT": "VIDEO_INTENT_MAX_TURNS_PER_CHAT",
+    "VIDEO_INTENT_MAX_CALLS_PER_USER_DAY": "VIDEO_INTENT_MAX_TURNS_PER_USER_DAY",
+}
+
+
+def carry_renamed_valves(cls: type, values: Any) -> Any:
+    if not isinstance(values, Mapping):
+        return values
+    for old, new in _RENAMED_VALVES.items():
+        if new not in cls.model_fields or old not in values:
+            continue
+        value = values[old]
+        carried = {k: v for k, v in values.items() if k != old}
+        if value is not None and new not in values:
+            carried[new] = value
+        logger.log(
+            warn_level(_warned_stale_valves, old, cooldown_s=_STALE_VALVES_WARN_EVERY_S),
+            "pipe: stored setting %s has been renamed to %s; its value was carried over.",
+            old, new,
+        )
+        values = carried
+    return values
 
 
 def _encrypted_type() -> Any:
@@ -62,6 +85,7 @@ def _valve_schema(cls: type) -> type:
 
 
 def drop_unvalidatable(cls: type, values: Any) -> Any:
+    values = carry_renamed_valves(cls, values)
     if not isinstance(values, Mapping):
         return values
     kept = dict(values)
@@ -122,4 +146,11 @@ def drop_unvalidatable(cls: type, values: Any) -> Any:
                 "you configure the pipe.",
                 name, shown, default,
             )
+    for name in sorted(set(values) - set(cls.model_fields)):
+        logger.log(
+            warn_level(_warned_stale_valves, name, cooldown_s=_STALE_VALVES_WARN_EVERY_S),
+            "pipe: stored setting %s is not a setting this release has, and is not used. "
+            "The pipe keeps running; nothing is read from it.",
+            name,
+        )
     return kept

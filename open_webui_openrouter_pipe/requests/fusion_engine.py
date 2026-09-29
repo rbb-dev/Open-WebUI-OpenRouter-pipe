@@ -23,7 +23,7 @@ from ..core.fusion_defaults import (
     FusionRunPlan,
 )
 from ..core.logging_system import SessionLogger
-from ..core.utils import CONTINUED_REPLY, merge_usage_stats
+from ..core.utils import CONTINUED_REPLY, join_answer_and_card, merge_usage_stats
 from ..storage.owui_files import is_temporary_chat
 from ..structured_task.schema import build_response_format_for_model
 
@@ -458,6 +458,11 @@ def degrade_note(result: FusionMemberResult) -> str:
     return f"*(panel member failed: {reason})*"
 
 
+def synthesis_degrade_note(result: FusionMemberResult) -> str:
+    reason = (result.fail_reason or "no usable answer").strip()
+    return f"*(final answer cut off: {reason})*"
+
+
 def build_judge_input(question: str, results: list[FusionMemberResult]) -> list[dict[str, Any]]:
     blocks: list[str] = []
     for res in results:
@@ -760,7 +765,11 @@ async def run_internal_fusion(
             if not synth_result.failed and synth_result.content:
                 final_text = synth_result.content
             elif synth_text:
-                final_text = synth_text
+                final_text = join_answer_and_card(
+                    synth_text, synthesis_degrade_note(synth_result)
+                )
+                yield {"type": "response.output_text.delta", "output_index": 1,
+                       "delta": final_text[len(synth_text):]}
             else:
                 final_text = (
                     "The final synthesis step failed, but the panel answers above are "

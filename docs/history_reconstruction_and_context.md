@@ -39,7 +39,7 @@ Output:
 
 Messages with `role` of `system` or `developer` are preserved as separate message items:
 
-- Content is converted into `input_text` blocks without merging or whitespace normalization.
+- Content is converted into `input_text` blocks without merging or whitespace normalization. A `system` or `developer` turn whose text resolves to nothing produces no message item at all — which is what Open WebUI’s own converter does (`if system_content:`, `routers/openai.py:1386-1387`) and what the list form of this pipe’s own guard already did.
 - The pipe emits them as:
 
 ```json
@@ -137,7 +137,7 @@ For each marker segment:
 - the pipe looks up the referenced persisted artifact payload (via `artifact_loader` when available;
   the lookups are batched across the whole rebuild, one call per distinct `message_id` rather than one
   per message),
-- normalizes it to the schema expected by upstream (`normalize_persisted_item`),
+- normalizes it to the schema expected by upstream (`normalize_persisted_item`) — once per marker, and the orphan guard below is run over exactly the payloads that normalization **kept**, not over the raw rows. A row the normalizer rejects is therefore not an artifact the guard ever sees: its own output is left orphaned and is dropped and named in the transformer's own `missing calls` warning, while a marker with no row at all stays the separate `missing_artifact_markers` case. A row the normalizer gives a minted `call_id` to is paired against that minted id, so a call and its output stored without ids cannot pair;
 - and appends it directly into the `input` array as a structured item.
 
 **Artifact loader preconditions (important):**
@@ -164,7 +164,7 @@ Some tool artifacts are intentionally never replayed back to the provider (to av
 ### 5.2 Orphaned function call pairs
 When tool calls are persisted, the pipe attempts to keep tool call/request and tool output/response pairs consistent.
 
-During replay, the pipe classifies persisted function call artifacts and may drop:
+During replay, the pipe classifies the normalized artifacts — the same items it replays — and may drop:
 - `function_call` items with no matching output
 - `function_call_output` items with no matching call
 
@@ -263,7 +263,12 @@ only through the card Open WebUI keeps for it in the browser, and none with card
   part of that round's result: handed over in full where it sits, whatever the attachment limit, even when it is
   not the last message; withheld with the round on an earlier turn while results are not kept; never stored again;
   unlike an image the person attached, never reused on a later question; and it ends the reuse of any older
-  picture. That message is recognised as the round's only when its pictures are the round's own, so a person who
+  picture. Each of its pictures is gated before it is sent, exactly as a picture the person attached is - scheme,
+  plain `http://`, inline size, and the address an `http(s)` link names - and a refused one is named on the turn
+  that round is answered on. The message itself is sent only when at least one picture survived: a round of
+  nothing but refused pictures goes to the model as its text alone, because a message carrying the sentence with no
+  picture would no longer read as the round's result, and that reading is what lets a person mid-tool-round past the
+  concurrency breaker. That message is recognised as the round's only when its pictures are the round's own, so a person who
   repeats the sentence with a picture of their own keeps their turn.
 
 The copy does not depend on reasoning. Tool rounds were accepted without the reasoning around them when measured with
@@ -289,7 +294,11 @@ sentences of an answer. Open WebUI stores the answer as text, so that position i
 it. Each persisted reasoning item therefore carries an anchor - which call it preceded or followed, or which
 assistant message it sat before - and replay puts it back in that place rather than appending it. An ordinal at
 or beyond the turn's message count places the block after the last message, in that turn: a continued turn whose
-carried turn ends in reasoning produces exactly that one-past ordinal.
+carried turn ends in reasoning produces exactly that one-past ordinal. That ordinal counts **every** assistant
+message in the turn, on the writing side exactly as on the reading side: a message the model sent without a
+`phase` marker counts like any other, and a `phase`-emitting model and a non-`phase` model produce identical
+ordinals for the same event sequence. An API call (no `chat_id`) is the one exception, because none of its
+messages are written to the database and are replayed, so its counter does not advance.
 
 Anchors are **scoped to a turn**, where a turn is the region between user messages. Tool `call_id` values are
 not guaranteed unique across a conversation: in chats saved before the pipe made the ids it invents unique, the
@@ -298,10 +307,18 @@ Binding an anchor only within its own turn is what keeps a reasoning item from
 attaching itself to an unrelated call with the same id. Open WebUI's own "Here are the images from the tool
 results above" message, which follows a round's results and carries that round's pictures, is not a user message
 for this purpose: it stays inside its round's turn on both the generating and the replaying side, and a thought
-the model had after the round is replayed after it.
+the model had after the turn is replayed after it.
 
 On `/chat/completions` a replayed reasoning item rides on the assistant message that carries the tool calls, as
-`reasoning_details`, matching Open WebUI's `convert_output_to_messages(raw=True)`.
+`reasoning_details`, matching Open WebUI's `convert_output_to_messages(raw=True)`. That replayed block is
+byte-identical to the concatenation of the streamed `reasoning.text` deltas: never that run plus the terminal
+`message.reasoning_details` echo a provider may close the stream with, which carries the same bytes a second time.
+
+The `Chats` write at the end of a turn reads `annotations` and `reasoning_details` off **every** round of the
+turn, in round order, and not off the round the loop happened to end on. A turn whose middle rounds reasoned and
+whose last round did not would otherwise store neither field at all, and a turn that ran three reasoning rounds
+would store only the third. The per-round scan sits on the path that completes a round, so an attempt handed back
+for a retry never fills it and still writes nothing over the winning attempt's message.
 
 The anchors are internal ordering metadata, and they are stripped from every item the pipe sends — including a
 turn-opener, not only reasoning — so none of the five keys in `REASONING_ANCHOR_KEYS` is ever part of a

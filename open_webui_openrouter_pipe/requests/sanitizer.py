@@ -18,6 +18,7 @@ from ..core.context_budget import (
     apply_replay_tool_output_budget,
     effective_chars_per_token,
 )
+from ..core.url_scheme import loggable_link
 from ..core.utils import (
     TOOL_CALL_STATUSES,
     _clean_str,
@@ -139,6 +140,45 @@ def _request_overhead_chars(body: Any) -> int:
         return 0
 
 
+def _gate_tool_pictures(
+    item: dict[str, Any], logger: logging.Logger
+) -> tuple[dict[str, Any], bool]:
+    from .transformer import _tool_picture_gate
+
+    if item.get("type") != "function_call_output":
+        return item, False
+    output = item.get("output")
+    parts = output if isinstance(output, list) else []
+    if not is_picture_output(parts):
+        return item, False
+    urls = [
+        str(part.get("image_url"))
+        for part in parts
+        if isinstance(part, dict) and part.get("type") == "input_image" and part.get("image_url")
+    ]
+    kept, refused = _tool_picture_gate(urls)
+    if not refused:
+        return item, False
+    for url, reason, cause in refused:
+        logger.warning(
+            "Not forwarding a tool's picture (%s): %s [cause=%s]",
+            loggable_link(url), reason, cause,
+        )
+    survivors = set(kept)
+    rebuilt = [
+        part
+        for part in parts
+        if not (
+            isinstance(part, dict)
+            and part.get("type") == "input_image"
+            and part.get("image_url") not in survivors
+        )
+    ]
+    if rebuilt == parts:
+        return item, False
+    return {**item, "output": rebuilt}, True
+
+
 def _sanitize_request_input(pipe: Pipe, body: ResponsesBody) -> BudgetOutcome | None:
     """Remove non-replayable artifacts that may have snuck into body.input."""
     items = getattr(body, "input", None)
@@ -181,9 +221,11 @@ def _sanitize_request_input(pipe: Pipe, body: ResponsesBody) -> BudgetOutcome | 
                 changed = True
             return minimal, changed
         if item_type == "function_call_output":
+            item, gated = _gate_tool_pictures(item, pipe.logger)
+            changed = gated
             call_id = item.get("call_id")
             if not (isinstance(call_id, str) and call_id.strip()):
-                return item, False
+                return item, gated
             output = item.get("output")
             if not isinstance(output, str) and not is_picture_output(output):
                 output = json.dumps(output, ensure_ascii=False)

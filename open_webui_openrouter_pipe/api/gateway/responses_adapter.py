@@ -9,7 +9,8 @@ import asyncio
 import contextlib
 import json
 import logging
-from collections.abc import AsyncGenerator
+import time
+from collections.abc import AsyncGenerator, Callable
 from typing import TYPE_CHECKING, Any, TypeGuard
 
 import aiohttp
@@ -58,21 +59,35 @@ if TYPE_CHECKING:
     from ...pipe import Pipe
 
 _RESPONSES_CHUNK_PARSE_WARN_COOLDOWN_S = 30.0
+_BACKLOG_DEBUG_SAMPLE_INTERVAL_S = 1.0
 _BODY_EXCERPT_CHARS = 200
 _RESPONSES_SSE_DONE_SENTINEL = b"[DONE]"
 _warned_responses_chunk_parse: dict[str, float] = {}
 _warned_queue_backlog: dict[str, float] = {}
+_warned_queue_backlog_sample: dict[str, float] = {}
 
 
 def _backlog_cause(queue: str, request_id: str) -> str:
     return f"{queue}:{request_id}" if request_id else f"{queue}:unknown"
 
 
+def _backlog_debug_due(queue: str, request_id: str) -> bool:
+    key = _backlog_cause(queue, request_id)
+    now = time.monotonic()
+    previous = _warned_queue_backlog_sample.get(key)
+    if previous is not None and now - previous < _BACKLOG_DEBUG_SAMPLE_INTERVAL_S:
+        return False
+    _warned_queue_backlog_sample[key] = now
+    return True
+
+
 def _drop_backlog_latch(request_id: str) -> None:
     if not request_id:
         return
     for queue_name in ("chunk_queue", "event_queue"):
-        _warned_queue_backlog.pop(_backlog_cause(queue_name, request_id), None)
+        cause = _backlog_cause(queue_name, request_id)
+        _warned_queue_backlog.pop(cause, None)
+        _warned_queue_backlog_sample.pop(cause, None)
 
 
 def _should_retry_stream(emitted_any: bool, exc: BaseException | None) -> bool:
@@ -90,6 +105,14 @@ def _should_retry_stream(emitted_any: bool, exc: BaseException | None) -> bool:
 
 
 _STREAM_END_EVENTS = frozenset({"response.completed", "response.done", "response.incomplete"})
+
+
+def _terminal_frame_is_readable(event: dict[str, Any]) -> bool:
+    if event.get("type") not in _STREAM_END_EVENTS:
+        return False
+    response = event.get("response")
+    return isinstance(response, dict) and bool(response)
+
 
 _RESPONSES_INVISIBLE_EVENTS = frozenset(
     {"response.created", "response.in_progress", "response.queued", "response.heartbeat"}
@@ -134,14 +157,14 @@ def _task_is_cancelling() -> bool:
     return task is not None and bool(task.cancelling())
 
 
-class _AcceptedResponseLostBody(aiohttp.ClientPayloadError, RuntimeError):
+class AcceptedResponseLostBody(aiohttp.ClientPayloadError, RuntimeError):
     pass
 
 
 def _should_retry_nonstreaming(exc: BaseException | None) -> bool:
     if exc is None:
         return False
-    if isinstance(exc, _AcceptedResponseLostBody):
+    if isinstance(exc, AcceptedResponseLostBody):
         return False
     if isinstance(exc, (aiohttp.ClientError, asyncio.TimeoutError)):
         return True
@@ -180,7 +203,7 @@ async def _decode_json_body(resp: Any, logger: Any, endpoint: str) -> Any:
     try:
         return await resp.json()
     except (aiohttp.ClientPayloadError, aiohttp.ServerDisconnectedError) as exc:
-        raise _AcceptedResponseLostBody(str(exc)) from exc
+        raise AcceptedResponseLostBody(str(exc)) from exc
     except Exception:
         logger.debug(
             "OpenRouter response was not decodable JSON; falling back to text",
@@ -191,7 +214,7 @@ async def _decode_json_body(resp: Any, logger: Any, endpoint: str) -> Any:
             text = await resp.text()
             return json.loads(text)
         except (aiohttp.ClientPayloadError, aiohttp.ServerDisconnectedError) as exc:
-            raise _AcceptedResponseLostBody(str(exc)) from exc
+            raise AcceptedResponseLostBody(str(exc)) from exc
         except Exception as exc:
             raise UpstreamBodyUnreadable(
                 endpoint=endpoint,
@@ -218,28 +241,48 @@ def _record_failed_call(pipe: Pipe, breaker_key: str | None) -> None:
         pipe._circuit_breaker.record_failure(breaker_key)
 
 
-def _split_sse_lines(buf: bytearray) -> list[bytes]:
+def _once_only_charge(pipe: Pipe, breaker_key: str | None) -> Callable[[], None]:
+    charged = False
+
+    def _charge() -> None:
+        nonlocal charged
+        if charged:
+            return
+        charged = True
+        _record_failed_call(pipe, breaker_key)
+
+    return _charge
+
+
+def _split_sse_lines(buf: bytearray, scanned: int = 0) -> tuple[list[bytes], int]:
     lines: list[bytes] = []
     start_idx = 0
+    search_idx = scanned if 0 <= scanned <= len(buf) else 0
     while True:
-        newline_idx = buf.find(b"\n", start_idx)
+        newline_idx = buf.find(b"\n", search_idx)
         if newline_idx == -1:
             break
         lines.append(bytes(buf[start_idx:newline_idx]).strip())
-        start_idx = newline_idx + 1
+        start_idx = search_idx = newline_idx + 1
     if start_idx > 0:
         del buf[:start_idx]
-    return lines
+        scanned = 0
+    else:
+        scanned = len(buf)
+    return lines, scanned
 
 
 @contextlib.asynccontextmanager
-async def _count_failed_call(pipe: Pipe, breaker_key: str | None) -> AsyncGenerator[None, None]:
+async def _count_failed_call(
+    pipe: Pipe, breaker_key: str | None, charge: Callable[[], None] | None = None
+) -> AsyncGenerator[None, None]:
     try:
         yield
-    except _AcceptedResponseLostBody:
-        raise
     except (OpenRouterAPIError, aiohttp.ClientError, TimeoutError):
-        _record_failed_call(pipe, breaker_key)
+        if charge is not None:
+            charge()
+        else:
+            _record_failed_call(pipe, breaker_key)
         raise
 
 
@@ -320,6 +363,8 @@ class ResponsesAdapter:
         idle_flush_seconds = float(idle_flush_ms) / 1000 if idle_flush_ms > 0 else None
         passthrough_deltas = delta_char_limit <= 0 and idle_flush_ms <= 0
         requested_model = request_body.get("model")
+        charge_failure = _once_only_charge(self._pipe, breaker_key)
+        producer_reported = False
 
         def _raise_in_band_error(current: dict[str, Any] | None):
             if current is None:
@@ -332,6 +377,7 @@ class ResponsesAdapter:
 
         @timed
         async def _producer() -> None:
+            nonlocal producer_reported
             seq = 0
             first_chunk_received = False
 
@@ -353,12 +399,13 @@ class ResponsesAdapter:
 
             retryer = _transient_retry_policy(effective_valves, retry=_retry_streaming)
             try:
-                async with _count_failed_call(self._pipe, breaker_key):
+                async with _count_failed_call(self._pipe, breaker_key, charge_failure):
                     async for attempt in retryer:
                         with attempt:
                             queued_any = False
                             delivered_any = False
                             buf = bytearray()
+                            scanned = 0
                             event_data_parts: list[bytes] = []
                             stream_complete = False
                             held: list[bytes] = []
@@ -425,7 +472,8 @@ class ResponsesAdapter:
                                             timing_mark("responses_first_chunk")
                                         view = memoryview(chunk)
                                         buf.extend(view)
-                                        for stripped in _split_sse_lines(buf):
+                                        sse_lines, scanned = _split_sse_lines(buf, scanned)
+                                        for stripped in sse_lines:
                                             if not stripped:
                                                 if event_data_parts:
                                                     data_blob = b"\n".join(event_data_parts).strip()
@@ -459,6 +507,7 @@ class ResponsesAdapter:
                                 if not stream_complete and buf:
                                     tail_line = bytes(buf).strip()
                                     del buf[:]
+                                    scanned = 0
                                     if tail_line.startswith(b"data:"):
                                         event_data_parts.append(bytes(tail_line[5:].lstrip()))
 
@@ -476,6 +525,8 @@ class ResponsesAdapter:
                                             await _dispatch(blob)
                                 if not queued_any:
                                     raise aiohttp.ClientPayloadError("OpenRouter closed the stream before sending anything")
+                                if not delivered_any:
+                                    raise aiohttp.ClientPayloadError("OpenRouter sent no user-visible events on /responses")
                             except Exception as producer_exc:
                                 is_auth_failure = isinstance(
                                     producer_exc, OpenRouterAPIError
@@ -490,6 +541,7 @@ class ResponsesAdapter:
                                     self.logger.exception(
                                         "Producer encountered error while streaming from OpenRouter"
                                     )
+                                producer_reported = True
                                 raise
                             for pending in held:
                                 await _put_seq(pending)
@@ -517,16 +569,20 @@ class ResponsesAdapter:
                     if self._pipe._should_warn_event_queue_backlog(
                         chunk_queue.qsize(), chunk_queue_warn_size
                     ):
-                        self.logger.log(
-                            warn_level(
-                                _warned_queue_backlog,
-                                _backlog_cause("chunk_queue", _backlog_request_id),
-                                cooldown_s=30.0,
-                            ),
-                            "Chunk queue backlog high: %d items (session=%s)",
-                            chunk_queue.qsize(),
-                            SessionLogger.session_id.get() or "unknown",
+                        level = warn_level(
+                            _warned_queue_backlog,
+                            _backlog_cause("chunk_queue", _backlog_request_id),
+                            cooldown_s=30.0,
                         )
+                        if level != logging.DEBUG or _backlog_debug_due(
+                            "chunk_queue", _backlog_request_id
+                        ):
+                            self.logger.log(
+                                level,
+                                "Chunk queue backlog high: %d items (session=%s)",
+                                chunk_queue.qsize(),
+                                SessionLogger.session_id.get() or "unknown",
+                            )
                     try:
                         if seq is None:
                             break
@@ -605,16 +661,20 @@ class ResponsesAdapter:
                 if self._pipe._should_warn_event_queue_backlog(
                     event_queue.qsize(), event_queue_warn_size
                 ):
-                    self.logger.log(
-                        warn_level(
-                            _warned_queue_backlog,
-                            _backlog_cause("event_queue", _backlog_request_id),
-                            cooldown_s=30.0,
-                        ),
-                        "Event queue backlog high: %d items (session=%s)",
-                        event_queue.qsize(),
-                        SessionLogger.session_id.get() or "unknown",
+                    level = warn_level(
+                        _warned_queue_backlog,
+                        _backlog_cause("event_queue", _backlog_request_id),
+                        cooldown_s=30.0,
                     )
+                    if level != logging.DEBUG or _backlog_debug_due(
+                        "event_queue", _backlog_request_id
+                    ):
+                        self.logger.log(
+                            level,
+                            "Event queue backlog high: %d items (session=%s)",
+                            event_queue.qsize(),
+                            SessionLogger.session_id.get() or "unknown",
+                        )
 
                 if seq is None:
                     done_workers += 1
@@ -637,13 +697,13 @@ class ResponsesAdapter:
                         continue
                     streaming_error = _raise_in_band_error(current)
                     if streaming_error is not None:
-                        _record_failed_call(self._pipe, breaker_key)
+                        charge_failure()
                         tail: list[dict[str, Any]] = []
                         coalescer.flush_all_to(tail)
                         for item in tail:
                             yield item
                         raise streaming_error
-                    stream_ended = stream_ended or current.get("type") in _STREAM_END_EVENTS
+                    stream_ended = stream_ended or _terminal_frame_is_readable(current)
                     coalescer.process_event(current, yield_queue, passthrough=passthrough_deltas)
 
                 drained = 0
@@ -669,13 +729,13 @@ class ResponsesAdapter:
                             continue
                         streaming_error = _raise_in_band_error(current)
                         if streaming_error is not None:
-                            _record_failed_call(self._pipe, breaker_key)
+                            charge_failure()
                             tail: list[dict[str, Any]] = []
                             coalescer.flush_all_to(tail)
                             for item in tail:
                                 yield item
                             raise streaming_error
-                        stream_ended = stream_ended or current.get("type") in _STREAM_END_EVENTS
+                        stream_ended = stream_ended or _terminal_frame_is_readable(current)
                         coalescer.process_event(current, yield_queue, passthrough=passthrough_deltas)
 
                 coalescer.flush_all_to(yield_queue, force=False)
@@ -696,7 +756,7 @@ class ResponsesAdapter:
 
             await producer_task
             if not stream_ended:
-                _record_failed_call(self._pipe, breaker_key)
+                charge_failure()
         finally:
             if not producer_task.done():
                 producer_task.cancel()
@@ -705,6 +765,8 @@ class ResponsesAdapter:
                     task.cancel()
             results = await asyncio.gather(producer_task, *worker_tasks, return_exceptions=True)
             for idx, result in enumerate(results):
+                if idx == 0 and producer_reported:
+                    continue
                 if isinstance(result, Exception) and not isinstance(result, asyncio.CancelledError):
                     task_name = "producer" if idx == 0 else f"worker-{idx - 1}"
                     self.logger.error(
@@ -794,12 +856,12 @@ class ResponsesAdapter:
                         )
                         if reported_error is not None:
                             raise reported_error
-                        if "output" not in payload:
+                        output = payload.get("output")
+                        if "output" not in payload or not isinstance(output, (list, type(None))):
                             raise aiohttp.ClientPayloadError(
                                 "OpenRouter returned 200 with no output on /responses"
                             )
-                        output_items = payload["output"]
-                        if output_items is None or (isinstance(output_items, list) and not output_items):
+                        if output is None or not output:
                             raise EmptyAnswerError(
                                 "The model returned an empty answer (no output items) on /responses",
                                 requested_model=request_params.get("model"),

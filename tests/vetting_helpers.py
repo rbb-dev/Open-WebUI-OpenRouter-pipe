@@ -116,6 +116,7 @@ def vetting_handler(**valve_over: Any) -> MultimodalHandler:
         ALLOW_INSECURE_HTTP_HOSTS="",
         ENABLE_SSRF_PROTECTION=True,
         HTTP_REFERER_OVERRIDE="",
+        REMOTE_FILE_MAX_SIZE_MB=50,
     )
     for key, value in valve_over.items():
         setattr(valves, key, value)
