@@ -1903,7 +1903,8 @@ class StreamingHandler:
                                         },
                                     }
                                 )
-                                retry_barrier_crossed = True
+                                if body.stream:
+                                    retry_barrier_crossed = True
                         continue
 
                     if etype == "response.content_part.done":
@@ -2585,7 +2586,8 @@ class StreamingHandler:
                                 image_delta = assistant_message[msg_before:]
                                 await _open_message()
                                 await event_emitter({"type": "chat:message:delta", "data": {"content": image_delta}})
-                                retry_barrier_crossed = True
+                                if body.stream:
+                                    retry_barrier_crossed = True
                             if (
                                 item_type in ("image_generation_call", "openrouter:image_generation")
                                 and str(item.get("id") or "") in opened_image_windows
@@ -2625,7 +2627,12 @@ class StreamingHandler:
                                     await _emit_fusion_event(_synth_terminal)
                                 await _emit_fusion_event(event)
                         note_model_activity()
-                        final_response = event.get("response", {})
+                        _terminal_response = event.get("response")
+                        final_response = (
+                            _terminal_response
+                            if isinstance(_terminal_response, dict) and _terminal_response
+                            else None
+                        )
                         response_completed_at = perf_counter()
                         if generation_started_at is not None:
                             generation_last_event_at = response_completed_at
@@ -3183,6 +3190,24 @@ class StreamingHandler:
                                     }
                                 )
                             if loop_index > max_loops:
+                                if emitter_supplied:
+                                    try:
+                                        for output in function_outputs:
+                                            result_str, pictures = tool_output_text_and_pictures(
+                                                output.get("output")
+                                            )
+                                            await _emit_tool_result(
+                                                call_id=_extract_call_id(output) or "",
+                                                result_text=result_str,
+                                                files=output.get("files") or None,
+                                                embeds=output.get("embeds") or None,
+                                                status=str(output.get("status") or "completed"),
+                                                pictures=pictures,
+                                            )
+                                    except Exception as exc:
+                                        self.logger.warning(
+                                            "Failed to emit the skipped tool cards: %s", exc, exc_info=True
+                                        )
                                 break
                         else:
                             fresh_calls = [
@@ -3621,7 +3646,7 @@ class StreamingHandler:
                     duration = max(0.0, last_generation_stamp - effective_start)
                     if duration > 0:
                         stream_window = duration
-                if terminal:
+                if terminal or handed_back:
                     description = self._pipe._ensure_error_formatter()._format_final_status_description(
                         elapsed=elapsed,
                         total_usage=total_usage,
@@ -3752,7 +3777,8 @@ class StreamingHandler:
 
             if (
                 fusion_armed and fusion_state is not None and fusion_state.fusion_index is not None
-                and fusion_state.events and Chats is not None and not was_cancelled
+                and fusion_state.events and Chats is not None
+                and not was_cancelled and not error_occurred
             ):
                 try:
                     if resolved_chat_id and resolved_message_id:

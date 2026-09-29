@@ -1055,6 +1055,13 @@ class Filter:
 
         overrides: dict = {{}}
 {_render_image_overrides(spec)}
+        provider_options = self._json_object(
+            getattr(user_valves, "IMAGE_PROVIDER_OPTIONS_JSON", ""), "Provider options"
+        )
+        reference_mode = getattr(user_valves, "IMAGE_REFERENCE_MODE", "auto")
+        reference_links = self._json_array(
+            getattr(user_valves, "IMAGE_REFERENCE_URLS", ""), "Reference image links"
+        )
         if overrides:
             existing = body.get("image_config")
             if not isinstance(existing, dict):
@@ -1064,13 +1071,6 @@ class Filter:
             existing.update(overrides)
             body["image_config"] = existing
 
-        provider_options = self._json_object(
-            getattr(user_valves, "IMAGE_PROVIDER_OPTIONS_JSON", ""), "Provider options"
-        )
-        reference_mode = getattr(user_valves, "IMAGE_REFERENCE_MODE", "auto")
-        reference_links = self._json_array(
-            getattr(user_valves, "IMAGE_REFERENCE_URLS", ""), "Reference image links"
-        )
         if isinstance(__metadata__, dict) and (
             provider_options or reference_links or reference_mode != "auto"
         ):
@@ -1282,6 +1282,7 @@ class Filter:
     toggle = True
 
     class Valves(BaseModel):
+{_KEEP_WHAT_STILL_FITS}
         priority: int = Field(
             default=0,
             description="Priority level for the filter operations.",

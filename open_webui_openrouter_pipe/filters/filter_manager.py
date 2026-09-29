@@ -2268,7 +2268,7 @@ __KEEP_WHAT_STILL_FITS__
         )
         DIRECT_FILE_MIME_ALLOWLIST: str = Field(
             default="application/pdf,text/plain,text/markdown,application/json,text/csv",
-            description="Comma-separated MIME allowlist for diverted direct generic files.",
+            description="Comma-separated MIME allowlist for diverted direct generic files. The pattern is matched with `fnmatch` against the declared type, so a wildcard admits declared values that are not media types at all; an attachment whose type is not a media type is refused before the request is sent.",
         )
         DIRECT_AUDIO_MIME_ALLOWLIST: str = Field(
             default="audio/*",
@@ -2276,7 +2276,7 @@ __KEEP_WHAT_STILL_FITS__
         )
         DIRECT_VIDEO_MIME_ALLOWLIST: str = Field(
             default="video/mp4,video/mpeg,video/quicktime,video/webm",
-            description="Comma-separated MIME allowlist for diverted direct video files.",
+            description="Comma-separated MIME allowlist for diverted direct video files. The pattern is matched with `fnmatch` against the declared type, so a wildcard admits declared values that are not media types at all; such an attachment is not sent at all -- it is refused before the request leaves the pipe and the turn carries the `Direct Upload Issue` card.",
         )
         DIRECT_AUDIO_FORMAT_ALLOWLIST: str = Field(
             default="wav,mp3,aiff,aac,ogg,flac,m4a,pcm16,pcm24",
@@ -3128,6 +3128,29 @@ __KEEP_WHAT_STILL_FITS__
             _warn_stale_choice(info.field_name, value, kept)
             return kept
 ''' if guarded else ""
+        dropped = [
+            name for name in drawn
+            if name not in guarded and name != "DATA_COLLECTION"
+        ]
+        dropped_literal = ", ".join(json.dumps(name) for name in dropped)
+        stale_value_guard = f'''
+        @field_validator({dropped_literal}, mode="before")
+        @classmethod
+        def _drop_unusable_setting(cls, value: Any, info: ValidationInfo) -> Any:
+            field = cls.model_fields[info.field_name]
+            metadata = field.metadata
+            annotated = (
+                Annotated[(field.annotation, *metadata)]
+                if metadata
+                else field.annotation
+            )
+            try:
+                TypeAdapter(annotated).validate_python(value)
+            except ValidationError:
+                _warn_unusable_setting(info.field_name, value, field.get_default())
+                return field.get_default(call_default_factory=True)
+            return value
+''' if dropped else ""
 
         valves_class = ""
         if visibility in ("admin", "both"):
@@ -3135,7 +3158,7 @@ __KEEP_WHAT_STILL_FITS__
     class Valves(BaseModel):
         """Admin-level provider routing preferences."""
 {rendered_controls}
-{stale_choice_guard}'''
+{stale_choice_guard}{stale_value_guard}'''
 
         user_valves_class = ""
         if visibility in ("user", "both"):
@@ -3143,7 +3166,7 @@ __KEEP_WHAT_STILL_FITS__
     class UserValves(BaseModel):
         """User-level provider routing preferences (can override admin defaults)."""
 {rendered_controls}
-{stale_choice_guard}'''
+{stale_choice_guard}{stale_value_guard}'''
 
         # Generate init based on visibility
         init_body = "        self.log = logging.getLogger(f\"openrouter.provider.{MODEL_SLUG}\")\n        self.log.setLevel(SRC_LOG_LEVELS.get(\"OPENAI\", logging.INFO))"
@@ -3167,9 +3190,9 @@ license: MIT
 from __future__ import annotations
 
 import logging
-from typing import Any, Literal, get_args
+from typing import Annotated, Any, Literal, get_args
 
-from pydantic import BaseModel, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError, ValidationInfo, field_validator
 
 try:
     from open_webui.env import SRC_LOG_LEVELS
@@ -3191,6 +3214,7 @@ _PROVIDER_MAP: dict[str, str] = {provider_map_code}
 _ORDER_MAP: dict[str, list[str]] = {order_map_code}
 
 _WARNED_STALE_CHOICES: set[tuple[str, str, str]] = set()
+_WARNED_UNUSABLE_SETTINGS: set[tuple[str, str, str]] = set()
 
 
 def _warn_stale_choice(field: str, value: Any, kept: str) -> None:
@@ -3200,6 +3224,20 @@ def _warn_stale_choice(field: str, value: Any, kept: str) -> None:
     _WARNED_STALE_CHOICES.add(marker)
     logging.getLogger(MODEL_SLUG).warning(
         "Provider routing valve %s: %r is no longer offered; using %r",
+        field,
+        value,
+        kept,
+    )
+
+
+def _warn_unusable_setting(field: str, value: Any, kept: Any) -> None:
+    marker = (field, str(value), str(kept))
+    if marker in _WARNED_UNUSABLE_SETTINGS:
+        return
+    _WARNED_UNUSABLE_SETTINGS.add(marker)
+    logging.getLogger(MODEL_SLUG).warning(
+        "Provider routing valve %s: stored value %r is not usable by this filter "
+        "build; using the field default %r",
         field,
         value,
         kept,

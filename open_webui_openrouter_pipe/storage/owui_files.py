@@ -31,7 +31,7 @@ from starlette.datastructures import Headers
 from ..core.config import _INTERNAL_FILE_ID_PATTERN
 from ..core.errors import FileUnavailableError, RequiredInternalFileError
 from ..core.timing_logger import timed
-from ..core.url_scheme import is_absolute_url, url_path
+from ..core.url_scheme import is_absolute_url, media_type_or_empty, url_path
 from ..core.warn_latch import warn_level
 
 try:
@@ -911,7 +911,12 @@ class OwuiFileGateway:
             return None
         if not b64:
             return None
-        data_url = f"data:{mime_type};base64,{b64}"
+        media_type = media_type_or_empty(mime_type)
+        if not media_type:
+            raise RequiredInternalFileError(
+                "A referenced file's recorded type is not a media type.", kind="file"
+            )
+        data_url = f"data:{media_type};base64,{b64}"
         meta = getattr(file_obj, "meta", None)
         filename = ""
         if isinstance(meta, dict):

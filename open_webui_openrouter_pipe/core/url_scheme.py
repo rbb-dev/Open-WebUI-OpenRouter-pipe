@@ -1,9 +1,24 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 from urllib.parse import urlsplit
 
 HTTP_SCHEMES = frozenset({"http", "https"})
+
+MEDIA_TYPE_PATTERN = re.compile(
+    r"^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$"
+)
+
+
+def media_type_or_empty(value: Any) -> str:
+    if not value:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    candidate = text.split(";", 1)[0].strip().lower()
+    return candidate if MEDIA_TYPE_PATTERN.match(candidate) else ""
 
 
 def _scheme_prefix(url: str) -> str | None:

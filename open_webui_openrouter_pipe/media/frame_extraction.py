@@ -9,6 +9,7 @@ import contextlib
 import io
 import logging
 import math
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -27,6 +28,12 @@ _PROBE_TIMEOUT_S = 10.0
 _END_SEEK_WINDOWS = ("-1", "-5", "-30")
 _RETRYABLE_FFMPEG_EXITS = frozenset({69})
 _MAX_SEEK_SECONDS = 1e12
+_VIDEO_HEAD = re.compile(r"Video:")
+_STREAM_INDEX = re.compile(r"Stream #\d+:(\d+)")
+_MATROSKA_DURATION = re.compile(r"DURATION\s*:\s*(\d+):(\d+):([\d.]+)")
+_MOV_DURATION = re.compile(r"Processing st:\s*(\d+),[^\n]*duration:\s*(\d+)")
+_TIME_BASE = re.compile(r"1/(\d+)\s*:")
+_PICTURE_CODEC = re.compile(r"Video:\s*(?:png|mjpeg|bmp|gif|webp|tiff)\b")
 
 
 class FrameExtractionError(Exception):
@@ -121,6 +128,76 @@ def _ffprobe_stream_duration(path: Path) -> float | None:
     return value if value > 0 else None
 
 
+def _ffmpeg_binary() -> str | None:
+    binary = shutil.which("ffmpeg")
+    if binary is not None:
+        return binary
+    try:
+        import imageio_ffmpeg  # type: ignore[import-untyped]
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:  # noqa: BLE001 - a missing wheel is a host with no ffmpeg
+        return None
+
+
+def _ffmpeg_video_stream_duration(path: Path, binary: str) -> float | None:
+    def _run(level: str | None) -> str | None:
+        level_arg = ["-loglevel", level] if level is not None else []
+        try:
+            proc = subprocess.run(
+                [binary, "-hide_banner", "-nostats", "-protocol_whitelist", "file",
+                 *level_arg, "-i", str(path)],
+                capture_output=True, text=True, errors="replace",
+                timeout=_PROBE_TIMEOUT_S, check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return proc.stderr or ""
+
+    stderr = _run(None)
+    if stderr is not None:
+        values: list[float] = []
+        in_video = False
+        for line in stderr.splitlines():
+            if "Stream #" in line:
+                in_video = (
+                    _VIDEO_HEAD.search(line) is not None
+                    and _PICTURE_CODEC.search(line) is None
+                )
+            elif in_video and "Metadata:" not in line:
+                found = _MATROSKA_DURATION.search(line)
+                if found is not None:
+                    hours, minutes, seconds = found.groups()
+                    value = int(hours) * 3600.0 + int(minutes) * 60.0 + float(seconds)
+                    if value > 0:
+                        values.append(value)
+        if values:
+            return max(values)
+    stderr = _run("debug")
+    if stderr is None:
+        return None
+    found_values: list[float] = []
+    for line in stderr.splitlines():
+        if "Stream #" not in line or not _VIDEO_HEAD.search(line):
+            continue
+        if _PICTURE_CODEC.search(line):
+            continue
+        position = _STREAM_INDEX.search(line)
+        base = _TIME_BASE.search(line.split("Video:")[0])
+        stream_index = position.group(1) if position else None
+        time_base = int(base.group(1)) if base else None
+        if stream_index is None or not time_base:
+            continue
+        value = None
+        for found in _MOV_DURATION.finditer(stderr):
+            if found.group(1) == stream_index:
+                value = int(found.group(2)) / time_base
+        if value is not None and value > 0:
+            found_values.append(value)
+    if found_values:
+        return max(found_values)
+    return None
+
+
 def _probe_video_sync(path: Path) -> VideoMetadata:
     """Blocking video probe. Caller wraps in to_thread."""
     if str(path).startswith("-"):
@@ -131,7 +208,11 @@ def _probe_video_sync(path: Path) -> VideoMetadata:
         duration_is_stream = False
         if duration > 0:
             probed = _ffprobe_stream_duration(path)
-            if probed is not None:
+            if probed is None:
+                binary = _ffmpeg_binary()
+                if binary is not None:
+                    probed = _ffmpeg_video_stream_duration(path, binary)
+            if probed is not None and probed > 0:
                 duration = probed
                 duration_is_stream = True
         fps_raw = meta.get("fps") or meta.get("fps_in_av") or 0.0
@@ -519,6 +600,28 @@ async def _extract_frame_with_budget(
                 from_end=not rescue_first, saw_damage=ladder_saw_damage,
             )
         except FrameExtractionError:
+            if (
+                target == "at_timestamp"
+                and not rescue_first
+                and meta is not None
+                and meta.duration_seconds > 0
+            ):
+                last_index_end = _index_end(meta, "last")
+                try:
+                    png_bytes, w, h = await _extract_frame_ffmpeg(
+                        path, timestamp_seconds=last_index_end,
+                        logger=logger, from_end=False,
+                    )
+                except FrameExtractionError:
+                    pass
+                else:
+                    return ExtractedFrame(
+                        image_bytes=png_bytes, width=w, height=h,
+                        actual_timestamp_seconds=last_index_end,
+                        requested_timestamp_seconds=requested_ts,
+                        downgrade_note=downgrade_note or "frame_seek_failed_used_last_frame",
+                        resolved_target="last_frame",
+                    )
             png_bytes, w, h = await asyncio.to_thread(
                 _extract_frame_imageio_sync, path, frame_index=0,
             )

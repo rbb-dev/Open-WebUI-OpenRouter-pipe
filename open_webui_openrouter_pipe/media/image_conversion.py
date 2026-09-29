@@ -4,18 +4,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from ..core.url_scheme import media_type_or_empty
+
 if TYPE_CHECKING:
     from PIL import Image as _Image  # type: ignore[import-untyped]
 
 
 def normalise_mime(value: Any) -> str:
     """Lowercase, strip parameters: 'IMAGE/JPEG; charset=utf-8' -> 'image/jpeg'."""
-    if not value:
-        return ""
-    text = str(value).strip()
-    if not text:
-        return ""
-    return text.split(";", 1)[0].strip().lower()
+    return media_type_or_empty(value)
 
 
 def _carries_transparency(img: _Image.Image) -> bool:

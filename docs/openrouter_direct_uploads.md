@@ -149,7 +149,7 @@ The pipe reads those references and:
 - Loads bytes from Open WebUI storage by file `id` — once per turn, and reuses those bytes for every stage: the outer request, each internal-Fusion panel member, the judge, the judge's repair pass and the synthesis. The format sniffing and the Direct Audio Format Allowlist check are *not* memoised: they run on every stage.
 - Injects the attachment(s) into the **last user message** in the outgoing request
 
-For safety/portability, OpenRouter never receives an internal Open WebUI URL. Any internal `/api/v1/files/<id>/content` reference is inlined to a `data:<mime>;base64,...` payload before sending upstream.
+For safety/portability, OpenRouter never receives an internal Open WebUI URL. Any internal `/api/v1/files/<id>/content` reference is inlined to a `data:<mime>;base64,...` payload before sending upstream. The `<mime>` there is the recorded type of the stored file, lowercased with its parameters stripped and checked against the media-type grammar: a recorded type that is not a media type produces no `data:` head at all, and the reference is refused with the `Direct Upload Issue` card rather than forwarded under a defaulted or truncated type.
 
 ### 3) Tasks do not receive direct uploads
 
@@ -171,7 +171,7 @@ OpenRouter exposes multiple OpenAI-compatible endpoints. For direct uploads, the
   - On **`/responses`**, the pipe emits Responses-style `type:"input_file"` blocks.
   - On **`/chat/completions`**, the pipe emits Chat-style `type:"file"` blocks and inlines the bytes as `file.file_data` (data URL).
 
-- **Direct video** → requires **`/chat/completions`** (current implementation)
+- **Direct video** → requires **`/chat/completions`** (current implementation). The `data:` head is grammar-checked before it is built: a declared type that is not a media type is refused and named on the `Direct Upload Issue` card, not sent with a malformed head.
 
 - **Direct audio**
   - Eligible for **`/responses`** when the (sniffed) audio format is in `DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST` (default: `wav,mp3`)
@@ -230,9 +230,9 @@ These are configured on the **OpenRouter Direct Uploads** filter function (Admin
 | `DIRECT_FILE_MAX_UPLOAD_SIZE_MB` | `50` | Maximum size (MB) for a single diverted direct file upload. |
 | `DIRECT_AUDIO_MAX_UPLOAD_SIZE_MB` | `25` | Maximum size (MB) for a single diverted direct audio upload. |
 | `DIRECT_VIDEO_MAX_UPLOAD_SIZE_MB` | `20` | Maximum size (MB) for a single diverted direct video upload. |
-| `DIRECT_FILE_MIME_ALLOWLIST` | `application/pdf,text/plain,text/markdown,application/json,text/csv` | Comma-separated MIME allowlist for diverted direct generic files. Non-allowlisted types are fail-open (left on normal OWUI RAG/Knowledge path). |
+| `DIRECT_FILE_MIME_ALLOWLIST` | `application/pdf,text/plain,text/markdown,application/json,text/csv` | Comma-separated MIME allowlist for diverted direct generic files. Non-allowlisted types are fail-open (left on normal OWUI RAG/Knowledge path). The pattern is matched with `fnmatch` against the declared type, so a wildcard admits declared values that are not media types at all; an attachment whose type is not a media type is refused before the request is sent. |
 | `DIRECT_AUDIO_MIME_ALLOWLIST` | `audio/*` | Comma-separated MIME allowlist for diverted direct audio files. |
-| `DIRECT_VIDEO_MIME_ALLOWLIST` | `video/mp4,video/mpeg,video/quicktime,video/webm` | Comma-separated MIME allowlist for diverted direct video files. |
+| `DIRECT_VIDEO_MIME_ALLOWLIST` | `video/mp4,video/mpeg,video/quicktime,video/webm` | Comma-separated MIME allowlist for diverted direct video files. The pattern is matched with `fnmatch` against the declared type, so a wildcard admits declared values that are not media types at all; such an attachment is not sent at all -- it is refused before the request leaves the pipe and the turn carries the `Direct Upload Issue` card. |
 | `DIRECT_AUDIO_FORMAT_ALLOWLIST` | `wav,mp3,aiff,aac,ogg,flac,m4a,pcm16,pcm24` | Comma-separated audio format allowlist (derived from filename/MIME). Listing a format lets a direct audio upload through even when it is outside the nine the pipe sends natively; the request is then normalised to `mp3`. A `webm` container is not diverted and stays on Open WebUI's path. |
 | `DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST` | `wav,mp3` | Comma-separated audio formats eligible for `/responses` `input_audio.format`. |
 
@@ -275,6 +275,7 @@ Common causes:
 - File exceeds size limits (the size checks apply only to a modality whose user valve is on)
 - The uploaded file's dict carries no `size`
 - The MIME type is allowlisted but the model or provider still rejects it (see "Provider says unsupported MIME/type" below)
+- An attachment declares a type that is not a media type, so the pipe will not forward it
 - Open WebUI storage object could not be loaded by ID
 - Admin enforced an incompatible endpoint override (forced `/responses` but the request requires `/chat/completions`)
 

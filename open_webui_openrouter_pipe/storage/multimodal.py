@@ -98,6 +98,14 @@ _ADDRESS_CHECK_WORKERS = 4
 
 _ICON_SWEEP_ADDRESS_WORKERS = 10
 
+_NUMERIC_SOCKET_FLAGS = socket.AI_NUMERICHOST | socket.AI_NUMERICSERV
+
+_NAME_SOCKET_FLAGS = socket.NI_NUMERICHOST | socket.NI_NUMERICSERV
+
+_AI_ADDRCONFIG = socket.AI_ADDRCONFIG
+if hasattr(socket, "AI_MASK"):
+    _AI_ADDRCONFIG &= socket.AI_MASK  # pyright: ignore[reportAttributeAccessIssue]
+
 _VETTED_CONNECTION_LIMIT = 20
 
 _VETTED_CONNECTION_LIMIT_PER_HOST = 10
@@ -195,11 +203,51 @@ async def _run_address(handler: Any, func: Callable[..., Any], *args: Any) -> An
     )
 
 
+async def _resolve_name_on_address_pool(
+    handler: Any, host: str, port: int, family: socket.AddressFamily
+) -> list[ResolveResult]:
+    def _blocking() -> list[ResolveResult]:
+        infos = socket.getaddrinfo(
+            host,
+            port,
+            type=socket.SOCK_STREAM,
+            family=family,
+            flags=_AI_ADDRCONFIG,
+        )
+        hosts: list[ResolveResult] = []
+        for answer_family, _, proto, _, address in infos:
+            if answer_family == socket.AF_INET6:
+                if len(address) < 3:
+                    continue
+                if address[3]:
+                    resolved_host, resolved_port = socket.getnameinfo(
+                        address, _NAME_SOCKET_FLAGS
+                    )
+                    entry_port = int(resolved_port)
+                else:
+                    resolved_host, entry_port = address[:2]
+            else:
+                assert answer_family == socket.AF_INET
+                resolved_host, entry_port = address  # type: ignore[misc]
+            hosts.append(
+                ResolveResult(
+                    hostname=host,
+                    host=str(resolved_host),
+                    port=int(entry_port),
+                    family=int(answer_family),
+                    proto=int(proto),
+                    flags=int(_NUMERIC_SOCKET_FLAGS),
+                )
+            )
+        return hosts
+
+    return await _run_address(handler, _blocking)
+
+
 class _VettedResolver(AbstractResolver):
     def __init__(self, handler: MultimodalHandler, protection: bool) -> None:
         self._handler = handler
         self._protection = protection
-        self._fallback = aiohttp.ThreadedResolver()
 
     async def resolve(
         self,
@@ -208,7 +256,7 @@ class _VettedResolver(AbstractResolver):
         family: socket.AddressFamily = socket.AF_INET,
     ) -> list[ResolveResult]:
         if not self._protection:
-            return await self._fallback.resolve(host, port, family=family)
+            return await _resolve_name_on_address_pool(self._handler, host, port, family)
         ips = await asyncio.wait_for(
             _run_address(
                 self._handler, self._handler._validated_ips_for_host, host, port
@@ -230,7 +278,7 @@ class _VettedResolver(AbstractResolver):
         ]
 
     async def close(self) -> None:
-        await self._fallback.close()
+        return None
 
 
 _IMAGE_EXTENSIONS = frozenset(

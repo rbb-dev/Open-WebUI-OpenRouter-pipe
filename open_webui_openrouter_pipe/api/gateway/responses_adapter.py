@@ -402,8 +402,7 @@ class ResponsesAdapter:
                                     first_event_queued = False
                                     async for chunk in resp.content.iter_chunked(4096):
                                         chunk_count += 1
-                                        preview = chunk[:40].decode("utf-8", errors="replace").replace("\n", "\\n").replace("\r", "\\r")
-                                        timing_mark(f"chunk_{chunk_count}_len_{len(chunk)}_[{preview}]")
+                                        timing_mark(f"chunk_{chunk_count}_len_{len(chunk)}")
                                         if not first_chunk_received:
                                             first_chunk_received = True
                                             timing_mark("responses_first_chunk")

@@ -9,6 +9,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 import aiohttp
 
+from ..core.url_scheme import media_type_or_empty
+
 RELAY_HOSTS: tuple[str, ...] = ("litterbox", "catbox")
 
 RELAY_RETENTIONS: tuple[str, ...] = ("1h", "12h", "24h", "72h")
@@ -43,10 +45,6 @@ _UPLOAD_ATTEMPTS = 3
 
 _RETRY_PAUSE_SECONDS = 2.0
 
-_MEDIA_TYPE = re.compile(
-    r"^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$"
-)
-
 _UNQUOTABLE = re.compile(r"""[^A-Za-z0-9 .,;'"?!=%/-]""")
 
 _HOST_REPLY_LIMIT = 120
@@ -69,8 +67,7 @@ def host_keeps_forever(host: str) -> bool:
 
 
 def usable_media_type(value: Any) -> str:
-    candidate = value.split(";", 1)[0].strip().lower() if isinstance(value, str) else ""
-    return candidate if _MEDIA_TYPE.match(candidate) else ""
+    return media_type_or_empty(value)
 
 
 def megabytes(count: int) -> str:

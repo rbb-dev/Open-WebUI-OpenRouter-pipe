@@ -2359,6 +2359,11 @@ class Pipe:
             with contextlib.suppress(Exception):
                 await asyncio.gather(*extra_tasks, return_exceptions=True)
 
+        store = getattr(self, "_artifact_store", None)
+        if store is not None and store._redis_client is not None:
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await self._drain_redis_pending(store)
+
         await self._stop_redis_tasks()
 
         pending_shutdown: list[Any] = []

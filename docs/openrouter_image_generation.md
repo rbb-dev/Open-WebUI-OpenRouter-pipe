@@ -1619,9 +1619,20 @@ pipes()
 
 settings-row inlet (Open WebUI runs this before the pipe sees the body)
   ├─ model gate: every id form OWUI produces, and no other model
+  ├─ parse the free-text provider options and reference links
   ├─ merge the chosen values into body.image_config, per key
   ├─ typed values parsed as JSON only when they open a container
   └─ provider options and reference choices go to the pipe's metadata key
+
+A field the inlet refuses aborts the turn, and the caller's body is left exactly as it
+was handed over. Open WebUI passes `form_data` into a filter by reference and re-raises
+whatever the filter raises, so the caller never gets the body back: any merge applied
+before the refusal would stand on a turn that is not going to be sent, half-rewritten
+and naming choices the user did not finish making. Every fallible parse therefore runs
+before the single write into `image_config`, and the refusal still names the field the
+user typed. The refusal itself is not softened — a value that cannot be sent is refused
+rather than dropped, because a silently dropped one produces a request that looks
+configured and is not.
 
 pipe(body, ...)
   └─ orchestrator._inject_image_modalities(body)

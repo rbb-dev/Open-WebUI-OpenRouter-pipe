@@ -1915,6 +1915,7 @@ class ModelCatalogManager:
                         self._pipe._ensure_filter_manager()._provider_routing_ids_known
                     )
                 else:
+                    pr_ids_known = False
                     self.logger.warning(
                         "Provider routing enabled but provider_map is empty (frontend catalog may have failed to load)"
                     )
@@ -2943,8 +2944,9 @@ class ModelCatalogManager:
             ):
                 meta_updated = True
 
+            pr_hands_off = not provider_routing_ids_known
             pr_ids_now = [provider_routing_filter_id] if provider_routing_filter_id else []
-            pr_detached = _detached_with_default_off(
+            pr_detached = set() if pr_hands_off else _detached_with_default_off(
                 meta_dict,
                 prune_key="provider_routing_filter_id",
                 filter_function_ids=pr_ids_now,
@@ -2962,7 +2964,7 @@ class ModelCatalogManager:
                 detached=pr_detached,
                 provider_routing_filter_id=provider_routing_filter_id,
                 auto_default_provider_routing_filter=auto_default_provider_routing_filter,
-                hands_off=not provider_routing_ids_known,
+                hands_off=pr_hands_off,
             ):
                 meta_updated = True
 
@@ -3088,7 +3090,8 @@ class ModelCatalogManager:
                 auto_default=auto_default_fusion_filter,
                 hands_off=fusion_hands_off,
             )
-            pr_detached = _detached_with_default_off(
+            pr_hands_off = not provider_routing_ids_known
+            pr_detached = set() if pr_hands_off else _detached_with_default_off(
                 meta_dict,
                 prune_key="provider_routing_filter_id",
                 filter_function_ids=[provider_routing_filter_id] if provider_routing_filter_id else [],
@@ -3105,7 +3108,7 @@ class ModelCatalogManager:
                 detached=pr_detached,
                 provider_routing_filter_id=provider_routing_filter_id,
                 auto_default_provider_routing_filter=auto_default_provider_routing_filter,
-                hands_off=not provider_routing_ids_known,
+                hands_off=pr_hands_off,
             )
 
             if openrouter_pipe_capabilities is not None:

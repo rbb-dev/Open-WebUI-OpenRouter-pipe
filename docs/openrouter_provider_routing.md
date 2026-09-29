@@ -275,6 +275,23 @@ and the filter logs a WARNING naming the discarded order and what it kept. A sta
 that still exist keep working unchanged; only stale ones are touched, so re-pick to pin the
 rest of a provider lineup change.
 
+The numeric and boolean controls are healed the same way but differently: a stored value
+the current build refuses — a `MIN_THROUGHPUT` below zero, a `MAX_PRICE_*` that is not a
+number, a `ZDR` that is not a boolean — falls back to that field's own default, and the
+filter logs a WARNING naming the stored value and the default it used. Every other value
+on the row keeps its stored value, and the repaired key still counts as explicitly set,
+so a user's own preference is not silently replaced by the admin's. `DATA_COLLECTION` is
+the exception: its three options are a fixed set that cannot change between builds, so a
+value outside them is still refused rather than quietly turned into a policy the operator
+never chose. The same healing is on the user-side class, because a user row is rebuilt the
+same way.
+
+Open WebUI builds the admin and user classes straight from the stored row with no error
+handling around it, so a single value the current build cannot accept would otherwise
+abort the chat request rather than lose one field. Note that the fallback is a build-time
+repair only: the stale value stays in the database until the form is next saved, which is
+the same treatment the dropdown options get.
+
 ### Removal
 
 When a model is removed from routing valves:
@@ -296,6 +313,15 @@ does nothing until it is switched on again.
 A row the pipe could not switch on is named in the log with its id, is not attached while it
 is off, and is retried on the next catalog refresh. The retry stops once it succeeds, so a
 row you switch off by hand afterwards stays off.
+
+Removal is a decision, so a pass that never obtained the answer does not make one. If the
+filter installation raises, returns something that is not a map, or is skipped because the
+provider catalog failed to load, the sync leaves the model's `filterIds`, `defaultFilterIds`
+and ownership record exactly as they were and writes nothing. An `ADMIN_` model's enforced
+policy therefore survives such a pass unchanged rather than losing its Integrations entry
+with no switch left to bring it back through. A model that really is gone from the routing
+valves, or whose providers have gone away, is still detached on the next pass that can tell
+the difference.
 
 ### Two installed copies
 

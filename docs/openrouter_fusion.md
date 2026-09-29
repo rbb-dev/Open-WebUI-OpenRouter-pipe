@@ -219,6 +219,10 @@ streaming panel deltas, the cards simply fill in at completion as before.
   finishes server-side and the full panel + answer are persisted; reopening the chat shows the finished result.
 - A mid-stream **socket drop** has no live replay; reloading restores the complete panel from the persisted state.
 - A Fusion answer cut off by a length or provider cap is a **finished** run, not an interruption: the footer, the clock and the cost render exactly as they do for a completed turn.
+- A **dropped connection or a raised tool** is the other way round, and is not a finished run: the turn wrote no
+  final panel, so a reload shows the error above the live panel rather than a deliberation frozen at "—" and
+  presented as finished. A `final=True` panel is what a finished run persists, and it never opens a socket again,
+  so it is written only for a turn that shipped its answer.
 
 - Forces the `/responses` endpoint (the only one that emits the granular Fusion events). A
   `FORCE_CHAT_COMPLETIONS_MODELS` match on the fusion model is **not** overridden: the valve holds and the turn

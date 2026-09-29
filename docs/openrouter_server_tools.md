@@ -117,6 +117,15 @@ These are configured on the companion filter functions themselves (Open WebUI Ad
 | `IMAGE_GENERATION_MODEL` | `str` | `openai/gpt-5-image-mini` | Which OpenRouter model draws the picture. The pipe's default is `openai/gpt-5-image-mini`; OpenRouter documents `openai/gpt-5-image` as its own, so the two differ. The default was chosen because it costs less per image than OpenRouter's documented default, and a value an admin stores in this valve takes its place. Its own published contract is what the user valves below are built from, so changing it changes them on the next catalog refresh. Its description names the model in force and, when no settings are offered, says which of the four reasons applies. A refresh whose valve read **fails** leaves the installed filter exactly as it is, rather than rebuilding it for the default model, until a later refresh succeeds. Each distinct cause is warned about once at WARNING and then dropped to DEBUG for the life of the worker, latched separately for a read that raised and for a read that returned no result; the message reads "Could not read the image generation filter's selected model, so the installed filter is left as it is rather than rebuilt for the default model". |
 | `IMAGE_GENERATION_MODERATION` | `Literal["auto","low"]` | `auto` | How strictly the company running the model screens what it will draw. |
 
+A stored admin value from an older version of the pipe that no longer fits its field falls
+back to that field's default rather than failing the request, and every other stored value
+on the same row is kept. Open WebUI builds this class straight from the stored row with no
+error handling around it, so without that a single retired moderation option or a
+non-string model — both of which a refresh can produce, because the option list and the
+default model both move — would abort the chat rather than lose one field. The stored value
+is repaired when the class is built, not written back: the row keeps what was saved until
+the form is next saved, which is the same treatment the user valves get.
+
 ---
 
 ## Filter user valves

@@ -155,7 +155,15 @@ _EXPECTED: dict[str, int] = {
     # semaphore that raises on `release()` -- a loop-bound one whose loop is gone -- must
     # not replace the failure that is already unwinding the request; the permit is
     # already accounted for either way.
-    "pipe.py": 34,
+    # 35th (B248, H900-1): the close-path drain in `_do_close`, which commits whatever is
+    # still in the Redis pending queue before the client goes down. It swallows
+    # `CancelledError` for the same reason the four in `streaming/streaming_core.py` do: a
+    # teardown step must not raise out of its own teardown. A `CancelledError` raised here
+    # skips the entire remainder of `_do_close` -- the Redis socket stays open and the
+    # artifact store's DB executor is never shut down -- and a drained-queue failure must
+    # not stop the socket from being closed either, since the rows are then still in Redis
+    # for another worker. The drain reports its own failures through the store's logging.
+    "pipe.py": 35,
     "storage/persistence.py": 3,
     # 1st: the caller-supplied fallback in `_emit_templated_error_event`. It is reached only because the
     # admin's own template already failed to render, and the generic card below it is the answer if the

@@ -79,7 +79,7 @@ The pipe starts helper workers lazily:
 - **Request queue worker**: drains the bounded request queue and isolates per-request context.
 - **Log worker**: drains log records asynchronously so logging does not block request handling.
 - **Artifact cleanup loop** (when persistence is available): periodically deletes old rows based on retention valves.
-- **Redis workers** (when enabled and prerequisites are met): write-behind flush and pub/sub listeners for multi-worker cache behavior.
+- **Redis workers** (when enabled and prerequisites are met): write-behind flush and pub/sub listeners for multi-worker cache behavior. Whatever is still in the pending queue is drained before these tasks are cancelled.
 - **Session log writer/cleanup threads** (when enabled): writes encrypted session log archives and prunes old archives.
 
 **State ownership:**

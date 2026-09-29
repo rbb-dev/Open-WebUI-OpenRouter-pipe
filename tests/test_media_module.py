@@ -58,6 +58,17 @@ def synthetic_mp4(tmp_path_factory) -> Path:
     return out
 
 
+def _ffmpeg_binary() -> str:
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is not None:
+        return ffmpeg
+    try:
+        import imageio_ffmpeg  # type: ignore[import-untyped]
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        pytest.skip("ffmpeg not available")
+
+
 @pytest.fixture
 def red_jpeg_bytes() -> bytes:
     img = Image.new("RGB", (200, 100), color=(255, 0, 0))
@@ -123,7 +134,6 @@ class TestNormaliseMime:
 
     def test_strips_whitespace(self):
         assert normalise_mime("  image/webp  ") == "image/webp"
-
 
 class TestCompositeOnWhite:
     def test_rgba_flattened(self, rgba_png_bytes):
@@ -608,6 +618,155 @@ def test_a_jpeg_the_scanner_has_to_walk_is_measured_or_declined_never_guessed(
     from open_webui_openrouter_pipe.storage.multimodal import image_pixel_size
 
     assert image_pixel_size(raw) == expected, name
+
+
+# -----------------------------------------------------------------------------
+# The video stream's length, measured with ffmpeg, on a host with no ffprobe
+# -----------------------------------------------------------------------------
+
+_STREAM_SHAPES: list[tuple[Path, float, float, float]] = []
+
+@pytest.fixture(scope="module")
+def shapes(tmp_path_factory):
+    """Twelve sources whose PICTURE does not fill the container, each pinning one reading.
+
+    The oracle is the `expected_end` below -- the picture's own length, except for
+    `offset.mp4`, where the picture starts 2.0s into the container and the value the
+    code measures is where it ENDS. Neither `probe_video` nor ffprobe is the oracle:
+    `probe_video` is the code under test, and ffprobe is absent on the deployment this
+    ships for, so an oracle built from either would let a deleted fix pass.
+
+    Each row yields (path, expected_end, picture_s, fps). `expected_end` is what the
+    measurement must read and `picture_s` is where the picture really stops, and the
+    two are not the same number on the matroska rows: their `DURATION` tag carries a
+    small container-clock offset over the nominal picture (3.0 becomes 3.003), which
+    is why a row cannot state one number for both.
+
+    Every shape is built at test time from explicit lavfi durations, so the split
+    between the picture and the bed is true by construction. The nine older ones
+    cover both containers, both stream orders, a file whose video is neither the
+    first nor the last stream, a picture that does not start at zero, a still-image
+    stream the measurement must skip, two video tracks where the longer one is the
+    answer, the abbreviated time base an NTSC frame rate produces, and both
+    matroska rows. The four newer ones are the dimensions a first-match reading and
+    an ungated one cannot tell apart, and each is load-bearing in a direction the
+    others are not:
+
+    - `longcover.mkv` -- a still LONGER than the picture, on the matroska stage,
+      which is the only arm that pins the still-image exclusion there.
+    - `twovid.mp4` -- two video tracks on the mp4 path, so the second one is the
+      answer; the still-image rows cannot separate that from a gated reading.
+    - `stillshorter.mp4` -- a still SHORTER than the picture, at a file rate the
+      still itself sets (8.0), on the mp4 path.
+    - `stilllonger.mp4` -- a still longer than the picture, on the mp4 path. A short
+      still cannot separate the gate on from the gate off (a `max` over
+      `[0.125, 4.0]` is 4.0 either way), so this direction carries the mp4 gate on
+      its own.
+
+    `pytest.fail`, not `pytest.skip`: a fixture that gives up here ships twelve
+    skipped arms and a green gate, which is the shape this class exists to prevent.
+    """
+    if _STREAM_SHAPES:
+        return _STREAM_SHAPES
+    ffmpeg = _ffmpeg_binary()
+    out = tmp_path_factory.mktemp("shapes")
+    testsrc = "testsrc=size=160x120:rate={rate}:duration={d}"
+    sine = "sine=frequency=440:duration={d}"
+    cover = out / "cover.png"
+    Image.new("RGB", (64, 64), (0, 0, 255)).save(cover)
+    red = out / "red.png"
+    Image.new("RGB", (64, 64), (255, 0, 0)).save(red)
+    rows = [
+        ("v3in60.mp4", 3.0, 3.0, 24.0,
+         ["-f", "lavfi", "-i", testsrc.format(rate=24, d=3),
+          "-f", "lavfi", "-i", sine.format(d=60),
+          "-c:v", "libx264", "-pix_fmt", "yuv420p",
+          "-map", "0:v", "-map", "1:a"]),
+        ("v5in40.mp4", 5.0, 5.0, 24.0,
+         ["-f", "lavfi", "-i", testsrc.format(rate=24, d=5),
+          "-f", "lavfi", "-i", sine.format(d=40),
+          "-c:v", "libx264", "-pix_fmt", "yuv420p",
+          "-map", "1:a", "-map", "0:v"]),
+        ("three.mp4", 5.0, 5.0, 24.0,
+         ["-f", "lavfi", "-i", sine.format(d=40),
+          "-f", "lavfi", "-i", testsrc.format(rate=24, d=5),
+          "-f", "lavfi", "-i", "sine=frequency=880:duration=40",
+          "-c:v", "libx264", "-pix_fmt", "yuv420p",
+          "-map", "0:a", "-map", "1:v", "-map", "2:a"]),
+        ("offset.mp4", 8.0, 8.0, 24.0,
+         ["-itsoffset", "2.0",
+          "-f", "lavfi", "-i", testsrc.format(rate=24, d=6),
+          "-f", "lavfi", "-i", sine.format(d=12),
+          "-c:v", "libx264", "-pix_fmt", "yuv420p",
+          "-map", "0:v", "-map", "1:a"]),
+        ("coverart2.mkv", 4.083, 4.0, 24.0,
+         ["-loop", "1", "-t", "0.125", "-i", str(cover),
+          "-f", "lavfi", "-i", testsrc.format(rate=24, d=4),
+          "-f", "lavfi", "-i", sine.format(d=40),
+          "-map", "0:v", "-map", "1:v", "-map", "2:a",
+          "-c:v:0", "png", "-disposition:v:0", "attached_pic",
+          "-c:v:1", "libx264", "-pix_fmt", "yuv420p",
+          "-c:a", "libvorbis"]),
+        ("twovid.mkv", 9.0, 9.0, 24.0,
+         ["-f", "lavfi", "-i", testsrc.format(rate=24, d=4),
+          "-f", "lavfi",
+          "-i", "testsrc=size=160x120:rate=24:duration=9",
+          "-c:v", "libx264", "-pix_fmt", "yuv420p",
+          "-map", "0:v", "-map", "1:v"]),
+        ("ntsc4in40.mp4", 4.004, 4.0, 24000 / 1001,
+         ["-f", "lavfi", "-i", testsrc.format(rate="24000/1001", d=4),
+          "-f", "lavfi", "-i", sine.format(d=40),
+          "-c:v", "libx264", "-pix_fmt", "yuv420p",
+          "-map", "0:v", "-map", "1:a"]),
+        ("v3in60.mkv", 3.003, 3.0, 24.0,
+         ["-f", "lavfi", "-i", testsrc.format(rate=24, d=3),
+          "-f", "lavfi", "-i", sine.format(d=60),
+          "-c:v", "libx264", "-pix_fmt", "yuv420p",
+          "-map", "0:v", "-map", "1:a", "-c:a", "libvorbis"]),
+        ("a5in40.mkv", 5.003, 5.0, 24.0,
+         ["-f", "lavfi", "-i", testsrc.format(rate=24, d=5),
+          "-f", "lavfi", "-i", sine.format(d=40),
+          "-c:v", "libx264", "-pix_fmt", "yuv420p",
+          "-map", "1:a", "-map", "0:v", "-c:a", "libvorbis"]),
+        ("longcover.mkv", 1.083, 1.0, 24.0,
+         ["-loop", "1", "-t", "5", "-i", str(cover),
+          "-f", "lavfi", "-i", testsrc.format(rate=24, d=1),
+          "-map", "0:v", "-map", "1:v",
+          "-c:v:0", "png", "-c:v:1", "libx264", "-pix_fmt:v:1", "yuv420p"]),
+        ("twovid.mp4", 9.0, 9.0, 24.0,
+         ["-loop", "1", "-t", "2", "-i", str(red),
+          "-f", "lavfi", "-i", testsrc.format(rate=24, d=9),
+          "-map", "0:v", "-map", "1:v", "-c:v", "libx264"]),
+        ("stillshorter.mp4", 4.0, 4.0, 8.0,
+         ["-loop", "1", "-framerate", "8", "-t", "0.125", "-i", str(cover),
+          "-f", "lavfi", "-i", testsrc.format(rate=24, d=4),
+          "-f", "lavfi", "-i", sine.format(d=40),
+          "-map", "0:v", "-map", "1:v", "-map", "2:a",
+          "-c:v:0", "mjpeg", "-pix_fmt:v:0", "yuvj420p", "-color_range", "pc",
+          "-c:v:1", "libx264", "-pix_fmt:v:1", "yuv420p", "-c:a", "aac"]),
+        ("stilllonger.mp4", 1.0, 1.0, 24.0,
+         ["-loop", "1", "-t", "5", "-i", str(cover),
+          "-f", "lavfi", "-i", testsrc.format(rate=24, d=1),
+          "-map", "0:v", "-map", "1:v",
+          "-c:v:0", "mjpeg", "-pix_fmt:v:0", "yuvj420p", "-color_range", "pc",
+          "-c:v:1", "libx264", "-pix_fmt:v:1", "yuv420p"]),
+    ]
+    built: list[tuple[Path, float, float, float]] = []
+    for name, expected_end, picture_s, fps, cmd in rows:
+        path = out / name
+        result = subprocess.run(
+            [ffmpeg, "-y", "-loglevel", "error", *cmd, str(path)],
+            capture_output=True, check=False,
+        )
+        if result.returncode != 0:
+            pytest.fail(
+                f"ffmpeg could not build the {name} shape: "
+                f"{result.stderr.decode(errors='replace')[:200]}. A skipped shape is a "
+                "silently unpinned one, so this is a failure rather than a skip"
+            )
+        built.append((path, expected_end, picture_s, fps))
+    _STREAM_SHAPES[:] = built
+    return _STREAM_SHAPES
 
 
 def _declared(path: Path) -> tuple[object, ...] | None:

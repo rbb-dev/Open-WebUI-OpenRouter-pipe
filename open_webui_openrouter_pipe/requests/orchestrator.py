@@ -883,7 +883,13 @@ class RequestOrchestrator:
                 mime = item.get("content_type")
                 if not isinstance(mime, str) or not mime.strip():
                     mime = infer_file_mime_type(file_obj)
-                data_url = f"data:{normalise_mime(mime)};base64,{b64}"
+                content_type = normalise_mime(mime)
+                if not content_type:
+                    raise ValueError(
+                        f"Native video attachment declared type {mime!r} is not a media "
+                        f"type, so there is no honest way to declare the clip to a provider."
+                    )
+                data_url = f"data:{content_type};base64,{b64}"
                 _append(
                     ("video", file_id),
                     {

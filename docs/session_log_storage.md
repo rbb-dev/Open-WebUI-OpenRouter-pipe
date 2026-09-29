@@ -213,7 +213,7 @@ Each line is a single JSON object:
 - `ts` (string): UTC ISO 8601 timestamp (milliseconds), for example `2026-01-18T12:34:56.789Z`.
 - `perf_ts` (float): High-resolution monotonic counter (`time.perf_counter()`) for precise elapsed-time calculations.
 - `event` (string): One of `enter`, `exit`, or `mark`.
-- `label` (string): Function or scope name (for example `streaming.streaming_core.StreamingHandler._run_streaming_loop`).
+- `label` (string): What was measured, never what was said. A label names a function or scope (for example `streaming.streaming_core.StreamingHandler._run_streaming_loop`), a scope such as `tool_run:<tool_name>:start`, a worker, or a transport read by its number and byte length (`chunk_1_len_4096`). It never carries prompt or response content: a timing record is a measurement, and a slice of the provider's body is not one.
 - `request_id` (string): The pipe's per-request correlation id. Present on every event that belongs to a request; the pipe's process-lifetime background workers — the request dispatcher, the log worker and the artifact-cleanup sweep — are started on an empty context and are deliberately not attributed to any request, so their frames do not appear. The one-shot startup warmup does carry the id of the request that started it.
 - `elapsed_ms` (float, optional): Elapsed time in milliseconds (only present on `exit` events).
 
