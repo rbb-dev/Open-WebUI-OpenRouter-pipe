@@ -411,19 +411,24 @@ def is_tool_image_handoff(previous: Any, message: Any) -> bool:
     if not (previous.get("role") == "tool" and message.get("role") == "user" and isinstance(content, list)):
         return False
     first, *images = content or [None]
-    return (
-        isinstance(first, dict)
-        and first.get("type") == "text"
-        and first.get("text") == OPEN_WEBUI_TOOL_IMAGES_TEXT
-        and bool(images)
-        and all(isinstance(part, dict) and part.get("type") == "image_url" for part in images)
-    )
+    if not (isinstance(first, dict) and first.get("type") == "text"
+            and first.get("text") == OPEN_WEBUI_TOOL_IMAGES_TEXT
+            and bool(images)
+            and all(isinstance(part, dict) and part.get("type") == "image_url" for part in images)):
+        return False
+    handoff = _handoff_urls(message)
+    if not handoff:
+        return False
+    round_pictures = _picture_urls(previous.get("content"))
+    if not round_pictures:
+        return True
+    return any(url in round_pictures for url in handoff)
 
 
 def _picture_urls(blocks: Any) -> list[str]:
     urls: list[str] = []
     for part in blocks if isinstance(blocks, list) else []:
-        if not (isinstance(part, dict) and part.get("type") == "input_image"):
+        if not (isinstance(part, dict) and part.get("type") in ("input_image", "image_url")):
             continue
         url = part.get("image_url")
         if isinstance(url, dict):

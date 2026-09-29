@@ -193,3 +193,5 @@ class ImageGenerationResult:
     usage: dict[str, object] = field(default_factory=dict)
     rejected: list[str] = field(default_factory=list)
     warning: str = ""
+    over_ceiling: int = 0
+    over_ceiling_own: int = 0

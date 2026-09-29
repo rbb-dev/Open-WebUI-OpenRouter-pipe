@@ -239,7 +239,8 @@ only through the card Open WebUI keeps for it in the browser, and none with card
   part of that round's result: handed over in full where it sits, whatever the attachment limit, even when it is
   not the last message; withheld with the round on an earlier turn while results are not kept; never stored again;
   unlike an image the person attached, never reused on a later question; and it ends the reuse of any older
-  picture.
+  picture. That message is recognised as the round's only when its pictures are the round's own, so a person who
+  repeats the sentence with a picture of their own keeps their turn.
 
 The copy does not depend on reasoning. Tool rounds were accepted without the reasoning around them when measured with
 Claude Opus 4.8 on `/responses` and `/chat/completions`, so the copy stays when reasoning is dropped from a request and outlives reasoning

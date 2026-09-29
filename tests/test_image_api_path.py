@@ -195,26 +195,6 @@ async def test_the_valve_governs_the_decode_ceiling(ceiling_mb, rejected):
 
 
 @pytest.mark.asyncio
-async def test_a_reply_whose_images_together_exceed_the_ceiling_is_rejected():
-    import aiohttp
-
-    entry = {"b64_json": _b64(_png(4, 4) + b"\x00" * (600 * 1024))}
-    with aioresponses() as mocked:
-        mocked.post(f"{BASE}/images", payload={"data": [entry, entry]})
-        async with aiohttp.ClientSession() as session:
-            client = await _client(session)
-            with pytest.raises(ImageGenerationError, match="BASE64_MAX_SIZE_MB"):
-                await client.generate({"model": "m", "prompt": "p"}, max_decoded_bytes=1024 * 1024)
-
-    with aioresponses() as mocked:
-        mocked.post(f"{BASE}/images", payload={"data": [entry]})
-        async with aiohttp.ClientSession() as session:
-            client = await _client(session)
-            result = await client.generate({"model": "m", "prompt": "p"}, max_decoded_bytes=1024 * 1024)
-    assert len(result.images) == 1
-
-
-@pytest.mark.asyncio
 async def test_a_reply_that_is_not_an_image_is_reported_not_stored():
     adapter = _adapter(_KeyPipe("sk-x"))
     adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
@@ -3286,13 +3266,16 @@ async def test_the_ceiling_stops_the_loop_before_it_decodes(monkeypatch):
         mocked.post(f"{BASE}/images", payload={"data": [entry, entry]})
         async with aiohttp.ClientSession() as session:
             client = await _client(session)
-            with pytest.raises(ImageGenerationError, match="BASE64_MAX_SIZE_MB"):
-                await client.generate({"model": "m", "prompt": "p"}, max_decoded_bytes=1024 * 1024)
+            result = await client.generate(
+                {"model": "m", "prompt": "p"}, max_decoded_bytes=1024 * 1024
+            )
 
     assert len(decoded) == 1, (
         "the pre-decode estimate exists so an oversized reply is refused without materialising "
         f"every blob; {len(decoded)} entries were decoded"
     )
+    assert len(result.images) == 1
+    assert result.over_ceiling == 1
 
 
 @pytest.mark.asyncio

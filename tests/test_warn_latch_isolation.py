@@ -27,6 +27,12 @@ EXPECTED_LATCHES = {
     "_warned_chat_chunk_parse",
     "_warned_collectors",
     "_warned_dropped_video_param",
+    # One latch for both reasons a frame_plan entry can fail to materialise: a frame
+    # over the VIDEO_FRAME_IMAGE_MAX_BYTES byte budget, and one the extractors could
+    # not read. They are separate downgrade codes and separate log lines, but one
+    # decision -- warn the first time each, then repeat at DEBUG rather than going
+    # silent at every level -- and the two arms are the same shape.
+    "_warned_frame_not_materialised",
     "_warned_image_catalog",
     "_warned_dropped_image_param",
     "_warned_image_cost_snapshot",

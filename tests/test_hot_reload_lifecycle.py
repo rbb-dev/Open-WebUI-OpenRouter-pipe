@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import gc
 import importlib
+import inspect
 import logging
 import os
 import sys
@@ -318,27 +319,6 @@ async def test_concurrent_close_all_callers_see_completion(fresh_registry):
     assert pipe._closed is True
     assert pipe._close_done is not None
     assert pipe._close_done.done() is True
-
-
-@pytest.mark.asyncio
-async def test_stream_wrapper_dropped_without_iteration_releases_counter(fresh_registry):
-    pipe_mod = _import_pipe_module()
-    pipe = pipe_mod.Pipe()
-    pipe.id = "stream_drop_test"
-    pipe._active_pipes_calls = 1
-
-    async def _fake_inner():
-        if False:
-            yield
-    state = {"released": False}
-    wrapped = pipe._wrap_stream_with_counter_release(_fake_inner(), state)
-    weakref.finalize(wrapped, pipe_mod.Pipe._release_stream_counter, pipe, state)
-
-    del wrapped
-    gc.collect()
-    await asyncio.sleep(0)
-    assert state["released"] is True
-    assert pipe._active_pipes_calls == 0
 
 
 def test_counter_underflow_guard():

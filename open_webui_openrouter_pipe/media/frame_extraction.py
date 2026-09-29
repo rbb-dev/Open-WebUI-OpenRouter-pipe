@@ -34,11 +34,13 @@ class FrameExtractionError(Exception):
     """
 
     def __init__(self, message: str, *, no_frame: bool = False,
-                 returncode: int | None = None, pixel_cap: bool = False) -> None:
+                 returncode: int | None = None, pixel_cap: bool = False,
+                 byte_budget: bool = False) -> None:
         super().__init__(message)
         self.no_frame = no_frame
         self.returncode = returncode
         self.pixel_cap = pixel_cap
+        self.byte_budget = byte_budget
 
 
 def _over_pixel_cap(width: int, height: int) -> bool:
@@ -161,6 +163,15 @@ async def probe_video(path: Path) -> VideoMetadata:
 # -----------------------------------------------------------------------------
 # Frame extraction
 # -----------------------------------------------------------------------------
+
+def _check_frame_bytes(data: bytes, max_frame_bytes: int) -> None:
+    if 0 < max_frame_bytes < len(data):
+        raise FrameExtractionError(
+            f"frame too large: {len(data)} bytes exceeds the {max_frame_bytes} byte "
+            f"frame budget",
+            byte_budget=True,
+        )
+
 
 def _normalise_png_mode(img: Image.Image) -> bytes:
     if img.mode != "RGB":
@@ -329,7 +340,7 @@ async def _extract_frame_ffmpeg(
 
 async def _imageio_last_resort(
     path: Path, *, requested_ts: float | None,
-    downgrade_note: str, logger: logging.Logger,
+    downgrade_note: str, logger: logging.Logger, max_frame_bytes: int = 0,
 ) -> ExtractedFrame:
     png_bytes, w, h = await asyncio.to_thread(
         _extract_frame_imageio_sync, path, frame_index=0,
@@ -337,6 +348,7 @@ async def _imageio_last_resort(
     if not downgrade_note:
         downgrade_note = "frame_damaged_used_first_frame"
     logger.debug("ffmpeg produced no frame; the file's first frame is the last resort")
+    _check_frame_bytes(png_bytes, max_frame_bytes)
     return ExtractedFrame(
         image_bytes=png_bytes, width=w, height=h,
         actual_timestamp_seconds=0.0,
@@ -360,6 +372,28 @@ async def extract_frame(
     fallback_to_last_on_overshoot: bool = True,
     reused_frame_index: Literal["first", "last"] = "last",
     logger: logging.Logger | None = None,
+    max_frame_bytes: int = 0,
+) -> ExtractedFrame:
+    return await _extract_frame_with_budget(
+        path,
+        target=target,
+        timestamp_seconds=timestamp_seconds,
+        fallback_to_last_on_overshoot=fallback_to_last_on_overshoot,
+        reused_frame_index=reused_frame_index,
+        logger=logger,
+        max_frame_bytes=max_frame_bytes,
+    )
+
+
+async def _extract_frame_with_budget(
+    path: Path,
+    *,
+    target: Literal["first_frame", "last_frame", "at_timestamp"],
+    timestamp_seconds: float | None = None,
+    fallback_to_last_on_overshoot: bool = True,
+    reused_frame_index: Literal["first", "last"] = "last",
+    logger: logging.Logger | None = None,
+    max_frame_bytes: int = 0,
 ) -> ExtractedFrame:
     """Extract a frame from a video file.
 
@@ -431,21 +465,25 @@ async def extract_frame(
         raise FrameExtractionError(f"unknown target: {target}")
 
     if target == "first_frame":
+        first_frame: tuple[bytes, int, int] | None = None
         try:
-            png_bytes, w, h = await asyncio.to_thread(
+            first_frame = await asyncio.to_thread(
                 _extract_frame_imageio_sync, path, frame_index=0,
-            )
-            return ExtractedFrame(
-                image_bytes=png_bytes, width=w, height=h,
-                actual_timestamp_seconds=0.0,
-                requested_timestamp_seconds=requested_ts,
-                downgrade_note=downgrade_note,
-                resolved_target=resolved_target,
             )
         except FrameExtractionError as exc:
             if getattr(exc, "pixel_cap", False):
                 raise
             logger.debug("imageio first_frame failed; falling through to ffmpeg: %s", exc)
+        if first_frame is not None:
+            first_frame_bytes, w, h = first_frame
+            _check_frame_bytes(first_frame_bytes, max_frame_bytes)
+            return ExtractedFrame(
+                image_bytes=first_frame_bytes, width=w, height=h,
+                actual_timestamp_seconds=0.0,
+                requested_timestamp_seconds=requested_ts,
+                downgrade_note=downgrade_note,
+                resolved_target=resolved_target,
+            )
 
     direct_saw_damage: list[bool] = []
     try:
@@ -461,7 +499,7 @@ async def extract_frame(
         if use_end_seek and exc.no_frame:
             return await _imageio_last_resort(
                 path, requested_ts=requested_ts, downgrade_note=downgrade_note,
-                logger=logger,
+                logger=logger, max_frame_bytes=max_frame_bytes,
             )
         if use_end_seek or target == "first_frame" or (
             not exc.no_frame and exc.returncode not in _RETRYABLE_FFMPEG_EXITS
@@ -484,6 +522,7 @@ async def extract_frame(
             png_bytes, w, h = await asyncio.to_thread(
                 _extract_frame_imageio_sync, path, frame_index=0,
             )
+            _check_frame_bytes(png_bytes, max_frame_bytes)
             actual_ts = 0.0
             if not downgrade_note:
                 downgrade_note = "frame_damaged_used_first_frame"
@@ -519,6 +558,7 @@ async def extract_frame(
         elif not downgrade_note and target == "at_timestamp":
             downgrade_note = ("frame_seek_failed_used_first_frame" if rescue_first
                              else "frame_seek_failed_used_last_frame")
+    _check_frame_bytes(png_bytes, max_frame_bytes)
     return ExtractedFrame(
         image_bytes=png_bytes, width=w, height=h,
         actual_timestamp_seconds=actual_ts,

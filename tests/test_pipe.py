@@ -10248,6 +10248,7 @@ class TestConcurrencyControlsPaths:
     async def test_stale_queue_different_loop(self, caplog):
         """Test dropping stale queue bound to different loop (line 3920-3927)."""
         pipe = Pipe()
+        other_loop = asyncio.new_event_loop()
         try:
             # Reset to allow recreation
             pipe._request_queue = None
@@ -10256,19 +10257,28 @@ class TestConcurrencyControlsPaths:
 
             await pipe._ensure_concurrency_controls(pipe.valves)
 
-            # Now create a mock queue with _get_loop returning different loop
-            other_loop = asyncio.new_event_loop()
-            mock_queue = MagicMock()
-            mock_queue._get_loop.return_value = other_loop
-            pipe._request_queue = mock_queue
+            # A real queue pinned to a real dead loop, not a mock: a MagicMock answers
+            # every question about itself, so nothing here can fail on an assertion.
+            stale_queue = asyncio.Queue()
+            stale_queue._loop = other_loop
+            pipe._request_queue = stale_queue
+            pipe._queue_worker_task = None
 
             # Re-run to trigger the stale check
             with caplog.at_level(logging.DEBUG):
                 await pipe._ensure_concurrency_controls(pipe.valves)
-                # Should have recreated the queue
 
-            other_loop.close()
+            assert pipe._request_queue is not stale_queue, (
+                "a queue bound to another loop was kept: it can never hand a job to the "
+                "worker now running, so every request enqueued on it would hang"
+            )
+            assert pipe._request_queue is not None
+            assert pipe._request_queue.qsize() == 0
+            assert pipe._queue_worker_task is not None
+            assert pipe._queue_worker_task.get_loop() is asyncio.get_running_loop()
         finally:
+            if not other_loop.is_closed():
+                other_loop.close()
             await pipe.close()
 
 

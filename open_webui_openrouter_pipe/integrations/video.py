@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 from urllib.parse import urlsplit
 
 from ..api.gateway.responses_adapter import _record_failed_call
-from ..core.config import _PIPE_METADATA_KEY, _select_openrouter_http_referer
+from ..core.config import _PIPE_METADATA_KEY, Valves, _select_openrouter_http_referer
 from ..core.costs import maybe_dump_costs_snapshot
 from ..core.errors import OpenRouterAPIError, RequiredInternalFileError
 from ..core.utils import (
@@ -126,6 +126,12 @@ _INTENT_CHAT_COUNT_WINDOW = 300
 _INTENT_BREAKER_SWEEP_INTERVAL_SECONDS = 60.0
 
 _INTENT_NO_CHAT_ID_KEY = "__no_chat_id__"
+
+_DEFAULT_FRAME_MAX_BYTES = int(Valves.model_fields["VIDEO_FRAME_IMAGE_MAX_BYTES"].default)
+
+
+def _frame_max_bytes(valves: Valves) -> int:
+    return int(valves.VIDEO_FRAME_IMAGE_MAX_BYTES)
 
 
 def _reference_write_key(video_meta: dict[str, Any]) -> str:
@@ -470,6 +476,8 @@ _warned_dropped_video_param: set[str] = set()
 
 _warned_pinned_attachment: set[str] = set()
 
+_warned_frame_not_materialised: set[str] = set()
+
 _DOCUMENTED_TOP_LEVEL_VIDEO_FIELDS: frozenset[str] = VIDEO_REQUEST_FIELDS
 
 if TYPE_CHECKING:
@@ -763,6 +771,7 @@ class VideoGenerationAdapter:
                         chat_id=chat_id if isinstance(chat_id, str) else "",
                         message_id=message_id if isinstance(message_id, str) else "",
                         reused_frame_index=reused_frame_pref,
+                        frame_max_bytes=_frame_max_bytes(valves),
                         video_model=video_model,
                     )
                     if isinstance(metadata, dict):
@@ -2817,6 +2826,7 @@ class VideoGenerationAdapter:
         chat_id: str,
         message_id: str,
         reused_frame_index: Literal["first", "last"] = "last",
+        frame_max_bytes: int = _DEFAULT_FRAME_MAX_BYTES,
         video_model: Any = None,
     ) -> list[str]:
         """For each prior_video_* entry in frame_plan, extract the frame from
@@ -2898,6 +2908,7 @@ class VideoGenerationAdapter:
                             fallback_to_last_on_overshoot=True,
                             reused_frame_index=effective_fallback,
                             logger=self.logger,
+                            max_frame_bytes=frame_max_bytes,
                         )
                         if frame.downgrade_note:
                             intent.downgrades.append(frame.downgrade_note)
@@ -2914,13 +2925,32 @@ class VideoGenerationAdapter:
                                     fallback_to_last_on_overshoot=True,
                                     reused_frame_index=reused_frame_index,
                                     logger=self.logger,
+                                    max_frame_bytes=frame_max_bytes,
                                 )
                             except FrameExtractionError:
                                 raise exc
                             if frame.downgrade_note:
                                 intent.downgrades.append(frame.downgrade_note)
+                        elif getattr(exc, "byte_budget", False):
+                            self.logger.log(
+                                warn_level(
+                                    _warned_frame_not_materialised,
+                                    f"byte_budget:{entry.source_index}",
+                                ),
+                                "frame over the byte budget for entry %s: %s",
+                                entry.source_index, exc,
+                            )
+                            intent.downgrades.append(
+                                f"frame_over_byte_budget_idx_{entry.source_index}_at_{position}"
+                            )
+                            thumb_urls.append("")
+                            continue
                         else:
-                            self.logger.warning(
+                            self.logger.log(
+                                warn_level(
+                                    _warned_frame_not_materialised,
+                                    f"extract_failed:{entry.source_index}",
+                                ),
                                 "frame extraction failed for entry %s: %s",
                                 entry.source_index, exc,
                             )

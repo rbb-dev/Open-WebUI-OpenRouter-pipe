@@ -51,6 +51,13 @@ _IMAGE_SSE_PREFIX = "data:"
 _IMAGE_SSE_DONE = "[DONE]"
 
 
+def _over_ceiling_reason(what: str, max_decoded_bytes: int) -> str:
+    return (
+        f"{what} pushed this reply past the {max_decoded_bytes // (1024 * 1024)} MB "
+        "BASE64_MAX_SIZE_MB ceiling for one generated-image reply"
+    )
+
+
 class _ProgressCallbackFailed(BaseException):
     def __init__(self, cause: BaseException) -> None:
         super().__init__(str(cause))
@@ -318,7 +325,9 @@ class OpenRouterImageClient:
         images: list[GeneratedImage] = []
         rejected: list[str] = []
         decoded_total = 0
-        for entry in entries:
+        over_ceiling = 0
+        over_ceiling_own = 0
+        for index, entry in enumerate(entries):
             if not isinstance(entry, dict):
                 rejected.append(clamp_text(f"an entry of type {type(entry).__name__} carried no image"))
                 continue
@@ -326,14 +335,18 @@ class OpenRouterImageClient:
             if not isinstance(blob, str) or not blob:
                 rejected.append(clamp_text(f"an entry with keys {sorted(entry)} carried no inline base64"))
                 continue
-            decoded_total += (len(blob) * 3) // 4
+            own_decoded = (len(blob) * 3) // 4
+            decoded_total += own_decoded
             if 0 < max_decoded_bytes < decoded_total:
-                raise ImageGenerationError(
-                    f"OpenRouter returned more image data than the {max_decoded_bytes // (1024 * 1024)} MB "
-                    "BASE64_MAX_SIZE_MB ceiling allows; raise the valve, ask for fewer images, "
-                    "or ask for a smaller resolution.",
-                    usage=billed,
+                over_ceiling += 1
+                if 0 < max_decoded_bytes < own_decoded:
+                    over_ceiling_own += 1
+                rejected.append(
+                    clamp_text(
+                        _over_ceiling_reason(f"entry {index + 1} of {len(entries)}", max_decoded_bytes)
+                    )
                 )
+                continue
             try:
                 raw = base64.b64decode(blob, validate=True)
             except (binascii.Error, ValueError):
@@ -363,5 +376,6 @@ class OpenRouterImageClient:
             )
 
         return ImageGenerationResult(
-            images=images, usage=billed, rejected=rejected, warning=state.get("warning", "")
+            images=images, usage=billed, rejected=rejected, warning=state.get("warning", ""),
+            over_ceiling=over_ceiling, over_ceiling_own=over_ceiling_own,
         )

@@ -36,6 +36,7 @@ from .image_types import (
     prompt_with_system,
     supersede_size_conflicts,
 )
+from .media_relay import megabytes
 from .provider_options import (
     IMAGE_PROVIDER_KEYS,
     UnvettableRequest,
@@ -77,6 +78,30 @@ def _labelled(name: Any) -> str:
 
 def _label_for_generated_image(shown: int, total: int) -> str:
     return "Generated image" if total == 1 else f"Generated image {shown}"
+
+
+def _rejected_image_note(result: ImageGenerationResult, ceiling_mb: int) -> str:
+    unreadable = len(result.rejected)
+    over = result.over_ceiling
+    on_its_own = result.over_ceiling_own
+    total = len(result.images) + unreadable
+    limit = megabytes(ceiling_mb * 1024 * 1024)
+    own_phrase = (
+        f"{on_its_own} of the {unreadable} on its own"
+        if on_its_own == 1
+        else f"{on_its_own} of the {unreadable} on their own"
+    )
+    size_clause = ""
+    if over:
+        size_clause = (
+            f" {over} of the {unreadable} pushed the reply past the {limit} size limit "
+            f"this deployment applies to one generated-image reply ({own_phrase}): raise "
+            "that limit, ask for fewer images, or ask for a smaller picture."
+        )
+    return (
+        f"_{unreadable} of {total} generated image(s) arrived in a form the pipe could "
+        f"not read._" + size_clause
+    )
 
 
 _TOP_LEVEL_PARAMS = TOP_LEVEL_PARAMS
@@ -1303,8 +1328,9 @@ class ImageGenerationAdapter:
             )
         if result.rejected and snippets:
             snippets.append(
-                f"_{len(result.rejected)} of {len(result.images) + len(result.rejected)} "
-                "generated image(s) arrived in a form the pipe could not read._"
+                _rejected_image_note(
+                    result, int(getattr(valves, "BASE64_MAX_SIZE_MB", 0) or 0)
+                )
             )
         if unsaved and snippets:
             snippets.append(f"_{unsaved} generated image(s) could not be saved to storage._")
