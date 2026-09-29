@@ -32,6 +32,17 @@ opposite outcome — trimming that succeeded versus trimming that failed — and
 task-model adapter path stays silent by design, because the classifier it runs never sees the tool round. See
 [Tooling & Integrations](tooling_and_integrations.md).
 
+The same shape has a second source, one layer further down. When the artifact store fails to load an earlier tool round,
+the request also goes out without it: the store swallows its own database error, records the failure against the DB
+breaker and returns whatever its cache already held, so the turn succeeds while degraded. It emits a warning notification
+of its own, through the same seam the breaker's notice uses, saying that earlier tool results could not be loaded and
+that the model did not receive them. It names no cause — the store cannot tell a database blip from a decryption failure
+— and it promises no retry. It is kept apart from the two budget notices on purpose: a budget that trimmed successfully
+and a read that failed are different conditions, and one turn can hit both, so folding the wordings together would have
+each of them announce the other's condition. A marker that simply resolves to nothing stays log-only, because a
+legitimately consumed row is indistinguishable from a lost one at that layer; see
+[History Reconstruction & Context](history_reconstruction_and_context.md).
+
 ### Where a card lands: saved chat or channel
 
 A card is delivered differently depending on whether the chat id is a `channel:` id. The

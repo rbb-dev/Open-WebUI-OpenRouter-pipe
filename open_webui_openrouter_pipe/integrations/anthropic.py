@@ -57,6 +57,27 @@ def _maybe_apply_anthropic_prompt_caching(
     if isinstance(ttl, str) and ttl:
         cache_control_payload["ttl"] = ttl
 
+    for item in input_items:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if (
+                isinstance(block, dict)
+                and block.get("type") == "input_text"
+                and block.get("cache_control") == cache_control_payload
+            ):
+                del block["cache_control"]
+    if isinstance(tools, list):
+        for tool in tools:
+            if (
+                isinstance(tool, dict)
+                and tool.get("cache_control") == cache_control_payload
+            ):
+                del tool["cache_control"]
+
     # Mark the last tool definition with cache_control (tools are earliest
     # in Anthropic's cache prefix order: tools → system → messages).
     has_tools = isinstance(tools, list) and len(tools) > 0

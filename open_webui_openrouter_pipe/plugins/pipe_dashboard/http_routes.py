@@ -13,7 +13,7 @@ import inspect
 import logging
 import threading
 import time
-from typing import Any
+from typing import Any, cast
 
 from fastapi import Depends, Request
 from pydantic import BaseModel
@@ -38,14 +38,33 @@ _PD_OFF_AUDIT_EVERY_S = 300.0
 _PD_RECONCILE_BACKOFF_S = 5.0
 
 _routes_get_pipe: Any = None
-_reconcile_lock = asyncio.Lock()
+_reconcile_lock: asyncio.Lock | None = None
 _fresh_dispatch: Any = None
 _reconcile_retry_until: float = 0.0
+_teardown_epoch: int = 0
+
+
+def _current_reconcile_lock() -> asyncio.Lock:
+    global _reconcile_lock
+    current = asyncio.get_running_loop()
+    lock = _reconcile_lock
+    if lock is not None:
+        try:
+            lock_loop = getattr(cast(Any, lock), "_get_loop", lambda: None)()
+            if lock_loop is not current:
+                lock = None
+        except RuntimeError:
+            lock = None
+    if lock is None:
+        lock = asyncio.Lock()
+        _reconcile_lock = lock
+    return lock
 
 
 def set_pipe_getter(get_pipe: Any) -> None:
-    global _routes_get_pipe
+    global _routes_get_pipe, _teardown_epoch
     _routes_get_pipe = get_pipe
+    _teardown_epoch += 1
 
 
 def clear_routes_pipe_getter(instance: Any, name: str) -> None:
@@ -73,7 +92,8 @@ def _audit_off(user: Any, action: str, client_ip: Any) -> None:
 
 
 def clear_fresh_dispatch(pipe: Any) -> None:
-    global _fresh_dispatch
+    global _fresh_dispatch, _teardown_epoch
+    _teardown_epoch += 1
     cached = _fresh_dispatch
     if cached is not None and cached[1] is pipe:
         _fresh_dispatch = None
@@ -214,10 +234,11 @@ def _preferred_dispatch(action: str) -> Any:
 async def _current_dispatch(request: Any, user: Any, pipe: Any, fid: Any, action: str = "") -> tuple[Any, Any]:
     global _fresh_dispatch, _reconcile_retry_until
     if pipe is not None and fid and time.monotonic() >= _reconcile_retry_until and await can_view(user, pipe):
-        async with _reconcile_lock:
-            if _fresh_dispatch is None and time.monotonic() >= _reconcile_retry_until:
+        epoch = _teardown_epoch
+        async with _current_reconcile_lock():
+            if _fresh_dispatch is None and epoch == _teardown_epoch and time.monotonic() >= _reconcile_retry_until:
                 fresh = await _resolve_fresh(request, fid)
-                if fresh is not None:
+                if fresh is not None and _teardown_epoch == epoch:
                     _fresh_dispatch = fresh
                     _reconcile_retry_until = 0.0
                 else:

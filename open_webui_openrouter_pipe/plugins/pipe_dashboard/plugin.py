@@ -380,21 +380,18 @@ class PipeDashboardPlugin(PluginBase):
         if not self.ctx.valves.PIPE_DASHBOARD_ENABLE:
             return None
 
-        # OWUI sends background tasks (title/tags/emoji) to ALL models.
-        # Handle them before auth so they don't break the admin's UI.
-        # Task stubs return harmless generic content only.
-        task_name = self._extract_task_name(task)
-        if task_name:
-            return self.ctx.build_response(
-                model=_PIPE_DASHBOARD_MODEL_ID,
-                content=self._build_task_fallback(task_name),
-            )
-
         acting_user = await resolve_user(user.get("id"))
         if not await can_view(acting_user, self.ctx.pipe):
             return self.ctx.build_response(
                 model=_PIPE_DASHBOARD_MODEL_ID,
                 content=ACCESS_DENIED_MD,
+            )
+
+        task_name = self._extract_task_name(task)
+        if task_name:
+            return self.ctx.build_response(
+                model=_PIPE_DASHBOARD_MODEL_ID,
+                content=self._build_task_fallback(task_name),
             )
 
         # Extract the user's message text

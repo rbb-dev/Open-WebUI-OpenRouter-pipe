@@ -497,6 +497,8 @@ ALLOWED_OPENROUTER_CHAT_FIELDS = {
     "provider",
     "route",
     "debug",
+    "service_tier",
+    "prompt_cache_key",
     "image_config",
     "modalities",
     "transforms",
@@ -1308,6 +1310,8 @@ def _responses_payload_to_chat_completions_payload(
         "max_completion_tokens",
         "web_search_options",
         "parallel_tool_calls",
+        "service_tier",
+        "prompt_cache_key",
     )
     for key in passthrough:
         if key in responses_payload:

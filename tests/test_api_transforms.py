@@ -3021,6 +3021,13 @@ class TestFilterOpenrouterRequestResponsesExtensions:
         result = _filter_openrouter_request(payload)
         assert result["store"] is False
 
+    # `service_tier` and `prompt_cache_key` are in the table above, so they are
+    # carried on the chat leg as well -- driven through the real converter and the
+    # real chat filter, from the same table rather than a parallel list of values.
+    # See `tests/test_a_service_tier_and_prompt_cache_key_reach_the_chat_endpoint.py`
+    # for the end-to-end statement on the wire.
+    SHARED_WITH_CHAT = ("prompt_cache_key", "service_tier")
+    RESPONSES_ONLY = ("max_tool_calls", "safety_identifier")
 
 class TestImageConfigPydanticRoundTrip:
     """`image_config` on `ResponsesBody` is now `Optional[Dict[str, Any]]` (was `Optional[Union[str, float]]`).

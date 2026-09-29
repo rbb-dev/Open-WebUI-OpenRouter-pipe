@@ -876,7 +876,6 @@ class TestPublisherLoop:
         monkeypatch.setattr(dashboard_publisher, "emit_dashboard", AsyncMock())
         reauth = AsyncMock()
         monkeypatch.setattr(dashboard_publisher, "reauthorize_local_viewers", reauth)
-        monkeypatch.setattr(dashboard_publisher, "_PD_REAUTH_EVERY", 1)
         await self._run_briefly(_make_mock_pipe, lambda: (None, False))
         reauth.assert_awaited()
 

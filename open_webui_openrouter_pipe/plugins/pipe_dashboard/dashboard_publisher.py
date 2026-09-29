@@ -109,7 +109,6 @@ _PD_SETTLE_DELAY = 1.0
 _PD_MEDIUM_EVERY = 8
 _PD_SLOW_EVERY = 30
 _PD_SLOW_MIN_INTERVAL = 30.0
-_PD_REAUTH_EVERY = 15
 
 
 def _worker_health(pipe: Any) -> dict[str, Any]:
@@ -630,6 +629,10 @@ async def run_dashboard_publisher(
                         await asyncio.sleep(_PD_SETTLE_DELAY)
                 emitting = True
                 try:
+                    await reauthorize_local_viewers()
+                except Exception:
+                    logger.debug("viewer re-auth failed", exc_info=True)
+                try:
                     payload = await _build_emit_payload(
                         pipe,
                         client if redis_ok else None,
@@ -642,11 +645,6 @@ async def run_dashboard_publisher(
                     await emit_dashboard(payload)
                 except Exception:
                     logger.debug("Dashboard emit iteration failed", exc_info=True)
-                if tick % _PD_REAUTH_EVERY == 0:
-                    try:
-                        await reauthorize_local_viewers()
-                    except Exception:
-                        logger.debug("viewer re-auth failed", exc_info=True)
                 tick += 1
                 await asyncio.sleep(_PD_PUBLISH_INTERVAL)
                 continue

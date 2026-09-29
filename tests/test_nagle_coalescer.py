@@ -97,7 +97,6 @@ class TestCoalescerTextBatching:
         c.flush_all_to(q)
         assert q == []
 
-
 # ============================================================================
 # NagleCoalescer — reasoning batching
 # ============================================================================

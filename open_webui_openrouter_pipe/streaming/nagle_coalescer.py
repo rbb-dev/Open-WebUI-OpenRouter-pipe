@@ -28,6 +28,7 @@ _BATCHABLE_REASONING_TYPES = frozenset({
     "response.reasoning_text.delta",
     "response.reasoning.delta",
 })
+_TEXT_ROUTING_KEYS = ("item_id", "output_index", "content_index")
 
 _MAX_DRAIN_PER_CYCLE = 32
 
@@ -52,12 +53,14 @@ class NagleCoalescer:
         "reasoning_template",
         "text_buffer",
         "text_length",
+        "text_route",
         "text_template",
     )
 
     def __init__(self, min_flush_chars: int = 1) -> None:
         self.text_buffer: list[str] = []
         self.text_template: dict[str, Any] | None = None
+        self.text_route: tuple[Any, ...] | None = None
         self.text_length: int = 0
         self.reasoning_buffer: list[str] = []
         self.reasoning_template: dict[str, Any] | None = None
@@ -83,6 +86,7 @@ class NagleCoalescer:
         base["delta"] = combined
         self.text_buffer = []
         self.text_template = None
+        self.text_route = None
         self.text_length = 0
         return base
 
@@ -134,7 +138,13 @@ class NagleCoalescer:
             flushed = self.flush_reasoning(force=True)
             if flushed:
                 yield_queue.append(flushed)
+            route = tuple(event.get(key) for key in _TEXT_ROUTING_KEYS)
+            if self.text_buffer and self.text_route != route:
+                flushed = self.flush_text(force=True)
+                if flushed:
+                    yield_queue.append(flushed)
             if delta_chunk:
+                self.text_route = route
                 self.text_buffer.append(delta_chunk)
                 self.text_length += len(delta_chunk)
                 if self.text_template is None:

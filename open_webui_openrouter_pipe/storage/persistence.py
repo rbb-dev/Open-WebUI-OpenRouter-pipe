@@ -1745,6 +1745,13 @@ class ArtifactStore:
         except Exception as exc:
             self._record_db_failure(user_id)
             self.logger.warning("Artifact fetch failed: %s", exc, exc_info=True)
+            context = self._TOOL_CONTEXT.get() if self._TOOL_CONTEXT else None
+            if self._emit_notification:
+                await self._emit_notification(
+                    context.event_emitter if context else None,
+                    "Earlier tool results could not be loaded, so the model did not receive them.",
+                    level="warning",
+                )
         await self._touch_cached(
             chat_id, message_id, [item_id for item_id in cached if item_id in set(cache_hit_ids)]
         )

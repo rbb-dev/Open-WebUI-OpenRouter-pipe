@@ -1198,6 +1198,17 @@ async def transform_messages_to_input(
                                     "oversized_remote",
                                     subject=loggable_link(url),
                                 )
+                            declared_type = str(downloaded.get("mime_type") or "").split(";", 1)[0].strip().lower()
+                            resolved_type = resolve_download_type(
+                                declared_type,
+                                _sniff_evidence(bytes(downloaded["data"][:_SNIFF_PREFIX_BYTES])),
+                            )
+                            if not resolved_type.startswith("image/"):
+                                return _refuse(
+                                    "not identifiable as an image",
+                                    "inline_untyped",
+                                    subject=loggable_link(url),
+                                )
                             if mode == "reuse" and memo_key is not None:
                                 request_memo[memo_key] = (
                                     downloaded["data"],
@@ -1222,17 +1233,6 @@ async def transform_messages_to_input(
                                 _reuse_download_memo[memo_key] = (
                                     downloaded["data"],
                                     downloaded.get("mime_type") or "",
-                                )
-                            declared_type = str(downloaded.get("mime_type") or "").split(";", 1)[0].strip().lower()
-                            resolved_type = resolve_download_type(
-                                declared_type,
-                                _sniff_evidence(bytes(downloaded["data"][:_SNIFF_PREFIX_BYTES])),
-                            )
-                            if not resolved_type.startswith("image/"):
-                                return _refuse(
-                                    "not identifiable as an image",
-                                    "inline_untyped",
-                                    subject=loggable_link(url),
                                 )
                             url = f"data:{resolved_type};base64," + await asyncio.to_thread(
                                 _b64encode_ascii, downloaded["data"]

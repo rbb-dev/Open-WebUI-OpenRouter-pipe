@@ -2766,7 +2766,7 @@ class StreamingHandler:
                     total_usage = merge_usage_stats(total_usage, usage)
                     intermediate_content = (
                         None
-                        if (fusion_armed or open_webui_keeps_stored_output)
+                        if (emitted_response_output_items or fusion_armed or open_webui_keeps_stored_output)
                         else (assistant_message if assistant_message else None)
                     )
                     await self._pipe._event_emitter_handler._emit_completion(
