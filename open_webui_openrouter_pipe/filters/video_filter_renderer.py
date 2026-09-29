@@ -1234,8 +1234,8 @@ def _render_purpose_built_fields(spec: VideoFilterSpec) -> list[str]:
                 '                "When your request is unclear (for example, you have two '
                 'previous videos and say \\"make the last one red\\"), the chat can ask a '
                 'short clarifying question to pick the right one. This is how many such '
-                'questions are allowed in a row before the chat just goes with its best '
-                'guess. Set to 0 to skip questions entirely."\n'
+                'questions the chat may ask in this conversation; once they are used up it '
+                'just goes with its best guess. Set to 0 to skip questions entirely."\n'
                 '            ),\n'
                 '        )'
             )

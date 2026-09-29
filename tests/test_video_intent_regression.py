@@ -311,19 +311,6 @@ class TestClarificationCap:
         ]
         assert count_prior_clarifications(msgs) == 0
 
-    def test_streak_breaks_at_intervening_user_turn(self):
-        # Most-recent streak before current user is 1, not 2.
-        clar = self._clar_text()
-        msgs = [
-            {"role": "user", "content": "orig"},
-            {"role": "assistant", "content": clar},
-            {"role": "user", "content": "reply1"},
-            {"role": "assistant", "content": clar},
-            {"role": "user", "content": "reply2"},
-        ]
-        assert count_prior_clarifications(msgs) == 1
-
-
 # -----------------------------------------------------------------------------
 # classifier infrastructure failures trip the breaker
 # -----------------------------------------------------------------------------

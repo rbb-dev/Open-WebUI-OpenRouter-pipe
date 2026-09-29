@@ -925,8 +925,9 @@ _INTENT_KNOB_DESCRIPTIONS: dict[str, str] = {
         "starts a new one from that message alone. On unless an admin says otherwise."
     ),
     "Clarifying question limit": (
-        "How many short questions the chat may ask in a row when it cannot tell which "
-        "earlier video you mean, before it picks one and gets on with it. 0 asks none."
+        "How many short questions this chat may ask in total when it cannot tell which "
+        "earlier video you mean; once they are used up it picks one and gets on with it. "
+        "0 asks none."
     ),
     "Which frame to use from previous video": (
         "Which still is taken from the earlier clip when it is reused as a starting "

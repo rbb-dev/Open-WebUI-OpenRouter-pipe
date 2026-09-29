@@ -242,21 +242,6 @@ def strip_intent_blocks(content: str) -> str:
 
 
 def count_prior_clarifications(messages: list[dict[str, Any]]) -> int:
-    """Count consecutive most-recent assistant turns containing the
-    `intent_clarification` marker. Used for the MAX_CLARIFICATIONS soft cap.
-
-    Looks for the dedicated `intent_clarification` marker emitted only by
-    `render_clarification_message` — independent of the `intent_mode` enum
-    so future mode renames cannot silently break the loop guard.
-
-    Multi-modal (list) assistant content is converted to a flat text string
-    before scanning so it doesn't break the streak.
-
-    The trailing message in a chat-completion request is always the current
-    user turn; skip it before walking backwards so the streak counter sees
-    the immediately preceding assistant turn(s). Counting stops at the next
-    user message above the run, which is the user's original ambiguous turn.
-    """
     if not isinstance(messages, list):
         return 0
     end = len(messages)
@@ -266,10 +251,8 @@ def count_prior_clarifications(messages: list[dict[str, Any]]) -> int:
     for idx in range(end - 1, -1, -1):
         msg = messages[idx]
         if not isinstance(msg, dict):
-            break
+            continue
         role = msg.get("role")
-        if role == "user":
-            break
         if role != "assistant":
             continue
         content = msg.get("content") or ""
@@ -286,8 +269,6 @@ def count_prior_clarifications(messages: list[dict[str, Any]]) -> int:
         )
         if is_clarify:
             count += 1
-        else:
-            break
     return count
 
 

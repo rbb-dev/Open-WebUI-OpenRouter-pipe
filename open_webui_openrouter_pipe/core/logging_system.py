@@ -66,6 +66,8 @@ class _SessionLogArchiveJob:
     log_events: list[dict[str, Any]]
     meta_message_id: str | None = None
     meta_task: str | None = None
+    status: str = ""
+    reason: str = ""
 
 
 def _safe_message(record: logging.LogRecord) -> str:
@@ -767,6 +769,8 @@ def _write_session_log_archive_unclaimed(job: _SessionLogArchiveJob, out_dir: Pa
         },
         "request_id": str(job.request_id or ""),
         **({"request_ids": request_ids} if request_ids else {}),
+        **({"status": str(job.status or "")} if str(job.status or "") else {}),
+        **({"reason": str(job.reason or "")} if str(job.reason or "") else {}),
         "log_format": str(job.log_format or ""),
     }
     meta_json = json.dumps(meta, ensure_ascii=False, indent=2)

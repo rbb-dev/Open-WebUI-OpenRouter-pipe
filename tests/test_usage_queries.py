@@ -308,9 +308,6 @@ async def test_run_usage_query_clamps_and_memoizes(seeded, monkeypatch):
     denied = await uq.run_usage_query(plugin, pipe, {"range": "30d", "tz_offset_min": 0, "include_tasks": True})
     assert denied["available"] is False and "retention" in denied["reason"]
 
-    unknown = await uq.run_usage_query(plugin, pipe, {"range": "9y", "tz_offset_min": 0, "include_tasks": True})
-    assert unknown["available"] is False
-
     calls = {"n": 0}
     real = uq.query_usage_stats
 

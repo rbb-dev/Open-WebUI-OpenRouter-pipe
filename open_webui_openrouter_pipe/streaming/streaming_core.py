@@ -1307,6 +1307,7 @@ class StreamingHandler:
                         "emitted": False,
                         "published_len": 0,
                         "published_round": None,
+                        "published_id": None,
                     }
                     reasoning_display[key] = state
                 return state
@@ -1327,6 +1328,7 @@ class StreamingHandler:
                 if not text.strip() or len(text) <= published:
                     return
                 if state.get("published_round") == loop_index:
+                    await _replace_published_reasoning_item(key, text, state)
                     return
                 mono_end = state["mono_close"] if state["mono_close"] is not None else _monotonic()
                 duration = max(0.1, round(mono_end - state["mono_open"], 1))
@@ -1356,6 +1358,37 @@ class StreamingHandler:
                         "item": reasoning_item,
                     }
                 )
+                state["published_id"] = item_id
+
+            async def _replace_published_reasoning_item(
+                key: str, text: str, state: dict[str, Any]
+            ) -> None:
+                item_id = state.get("published_id")
+                if not item_id:
+                    return
+                if len(text) <= int(state.get("published_len", 0) or 0):
+                    return
+                mono_end = state["mono_close"] if state["mono_close"] is not None else _monotonic()
+                duration = max(0.1, round(mono_end - state["mono_open"], 1))
+                reasoning_item: dict[str, Any] = {
+                    "type": "reasoning",
+                    "id": item_id,
+                    "summary": [{"type": "summary_text", "text": text}],
+                    "status": "completed",
+                    "started_at": state["wall_open"],
+                    "ended_at": time.time(),
+                    "duration": duration,
+                }
+                await _record_output_item(reasoning_item)
+                reasoning_index = _output_index(reasoning_item)
+                await event_emitter(
+                    {
+                        "type": "response.output_item.done",
+                        "output_index": reasoning_index,
+                        "item": reasoning_item,
+                    }
+                )
+                state["published_len"] = len(text)
 
             async def _close_and_emit_reasoning_items() -> None:
                 _close_open_reasoning_windows()

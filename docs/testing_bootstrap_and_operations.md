@@ -64,6 +64,8 @@ Optional:
 
 You do not need to import any bootstrap module in individual test files.
 
+A probe subprocess that imports the real `open_webui` must be given its own `DATA_DIR`: the import builds a chromadb store under it, so a probe that inherits the ambient one races every concurrent collection for the same directory. Give it from a fixture rather than at module import — a process-wide timeout does not cover a module-import probe, so a probe that costs tens of seconds there runs entirely outside the budget the suite enforces on tests.
+
 ### Running tests
 
 Run a single file first, then the full suite:
@@ -90,6 +92,7 @@ The suite is organized by subsystem. Common entry points:
 - `tests/test_direct_tool_servers.py`: Open WebUI Direct Tool Servers (Socket.IO `execute:tool`) wiring.
 - `tests/test_transform_messages.py`: history reconstruction/marker replay behavior.
 - `tests/test_pipe_guards.py`: admission controls, breakers, and runtime guards.
+- `tests/test_a_free_form_items_is_not_sealed_shut.py`: worked example of the probe-subprocess convention above — a real `open_webui` import, run from a session fixture over its own `TemporaryDirectory` under a file-scoped `pytest.mark.timeout`.
 
 ---
 

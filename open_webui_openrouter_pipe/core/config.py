@@ -1548,7 +1548,7 @@ class Valves(BaseModel):
     )
     SESSION_LOG_STALE_FINALIZE_SECONDS: int = Field(
         default=6 * 7200,
-        ge=60,
+        ge=300,
         description=(
             "If a message has staged session-log segments but never signals that it finished "
             "(the worker crashed or was killed), finalize an incomplete zip after this many seconds since the last piece. "
@@ -1556,12 +1556,14 @@ class Valves(BaseModel):
             "incomplete too, and a segment it stages afterwards is left stranded until the next assembly, unless it lands before "
             "the sealing pass has read that turn's segments - a pass that finds a terminal segment among the rows it loaded writes the "
             "turn complete instead; one that lands after that read is not folded into that archive by that pass and is "
-            "picked up by a later one. That "
+            "picked up by a later one, unless the archive already records that turn as finished - "
+            "a segment that lands after that read on a turn whose archive already records the turn as "
+            "finished is folded in by that same pass, which writes the turn complete rather than sealing it again. That "
             "exposure is why the default is long. Each pass takes the oldest stranded bundles first and seals a "
             "bundle only if the sealed write succeeds, keeping the segments for a retry otherwise."
             "The incomplete marker is written at most once per archive: a pass that finds the turn still stale leaves the single marker "
             "in place rather than adding another, and a pass that finds the turn complete retires it. "
-            "**Warning:** Values under `300` seconds (five minutes) are raised to `300` at runtime."
+            "**Warning:** The minimum is `300` seconds (five minutes): a lower value is refused when the configuration is saved, and a stored one that no longer validates falls back to the default rather than being raised to it."
         ),
     )
     SESSION_LOG_LOCK_STALE_SECONDS: int = Field(
@@ -2452,9 +2454,10 @@ class Valves(BaseModel):
         ge=0,
         le=3,
         description=(
-            "Per-session cap on consecutive clarifying questions. 0 disables the "
+            "Per-chat cap on clarifying questions. 0 disables the "
             "clarification loop entirely (always proceeds with best-guess interpretation). "
-            "Default 1 = at most one question, then it proceeds with its best guess."
+            "Default 1 = at most one question in the whole chat, after which it proceeds "
+            "with its best guess on every later ambiguous request."
         ),
     )
     VIDEO_INTENT_FRAME_EXTRACTION_INDEX: Literal["first", "last"] = Field(

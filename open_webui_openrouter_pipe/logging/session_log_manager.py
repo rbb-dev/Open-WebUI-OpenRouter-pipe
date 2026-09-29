@@ -160,7 +160,7 @@ def _cleanup_loop(mgr_ref: Any, stop_event: threading.Event) -> None:
             logger.debug("Session log cleanup failed", exc_info=True)
         interval = 3600
         with contextlib.suppress(Exception):
-            interval = mgr._cleanup_interval_seconds  # type: ignore[attr-defined]
+            interval = mgr.valves.SESSION_LOG_CLEANUP_INTERVAL_SECONDS
         mgr = None
         if _wait_alive(mgr_ref, stop_event, interval):
             break
@@ -236,6 +236,12 @@ def _is_incomplete_marker(evt: Any) -> bool:
     if not str(evt.get("message", "")).startswith(_INCOMPLETE_MARKER_PREFIX):
         return False
     return evt.get("lineno") == 0 and evt.get("level") == "WARNING"
+
+
+def _archive_file_name(message_id: str) -> str:
+    from ..core.utils import _sanitize_path_component
+
+    return f"{_sanitize_path_component(message_id, fallback='message')}.zip"
 
 
 def _incomplete_marker(
@@ -394,7 +400,6 @@ class SessionLogManager:
 
         # Thread-safe configuration access
         self._lock = threading.Lock()
-        self._cleanup_interval_seconds = self.valves.SESSION_LOG_CLEANUP_INTERVAL_SECONDS
         self._dirs: set[str] = set()
         self._assembler_recent_failures: dict[tuple[str, str], float] = {}
         self._rescue_pending: set[tuple[str, str]] = set()
@@ -631,7 +636,6 @@ class SessionLogManager:
             zip_compresslevel = None
 
         with contextlib.suppress(Exception), self._lock:
-            self._cleanup_interval_seconds = valves.SESSION_LOG_CLEANUP_INTERVAL_SECONDS
             self._dirs.add(base_dir)
 
         return base_dir, password.encode("utf-8"), zip_compression, zip_compresslevel
@@ -716,7 +720,6 @@ class SessionLogManager:
             zip_compresslevel = None
 
         with contextlib.suppress(Exception), self._lock:
-            self._cleanup_interval_seconds = valves.SESSION_LOG_CLEANUP_INTERVAL_SECONDS
             self._dirs.add(base_dir)
 
         job = _SessionLogArchiveJob(
@@ -905,6 +908,8 @@ class SessionLogManager:
                         created_at=time.time(),
                         log_format=valves.SESSION_LOG_FORMAT,
                         log_events=log_events,
+                        status=str(status or "").strip(),
+                        reason=str(reason or "").strip(),
                     )
                 )
         except Exception:
@@ -951,7 +956,7 @@ class SessionLogManager:
 
         batch_size = self.valves.SESSION_LOG_ASSEMBLER_BATCH_SIZE
         lock_stale_seconds = self.valves.SESSION_LOG_LOCK_STALE_SECONDS
-        stale_finalize_seconds = max(300, self.valves.SESSION_LOG_STALE_FINALIZE_SECONDS)
+        stale_finalize_seconds = float(self.valves.SESSION_LOG_STALE_FINALIZE_SECONDS)
 
         self._cleanup_stale_locks(model, session_factory, lock_stale_seconds)
 
@@ -1274,11 +1279,19 @@ class SessionLogManager:
 
         events: list[dict[str, Any]] = []
         request_id = ""
+        resolved_status = ""
+        resolved_reason = ""
         for seg in segments:
             if not request_id:
                 rid = seg.get("request_id")
                 if isinstance(rid, str) and rid.strip():
                     request_id = rid.strip()
+            if seg.get("type") == "session_log_segment_terminal":
+                raw_status = seg.get("status")
+                if isinstance(raw_status, str) and raw_status.strip():
+                    resolved_status = raw_status.strip()
+                    raw_reason = seg.get("reason")
+                    resolved_reason = raw_reason.strip() if isinstance(raw_reason, str) else ""
             seg_events = seg.get("events")
             if isinstance(seg_events, list):
                 events.extend(e for e in seg_events if isinstance(e, dict))
@@ -1286,7 +1299,7 @@ class SessionLogManager:
             return
 
         fallback_message_id = f"{message_id}.{request_id}"
-        rescue_path = out_path.with_name(f"{fallback_message_id}.zip")
+        rescue_path = out_path.with_name(_archive_file_name(fallback_message_id))
         before_stat = None
         with contextlib.suppress(Exception):
             before_stat = rescue_path.stat()
@@ -1305,6 +1318,8 @@ class SessionLogManager:
                     created_at=time.time(),
                     log_format=self.valves.SESSION_LOG_FORMAT,
                     log_events=events,
+                    status=resolved_status,
+                    reason=resolved_reason,
                 )
             )
         except Exception:
@@ -1356,7 +1371,7 @@ class SessionLogManager:
             "Wrote stranded session log turn to a SEPARATE archive after %d refused attempts: "
             "the existing archive at %s cannot be read, so this turn can never be merged into it. "
             "Those staged segments have now been removed from the database "
-            "(chat_id=%s message_id=%s, captured as %s.zip), and the turn's own archive still does not "
+            "(chat_id=%s message_id=%s, captured as %s), and the turn's own archive still does not "
             "contain them. That separate file ages like any other archive and is reaped by the retention window. "
             "The usual cause is rotating SESSION_LOG_ZIP_PASSWORD while a turn was mid-assembly; "
             "rotate between turns, not during one.",
@@ -1364,7 +1379,7 @@ class SessionLogManager:
                 str(out_path),
                 chat_id,
                 message_id,
-                fallback_message_id,
+                rescue_path.name,
         )
 
     def _restore_touched_stamps(
@@ -1530,6 +1545,8 @@ class SessionLogManager:
         resolved_user_id = ""
         resolved_session_id = ""
         preferred_request_id = ""
+        resolved_status = ""
+        resolved_reason = ""
         merged_events: list[dict[str, Any]] = []
 
         for seg in segments:
@@ -1545,6 +1562,11 @@ class SessionLogManager:
                 rid = seg.get("request_id")
                 if isinstance(rid, str) and rid.strip():
                     preferred_request_id = rid.strip()
+                raw_status = seg.get("status")
+                if isinstance(raw_status, str) and raw_status.strip():
+                    resolved_status = raw_status.strip()
+                    raw_reason = seg.get("reason")
+                    resolved_reason = raw_reason.strip() if isinstance(raw_reason, str) else ""
             events = seg.get("events")
             if isinstance(events, list):
                 for evt in events:
@@ -1570,17 +1592,6 @@ class SessionLogManager:
         if not terminal and any(seg.get("type") == "session_log_segment_terminal" for seg in segments):
             terminal = True
 
-        # Add a final synthetic marker to make incomplete bundles explicit.
-        if not terminal:
-            merged_events.append(
-                _incomplete_marker(
-                    preferred_request_id,
-                    resolved_session_id,
-                    resolved_user_id,
-                    stale_finalize_seconds,
-                )
-            )
-
         settings = archive_settings or self.resolve_archive_settings(self.valves)
         if settings is None:
             self.logger.log(
@@ -1600,16 +1611,18 @@ class SessionLogManager:
         base_dir, zip_password, zip_compression, zip_compresslevel = settings
 
         out_dir = Path(base_dir).expanduser() / _sanitize_path_component(resolved_user_id, fallback="user") / _sanitize_path_component(chat_id, fallback="chat")
-        out_path = out_dir / f"{_sanitize_path_component(message_id, fallback='message')}.zip"
+        out_path = out_dir / _archive_file_name(message_id)
         before_stat = None
         with contextlib.suppress(Exception):
             before_stat = out_path.stat()
 
         # Merge with existing archive events if the zip already exists.
+        existing_raw: list[dict[str, Any]] = []
         read_failed = False
         if out_path.exists():
             try:
-                existing_events = self.read_archive_events(out_path, settings)
+                existing_raw = self.read_archive_events(out_path, settings)
+                existing_events = existing_raw
                 if existing_events:
                     existing_events = [evt for evt in existing_events if not _is_incomplete_marker(evt)]
                     if existing_events:
@@ -1659,6 +1672,15 @@ class SessionLogManager:
             self._rescue_pending.add((chat_id, message_id))
             return False
 
+        if not terminal and existing_raw and not any(_is_incomplete_marker(evt) for evt in existing_raw):
+            terminal = True
+        if not terminal:
+            merged_events.append(
+                _incomplete_marker(
+                    preferred_request_id, resolved_session_id, resolved_user_id, stale_finalize_seconds
+                )
+            )
+
         meta_message_id, meta_task = _split_archive_key(message_id)
         job = _SessionLogArchiveJob(
             base_dir=base_dir,
@@ -1675,6 +1697,8 @@ class SessionLogManager:
             log_events=merged_events,
             meta_message_id=meta_message_id,
             meta_task=meta_task,
+            status=resolved_status,
+            reason=resolved_reason,
         )
         self._write_archive(job)
 

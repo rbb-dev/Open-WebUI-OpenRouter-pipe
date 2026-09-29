@@ -14,7 +14,11 @@ from typing import Any
 
 from ..core.errors import OpenRouterAPIError
 from ..core.logging_system import SessionLogger
-from .client import TaskModelFault, read_task_model_response_json
+from .client import (
+    TaskModelFault,
+    normalise_model_content,
+    read_task_model_response_json,
+)
 from .logging import _fault_code, safe_log_payload
 
 _MIN_CANDIDATE_SLICE_S = 0.05
@@ -56,8 +60,10 @@ def _response_text(response: Any) -> str:
                 if isinstance(refusal, str) and refusal.strip():
                     return refusal
                 content = message.get("content")
-                if isinstance(content, str) and content:
+                if isinstance(content, str):
                     return content
+                if content is not None:
+                    return normalise_model_content(content)
         output = response.get("output")
         if isinstance(output, list):
             parts = [

@@ -334,28 +334,6 @@ class TestCountPriorClarifications:
         ]
         assert count_prior_clarifications(messages) == 1
 
-    def test_stops_on_user_turn(self):
-        from open_webui_openrouter_pipe.integrations.video_intent import (
-            ClarificationPayload, VideoIntentResult, render_clarification_message,
-        )
-        intent = VideoIntentResult(
-            intent="ambiguous", frame_plan=[], prompt="",
-            use_user_prompt=False, language="en", confidence="low",
-            clarification=ClarificationPayload(
-                needs=True, question="?", options=None, reason="x",
-            ),
-            reason="x",
-        )
-        msg = render_clarification_message(intent)
-        messages = [
-            {"role": "assistant", "content": msg},
-            {"role": "user", "content": "answer"},
-            {"role": "assistant", "content": msg},
-        ]
-        # Walking from the end: first assistant is clarify (count=1), then user breaks the streak.
-        assert count_prior_clarifications(messages) == 1
-
-
 # -----------------------------------------------------------------------------
 # build_task_payload
 # -----------------------------------------------------------------------------
