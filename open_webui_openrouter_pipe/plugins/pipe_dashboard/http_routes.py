@@ -24,6 +24,7 @@ from .authz import can_view
 logger = logging.getLogger(__name__)
 
 _ACTIONS_MODNAME = "open_webui_openrouter_pipe.plugins.pipe_dashboard.actions"
+_ROUTES_MODNAME = "open_webui_openrouter_pipe.plugins.pipe_dashboard.http_routes"
 
 _ACTION_PATH = "/api/pipe/dashboard/action"
 _registered_paths: set[str] = set()
@@ -220,6 +221,18 @@ def _live_dispatch() -> Any:
     return getattr(mod, "dispatch_action", None)
 
 
+def _live_routes_get_pipe() -> Any:
+    try:
+        mod = importlib.import_module(_ROUTES_MODNAME)
+    except Exception:
+        logger.warning("pipe_dashboard action-route pipe lookup failed", exc_info=True)
+        return None
+    getter = getattr(mod, "_routes_get_pipe", None)
+    if getter is None:
+        return None
+    return getter()
+
+
 def _preferred_dispatch(action: str) -> Any:
     live = _live_dispatch()
     if live is not None and action in (_live_actions() or {}):
@@ -255,7 +268,7 @@ async def _action_route(
     from fastapi.responses import JSONResponse
 
     user = await bearer_user(request)
-    pipe = _routes_get_pipe() if _routes_get_pipe else None
+    pipe = _live_routes_get_pipe()
     if not _plugins_enabled(pipe):
         _audit_off(user, body.action, _client_ip(request))
         return JSONResponse({"error": "plugin_system_off"}, status_code=404)
@@ -303,11 +316,22 @@ def register_action_route() -> bool:
         if app is None:
             return False
         try:
-            for route in list(getattr(app, "routes", []) or []):
-                if getattr(route, "path", None) == _ACTION_PATH:
+            for index, route in enumerate(list(getattr(app, "routes", []) or [])):
+                if getattr(route, "path", None) != _ACTION_PATH:
+                    continue
+                endpoint = getattr(route, "endpoint", None)
+                if getattr(endpoint, "__name__", None) != "_action_route" or (
+                    "_live_routes_get_pipe" in getattr(endpoint, "__globals__", {})
+                ):
                     _registered_paths.add(_ACTION_PATH)
                     ensure_route_before_spa(app)
                     return True
+                app.add_api_route(_ACTION_PATH, _action_route, methods=["POST"])
+                app.routes.insert(index, app.routes.pop())
+                del app.routes[index + 1]
+                ensure_route_before_spa(app)
+                _registered_paths.add(_ACTION_PATH)
+                return True
             app.add_api_route(_ACTION_PATH, _action_route, methods=["POST"])
             ensure_route_before_spa(app)
         except Exception:
