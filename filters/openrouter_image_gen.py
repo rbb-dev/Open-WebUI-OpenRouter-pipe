@@ -121,7 +121,7 @@ class Filter:
         IMAGE_QUALITY: str = Field(
                     default="",
                     title='Quality',
-                    description="Rendering quality tier. This model publishes no preference of its own. OpenRouter's image API takes one of auto, low, medium, high here and refuses anything else before the company running the model sees it. Empty leaves it unset.",
+                    description="Rendering quality tier. This model publishes no preference of its own. OpenRouter's image API takes one of auto, low, medium, high, xhigh, max here and refuses anything else before the company running the model sees it. Empty leaves it unset.",
                 )
         IMAGE_SIZE: str = Field(
                     default="",
@@ -131,7 +131,7 @@ class Filter:
         IMAGE_ASPECT_RATIO: str = Field(
                     default="",
                     title='Aspect ratio',
-                    description="Frame shape. This model publishes no preference of its own. OpenRouter's image API takes one of 1:1, 1:2, 1:4, 1:8, 2:1, 2:3, 3:2, 3:4, 4:1, 4:3, 4:5, 5:4, 8:1, 9:16, 16:9, 9:19.5, 19.5:9, 9:20, 20:9, 9:21, 21:9, auto here and refuses anything else before the company running the model sees it. Empty leaves it unset.",
+                    description="Frame shape. This model publishes no preference of its own. OpenRouter's image API takes one of 1:1, 1:2, 1:4, 1:8, 2:1, 2:3, 2.35:1, 3:2, 3:4, 4:1, 4:3, 4:5, 5:2, 5:4, 8:1, 9:16, 16:9, 9:19.5, 19.5:9, 9:20, 20:9, 9:21, 21:9, auto here and refuses anything else before the company running the model sees it. Empty leaves it unset.",
                 )
         IMAGE_BACKGROUND: str = Field(
                     default="",

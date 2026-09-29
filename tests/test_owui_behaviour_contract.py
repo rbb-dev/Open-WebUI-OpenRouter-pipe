@@ -30,7 +30,7 @@ _WANTED = {
         "get_content_from_message",
         "get_output_text",
     },
-    "middleware.py": {"handle_responses_streaming_event", "deep_merge"},
+    "middleware.py": {"handle_responses_streaming_event", "deep_merge", "merge_streamed_reasoning_details"},
 }
 _ONE_PIXEL_PNG = (
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="

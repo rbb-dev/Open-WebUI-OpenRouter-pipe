@@ -167,7 +167,8 @@ __KEEP_WHAT_STILL_FITS__
             le=16,
             title="Max tool calls per model",
             description=(
-                "Tool budget for each panel and judge model (1-16; 0 = default 8). On the "
+                "Tool budget for each panel and judge model (1-16; 0 leaves it to the "
+                "engine: 8 on this pipe's internal engine, 4 on OpenRouter's). On the "
                 "OpenRouter engine this caps web search/fetch steps. On the pipe's "
                 "internal engine it is enforced as a hard per-model cap on individual "
                 "tool invocations (knowledge bases, tool servers, web tools alike); "

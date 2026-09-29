@@ -376,7 +376,9 @@ def _config_snapshot(
     return {"valves": specs, "drift": drift(valves_cls)}
 
 
-async def _saved_values(pipe: Any, names: Iterable[str]) -> tuple[dict[str, Any], list[str]]:
+async def _saved_values(
+    pipe: Any, names: Iterable[str]
+) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
     wanted = set(names)
     try:
         effective, reset, stored, _read_ok = await _effective_valves_and_state(pipe)
@@ -385,13 +387,24 @@ async def _saved_values(pipe: Any, names: Iterable[str]) -> tuple[dict[str, Any]
             "pipe_dashboard: the store became unreadable while echoing a completed save; "
             "the write is committed, so the echo is dropped rather than reported as a failure"
         )
-        return {}, []
+        return {}, {}, []
     snapshot = _config_snapshot(effective, stored)
-    return {
-        spec["name"]: spec["value"]
-        for spec in snapshot["valves"]
-        if spec["name"] in wanted and not spec["secret"]
-    }, list(reset)
+    return (
+        {
+            spec["name"]: spec["value"]
+            for spec in snapshot["valves"]
+            if spec["name"] in wanted and not spec["secret"]
+        },
+        {
+            spec["name"]: {
+                "set": bool(spec["secret_set"]),
+                "stored": bool(spec["secret_stored"]),
+            }
+            for spec in snapshot["valves"]
+            if spec["name"] in wanted and spec["secret"]
+        },
+        list(reset),
+    )
 
 
 @register_action("config_get", permission="read", schema=None, admin_only=True)
@@ -415,7 +428,9 @@ async def _config_set(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
     async with _config_write_lock(getattr(pipe, "id", "")):
         result, committed = await _persist_config_edit(pipe, user, args)
     if committed:
-        result["values"], result["post_reset"] = await _saved_values(pipe, args["edits"])
+        result["values"], result["secrets"], result["post_reset"] = await _saved_values(
+            pipe, args["edits"]
+        )
     return result
 
 

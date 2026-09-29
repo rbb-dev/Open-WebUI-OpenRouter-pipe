@@ -88,6 +88,21 @@ def _append_text_field(item: dict, key: str, value: str) -> None:
     item[key] = text
 
 
+def _reasoning_detail_key(detail: dict[str, Any], order_length: int) -> tuple[str, str] | None:
+    dtype = detail.get("type")
+    if not isinstance(dtype, str) or not dtype:
+        return None
+    idx = detail.get("index")
+    did = detail.get("id")
+    if isinstance(idx, int) and not isinstance(idx, bool):
+        disc = f"idx:{idx}"
+    elif isinstance(did, str) and did.strip():
+        disc = did.strip()
+    else:
+        disc = f"pos:{order_length}"
+    return (dtype, disc)
+
+
 def _chat_message_text(message: Any) -> str:
     if not isinstance(message, dict):
         return ""
@@ -252,13 +267,15 @@ class ChatCompletionsAdapter:
         reasoning_item_id: str | None = None
         reasoning_text_parts: list[str] = []
         reasoning_text_seen = False
-        reasoning_summary_text: str | None = None
+        reasoning_summary_parts: dict[tuple[str, str], str] = {}
+        reasoning_summary_order: list[tuple[str, str]] = []
         reasoning_details_by_key: dict[tuple[str, str], dict[str, Any]] = {}
         reasoning_details_order: list[tuple[str, str]] = []
         image_item_id: str | None = None
         image_output_item: dict[str, Any] | None = None
         images_emitted = False
         provider_refusal_parts: list[str] = []
+        provider_refusal_full: str | None = None
         refusal_text_seen = False
         assistant_text_seen = False
 
@@ -316,24 +333,16 @@ class ChatCompletionsAdapter:
         retryer = _transient_retry_policy(effective_valves, retry=_retry_streaming)
 
         @timed
-        def _record_reasoning_detail(detail: dict[str, Any]) -> None:
-            dtype = detail.get("type")
-            if not isinstance(dtype, str) or not dtype:
-                return
-            idx = detail.get("index")
-            did = detail.get("id")
-            if isinstance(idx, int) and not isinstance(idx, bool):
-                disc = f"idx:{idx}"
-            elif isinstance(did, str) and did.strip():
-                disc = did.strip()
-            else:
-                disc = f"pos:{len(reasoning_details_order)}"
-            key = (dtype, disc)
+        def _record_reasoning_detail(detail: dict[str, Any]) -> tuple[str, str] | None:
+            key = _reasoning_detail_key(detail, len(reasoning_details_order))
+            if key is None:
+                return None
+            dtype = key[0]
             existing = reasoning_details_by_key.get(key)
             if existing is None:
                 reasoning_details_order.append(key)
                 reasoning_details_by_key[key] = dict(detail)
-                return
+                return key
             merged = dict(existing)
             if dtype == "reasoning.text":
                 prev_text = merged.get("text")
@@ -364,6 +373,7 @@ class ChatCompletionsAdapter:
                     continue
                 merged[k] = v
             reasoning_details_by_key[key] = merged
+            return key
 
         @timed
         def _final_reasoning_details() -> list[dict[str, Any]]:
@@ -381,8 +391,9 @@ class ChatCompletionsAdapter:
 
         def _consume_blob(data_blob: bytes):
             nonlocal received_any, latest_usage, reasoning_item_id, reasoning_text_seen, \
-                reasoning_summary_text, latest_message_annotations, image_item_id, \
-                image_output_item, images_emitted, refusal_text_seen, tool_calls_completed, \
+                latest_message_annotations, image_item_id, \
+                image_output_item, images_emitted, refusal_text_seen, provider_refusal_full, \
+                tool_calls_completed, \
                 truncating_reason, delivered_any, saw_choice_chunk, assistant_text_seen
             try:
                 chunk_obj = json.loads(data_blob.decode("utf-8"))
@@ -422,7 +433,7 @@ class ChatCompletionsAdapter:
                 for entry in delta_reasoning_details:
                     if not isinstance(entry, dict):
                         continue
-                    _record_reasoning_detail(entry)
+                    detail_key = _record_reasoning_detail(entry)
                     rtype = entry.get("type")
                     if not isinstance(rtype, str) or not rtype:
                         continue
@@ -454,13 +465,17 @@ class ChatCompletionsAdapter:
                             }
                     elif rtype == "reasoning.summary":
                         summary = entry.get("summary")
-                        if isinstance(summary, str) and summary.strip():
-                            reasoning_summary_text = summary.strip()
+                        if isinstance(summary, str) and summary.strip() and detail_key is not None:
+                            if detail_key not in reasoning_summary_parts:
+                                reasoning_summary_order.append(detail_key)
+                            reasoning_summary_parts[detail_key] = summary.strip()
                             delivered_any = True
                             yield {
                                 "type": "response.reasoning_summary_text.done",
                                 "item_id": reasoning_item_id,
-                                "text": reasoning_summary_text,
+                                "text": "".join(
+                                    reasoning_summary_parts[k] for k in reasoning_summary_order
+                                ),
                             }
 
             delta_reasoning_text = None
@@ -534,12 +549,11 @@ class ChatCompletionsAdapter:
                             "item_id": reasoning_item_id,
                             "delta": message_reasoning_text,
                         }
-                if not refusal_text_seen:
-                    message_refusal = message_obj.get("refusal")
-                    if isinstance(message_refusal, str) and message_refusal.strip():
-                        delivered_any = True
-                        provider_refusal_parts.append(message_refusal)
-                        refusal_text_seen = True
+                message_refusal = message_obj.get("refusal")
+                if isinstance(message_refusal, str) and message_refusal.strip():
+                    delivered_any = True
+                    provider_refusal_full = message_refusal.strip()
+                    refusal_text_seen = True
                 if not assistant_text_seen:
                     message_text = _chat_message_text(message_obj)
                     if message_text:
@@ -599,7 +613,7 @@ class ChatCompletionsAdapter:
                 yield {"type": "response.output_text.delta", "delta": content_delta}
 
             delta_refusal = delta_obj.get("refusal")
-            if isinstance(delta_refusal, str) and delta_refusal.strip():
+            if provider_refusal_full is None and isinstance(delta_refusal, str) and delta_refusal.strip():
                 delivered_any = True
                 provider_refusal_parts.append(delta_refusal)
                 refusal_text_seen = True
@@ -662,9 +676,11 @@ class ChatCompletionsAdapter:
                         tool_call_added.clear()
                         assistant_text_parts.clear()
                         provider_refusal_parts.clear()
+                        provider_refusal_full = None
                         refusal_text_seen = False
                         reasoning_text_parts.clear()
-                        reasoning_summary_text = None
+                        reasoning_summary_parts.clear()
+                        reasoning_summary_order.clear()
                         reasoning_details_by_key.clear()
                         reasoning_details_order.clear()
                         seen_citation_urls.clear()
@@ -791,7 +807,11 @@ class ChatCompletionsAdapter:
                 "id": reasoning_item_id,
                 "status": "completed",
                 "content": [{"type": "reasoning_text", "text": reasoning_text}] if reasoning_text else [],
-                "summary": [{"type": "summary_text", "text": reasoning_summary_text}] if reasoning_summary_text else [],
+                "summary": [
+                    {"type": "summary_text", "text": reasoning_summary_parts[k]}
+                    for k in reasoning_summary_order
+                    if reasoning_summary_parts.get(k)
+                ],
             }
             for detail in _final_reasoning_details():
                 detail_type = detail.get("type")
@@ -827,7 +847,7 @@ class ChatCompletionsAdapter:
 
         assistant_text = "".join(assistant_text_parts)
         refusal_delta, assistant_text = _refusal_split(
-            assistant_text, "".join(provider_refusal_parts)
+            assistant_text, provider_refusal_full or "".join(provider_refusal_parts)
         )
         if refusal_delta is not None:
             yield {"type": "response.output_text.delta", "delta": refusal_delta}

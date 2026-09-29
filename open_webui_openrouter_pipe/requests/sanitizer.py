@@ -48,19 +48,6 @@ def _without_hidden_marker_lines(output: Any) -> Any:
     return output
 
 
-def _last_call_index_after(items: list[Any], start: int, cid: str) -> int:
-    anchor = start
-    for j in range(start + 1, len(items)):
-        later = items[j]
-        if (
-            isinstance(later, dict)
-            and later.get("type") == "function_call"
-            and later.get("call_id") == cid
-        ):
-            anchor = j
-    return anchor
-
-
 def _normalise_tool_call_id(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
 
@@ -283,8 +270,9 @@ def _validate_tool_call_pairs(
     """
     call_counts: Counter[str] = Counter()
     output_counts: Counter[str] = Counter()
+    positions: dict[str, list[int]] = {}
 
-    for item in items:
+    for i, item in enumerate(items):
         if not isinstance(item, dict):
             continue
         call_id = item.get("call_id")
@@ -294,6 +282,7 @@ def _validate_tool_call_pairs(
         item_type = item.get("type")
         if item_type == "function_call":
             call_counts[cid] += 1
+            positions.setdefault(cid, []).append(i)
         elif item_type == "function_call_output":
             output_counts[cid] += 1
 
@@ -346,7 +335,12 @@ def _validate_tool_call_pairs(
         if cid in surplus_outputs and seen_outputs[cid] >= call_counts[cid]:
             continue
         seen_outputs[cid] += 1
-        stub_anchors[cid] = _last_call_index_after(items, i, cid)
+        pos = positions.get(cid)
+        stub_anchors[cid] = pos[-1] if pos and pos[-1] > i else i
+
+    by_anchor: dict[int, list[str]] = {}
+    for starved_index, starved_cid in sorted(starved_occurrences):
+        by_anchor.setdefault(stub_anchors.get(starved_cid, starved_index), []).append(starved_cid)
 
     if orphaned_outputs:
         logger.warning(
@@ -369,7 +363,6 @@ def _validate_tool_call_pairs(
 
     result: list[Any] = []
     emitted: Counter[str] = Counter()
-    stubbed: set[tuple[int, str]] = set()
     for i, item in enumerate(items):
         if not isinstance(item, dict):
             result.append(item)
@@ -388,13 +381,7 @@ def _validate_tool_call_pairs(
 
         result.append(item)
 
-        for starved_index, starved_cid in starved_occurrences:
-            if (starved_index, starved_cid) in stubbed:
-                continue
-            anchor = stub_anchors.get(starved_cid, starved_index)
-            if anchor != i:
-                continue
-            stubbed.add((starved_index, starved_cid))
+        for starved_cid in by_anchor.pop(i, ()):
             result.append({
                 "type": "function_call_output",
                 "call_id": starved_cid,

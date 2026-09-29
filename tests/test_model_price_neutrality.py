@@ -212,7 +212,8 @@ def _surfaces() -> dict[str, str]:
             id="the-shared-pointer-is-the-one-exemption",
         ),
         pytest.param(
-            "Tool budget for each panel and judge model (1-16; 0 = default 8).",
+            "Tool budget for each panel and judge model (1-16; 0 leaves it to the "
+            "engine: 8 on this pipe's internal engine, 4 on OpenRouter's).",
             False,
             id="a-tool-budget-is-not-a-price",
         ),

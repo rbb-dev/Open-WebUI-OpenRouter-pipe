@@ -33,6 +33,12 @@ def _chat_completions_adapter() -> type[ChatCompletionsAdapter]:
     return ChatCompletionsAdapter
 
 
+def _chat_reasoning_detail_key(detail: dict[str, Any], order_length: int) -> tuple[str, str] | None:
+    from ..api.gateway.chat_completions_adapter import _reasoning_detail_key as key_of
+
+    return key_of(detail, order_length)
+
+
 def _build_chat_output_items(**kwargs: Any) -> list[dict[str, Any]]:
     from ..api.gateway.chat_completions_adapter import _build_output_items as build
 
@@ -163,7 +169,8 @@ class NonStreamingAdapter:
 
             reasoning_item_id: str | None = None
             reasoning_text_parts: list[str] = []
-            reasoning_summary_text: str | None = None
+            reasoning_summary_parts: dict[tuple[str, str], str] = {}
+            reasoning_summary_order: list[tuple[str, str]] = []
             reasoning_details = message_obj.get("reasoning_details")
             if isinstance(reasoning_details, list) and reasoning_details:
                 for entry in reasoning_details:
@@ -186,9 +193,18 @@ class NonStreamingAdapter:
                             yield {"type": "response.reasoning_text.delta", "item_id": reasoning_item_id, "delta": text}
                     elif rtype == "reasoning.summary":
                         summary = entry.get("summary")
-                        if isinstance(summary, str) and summary.strip():
-                            reasoning_summary_text = summary.strip()
-                            yield {"type": "response.reasoning_summary_text.done", "item_id": reasoning_item_id, "text": reasoning_summary_text}
+                        detail_key = _chat_reasoning_detail_key(entry, len(reasoning_summary_order))
+                        if isinstance(summary, str) and summary.strip() and detail_key is not None:
+                            if detail_key not in reasoning_summary_parts:
+                                reasoning_summary_order.append(detail_key)
+                            reasoning_summary_parts[detail_key] = summary.strip()
+                            yield {
+                                "type": "response.reasoning_summary_text.done",
+                                "item_id": reasoning_item_id,
+                                "text": "".join(
+                                    reasoning_summary_parts[k] for k in reasoning_summary_order
+                                ),
+                            }
 
             message_reasoning_text = None
             for key in ("reasoning", "reasoning_content"):
@@ -251,7 +267,11 @@ class NonStreamingAdapter:
                     "id": reasoning_item_id,
                     "status": "completed",
                     "content": [{"type": "reasoning_text", "text": reasoning_text}] if reasoning_text else [],
-                    "summary": [{"type": "summary_text", "text": reasoning_summary_text}] if reasoning_summary_text else [],
+                    "summary": [
+                        {"type": "summary_text", "text": reasoning_summary_parts[k]}
+                        for k in reasoning_summary_order
+                        if reasoning_summary_parts.get(k)
+                    ],
                 }
                 for detail in (reasoning_details if isinstance(reasoning_details, list) else ()):
                     if not isinstance(detail, dict):

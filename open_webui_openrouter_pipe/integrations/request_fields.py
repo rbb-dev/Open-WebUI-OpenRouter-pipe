@@ -27,7 +27,24 @@ IMAGE_FIELD_ROUTES: dict[str, str] = {
     ),
 }
 
-IMAGE_FIELD_GAPS: dict[str, str] = {}
+IMAGE_FIELD_GAPS: dict[str, str] = {
+    "session_id": (
+        "a key OpenRouter's published format says is never sent to the provider. The "
+        "pipe's session identity travels as a request header where Open WebUI is "
+        "configured to forward one, and never in the body, so putting it there would "
+        "either be refused or would be a second, disagreeing spelling."
+    ),
+    "trace": (
+        "a reference to a broadcast tracing configuration, filled in by whatever "
+        "collects a trace rather than by a chat turn. A message has no tracing setup to "
+        "describe, and a default here would either trace every chat or be ignored."
+    ),
+    "user": (
+        "a field the published format says is never sent to the provider. Nothing this "
+        "pipe sends needs the account it is sent under, because the account is already "
+        "established by the key the request carries."
+    ),
+}
 
 VIDEO_FIELD_ROUTES: dict[str, str] = {
     "input_references": (

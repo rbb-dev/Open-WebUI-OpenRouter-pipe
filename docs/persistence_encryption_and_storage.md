@@ -53,7 +53,7 @@ the video intent and media relay disclosures). Only the ULID form above is an **
 section is about, and the only one that is looked up and replayed. The kind form is a **transport line**: it carries
 state within a single message and is never resolved against the artifact store.
 
-On subsequent turns, the pipe scans prior assistant messages for marker lines, fetches the referenced artifacts (from Redis cache if available, otherwise the database), and replays them into the next request in a structured form. Markers are emitted for chat turns only: a call that carries no `chat_id` adds none to its response, so a program calling the API sees exactly the bytes the model produced.
+On subsequent turns, the pipe scans prior assistant messages for marker lines, fetches the referenced artifacts in one batched pass per turn (from Redis cache if available, otherwise the database), and replays them into the next request in a structured form. Markers are emitted for chat turns only: a call that carries no `chat_id` adds none to its response, so a program calling the API sees exactly the bytes the model produced.
 
 ---
 

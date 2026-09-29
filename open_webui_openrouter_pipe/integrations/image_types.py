@@ -62,13 +62,13 @@ CONTRACT_GATED_PARAMS: tuple[str, ...] = tuple(
 
 SCHEMA_ENUMS: dict[str, tuple[str, ...]] = {
     "aspect_ratio": (
-        "1:1", "1:2", "1:4", "1:8", "2:1", "2:3", "3:2", "3:4", "4:1", "4:3", "4:5",
-        "5:4", "8:1", "9:16", "16:9", "9:19.5", "19.5:9", "9:20", "20:9", "9:21",
-        "21:9", "auto",
+        "1:1", "1:2", "1:4", "1:8", "2:1", "2:3", "2.35:1", "3:2", "3:4", "4:1",
+        "4:3", "4:5", "5:2", "5:4", "8:1", "9:16", "16:9", "9:19.5", "19.5:9",
+        "9:20", "20:9", "9:21", "21:9", "auto",
     ),
     "background": ("auto", "transparent", "opaque"),
     "output_format": ("png", "jpeg", "webp", "svg"),
-    "quality": ("auto", "low", "medium", "high"),
+    "quality": ("auto", "low", "medium", "high", "xhigh", "max"),
     "resolution": ("512", "1K", "2K", "4K"),
 }
 

@@ -549,7 +549,7 @@ def validate_intent_params(
     }
     seen_targets: set[str] = set()  
     if isinstance(raw_plan, list):
-        for entry_raw in raw_plan[:_FRAME_PLAN_MAX]:
+        for entry_position, entry_raw in enumerate(raw_plan):
             if not isinstance(entry_raw, dict):
                 continue
             source = entry_raw.get("source")
@@ -621,6 +621,8 @@ def validate_intent_params(
                 target=target,  # type: ignore[arg-type]
             ))
             if len(frame_plan) >= _FRAME_PLAN_MAX:
+                if entry_position + 1 < len(raw_plan):
+                    downgrades.append(f"frame_plan_capped_at_{_FRAME_PLAN_MAX}")
                 break
 
     # Cross-field invariants
@@ -1073,6 +1075,10 @@ _DOWNGRADE_USER_MESSAGES: dict[str, str] = {
     "clarification_capped_max_reached": "Proceeding with best-effort interpretation.",
     "frame_plan_dropped_temporary_chat": (
         "This chat cannot hold files, so the previous video's frame was not used."
+    ),
+    "frame_plan_capped": (
+        f"This request can use at most {_FRAME_PLAN_MAX} reference frames; the rest of "
+        "your attachments were not sent with it."
     ),
 }
 

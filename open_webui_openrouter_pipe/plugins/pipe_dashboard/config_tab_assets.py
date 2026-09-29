@@ -104,6 +104,9 @@ CONFIG_TAB_CSS = r"""
 .cfgroot .callout{border-radius:8px;padding:10px 14px;margin:6px 0 14px;font-size:13.5px;border:1px solid}
 .cfgroot .callout.warning{background:var(--warn-bg);border-color:var(--warn-bd);color:#92400e}
 .cfgroot .callout.tip{background:var(--tip-bg);border-color:var(--tip-bd);color:#1e40af}
+.cfgroot .callout.note{background:var(--tip-bg);border-color:var(--tip-bd);color:#1e40af}
+.cfgroot .callout.caution{background:var(--warn-bg);border-color:var(--warn-bd);color:#92400e}
+.cfgroot .callout.known-gap{background:var(--warn-bg);border-color:var(--warn-bd);color:#92400e}
 .cfgroot .secth{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--faint);font-weight:600;margin:26px 0 12px}
 .cfgroot .meta{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
 .cfgroot .mcell{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:11px 14px}
@@ -194,8 +197,8 @@ function md(src){
     if(/^\s*-\s+/.test(line)){if(!inList){out+="<ul>";inList=true;}out+="<li>"+inline(line.replace(/^\s*-\s+/,""))+"</li>";continue;}
     if(inList){out+="</ul>";inList=false;}
     if(line===""){continue;}
-    const m=line.match(/^\*\*(Warning|Tip):\*\*\s*(.*)$/);
-    if(m){out+='<div class="callout '+m[1].toLowerCase()+'"><strong>'+m[1]+':</strong> '+inline(m[2])+'</div>';continue;}
+    const m=line.match(/^\*\*(Warning|Tip|Note|Caution|Known gap):\*\*\s*(.*)$/);
+    if(m){out+='<div class="callout '+m[1].toLowerCase().replace(/[^a-z0-9]+/g,'-')+'"><strong>'+m[1]+':</strong> '+inline(m[2])+'</div>';continue;}
     out+="<p>"+inline(line)+"</p>";
   }
   if(inList)out+="</ul>"; return out;
@@ -444,7 +447,8 @@ function commitSave(){
     if(r.conflict){ inflightSave=false; $("#modal").classList.remove("show"); if(btn){btn.disabled=false;btn.textContent="Save "+names.length;} if(r.config_unreadable){configUnreadable=true;showUnreadable();updateBar();return;} refuseSave(btn,names,null,null); return; }
     const vals=(r.values&&typeof r.values==="object")?r.values:{};
     const notSaved=Array.isArray(r.not_saved)?r.not_saved:[];
-    names.forEach(n=>{ const v=byName[n]; if(v&&v.secret){v.secret_set=(edits[n]===null&&v.secret_stored)?v.secret_set:(edits[n]!==null&&notSaved.indexOf(n)<0);} else if(v){baseline[n]=Object.prototype.hasOwnProperty.call(vals,n)?vals[n]:edits[n];} delete edits[n]; });
+    const sec=(r.secrets&&typeof r.secrets==="object")?r.secrets:{};
+    names.forEach(n=>{ const v=byName[n]; if(v&&v.secret){v.secret_set=(edits[n]===null&&v.secret_stored)?v.secret_set:(edits[n]!==null&&notSaved.indexOf(n)<0); const fl=sec[n]; if(fl){v.secret_set=!!fl.set;v.secret_stored=!!fl.stored;}} else if(v){baseline[n]=Object.prototype.hasOwnProperty.call(vals,n)?vals[n]:edits[n];} delete edits[n]; });
     if(r.rev!=null){REV=r.rev;lastSeenRev=r.rev;}
     inflightSave=false;
     paintDriftNote($("#driftnote"),{drift:driftCache,reset:r.reset});

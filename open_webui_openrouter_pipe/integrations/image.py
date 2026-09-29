@@ -947,7 +947,7 @@ class ImageGenerationAdapter:
         kept_links = links[:limit]
         kept_attached = attached[-room:] if room else []
         refs = kept_links + kept_attached
-        offered = len(links) + len(attached)
+        offered = len(chosen) + len(attached)
         if offered > len(refs):
             reason = (
                 f"this model accepts {limit}"

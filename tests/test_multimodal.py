@@ -3511,11 +3511,14 @@ class TestAudioTransformer:
         sample_audio_base64,
         monkeypatch,
     ):
-        """A converter that raises still yields a void block, and still no audio.
+        """A converter that raises still yields no audio, and now names the clip.
 
-        The exception is swallowed by `_to_input_audio` exactly as before, so the
-        per-block contract this row documents is intact; the block it produces is empty,
-        and T433 stops that empty block from reaching OpenRouter.
+        The exception is still swallowed by `_to_input_audio` and still logged, so the
+        per-block contract this row documents is intact. What changed is the sentence:
+        the arm returns a refusal rather than an empty block, so the turn that carried
+        only this clip is told the clip was not sent and why, instead of claiming the
+        person sent an empty message. Same shape as the row above, which is the same
+        turn for a payload that is undecodable rather than unreadable.
         """
         boom = RuntimeError("boom")
         monkeypatch.setattr(pipe_instance._multimodal_handler, "_parse_data_url", Mock(side_effect=boom))
@@ -3527,7 +3530,7 @@ class TestAudioTransformer:
         assert audio_block is not None
         assert audio_block["type"] == "input_text"
         assert audio_block["text"] == (
-            "[An attached item was not sent: an audio clip carried no audio data.]"
+            "[An attached item was not sent: an audio clip could not be read.]"
         )
 
     @pytest.mark.asyncio

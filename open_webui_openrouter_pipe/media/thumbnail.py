@@ -60,12 +60,12 @@ def make_thumbnail(
     src = composite_on_white(src)
 
     canvas = Image.new("RGB", (target_size, target_size), (255, 255, 255))
-    src.thumbnail((target_size, target_size), Image.Resampling.LANCZOS)
-    offset = (
-        (target_size - src.width) // 2,
-        (target_size - src.height) // 2,
+    scale = target_size / max(src.width, src.height)
+    fitted = src.resize(
+        (max(1, round(src.width * scale)), max(1, round(src.height * scale))),
+        Image.Resampling.LANCZOS,
     )
-    canvas.paste(src, offset)
+    canvas.paste(fitted, ((target_size - fitted.width) // 2, (target_size - fitted.height) // 2))
 
     buf = io.BytesIO()
     canvas.save(buf, format="JPEG", quality=quality, optimize=True)

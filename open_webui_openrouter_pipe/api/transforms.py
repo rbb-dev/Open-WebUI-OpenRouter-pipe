@@ -1170,10 +1170,13 @@ def _responses_input_to_chat_messages(
                     if btype == "input_file":
                         transformed = dict(block)
                         transformed["type"] = "file"
+                        file_id = transformed.pop("file_id", None)
                         filename = transformed.pop("filename", None)
                         file_data = transformed.pop("file_data", None)
                         file_url = transformed.pop("file_url", None)
                         file_payload: dict[str, Any] = {}
+                        if isinstance(file_id, str) and file_id.strip():
+                            file_payload["file_id"] = file_id.strip()
                         if isinstance(filename, str) and filename.strip():
                             file_payload["filename"] = filename.strip()
                         file_value: str | None = None

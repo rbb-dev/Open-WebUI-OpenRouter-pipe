@@ -660,7 +660,8 @@ ALWAYS_ON_CONTROLS: tuple[tuple[str, str, str, str, str], ...] = (
         (
             "Reference images to use as well as, or instead of, the "
             "attached ones: a JSON list of https links or data URLs. These are placed first, "
-            "so they survive when the model takes fewer references than are on offer."
+            "so they survive when the model takes fewer references than are on offer. "
+            "At most 16 are sent; the rest are named in the chat as not sent."
         ),
     ),
 )

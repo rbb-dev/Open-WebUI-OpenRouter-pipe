@@ -129,15 +129,16 @@ def query_usage_stats(
     off = int(tz_offset_min) * 60
 
     with _db_session(session_factory) as session:
-        from sqlalchemy import case, func, select
+        from sqlalchemy import case, func, or_, select
 
         totals_q = session.query(
             func.sum(case((model.kind == "task", 0), else_=1)), func.min(model.ts),
             func.sum(model.tokens_in), func.sum(model.tokens_cached), func.sum(model.tokens_out),
-            func.sum(model.tools_ok + model.tools_failed), func.sum(model.cost),
+            func.sum(func.coalesce(model.tools_ok, 0) + func.coalesce(model.tools_failed, 0)),
+            func.sum(model.cost),
         )
         if not include_tasks:
-            totals_q = totals_q.filter(model.kind != "task")
+            totals_q = totals_q.filter(or_(model.kind != "task", model.kind.is_(None)))
         total_count, min_ts, tot_tin, tot_tcached, tot_tout, tot_tools, tot_cost = totals_q.one()
 
         rows = [

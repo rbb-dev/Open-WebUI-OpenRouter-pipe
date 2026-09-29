@@ -347,6 +347,13 @@ async def test_cleartext_video_urls_are_gated_however_the_scheme_is_typed(
     only on this one. The gate's decision is still what is under test: an allowed one
     forwards the URL unchanged. An allowed row that stopped forwarding, or a refused row
     that started, would both show up here.
+
+    The refused rows used to end with the turn reporting `[The user sent an empty
+    message.]`, which was the second half of the same defect: the arm recorded nothing,
+    so a turn that carried a refused clip read as a turn that carried nothing. The arm
+    records a refusal now, so the sole-content turn names the clip and the remedy. The
+    arm's own error card is unchanged and is the one sentence this refusal does not
+    double up with.
     """
     pipe = _vision_pipe(pipe_instance_async, allow=allow, hosts=hosts)
     monkeypatch.setattr(pipe._multimodal_handler, "_is_safe_url", AsyncMock(return_value=True))
@@ -364,7 +371,9 @@ async def test_cleartext_video_urls_are_gated_however_the_scheme_is_typed(
         f"url={url} ALLOW_INSECURE_HTTP={allow}: a refused cleartext URL was sent as "
         f"{videos!r}"
     )
-    assert transformed[0]["content"][0]["text"] == "[The user sent an empty message.]"
+    not_sent = transformed[0]["content"][0]["text"]
+    assert not_sent.startswith("[An attached item was not sent: "), not_sent
+    assert "ALLOW_INSECURE_HTTP" in not_sent, not_sent
 
 
 @pytest.mark.asyncio

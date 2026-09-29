@@ -273,10 +273,11 @@ class TestMakeThumbnail:
         """A 50%-alpha green thumbnail is pale green, and it is a JPEG at that.
 
         The mode says no alpha, which a function that dropped alpha also says, so
-        the pixel is the assertion. The source is 100px on a 256px canvas and
-        `thumbnail` only ever shrinks, so it lands centred at offset 78: the
-        coordinate below is that centre, asserted as a precondition so the probe
-        cannot drift onto the white bar if the fixture is ever resized.
+        the pixel is the assertion. The source is 100px and the fit scales it up to
+        256 on its long side, so the picture covers the canvas: the coordinate below
+        is read off the picture the function actually drew, not computed from the
+        source size, so it cannot drift onto the white bar if the fixture or the fit
+        is ever changed.
 
         Deliberate divergence from Open WebUI, which normalises a user's own upload
         with a bare `image.convert('RGB')` -- structurally the "drop the alpha"
@@ -286,12 +287,16 @@ class TestMakeThumbnail:
         sits against, so an un-matted pixel reads as a hole in the card.
         """
         source = Image.open(io.BytesIO(rgba_png_bytes))
-        assert source.size[0] < 256 and source.size[1] < 256, (
-            "the source must stay smaller than the canvas, or the centred "
-            "coordinate below is not on the picture any more"
+        thumb = make_thumbnail(rgba_png_bytes)
+        result_img = Image.open(io.BytesIO(thumb.image_bytes))
+        from PIL import ImageOps
+
+        drawn = ImageOps.invert(result_img.convert("L")).getbbox()
+        assert drawn is not None, (
+            "the thumbnail is entirely white, so there is no picture to sample and "
+            "the probe below would be reading the letterbox"
         )
-        centre = ((256 - source.width) // 2 + source.width // 2,
-                  (256 - source.height) // 2 + source.height // 2)
+        centre = ((drawn[0] + drawn[2]) // 2, (drawn[1] + drawn[3]) // 2)
 
         thumb = make_thumbnail(rgba_png_bytes)
         # Decode resulting JPEG and check it's RGB (no alpha)

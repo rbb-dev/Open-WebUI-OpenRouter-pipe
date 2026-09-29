@@ -920,6 +920,35 @@ async def transform_messages_to_input(
         """Strip hidden transport markers from non-assistant free text."""
         return strip_hidden_marker_lines(text)
 
+    artifact_groups: dict[str | None, dict[str, dict]] = {}
+    if artifact_loader and chat_id and openwebui_model_id:
+        wanted_by_group: dict[str | None, list[str]] = {}
+        for entry in messages:
+            entry_role = (entry.get("role") or "").lower()
+            if entry_role in {"tool", "user"}:
+                continue
+            entry_content = entry.get("content", "")
+            entry_text = (
+                entry_content
+                if isinstance(entry_content, str)
+                else _extract_plain_text_content(entry_content)
+            )
+            if not contains_marker(entry_text):
+                continue
+            group_id = entry.get("message_id") or _message_identifier(entry)
+            group_markers = wanted_by_group.setdefault(group_id, [])
+            for segment in split_text_by_markers(entry_text):
+                if segment.get("type") == "marker" and segment["marker"] not in group_markers:
+                    group_markers.append(segment["marker"])
+        for group_id, group_markers in wanted_by_group.items():
+            if not group_markers:
+                continue
+            try:
+                artifact_groups[group_id] = await artifact_loader(chat_id, group_id, group_markers)
+            except Exception:
+                logger.warning("Artifact loader failed for chat_id=%s message_id=%s", chat_id, group_id, exc_info=True)
+                artifact_groups[group_id] = {}
+
     missing_artifact_markers: list[str] = []
     for idx, msg in enumerate(messages):
         raw_role = msg.get("role")
@@ -1526,15 +1555,6 @@ async def transform_messages_to_input(
                         return "mp3"
                     return format_map.get(mime.lower(), "mp3")
 
-                def _empty_audio_block() -> dict[str, Any]:
-                    return {
-                        "type": "input_audio",
-                        "input_audio": {
-                            "data": "",
-                            "format": "mp3",
-                        },
-                    }
-
                 def _refuse_audio(why: str, cause: str) -> ImageRefusal:
                     return ImageRefusal(why, cause, subject="audio")
 
@@ -1706,7 +1726,9 @@ async def transform_messages_to_input(
                         f"Audio processing error: {exc}",
                         show_error_message=False,
                     )
-                    return _empty_audio_block()
+                    return _refuse_audio(
+                        "an audio clip could not be read", "audio_conversion_failed",
+                    )
 
             async def _to_input_video(block: dict) -> dict | ImageRefusal | None:
                 """Convert Open WebUI video blocks into Chat Completions video format.
@@ -1780,7 +1802,14 @@ async def transform_messages_to_input(
                             "Enable ALLOW_INSECURE_HTTP + ALLOW_INSECURE_HTTP_HOSTS to allow specific hosts.",
                             show_error_message=True,
                         )
-                        return None
+                        return ImageRefusal(
+                            "served over plain HTTP, which is blocked by security "
+                            "policy; use an https link, or set ALLOW_INSECURE_HTTP "
+                            "and list the host in ALLOW_INSECURE_HTTP_HOSTS",
+                            "insecure_http_video",
+                            severity="error",
+                            subject=loggable_link(url),
+                        )
 
                     if url_scheme(url) == "data":
                         estimated_size_bytes = _inline_payload_bytes(url)
@@ -1817,7 +1846,16 @@ async def transform_messages_to_input(
                             else "Video URL blocked by security policy (private network)",
                             show_error_message=True
                         )
-                        return None
+                        return ImageRefusal(
+                            "not an http or https link, which is blocked by security "
+                            "policy"
+                            if not is_http_or_https_url(url)
+                            else "a link to a private network address, which is "
+                            "blocked by security policy",
+                            "unsafe_video_url",
+                            severity="error",
+                            subject=loggable_link(url),
+                        )
                     else:
                         await pipe._event_emitter_handler._emit_status(
                             event_emitter,
@@ -2219,32 +2257,29 @@ async def transform_messages_to_input(
             orphaned_call_ids: set[str] = set()
             orphaned_output_ids: set[str] = set()
             if artifact_loader and chat_id and openwebui_model_id and markers:
-                try:
-                    db_artifacts = await artifact_loader(chat_id, msg_id, markers)
-                    (
-                        _,
-                        orphaned_call_ids,
-                        orphaned_output_ids,
-                    ) = _classify_function_call_artifacts(db_artifacts)
-                    if orphaned_call_ids:
-                        logger.debug(
-                            "Dropping %d persisted function_call artifact(s) missing outputs (chat_id=%s message_id=%s call_ids=%s)",
-                            len(orphaned_call_ids),
-                            chat_id,
-                            msg_id,
-                            sorted(orphaned_call_ids),
-                        )
-                    if orphaned_output_ids:
-                        logger.warning(
-                            "Dropping %d persisted function_call_output artifact(s) missing calls (chat_id=%s message_id=%s call_ids=%s)",
-                            len(orphaned_output_ids),
-                            chat_id,
-                            msg_id,
-                            sorted(orphaned_output_ids),
-                        )
-                except Exception:
-                    logger.warning("Artifact loader failed for chat_id=%s message_id=%s", chat_id, msg_id, exc_info=True)
-                    db_artifacts = {}
+                batch = artifact_groups.get(msg_id) or {}
+                db_artifacts = {marker: batch[marker] for marker in markers if marker in batch}
+                (
+                    _,
+                    orphaned_call_ids,
+                    orphaned_output_ids,
+                ) = _classify_function_call_artifacts(db_artifacts)
+                if orphaned_call_ids:
+                    logger.debug(
+                        "Dropping %d persisted function_call artifact(s) missing outputs (chat_id=%s message_id=%s call_ids=%s)",
+                        len(orphaned_call_ids),
+                        chat_id,
+                        msg_id,
+                        sorted(orphaned_call_ids),
+                    )
+                if orphaned_output_ids:
+                    logger.warning(
+                        "Dropping %d persisted function_call_output artifact(s) missing calls (chat_id=%s message_id=%s call_ids=%s)",
+                        len(orphaned_output_ids),
+                        chat_id,
+                        msg_id,
+                        sorted(orphaned_output_ids),
+                    )
 
             replay_pending: dict[str, list[str]] = {}
             for segment in segments:

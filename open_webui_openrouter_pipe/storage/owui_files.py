@@ -494,7 +494,7 @@ async def materialize_owui_file_to_temp(
     if allowed_suffixes is not None and contained.suffix.lower() not in allowed_suffixes:
         raise RequiredInternalFileError("A referenced file has an unsupported type.")
 
-    temp_path = copy_to_private_temp(contained, suffix=suffix or contained.suffix)
+    temp_path = await asyncio.to_thread(copy_to_private_temp, contained, suffix=suffix or contained.suffix)
     try:
         if max_bytes > 0 and temp_path.stat().st_size > max_bytes:
             raise RequiredInternalFileError(

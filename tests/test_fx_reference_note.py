@@ -6,6 +6,12 @@ fill whatever room is left and are taken from the tail, so the LAST N survive. T
 said "keeping the most recent" in every case, which is true only of attachments -- and
 when the published limit is zero it said it while keeping nothing at all.
 
+B305 added the count to the same sentence. The number in it has to be the number the
+person can check their own list against: what was OFFERED (every link they listed, plus
+every attachment) minus what was SENT. It used to be computed from the list after it had
+already been sliced, so links past the ceiling were counted as never offered at all: 20
+links said nothing, and 20 links beside 3 attachments said "dropped 3" when 7 went.
+
 Parametrised over the four shapes the trim can take, each asserting the phrase that is
 true of it and the phrase that is not, so a note that always says one thing fails.
 """
@@ -16,7 +22,10 @@ from typing import Any, cast
 
 import pytest
 
-from open_webui_openrouter_pipe.integrations.image import ImageGenerationAdapter
+from open_webui_openrouter_pipe.integrations.image import (
+    _SCHEMA_REFERENCE_CAP,
+    ImageGenerationAdapter,
+)
 from tests.test_image_api_path import _adapter, _KeyPipe, _user_turn_with_images
 
 PIPE_KEY = "openrouter_pipe"

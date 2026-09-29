@@ -17,7 +17,12 @@ Inputs (high level):
 - Optional context for artifact replay:
   - `chat_id`
   - `openwebui_model_id`
-  - `artifact_loader(chat_id, message_id, ulids)` (async)
+  - `artifact_loader(chat_id, message_id, ulids)` (async) — called once per rebuild rather than
+    once per message: the markers of every message sharing a `message_id` are gathered first and
+    asked for together, so a whole history normally costs one call. `message_id` scopes the store's
+    own SELECT, so it is never widened: a history whose messages carry distinct ids still costs one
+    call per id, each asking only for its own group. On the replayed path the messages arrive
+    without an id at all, so the id a batched call passes is `None`.
 - Retention/pruning:
   - `pruning_turns` (from `TOOL_OUTPUT_RETENTION_TURNS`)
   - `replayed_reasoning_refs` (for `PERSIST_REASONING_TOKENS="next_reply"` cleanup)
@@ -129,7 +134,9 @@ marker-shaped line a user typed **on a line of its own** — in any of the three
 the same text inline is preserved. Only whole lines are affected; a marker that is part of a sentence is left alone.
 
 For each marker segment:
-- the pipe looks up the referenced persisted artifact payload (via `artifact_loader` when available),
+- the pipe looks up the referenced persisted artifact payload (via `artifact_loader` when available;
+  the lookups are batched across the whole rebuild, one call per distinct `message_id` rather than one
+  per message),
 - normalizes it to the schema expected by upstream (`normalize_persisted_item`),
 - and appends it directly into the `input` array as a structured item.
 
@@ -141,6 +148,11 @@ For each marker segment:
   - at least one marker in the message
 
 If any of these are missing, marker segments will not be replayed.
+
+The same four preconditions decide whether the batched lookup runs at all, and they are load-bearing for it: a
+fusion member carries no `chat_id` and so never reaches the loader, and the batch is grouped by the same
+`message_id` the store scopes its read by. Artifacts are still classified per message, not over the group, so a
+`function_call` in one message whose output lives in another is dropped as the orphan it is rather than paired.
 
 ---
 
@@ -336,7 +348,7 @@ and carries no `content` for the frontend to write over the prefix with.
 
 ## 7. Failure modes (what happens when artifacts are missing)
 
-- If the artifact loader fails (DB errors, network issues), the pipe logs a warning and continues without replaying artifacts for that assistant message, and the person is told: the store emits a warning notification saying that earlier tool results could not be loaded, so the model did not receive them. The notice names no cause, because the store cannot tell a database blip from a decryption failure, and it promises no retry. It is a notification rather than a status because Open WebUI renders only the newest status (`StatusHistory.svelte` shows `history.at(-1)` and defaults `expand = false`), so a status would replace the line above it instead of saying anything after the fact.
+- If the artifact loader fails (DB errors, network issues), the pipe logs a warning and continues without replaying artifacts for that assistant message — or, since the lookups are batched, for the whole group that one lookup covered, every message sharing its `message_id`, which on the replayed path is the whole history — and the person is told: the store emits a warning notification saying that earlier tool results could not be loaded, so the model did not receive them. The notice names no cause, because the store cannot tell a database blip from a decryption failure, and it promises no retry. It is a notification rather than a status because Open WebUI renders only the newest status (`StatusHistory.svelte` shows `history.at(-1)` and defaults `expand = false`), so a status would replace the line above it instead of saying anything after the fact.
 - If an individual marker cannot be resolved to a payload (for example after key rotation or cleanup), the pipe logs a warning and skips that artifact, and says nothing to the person. That stays log-only on purpose: at this layer a row consumed by `PERSIST_REASONING_TOKENS=next_reply`, a row lost to a rotated key and a row lost to a failed read are one state, and the first is a normal steady state on every turn of every default-configured reasoning conversation. In a temporary chat a later turn's markers resolve to nothing by design, since the pipe keeps none of its rows, and are logged only at debug level. A call that carries no `chat_id` never gets markers at all, so there is nothing for it to resolve.
 
 Operational implications:

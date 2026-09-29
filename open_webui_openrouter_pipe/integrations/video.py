@@ -20,6 +20,8 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 from urllib.parse import urlsplit
 
+import aiohttp
+
 from ..api.gateway.responses_adapter import _record_failed_call
 from ..core.config import _PIPE_METADATA_KEY, Valves, _select_openrouter_http_referer
 from ..core.costs import maybe_dump_costs_snapshot
@@ -2279,26 +2281,32 @@ class VideoGenerationAdapter:
         )
         used: set[tuple[str, str]] = set()
         relay_deadline = time.monotonic() + MAX_RELAY_SECONDS_PER_REQUEST
-        for entry in accepted:
-            if entry.via_file_host:
-                link, host = await self._relay_reference(
-                    valves, entry.blob, filename=entry.filename,
-                    mime=entry.mime, family=entry.family,
-                    deadline=relay_deadline,
+        async with contextlib.AsyncExitStack() as relay_stack:
+            relay_session: Any = None
+            for entry in accepted:
+                if entry.via_file_host:
+                    if relay_session is None:
+                        relay_session = await relay_stack.enter_async_context(
+                            self._pipe._create_http_session(valves)
+                        )
+                    link, host = await self._relay_reference(
+                        valves, entry.blob, filename=entry.filename,
+                        mime=entry.mime, family=entry.family,
+                        deadline=relay_deadline, session=relay_session,
+                    )
+                    encoded.append({"type": entry.kind, entry.kind: {"url": link}})
+                    if vetted is not None:
+                        vetted[link] = True
+                    used.add((entry.family, host))
+                    if relayed is not None:
+                        relayed.add((entry.family, host))
+                    continue
+                encoded.append(
+                    {
+                        "type": entry.kind,
+                        entry.kind: {"url": f"data:{entry.mime};base64,{entry.b64}"},
+                    }
                 )
-                encoded.append({"type": entry.kind, entry.kind: {"url": link}})
-                if vetted is not None:
-                    vetted[link] = True
-                used.add((entry.family, host))
-                if relayed is not None:
-                    relayed.add((entry.family, host))
-                continue
-            encoded.append(
-                {
-                    "type": entry.kind,
-                    entry.kind: {"url": f"data:{entry.mime};base64,{entry.b64}"},
-                }
-            )
         if used and used != disclosed:
             await self._emit_file_host_notice(valves, used, event_emitter)
         return encoded
@@ -2538,7 +2546,7 @@ class VideoGenerationAdapter:
 
     async def _relay_reference(
         self, valves: Any, payload: str | bytes, *, filename: str, mime: str,
-        family: str, deadline: float,
+        family: str, deadline: float, session: aiohttp.ClientSession | None = None,
     ) -> tuple[str, str]:
         if isinstance(payload, (bytes, bytearray)):
             blob = bytes(payload)
@@ -2551,7 +2559,12 @@ class VideoGenerationAdapter:
                 ) from exc
         hosts = self._relay_hosts(valves)
         failures: list[str] = []
-        async with self._pipe._create_http_session(valves) as http:
+        async with contextlib.AsyncExitStack() as stack:
+            http = session
+            if http is None:
+                http = await stack.enter_async_context(
+                    self._pipe._create_http_session(valves)
+                )
             for host in hosts:
                 try:
                     link = await relay_to_public_url(
@@ -2948,7 +2961,13 @@ class VideoGenerationAdapter:
                         ):
                             try:
                                 frame = await extract_frame(
-                                    tmp_path, target="at_timestamp", timestamp_seconds=0.0,
+                                    tmp_path,
+                                    target=(
+                                        "at_timestamp"
+                                        if reused_frame_index == "first"
+                                        else "last_frame"
+                                    ),
+                                    timestamp_seconds=0.0,
                                     fallback_to_last_on_overshoot=True,
                                     reused_frame_index=reused_frame_index,
                                     logger=self.logger,

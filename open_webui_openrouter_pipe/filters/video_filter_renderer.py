@@ -1149,7 +1149,9 @@ def _render_purpose_built_fields(spec: VideoFilterSpec) -> list[str]:
             )
         )
     if spec.supports_frames:
-        modes = ["auto", "none", "first_only"]
+        modes = ["auto", "none"]
+        if "first_frame" in spec.frame_types:
+            modes.append("first_only")
         if spec.supports_first_last:
             modes.append("first_last")
         literals = _literal_union(tuple(modes))
@@ -1515,18 +1517,19 @@ def _render_frame_block(spec: VideoFilterSpec) -> str:
                     }}
                 )'''
         else:
-            image_select_block = '''            if frame_mode != "none" and image_items:
+            single_type = repr(spec.frame_types[0])
+            image_select_block = f'''            if frame_mode != "none" and image_items:
                 item = image_items[0]
                 claimed_ids.add(self._file_id(item))
                 frame_images.append(
-                    {
+                    {{
                         "id": self._file_id(item),
                         "name": item.get("name") or "",
                         "size": self._to_int(item.get("size")) or 0,
                         "content_type": self._content_type(item),
-                        "frame_type": "first_frame",
+                        "frame_type": {single_type},
                         "attachment_index": _attmap.get(self._file_id(item), 0),
-                    }
+                    }}
                 )'''
 
     image_classifier_block = (

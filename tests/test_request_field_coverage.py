@@ -87,7 +87,10 @@ def test_no_field_is_both_reached_and_unreachable(kind, routes, gaps):
     assert all(text.strip() for text in (*routes.values(), *gaps.values())), kind
 
 
-@pytest.mark.parametrize(("kind", "gaps"), [("video", VIDEO_FIELD_GAPS)])
+@pytest.mark.parametrize(
+    ("kind", "gaps"),
+    [("image", IMAGE_FIELD_GAPS), ("video", VIDEO_FIELD_GAPS)],
+)
 def test_every_gap_carries_a_reason_long_enough_to_be_one(kind, gaps):
     """A one-word reason is a label, not an explanation, and the point of the list is
     that a reader can tell a decision from an oversight without reading the code."""

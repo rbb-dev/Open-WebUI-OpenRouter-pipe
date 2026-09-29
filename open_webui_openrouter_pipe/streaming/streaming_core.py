@@ -1294,7 +1294,7 @@ class StreamingHandler:
                     append = ""
                 elif candidate.startswith(current):
                     append = candidate[len(current) :]
-                elif current.startswith(candidate):
+                elif current.startswith(candidate) or current.endswith(candidate):
                     append = ""
                 else:
                     append = candidate if allow_misaligned else ""
@@ -1654,6 +1654,7 @@ class StreamingHandler:
 
         try:
             max_loops = max(1, int(valves.MAX_FUNCTION_CALL_LOOPS))
+            input_is_sanitized = False
             for loop_index in range(max_loops + 2):
                 if loop_index > max_loops and not loop_limit_reached:
                     ran_out = True
@@ -1672,9 +1673,11 @@ class StreamingHandler:
                     model_for_cache = body.model
                     event_iter = event_source
                 else:
-                    _replay_budget = _sanitize_request_input(self._pipe, body)
-                    await _warn_if_futile(_replay_budget)
-                    await _report_omissions(_replay_budget, _REPLAY_DROPPED_OPENING)
+                    if not input_is_sanitized:
+                        _replay_budget = _sanitize_request_input(self._pipe, body)
+                        await _warn_if_futile(_replay_budget)
+                        await _report_omissions(_replay_budget, _REPLAY_DROPPED_OPENING)
+                        input_is_sanitized = True
                     api_model_override = getattr(body, "api_model", None)
                     model_for_cache = api_model_override if isinstance(api_model_override, str) else body.model
                     items = getattr(body, "input", None)
@@ -3015,6 +3018,7 @@ class StreamingHandler:
                     note_model_activity()
                     if continuation_input_items:
                         body.input.extend(continuation_input_items)
+                        input_is_sanitized = False
                     if reasoning_count:
                         self.logger.debug(
                             "🧠 Preserving %d reasoning item(s) with encrypted_content for tool continuation",
@@ -3033,6 +3037,7 @@ class StreamingHandler:
                     _replay_budget = _sanitize_request_input(self._pipe, body)
                     await _warn_if_futile(_replay_budget)
                     await _report_omissions(_replay_budget, _REPLAY_DROPPED_OPENING)
+                    input_is_sanitized = True
 
                 self.logger.debug("📞 Found %d function_call items in response", len(call_items))
                 function_outputs: list[dict[str, Any]] = []
@@ -3498,9 +3503,11 @@ class StreamingHandler:
                         if loop_index > max_loops:
                             break
                         body.input.extend(budgeted_outputs)
+                        input_is_sanitized = False
                         shipped_budget = _sanitize_request_input(self._pipe, body)
                         await _warn_if_futile(shipped_budget)
                         await _report_omissions(shipped_budget, _REPLAY_DROPPED_OPENING)
+                        input_is_sanitized = True
                     elif invalid_call_outputs:
                         if not tool_loops_executed:
                             assistant_len_before_tool_loops = len(assistant_message)
@@ -3511,9 +3518,11 @@ class StreamingHandler:
                                 cancel_thinking()
                             self.logger.debug("Received tool result\n%s", _tool_result_for_log(output))
                         body.input.extend(all_function_outputs)
+                        input_is_sanitized = False
                         shipped_budget = _sanitize_request_input(self._pipe, body)
                         await _warn_if_futile(shipped_budget)
                         await _report_omissions(shipped_budget, _REPLAY_DROPPED_OPENING)
+                        input_is_sanitized = True
                     else:
                         break
                 else:

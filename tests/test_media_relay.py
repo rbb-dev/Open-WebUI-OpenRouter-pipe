@@ -718,7 +718,7 @@ def _adapter_with_files(records, reads, uploads):
     pipe._file_gateway.read_file_record_base64 = _read
     adapter = VideoGenerationAdapter(pipe=pipe, logger=logging.getLogger("relay-order"))
 
-    async def _relay(self, valves, b64, *, filename, mime, family, deadline):
+    async def _relay(self, valves, b64, *, filename, mime, family, deadline, session=None):
         uploads.append((filename, mime, family))
         return f"https://files.example/{family}.bin", "litterbox"
 
