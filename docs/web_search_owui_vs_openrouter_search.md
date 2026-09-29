@@ -11,7 +11,7 @@ Open WebUI has a built-in **Web Search** feature. Separately, OpenRouter provide
 ### 1) Open WebUI Web Search (OWUI-native)
 
 - Open WebUI's own web search, configured in Open WebUI's settings (search engine, API keys, etc.).
-- By default (native function calling), Open WebUI hands the model its `search_web` and `fetch_url` tools, and the model decides when to search. In the pipe's default `Pipeline` tool mode, the pipe runs them. Search hits are not shown as sources (Open WebUI's own chats do not show them either), but a page the model fetches is.
+- By default (native function calling), Open WebUI hands the model its `search_web` and `fetch_url` tools, and the model decides when to search. In the pipe's default `Pipeline` tool mode, the pipe runs them. Search hits are not shown as sources (Open WebUI's own chats do not show them either), but a page the model fetches is — unless the model's `Citations` box is unticked, which withholds a fetched page's source as well.
 - Only for a model set to legacy function calling does Open WebUI search **before** the model is called, attaching the results to the request as context. That form needs no tool support from the model.
 
 ### 2) OpenRouter Web Search (server tool)

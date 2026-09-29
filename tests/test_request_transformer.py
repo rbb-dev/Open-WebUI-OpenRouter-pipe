@@ -15,13 +15,12 @@ HTTPS-only defaults apply to SSRF-related URL handling; HTTP is allowlisted only
 from __future__ import annotations
 
 import asyncio
+import ast
 import base64
 import inspect
 import json
 import struct
-import sys
 import zlib
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 from unittest.mock import AsyncMock, MagicMock, Mock, patch

@@ -8,7 +8,8 @@ import importlib.metadata
 import sys
 import time
 import types
-from functools import partial
+from functools import lru_cache, partial
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -1319,8 +1320,17 @@ async def test_apply_rev_recheck_trips_after_download(svc, wired, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_apply_rev_recheck_trips_after_loader(svc, wired, monkeypatch):
+    """The revision guard the loader sits between, and what the worker is left holding.
+
+    The `wired` loader double rebinds no module, so the module-state assertions below
+    are about the `sys.modules` entry the `flat_module` fixture put there and which the
+    refusal must not disturb -- the arm whose loader is honest, and therefore the one
+    that installs a replacement, lives beside this one.
+    """
     import open_webui.utils.plugin as owp
 
+    seeded = sys.modules[f"function_{PID}"]
+    meta_path_before = list(sys.meta_path)
     async def _load_and_bump(fid, content=None):
         wired.events.append("loader")
         wired.functions.row.updated_at += 7
@@ -1332,6 +1342,10 @@ async def test_apply_rev_recheck_trips_after_loader(svc, wired, monkeypatch):
         await svc.apply({"rev": rev}, actor="admin", actor_id="u1", request=_request())
     assert exc.value.code == "stale_rev"
     assert not any("content" in u for u in wired.functions.updates)
+    assert sys.modules[f"function_{PID}"] is seeded, (
+        "the post-loader refusal disturbed the module this worker was serving"
+    )
+    assert sys.meta_path == meta_path_before
 
 
 @pytest.mark.asyncio
@@ -2013,7 +2027,7 @@ async def test_null_download_url_asset_treated_missing(svc, fake_functions, fake
 async def test_commit_inflight_blocks_second_apply_after_cancel(svc, wired, monkeypatch):
     release = asyncio.Event()
 
-    async def _slow_commit(content, rev, request, actor, from_version):
+    async def _slow_commit(content, rev, request, actor, from_version, actor_user=None):
         await release.wait()
         return {"ok": True, "from_version": from_version, "to_version": "2.7.0"}
 
@@ -2039,7 +2053,7 @@ async def test_commit_inflight_blocks_second_apply_after_cancel(svc, wired, monk
 async def test_commit_failure_after_cancel_recorded(svc, wired, monkeypatch):
     release = asyncio.Event()
 
-    async def _failing_commit(content, rev, request, actor, from_version):
+    async def _failing_commit(content, rev, request, actor, from_version, actor_user=None):
         await release.wait()
         raise us.UpdateError("stale_rev", "row changed mid-commit")
 
@@ -2894,3 +2908,138 @@ async def test_an_undecodable_valve_blob_is_not_read_as_no_override(
         "downgrade with nothing said leaves the operator with a refused action and no "
         "cause; a warning on a healthy row is a false alarm."
     )
+
+
+# ── H656-2: a refused content write leaves the freshly loaded code installed and the
+# ── pipe dead. The restore is what makes the rebuild possible; the rebuild is what
+# ── makes the next chat work. Restoring `sys.modules` alone leaves a dead instance.
+#
+# THE LOADER STUB. It may mimic only two of Open WebUI's loader's own effects --
+# `sys.modules[module_name] = module` and `exec(content, module.__dict__)` -- because
+# those two are what `load_function_module_by_id` itself does. It must NOT fabricate
+# the bundle's `open_webui_openrouter_pipe*` alias keys or a `sys.meta_path` finder:
+# those are body code inside the bundle that only runs when the bundle is really exec'd,
+# so a stub that pre-creates them is manufacturing its own premise and every alias
+# assertion written against it is vacuous. Only a test that drives the REAL loader with
+# real bundle content can fail a restore that touches just `function_<PID>`.
+#
+# `OWUI_PIPE_TEST_MODE` IS NOT SET FOR ANY TEST IN THIS BLOCK. `Pipe.__init__` returns
+# early at that check, BEFORE `_attach_to_lifecycle_registry()`, so no instance ever
+# registers and `close_when_idle` is never called: every one of these tests would pass
+# for the wrong reason.
+
+
+class _LivablePipe:
+    """The minimum a revived instance must be for the property: `id` and `valves`.
+
+    `get_function_module_from_cache`'s cache-hit early return applies NO valves, so a
+    revived instance built with factory defaults would serve a chat with the wrong
+    settings. The fix mirrors `functions.py` and reads them off the pre-attempt row.
+
+    Its own `vars(revived.valves) == vars(serving.valves)` assertion CANNOT see the
+    difference between that fix and a plain `revived.valves = <the row's dict>`:
+    `_FakeFunctions.valves_row` defaults to `None`, so the branch that binds is never
+    taken and the revived instance keeps the `SimpleNamespace` this constructor built.
+    The nodes that set `valves_row` are the ones that see it, and they stand this class
+    up beside `_valved_old_module`'s, which declares a real model.
+    """
+
+    _next_serial = 0
+
+    def __init__(self, pipe_id=PID, valves=None, marker="revived"):
+        type(self)._next_serial += 1
+        self.id = pipe_id
+        self.valves = valves if valves is not None else _valves()
+        self.marker = marker
+        self.serial = type(self)._next_serial
+        self._draining = False
+        self._closing = False
+        self.served = 0
+
+    def pipe(self, *a, **kw):
+        if self._draining or self._closing:
+            raise RuntimeError(
+                "This pipe instance has been superseded by a newer version; please retry."
+            )
+        self.served += 1
+        return {"ok": True, "marker": self.marker, "serial": self.serial}
+
+
+def _serving_pipe(monkeypatch, *, in_cache=True, content=INSTALLED_CONTENT):
+    """The instance the worker is serving before the update, plus its cache entry.
+
+    `old_module.Pipe` is a CONSTRUCTOR, not a factory for a fixed object, because the
+    revival under test is a construction: `Pipe.__init__` ends in
+    `_attach_to_lifecycle_registry()`, which swaps the new instance in for the same
+    valve-derived id and then calls `close_when_idle()` on its predecessor. That is the
+    whole mechanism by which the revived instance un-drains the dead one, and a stub
+    returning a fixed object would let the test pass without it ever running.
+    """
+    serving = _LivablePipe(marker="serving")
+
+    def _Pipe():
+        revived = _LivablePipe(marker="revived")
+        serving._draining = True
+        return revived
+
+    old_module = types.ModuleType(f"function_{PID}")
+    setattr(old_module, "Pipe", _Pipe)
+    monkeypatch.setitem(sys.modules, f"function_{PID}", old_module)
+    req = _request()
+    if in_cache:
+        import open_webui.utils.plugin as owp
+
+        owp.get_functions_cache(req)[PID] = serving
+        owp.get_function_contents_cache(req)[PID] = content
+    return serving, old_module, req
+
+
+@lru_cache(maxsize=1)
+def _b358_revived_valves() -> Any:
+    """A subclass of the pipe's own (plugin-extended) valve model, plus one row-only field."""
+    from open_webui_openrouter_pipe.pipe import Pipe
+
+    class _RevivedValves(Pipe.Valves):
+        B358_ROW_ONLY: int = 5
+
+    return _RevivedValves
+
+
+def _valved_old_module(monkeypatch, *, in_cache=True):
+    """The pre-attempt module, whose `Pipe` declares the extended `Valves` class.
+
+    Same shape as `_serving_pipe`: the cache-hit early return applies no valves, so the
+    revival under test is a construction and the stand-in has to be a class whose
+    `__init__` really builds its valve model.
+    """
+    valves_cls = _b358_revived_valves()
+    serving = _LivablePipe(marker="serving")
+
+    class _ValvedPipe:
+        Valves = valves_cls
+
+        def __init__(self, marker="revived"):
+            self.id = PID
+            self.marker = marker
+            self.valves = self.Valves()
+            self.served = 0
+
+        def pipe(self, *a, **kw):
+            self.served += 1
+            return {"ok": True, "marker": self.marker}
+
+    def _Pipe():
+        revived = _ValvedPipe()
+        serving._draining = True
+        return revived
+
+    old_module = types.ModuleType(f"function_{PID}")
+    setattr(old_module, "Pipe", _Pipe)
+    monkeypatch.setitem(sys.modules, f"function_{PID}", old_module)
+    req = _request()
+    if in_cache:
+        import open_webui.utils.plugin as owp
+
+        owp.get_functions_cache(req)[PID] = serving
+        owp.get_function_contents_cache(req)[PID] = INSTALLED_CONTENT
+    return serving, req, valves_cls

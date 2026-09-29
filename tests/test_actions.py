@@ -572,13 +572,13 @@ class _FakeUpdateService:
             raise self.raise_error
         return {"enabled": True, "update_available": True, "rev": 7}
 
-    async def apply(self, args, *, actor, actor_id, request):
+    async def apply(self, args, *, actor, actor_id, request, actor_user=None):
         self.calls.append(("apply", {"args": dict(args), "actor": actor, "actor_id": actor_id, "request": request}))
         if self.raise_error:
             raise self.raise_error
         return {"ok": True, "from_version": "a", "to_version": "b"}
 
-    async def restore(self, args, *, actor, actor_id, request):
+    async def restore(self, args, *, actor, actor_id, request, actor_user=None):
         self.calls.append(("restore", {"args": dict(args), "request": request}))
         if self.raise_error:
             raise self.raise_error
@@ -805,6 +805,7 @@ async def test_a_row_open_webui_cannot_read_blocks_the_write(fake_functions, cap
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("in_memory_enable", [True, False])
+@pytest.mark.parametrize("valves_shape", ["simple-namespace", "pipe-valves"])
 @pytest.mark.parametrize(
     ("outcome", "readable"),
     [
@@ -815,7 +816,7 @@ async def test_a_row_open_webui_cannot_read_blocks_the_write(fake_functions, cap
     ],
 )
 async def test_the_real_service_reports_an_unreadable_valve_read(
-    monkeypatch, in_memory_enable, outcome, readable
+    monkeypatch, in_memory_enable, valves_shape, outcome, readable
 ):
     """Drives the real `_row_valves_checked` across every outcome the store produces.
 
@@ -834,9 +835,17 @@ async def test_the_real_service_reports_an_unreadable_valve_read(
 
     Parametrised over the in-memory value because that is the trap: with an in-memory
     True and an unreadable store, the old code returned True and let the action run.
+
+    Parametrised over the valves SHAPE for the same reason one step further down. A
+    `SimpleNamespace` declares no fields, so the reader falls back to `getattr` and
+    cannot tell a stored row apart from this worker's memory at all -- which is why the
+    whole table used to certify a stale in-memory seed green on the real class. The
+    `pipe-valves` arm is the one production runs on: an absent key there resolves to
+    the field's declared default, and only `SimpleNamespace` falls back to memory.
     """
     import open_webui.models.functions as owf
 
+    from open_webui_openrouter_pipe import Pipe
     from open_webui_openrouter_pipe.plugins.pipe_dashboard.update_service import UpdateService
 
     class _Store:
@@ -850,11 +859,14 @@ async def test_the_real_service_reports_an_unreadable_valve_read(
             return {"PIPE_DASHBOARD_UPDATE_ENABLE": True}
 
     monkeypatch.setattr(owf, "Functions", _Store())
-    valves = SimpleNamespace(
-        PIPE_DASHBOARD_UPDATE_ENABLE=in_memory_enable,
-        PIPE_DASHBOARD_UPDATE_AUTO=False,
-        PIPE_DASHBOARD_UPDATE_REPO="",
-    )
+    if valves_shape == "pipe-valves":
+        valves = Pipe.Valves(**{"PIPE_DASHBOARD_UPDATE_ENABLE": in_memory_enable})
+    else:
+        valves = SimpleNamespace(
+            PIPE_DASHBOARD_UPDATE_ENABLE=in_memory_enable,
+            PIPE_DASHBOARD_UPDATE_AUTO=False,
+            PIPE_DASHBOARD_UPDATE_REPO="",
+        )
     pipe = SimpleNamespace(id="openrouter", valves=valves)
 
     svc = UpdateService.__new__(UpdateService)
@@ -870,10 +882,18 @@ async def test_the_real_service_reports_an_unreadable_valve_read(
         "lets an unverified in-memory True authorise an update, or denies every update "
         "on a perfectly healthy store."
     )
-    expected = True if outcome == "returns-a-value" else in_memory_enable
-    assert merged.get("PIPE_DASHBOARD_UPDATE_ENABLE") is expected, (
-        "the merged dict should carry the stored value where there is one and the "
-        "in-memory fallback otherwise; only the flag says whether it is verified"
+    fields = getattr(type(valves), "model_fields", None) or {}
+    key = "PIPE_DASHBOARD_UPDATE_ENABLE"
+    if key in fields:
+        absent = fields[key].get_default(call_default_factory=True)
+    else:
+        absent = in_memory_enable
+    expected = True if outcome == "returns-a-value" else absent
+    assert merged.get(key) is expected, (
+        f"{valves_shape}: the merged dict answers {merged.get(key)!r} for a key the row "
+        f"does not carry; a stored row is absent-means-default, and only a valve object "
+        f"that declares no fields at all may fall back to the worker's own copy "
+        f"(expected {expected!r})"
     )
 
 

@@ -113,7 +113,7 @@ Why:
 
 * OpenRouter/provider support can reference `user` and/or `metadata.*` when reporting abuse or asking you to investigate.
 * Encrypted on-disk session log archives give operators a durable record of what happened for a specific request, without needing to run the whole system at `LOG_LEVEL=DEBUG`.
-* Archives are stored using the same IDs (`<user_id>/<chat_id>/<message_id>.zip`) so they’re directly searchable from the identifiers you already see in Open WebUI / provider reports.
+* Archives are stored using the same IDs (`<user_id>/<chat_id>/<message_id>.zip`), so for an ID that needs no escaping on disk — a uuid, an Open WebUI message id — they are directly searchable from the identifiers you already see in Open WebUI / provider reports. An ID containing anything outside `[0-9A-Za-z._-]` (a `channel:` chat id, or any caller-minted message id) keeps a sanitized stem plus a short digest, so match it on the archive's `meta.json` under `ids` instead, which carries the exact ID.
 
 This is optional: you can keep request identifiers enabled without storing archives, and you can store archives purely as local backups even if you choose not to send identifiers to OpenRouter.
 

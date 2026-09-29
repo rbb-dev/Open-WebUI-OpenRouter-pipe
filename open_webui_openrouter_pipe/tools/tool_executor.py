@@ -33,7 +33,7 @@ from ..core.warn_latch import warn_level
 
 _OWUI_RESULT_WARN_COOLDOWN_S = 300.0
 _OWUI_RESULT_WARN_CAP = 256
-from ..storage.owui_files import is_linkable_chat
+from ..storage.owui_files import is_temporary_chat
 from ..storage.persistence import generate_item_id
 from .tool_schema import _advertised_root_params
 
@@ -300,6 +300,18 @@ async def _decode_data_entry(payload: str) -> bytes:
         raw += base64.b64decode(payload[offset : offset + _DATA_ENTRY_DECODE_QUANTUM], validate=True)
         await asyncio.sleep(0)
     return bytes(raw)
+
+
+def _entry_mime_type(url: str) -> str:
+    parsed = split_base64_data_url(url) if url else None
+    header = parsed[0] if parsed is not None else ""
+    mime_type = header.partition(";")[0].strip().removeprefix("data:").strip()
+    return mime_type or "application/octet-stream"
+
+
+def _entry_file_kind(entry: Any) -> str:
+    extension = _DATA_ENTRY_EXTENSIONS.get(_entry_mime_type(entry_data_url(entry)), ".bin")
+    return extension.lstrip(".") or "binary"
 
 
 def _idle_allowance(
@@ -924,10 +936,11 @@ class ToolExecutor:
 
 
     async def _tool_pictures_safe(
-        self, files: list[dict[str, Any]], context: _ToolExecutionContext
+        self, files: list[dict[str, Any]], context: _ToolExecutionContext, *, tool_name: str = ""
     ) -> tuple[list[str], list[dict[str, Any]]]:
         pictures: list[str] = []
         shown: list[dict[str, Any]] = []
+        unfiled: str | None = None
         for entry in files:
             url = entry.get("url") if isinstance(entry, dict) else None
             if isinstance(entry, dict) and entry.get("type") == "image" and isinstance(url, str) and url.startswith("data:"):
@@ -939,11 +952,25 @@ class ToolExecutor:
                     pictures.append(filed)
                 elif filed is not None:
                     shown.append(filed)
+                else:
+                    unfiled = unfiled or _entry_file_kind(entry)
                 continue
             shown.append(entry)
             if isinstance(entry, dict) and entry.get("type") == "image" and isinstance(url, str) and url:
                 pictures.append(url)
+        if unfiled:
+            await self._notify_unfiled_tool_file_safe(context, unfiled, tool_name)
         return pictures, shown
+
+    async def _notify_unfiled_tool_file_safe(
+        self, context: _ToolExecutionContext, kind: str, tool_name: str
+    ) -> None:
+        named = tool_name or "a tool"
+        await self._pipe._event_emitter_handler._emit_notification(
+            context.event_emitter,
+            f"{named} returned a {kind} file that was not stored, so it is not attached to this message.",
+            level="warning",
+        )
 
     async def _stored_data_entry_safe(
         self, entry: dict[str, Any], context: _ToolExecutionContext
@@ -952,15 +979,13 @@ class ToolExecutor:
         if not url:
             return None
         metadata = context.metadata or {}
-        if not is_linkable_chat(metadata.get("chat_id")):
+        if is_temporary_chat(metadata.get("chat_id")):
             return None
         parsed = split_base64_data_url(url)
         if parsed is None:
             return None
-        header, payload = parsed
-        mime_type = header.partition(";")[0].strip().removeprefix("data:").strip()
-        if not mime_type:
-            mime_type = "application/octet-stream"
+        _header, payload = parsed
+        mime_type = _entry_mime_type(url)
         if not self._pipe._file_gateway.validate_base64_size(payload):
             return None
         try:
@@ -1040,10 +1065,6 @@ class ToolExecutor:
     def _can_batch_tool_calls(self, first: _QueuedToolCall, candidate: _QueuedToolCall) -> bool:
         """Check if two tool calls can be batched together."""
         if first.call.get("name") != candidate.call.get("name"):
-            return False
-
-        dep_keys = {"depends_on", "_depends_on", "sequential", "no_batch"}
-        if any(key in first.args or key in candidate.args for key in dep_keys):
             return False
 
         first_id = first.call.get("call_id")

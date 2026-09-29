@@ -422,6 +422,7 @@ _LEGACY_VIDEO_FILTER_ID = "openrouter_video_openrouter_video"
 _WARMUP_RETRY_SECONDS = 300.0
 _warned_user_valves: set[str] = set()
 _warned_timing_file: set[str] = set()
+_SEMAPHORE_NOT_GIVEN: Any = object()
 
 
 def _admission_bound(max_concurrent_requests: int, queue_maxsize: int) -> int:
@@ -522,6 +523,13 @@ class Pipe:
         default=None,
     )
     _tool_pool: concurrent.futures.ThreadPoolExecutor | None = None
+    _enforcement_memo: tuple[
+        tuple[Any, ...],
+        frozenset[str],
+        frozenset[str],
+        frozenset[str],
+        dict[str, str],
+    ] | None = None
 
     @timed
     def __init__(self):
@@ -739,6 +747,8 @@ class Pipe:
     @timed
     def _maybe_start_startup_checks(self) -> None:
         """Schedule background warmup checks once an event loop is available."""
+        if getattr(self, "_closed", False):
+            return
         if self._startup_checks_complete:
             return
         if self._startup_task and not self._startup_task.done():
@@ -1004,6 +1014,8 @@ class Pipe:
     @timed
     def _maybe_start_redis(self) -> None:
         """Initialize Redis cache if enabled."""
+        if getattr(self, "_closed", False):
+            return
         self._refresh_redis_candidate()
         if not self._redis_allowed or self._redis_enabled:
             return
@@ -1033,6 +1045,8 @@ class Pipe:
 
     @timed
     def _maybe_start_cleanup(self) -> None:
+        if getattr(self, "_closed", False):
+            return
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -1863,17 +1877,7 @@ class Pipe:
                 timing_holder=timing_tokens,
             )
             if inspect.isasyncgen(result):
-                wrapped = self._wrap_stream_with_counter_release(result, state)
-
-                def _finalize_if_unowned(
-                    _ref: object = None, p: Pipe = self, st: dict = state
-                ) -> None:
-                    if st.get("owned"):
-                        return
-                    Pipe._release_stream_counter(p, st)
-
-                weakref.finalize(wrapped, _finalize_if_unowned)
-                return wrapped
+                return self._wrap_stream_with_counter_release(result)
             return result
         finally:
             CONTINUED_REPLY.reset(continued_token)
@@ -1894,7 +1898,6 @@ class Pipe:
     async def _wrap_stream_with_counter_release(
         self,
         inner: AsyncGenerator[dict[str, Any] | str, None],
-        state: dict,
     ) -> AsyncGenerator[dict[str, Any] | str, None]:
         async with contextlib.aclosing(inner):
             async for item in inner:
@@ -2880,7 +2883,8 @@ class Pipe:
                     continue
                 semaphore = type(job.pipe)._global_semaphore
                 if semaphore is None:
-                    job.future.set_exception(RuntimeError("Semaphore unavailable"))
+                    if not job.future.done():
+                        job.future.set_exception(RuntimeError("Semaphore unavailable"))
                     queue.task_done()
                     continue
                 try:
@@ -2896,7 +2900,9 @@ class Pipe:
                 from .core.timing_logger import set_timing_context as _set_job_tc
                 _set_job_tc(job.request_id, bool(job.valves.ENABLE_TIMING_LOG))
                 try:
-                    task = asyncio.create_task(job.pipe._execute_pipe_job(job, semaphore_held=True))
+                    task = asyncio.create_task(
+                        job.pipe._execute_pipe_job(job, semaphore_held=True, semaphore=semaphore)
+                    )
                 finally:
                     _clear_job_tc()
 
@@ -2924,13 +2930,20 @@ class Pipe:
 
 
     @timed
-    async def _execute_pipe_job(self, job: _PipeJob, semaphore_held: bool = False) -> None:
+    async def _execute_pipe_job(
+        self,
+        job: _PipeJob,
+        semaphore_held: bool = False,
+        semaphore: Any = _SEMAPHORE_NOT_GIVEN,
+    ) -> None:
         """Isolate per-request context, HTTP session, and semaphore slot."""
         if job.counter_state is not None:
             job.counter_state["tail"] = True
-        semaphore = type(self)._global_semaphore
+        if semaphore is _SEMAPHORE_NOT_GIVEN:
+            semaphore = type(self)._global_semaphore
         if semaphore is None:
-            job.future.set_exception(RuntimeError("Semaphore unavailable"))
+            if not job.future.done():
+                job.future.set_exception(RuntimeError("Semaphore unavailable"))
             if job.counter_state is not None:
                 Pipe._release_stream_counter(job.pipe, job.counter_state)
             return
@@ -3420,6 +3433,7 @@ class Pipe:
                 content=join_answer_and_card("", markdown),
             )
 
+        available_models: list[dict[str, Any]] | None = None
         try:
             await OpenRouterModelRegistry.ensure_loaded(
                 session,
@@ -3492,15 +3506,47 @@ class Pipe:
                 exc_info=True,
             )
         else:
-            available_models = OpenRouterModelRegistry.list_models()
-        catalog_norm_ids = {m["norm_id"] for m in available_models if isinstance(m, dict) and m.get("norm_id")}
-        allowlist_models = self._select_models(valves.MODEL_ID, available_models)
-        allowlist_models, virtual_variant_bases = self._expand_variants_for_enforcement(
-            allowlist_models, valves, available_models,
+            available_models = None
+
+        enforcement_key = (
+            OpenRouterModelRegistry._models,
+            OpenRouterModelRegistry._specs,
+            OpenRouterModelRegistry._ZDR_KEY.get(),
+            valves.MODEL_ID,
+            valves.VARIANT_MODELS,
+            valves.FREE_MODEL_FILTER,
+            valves.TOOL_CALLING_FILTER,
+            valves.ZDR_MODELS_ONLY,
         )
-        allowlist_norm_ids = {m["norm_id"] for m in allowlist_models if isinstance(m, dict) and m.get("norm_id")}
-        enforced_models = self._apply_model_filters(allowlist_models, valves)
-        enforced_norm_ids = {m["norm_id"] for m in enforced_models if isinstance(m, dict) and m.get("norm_id")}
+        memo = self._enforcement_memo
+        if (
+            memo is not None
+            and memo[0][0] is enforcement_key[0]
+            and memo[0][1] is enforcement_key[1]
+            and memo[0][2:] == enforcement_key[2:]
+        ):
+            catalog_norm_ids = set(memo[1])
+            allowlist_norm_ids = set(memo[2])
+            enforced_norm_ids = set(memo[3])
+            virtual_variant_bases = dict(memo[4])
+        else:
+            if available_models is None:
+                available_models = OpenRouterModelRegistry.list_models()
+            catalog_norm_ids = {m["norm_id"] for m in available_models if isinstance(m, dict) and m.get("norm_id")}
+            allowlist_models = self._select_models(valves.MODEL_ID, available_models)
+            allowlist_models, virtual_variant_bases = self._expand_variants_for_enforcement(
+                allowlist_models, valves, available_models,
+            )
+            allowlist_norm_ids = {m["norm_id"] for m in allowlist_models if isinstance(m, dict) and m.get("norm_id")}
+            enforced_models = self._apply_model_filters(allowlist_models, valves)
+            enforced_norm_ids = {m["norm_id"] for m in enforced_models if isinstance(m, dict) and m.get("norm_id")}
+            self._enforcement_memo = (
+                enforcement_key,
+                frozenset(catalog_norm_ids),
+                frozenset(allowlist_norm_ids),
+                frozenset(enforced_norm_ids),
+                dict(virtual_variant_bases),
+            )
 
         features = _extract_feature_flags(__metadata__)
         user_id = str(__user__.get("id") or __metadata__.get("user_id") or "")
@@ -4072,7 +4118,7 @@ class Pipe:
                     context=context,
                     is_direct_tool=bool(item.tool_cfg.get("direct")),
                 )
-                pictures, files = await executor._tool_pictures_safe(files, context)
+                pictures, files = await executor._tool_pictures_safe(files, context, tool_name=tool_name)
                 await executor._emit_terminal_events_safe(
                     origin_name, _terminal_event_args(), text, context.event_emitter
                 )

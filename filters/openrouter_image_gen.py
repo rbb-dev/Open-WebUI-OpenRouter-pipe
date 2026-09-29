@@ -182,7 +182,7 @@ class Filter:
         if user_valves is None:
             user_valves = self.UserValves()
 
-        params: dict[str, Any] = {"model": self.valves.IMAGE_GENERATION_MODEL}
+        params: dict[str, Any] = {"model": (self.valves.IMAGE_GENERATION_MODEL or "").strip() or 'openai/gpt-5-image-mini'}
         if self.valves.IMAGE_GENERATION_MODERATION != 'auto':
             params["moderation"] = self.valves.IMAGE_GENERATION_MODERATION
         wanted = (user_valves.IMAGE_QUALITY or "").strip()

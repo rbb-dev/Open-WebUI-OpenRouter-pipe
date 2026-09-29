@@ -1679,6 +1679,8 @@ class RequestOrchestrator:
         __tools__ = exec_registry
         if isinstance(__metadata__, dict) and exposed_to_origin:
             __metadata__["_pipe_exposed_to_origin"] = exposed_to_origin
+        if isinstance(__metadata__, dict) and builtin_ask_user_names:
+            __metadata__["_pipe_builtin_ask_user_names"] = frozenset(builtin_ask_user_names)
 
         context = self._pipe._TOOL_CONTEXT.get()
         if context is not None and _reaches_display_file(exposed_to_origin):

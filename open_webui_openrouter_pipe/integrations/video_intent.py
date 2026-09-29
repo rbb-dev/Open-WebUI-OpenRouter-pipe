@@ -130,9 +130,12 @@ def resolve_intent_user_setting(
 def _admin_intent_floor(valves: Any, admin_field: str, default: Any) -> Any:
     return getattr(valves, admin_field, default)
 
-_INTENT_BLOCK_REGION_RE = re.compile(
-    r"\[openrouter:v1:" + re.escape(INTENT_BLOCK_START) + r":[^\]]+\]: #"
-    r".*?"
+_INTENT_START_RE = re.compile(
+    r"\[openrouter:v1:" + re.escape(INTENT_BLOCK_START) + r":[^\]]+\]: #",
+    re.DOTALL,
+)
+
+_INTENT_END_RE = re.compile(
     r"\[openrouter:v1:" + re.escape(INTENT_BLOCK_END) + r":[^\]]+\]: #\s*\n?",
     re.DOTALL,
 )
@@ -231,6 +234,17 @@ class VideoIntentResult:
 # History hygiene
 # -----------------------------------------------------------------------------
 
+def first_intent_block_region(content: str) -> str:
+    if not content:
+        return ""
+    for match in _INTENT_START_RE.finditer(content):
+        end = _INTENT_END_RE.search(content, match.end())
+        if end is None:
+            return ""
+        return content[match.start() : end.end()]
+    return ""
+
+
 def strip_intent_blocks(content: str) -> str:
     """Remove `[openrouter:v1:intent_block_start]: #` ... `[openrouter:v1:intent_block_end]: #`
     regions from a chat-content string. Preserves videojob/videomodel/<video>
@@ -238,7 +252,19 @@ def strip_intent_blocks(content: str) -> str:
     """
     if not content:
         return ""
-    return _INTENT_BLOCK_REGION_RE.sub("", content)
+    pieces: list[str] = []
+    pos = 0
+    for match in _INTENT_START_RE.finditer(content):
+        if match.start() < pos:
+            continue
+        end = _INTENT_END_RE.search(content, match.end())
+        if end is None:
+            pieces.append(content[pos:])
+            return "".join(pieces)
+        pieces.append(content[pos : match.start()])
+        pos = end.end()
+    pieces.append(content[pos:])
+    return "".join(pieces)
 
 
 def count_prior_clarifications(messages: list[dict[str, Any]]) -> int:

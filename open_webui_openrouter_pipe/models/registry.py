@@ -382,7 +382,7 @@ class OpenRouterModelRegistry:
     @classmethod
     def _zdr_roster_for(cls, api_key: str) -> set[str] | None:
         stored = cls._zdr_rosters.get(_fingerprint(api_key))
-        return set(stored) if stored is not None else None
+        return stored
 
     @classmethod
     def arm_zdr_key(cls, api_key: str | None) -> Any:
@@ -1055,6 +1055,7 @@ class OpenRouterModelRegistry:
     _image_endpoint_alias_of: ClassVar[dict[str, list[dict[str, Any]]] | None] = None
     _last_image_contract_attempt: float = 0.0
     _image_contract_retry_after: float = 0.0
+    _image_contract_owed: frozenset[str] = frozenset()
 
     @classmethod
     def last_image_contract_attempt(cls) -> float:
@@ -1086,6 +1087,18 @@ class OpenRouterModelRegistry:
     @classmethod
     def clear_image_contract_retry(cls) -> None:
         cls._image_contract_retry_after = 0.0
+
+    @classmethod
+    def image_contract_owed(cls) -> frozenset[str]:
+        return cls._image_contract_owed
+
+    @classmethod
+    def set_image_contract_owed(cls, model_ids: frozenset[str]) -> None:
+        cls._image_contract_owed = frozenset(model_ids)
+
+    @classmethod
+    def clear_image_contract_owed(cls) -> None:
+        cls._image_contract_owed = frozenset()
 
     @classmethod
     def set_image_endpoints(
@@ -1539,6 +1552,8 @@ def _is_claude_reasoning_model(normalized_model_id: str) -> bool:
 def _supports_verbosity(normalized_model_id: str) -> bool:
     normalized = normalized_model_id or ""
     if not _is_claude_reasoning_model(normalized):
+        return False
+    if not ModelFamily.catalog_spec(normalized):
         return False
     supported = ModelFamily.catalog_supported_parameters(normalized)
     return not supported or "verbosity" in supported

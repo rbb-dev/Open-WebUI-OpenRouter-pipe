@@ -65,6 +65,20 @@ class _Logger:
         return False
 
 
+class _DecodeCounter:
+    """Total bytes decoded on this path, counted at `base64.b64decode` itself.
+
+    Bytes rather than calls: a row that counts calls is only true at one decode quantum.
+    The client splits a payload into bounded quanta, so the same single decode of the
+    same payload is several calls at one quantum size and one call at another, and a call
+    count cannot tell "one payload decoded" from "the payload decoded twice".
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.bytes = 0
+
+
 async def _client(session) -> OpenRouterImageClient:
     return OpenRouterImageClient(
         session, base_url=BASE, api_key="test-key", logger=_Logger()
@@ -3260,12 +3274,14 @@ async def test_the_ceiling_stops_the_loop_before_it_decodes(monkeypatch):
 
     import open_webui_openrouter_pipe.integrations.image_client as client_module
 
-    decoded: list[int] = []
+    decoded = _DecodeCounter()
     real = _base64.b64decode
 
     def _spy(blob, **kwargs):
-        decoded.append(len(blob))
-        return real(blob, **kwargs)
+        decoded.calls += 1
+        out = real(blob, **kwargs)
+        decoded.bytes += len(out)
+        return out
 
     monkeypatch.setattr(client_module.base64, "b64decode", _spy)
     entry = {"b64_json": _b64(_png(4, 4) + b"\x00" * (600 * 1024))}
@@ -3278,9 +3294,12 @@ async def test_the_ceiling_stops_the_loop_before_it_decodes(monkeypatch):
                 {"model": "m", "prompt": "p"}, max_decoded_bytes=1024 * 1024
             )
 
-    assert len(decoded) == 1, (
+    assert decoded.bytes == 600 * 1024 + len(_png(4, 4)), (
         "the pre-decode estimate exists so an oversized reply is refused without materialising "
-        f"every blob; {len(decoded)} entries were decoded"
+        f"every blob; {decoded.bytes} bytes were decoded across {decoded.calls} calls, and one "
+        f"entry's payload is {600 * 1024 + len(_png(4, 4))} bytes. Counting decoded BYTES rather "
+        "than calls is what makes this row true at any decode quantum: the client may now split "
+        "one payload across several calls, and a call count would read that as a second decode."
     )
     assert len(result.images) == 1
     assert result.over_ceiling == 1

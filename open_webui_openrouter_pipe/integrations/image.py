@@ -20,6 +20,7 @@ from ..core.logging_system import SessionLogger
 from ..core.utils import clamp_text, summarise_names
 from ..core.warn_latch import warn_level
 from ..filters.image_filter_renderer import IMAGE_KNOB_TITLES
+from ..models.registry import _fingerprint
 from ..requests.fusion_engine import latest_user_text
 from ..storage.multimodal import ADDRESS_CHECK_BUDGET_SECONDS, ADDRESS_CHECK_SECONDS
 from .image_client import OpenRouterImageClient
@@ -139,6 +140,12 @@ _STALE_CONTRACT = (
     "gated against limits this model no longer publishes."
 )
 
+
+def _contract_target(valves: Any) -> tuple[str, str]:
+    base_url = (getattr(valves, "BASE_URL", "") or "https://openrouter.ai/api/v1").rstrip("/")
+    return base_url, _fingerprint(str(getattr(valves, "API_KEY", "") or ""))
+
+
 if TYPE_CHECKING:
     from ..pipe import Pipe
 
@@ -205,6 +212,7 @@ class ImageGenerationAdapter:
         self._logger = logger
         self._endpoint_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
         self._endpoint_failed_at: dict[str, float] = {}
+        self._contract_target: tuple[str, str] | None = None
 
     def _resolve_api_key(self, valves: Any) -> str:
         api_key, api_key_error = self._pipe._resolve_openrouter_api_key(valves)
@@ -566,6 +574,11 @@ class ImageGenerationAdapter:
         owui_chat_id: str | None = None,
         requested: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any] | None, str]:
+        identity = _contract_target(valves)
+        previous = self._contract_target
+        self._contract_target = identity
+        if previous is not None and previous != identity:
+            self._endpoint_cache.clear()
         raw_ttl = getattr(valves, "MODEL_CATALOG_REFRESH_SECONDS", 0)
         ttl = float(raw_ttl) if isinstance(raw_ttl, (int, float)) and not isinstance(raw_ttl, bool) else 0.0
         ttl = ttl or 3600.0
@@ -927,6 +940,7 @@ class ImageGenerationAdapter:
         attached = self._input_references(responses_body)
         if mode == "none":
             attached = []
+            chosen = []
         elif mode == "latest-only":
             attached = attached[-1:]
         seen = {} if seen is None else seen

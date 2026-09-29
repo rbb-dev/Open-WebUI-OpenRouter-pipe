@@ -52,6 +52,26 @@ The per-read cap bounds one request; this bounds the wait a user experiences, so
 number of image models does not appear in the time the model picker takes to appear.
 """
 
+_CONTRACT_VALVES = (
+    "AUTO_INSTALL_IMAGE_FILTERS",
+    "AUTO_ATTACH_IMAGE_FILTERS",
+    "AUTO_INSTALL_IMAGE_GEN_FILTER",
+    "AUTO_ATTACH_IMAGE_GEN_FILTER",
+)
+
+
+def _wants_contracts(valves: Any) -> bool:
+    return any(getattr(valves, name, False) for name in _CONTRACT_VALVES)
+
+
+def _stale_contracts(wants_filters: bool, cache_seconds: int) -> bool:
+    contract_attempt = OpenRouterModelRegistry.last_image_contract_attempt()
+    return wants_filters and (
+        OpenRouterModelRegistry.image_contract_retry_pending()
+        or not contract_attempt
+        or (time.time() - contract_attempt) >= cache_seconds
+    )
+
 
 async def ensure_image_catalog_loaded(
     session: aiohttp.ClientSession,
@@ -69,23 +89,11 @@ async def ensure_image_catalog_loaded(
     the request path passes False rather than making a user's message wait on contract
     reads for every model it will not call.
     """
-    # Gated on whether this call would actually sweep. Without that, a deployment with
-    # both filter valves off never stamps the contract clock, so the freshness check can
-    # never be satisfied and every model-list build refetches the catalogue.
-    wants_filters = with_contracts and bool(
-        getattr(valves, "AUTO_INSTALL_IMAGE_FILTERS", False)
-        or getattr(valves, "AUTO_ATTACH_IMAGE_FILTERS", False)
-    )
+    wants_filters = with_contracts and _wants_contracts(valves)
     if getattr(valves, "ENABLE_OPENROUTER_IMAGE_GENERATION", False):
         last_attempt = OpenRouterModelRegistry.last_image_attempt()
         stale_models = not last_attempt or (time.time() - last_attempt) >= cache_seconds
-        contract_attempt = OpenRouterModelRegistry.last_image_contract_attempt()
-        stale_contracts = wants_filters and (
-            OpenRouterModelRegistry.image_contract_retry_pending()
-            or not contract_attempt
-            or (time.time() - contract_attempt) >= cache_seconds
-        )
-        if not stale_models and not stale_contracts:
+        if not stale_models and not _stale_contracts(wants_filters, cache_seconds):
             return
 
     async with _current_image_catalog_lock():
@@ -104,13 +112,7 @@ async def ensure_image_catalog_loaded(
 
         last_attempt = OpenRouterModelRegistry.last_image_attempt()
         stale_models = not last_attempt or (time.time() - last_attempt) >= cache_seconds
-        contract_attempt = OpenRouterModelRegistry.last_image_contract_attempt()
-        stale_contracts = wants_filters and (
-            OpenRouterModelRegistry.image_contract_retry_pending()
-            or not contract_attempt
-            or (time.time() - contract_attempt) >= cache_seconds
-        )
-        if not stale_models and not stale_contracts:
+        if not stale_models and not _stale_contracts(wants_filters, cache_seconds):
             return
 
         await _refresh_image_catalog(
@@ -163,14 +165,14 @@ async def _refresh_image_catalog(
         logger.warning("Image catalog fetch returned 0 models; image-only models retired.")
         return
 
-    # One contract read per model, so only pay for them when something consumes them.
-    # The consumer is the per-model filter install, which runs under the same two valves
-    # that `catalog_manager` checks before calling it.
     endpoint_records: dict[str, list[dict[str, Any]]] = {}
     abandoned: frozenset[str] = frozenset()
     if wants_filters:
+        owed = OpenRouterModelRegistry.image_contract_owed()
         OpenRouterModelRegistry.record_image_contract_attempt()
-        endpoint_records, abandoned = await _fetch_endpoint_records(client, models, logger)
+        endpoint_records, abandoned = await _fetch_endpoint_records(
+            client, models, logger, only=owed or None
+        )
         OpenRouterModelRegistry.set_image_endpoints(
             endpoint_records,
             known_ids={
@@ -182,6 +184,9 @@ async def _refresh_image_catalog(
         if abandoned:
             OpenRouterModelRegistry.clear_image_contract_attempt()
             OpenRouterModelRegistry.mark_image_contract_retry(cache_seconds)
+            OpenRouterModelRegistry.set_image_contract_owed(abandoned)
+        else:
+            OpenRouterModelRegistry.clear_image_contract_owed()
     OpenRouterModelRegistry.register_image_models(models)
     # Stamped only once the models are registered. Stamping earlier meant a cancellation
     # mid-sweep left the models unregistered AND the retry suppressed for a whole TTL
@@ -200,6 +205,7 @@ async def _fetch_endpoint_records(
     models: list[dict[str, Any]],
     logger: Any,
     concurrency: int = 8,
+    only: frozenset[str] | None = None,
 ) -> tuple[dict[str, list[dict[str, Any]]], frozenset[str]]:
     """Read every published knob contract for each model, keyed by model id.
 
@@ -216,6 +222,7 @@ async def _fetch_endpoint_records(
         str(model.get("id")).strip()
         for model in models
         if isinstance(model, dict) and str(model.get("id") or "").strip()
+        and (only is None or str(model.get("id")).strip() in only)
     ]
     if not ids:
         return {}, frozenset()

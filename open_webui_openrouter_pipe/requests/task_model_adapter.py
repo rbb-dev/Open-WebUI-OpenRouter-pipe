@@ -25,6 +25,7 @@ from ..core.logging_system import SessionLogger
 from ..core.timing_logger import timed
 from ..core.utils import _render_error_template
 from ..models.registry import OpenRouterModelRegistry
+from ..storage.owui_files import is_temporary_chat
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
@@ -64,6 +65,8 @@ def _task_failure_card(
 
 
 def _task_failure_latch_key(task_type: str, model_id: str, scope: str) -> str:
+    if is_temporary_chat(scope):
+        return ""
     return f"{model_id}\x1f{scope or '__no_chat_or_user__'}"
 
 
@@ -296,18 +299,17 @@ class TaskModelAdapter:
             str(source_model_id or ""),
             str((owui_metadata or {}).get("chat_id") or "") or str(identifier_user_id or ""),
         )
-        if _task_failure_was_notified(latch_key):
-            self.logger.debug(
-                "task-failure toast suppressed: %s task=%s", latch_key, task_type
-            )
+        log_key = latch_key or "<not retained>"
+        if latch_key and _task_failure_was_notified(latch_key):
+            self.logger.debug("task-failure toast suppressed: %s task=%s", log_key, task_type)
         else:
             delivered = await self._pipe._event_emitter_handler._emit_notification(
                 event_emitter, card, level="warning"
             )
-            if delivered:
+            if delivered and latch_key:
                 _task_failure_note_notified(latch_key)
             else:
                 self.logger.debug(
-                    "task-failure toast not delivered; latch left open: %s", latch_key
+                    "task-failure toast not delivered; latch left open: %s", log_key
                 )
         return self._pipe._task_refusal_result(task_context, card)

@@ -20,6 +20,58 @@ from open_webui_openrouter_pipe.core.errors import OpenRouterAPIError
 from open_webui_openrouter_pipe.filters.fusion_filter_renderer import is_fusion_model
 
 
+def _injected_attachment_names(body: dict, block_type: str) -> list[str]:
+    """The names of the `block_type` blocks the injector wrote into the last user message.
+
+    The injector mutates the request body in place, so what it decided is readable off
+    the body the rows above already pass in. `file` blocks carry a filename; an
+    `input_audio` or `video_url` block carries none, so for those the caller passes the
+    block type it wants and gets that type's blocks' payloads through
+    `_injected_block_payloads` instead.
+    """
+    content = body["messages"][-1]["content"]
+    names = []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == block_type:
+            spec = block.get("file")
+            if isinstance(spec, dict):
+                names.append(str(spec.get("filename")))
+    return names
+
+
+def _injected_block_payloads(body: dict, block_type: str, carrier: str) -> list[str]:
+    """The payload of every `block_type` block the injector wrote, under `carrier`.
+
+    The audio and video blocks carry no name, so the rows that check them read the
+    payload each one was built from; that is what tells two rows apart when only one of
+    them should survive.
+    """
+    content = body["messages"][-1]["content"]
+    return [
+        str(block[carrier].get("data" if carrier == "input_audio" else "url"))
+        for block in content
+        if isinstance(block, dict) and block.get("type") == block_type
+    ]
+
+
+def _payload_naming(file_id: str) -> str:
+    """Base64 bytes that sniff as audio and carry `file_id` in them.
+
+    The id-guard rows need each surviving attachment to be identifiable in the request
+    the injector built, and an audio or video block carries no name to identify it by.
+    Writing the id into the bytes gives each row a payload of its own, so the assertion
+    can name which rows survived instead of counting them.
+    """
+    return base64.b64encode(b"ID3\x04\x00\x00" + file_id.encode("ascii")).decode("ascii")
+
+
+def _record_named(file_id: str) -> MagicMock:
+    """A `get_file_by_id` stand-in whose id is the id that was asked for."""
+    record = MagicMock()
+    record.id = file_id
+    return record
+
+
 # -----------------------------------------------------------------------------
 # Fixtures
 # -----------------------------------------------------------------------------
@@ -182,7 +234,9 @@ class TestDecodeBase64PrefixEdgeCases:
 
 
 # -----------------------------------------------------------------------------
-# Test file/audio/video attachment skip paths (lines 197, 229, 255)
+# Test file/audio/video attachment skip paths -- the filter that runs is
+# `_extract_direct_uploads` at `orchestrator.py:682-684`; the three injection loops'
+# own guards are defence in depth behind it.
 # -----------------------------------------------------------------------------
 
 
@@ -190,6 +244,22 @@ class TestDirectUploadSkipPaths:
 
     @pytest.mark.asyncio
     async def test_file_attachment_with_invalid_id_skipped(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body):
+        """A `files` row whose id is not a usable string contributes no block to the request.
+
+        The property is over the composition, not over one guard. Three filters have to
+        agree for a bad id to reach nothing: `_extract_direct_uploads` drops anything
+        whose id is not a non-blank string, the injector's own guard drops whatever
+        reaches it anyway, and `_to_input_file` refuses to convert a block with no
+        payload. No single one of them can be made to fail this test on its own -- the
+        other two already cover for it -- so what is pinned is the conjunction, and the
+        fixture carries the one id shape that distinguishes it: a non-string, truthy id.
+        `None`, `""` and `"   "` are all neutralised by the extractor's own rule, so a
+        fixture made only of those cannot fail however the guards were arranged.
+
+        The assertion names the surviving file rather than counting blocks: a build that
+        emitted only the first valid row would satisfy a count, and one that emitted an
+        extra block would satisfy a truthiness check.
+        """
         orchestrator, pipe = orchestrator_and_pipe
 
         # Create file attachments with invalid ids
@@ -197,10 +267,12 @@ class TestDirectUploadSkipPaths:
             "openrouter_pipe": {
                 "direct_uploads": {
                     "files": [
-                        {"id": None, "name": "file1.txt"},  # None id
-                        {"id": 123, "name": "file2.txt"},   # Non-string id
-                        {"id": "", "name": "file3.txt"},    # Empty string id
-                        {"id": "  ", "name": "file4.txt"},  # Whitespace-only id
+                        {"id": None, "name": "file1.txt"},
+                        {"id": 123, "name": "file2.txt"},
+                        {"id": "", "name": "file3.txt"},
+                        {"id": "  ", "name": "file4.txt"},
+                        {"id": "valid_file", "name": "keep1.pdf"},
+                        {"id": "valid_file_2", "name": "keep2.pdf"},
                     ]
                 }
             }
@@ -235,9 +307,17 @@ class TestDirectUploadSkipPaths:
 
         # Should succeed - all invalid files were skipped
         assert result == "Test response"
+        assert _injected_attachment_names(base_request_body, "file") == ["keep1.pdf", "keep2.pdf"]
 
     @pytest.mark.asyncio
     async def test_audio_attachment_with_invalid_id_skipped(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body):
+        """An `audio` row whose id is not a usable string contributes no block to the request.
+
+        The audio guard, over the same three filters as the `files` row above. The
+        fixture's non-string, truthy id is the load-bearing row: without it, the three
+        invalid shapes are all caught by the extractor's own rule and this test cannot
+        fail however the other two guards were arranged.
+        """
         orchestrator, pipe = orchestrator_and_pipe
 
         # Create audio attachments with invalid ids
@@ -246,7 +326,10 @@ class TestDirectUploadSkipPaths:
                 "direct_uploads": {
                     "audio": [
                         {"id": None, "format": "mp3"},
-                        {"id": "", "format": "wav"},
+                        {"id": "", "format": "mp3"},
+                        {"id": "   ", "format": "mp3"},
+                        {"id": 123, "format": "mp3"},
+                        {"id": "valid_audio", "format": "mp3"},
                     ]
                 }
             }
@@ -258,32 +341,47 @@ class TestDirectUploadSkipPaths:
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
         pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
-
-        result = await orchestrator.process_request(
-            body=base_request_body,
-            __user__={"id": "user1"},
-            __request__=None,
-            __event_emitter__=None,
-            __event_call__=None,
-            __metadata__=metadata,
-            __tools__=None,
-            __task__=None,
-            __task_body__=None,
-            valves=mock_valves,
-            session=mock_session,
-            openwebui_model_id="openai/gpt-4o",
-            pipe_identifier="test-pipe",
-            allowlist_norm_ids={"openai/gpt-4o"},
-            enforced_norm_ids=set(),
-            catalog_norm_ids=set(),
-            features={},
-        )
+        with patch(
+            "open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id",
+            AsyncMock(side_effect=lambda file_id, *a, **k: _record_named(str(file_id))),
+        ):
+            pipe._file_gateway.read_file_record_base64 = AsyncMock(
+                side_effect=lambda record, *a, **k: _payload_naming(record.id)
+            )
+            result = await orchestrator.process_request(
+                body=base_request_body,
+                __user__={"id": "user1"},
+                __request__=None,
+                __event_emitter__=None,
+                __event_call__=None,
+                __metadata__=metadata,
+                __tools__=None,
+                __task__=None,
+                __task_body__=None,
+                valves=mock_valves,
+                session=mock_session,
+                openwebui_model_id="openai/gpt-4o",
+                pipe_identifier="test-pipe",
+                allowlist_norm_ids={"openai/gpt-4o"},
+                enforced_norm_ids=set(),
+                catalog_norm_ids=set(),
+                features={},
+            )
 
         # Should succeed - all invalid audio was skipped
         assert result == "Test response"
+        assert _injected_block_payloads(base_request_body, "input_audio", "input_audio") == [
+            _payload_naming("valid_audio")
+        ]
 
     @pytest.mark.asyncio
     async def test_video_attachment_with_invalid_id_skipped(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body):
+        """A `video` row whose id is not a usable string contributes no block to the request.
+
+        The third of the three identical guards, over video. The non-string, truthy id
+        in the fixture is again the load-bearing row, and the `video_url` block's data
+        URL is what names the one attachment that should have survived.
+        """
         orchestrator, pipe = orchestrator_and_pipe
 
         # Create video attachments with invalid ids
@@ -292,7 +390,10 @@ class TestDirectUploadSkipPaths:
                 "direct_uploads": {
                     "video": [
                         {"id": None, "content_type": "video/mp4"},
-                        {"id": 456, "content_type": "video/webm"},
+                        {"id": "", "content_type": "video/mp4"},
+                        {"id": "   ", "content_type": "video/mp4"},
+                        {"id": 456, "content_type": "video/mp4"},
+                        {"id": "valid_video", "content_type": "video/mp4"},
                     ]
                 }
             }
@@ -304,29 +405,38 @@ class TestDirectUploadSkipPaths:
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
         pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
-
-        result = await orchestrator.process_request(
-            body=base_request_body,
-            __user__={"id": "user1"},
-            __request__=None,
-            __event_emitter__=None,
-            __event_call__=None,
-            __metadata__=metadata,
-            __tools__=None,
-            __task__=None,
-            __task_body__=None,
-            valves=mock_valves,
-            session=mock_session,
-            openwebui_model_id="openai/gpt-4o",
-            pipe_identifier="test-pipe",
-            allowlist_norm_ids={"openai/gpt-4o"},
-            enforced_norm_ids=set(),
-            catalog_norm_ids=set(),
-            features={},
-        )
+        with patch(
+            "open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id",
+            AsyncMock(side_effect=lambda file_id, *a, **k: _record_named(str(file_id))),
+        ):
+            pipe._file_gateway.read_file_record_base64 = AsyncMock(
+                side_effect=lambda record, *a, **k: _payload_naming(record.id)
+            )
+            result = await orchestrator.process_request(
+                body=base_request_body,
+                __user__={"id": "user1"},
+                __request__=None,
+                __event_emitter__=None,
+                __event_call__=None,
+                __metadata__=metadata,
+                __tools__=None,
+                __task__=None,
+                __task_body__=None,
+                valves=mock_valves,
+                session=mock_session,
+                openwebui_model_id="openai/gpt-4o",
+                pipe_identifier="test-pipe",
+                allowlist_norm_ids={"openai/gpt-4o"},
+                enforced_norm_ids=set(),
+                catalog_norm_ids=set(),
+                features={},
+            )
 
         # Should succeed - all invalid videos were skipped
         assert result == "Test response"
+        assert _injected_block_payloads(base_request_body, "video_url", "video_url") == [
+            f"data:video/mp4;base64,{_payload_naming('valid_video')}"
+        ]
 
 
 # -----------------------------------------------------------------------------
@@ -1276,6 +1386,15 @@ class TestAttachmentSkipContinuePaths:
 
     @pytest.mark.asyncio
     async def test_file_with_mixed_valid_and_invalid_ids(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body):
+        """Mixed ids: only the rows with a usable id contribute a block, and each one exactly one.
+
+        The same composition as the `files` row in `TestDirectUploadSkipPaths`, over a
+        fixture that interleaves the shapes rather than listing them together, so the
+        rows are not adjacent and an implementation that stopped at the first bad row
+        would be caught by the surviving valid one after it. The non-string, truthy id
+        is here for the same reason it is there: the extractor's own rule already
+        neutralises `None`, `""` and `"   "`.
+        """
         orchestrator, pipe = orchestrator_and_pipe
 
         # Mix of valid and invalid
@@ -1286,6 +1405,9 @@ class TestAttachmentSkipContinuePaths:
                         {"id": None, "name": "skip1.txt"},
                         {"id": "valid_file", "name": "valid.txt"},
                         {"id": "", "name": "skip2.txt"},
+                        {"id": 123, "name": "skip3.txt"},
+                        {"id": "   ", "name": "skip4.txt"},
+                        {"id": "valid_file_2", "name": "valid2.txt"},
                     ]
                 }
             }
@@ -1318,9 +1440,17 @@ class TestAttachmentSkipContinuePaths:
         )
 
         assert result == "Test response"
+        assert _injected_attachment_names(base_request_body, "file") == ["valid.txt", "valid2.txt"]
 
     @pytest.mark.asyncio
     async def test_audio_with_only_invalid_ids(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body):
+        """Mixed audio ids: only the usable one contributes a block, and it contributes one.
+
+        The audio counterpart of the `files` row above, over the same three filters. The
+        non-string, truthy id is the load-bearing row: `None`, `""` and `"   "` are
+        neutralised by the extractor's own rule whatever the other two guards do, so a
+        fixture without it cannot fail.
+        """
         orchestrator, pipe = orchestrator_and_pipe
 
         metadata = {
@@ -1330,6 +1460,8 @@ class TestAttachmentSkipContinuePaths:
                         {"id": None},
                         {"id": ""},
                         {"id": 123},  # int, not string
+                        {"id": "   "},
+                        {"id": "valid_audio"},
                     ]
                 }
             }
@@ -1340,31 +1472,46 @@ class TestAttachmentSkipContinuePaths:
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
         pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
-
-        result = await orchestrator.process_request(
-            body=base_request_body,
-            __user__={"id": "user1"},
-            __request__=None,
-            __event_emitter__=None,
-            __event_call__=None,
-            __metadata__=metadata,
-            __tools__=None,
-            __task__=None,
-            __task_body__=None,
-            valves=mock_valves,
-            session=mock_session,
-            openwebui_model_id="openai/gpt-4o",
-            pipe_identifier="test-pipe",
-            allowlist_norm_ids={"openai/gpt-4o"},
-            enforced_norm_ids=set(),
-            catalog_norm_ids=set(),
-            features={},
-        )
+        with patch(
+            "open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id",
+            AsyncMock(side_effect=lambda file_id, *a, **k: _record_named(str(file_id))),
+        ):
+            pipe._file_gateway.read_file_record_base64 = AsyncMock(
+                side_effect=lambda record, *a, **k: _payload_naming(record.id)
+            )
+            result = await orchestrator.process_request(
+                body=base_request_body,
+                __user__={"id": "user1"},
+                __request__=None,
+                __event_emitter__=None,
+                __event_call__=None,
+                __metadata__=metadata,
+                __tools__=None,
+                __task__=None,
+                __task_body__=None,
+                valves=mock_valves,
+                session=mock_session,
+                openwebui_model_id="openai/gpt-4o",
+                pipe_identifier="test-pipe",
+                allowlist_norm_ids={"openai/gpt-4o"},
+                enforced_norm_ids=set(),
+                catalog_norm_ids=set(),
+                features={},
+            )
 
         assert result == "Test response"
+        assert _injected_block_payloads(base_request_body, "input_audio", "input_audio") == [
+            _payload_naming("valid_audio")
+        ]
 
     @pytest.mark.asyncio
     async def test_video_with_only_invalid_ids(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body):
+        """Mixed video ids: only the usable one contributes a block, and the missing id contributes none.
+
+        The video counterpart of the audio row above, over the same three filters. The
+        row with no `id` key at all is here because it is a different shape from a row
+        whose id is present and unusable, and both must reach nothing.
+        """
         orchestrator, pipe = orchestrator_and_pipe
 
         metadata = {
@@ -1375,6 +1522,8 @@ class TestAttachmentSkipContinuePaths:
                         {"id": ""},
                         {"id": 999},  # int, not string
                         {"content_type": "video/mp4"},  # missing id
+                        {"id": "   ", "content_type": "video/mp4"},
+                        {"id": "valid_video", "content_type": "video/mp4"},
                     ]
                 }
             }
@@ -1385,28 +1534,37 @@ class TestAttachmentSkipContinuePaths:
         pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
         pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(return_value={})
         pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="Test response")
-
-        result = await orchestrator.process_request(
-            body=base_request_body,
-            __user__={"id": "user1"},
-            __request__=None,
-            __event_emitter__=None,
-            __event_call__=None,
-            __metadata__=metadata,
-            __tools__=None,
-            __task__=None,
-            __task_body__=None,
-            valves=mock_valves,
-            session=mock_session,
-            openwebui_model_id="openai/gpt-4o",
-            pipe_identifier="test-pipe",
-            allowlist_norm_ids={"openai/gpt-4o"},
-            enforced_norm_ids=set(),
-            catalog_norm_ids=set(),
-            features={},
-        )
+        with patch(
+            "open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id",
+            AsyncMock(side_effect=lambda file_id, *a, **k: _record_named(str(file_id))),
+        ):
+            pipe._file_gateway.read_file_record_base64 = AsyncMock(
+                side_effect=lambda record, *a, **k: _payload_naming(record.id)
+            )
+            result = await orchestrator.process_request(
+                body=base_request_body,
+                __user__={"id": "user1"},
+                __request__=None,
+                __event_emitter__=None,
+                __event_call__=None,
+                __metadata__=metadata,
+                __tools__=None,
+                __task__=None,
+                __task_body__=None,
+                valves=mock_valves,
+                session=mock_session,
+                openwebui_model_id="openai/gpt-4o",
+                pipe_identifier="test-pipe",
+                allowlist_norm_ids={"openai/gpt-4o"},
+                enforced_norm_ids=set(),
+                catalog_norm_ids=set(),
+                features={},
+            )
 
         assert result == "Test response"
+        assert _injected_block_payloads(base_request_body, "video_url", "video_url") == [
+            f"data:video/mp4;base64,{_payload_naming('valid_video')}"
+        ]
 
     @pytest.mark.asyncio
     async def test_csv_set_with_non_string_value(self, orchestrator_and_pipe, mock_valves, mock_session, base_request_body, monkeypatch):

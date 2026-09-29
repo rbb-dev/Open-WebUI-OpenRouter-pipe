@@ -37,6 +37,7 @@ from ..core.utils import (
 from ..core.warn_latch import warn_level
 from ..media import (
     FrameExtractionError,
+    VideoMetadata,
     extract_frame,
     make_thumbnail,
     probe_video,
@@ -89,6 +90,7 @@ from .video_intent import (
     VideoIntentResult,
     _admin_intent_floor,
     _hash_chat_id,
+    _reference_source_keys,
     collect_attachments_from_video_meta,
     emit_telemetry_log,
     render_clarification_message,
@@ -136,12 +138,9 @@ def _frame_max_bytes(valves: Valves) -> int:
     return int(valves.VIDEO_FRAME_IMAGE_MAX_BYTES)
 
 
-def _reference_write_key(video_meta: dict[str, Any]) -> str:
-    for key in ("input_references", "video_attachments"):
-        items = video_meta.get(key)
-        if isinstance(items, list) and items:
-            return key
-    return "input_references"
+def _reference_slot(video_meta: dict[str, Any]) -> str:
+    keys = _reference_source_keys(video_meta)
+    return keys[0] if keys else "input_references"
 
 
 def _declared_input_kinds(video_model: Any) -> Callable[[str], bool]:
@@ -642,10 +641,8 @@ class VideoGenerationAdapter:
                 resumed_disclosure = self._recover_the_file_host_record(persisted)
                 resumed_disclosure += self._recover_the_withheld_record(persisted)
                 if persisted:
-                    from .video_intent import _INTENT_BLOCK_REGION_RE
-                    m = _INTENT_BLOCK_REGION_RE.search(persisted)
-                    if m:
-                        resumed_disclosure += m.group(0)
+                    from .video_intent import first_intent_block_region
+                    resumed_disclosure += first_intent_block_region(persisted)
                 bg_task = self._create_lifecycle_task(
                     key=key,
                     job_id=job_id,
@@ -2259,10 +2256,10 @@ class VideoGenerationAdapter:
                     kind=kind,
                     family=family,
                     mime=mime,
-                    b64=b64,
+                    b64=b64 if not via_file_host else "",
                     via_file_host=via_file_host,
                     filename=_clean_str(getattr(file_obj, "filename", "")),
-                    blob=blob,
+                    blob=blob if via_file_host else b"",
                 )
             )
         if past_the_count:
@@ -2809,7 +2806,7 @@ class VideoGenerationAdapter:
                     demoted.append(displaced)
                 else:
                     frame_images.append(target)
-                claimed = video_meta.get("input_references")
+                claimed = video_meta.get(_reference_slot(video_meta))
                 if isinstance(claimed, list) and target in claimed:
                     claimed.remove(target)
             existing_frame_type = target.get("frame_type")
@@ -2817,7 +2814,7 @@ class VideoGenerationAdapter:
                 target["frame_type"] = entry.target
                 retargeted += 1
         if moved or demoted:
-            references = video_meta.setdefault(_reference_write_key(video_meta), [])
+            references = video_meta.setdefault(_reference_slot(video_meta), [])
             if not isinstance(references, list):
                 references = []
                 video_meta["input_references"] = references
@@ -2875,7 +2872,7 @@ class VideoGenerationAdapter:
         if not intent.frame_plan:
             return thumb_urls
 
-        if is_temporary_chat(chat_id):
+        if not isinstance(chat_id, str) or not chat_id.strip() or is_temporary_chat(chat_id):
             intent.downgrades.append("frame_plan_dropped_temporary_chat")
             return ["" for _entry in intent.frame_plan]
 
@@ -2890,6 +2887,7 @@ class VideoGenerationAdapter:
             return ["" for _entry in intent.frame_plan]
 
         materialised: dict[str, Path] = {}
+        probed: dict[str, VideoMetadata] = {}
         try:
             for position, entry in enumerate(intent.frame_plan):
                 if entry.source == "uploaded_attachment":
@@ -2944,6 +2942,11 @@ class VideoGenerationAdapter:
                         effective_fallback: Literal["first", "last"] = (
                             "first" if first_only else reused_frame_index
                         )
+                        if target != "first_frame" and file_id not in probed:
+                            try:
+                                probed[file_id] = await probe_video(tmp_path)
+                            except FrameExtractionError:
+                                pass
 
                         frame = await extract_frame(
                             tmp_path, target=target, timestamp_seconds=ts,
@@ -2951,6 +2954,7 @@ class VideoGenerationAdapter:
                             reused_frame_index=effective_fallback,
                             logger=self.logger,
                             max_frame_bytes=frame_max_bytes,
+                            meta=probed.get(file_id),
                         )
                         if frame.downgrade_note:
                             intent.downgrades.append(frame.downgrade_note)
@@ -2974,6 +2978,7 @@ class VideoGenerationAdapter:
                                     reused_frame_index=reused_frame_index,
                                     logger=self.logger,
                                     max_frame_bytes=frame_max_bytes,
+                                    meta=probed.get(file_id),
                                 )
                             except FrameExtractionError:
                                 raise exc
@@ -3040,7 +3045,7 @@ class VideoGenerationAdapter:
                                 "content_type": "image/png",
                             })
                     elif entry.target == "input_reference":
-                        ir_list = video_meta.setdefault(_reference_write_key(video_meta), [])
+                        ir_list = video_meta.setdefault(_reference_slot(video_meta), [])
                         if isinstance(ir_list, list):
                             ir_list.append({
                                 "id": frame_file_id,

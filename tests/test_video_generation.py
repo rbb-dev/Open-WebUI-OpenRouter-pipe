@@ -7547,6 +7547,7 @@ def test_the_upscale_control_takes_its_bounds_from_the_catalogue(model_id):
     assert spec.upscale_bounds == (low, high)
 
     source = render_video_filter_source(model_id=model_id, video_model=VIDEO_BY_ID[model_id])
+    assert f"ge={low:g}" in source
     assert f"le={high:g}" in source
     assert f"if {low:g} <= upscale <= {high:g}:" in source
 

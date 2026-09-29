@@ -225,6 +225,7 @@ function setEdit(v,val){
   if(v.secret){ if(norm(val).length) edits[v.name]=val; else if(!isClearStaged(v.name)) delete edits[v.name]; }
   else if(numEq || norm(val)===norm(base)) delete edits[v.name];
   else edits[v.name]=val;
+  revalidate(v.name);
   updateBar();
   const it=CFGROOT.querySelector(".item.sel"); if(it&&SEL===v.name) it.classList.toggle("mod",isDirty(v.name));
   if(CHANGED) buildTree();
@@ -387,6 +388,14 @@ function renderPendingInline(d,v){
   else if(html){ d.querySelector(".badges").insertAdjacentHTML("afterend",html); wireRevert(d,v); }
 }
 function wireRevert(d,v){ const r=d.querySelector(".revert"); if(r)r.onclick=()=>{delete edits[v.name];invalid.delete(v.name);updateBar();renderDetail(v);buildTree();}; const c=d.querySelector("#cfgClear"); if(c)c.onclick=()=>{stageClear(v);}; }
+function fieldInvalid(v,val){
+  if(v.enum&&!v.enum.some(o=>String(o)===String(val)))return true;
+  return (v.bounds? !!heldProblem(v,val) : false);
+}
+function revalidate(n){ const v=byName[n]; if(!v)return;
+  if(!(n in edits)){ invalid.delete(n); return; }
+  if(!v.enum&&!v.bounds) return;
+  const bad=fieldInvalid(v,edits[n]); if(bad)invalid.add(n); else invalid.delete(n); }
 function heldProblem(v,val){
   const b=v.bounds||{}; const raw=String(val==null?"":val).trim(); let bad=null;
   if(raw===""){ if(v.default!=null) bad="Required"; }
@@ -495,9 +504,7 @@ function applySnapshot(r){
   byName={}; baseline={};
   VALVES.forEach(v=>{ byName[v.name]=v; baseline[v.name]=v.value; });
   Object.keys(edits).forEach(n=>{ if(!Object.prototype.hasOwnProperty.call(baseline,n)){ delete edits[n]; invalid.delete(n); } });
-  Object.keys(edits).forEach(n=>{ const v=byName[n]; if(!v)return;
-    if(v.enum&&!v.enum.some(o=>String(o)===String(edits[n])))invalid.add(n);
-    else if(v.bounds){ const bad=heldProblem(v,edits[n]); if(bad)invalid.add(n); else invalid.delete(n); } });
+  Object.keys(edits).forEach(n=>revalidate(n));
   updateBar();
   renderResetNote(r.reset||[]);
   driftCache=r.drift; paintDriftNote($("#driftnote"),r);

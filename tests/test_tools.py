@@ -2863,61 +2863,6 @@ class TestCanBatchToolCalls:
         finally:
             loop.close()
 
-    def test_depends_on_in_first_blocks(self) -> None:
-        """depends_on in first call should block batching."""
-        worker = _DummyWorker()
-        loop = asyncio.new_event_loop()
-        try:
-            first = _make_queued(loop, "call-1", "tool_a", args={"depends_on": "x"})
-            candidate = _make_queued(loop, "call-2", "tool_a", args={})
-            assert worker._can_batch_tool_calls(first, candidate) is False
-        finally:
-            loop.close()
-
-    def test_depends_on_in_candidate_blocks(self) -> None:
-        """depends_on in candidate call should block batching."""
-        worker = _DummyWorker()
-        loop = asyncio.new_event_loop()
-        try:
-            first = _make_queued(loop, "call-1", "tool_a", args={})
-            candidate = _make_queued(loop, "call-2", "tool_a", args={"depends_on": "y"})
-            assert worker._can_batch_tool_calls(first, candidate) is False
-        finally:
-            loop.close()
-
-    def test_underscore_depends_on_blocks(self) -> None:
-        """_depends_on in args should block batching."""
-        worker = _DummyWorker()
-        loop = asyncio.new_event_loop()
-        try:
-            first = _make_queued(loop, "call-1", "tool_a", args={"_depends_on": "x"})
-            candidate = _make_queued(loop, "call-2", "tool_a", args={})
-            assert worker._can_batch_tool_calls(first, candidate) is False
-        finally:
-            loop.close()
-
-    def test_sequential_blocks(self) -> None:
-        """sequential in args should block batching."""
-        worker = _DummyWorker()
-        loop = asyncio.new_event_loop()
-        try:
-            first = _make_queued(loop, "call-1", "tool_a", args={})
-            candidate = _make_queued(loop, "call-2", "tool_a", args={"sequential": True})
-            assert worker._can_batch_tool_calls(first, candidate) is False
-        finally:
-            loop.close()
-
-    def test_no_batch_blocks(self) -> None:
-        """no_batch in args should block batching."""
-        worker = _DummyWorker()
-        loop = asyncio.new_event_loop()
-        try:
-            first = _make_queued(loop, "call-1", "tool_a", args={"no_batch": True})
-            candidate = _make_queued(loop, "call-2", "tool_a", args={})
-            assert worker._can_batch_tool_calls(first, candidate) is False
-        finally:
-            loop.close()
-
     def test_candidate_references_first_call_id(self) -> None:
         """Candidate referencing first's call_id should block batching."""
         worker = _DummyWorker()
@@ -3202,6 +3147,9 @@ class TestToolCallBatching:
             ([("c1", "tool_a", {}), ("c2", "tool_b", {}), ("c3", "tool_a", {})], 4, [["c1"], ["c2"], ["c3"]]),
             ([("c1", "tool_a", {"sequential": True}), ("c2", "tool_a", {})], 4, [["c1"], ["c2"]]),
             ([("c1", "tool_a", {}), ("c2", "tool_a", {"depends_on": "c1"})], 4, [["c1"], ["c2"]]),
+            ([("c1", "tool_a", {}), ("c2", "tool_a", {"depends_on": "the whole list"})], 4, [["c1"], ["c2"]]),
+            ([("c1", "tool_a", {}), ("c2", "tool_a", {"_depends_on": "the whole list"})], 4, [["c1"], ["c2"]]),
+            ([("c1", "tool_a", {}), ("c2", "tool_a", {"no_batch": True})], 4, [["c1"], ["c2"]]),
             ([("c1", "tool_a", {}), ("c2", "tool_a", {"note": "use what c1 found"})], 4, [["c1"], ["c2"]]),
             ([("c1", "tool_a", {}), ("c2", "missing", {}), ("c3", "tool_a", {})], 4, [["c1", "c3"]]),
             (
@@ -3236,6 +3184,9 @@ class TestToolCallBatching:
             "another-tool-between-two-calls",
             "a-call-marked-sequential",
             "a-call-that-depends-on-another",
+            "a-call-marked-depends-on-something-not-a-call-id",
+            "a-call-marked-underscore-depends-on-something-not-a-call-id",
+            "a-call-marked-no-batch",
             "a-call-that-refers-to-another",
             "a-call-answered-before-queueing-does-not-split",
             "mixed",
@@ -4097,20 +4048,6 @@ def test_args_reference_call_detects_nested_call_ids():
 
     assert worker._args_reference_call(args, "call-123") is True
     assert worker._args_reference_call(args, "missing") is False
-
-
-def test_can_batch_tool_calls_blocks_dependencies_and_cross_refs():
-    worker = _DummyWorker2()
-    loop = asyncio.new_event_loop()
-    try:
-        first = _make_queued(loop, "call-1", "tool", args={})
-        candidate = _make_queued(loop, "call-2", "tool", args={"depends_on": "call-1"})
-        assert worker._can_batch_tool_calls(first, candidate) is False
-
-        candidate2 = _make_queued(loop, "call-2", "tool", args={"input": "call-1"})
-        assert worker._can_batch_tool_calls(first, candidate2) is False
-    finally:
-        loop.close()
 
 
 # ===== From test_tool_exception_logging.py =====

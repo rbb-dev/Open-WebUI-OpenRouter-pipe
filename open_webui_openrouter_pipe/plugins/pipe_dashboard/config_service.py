@@ -2,18 +2,15 @@
 
 from __future__ import annotations
 
-import base64
-import hashlib
 import logging
-import os
 import typing
 from typing import Any
 
 import annotated_types as at
-from cryptography.fernet import Fernet, InvalidToken
 from pydantic import ValidationError
 
 from ...core.config import EncryptedStr, _is_template_valve, _valve_schema
+from ...storage.persistence import raw_valve_column_decodes
 from .config_meta import CONFIG_META
 
 logger = logging.getLogger(__name__)
@@ -197,24 +194,14 @@ async def _raw_valve_column(pipe_id: str) -> Any:
 
 
 def _raw_column_decodes(raw: Any) -> bool:
-    if not isinstance(raw, str) or not raw.strip():
+    if raw_valve_column_decodes(raw):
         return True
-    secret = os.getenv("WEBUI_SECRET_KEY", os.getenv("WEBUI_JWT_SECRET_KEY", ""))
-    if not secret:
-        return True
-    key = secret.encode()
-    if len(secret) != 44:
-        key = base64.urlsafe_b64encode(hashlib.sha256(key).digest())
-    try:
-        Fernet(key).decrypt(raw.encode())
-    except (InvalidToken, ValueError, TypeError):
-        logger.warning(
-            "pipe_dashboard: the stored configuration did not decode under the current "
-            "WEBUI_SECRET_KEY (a rotated key does this); the Config tab will refuse to "
-            "show or write it rather than serve factory defaults over it"
-        )
-        return False
-    return True
+    logger.warning(
+        "pipe_dashboard: the stored configuration did not decode under the current "
+        "WEBUI_SECRET_KEY (a rotated key does this); the Config tab will refuse to "
+        "show or write it rather than serve factory defaults over it"
+    )
+    return False
 
 
 async def stored_row_readable(pipe_id: str, stored: Any) -> tuple[bool, str]:

@@ -1072,9 +1072,13 @@ def _panel_model_that_asks_the_user(captured: list[dict]):
             yield {"type": "response.output_text.delta", "delta": "member answer"}
             yield {"type": "response.completed", "response": {"output": [], "usage": {}}}
             return
-        offered = [
-            tool.get("name") for tool in request_body.get("tools") or [] if tool.get("description") == _OPEN_WEBUI_ASK_USER
-        ]
+        tools = request_body.get("tools") or []
+        offered = [tool.get("name") for tool in tools if tool.get("description") == _OPEN_WEBUI_ASK_USER]
+        if not offered:
+            offered = [
+                tool.get("name") for tool in tools
+                if isinstance(tool.get("name"), str) and "ask_user" in tool.get("name")
+            ]
         call = {"type": "function_call", "call_id": f"call-{len(captured)}", "name": offered[0] if offered else "ask_user",
                 "arguments": "{}", "status": "completed"}
         yield {"type": "response.output_item.done", "item": call}

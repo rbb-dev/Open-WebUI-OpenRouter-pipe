@@ -223,7 +223,7 @@ The OpenRouter error formatter supports a larger set of optional values, includi
 - `provider`, `requested_model`, `api_model_id`, `normalized_model_id`
 - `retry_after_seconds`, `rate_limit_type`
 - `include_model_limits`, `context_limit_tokens`, `max_output_tokens`
-- `metadata_json`, `provider_raw_json`, `diagnostics`
+- `metadata_json`, `provider_raw_json`, `diagnostics` — `metadata_json` and `provider_raw_json` are the provider's metadata and its raw error block cut at 16,384 characters, with a marker on a line of its own naming how many characters were removed, so a cut value is no longer parseable JSON; `raw_body` and `flagged_excerpt` are not cut and arrive whole
 - `error_chunk_id`, `error_chunk_created`, `is_streaming_error`, `native_finish_reason`, `request_id_reference`
 - `streaming_provider`, `streaming_model` — filled only for a failure reported inside a reply that has already started; empty on a rejected request however the provider is named, and empty when such a failure names no provider at all
 
@@ -323,7 +323,7 @@ the template's own fences, so a row written as ` ```json ` / `{metadata_json}` /
 shipped before 2.7.4, and the shape the pipe's own example used to show — renders as exactly one
 code block holding the payload, with the label above it and the card text after it. A template that
 does not fence the value is unaffected. The same holds for `{raw_body}`, `{flagged_excerpt}` and
-`{provider_raw_json}`; a value is only unwrapped when the template supplies the fence.
+`{provider_raw_json}`; a value is only unwrapped when the template supplies the fence. A value that arrives cut ends mid-payload and its `...(truncated: N characters omitted)...` marker sits on its own line inside the fence, so read a cut value as the start of the payload rather than the whole of it.
 
 ````markdown
 ### 🧾 Provider error

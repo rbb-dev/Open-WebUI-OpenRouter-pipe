@@ -42,7 +42,9 @@ from sqlalchemy import (
     DateTime,
     Engine,
     Index,
+    MetaData,
     String,
+    Table,
     func,
     text,
 )
@@ -106,6 +108,26 @@ def _delete_marker_value(keep_message_id: str | None) -> str:
     return _REDIS_DELETE_MARKER_ALL
 
 
+def _webui_secret_key() -> str:
+    return os.getenv("WEBUI_SECRET_KEY", os.getenv("WEBUI_JWT_SECRET_KEY", ""))
+
+
+def raw_valve_column_decodes(raw: Any) -> bool:
+    if not isinstance(raw, str) or not raw.strip():
+        return True
+    secret = _webui_secret_key()
+    if not secret:
+        return True
+    key = secret.encode()
+    if len(secret) != 44:
+        key = base64.urlsafe_b64encode(hashlib.sha256(key).digest())
+    try:
+        Fernet(key).decrypt(raw.encode())
+    except (InvalidToken, ValueError, TypeError):
+        return False
+    return True
+
+
 def _marker_spares_row(marker: Any, message_id: Any) -> bool:
     if not isinstance(marker, str) or not marker:
         return False
@@ -122,6 +144,7 @@ _CANCEL_REQUEUE_POLL_SECONDS = 0.05
 _CANCEL_REQUEUE_POLL_ATTEMPTS = 40
 
 _UNREADABLE_ARTIFACT_TABLE_KEY = "\x00artifact-key-unreadable"
+_STORED_VALVE_UNREADABLE_MEMO_MAX = 32
 
 REPLY_MEMORY_IDLE_SECONDS = 900.0
 REPLY_MEMORY_MAX_BYTES = 64 * 1024 * 1024
@@ -505,10 +528,10 @@ class ArtifactStore:
             user_id=lambda: (self._user_id_context.get() or "") if self._user_id_context else "",
             logger=self.logger,
         )
+        self._initialize_database_state()
         self._initialize_encryption_state()
         self._initialize_circuit_breakers()
         self._initialize_redis_state()
-        self._initialize_database_state()
         self._initialize_cleanup_state()
 
     @property
@@ -523,6 +546,7 @@ class ArtifactStore:
         self._artifact_key_warning_emitted = False
         self._artifact_key_unreadable = False
         self._table_key = ""
+        self._stored_valve_unreadable_memo: dict[tuple[str, str, str], bool] = {}
         self._apply_artifact_encryption_key(
             EncryptedStr.read(self.valves.ARTIFACT_ENCRYPTION_KEY),
             self.valves.ARTIFACT_ENCRYPTION_KEY,
@@ -536,9 +560,46 @@ class ArtifactStore:
         self._fernet_key_source: str | None = None
         self._lz4_warning_emitted = False
 
+    def _raw_valve_column(self) -> tuple[Any, bool]:
+        session_factory = self._session_factory
+        if session_factory is None:
+            return None, False
+        metadata = MetaData()
+        table = Table("function", metadata, autoload_with=session_factory.kw["bind"])
+        with _db_session(session_factory) as session:
+            return session.query(table.c.valves).filter(table.c.id == self.id).scalar(), True
+
+    def _stored_valve_row_is_unreadable(self, stored: Any) -> bool:
+        secret = _webui_secret_key()
+        memo_key = (str(self.id or ""), secret, str(stored or ""))
+        memo = self._stored_valve_unreadable_memo
+        if memo_key in memo:
+            return memo[memo_key]
+        try:
+            raw, reached = self._raw_valve_column()
+        except Exception:
+            self.logger.debug(
+                "Raw valve column could not be read while arming the artifact guard (pipe_id=%s)",
+                self.id,
+                exc_info=True,
+            )
+            return False
+        if not reached:
+            return False
+        unreadable = not raw_valve_column_decodes(raw)
+        if len(memo) >= _STORED_VALVE_UNREADABLE_MEMO_MAX:
+            memo.clear()
+        memo[memo_key] = unreadable
+        return unreadable
+
+    def _stored_key_is_unreadable(self, stored: Any) -> bool:
+        if self._encryption_key:
+            return False
+        return bool(str(stored or "").strip()) or self._stored_valve_row_is_unreadable(stored)
+
     def _apply_artifact_encryption_key(self, plaintext: str | None, stored: Any) -> None:
         self._encryption_key: str = (plaintext or "").strip()
-        unreadable = bool(str(stored or "").strip()) and not self._encryption_key
+        unreadable = self._stored_key_is_unreadable(stored)
         if unreadable != self._artifact_key_unreadable:
             self._artifact_key_warning_emitted = False
         self._artifact_key_unreadable = unreadable

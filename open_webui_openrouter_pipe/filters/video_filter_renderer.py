@@ -1053,11 +1053,12 @@ def _render_purpose_built_fields(spec: VideoFilterSpec) -> list[str]:
             _field_block(
                 "VIDEO_UPSCALE_FACTOR: float = Field(\n"
                 "            default=0.0,\n"
-                "            ge=0.0,\n"
+                f"            ge={low:g},\n"
                 f"            le={high:g},\n"
                 '            title="Upscale factor",\n'
                 f'            description="How much bigger to make the video, {low:g} to {high:g} '
-                'times its current size. 0 leaves it to the model.",\n'
+                "times its current size. Leave it on Default to let the model choose; a "
+                'number outside that range is not accepted and falls back to Default.",\n'
                 "        )"
             )
         )

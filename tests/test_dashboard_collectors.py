@@ -6,6 +6,7 @@ was replaced by OWUI socket.io (the collector/aggregation code is unchanged).
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections import defaultdict, deque
 from pathlib import Path
@@ -57,11 +58,15 @@ def _make_mock_pipe():
     pipe = Mock()
     pipe.id = "test-pipe"
 
-    # Concurrency
-    pipe._global_semaphore = Mock()
+    # Concurrency. Real semaphores, not `Mock()`s: `_waiter_count` reaches the
+    # wait queue through `len(sem._waiters)`, and a Mock's auto-created child is
+    # not sized, so every `waiting` / `tool_waiting` in this file used to answer 0
+    # behind a swallowed `TypeError` -- the one value a broken read also produces.
+    # Constructing one needs no running loop, so the sync call sites are unaffected.
+    pipe._global_semaphore = asyncio.Semaphore(50)
     pipe._global_semaphore._value = 45
     pipe._semaphore_limit = 50
-    pipe._tool_global_semaphore = Mock()
+    pipe._tool_global_semaphore = asyncio.Semaphore(10)
     pipe._tool_global_semaphore._value = 8
     pipe._tool_global_limit = 10
 
@@ -164,6 +169,12 @@ class TestCollectFastStats:
         assert q["requests_max"] == 1000
         assert q["logs"] == 7
         assert q["archive"] == 2
+        # An idle semaphore has no `_waiters` deque at all, and that is the branch
+        # every number here would otherwise skip. Pinned because "0" is also what an
+        # unreadable wait queue reports, so a regression in the read is invisible
+        # without it.
+        assert q["waiting"] == 0
+        assert q["tool_waiting"] == 0
 
     def test_rate_limits_empty(self):
         pipe = _make_mock_pipe()

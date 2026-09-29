@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import json
@@ -46,6 +47,7 @@ from .image_types import (
     ImageGenerationResult,
 )
 
+_IMAGE_DECODE_CHUNK_BYTES = 1024 * 1024
 _IMAGE_SSE_CONTENT_TYPE = "text/event-stream"
 _IMAGE_SSE_PREFIX = "data:"
 _IMAGE_SSE_DONE = "[DONE]"
@@ -241,7 +243,18 @@ class OpenRouterImageClient:
             buffer += _utf8.decode(b"", True)
             await self._consume_stream_line(buffer, state, on_progress)
         except _ProgressCallbackFailed as failed:
-            raise failed.cause from failed.cause
+            if not state["data"]:
+                raise failed.cause from failed.cause
+            self._logger.warning(
+                "The pipe's own image progress callback failed after the finished image "
+                "arrived; delivering it anyway: %s",
+                clamp_text(str(failed.cause) or type(failed.cause).__name__, 160),
+            )
+            if not state["warning"]:
+                state["warning"] = (
+                    "The image progress channel failed after the finished image had "
+                    f"already arrived: {clamp_text(str(failed.cause), 160)}."
+                )
         except ImageGenerationError:
             raise
         except Exception as exc:
@@ -351,7 +364,14 @@ class OpenRouterImageClient:
                 )
                 continue
             try:
-                raw = base64.b64decode(blob, validate=True)
+                if "=" in blob.rstrip("="):
+                    raise ValueError("interior padding")
+                raw = b"".join(
+                    [
+                        await asyncio.to_thread(base64.b64decode, blob[at : at + _IMAGE_DECODE_CHUNK_BYTES], validate=True)
+                        for at in range(0, len(blob), _IMAGE_DECODE_CHUNK_BYTES)
+                    ]
+                )
             except (binascii.Error, ValueError):
                 rejected.append(clamp_text(f"an entry starting {blob[:24]!r} was not decodable base64"))
                 continue

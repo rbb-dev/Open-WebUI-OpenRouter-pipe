@@ -1114,7 +1114,12 @@ list of size tiers, or **Output size**, for one that does not. No model gets
 both. Where the model publishes the values it takes, the control becomes a list
 of exactly those; where it publishes nothing, the control offers what
 OpenRouter's image API accepts in general and the company running the model
-decides what to do with the value.
+decides what to do with the value. Which of those two it gets is decided by the
+same published read, and that read is paid for by any of the four image filter
+valves, so the tool-only layout — the Image Generation tool on, the per-model
+panels off — is drawn and checked exactly like the per-model one. With all four
+off there is no published list to draw from, and the tool request ships whatever
+was typed.
 
 One control does appear on every per-model panel, because a request carries it
 for any model and no model's published list mentions it:
@@ -1143,11 +1148,13 @@ three are not drawn for it:
 - **Provider options** — extra settings for the company running the model, as a
   JSON object keyed by its OpenRouter name. Use it for anything the panel does
   not already offer.
-- **Reference images** — which of the pictures attached to the turn are sent as
-  references: every one of them (oldest first), only the most recent, or none.
+- **Reference images** — which images are sent as references, from both
+  sources: every one of them (the attached pictures oldest first), only the most
+  recent, or none from either source.
 - **Reference image links** — a JSON list of `https` links or `data:` URLs to
   use as well as, or instead of, the attached pictures. These go first, so they
-  survive on models that take only one reference.
+  survive on models that take only one reference, and **Reference images** set to
+  none suppresses them as well as the attached ones.
 
 A request carries at most 16 references. Where a model publishes a lower limit
 the lower one applies, and anything over the limit is dropped with a note saying
@@ -1218,7 +1225,11 @@ against whatever the model publishes right now.
 Panels are installed and refreshed on their own while
 `AUTO_INSTALL_IMAGE_FILTERS` is on, one per image model, and only for models
 actually offered in this workspace. A model whose panel fails to install does
-not hold up the others.
+not hold up the others. That valve pays for the published-contract sweep the
+panels are drawn from, and so does either half of the Image Generation tool's
+own pair, `AUTO_INSTALL_IMAGE_GEN_FILTER` and `AUTO_ATTACH_IMAGE_GEN_FILTER`:
+turning the per-model pair off does not stop the tool's panel being built from
+the contracts it publishes.
 
 A panel is keyed to the model's Open WebUI id, so a model that starts or stops
 publishing text output keeps its panel and its saved settings. A panel left
@@ -1286,8 +1297,8 @@ Recraft's typography champion — the only AI image model that can render long-f
 
 ## Controls
 - **Provider options** — Extra settings for the company that runs this model, as a JSON object keyed by its OpenRouter name. Use it for anything this panel does not already offer. Empty sends nothing.
-- **Reference images** — Which attached images go to the model as references. auto sends every picture in this chat, and where the model takes fewer than you attached the most recent ones are kept; latest-only sends just the most recent; none sends none of them.
-- **Reference image links** — Reference images to use as well as, or instead of, the attached ones: a JSON list of https links or data URLs. These are placed first, so they survive when the model takes fewer references than are on offer. At most 16 are sent; the rest are named in the chat as not sent.
+- **Reference images** — Which images go to the model as references, from both sources: the pictures attached to this chat and the links below. auto sends every one of them, and where the model takes fewer than you supplied the most recent attachments are kept; latest-only sends just the most recent; none sends none of them, from either source.
+- **Reference image links** — Reference images to use as well as, or instead of, the attached ones: a JSON list of https links or data URLs. These are placed first, so they survive when the model takes fewer references than are on offer. Reference images set to none sends none of these either. At most 16 are sent; the rest are named in the chat as not sent.
 - **Aspect ratio** — Frame shape. Choices: 1:1, 4:3, 3:4, 16:9, 9:16, auto.
 - **Output size** — Either a size tier (512, 1K, 2K or 4K) or exact pixels written like 1024x1024. This model publishes no tiers of its own, so a tier is checked only against those four names and then goes out for the company running the model to interpret. It still takes its shape from Aspect ratio. Exact pixels settle the picture on their own, so Aspect ratio is not sent alongside them unless it is the shape you typed. A toast says so at the time, which Open WebUI does not keep with the message: it is gone once the page reloads. No model publishes a list of pixel sizes, so exact pixels go out as typed and the company running this one decides what to do with them. Empty leaves it unset.
 - **Number of images** — How many images this request asks for. Accepts 1 to 6.
@@ -1404,7 +1415,7 @@ is shared with chat/video catalogs (`MODEL_CATALOG_REFRESH_SECONDS`).
 | Valve | Default | Range | Purpose |
 |-------|---------|-------|---------|
 | `ENABLE_OPENROUTER_IMAGE_GENERATION` | `True` | bool | Master kill switch. False drops pure-image-only models from the model list AND clears them from OWUI's catalog on the next model-list build, ahead of the catalogue refresh window, so it does not wait on `MODEL_CATALOG_REFRESH_SECONDS`. Multimodal models stay since they're in the chat catalog. |
-| `AUTO_INSTALL_IMAGE_FILTERS` | `True` | bool | Install and keep current one settings panel per image model, built from what that model publishes. Every panel also carries `Output size`, where a tier is checked against the tiers that model publishes -- or against `512`, `1K`, `2K` and `4K` where it publishes none -- while exact pixels such as `1024x1024` travel as typed; and a model that answers with a picture and no text carries `Provider options`, `Reference images` and `Reference image links` on top of that. A model whose settings list has never been read gets no panel; one read before keeps its last successful set. |
+| `AUTO_INSTALL_IMAGE_FILTERS` | `True` | bool | Install and keep current one settings panel per image model, built from what that model publishes. It is one of the four valves that pay for that read — `AUTO_ATTACH_IMAGE_FILTERS`, `AUTO_INSTALL_IMAGE_GEN_FILTER` and `AUTO_ATTACH_IMAGE_GEN_FILTER` read the same contracts for the Image Generation tool's own panel, and with all four off no contract is read at all. Every panel also carries `Output size`, where a tier is checked against the tiers that model publishes -- or against `512`, `1K`, `2K` and `4K` where it publishes none -- while exact pixels such as `1024x1024` travel as typed; and a model that answers with a picture and no text carries `Provider options`, `Reference images` and `Reference image links` on top of that. A model whose settings list has never been read gets no panel; one read before keeps its last successful set. |
 | `AUTO_ATTACH_IMAGE_FILTERS` | `True` | bool | Attach each model's own settings panel to it, so its settings appear in the chat controls when that model is selected. A single model can opt out with the `disable_image_filter_auto_attach` advanced parameter. |
 | `AUTO_DEFAULT_IMAGE_FILTERS` | `True` | bool | Keep attached image filters enabled by default per chat. Re-asserted on every catalog metadata sync. |
 
@@ -1552,6 +1563,15 @@ reason it broke is appended to the answer next to the image, so the
 user is told what happened in the same message that carries the
 picture.
 
+The same salvage covers a failure of the pipe's *own* progress channel,
+not only of OpenRouter's stream. The progress lines are handed to the
+chat's event emitter, so an emitter that cannot take one is the pipe's
+problem to absorb rather than the user's to read about: the image is
+delivered, the run is billed, the generation settles as a success, and
+the reason appended next to the picture names the progress channel
+rather than OpenRouter's connection. Before any image has arrived there
+is nothing to salvage, and the failure surfaces as what it is.
+
 ### Image generation succeeds but no image renders inline
 
 Check:
@@ -1616,16 +1636,24 @@ pipes()
           │  than a TTL later
           ├─ TTL-gated fetch (cache_seconds = MODEL_CATALOG_REFRESH_SECONDS)
           ├─ /api/v1/models?output_modalities=image via OpenRouterImageClient
-          ├─ if a filter valve is on, read each model's published contract
+          ├─ if any of the four image filter valves is on —
+          │  AUTO_INSTALL_IMAGE_FILTERS, AUTO_ATTACH_IMAGE_FILTERS,
+          │  AUTO_INSTALL_IMAGE_GEN_FILTER or AUTO_ATTACH_IMAGE_GEN_FILTER,
+          │  the last two of which build the inline Image Generation tool's
+          │  own six controls — read each model's published contract
           │  from /api/v1/images/models/<id>/endpoints — 8 reads at a time,
           │  whole sweep capped at 45s by the pipe; a model that could not
-          │  be read this pass keeps its last good record
+          │  be read this pass keeps its last good record. With all four off,
+          │  nothing consumes a contract and none is read.
           ├─ a sweep the 45s budget cut off leaves the contract clock
-          │  unsatisfied, so the next refresh inside the window re-reads
-          │  the models it abandoned — once per successful repair, not on
-          │  every build; a repair that is itself cut off re-arms, because
-          │  the models it abandoned have still never been read. An empty
-          │  settings panel means "not read yet", not "no options" 
+          │  unsatisfied and records the models it abandoned, so the next
+          │  refresh inside the window re-reads only those — once per
+          │  successful repair, not on every build; a repair that is itself
+          │  cut off re-arms, because the models it abandoned have still
+          │  never been read, and a sweep that finishes its work clears
+          │  what was owed. An endpoint that stays slow therefore costs a
+          │  sweep of the models still missing, not of the whole catalogue.
+          │  An empty settings panel means "not read yet", not "no options"
           └─ register_image_models()
                 ├─ skip multimodal (text in output_modalities)
                 ├─ a sweep that completes with 0 models calls this with

@@ -646,10 +646,11 @@ ALWAYS_ON_CONTROLS: tuple[tuple[str, str, str, str, str], ...] = (
         '"auto"',
         "Reference images",
         (
-            "Which attached images go to the model as references. "
-            "auto sends every picture in this chat, and where the model takes fewer than "
-            "you attached the most recent ones are kept; latest-only sends just the most "
-            "recent; none sends none of them."
+            "Which images go to the model as references, from both sources: the "
+            "pictures attached to this chat and the links below. "
+            "auto sends every one of them, and where the model takes fewer than "
+            "you supplied the most recent attachments are kept; latest-only sends just the most "
+            "recent; none sends none of them, from either source."
         ),
     ),
     (
@@ -661,6 +662,7 @@ ALWAYS_ON_CONTROLS: tuple[tuple[str, str, str, str, str], ...] = (
             "Reference images to use as well as, or instead of, the "
             "attached ones: a JSON list of https links or data URLs. These are placed first, "
             "so they survive when the model takes fewer references than are on offer. "
+            "Reference images set to none sends none of these either. "
             "At most 16 are sent; the rest are named in the chat as not sent."
         ),
     ),
@@ -1335,7 +1337,7 @@ class Filter:
         if user_valves is None:
             user_valves = self.UserValves()
 
-        params: dict[str, Any] = {{"model": self.valves.IMAGE_GENERATION_MODEL}}
+        params: dict[str, Any] = {{"model": (self.valves.IMAGE_GENERATION_MODEL or "").strip() or {model_id!r}}}
         if self.valves.IMAGE_GENERATION_MODERATION != {moderation_values[0]!r}:
             params["moderation"] = self.valves.IMAGE_GENERATION_MODERATION
 {_render_image_overrides(tool_spec, target="params", wire_keys=image_gen_tool_wire_keys())}

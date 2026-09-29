@@ -67,6 +67,17 @@ except Exception:
 logger = logging.getLogger(__name__)
 
 _warned_forward_headers: set[str] = set()
+_warned_bzip2_compresslevel: set[str] = set()
+
+
+def _warn_bzip2_level_floored() -> None:
+    logger.log(
+        warn_level(_warned_bzip2_compresslevel, "0"),
+        "Session log zip compression is bzip2 at level 0, which bzip2 cannot use; "
+        "writing archives at level 1. bzip2 takes levels 1-9: set Session log zip "
+        "compress level to 1-9, or choose another codec. The stored setting still "
+        "reads 0 until it is saved again.",
+    )
 
 
 # Constants
@@ -897,13 +908,31 @@ class Valves(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
+    def _floor_the_bzip2_compression_level(cls, values):
+        if not isinstance(values, Mapping):
+            return values
+        if values.get("SESSION_LOG_ZIP_COMPRESSION") != "bzip2":
+            return values
+        level = values.get("SESSION_LOG_ZIP_COMPRESSLEVEL")
+        if level != 0 or isinstance(level, bool):
+            return values
+        _warn_bzip2_level_floored()
+        return dict(values, SESSION_LOG_ZIP_COMPRESSLEVEL=1)
+
+    @model_validator(mode="before")
+    @classmethod
     def _drop_unvalidatable(cls, values):
         return drop_unvalidatable(cls, values)
 
     # Connection & Auth
     BASE_URL: str = Field(
         default=((os.getenv("OPENROUTER_API_BASE_URL") or "").strip() or "https://openrouter.ai/api/v1"),
-        description="OpenRouter API base URL. Override this if you are using a gateway or proxy.",
+        description=(
+            "OpenRouter API base URL. Override this if you are using a gateway or proxy. "
+            "Changing it makes the next image request re-read every image model's published "
+            "settings, so the controls a gateway offers are never taken from the host they were "
+            "read from before the change."
+        ),
     )
     DEFAULT_LLM_ENDPOINT: Literal["responses", "chat_completions"] = Field(
         default="responses",
@@ -952,7 +981,15 @@ class Valves(BaseModel):
     API_KEY: EncryptedStr = Field(
         default_factory=_default_api_key,
         title="OpenRouter API key",
-        description="Your OpenRouter API key. Defaults to the OPENROUTER_API_KEY environment variable. Clearing it removes the stored value and returns the setting to its default: the OPENROUTER_API_KEY environment value when one is set, and no key at all when one is not.",
+        description=(
+            "Your OpenRouter API key. Defaults to the OPENROUTER_API_KEY environment variable. "
+            "Clearing it removes the stored value and returns the setting to its default: the "
+            "OPENROUTER_API_KEY environment value when one is set, and no key at all when one is "
+            "not. Rotating it makes the next image request re-read every image model's published "
+            "settings under the new account, so one account's published limits are never applied "
+            "to another's. Re-saving an unchanged key does the same, because the stored value is "
+            "re-encrypted with a fresh nonce on every save."
+        ),
     )
     HTTP_REFERER_OVERRIDE: str = Field(
         default="",
@@ -962,7 +999,11 @@ class Valves(BaseModel):
             "Applies to every request to an openrouter.ai host, including the catalogue, "
             "endpoint and maker-page refresh reads; not to user- or model-supplied asset "
             "downloads or the GitHub self-update check. "
-            "When empty, the pipe uses its default project URL."
+            "Surrounding whitespace is trimmed, so a URL pasted with a trailing newline "
+            "is used as typed. "
+            "When empty, the pipe uses its default project URL. "
+            "A value that is still not a full http(s) URL after trimming is ignored, a "
+            "warning is shown, and the default is used."
         ),
     )
     HTTP_CONNECT_TIMEOUT_SECONDS: int = Field(
@@ -1146,7 +1187,10 @@ class Valves(BaseModel):
         description=(
             "How long to cache the OpenRouter model catalog (in seconds) before refreshing. "
             "The refresh backoff after a failed fetch is tracked per OpenRouter account, so "
-            "one account's outage never holds up another account's catalog read."
+            "one account's outage never holds up another account's catalog read. The image "
+            "models' published settings are cached on the same window, and that cache is "
+            "dropped at once when the base URL or the API key changes, rather than being "
+            "kept for the rest of the window."
         ),
     )
     NEW_MODEL_ACCESS_CONTROL: Literal["public", "admins"] = Field(
@@ -1245,6 +1289,7 @@ class Valves(BaseModel):
         title="Anthropic interleaved thinking",
         description=(
             "When True, enables Claude's interleaved thinking mode by sending "
+            "`interleaved-thinking-2025-05-14` in the `x-anthropic-beta` header "
             "on Claude models that support it "
             "(including the `~anthropic/...` router aliases)."
         ),
@@ -1474,11 +1519,12 @@ class Valves(BaseModel):
         description=(
             "When True, save the full log of each request to encrypted zip files on disk. "
             "Archives capture the full OpenRouter request/response (prompts, model output, tool calls, provider errors) plus request identifiers — treat as sensitive conversation data at rest. "
-            "One zip is written per message turn, plus one for each housekeeping task Open WebUI dispatches on that turn, named <message_id>.<task>.zip. Open WebUI defines nine task types in its TASKS enum plus three more named inline (context_compaction, memory_review, context_summary), so a turn that triggers all of them produces up to thirteen archives. "
+            "One zip is written per message turn, plus one for each housekeeping task Open WebUI dispatches on that turn, named <message_id>.<task>.zip. Open WebUI defines nine task types in its TASKS enum plus three more named inline (context_compaction, memory_review, context_summary), so a turn that triggers all of them produces up to thirteen archives. An internal-Fusion turn writes its inner calls on top of that count, each in the request-keyed api/ tree rather than beside the turn's own archives. "
             "Persistence needs a user_id and a request_id; with it on, a call that carries no usable chat_id or message_id is archived under "
-            "`api/api-<request_id>.zip` (see SESSION_LOG_ARCHIVE_API_CALLS), and every temporary chat is still dropped; that drop is logged as a warning on each of the three archive paths and again after a five-minute cooldown, once per person on the two paths that run and once per worker process on bundle assembly, which is called without a user. Only the segment-persist path runs for a request today, so that is the one that warns. "
-            "A task invocation that resolves to no message id is skipped the same way, which includes every Fusion panel member — those carry no message id at all, so they are not archived. "
-            "Turning this off also stops the retention sweep, leaving every archive already on disk untouched until it is re-enabled and the retention window passes."
+            "`api/api-<request_id>.zip` (see SESSION_LOG_ARCHIVE_API_CALLS), and every temporary chat is still dropped; that drop is logged as a warning on each of the two archive paths (segment persist, bundle assembly) and again after a five-minute cooldown, once per person on the one path that runs and once per worker process on bundle assembly, which is called without a user. Only the segment-persist path runs for a request today, so that is the one that warns. "
+            "A Fusion panel member is archived too. It carries no message id of its own, but `run_fusion_member` restores the outer turn's chat_id onto it, so it takes the request surrogate and is written as `api/api-<request_id>.zip` while SESSION_LOG_ARCHIVE_API_CALLS is on — one file per inner call, so an N-model panel turn writes N+2 of them (the members, the judge and the synthesis), or N+3 with the judge's second pass, on top of the turn's own archives. "
+            "Turning this off also stops the retention sweep, leaving every archive already on disk untouched until it is re-enabled and the retention window passes. "
+            "A write already inside an assembly pass is read again at the write itself, so one that is already under way when this is switched off publishes nothing and its staged segments stay in the database for a later pass."
         ),
     )
     SESSION_LOG_ARCHIVE_API_CALLS: bool = Field(
@@ -1492,8 +1538,9 @@ class Valves(BaseModel):
             "segment already staged while this was on is still packed and written by the assembler, so a handful of "
             "archives can appear after you switch it off. A `parent_id: null` body is given a real chat id but no "
             "message id, so it takes this path too and is keyed on the request id, not on that chat. "
-            "The archive is never valve-gated after staging: a row already written is finished, exactly as a terminal "
-            "segment that lands after a turn has ended."
+            "This valve is never read again after staging: a row already written is finished under it, exactly as a "
+            "terminal segment that lands after a turn has ended. The master SESSION_LOG_STORE_ENABLED is different - it is read "
+            "at the write itself, so an assembly pass already under way when it is switched off publishes nothing and keeps its rows."
         ),
     )
     SESSION_LOG_DIR: str = Field(
@@ -1501,7 +1548,10 @@ class Valves(BaseModel):
         description=(
             "Base directory for encrypted session log archives. "
             "Files are stored under <SESSION_LOG_DIR>/<user_id>/<chat_id>/<message_id>.zip, "
-            "with a housekeeping task's own archive beside the answer's as <message_id>.<task>.zip."
+            "with a housekeeping task's own archive beside the answer's as <message_id>.<task>.zip. "
+            "A path component holding a character outside [0-9A-Za-z._-], or long enough to be cut, keeps its sanitized stem "
+            "and gains a short digest of the exact id, so two ids that would otherwise land on the same name cannot; the exact ids stay in "
+            "the archive's meta.json under ids, and a turn with no usable user id gets a directory of its own rather than a shared user/."
         ),
     )
     SESSION_LOG_ZIP_PASSWORD: EncryptedStr = Field(
@@ -1511,7 +1561,9 @@ class Valves(BaseModel):
             "Recommend using a long random passphrase and encrypting the value (requires WEBUI_SECRET_KEY). "
             "Clearing it stops all archive writing, and so does a stored value that cannot be read under "
             "the current WEBUI_SECRET_KEY, whether it was stored under a key that no longer decrypts or is a "
-            "damaged row: no archive is written until a passphrase is re-entered here. A passphrase typed here "
+            "damaged row: no new archive is written until a passphrase is re-entered here. A segment staged while "
+            "the passphrase did resolve is still packed once it resolves again, so a few archives can appear after "
+            "you clear it. A passphrase typed here "
             "that begins with encrypted: and continues with an all-base64 character body is read as a damaged "
             "stored value and refused the same way, so enter it without the prefix."
         ),
@@ -1545,8 +1597,11 @@ class Valves(BaseModel):
         ge=0,
         le=9,
         description=(
-            "Compression level (0-9) for deflated/bzip2 zip compression. "
-            "Ignored for stored/lzma."
+            "Compression level for deflated (0-9) and bzip2 (1-9) zip compression; 0 "
+            "stores a deflated entry without compressing it, and bzip2 has no such "
+            "level. "
+            "Ignored for stored/lzma. "
+            "A 0 under bzip2 is read as 1."
         ),
     )
     SESSION_LOG_MAX_LINES: int = Field(
@@ -1566,7 +1621,11 @@ class Valves(BaseModel):
     SESSION_LOG_ASSEMBLER_INTERVAL_SECONDS: int = Field(
         default=30,
         ge=1,
-        description="How often (in seconds) to check the database for log pieces waiting to be packed and build one zip per message.",
+        description=(
+            "How often (in seconds) to check the database for log pieces waiting to be packed and build one zip per message. "
+            "The same number is the wall-clock budget one pass gets: it takes no new turn once this much time has elapsed since the pass began, "
+            "and leaves the rest of its window to the next pass. Read on every pass, so a change applies with no restart."
+        ),
     )
     SESSION_LOG_ASSEMBLER_JITTER_SECONDS: int = Field(
         default=10,
@@ -1577,7 +1636,12 @@ class Valves(BaseModel):
         default=25,
         ge=1,
         le=500,
-        description="Maximum number of message bundles to assemble per archiving pass; counted in turns, not rows.",
+        description=(
+            "Maximum number of message bundles listed per archiving pass, in each of the two listings "
+            "(finished turns and crash-stranded ones), so a pass lists up to twice this many; counted in turns, not rows. "
+            "A pass then assembles as many of those as SESSION_LOG_ASSEMBLER_INTERVAL_SECONDS of wall clock allows, "
+            "leaving the rest staged for the next pass."
+        ),
     )
     SESSION_LOG_STALE_FINALIZE_SECONDS: int = Field(
         default=6 * 7200,
@@ -1602,7 +1666,7 @@ class Valves(BaseModel):
     SESSION_LOG_LOCK_STALE_SECONDS: int = Field(
         default=1800,
         ge=60,
-        description="Stale lock timeout (seconds) for DB-backed session log assembly locks; stale locks are reclaimed. It is also the write-failure backoff: a bundle whose archive could not be written is skipped for this long before it is retried, so one bundle the pipe cannot write does not hold the window. A lock held by another worker is not a write failure and is never backed off.",
+        description="Stale lock timeout (seconds) for DB-backed session log assembly locks; stale locks are reclaimed. It is also the write-failure backoff: a bundle whose archive could not be written is skipped for this long before it is retried, so one bundle the pipe cannot write does not hold the window. The one carve-out is the stranded-turn rescue: a turn whose existing archive could not be read is exempt from the backoff only while its own three-strike rescue budget lasts, and once that budget is spent it is set aside for this interval like any other bundle the pipe could not write. A lock held by another worker is not a write failure and is never backed off.",
     )
     ENABLE_TIMING_LOG: bool = Field(
         default=False,
@@ -1709,7 +1773,7 @@ class Valves(BaseModel):
         description=(
             "Markdown template used when OpenRouter rejects a request with a status that has no template of its own (400, 403, 404, 422, and so on), and when a failure reported inside a started reply resolves to such a status, from the kind OpenRouter named or, when that kind is unknown, from the code it sent. Clear this box and save to restore this built-in text. Placeholders such as {heading}, {detail}, {sanitized_detail}, {provider}, {model_identifier}, {requested_model}, {api_model_id}, {normalized_model_id}, {openrouter_code}, {upstream_type}, {reason}, {request_id}, {request_id_reference}, {openrouter_message}, {upstream_message}, {moderation_reasons}, {flagged_excerpt}, {raw_body}, {context_limit_tokens}, {max_output_tokens}, {include_model_limits}, {metadata_json}, {provider_raw_json}, {error_id}, {timestamp}, {session_id}, {user_id}, {native_finish_reason}, {error_chunk_id}, {error_chunk_created}, {is_streaming_error}, {streaming_provider}, {streaming_model}, {retry_after_seconds}, {rate_limit_type}, {required_cost}, and {account_balance} are replaced when values are available. Lines whose **own** placeholder resolves to a missing or empty value are omitted automatically; a value that itself contains a placeholder in braces is shown verbatim, never re-read as a placeholder. `{streaming_provider}` and `{streaming_model}` are filled only for a failure reported inside a reply that has already started, on a rejected request they are empty however the provider is named, and they are also empty when such a failure names no provider at all. "
             + _BOOLEAN_PLACEHOLDER_RULE
-            + " The pipe does the span and fence work on these values itself: a value placed inside a backtick span, on a `### ` heading, or on a bare `**…**` / `- ` line arrives as one logical line with its backticks removed, and a value placed in a fenced block arrives inside a fence long enough to contain it, so a custom template does not have to. The pipe's own numbers and labels (`status_code`, `retry_after_seconds`, `context_limit_tokens`, `max_output_tokens`, `diagnostics`) are already single-line. Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to show them only when that value is set. {metadata_json} is the complete provider metadata, including any field the pipe itself adds, so a template that assumed it held only what the provider sent would read it wrongly."
+            + " The pipe does the span and fence work on these values itself: a value placed inside a backtick span, on a `### ` heading, or on a bare `**…**` / `- ` line arrives as one logical line with its backticks removed, and a value placed in a fenced block arrives inside a fence long enough to contain it, so a custom template does not have to. The pipe's own numbers and labels (`status_code`, `retry_after_seconds`, `context_limit_tokens`, `max_output_tokens`, `diagnostics`) are already single-line. Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to show them only when that value is set. {metadata_json} and {provider_raw_json} are the provider's metadata and its raw error block, including any field the pipe itself adds, cut at 16,384 characters with a marker on a line of its own naming how many characters were removed, so a value that arrives cut is no longer parseable JSON and a template that read it as the whole payload would read it wrongly. {raw_body} and {flagged_excerpt} are never cut: they are the provider's own bytes and reach the card whole on purpose, so that what a person reads is what the provider sent. The complete values stay on the error object and in the session log, which is where an operator who needs the whole payload reads it."
         ),
     )
     ENDPOINT_OVERRIDE_CONFLICT_TEMPLATE: str = Field(
@@ -1963,7 +2027,7 @@ class Valves(BaseModel):
     )
     USE_MODEL_MAX_OUTPUT_TOKENS: bool = Field(
         default=False,
-        description="When enabled, and the request does not already set a limit, fill in an output allowance: the smaller of the model's advertised max_output_tokens and half its context window, or the advertised value alone when no context window is known. Models advertising neither are left unset. Disable to send no limit of the pipe's own. A routing variant such as base:nitro resolves through its base's catalog row, so it inherits the base's ceiling. This valve controls the automatic value, not yours: a max_tokens or max_output_tokens that is an integer of 1 or above is forwarded unchanged. OpenRouter documents the parameters as 1 or above and Open WebUI's slider reaches -2, so a value below 1 is sent as no cap -- which means the automatic ceiling applies if this valve is on.",
+        description="When enabled, and the request does not already set a limit, fill in an output allowance: the smaller of the model's advertised max_output_tokens and half its context window, or the advertised value alone when no context window is known. Models advertising neither are left unset. Disable to send no limit of the pipe's own. A routing variant such as base:nitro resolves through its base's catalog row, so it inherits the base's ceiling. This valve controls the automatic value, not yours: a max_tokens, max_output_tokens or max_completion_tokens that is an integer of 1 or above is forwarded unchanged. OpenRouter documents the parameters as 1 or above and Open WebUI's slider reaches -2, so a value below 1 is sent as no cap -- which means the automatic ceiling applies if this valve is on.",
     )
     SHOW_FINAL_USAGE_STATUS: bool = Field(
         default=True,
@@ -2034,7 +2098,7 @@ class Valves(BaseModel):
     )
     UPDATE_MODEL_CAPABILITIES: bool = Field(
         default=True,
-        description="When enabled, automatically sync model capabilities (vision, file_upload, web_search, etc.) from OpenRouter's API catalog to Open WebUI model metadata. Disable to manage capabilities manually.",
+        description="When enabled, automatically sync model capabilities (vision, file_upload, web_search, etc.) from OpenRouter's API catalog to Open WebUI model metadata. The web_search and citations checkboxes are written only where the model has no setting of its own yet, so a value set by hand is kept. Disable to manage capabilities manually.",
     )
     DISABLE_BUILTIN_TOOLS_ON_MEDIA_MODELS: bool = Field(
         default=True,
@@ -2127,11 +2191,17 @@ class Valves(BaseModel):
             "in Open WebUI."
             + _PIPE_OFF_COMES_BACK
             + _ADMIN_OFF_STAYS_OFF
+            + " The six controls on that tool's panel are built from the same "
+            "published-contract sweep as the per-model image panels, so either half of "
+            "this pair, or either half of AUTO_INSTALL_IMAGE_FILTERS / "
+            "AUTO_ATTACH_IMAGE_FILTERS, pays for that read; turning the per-model pair off "
+            "does not turn this one off, and with all four off the contracts are not read "
+            "at all."
         ),
     )
     AUTO_ATTACH_IMAGE_GEN_FILTER: bool = Field(
         default=True,
-        description="Automatically attach the OpenRouter Image Generation filter to every pipe model that can send the tool: not a model whose catalogue entry rules tool use out, not a picture-only model, not a video model, not the hosted Fusion model. A model that stops qualifying loses the switch at the next refresh, and the id the pipe had recorded for it is released from `filterIds` on that same refresh. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone.",
+        description="Automatically attach the OpenRouter Image Generation filter to every pipe model that can send the tool: not a model whose catalogue entry rules tool use out, not a picture-only model, not a video model, not the hosted Fusion model. A model that stops qualifying loses the switch at the next refresh, and the id the pipe had recorded for it is released from `filterIds` on that same refresh. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. On its own, with the per-model image filter pair off, this valve also buys the published-contract sweep the tool's six controls are drawn from and checked against, so the choices on them are the drawing model's own.",
     )
     ENABLE_OPENROUTER_IMAGE_GENERATION: bool = Field(
         default=True,
@@ -2159,7 +2229,11 @@ class Valves(BaseModel):
             "last successful read; a model never read gets no panel at all rather than a "
             "guessed set. If a whole refresh cannot install the panels or the Fusion "
             "panel at all, every model keeps the panels it already had and the pass is "
-            "tried again at the next catalog fetch."
+            "tried again at the next catalog fetch. This is not the only valve that reads "
+            "those settings: the Image Generation tool's own panel is built from the same "
+            "sweep, so either half of AUTO_INSTALL_IMAGE_GEN_FILTER / "
+            "AUTO_ATTACH_IMAGE_GEN_FILTER reads them too, and with all four filter valves "
+            "off nothing reads them at all."
             + _ADMIN_OFF_STAYS_OFF
         ),
     )
@@ -2712,6 +2786,7 @@ class UserValves(BaseModel):
         title="Interleaved thinking (Claude)",
         description=(
             "When enabled, request Claude's interleaved thinking stream by sending "
+            "`interleaved-thinking-2025-05-14` in the `x-anthropic-beta` header "
             "on Claude models that support it "
             "(including the `~anthropic/...` router aliases)."
         ),
@@ -2724,7 +2799,7 @@ class UserValves(BaseModel):
     REASONING_SUMMARY_MODE: Literal["auto", "concise", "detailed", "disabled"] = Field(
         default="auto",
         title="Reasoning explanation detail",
-        description="Pick how detailed the reasoning summary should be (auto, concise, detailed, or hidden).",
+        description="Pick how detailed the reasoning summary should be (auto, concise, detailed, or disabled).",
     )
     PERSIST_REASONING_TOKENS: Literal["disabled", "next_reply", "conversation"] = Field(
         default="next_reply",
@@ -2793,10 +2868,15 @@ def parse_user_valves(
         return model(), []
 
     candidate = dict(raw)
+    renamed = {
+        name
+        for name, value in raw.items()
+        if value is not None and name not in model.model_fields
+    }
     rejected: list[str] = []
     for _ in range(len(candidate) + 1):
         try:
-            return model.model_validate(candidate), rejected
+            return model.model_validate(candidate), sorted(set(rejected) | renamed)
         except ValidationError as exc:
             bad = {
                 str(err["loc"][0])
@@ -2804,18 +2884,19 @@ def parse_user_valves(
                 if err.get("loc") and str(err["loc"][0]) in candidate
             }
             if not bad:
-                return model(), sorted(set(rejected) | set(candidate))
+                return model(), sorted(set(rejected) | set(candidate) | renamed)
             rejected.extend(sorted(bad))
             for name in bad:
                 candidate.pop(name, None)
-    return model(), sorted(set(rejected))
+    return model(), sorted(set(rejected) | renamed)
 
 
 def _select_openrouter_http_referer(valves: Any | None) -> str:
     """Select HTTP referer for OpenRouter requests, with optional valve override."""
     override = valves.HTTP_REFERER_OVERRIDE if valves else ""
-    if override and is_http_or_https_url(override):
-        return override
+    candidate = override.strip() if isinstance(override, str) else ""
+    if candidate and is_http_or_https_url(candidate):
+        return candidate
     return _OPENROUTER_REFERER
 
 

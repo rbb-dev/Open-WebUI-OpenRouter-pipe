@@ -1917,100 +1917,6 @@ class TestSessionLogWorkers:
 class TestSessionLogArchive:
     """Tests for session log archive handling."""
 
-    def test_enqueue_session_log_archive_missing_ids(self):
-        """Test that _enqueue_session_log_archive returns early with missing IDs."""
-        pipe = Pipe()
-        pipe.valves.SESSION_LOG_STORE_ENABLED = True
-
-        try:
-            pipe._session_log_manager.enqueue_archive(
-                pipe.valves,
-                user_id="",  # Missing
-                session_id="session1",
-                chat_id="chat1",
-                message_id="msg1",
-                request_id="req1",
-                log_events=[{"test": "event"}],
-            )
-            # Should return early without error
-        finally:
-            pipe.shutdown()
-
-    def test_enqueue_session_log_archive_no_pyzipper(self, caplog, monkeypatch):
-        """Test that _enqueue_session_log_archive handles missing pyzipper."""
-        import open_webui_openrouter_pipe.logging.session_log_manager as slm_mod
-        original_pyzipper = slm_mod.pyzipper
-        slm_mod.pyzipper = None
-
-        pipe = Pipe()
-        pipe.valves.SESSION_LOG_STORE_ENABLED = True
-        pipe._session_log_manager._warning_emitted = False
-
-        try:
-            with caplog.at_level(logging.WARNING):
-                pipe._session_log_manager.enqueue_archive(
-                    pipe.valves,
-                    user_id="user1",
-                    session_id="session1",
-                    chat_id="chat1",
-                    message_id="msg1",
-                    request_id="req1",
-                    log_events=[{"test": "event"}],
-                )
-
-            assert any("pyzipper" in msg for msg in caplog.messages)
-        finally:
-            slm_mod.pyzipper = original_pyzipper
-            pipe.shutdown()
-
-    def test_enqueue_session_log_archive_empty_dir(self, caplog):
-        """Test that _enqueue_session_log_archive handles empty SESSION_LOG_DIR."""
-        pipe = Pipe()
-        pipe.valves.SESSION_LOG_STORE_ENABLED = True
-        pipe.valves.SESSION_LOG_DIR = ""
-        pipe._session_log_manager._warning_emitted = False
-
-        try:
-            with caplog.at_level(logging.WARNING):
-                pipe._session_log_manager.enqueue_archive(
-                    pipe.valves,
-                    user_id="user1",
-                    session_id="session1",
-                    chat_id="chat1",
-                    message_id="msg1",
-                    request_id="req1",
-                    log_events=[{"test": "event"}],
-                )
-
-            assert any("SESSION_LOG_DIR is empty" in msg for msg in caplog.messages)
-        finally:
-            pipe.shutdown()
-
-    def test_enqueue_session_log_archive_no_password(self, caplog):
-        """Test that _enqueue_session_log_archive handles empty password."""
-        pipe = Pipe()
-        pipe.valves.SESSION_LOG_STORE_ENABLED = True
-        pipe.valves.SESSION_LOG_DIR = "/tmp/logs"
-        pipe.valves.SESSION_LOG_ZIP_PASSWORD = EncryptedStr("")
-        pipe._session_log_manager._warning_emitted = False
-
-        try:
-            with caplog.at_level(logging.WARNING):
-                pipe._session_log_manager.enqueue_archive(
-                    pipe.valves,
-                    user_id="user1",
-                    session_id="session1",
-                    chat_id="chat1",
-                    message_id="msg1",
-                    request_id="req1",
-                    log_events=[{"test": "event"}],
-                )
-
-            assert any("SESSION_LOG_ZIP_PASSWORD" in msg for msg in caplog.messages)
-        finally:
-            pipe.shutdown()
-
-
 # =============================================================================
 # SESSION LOG ASSEMBLER TESTS
 # =============================================================================
@@ -5816,7 +5722,7 @@ from typing import Any, cast
 import pytest
 
 from open_webui_openrouter_pipe import Pipe, EncryptedStr
-from open_webui_openrouter_pipe.core.utils import _sanitize_path_component
+from open_webui_openrouter_pipe.core.logging_system import _archive_file_path
 from open_webui_openrouter_pipe.storage.persistence import generate_item_id
 
 
@@ -6193,56 +6099,6 @@ def test_resolve_session_log_archive_settings_success(pipe_instance, monkeypatch
     assert compresslevel is None
 
 
-def test_enqueue_session_log_archive_queues_job(pipe_instance, monkeypatch, tmp_path):
-    pipe = pipe_instance
-    pipe.valves.SESSION_LOG_STORE_ENABLED = True
-    pipe.valves.SESSION_LOG_DIR = str(tmp_path)
-    pipe.valves.SESSION_LOG_ZIP_PASSWORD = EncryptedStr("pass")
-    monkeypatch.setattr("open_webui_openrouter_pipe.pipe.pyzipper", object())
-    monkeypatch.setattr(pipe._session_log_manager, "start_workers", lambda: None)
-
-    pipe._session_log_manager._queue = None
-    pipe._session_log_manager.enqueue_archive(
-        pipe.valves,
-        user_id="user",
-        session_id="sess",
-        chat_id="chat",
-        message_id="msg",
-        request_id="req",
-        log_events=[{"message": "hello"}],
-    )
-
-    assert pipe._session_log_manager._queue is not None
-    job = pipe._session_log_manager._queue.get_nowait()
-    assert job.user_id == "user"
-    assert job.chat_id == "chat"
-
-
-def test_enqueue_session_log_archive_queue_full(pipe_instance, monkeypatch, tmp_path, caplog):
-    pipe = pipe_instance
-    pipe.valves.SESSION_LOG_STORE_ENABLED = True
-    pipe.valves.SESSION_LOG_DIR = str(tmp_path)
-    pipe.valves.SESSION_LOG_ZIP_PASSWORD = EncryptedStr("pass")
-    monkeypatch.setattr("open_webui_openrouter_pipe.pipe.pyzipper", object())
-    monkeypatch.setattr(pipe._session_log_manager, "start_workers", lambda: None)
-
-    pipe._session_log_manager._queue = pipe._session_log_manager._queue or __import__("queue").Queue(maxsize=1)
-    pipe._session_log_manager._queue.put_nowait("filled")
-
-    caplog.set_level("WARNING")
-    pipe._session_log_manager.enqueue_archive(
-        pipe.valves,
-        user_id="user",
-        session_id="sess",
-        chat_id="chat",
-        message_id="msg",
-        request_id="req",
-        log_events=[{"message": "hello"}],
-    )
-
-    assert any("Session log archive queue is full" in rec.message for rec in caplog.records)
-
-
 def test_assemble_and_write_session_log_bundle_writes_zip(pipe_instance, monkeypatch, tmp_path):
     pipe = pipe_instance
     _install_fake_store(pipe)
@@ -6275,9 +6131,10 @@ def test_assemble_and_write_session_log_bundle_writes_zip(pipe_instance, monkeyp
     pipe._artifact_store._db_persist_sync([row])
 
     def _fake_write(job):
-        out_dir = Path(job.base_dir) / _sanitize_path_component(job.user_id, fallback="user") / _sanitize_path_component(job.chat_id, fallback="chat")
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / f"{_sanitize_path_component(job.message_id, fallback='message')}.zip"
+        out_path = _archive_file_path(
+            job.base_dir, user_id=job.user_id, chat_id=job.chat_id, message_id=job.message_id
+        )
+        out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text("zip")
 
     pipe._session_log_manager._write_archive = _fake_write  # type: ignore[assignment]
@@ -6832,76 +6689,6 @@ def test_maybe_start_session_log_assembler_worker_idempotent(pipe_for_session_lo
 
     pipe._session_log_manager.stop_workers()
     time.sleep(0.1)
-
-
-@pytest.mark.asyncio
-async def test_persist_session_log_segment_skips_when_missing_ids():
-    """Test that _persist_session_log_segment_to_db skips when required IDs are missing."""
-    pipe = Pipe()
-    pipe.valves.SESSION_LOG_STORE_ENABLED = True
-
-    try:
-        # Missing chat_id
-        await pipe._session_log_manager.persist_segment_to_db(
-            user_id="user1",
-            session_id="sess1",
-            chat_id="",
-            message_id="msg1",
-            request_id="req1",
-            log_events=[{"event": "test"}],
-            terminal=False,
-            status="success",
-        valves=pipe.valves,
-        )
-        # Should return without error
-    finally:
-        await pipe.close()
-
-
-@pytest.mark.asyncio
-async def test_persist_session_log_segment_skips_when_no_events():
-    """Test that _persist_session_log_segment_to_db skips when log_events is empty."""
-    pipe = Pipe()
-    pipe.valves.SESSION_LOG_STORE_ENABLED = True
-
-    try:
-        await pipe._session_log_manager.persist_segment_to_db(
-            user_id="user1",
-            session_id="sess1",
-            chat_id="chat1",
-            message_id="msg1",
-            request_id="req1",
-            log_events=[],
-            terminal=False,
-            status="success",
-        valves=pipe.valves,
-        )
-    finally:
-        await pipe.close()
-
-
-@pytest.mark.asyncio
-async def test_persist_session_log_segment_skips_when_archive_settings_unavailable():
-    """Test that _persist_session_log_segment_to_db skips when archive settings are not configured."""
-    pipe = Pipe()
-    pipe.valves.SESSION_LOG_STORE_ENABLED = True
-    pipe.valves.SESSION_LOG_DIR = ""
-    pipe.valves.SESSION_LOG_ZIP_PASSWORD = EncryptedStr("")
-
-    try:
-        await pipe._session_log_manager.persist_segment_to_db(
-            user_id="user1",
-            session_id="sess1",
-            chat_id="chat1",
-            message_id="msg1",
-            request_id="req1",
-            log_events=[{"event": "test"}],
-            terminal=False,
-            status="success",
-        valves=pipe.valves,
-        )
-    finally:
-        await pipe.close()
 
 
 def test_convert_jsonl_to_internal_converts_ts_to_created():
@@ -7895,7 +7682,7 @@ class TestSessionLogArchiveReader:
 
             settings = ("/tmp", password, "deflated", 6)
 
-            events = pipe._session_log_manager.read_archive_events(zip_path, settings)
+            events = pipe._session_log_manager.read_archive(zip_path, settings)[1]
 
             assert len(events) == 2
             assert events[0].get("event") == "test"
@@ -7922,7 +7709,7 @@ class TestSessionLogArchiveReader:
 
             settings = ("/tmp", password, "deflated", 6)
 
-            events = pipe._session_log_manager.read_archive_events(zip_path, settings)
+            events = pipe._session_log_manager.read_archive(zip_path, settings)[1]
 
             # Should have 2 valid events, skipping the malformed line
             assert len(events) == 2
@@ -8824,34 +8611,6 @@ class TestToolCanBatch:
         finally:
             pipe.shutdown()
 
-    def test_can_batch_tool_calls_with_dependency(self):
-        """Test _can_batch_tool_calls with dependency markers."""
-        pipe = Pipe()
-
-        try:
-            from open_webui_openrouter_pipe.tools.tool_executor import _QueuedToolCall
-
-            first = _QueuedToolCall(
-                call={"name": "tool_a", "call_id": "call1"},
-                tool_cfg={"type": "function"},
-                args={"arg1": "value1"},
-                future=Mock(),
-                allow_batch=True,
-            )
-
-            candidate = _QueuedToolCall(
-                call={"name": "tool_a", "call_id": "call2"},
-                tool_cfg={"type": "function"},
-                args={"depends_on": "call1"},  # Has dependency
-                future=Mock(),
-                allow_batch=True,
-            )
-
-            result = pipe._ensure_tool_executor()._can_batch_tool_calls(first, candidate)
-            assert result is False
-        finally:
-            pipe.shutdown()
-
 
 
 # =============================================================================
@@ -9123,41 +8882,6 @@ class TestSessionLogWorkerStop:
 
 class TestEnqueueSessionLogArchive:
     """Tests for session log archive enqueueing."""
-
-    def test_enqueue_session_log_archive(self, tmp_path):
-        """Test _enqueue_session_log_archive adds job to queue."""
-        pipe = Pipe()
-
-        try:
-            pipe.valves.SESSION_LOG_STORE_ENABLED = True
-            pipe.valves.SESSION_LOG_DIR = str(tmp_path)
-            pipe.valves.SESSION_LOG_ZIP_PASSWORD = EncryptedStr("password123")
-
-            # Start workers to initialize the queue
-            pipe._session_log_manager.start_workers()
-
-            # Enqueue a job using the correct method signature
-            pipe._session_log_manager.enqueue_archive(
-                user_id="test_user",
-                session_id="test_session",
-                chat_id="test_chat",
-                message_id="test_message",
-                request_id="test_request",
-                log_events=[{"event": "test", "created": time.time()}],
-            valves=pipe.valves,
-            )
-
-            # Check that queue is not empty
-            if pipe._session_log_manager._queue:
-                # Queue should have the job (or worker already picked it up)
-                pass
-
-            pipe._session_log_manager.stop_workers()
-        finally:
-            pipe.shutdown()
-
-
-
 
 class TestMoreStreamingDelegationGuards:
     """Tests for streaming delegation methods with guard clauses."""
@@ -10587,8 +10311,8 @@ class _WarningRecorder(logging.Handler):
         return [r.getMessage() for r in self.records if r.levelno == level]
 
 
-def _enqueue(manager, valve_obj, chat_id="c", message_id="m"):
-    manager.enqueue_archive(
+async def _persist(manager, valve_obj, chat_id="c", message_id="m"):
+    await manager.persist_segment_to_db(
         valve_obj,
         user_id="u",
         session_id="s",
@@ -10596,4 +10320,6 @@ def _enqueue(manager, valve_obj, chat_id="c", message_id="m"):
         message_id=message_id,
         request_id="r",
         log_events=[{"created": 1.0, "message": "hi"}],
+        terminal=True,
+        status="ok",
     )

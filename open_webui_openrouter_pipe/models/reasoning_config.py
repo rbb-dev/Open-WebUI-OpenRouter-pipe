@@ -103,18 +103,21 @@ class ReasoningConfigManager:
             cfg: dict[str, Any] = {}
             if isinstance(responses_body.reasoning, dict):
                 cfg = dict(responses_body.reasoning)
-            if target_effort and "effort" not in cfg:
+            if target_effort in _EFFORT_REASONING_OFF or (target_effort and "effort" not in cfg):
                 cfg["effort"] = target_effort
-            if requested_summary and "summary" not in cfg:
+            if summary_mode == "disabled":
+                cfg.pop("summary", None)
+            elif requested_summary and "summary" not in cfg:
                 cfg["summary"] = requested_summary
             cfg.setdefault("enabled", True)
             cfg, refused = self._refuse_off_on_mandatory_model(responses_body.model, cfg)
             responses_body.reasoning = cfg or None
             self._set_include_reasoning(responses_body, None)
         elif supports_legacy_only:
+            carried = responses_body.reasoning if isinstance(responses_body.reasoning, dict) else {}
             responses_body.reasoning = None
-            desired = target_effort not in _EFFORT_REASONING_OFF
-            self._set_include_reasoning(responses_body, desired)
+            off = target_effort in _EFFORT_REASONING_OFF or self._request_asks_for_no_reasoning(carried)
+            self._set_include_reasoning(responses_body, not off)
 
         return responses_body.model if refused else None
 

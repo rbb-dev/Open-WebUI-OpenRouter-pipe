@@ -3,6 +3,8 @@ lock, overload drops, and disabled-mode no-ops — against a real sqlite DB."""
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import datetime
 import time
 from types import MethodType, SimpleNamespace

@@ -11,6 +11,7 @@ import base64
 import binascii
 import contextlib
 import copy
+import functools
 import json
 import logging
 import random
@@ -82,6 +83,7 @@ from ..core.url_scheme import is_http_or_https_url
 
 # Imports from core.utils
 from ..core.utils import (
+    BUILTIN_ASK_USER_ROUND_KEY,
     CONTINUED_REPLY,
     IMAGE_NO_IMAGES_REASON,
     OWUI_UNRESOLVABLE_CALL_STATUSES,
@@ -135,6 +137,9 @@ from ..requests.sanitizer import (
 )
 
 _OWUI_ORIGIN_SOURCES = frozenset({"owui_registry_tools", "owui_request_tools"})
+
+ASK_USER_ROUND_NAME = "ask_user"
+_BUILTIN_ASK_USER_NAMES_KEY = "_pipe_builtin_ask_user_names"
 
 _FUSION_PANEL_FAILURE_REASON = (
     "Every Fusion panel member failed; this run has no deliberated answer."
@@ -260,6 +265,16 @@ def _citation_host(url: str) -> str:
     return host.removeprefix("www.")
 
 
+def _owui_citations_enabled(model_block: Any) -> bool:
+    if not isinstance(model_block, dict):
+        return True
+    return bool(
+        (((model_block.get("info") or {}).get("meta") or {}).get("capabilities") or {}).get(
+            "citations", True
+        )
+    )
+
+
 def _append_hidden_marker_block(text: str, marker: str) -> str:
     """Append a hidden marker line to text using the same spacing as ULID markers."""
     if text:
@@ -350,6 +365,27 @@ def _joined_labels(labels: list[str]) -> str:
 
 async def _aclose_quietly(it: AsyncGenerator[dict[str, Any], None]) -> None:
     await it.aclose()
+
+
+_REASONING_HEAD_CHARS = 1024
+
+
+class _ReasoningTextBox:
+    __slots__ = ("head", "length", "parts")
+
+    def __init__(self) -> None:
+        self.parts: list[str] = []
+        self.length = 0
+        self.head = ""
+
+    def add(self, append: str) -> None:
+        if len(self.head) < _REASONING_HEAD_CHARS:
+            self.head += append[: _REASONING_HEAD_CHARS - len(self.head)]
+        self.parts.append(append)
+        self.length += len(append)
+
+    def text(self) -> str:
+        return "".join(self.parts)
 
 
 class StreamingHandler:
@@ -572,6 +608,7 @@ class StreamingHandler:
                 self.logger.warning("Received list-based tools without callables; tool execution will be disabled for this request.")
         model_block = metadata.get("model")
         openwebui_model = model_block.get("id", "") if isinstance(model_block, dict) else ""
+        citations_enabled = _owui_citations_enabled(model_block)
         assistant_message = ""
         assistant_len_before_tool_loops = len(assistant_message)
         pending_ulids: list[str] = []
@@ -587,7 +624,7 @@ class StreamingHandler:
         total_usage: dict[str, Any] = {}
         reasoning_stream_active = False
         active_reasoning_item_id: str | None = None
-        reasoning_stream_buffers: dict[str, str] = {}
+        reasoning_stream_buffers: dict[str, _ReasoningTextBox] = {}
         reasoning_stream_completed: set[str] = set()
         reasoning_display: dict[str, dict[str, Any]] = {}
         round_saw_function_call = 0
@@ -955,14 +992,14 @@ class StreamingHandler:
                         seeded_output_items = stored_items
                 return seeded_output_items
 
-            def _flush_recorded_message() -> dict[str, Any] | None:
+            def _flush_recorded_message(current_text: str) -> dict[str, Any] | None:
                 nonlocal recorded_message_chars, open_message_id
-                pending = assistant_message[recorded_message_chars:]
+                pending = current_text[recorded_message_chars:]
                 segment_id = open_message_id or f"msg-{uuid.uuid4().hex}"
                 open_message_id = None
                 if not pending:
                     return None
-                recorded_message_chars = len(assistant_message)
+                recorded_message_chars = len(current_text)
                 item = {
                     "type": "message",
                     "id": segment_id,
@@ -973,9 +1010,9 @@ class StreamingHandler:
                 emitted_output_items.append(item)
                 return item
 
-            async def _record_output_item(item: dict[str, Any]) -> None:
+            async def _record_output_item(item: dict[str, Any], current_text: str) -> None:
                 await _capture_seeded_output()
-                _flush_recorded_message()
+                _flush_recorded_message(current_text)
                 recorded = copy.deepcopy(item)
                 item_id = recorded.get("id")
                 if item_id:
@@ -985,7 +1022,7 @@ class StreamingHandler:
                             return
                 emitted_output_items.append(recorded)
 
-            def _terminal_output_items() -> list[dict[str, Any]]:
+            def _terminal_output_items(current_text: str) -> list[dict[str, Any]]:
                 seeded = seeded_output_items or []
                 combined = seeded + emitted_output_items
                 result_status_by_call_id: dict[str, Any] = {}
@@ -1005,7 +1042,7 @@ class StreamingHandler:
                         if resolvable and addressable and call_id in result_status_by_call_id:
                             item["status"] = owui_call_status(result_status_by_call_id.get(call_id))
                     resolved.append(item)
-                trailing = assistant_message[recorded_message_chars:]
+                trailing = current_text[recorded_message_chars:]
                 if trailing:
                     resolved.append({
                         "type": "message",
@@ -1030,11 +1067,11 @@ class StreamingHandler:
                 published_item_ids.insert(position, str(item["id"]))
                 return position
 
-            async def _place_item(item: dict[str, Any]) -> int:
+            async def _place_item(item: dict[str, Any], current_text: str) -> int:
                 nonlocal retry_barrier_crossed
                 if emitter_supplied:
                     retry_barrier_crossed = True
-                pending = assistant_message[recorded_message_chars:]
+                pending = current_text[recorded_message_chars:]
                 if item.get("type") == "function_call" and not strip_hidden_marker_lines(pending).strip():
                     recorded = [*(await _capture_seeded_output() or []), *emitted_output_items]
                     if recorded and recorded[-1].get("type") == "function_call_output":
@@ -1047,7 +1084,7 @@ class StreamingHandler:
                         }
                         await event_emitter({
                             "type": "response.output_item.added",
-                            "output_index": await _place_item(divider),
+                            "output_index": await _place_item(divider, current_text),
                             "item": divider,
                         })
                 if pending and not strip_hidden_marker_lines(pending).strip():
@@ -1055,14 +1092,14 @@ class StreamingHandler:
                     emitted_output_items.append(copy.deepcopy(item))
                     return _output_index_before_open_message(item)
                 if open_message_id is None and strip_hidden_marker_lines(pending).strip():
-                    published = _flush_recorded_message()
+                    published = _flush_recorded_message(current_text)
                     if published is not None:
                         await event_emitter({
                             "type": "response.output_item.added",
                             "output_index": _output_index(published),
                             "item": published,
                         })
-                await _record_output_item(item)
+                await _record_output_item(item, current_text)
                 return _output_index(item)
 
             async def _open_message() -> None:
@@ -1097,6 +1134,7 @@ class StreamingHandler:
                 name: str,
                 arguments: str,
                 status: str = "in_progress",
+                current_text: str,
             ) -> str:
                 """Emit a function_call tool card. Returns the effective call_id (UUID-generated if input was empty).
 
@@ -1121,13 +1159,13 @@ class StreamingHandler:
                     "arguments": arguments,
                     "status": status,
                 }
-                call_index = await _place_item(call_item)
+                call_index = await _place_item(call_item, current_text)
                 await event_emitter({
                     "type": "response.output_item.added",
                     "output_index": call_index,
                     "item": call_item,
                 })
-                await _flush_deferred_reasoning_items(len(emitted_tool_call_items))
+                await _flush_deferred_reasoning_items(len(emitted_tool_call_items), current_text)
                 return effective_id
 
             async def _emit_tool_result(
@@ -1138,6 +1176,7 @@ class StreamingHandler:
                 embeds: list | None = None,
                 status: str,
                 pictures: list[str] | None = None,
+                current_text: str,
             ) -> None:
                 """Emit a tool result card. Used by both pipeline and server tools.
 
@@ -1165,7 +1204,7 @@ class StreamingHandler:
                     output_item["files"] = files
                 if embeds:
                     output_item["embeds"] = embeds
-                output_index = await _place_item(output_item)
+                output_index = await _place_item(output_item, current_text)
                 await event_emitter({"type": "response.output_item.added", "output_index": output_index, "item": output_item})
                 call_item = next(
                     (entry for entry in emitted_output_items
@@ -1201,7 +1240,31 @@ class StreamingHandler:
                 return rows
 
             def _round_call_row(call: dict[str, Any], cid: str) -> list[dict[str, Any]]:
-                return _tool_rows([dict(call)], cid)
+                from ..tools.tool_executor import is_builtin_ask_user
+
+                payload = dict(call)
+                exposed = str(payload.get("name") or "").strip()
+                if is_builtin_ask_user(tool_registry.get(exposed)):
+                    payload[BUILTIN_ASK_USER_ROUND_KEY] = True
+                return _tool_rows([payload], cid)
+
+            def _handed_back_round_rows(
+                call: dict[str, Any], cid: str, exposed_name: str, tool_name: str, args_text: str
+            ) -> list[dict[str, Any]]:
+                if exposed_name != ASK_USER_ROUND_NAME and tool_name != ASK_USER_ROUND_NAME:
+                    return []
+                builtin_names = metadata.get(_BUILTIN_ASK_USER_NAMES_KEY) if isinstance(metadata, dict) else None
+                payload: dict[str, Any] = {
+                    "type": "function_call",
+                    "call_id": cid,
+                    "name": tool_name,
+                    "arguments": args_text,
+                    "status": str(call.get("status") or "completed"),
+                    BUILTIN_ASK_USER_ROUND_KEY: bool(
+                        isinstance(builtin_names, (set, frozenset)) and exposed_name in builtin_names
+                    ),
+                }
+                return _tool_rows([payload], cid)
 
             def _round_output_row(output: dict[str, Any], cid: str) -> list[dict[str, Any]]:
                 recorded = output.get("output")
@@ -1214,10 +1277,10 @@ class StreamingHandler:
 
             async def _commit_server_tool_round(
                 call_id: str, name: str, status: str, *, item_type: str, result_text: str, arguments: str = "{}",
-                raw_item: dict[str, Any] | None = None,
-            ) -> None:
+                raw_item: dict[str, Any] | None = None, current_text: str,
+            ) -> str:
                 if not message_id and not api_hold_key:
-                    return
+                    return current_text
                 if persist_tools_enabled and item_type in _RAW_REPLAYED_SERVER_TOOLS:
                     normalized = normalize_persisted_item(raw_item) if raw_item else None
                     row = (
@@ -1237,7 +1300,10 @@ class StreamingHandler:
                     )
                 ulids = await _persist_rows(rows, "server_tool") if rows else []
                 if ulids and not api_hold_key:
-                    await _append_assistant_hidden_markers([_serialize_marker(ulid) for ulid in ulids])
+                    current_text = await _append_assistant_hidden_markers(
+                        current_text, [_serialize_marker(ulid) for ulid in ulids]
+                    )
+                return current_text
 
             def _normalize_surrogate_chunk(text: str, bucket: str) -> str:
                 """Coalesce surrogate pairs in streaming chunks to keep UTF-8 happy."""
@@ -1329,20 +1395,36 @@ class StreamingHandler:
                 candidate = (incoming or "")
                 if not candidate:
                     return ""
-                current = reasoning_stream_buffers.get(key, "")
-                append = ""
-                if not current:
+                box = reasoning_stream_buffers.get(key)
+                if box is None or box.length == 0:
                     append = candidate
-                elif candidate == current:
-                    append = ""
-                elif candidate.startswith(current):
-                    append = candidate[len(current) :]
-                elif current.startswith(candidate) or current.endswith(candidate):
-                    append = ""
+                elif len(candidate) == box.length:
+                    append = "" if candidate == box.text() else (candidate if allow_misaligned else "")
+                elif len(candidate) > box.length:
+                    current = box.text()
+                    append = (
+                        candidate[box.length :]
+                        if candidate.startswith(current)
+                        else (candidate if allow_misaligned else "")
+                    )
+                elif len(candidate) <= len(box.head):
+                    if box.head.startswith(candidate):
+                        append = ""
+                    else:
+                        current = box.text()
+                        append = "" if current.endswith(candidate) else (candidate if allow_misaligned else "")
                 else:
-                    append = candidate if allow_misaligned else ""
+                    current = box.text()
+                    append = (
+                        ""
+                        if current.startswith(candidate) or current.endswith(candidate)
+                        else (candidate if allow_misaligned else "")
+                    )
                 if append:
-                    reasoning_stream_buffers[key] = f"{current}{append}"
+                    if box is None:
+                        box = _ReasoningTextBox()
+                        reasoning_stream_buffers[key] = box
+                    box.add(append)
                 return append
 
             def _reasoning_display_state(key: str) -> dict[str, Any]:
@@ -1366,17 +1448,21 @@ class StreamingHandler:
                     if state["mono_close"] is None:
                         state["mono_close"] = now
 
-            async def _emit_reasoning_item(key: str) -> None:
+            async def _emit_reasoning_item(key: str, current_text: str) -> None:
                 nonlocal emitted_response_output_items
                 if event_emitter is None or not thinking_box_enabled:
                     return
-                text = reasoning_stream_buffers.get(key, "")
+                box = reasoning_stream_buffers.get(key)
+                length = box.length if box is not None else 0
                 state = _reasoning_display_state(key)
                 published = int(state.get("published_len", 0) or 0)
-                if not text.strip() or len(text) <= published:
+                if length <= published:
+                    return
+                text = box.text() if box is not None else ""
+                if not text.strip():
                     return
                 if state.get("published_round") == loop_index:
-                    await _replace_published_reasoning_item(key, text, state)
+                    await _replace_published_reasoning_item(key, text, state, current_text)
                     return
                 mono_end = state["mono_close"] if state["mono_close"] is not None else _monotonic()
                 duration = max(0.1, round(mono_end - state["mono_open"], 1))
@@ -1398,7 +1484,7 @@ class StreamingHandler:
                     "ended_at": time.time(),
                     "duration": duration,
                 }
-                reasoning_index = await _place_item(reasoning_item)
+                reasoning_index = await _place_item(reasoning_item, current_text)
                 await event_emitter(
                     {
                         "type": "response.output_item.added",
@@ -1409,7 +1495,7 @@ class StreamingHandler:
                 state["published_id"] = item_id
 
             async def _replace_published_reasoning_item(
-                key: str, text: str, state: dict[str, Any]
+                key: str, text: str, state: dict[str, Any], current_text: str
             ) -> None:
                 item_id = state.get("published_id")
                 if not item_id:
@@ -1427,7 +1513,7 @@ class StreamingHandler:
                     "ended_at": time.time(),
                     "duration": duration,
                 }
-                await _record_output_item(reasoning_item)
+                await _record_output_item(reasoning_item, current_text)
                 reasoning_index = _output_index(reasoning_item)
                 await event_emitter(
                     {
@@ -1438,10 +1524,10 @@ class StreamingHandler:
                 )
                 state["published_len"] = len(text)
 
-            async def _close_and_emit_reasoning_items() -> None:
+            async def _close_and_emit_reasoning_items(current_text: str) -> None:
                 _close_open_reasoning_windows()
                 for reasoning_key in list(reasoning_display):
-                    await _emit_reasoning_item(reasoning_key)
+                    await _emit_reasoning_item(reasoning_key, current_text)
 
             def _defer_reasoning_keys_after_a_call(completed: Any) -> None:
                 if not isinstance(completed, dict):
@@ -1460,21 +1546,21 @@ class StreamingHandler:
                                 due, deferred_reasoning_keys.get(entry_id, due)
                             )
 
-            async def _flush_deferred_reasoning_items(upto_calls: int) -> None:
+            async def _flush_deferred_reasoning_items(upto_calls: int, current_text: str) -> None:
                 if not deferred_reasoning_keys:
                     return
                 for reasoning_key, calls_before in list(deferred_reasoning_keys.items()):
                     if calls_before > upto_calls:
                         continue
                     del deferred_reasoning_keys[reasoning_key]
-                    await _emit_reasoning_item(reasoning_key)
+                    await _emit_reasoning_item(reasoning_key, current_text)
 
-            async def _flush_trailing_reasoning() -> None:
+            async def _flush_trailing_reasoning(current_text: str) -> None:
                 if event_emitter is None or not thinking_box_enabled:
                     return
                 for reasoning_key in list(reasoning_display):
                     try:
-                        await _emit_reasoning_item(reasoning_key)
+                        await _emit_reasoning_item(reasoning_key, current_text)
                     except Exception:
                         self.logger.exception("Failed to emit trailing reasoning item")
 
@@ -1500,14 +1586,16 @@ class StreamingHandler:
                 pending_items.clear()
                 pending_ulids.extend(await _persist_rows(rows, reason))
 
-            async def _mark_committed_rows() -> None:
+            async def _mark_committed_rows(current_text: str) -> str:
                 if not pending_ulids:
-                    return
+                    return current_text
                 ulids = pending_ulids[:]
                 pending_ulids.clear()
                 if api_hold_key:
-                    return
-                await _append_assistant_hidden_markers([_serialize_marker(ulid) for ulid in ulids])
+                    return current_text
+                return await _append_assistant_hidden_markers(
+                    current_text, [_serialize_marker(ulid) for ulid in ulids]
+                )
 
             thinking_tasks: list[asyncio.Task] = []
             thinking_cancelled = False
@@ -1560,24 +1648,24 @@ class StreamingHandler:
                 if generation_started_at is None:
                     generation_started_at = now
 
-            def _continuation_lead() -> str:
+            def _continuation_lead(current_text: str) -> str:
                 nonlocal continuation_newline_pending
-                lead = "\n" if continuation_newline_pending and not assistant_message else ""
+                lead = "\n" if continuation_newline_pending and not current_text else ""
                 continuation_newline_pending = False
                 return lead
 
-            async def _append_assistant_hidden_markers(markers: list[str]) -> None:
-                nonlocal assistant_message, retry_barrier_crossed
+            async def _append_assistant_hidden_markers(current_text: str, markers: list[str]) -> str:
+                nonlocal retry_barrier_crossed
                 if not markers:
-                    return
-                assistant_message += _continuation_lead()
-                msg_before = len(assistant_message)
-                if not assistant_message and continues_after_text:
-                    assistant_message = "\n\n"
-                assistant_message = _append_hidden_marker_lines(assistant_message, markers)
+                    return current_text
+                current_text += _continuation_lead(current_text)
+                msg_before = len(current_text)
+                if not current_text and continues_after_text:
+                    current_text = "\n\n"
+                current_text = _append_hidden_marker_lines(current_text, markers)
                 if reasoning_anchor_state["chars_at_last_chunk"] == msg_before:
-                    reasoning_anchor_state["chars_at_last_chunk"] = len(assistant_message)
-                marker_delta = assistant_message[msg_before:]
+                    reasoning_anchor_state["chars_at_last_chunk"] = len(current_text)
+                marker_delta = current_text[msg_before:]
                 if body.stream:
                     await _open_message()
                     await event_emitter({"type": "chat:message:delta", "data": {"content": marker_delta}})
@@ -1595,6 +1683,7 @@ class StreamingHandler:
                         chat_id,
                         markers,
                     )
+                return current_text
 
             def _extract_call_id(item: Any) -> str:
                 """Best-effort call_id extraction for tool call/output items."""
@@ -1698,6 +1787,7 @@ class StreamingHandler:
         try:
             max_loops = max(1, int(valves.MAX_FUNCTION_CALL_LOOPS))
             input_is_sanitized = False
+            _answer_carry = [assistant_message]
             for loop_index in range(max_loops + 2):
                 if loop_index > max_loops and not loop_limit_reached:
                     ran_out = True
@@ -1705,7 +1795,7 @@ class StreamingHandler:
 
                 if loop_index > 0:
                     retry_barrier_crossed = True
-                    await _close_and_emit_reasoning_items()
+                    await _close_and_emit_reasoning_items(assistant_message)
                     active_reasoning_item_id = None
                     reasoning_stream_buffers.pop("__reasoning__", None)
                     reasoning_stream_completed.discard("__reasoning__")
@@ -1961,7 +2051,7 @@ class StreamingHandler:
                         if reasoning_display:
                             _close_open_reasoning_windows()
                             for reasoning_key in list(reasoning_display):
-                                await _emit_reasoning_item(reasoning_key)
+                                await _emit_reasoning_item(reasoning_key, assistant_message)
                         delta = event.get("delta") or ""
                         normalized_delta = _normalize_surrogate_chunk(delta, "assistant") if delta else ""
                         if normalized_delta:
@@ -1982,7 +2072,7 @@ class StreamingHandler:
                                     }
                                 )
                             if normalized_delta:
-                                normalized_delta = _continuation_lead() + normalized_delta
+                                normalized_delta = _continuation_lead(assistant_message) + normalized_delta
                             assistant_message += normalized_delta
                             if not fusion_armed:
                                 await _open_message()
@@ -2249,7 +2339,7 @@ class StreamingHandler:
                             await _emit_annotation_citations(item.get("annotations"))
                             phase_marker = _phase_marker_for_output_item(item)
                             if phase_marker and not api_hold_key:
-                                await _append_assistant_hidden_markers([phase_marker])
+                                assistant_message = await _append_assistant_hidden_markers(assistant_message, [phase_marker])
                                 reasoning_anchor_state["text_chunks"] += 1
                                 reasoning_anchor_state["chars_at_last_chunk"] = len(
                                     assistant_message
@@ -2528,15 +2618,17 @@ class StreamingHandler:
                                     name="datetime",
                                     arguments="{}",
                                     status=server_tool_status(item),
+                                    current_text=assistant_message,
                                 )
                                 await _emit_tool_result(
                                     call_id=effective_id,
                                     result_text=result_text,
                                     status=server_tool_status(item),
+                                    current_text=assistant_message,
                                 )
-                            await _commit_server_tool_round(
+                            assistant_message = await _commit_server_tool_round(
                                 effective_id, "datetime", server_tool_status(item),
-                                item_type=item_type, result_text=result_text, arguments="{}",
+                                item_type=item_type, result_text=result_text, arguments="{}", current_text=assistant_message,
                             )
                             await self._pipe._event_emitter_handler._emit_status(event_emitter, "", done=True)
                         elif item_type == "openrouter:web_search":
@@ -2553,15 +2645,17 @@ class StreamingHandler:
                                     name="web_search",
                                     arguments="{}",
                                     status=server_tool_status(item),
+                                    current_text=assistant_message,
                                 )
                                 await _emit_tool_result(
                                     call_id=effective_id,
                                     result_text=result_text,
                                     status=server_tool_status(item),
+                                    current_text=assistant_message,
                                 )
-                            await _commit_server_tool_round(
+                            assistant_message = await _commit_server_tool_round(
                                 effective_id, "web_search", server_tool_status(item),
-                                item_type=item_type, result_text=result_text, arguments="{}",
+                                item_type=item_type, result_text=result_text, arguments="{}", current_text=assistant_message,
                             )
                             action = item.get("action") if isinstance(item.get("action"), dict) else {}
                             search_urls: list[str] = []
@@ -2600,15 +2694,17 @@ class StreamingHandler:
                                     name="web_fetch",
                                     arguments=args_text,
                                     status=server_tool_status(item),
+                                    current_text=assistant_message,
                                 )
                                 await _emit_tool_result(
                                     call_id=effective_id,
                                     result_text=result_text,
                                     status=server_tool_status(item),
+                                    current_text=assistant_message,
                                 )
-                            await _commit_server_tool_round(
+                            assistant_message = await _commit_server_tool_round(
                                 effective_id, "web_fetch", server_tool_status(item),
-                                item_type=item_type, result_text=result_text, arguments=args_text,
+                                item_type=item_type, result_text=result_text, arguments=args_text, current_text=assistant_message,
                             )
                             await self._pipe._event_emitter_handler._emit_status(event_emitter, "", done=True)
                         elif isinstance(item_type, str) and item_type.startswith("openrouter:"):
@@ -2623,15 +2719,18 @@ class StreamingHandler:
                                     name=tool_name,
                                     arguments=server_arguments,
                                     status=server_tool_status(item),
+                                    current_text=assistant_message,
                                 )
                                 await _emit_tool_result(
                                     call_id=effective_id,
                                     result_text=result_text,
                                     status=server_tool_status(item),
+                                    current_text=assistant_message,
                                 )
-                            await _commit_server_tool_round(
+                            assistant_message = await _commit_server_tool_round(
                                 effective_id, tool_name, server_tool_status(item),
                                 item_type=item_type, result_text=result_text, arguments=server_arguments, raw_item=item,
+                                current_text=assistant_message,
                             )
                             await self._pipe._event_emitter_handler._emit_status(event_emitter, "", done=True)
                         elif item_type == "reasoning":
@@ -2658,7 +2757,7 @@ class StreamingHandler:
                                 _reasoning_display_state(key)
                                 deferred_reasoning_keys.setdefault(key, round_saw_function_call)
                             else:
-                                await _emit_reasoning_item(key)
+                                await _emit_reasoning_item(key, assistant_message)
 
                         if title:
                             desc = title if not content else f"{title}\n{content}"
@@ -2670,7 +2769,7 @@ class StreamingHandler:
                             note_model_activity()
                             note_generation_activity()
                             msg_before = len(assistant_message)
-                            assistant_message += _continuation_lead()
+                            assistant_message += _continuation_lead(assistant_message)
                             for snippet in image_markdowns:
                                 assistant_message = _append_output_block(assistant_message, snippet)
                             if event_emitter:
@@ -2696,7 +2795,7 @@ class StreamingHandler:
                             for reasoning_key in list(reasoning_display):
                                 if reasoning_key in deferred_reasoning_keys:
                                     continue
-                                await _emit_reasoning_item(reasoning_key)
+                                await _emit_reasoning_item(reasoning_key, assistant_message)
                         if fusion_armed and fusion_batcher is not None:
                             for _straggler in fusion_batcher.flush_all():
                                 await _emit_fusion_event(_straggler)
@@ -3077,10 +3176,11 @@ class StreamingHandler:
                             "📞 Preserving %d function_call item(s) for tool continuation",
                             len(call_items),
                         )
-                    _replay_budget = _sanitize_request_input(self._pipe, body)
-                    await _warn_if_futile(_replay_budget)
-                    await _report_omissions(_replay_budget, _REPLAY_DROPPED_OPENING)
-                    input_is_sanitized = True
+                    if not input_is_sanitized:
+                        _replay_budget = _sanitize_request_input(self._pipe, body)
+                        await _warn_if_futile(_replay_budget)
+                        await _report_omissions(_replay_budget, _REPLAY_DROPPED_OPENING)
+                        input_is_sanitized = True
 
                 self.logger.debug("📞 Found %d function_call items in response", len(call_items))
                 function_outputs: list[dict[str, Any]] = []
@@ -3113,6 +3213,9 @@ class StreamingHandler:
                                         "type": "function",
                                         "function": {"name": tool_name, "arguments": args_text},
                                     }
+                                )
+                                pending_items.extend(
+                                    _handed_back_round_rows(call, call_id, exposed_name, tool_name, args_text)
                                 )
 
                                 if body.stream and event_emitter:
@@ -3255,6 +3358,7 @@ class StreamingHandler:
                                         name=tool_name,
                                         arguments=args_text,
                                         status="in_progress" if _origin_tool_name(tool_name) == "ask_user" else "completed",
+                                        current_text=assistant_message,
                                     )
                             except Exception as exc:
                                 self.logger.warning("Failed to emit in-progress tool cards: %s", exc, exc_info=True)
@@ -3298,6 +3402,7 @@ class StreamingHandler:
                                             embeds=output.get("embeds") or None,
                                             status=str(output.get("status") or "completed"),
                                             pictures=pictures,
+                                            current_text=assistant_message,
                                         )
                                 except Exception as exc:
                                     self.logger.warning(
@@ -3350,14 +3455,16 @@ class StreamingHandler:
                                             embeds=result.get("embeds") or None,
                                             status=str(result.get("status") or "completed"),
                                             pictures=pictures,
+                                            current_text=_answer_carry[0],
                                         )
                                         if persist_message_id and cid in committed_call_rows and cid not in committed_output_rows:
                                             committed_output_rows.add(cid)
                                             rows = _round_output_row(result, cid)
                                             ulids = await _persist_rows(rows, "tool_result") if rows else []
                                             if ulids and not api_hold_key:
-                                                await _append_assistant_hidden_markers(
-                                                    [_serialize_marker(ulid) for ulid in ulids]
+                                                _answer_carry[0] = await _append_assistant_hidden_markers(
+                                                    _answer_carry[0],
+                                                    [_serialize_marker(ulid) for ulid in ulids],
                                                 )
 
                                     _tool_ctx.on_complete = _on_tool_complete
@@ -3376,7 +3483,9 @@ class StreamingHandler:
                                         cancel_thinking()
                                     pending_items.extend(call_rows_at_start)
                                     await _flush_pending("tool_calls")
-                                    await _mark_committed_rows()
+                                    assistant_message = await _mark_committed_rows(assistant_message)
+
+                                _answer_carry[0] = assistant_message
 
                                 try:
                                     function_outputs = await self._pipe._ensure_tool_executor()._execute_function_calls(
@@ -3404,6 +3513,7 @@ class StreamingHandler:
                                     if _tool_ctx and _tool_ctx.on_complete is not None:
                                         _tool_ctx.on_complete = None
                                         _tool_ctx.carded_calls = set()
+                                assistant_message = _answer_carry[0]
                                 if repeated_outputs:
                                     function_outputs = list(function_outputs) + repeated_outputs
 
@@ -3453,6 +3563,7 @@ class StreamingHandler:
                                         embeds=output.get("embeds") or None,
                                         status=str(output.get("status") or "completed"),
                                         pictures=pictures,
+                                        current_text=assistant_message,
                                     )
                             except Exception as exc:
                                 self.logger.warning("Failed to emit completed tool cards: %s", exc, exc_info=True)
@@ -3468,6 +3579,8 @@ class StreamingHandler:
                                 continue
                             exposed_name = (call.get("name") or "").strip()
                             if not _cites_as_owui_builtin(exposed_name, tool_name):
+                                continue
+                            if not citations_enabled:
                                 continue
                             try:
                                 tool_result = output.get("output") or ""
@@ -3537,7 +3650,7 @@ class StreamingHandler:
                                 cancel_thinking()
                             pending_items.extend(round_rows)
                             await _flush_pending("tool_round")
-                            await _mark_committed_rows()
+                            assistant_message = await _mark_committed_rows(assistant_message)
 
                         for output in all_function_outputs:
                             if thinking_tasks:
@@ -3708,16 +3821,18 @@ class StreamingHandler:
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await t
             if handed_back_for_retry and retry_handoff is not None:
-                retry_handoff[DEFERRED_REASONING_FLUSH] = _flush_trailing_reasoning
+                retry_handoff[DEFERRED_REASONING_FLUSH] = functools.partial(
+                    _flush_trailing_reasoning, assistant_message
+                )
             else:
-                await _flush_trailing_reasoning()
+                await _flush_trailing_reasoning(assistant_message)
             surrogate_carry["assistant"] = ""
             surrogate_carry["reasoning"] = ""
 
             if fusion_no_usable_member:
                 session_log_reason = _FUSION_PANEL_FAILURE_REASON
 
-            terminal = bool(was_cancelled or error_occurred or not handed_back)
+            terminal = bool(was_cancelled or error_occurred or not handed_back) and not handed_back_for_retry
 
             generation_status = _generation_status(
                 was_cancelled, error_occurred, fusion_no_usable_member
@@ -3859,7 +3974,7 @@ class StreamingHandler:
                     }
                     try:
                         recorded_message_chars = len(assistant_message)
-                        await _record_output_item(fusion_answer_item)
+                        await _record_output_item(fusion_answer_item, assistant_message)
                         answer_index = _output_index(fusion_answer_item)
                         await event_emitter({
                             "type": "response.output_item.added",
@@ -3934,7 +4049,7 @@ class StreamingHandler:
                     )
             else:
                 await _flush_pending("finalize")
-                await _mark_committed_rows()
+                assistant_message = await _mark_committed_rows(assistant_message)
 
             if (
                 chat_id
@@ -3967,7 +4082,7 @@ class StreamingHandler:
                 and (emitted_output_items or not error_occurred)
             ):
                 await _capture_seeded_output()
-                terminal_output = _terminal_output_items()
+                terminal_output = _terminal_output_items(assistant_message)
             if outcome_sink is not None and terminal_output and terminal:
                 outcome_sink["output"] = terminal_output
                 if total_usage:

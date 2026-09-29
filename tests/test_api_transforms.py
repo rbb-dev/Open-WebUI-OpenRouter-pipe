@@ -108,17 +108,20 @@ class TestFilterOpenrouterRequest:
         assert "temperature" not in result
 
     def test_top_k_int_converted_to_float(self):
-        """Test top_k integer is converted to float."""
+        """Test top_k integer reaches the wire as a JSON integer."""
         payload = {"model": "gpt-4", "top_k": 10, "input": []}
         result = _filter_openrouter_request(payload)
-        assert result["top_k"] == 10.0
-        assert isinstance(result["top_k"], float)
+        assert result["top_k"] == 10
+        assert isinstance(result["top_k"], int)
+        assert not isinstance(result["top_k"], bool)
 
     def test_top_k_string_converted(self):
-        """Test top_k string is converted to float."""
+        """Test top_k string reaches the wire as a JSON integer."""
         payload = {"model": "gpt-4", "top_k": "5", "input": []}
         result = _filter_openrouter_request(payload)
-        assert result["top_k"] == 5.0
+        assert result["top_k"] == 5
+        assert isinstance(result["top_k"], int)
+        assert not isinstance(result["top_k"], bool)
 
     def test_top_k_empty_string_dropped(self):
         """Test top_k empty string is dropped."""
@@ -2938,13 +2941,17 @@ from open_webui_openrouter_pipe import _filter_openrouter_request
 def test_filter_openrouter_request_forwards_numeric_top_k() -> None:
     payload = {"model": "openai/gpt-5", "input": [], "top_k": 50}
     filtered = _filter_openrouter_request(payload)
-    assert filtered["top_k"] == 50.0
+    assert filtered["top_k"] == 50
+    assert isinstance(filtered["top_k"], int)
+    assert not isinstance(filtered["top_k"], bool)
 
 
 def test_filter_openrouter_request_parses_string_top_k() -> None:
     payload = {"model": "openai/gpt-5", "input": [], "top_k": " 50 "}
     filtered = _filter_openrouter_request(payload)
-    assert filtered["top_k"] == 50.0
+    assert filtered["top_k"] == 50
+    assert isinstance(filtered["top_k"], int)
+    assert not isinstance(filtered["top_k"], bool)
 
 
 def test_filter_openrouter_request_drops_invalid_top_k() -> None:

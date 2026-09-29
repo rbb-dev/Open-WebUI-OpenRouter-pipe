@@ -160,6 +160,49 @@ async def _consume_stream(result):
     return "".join(collected) if collected else ""
 
 
+def _blocks_of_type(captured_payloads: list[dict], block_type: str) -> list[dict]:
+    """Every content block of one kind that reached the wire, in call order.
+
+    The two keys are this file's own idiom (`payload.get("input") or payload.get("messages")`):
+    the pipe posts either the Responses API's `input` or the chat API's `messages`, and the
+    media blocks the Direct Uploads filter injects are found under a message's `content`.
+    """
+    blocks: list[dict] = []
+    for payload in captured_payloads:
+        for message in payload.get("input") or payload.get("messages") or []:
+            if not isinstance(message, dict):
+                continue
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            blocks.extend(
+                block
+                for block in content
+                if isinstance(block, dict) and block.get("type") == block_type
+            )
+    return blocks
+
+
+def _sent_audio_format(captured: list[dict]) -> str | None:
+    """The `input_audio.format` the provider was actually offered, or None if it was offered none.
+
+    Both carriers are walked, and the walk is not optional: the endpoint is chosen from
+    the same sniffed format, so a container inside `{mp3, wav}` leaves on `/responses`
+    under the `input` key and every other container leaves on `/chat/completions` under
+    `messages`. A reader that walked one carrier would read `None` for half the rows and
+    pass them vacuously -- the exact defect these rows exist to remove.
+    """
+    for payload in captured:
+        for carrier in ("input", "messages"):
+            for item in payload.get(carrier) or []:
+                if not isinstance(item, dict) or not isinstance(item.get("content"), list):
+                    continue
+                for block in item["content"]:
+                    if isinstance(block, dict) and block.get("type") == "input_audio":
+                        return block["input_audio"]["format"]
+    return None
+
+
 # -----------------------------------------------------------------------------
 # Audio/Video Base64 Helpers
 # -----------------------------------------------------------------------------
@@ -295,7 +338,12 @@ async def test_extract_direct_uploads_returns_empty_for_invalid_pipe_meta():
 async def test_extract_direct_uploads_skips_invalid_items():
     """Test that _extract_direct_uploads skips invalid items (non-dict, missing/invalid id).
 
-    Covers lines 92-98: skipping non-dict items, invalid file_id, duplicate file_id.
+    The filter that runs is `_extract_direct_uploads`'s own, at `orchestrator.py:682-684`:
+    a non-dict item, an `id` that is not a non-blank string, and a repeated id are all
+    dropped there, before anything looks a file up. The checks inside the three injection
+    loops are defence in depth behind it. `{"id": 7}` is the load-bearing case: blank ids
+    normalise to `""` and are dropped a second time by the loop guards, so only a
+    non-string, non-blank id can tell this filter from a `str()` around it.
     """
     pipe = Pipe()
 
@@ -310,12 +358,13 @@ async def test_extract_direct_uploads_skips_invalid_items():
             "openrouter_pipe": {
                 "direct_uploads": {
                     "files": [
-                        "not-a-dict",  # Invalid - not a dict (line 92)
-                        {"id": None},  # Invalid - id is not string (line 94)
-                        {"id": ""},  # Invalid - empty id (line 94)
-                        {"id": "  "},  # Invalid - whitespace only (line 94)
+                        "not-a-dict",  # Invalid - not a dict (orchestrator.py:682-684)
+                        {"id": None},  # Invalid - id is not string
+                        {"id": ""},  # Invalid - empty id
+                        {"id": "  "},  # Invalid - whitespace only
+                        {"id": 7, "name": "numeric.pdf"},  # Invalid - a non-string, non-blank id
                         {"id": "file_1", "name": "doc.pdf"},  # Valid
-                        {"id": "file_1", "name": "doc2.pdf"},  # Duplicate (line 97-98)
+                        {"id": "file_1", "name": "doc2.pdf"},  # Duplicate (orchestrator.py:685-687)
                         {"id": "file_2", "name": "doc3.pdf"},  # Valid
                     ],
                 }
@@ -328,8 +377,11 @@ async def test_extract_direct_uploads_skips_invalid_items():
         async def event_emitter(event):
             pass
 
+        asked: list[str] = []
+
         # Mock the file inlining to simulate successful inlining at the multimodal handler level
         async def mock_inline_owui_file_id(file_id, *args, **kwargs):
+            asked.append(file_id)
             return InlinedFile(data_url=f"data:application/pdf;base64,{_pdf_like_base64()}", filename="doc.pdf")
 
         pipe._file_gateway.inline_owui_file_id = mock_inline_owui_file_id
@@ -366,8 +418,10 @@ async def test_extract_direct_uploads_skips_invalid_items():
 
             await _consume_stream(result)
 
-        # Should complete successfully - only 2 valid file blocks expected
-        assert len(captured_payloads) >= 1
+        assert asked == ["file_1", "file_2"], (
+            f"the pipe asked the file gateway for ids the user never named as they were "
+            f"written: {asked}"
+        )
 
     finally:
         await pipe.close()
@@ -810,9 +864,12 @@ async def test_inject_direct_uploads_unsupported_content_type():
 
 @pytest.mark.asyncio
 async def test_sniff_audio_format_wav(monkeypatch):
-    """Test audio format sniffing for WAV files.
+    """A RIFF/WAVE container goes out declared `wav`, on the endpoint that format allows.
 
-    Covers lines 177-178: WAV detection via RIFF/WAVE signature.
+    The header in the bytes, not the fixture that supplied them, decides the format on
+    the wire, and the same value decides the endpoint. Both are read off the request the
+    provider was handed rather than off the pipe's own metadata, which writes the
+    resolved format back into the attachment dict in place.
     """
     pipe = Pipe()
 
@@ -831,7 +888,8 @@ async def test_sniff_audio_format_wav(monkeypatch):
         }
 
         captured_payloads: list[dict] = []
-        callback = _smart_callback(captured_payloads, "Response")
+        captured_endpoints: list[str] = []
+        callback = _smart_callback(captured_payloads, "Response", captured_endpoints)
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
@@ -878,7 +936,8 @@ async def test_sniff_audio_format_wav(monkeypatch):
 
             await _consume_stream(result)
 
-        assert len(captured_payloads) >= 1
+        assert _sent_audio_format(captured_payloads) == "wav"
+        assert captured_endpoints == ["responses"]
 
     finally:
         await pipe.close()
@@ -1068,9 +1127,11 @@ async def test_native_audio_unauthorized_read_is_surfaced(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_sniff_audio_format_mp3_id3(monkeypatch):
-    """Test audio format sniffing for MP3 with ID3 header.
+    """An ID3-tagged container goes out declared `mp3`, on the endpoint that format allows.
 
-    Covers lines 179-180: MP3 detection via ID3 signature.
+    The ID3 tag is the container's own header, so it is what the sniffer sees. `mp3` is
+    inside the default `/responses` allowlist, which is why the endpoint is pinned here
+    too: both facts come from the same sniffed value.
     """
     pipe = Pipe()
 
@@ -1089,7 +1150,8 @@ async def test_sniff_audio_format_mp3_id3(monkeypatch):
         }
 
         captured_payloads: list[dict] = []
-        callback = _smart_callback(captured_payloads, "Response")
+        captured_endpoints: list[str] = []
+        callback = _smart_callback(captured_payloads, "Response", captured_endpoints)
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
@@ -1136,7 +1198,8 @@ async def test_sniff_audio_format_mp3_id3(monkeypatch):
 
             await _consume_stream(result)
 
-        assert len(captured_payloads) >= 1
+        assert _sent_audio_format(captured_payloads) == "mp3"
+        assert captured_endpoints == ["responses"]
 
     finally:
         await pipe.close()
@@ -1144,9 +1207,11 @@ async def test_sniff_audio_format_mp3_id3(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_sniff_audio_format_mp3_sync(monkeypatch):
-    """Test audio format sniffing for MP3 with sync word.
+    """A bare MPEG sync word sniffs to `mp3` too, so it is the container and not the tag.
 
-    Covers lines 181-182: MP3 detection via sync word.
+    The second spelling of the same format: no ID3 tag here, just the frame sync. The
+    wire assertion is the point -- both spellings must reach the provider as `mp3`, and
+    the second would pass unnoticed if only the first were pinned.
     """
     pipe = Pipe()
 
@@ -1165,7 +1230,8 @@ async def test_sniff_audio_format_mp3_sync(monkeypatch):
         }
 
         captured_payloads: list[dict] = []
-        callback = _smart_callback(captured_payloads, "Response")
+        captured_endpoints: list[str] = []
+        callback = _smart_callback(captured_payloads, "Response", captured_endpoints)
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
@@ -1212,7 +1278,8 @@ async def test_sniff_audio_format_mp3_sync(monkeypatch):
 
             await _consume_stream(result)
 
-        assert len(captured_payloads) >= 1
+        assert _sent_audio_format(captured_payloads) == "mp3"
+        assert captured_endpoints == ["responses"]
 
     finally:
         await pipe.close()
@@ -1220,9 +1287,12 @@ async def test_sniff_audio_format_mp3_sync(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_sniff_audio_format_m4a(monkeypatch):
-    """Test audio format sniffing for M4A files.
+    """An MP4-family container goes out declared `m4a`, and off `/responses`.
 
-    Covers lines 183-185: M4A detection via ftyp signature.
+    `m4a` is outside the default `/responses` audio allowlist, so the same sniffed
+    value that names the format also sends the request to `/chat/completions`. Pinning
+    the format without the endpoint would let a sniffer that returned `mp3` for
+    everything pass: the label would be wrong and nothing here would say so.
     """
     pipe = Pipe()
 
@@ -1241,7 +1311,8 @@ async def test_sniff_audio_format_m4a(monkeypatch):
         }
 
         captured_payloads: list[dict] = []
-        callback = _smart_callback(captured_payloads, "Response")
+        captured_endpoints: list[str] = []
+        callback = _smart_callback(captured_payloads, "Response", captured_endpoints)
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
@@ -1289,7 +1360,8 @@ async def test_sniff_audio_format_m4a(monkeypatch):
 
             await _consume_stream(result)
 
-        assert len(captured_payloads) >= 1
+        assert _sent_audio_format(captured_payloads) == "m4a"
+        assert captured_endpoints == ["chat_completions"]
 
     finally:
         await pipe.close()
@@ -1297,9 +1369,10 @@ async def test_sniff_audio_format_m4a(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_sniff_audio_format_flac(monkeypatch):
-    """Test audio format sniffing for FLAC files.
+    """A `fLaC` container goes out declared `flac`, and off `/responses`.
 
-    Covers lines 186-187: FLAC detection via fLaC signature.
+    Same two facts as the m4a row, from a different magic number: the header in the
+    bytes picks both the label and the endpoint, and neither is the fixture's to choose.
     """
     pipe = Pipe()
 
@@ -1318,7 +1391,8 @@ async def test_sniff_audio_format_flac(monkeypatch):
         }
 
         captured_payloads: list[dict] = []
-        callback = _smart_callback(captured_payloads, "Response")
+        captured_endpoints: list[str] = []
+        callback = _smart_callback(captured_payloads, "Response", captured_endpoints)
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
@@ -1365,7 +1439,8 @@ async def test_sniff_audio_format_flac(monkeypatch):
 
             await _consume_stream(result)
 
-        assert len(captured_payloads) >= 1
+        assert _sent_audio_format(captured_payloads) == "flac"
+        assert captured_endpoints == ["chat_completions"]
 
     finally:
         await pipe.close()
@@ -1373,9 +1448,11 @@ async def test_sniff_audio_format_flac(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_sniff_audio_format_ogg(monkeypatch):
-    """Test audio format sniffing for OGG files.
+    """An `OggS` container goes out declared `ogg`, and off `/responses`.
 
-    Covers lines 188-189: OGG detection via OggS signature.
+    The last of the three out-of-allowlist containers. `ogg` differs from `flac` and
+    `m4a` in one byte of the header, so a sniffer that reached the last check for
+    everything would be caught here and by neither of the others.
     """
     pipe = Pipe()
 
@@ -1394,7 +1471,8 @@ async def test_sniff_audio_format_ogg(monkeypatch):
         }
 
         captured_payloads: list[dict] = []
-        callback = _smart_callback(captured_payloads, "Response")
+        captured_endpoints: list[str] = []
+        callback = _smart_callback(captured_payloads, "Response", captured_endpoints)
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "audio_1"
@@ -1441,7 +1519,8 @@ async def test_sniff_audio_format_ogg(monkeypatch):
 
             await _consume_stream(result)
 
-        assert len(captured_payloads) >= 1
+        assert _sent_audio_format(captured_payloads) == "ogg"
+        assert captured_endpoints == ["chat_completions"]
 
     finally:
         await pipe.close()
@@ -3158,16 +3237,16 @@ async def test_moa_inherits_provider_routing_but_housekeeping_task_skips_it():
         await pipe.close()
 
 
-# -----------------------------------------------------------------------------
-# Tests: OWUI Tool Registry Normalization (lines 567-591)
-# -----------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_owui_tool_registry_list_form():
-    """Test that OWUI tool registry in list form is normalized.
+    """An HTTP-boundary row for the list form, not a test of the normalisation.
 
-    Covers lines 570-578: normalizing list-form tool registry.
+    The schema-only fixture below cannot produce a tool at all -- an entry with no
+    `callable` is dropped in Pipeline mode -- so the line this row was written to cover
+    is reached and nothing more. What it does pin is that a list-form `__tools__` does
+    not stop the turn from reaching the provider.
+    `test_a_tools_registry_handed_over_as_a_list_advertises_the_same_names` is the row
+    that pins the normalisation.
     """
     pipe = Pipe()
 
@@ -3504,10 +3583,14 @@ async def test_decode_base64_prefix_invalid_base64_structure(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_sniff_audio_format_empty_prefix(monkeypatch):
-    """Test _sniff_audio_format returns empty string when prefix is empty.
+    """An attachment the pipe cannot read goes out as no request at all, and says why.
 
-    Covers line 176: return "" when not prefix.
-    This is triggered when _decode_base64_prefix returns b"".
+    A native audio row whose bytes cannot be encoded never reaches the sniffer: the read
+    fails first, so the turn carries no request to the provider. Both halves are
+    asserted, because either alone is satisfied by a build that quietly drops the
+    attachment -- one payload would be wrong, and a silent turn would be worse. The
+    refusal the person reads is the encoding failure, not the missing-format error: the
+    read never gets as far as a format to be missing.
     """
     pipe = Pipe()
 
@@ -3537,7 +3620,20 @@ async def test_sniff_audio_format_empty_prefix(monkeypatch):
         async def event_emitter(event):
             emitted_events.append(event)
 
+        captured_payloads: list[dict] = []
+        callback = _smart_callback(captured_payloads, "Response")
+
         with aioresponses() as mock_http:
+            mock_http.post(
+                "https://openrouter.ai/api/v1/responses",
+                callback=callback,
+                repeat=True,
+            )
+            mock_http.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                callback=callback,
+                repeat=True,
+            )
             mock_http.get(
                 "https://openrouter.ai/api/v1/models",
                 payload={"data": [{"id": "openai/gpt-4o-mini", "name": "GPT-4o Mini"}]},
@@ -3562,15 +3658,27 @@ async def test_sniff_audio_format_empty_prefix(monkeypatch):
                 __task_body__=None,
             )
 
-            await _consume_stream(result)
-            # Should fail with encoding error
+            consumed = await _consume_stream(result)
+
+        assert captured_payloads == [], (
+            "an attachment whose bytes could not be read must not reach the provider on "
+            f"any endpoint; got {captured_payloads!r}"
+        )
+        assert "Native audio attachment 'audio_empty' could not be encoded." in consumed, (
+            f"the turn must name the refusal that stopped the upload; got {consumed!r}"
+        )
 
     finally:
         await pipe.close()
 
 
 # -----------------------------------------------------------------------------
-# Additional Coverage Tests: File ID Validation (lines 197, 229, 255)
+# Additional Coverage Tests: File ID Validation
+#
+# The filter that runs is `_extract_direct_uploads` at `orchestrator.py:682-684`; the
+# checks inside the three injection loops (`orchestrator.py:792/838/879`) are defence in
+# depth behind it and never see a malformed id. `{"id": 7}` is what makes the two
+# distinguishable: a blank id normalises to `""` and the loop guards drop it anyway.
 # -----------------------------------------------------------------------------
 
 
@@ -3578,7 +3686,10 @@ async def test_sniff_audio_format_empty_prefix(monkeypatch):
 async def test_files_loop_skips_invalid_file_id():
     """Test that files loop skips items with invalid file_id.
 
-    Covers line 197: continue when file_id is not a valid string.
+    The filter that runs is `_extract_direct_uploads` at `orchestrator.py:682-684`; the
+    files loop's own guard at `orchestrator.py:792` is defence in depth behind it. What is
+    pinned is that the pipe asks the file gateway for exactly the ids the user named, in
+    order, and only those.
     """
     pipe = Pipe()
 
@@ -3592,8 +3703,9 @@ async def test_files_loop_skips_invalid_file_id():
             "openrouter_pipe": {
                 "direct_uploads": {
                     "files": [
-                        {"id": None},  # Invalid - line 197 will skip
-                        {"id": ""},  # Invalid - line 197 will skip
+                        {"id": None},  # Invalid - dropped by the filter
+                        {"id": ""},  # Invalid - dropped by the filter
+                        {"id": 7, "name": "numeric.pdf"},  # Invalid - a non-string, non-blank id
                         {"id": "valid_file_1", "name": "doc.pdf"},  # Valid
                     ],
                 }
@@ -3606,8 +3718,11 @@ async def test_files_loop_skips_invalid_file_id():
         async def event_emitter(event):
             pass
 
+        asked: list[str] = []
+
         # Mock file inlining
         async def mock_inline_owui_file_id(file_id, *args, **kwargs):
+            asked.append(file_id)
             return InlinedFile(data_url=f"data:application/pdf;base64,{_pdf_like_base64()}", filename="doc.pdf")
 
         pipe._file_gateway.inline_owui_file_id = mock_inline_owui_file_id
@@ -3644,8 +3759,9 @@ async def test_files_loop_skips_invalid_file_id():
 
             await _consume_stream(result)
 
-        # Should complete with only the valid file processed
-        assert len(captured_payloads) >= 1
+        assert asked == ["valid_file_1"], (
+            f"the pipe read an attachment the user never named: {asked}"
+        )
 
     finally:
         await pipe.close()
@@ -3655,8 +3771,13 @@ async def test_files_loop_skips_invalid_file_id():
 async def test_audio_loop_skips_invalid_file_id(monkeypatch):
     """Test that audio loop skips items with invalid file_id.
 
-    Covers line 229: continue when audio file_id is not valid.
+    The filter that runs is `_extract_direct_uploads` at `orchestrator.py:682-684`; the
+    audio loop's own guard at `orchestrator.py:838` is defence in depth behind it. Both
+    halves matter: the ids the pipe asks the gateway for, and the one audio block that
+    reaches the wire.
     """
+    import open_webui_openrouter_pipe.requests.orchestrator as orch_mod
+
     pipe = Pipe()
 
     try:
@@ -3669,8 +3790,9 @@ async def test_audio_loop_skips_invalid_file_id(monkeypatch):
             "openrouter_pipe": {
                 "direct_uploads": {
                     "audio": [
-                        {"id": None, "format": "mp3"},  # Invalid - line 229 will skip
-                        {"id": "", "format": "mp3"},  # Invalid - line 229 will skip
+                        {"id": None, "format": "mp3"},  # Invalid - dropped by the filter
+                        {"id": "", "format": "mp3"},  # Invalid - dropped by the filter
+                        {"id": 7, "format": "mp3"},  # Invalid - a non-string, non-blank id
                         {"id": "valid_audio", "format": "mp3"},  # Valid
                     ],
                 }
@@ -3682,7 +3804,13 @@ async def test_audio_loop_skips_invalid_file_id(monkeypatch):
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "valid_audio"
-        monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
+        asked: list[str] = []
+
+        async def recording_get_file_by_id(file_id, *_args, **_kwargs):
+            asked.append(file_id)
+            return mock_file_obj
+
+        monkeypatch.setattr(orch_mod, "get_file_by_id", recording_get_file_by_id)
         pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_mp3_like_base64())
 
         async def event_emitter(event):
@@ -3725,7 +3853,17 @@ async def test_audio_loop_skips_invalid_file_id(monkeypatch):
 
             await _consume_stream(result)
 
-        assert len(captured_payloads) >= 1
+        assert asked == ["valid_audio"], (
+            f"the pipe read an attachment the user never named: {asked}"
+        )
+        audio_blocks = _blocks_of_type(captured_payloads, "input_audio")
+        assert len(audio_blocks) == 1, (
+            f"exactly one of the named audio clips must reach the wire: {len(audio_blocks)}"
+            f" input_audio blocks"
+        )
+        assert audio_blocks[0]["input_audio"].get("format") == "mp3", (
+            f"the audio block lost its declared format: {audio_blocks[0]}"
+        )
 
     finally:
         await pipe.close()
@@ -3733,10 +3871,15 @@ async def test_audio_loop_skips_invalid_file_id(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_video_loop_skips_invalid_file_id(monkeypatch):
-    """Test that video loop skips items with invalid file_id.
+    """A `video` row whose id is not a usable string contributes no block to the request.
 
-    Covers line 255: continue when video file_id is not valid.
+    The filter that runs is `_extract_direct_uploads` at `orchestrator.py:682-684`; the
+    video loop's own guard at `orchestrator.py:879` is defence in depth behind it. A video
+    attachment is not legal on /responses, so this turn must reach `/chat/completions`,
+    carrying exactly one video block.
     """
+    import open_webui_openrouter_pipe.requests.orchestrator as orch_mod
+
     pipe = Pipe()
 
     try:
@@ -3749,8 +3892,9 @@ async def test_video_loop_skips_invalid_file_id(monkeypatch):
             "openrouter_pipe": {
                 "direct_uploads": {
                     "video": [
-                        {"id": None, "content_type": "video/mp4"},  # Invalid - line 255 will skip
-                        {"id": "", "content_type": "video/mp4"},  # Invalid - line 255 will skip
+                        {"id": None, "content_type": "video/mp4"},  # Invalid - dropped by the filter
+                        {"id": "", "content_type": "video/mp4"},  # Invalid - dropped by the filter
+                        {"id": 7, "content_type": "video/mp4"},  # Invalid - a non-string, non-blank id
                         {"id": "valid_video", "content_type": "video/mp4"},  # Valid
                     ],
                 }
@@ -3763,7 +3907,13 @@ async def test_video_loop_skips_invalid_file_id(monkeypatch):
 
         mock_file_obj = MagicMock()
         mock_file_obj.id = "valid_video"
-        monkeypatch.setattr("open_webui_openrouter_pipe.requests.orchestrator.get_file_by_id", AsyncMock(return_value=mock_file_obj))
+        asked: list[str] = []
+
+        async def recording_get_file_by_id(file_id, *_args, **_kwargs):
+            asked.append(file_id)
+            return mock_file_obj
+
+        monkeypatch.setattr(orch_mod, "get_file_by_id", recording_get_file_by_id)
         pipe._file_gateway.read_file_record_base64 = AsyncMock(return_value=_mp4_video_base64())
 
         async def event_emitter(event):
@@ -3808,10 +3958,16 @@ async def test_video_loop_skips_invalid_file_id(monkeypatch):
 
             await _consume_stream(result)
 
-        assert len(captured_payloads) >= 1
+        assert asked == ["valid_video"], (
+            f"the pipe read an attachment the user never named: {asked}"
+        )
         assert set(captured_endpoints) == {"chat_completions"}, (
             "a video attachment is not legal on /responses, so every call must go to "
             f"/chat/completions; got {captured_endpoints!r}")
+        video_blocks = _blocks_of_type(captured_payloads, "video_url")
+        assert len(video_blocks) == 1, (
+            f"exactly one of the named clips must reach the wire: {len(video_blocks)} video blocks"
+        )
 
     finally:
         await pipe.close()
@@ -4043,9 +4199,13 @@ async def test_extra_tools_from_completions_body():
 
 @pytest.mark.asyncio
 async def test_owui_tool_registry_list_skips_non_dict():
-    """Test that OWUI tool registry in list form skips non-dict entries.
+    """An HTTP-boundary row for a list with non-dict entries, not a test of the normalisation.
 
-    Covers line 573: continue when entry is not a dict.
+    As the row above: the one valid entry here is schema-only, so it cannot become a
+    tool, and what the row pins is that a list holding a string, an int and `None`
+    among its entries does not stop the turn from reaching the provider.
+    `test_a_tools_registry_handed_over_as_a_list_advertises_the_same_names` is the row
+    that pins the normalisation.
     """
     pipe = Pipe()
 

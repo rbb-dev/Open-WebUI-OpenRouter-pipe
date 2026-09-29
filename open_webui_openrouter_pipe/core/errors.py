@@ -517,6 +517,17 @@ def _inline_span(text: str) -> str:
     return collapsed
 
 
+_ERROR_CARD_DERIVED_VALUE_MAX_CHARS = 16_384
+
+
+def _bounded_card_value(text: str) -> str:
+    limit = _ERROR_CARD_DERIVED_VALUE_MAX_CHARS
+    if len(text) <= limit:
+        return text
+    omitted = len(text) - limit
+    return f"{text[:limit]}\n...(truncated: {omitted:,} characters omitted)..."
+
+
 def _fenced_block(text: str) -> str:
     return wrap_code_block(text, "") if text else ""
 
@@ -590,8 +601,8 @@ def _build_error_template_values(
         "include_model_limits": bool(include_model_limits),
         "api_model_id": _inline_span(api_model_id or ""),
         "normalized_model_id": _inline_span(normalized_model_id or ""),
-        "metadata_json": _fenced_block(metadata_json),
-        "provider_raw_json": _fenced_block(provider_raw_json),
+        "metadata_json": _fenced_block(_bounded_card_value(metadata_json)),
+        "provider_raw_json": _fenced_block(_bounded_card_value(provider_raw_json)),
         "native_finish_reason": _inline_span(error.native_finish_reason or ""),
         "error_chunk_id": _inline_span(error.chunk_id or ""),
         "error_chunk_created": _inline_span(error.chunk_created or ""),

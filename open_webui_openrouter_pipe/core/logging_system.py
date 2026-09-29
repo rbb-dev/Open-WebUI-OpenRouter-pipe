@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
-from .utils import _data_url_log_subject, _sanitize_path_component
+from .utils import _data_url_log_subject, _sanitize_path_component, _stable_crockford_id
 from .warn_latch import warn_level
 
 try:
@@ -66,6 +66,7 @@ class _SessionLogArchiveJob:
     log_events: list[dict[str, Any]]
     meta_message_id: str | None = None
     meta_task: str | None = None
+    terminal: bool = False
     status: str = ""
     reason: str = ""
 
@@ -593,10 +594,26 @@ def _archive_temp_path(out_dir: Path, message_id: str) -> Path:
     return out_dir / f"{message_id}.{os.getpid()}.{uuid.uuid4().hex[:8]}.zip.tmp"
 
 
+def _archive_path_component(value: str, *, fallback: str) -> str:
+    text = str(value or "")
+    safe = _sanitize_path_component(text, fallback=fallback)
+    if safe == text:
+        return safe
+    return f"{safe}-{_stable_crockford_id(text, length=10)}"
+
+
 def _archive_out_dir(base_dir: Path, *, user_id: str, chat_id: str) -> Path:
-    return base_dir / _sanitize_path_component(user_id, fallback="user") / _sanitize_path_component(
+    return base_dir / _archive_path_component(user_id, fallback="user") / _archive_path_component(
         chat_id, fallback="chat"
     )
+
+
+def _archive_file_path(
+    base_dir: Path | str, *, user_id: str, chat_id: str, message_id: str
+) -> Path:
+    return _archive_out_dir(
+        Path(base_dir).expanduser(), user_id=user_id, chat_id=chat_id
+    ) / f"{_archive_path_component(message_id, fallback='message')}.zip"
 
 
 def _archive_claim_key(path: Path | str) -> str:
@@ -706,9 +723,6 @@ def write_session_log_archive(job: _SessionLogArchiveJob) -> None:
     The archive contains:
     - meta.json: Metadata including timestamps, IDs, and configuration
     - logs.txt: Text-formatted logs (if log_format is "text" or "both")
-    - logs.jsonl: JSONL-formatted logs — ALWAYS written as the canonical,
-      machine-readable record so re-assembly can merge/dedup prior events even
-      when log_format is "text" (read_archive_events reads logs.jsonl only).
 
     All files are encrypted using AES encryption with the provided password.
     Atomic file replacement is used to prevent partial writes.
@@ -729,7 +743,7 @@ def _write_session_log_archive_unclaimed(job: _SessionLogArchiveJob, out_dir: Pa
     if not base_dir:
         return
 
-    message_id = _sanitize_path_component(job.message_id, fallback="message")
+    message_id = _archive_path_component(job.message_id, fallback="message")
     session_id = str(job.session_id or "")
 
     out_path = out_dir / f"{message_id}.zip"
@@ -784,6 +798,7 @@ def _write_session_log_archive_unclaimed(job: _SessionLogArchiveJob, out_dir: Pa
         **({"request_ids": request_ids} if request_ids else {}),
         **({"status": str(job.status or "")} if str(job.status or "") else {}),
         **({"reason": str(job.reason or "")} if str(job.reason or "") else {}),
+        "terminal": bool(getattr(job, "terminal", False)),
         "log_format": str(job.log_format or ""),
     }
     meta_json = json.dumps(meta, ensure_ascii=False, indent=2)

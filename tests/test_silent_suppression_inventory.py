@@ -92,8 +92,10 @@ _EXPECTED: dict[str, int] = {
     # report does not already cover, because a path that cannot be stat'd cannot have
     # been written either, so the capture reports the failure and leaves the rows.
     # B193 then removed the inline `after_stat` stat-diff in `_assemble_and_write_bundle`
-    # (hoisted into the shared `_archive_publish_changed_file` helper), so the count is 20.
-    "logging/session_log_manager.py": 20,
+    # (hoisted into the shared `_archive_publish_changed_file` helper), so the count was 20.
+    # B312-2 then deleted the whole `enqueue_archive` method, which carried the
+    # `contextlib.suppress(Exception)` around its `_dirs.add(base_dir)`, so the count is 19.
+    "logging/session_log_manager.py": 19,
     # 3rd: the generic ffmpeg arm, which now stops the child it started before it
     # reports a transport fault. The suppression is load-bearing and is not a test
     # guard: PIL's `UnidentifiedImageError` subclasses `OSError`, so the common

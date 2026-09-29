@@ -24,6 +24,12 @@ PACKAGE_DIR = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 
 EXPECTED_LATCHES = {
     "_warned_archive_write_failed",
+    # Tells an administrator that a stored `bzip2` level of 0, which the codec cannot
+    # use, is being read as 1. Keyed on the stored value rather than on the field name
+    # so one line covers every level that needs flooring, and latched because a
+    # `Valves` is built on Open WebUI's module load and on every Config-tab save --
+    # never on an archive write, which would fire per turn.
+    "_warned_bzip2_compresslevel",
     "_warned_chat_chunk_parse",
     "_warned_collectors",
     "_warned_dropped_video_param",

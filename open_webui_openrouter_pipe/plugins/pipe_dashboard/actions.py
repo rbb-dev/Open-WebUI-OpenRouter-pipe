@@ -25,7 +25,7 @@ from .config_service import (
     readable_stored,
     stored_row_readable,
 )
-from .dashboard_socket import emit_config_changed
+from .dashboard_socket import emit_config_changed, publish_valves_changed
 from .update_service import UpdateError
 
 logger = logging.getLogger(__name__)
@@ -337,7 +337,7 @@ async def _effective_valves_and_state(
             "not save over it (%s)",
             reason,
         )
-        return valves_cls(), [], stored, False
+        return pipe.valves, [], stored, False
     if not stored:
         return valves_cls(), [], {}, True
     kept, dropped = readable_stored(valves_cls, stored)
@@ -380,9 +380,8 @@ async def _saved_values(
     pipe: Any, names: Iterable[str]
 ) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
     wanted = set(names)
-    try:
-        effective, reset, stored, _read_ok = await _effective_valves_and_state(pipe)
-    except _ClientMessage:
+    effective, reset, stored, read_ok = await _effective_valves_and_state(pipe)
+    if not read_ok:
         logger.warning(
             "pipe_dashboard: the store became unreadable while echoing a completed save; "
             "the write is committed, so the echo is dropped rather than reported as a failure"
@@ -421,12 +420,15 @@ async def _config_get(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
     "config_set",
     permission="write",
     schema={"edits": dict, "rev": optional((int, str, type(None)))},
+    needs_request=True,
     admin_only=True,
 )
-async def _config_set(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
+async def _config_set(
+    pipe: Any, user: Any, args: Any, request: Any = None
+) -> dict[str, Any]:
     """Merge edits into the stored custom subset (not the live model) and persist; rev-guarded."""
     async with _config_write_lock(getattr(pipe, "id", "")):
-        result, committed = await _persist_config_edit(pipe, user, args)
+        result, committed = await _persist_config_edit(pipe, user, args, request)
     if committed:
         result["values"], result["secrets"], result["post_reset"] = await _saved_values(
             pipe, args["edits"]
@@ -442,7 +444,9 @@ def _config_write_lock(pipe_id: str) -> asyncio.Lock:
     return lock
 
 
-async def _persist_config_edit(pipe: Any, user: Any, args: Any) -> tuple[dict[str, Any], bool]:
+async def _persist_config_edit(
+    pipe: Any, user: Any, args: Any, request: Any = None
+) -> tuple[dict[str, Any], bool]:
     current_rev = await _current_config_rev(pipe)
     client_rev = args.get("rev")
     # An unreadable revision is a conflict on its own, independent of what the caller
@@ -495,6 +499,7 @@ async def _persist_config_edit(pipe: Any, user: Any, args: Any) -> tuple[dict[st
         raise RuntimeError("valve update rejected by store")
     rev = getattr(result, "updated_at", None)
     await emit_config_changed(rev)
+    await publish_valves_changed(getattr(pipe, "id", ""), user, request)
     return {
         "saved": len(edits) - len(not_saved - cleared),
         "not_saved": sorted(not_saved - cleared),
@@ -576,7 +581,7 @@ async def _update_apply(pipe: Any, user: Any, args: Any, request: Any = None) ->
         return {"error": "unavailable", "message": "update service not initialized"}
     actor = str(getattr(user, "id", "") or "admin")
     return await _run_update_call(
-        svc.apply(dict(args), actor=actor, actor_id=actor, request=request)
+        svc.apply(dict(args), actor=actor, actor_id=actor, request=request, actor_user=user)
     )
 
 
@@ -596,7 +601,7 @@ async def _update_restore(pipe: Any, user: Any, args: Any, request: Any = None) 
         return {"error": "unavailable", "message": "update service not initialized"}
     actor = str(getattr(user, "id", "") or "admin")
     return await _run_update_call(
-        svc.restore(dict(args), actor=actor, actor_id=actor, request=request)
+        svc.restore(dict(args), actor=actor, actor_id=actor, request=request, actor_user=user)
     )
 
 

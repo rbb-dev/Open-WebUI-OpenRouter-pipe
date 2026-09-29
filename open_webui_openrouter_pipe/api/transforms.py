@@ -337,6 +337,11 @@ class ResponsesBody(BaseModel):
             if isinstance(requested_max, int) and requested_max >= 1:
                 sanitized_params["max_output_tokens"] = requested_max
 
+        if "max_completion_tokens" in completions_dict:
+            requested_completion_max = completions_dict["max_completion_tokens"]
+            if isinstance(requested_completion_max, int) and requested_completion_max >= 1:
+                sanitized_params["max_output_tokens"] = requested_completion_max
+
         effort = completions_dict.get("reasoning_effort")
         if effort:
             reasoning = sanitized_params.get("reasoning", {})
@@ -1272,6 +1277,26 @@ def _responses_input_to_chat_messages(
 
 # Payload Transforms
 
+def _coerce_openrouter_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return round(value)
+    if isinstance(value, str):
+        candidate = value.strip()
+        if not candidate:
+            return None
+        try:
+            return round(float(candidate))
+        except ValueError:
+            return None
+    return None
+
+
 def _responses_payload_to_chat_completions_payload(
     responses_payload: dict[str, Any],
 ) -> dict[str, Any]:
@@ -1331,29 +1356,10 @@ def _responses_payload_to_chat_completions_payload(
         if key in responses_payload:
             chat_payload[key] = responses_payload[key]
 
-    def _coerce_chat_int_param(value: Any) -> Any:
-        if value is None:
-            return None
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, int):
-            return value
-        if isinstance(value, float):
-            return round(value)
-        if isinstance(value, str):
-            candidate = value.strip()
-            if not candidate:
-                return None
-            try:
-                return round(float(candidate))
-            except ValueError:
-                return value
-        return value
-
     for key in ("top_k", "seed", "top_logprobs", "max_tokens", "max_completion_tokens"):
         if key not in chat_payload:
             continue
-        rounded = _coerce_chat_int_param(chat_payload.get(key))
+        rounded = _coerce_openrouter_int(chat_payload.get(key))
         if rounded is None:
             chat_payload.pop(key, None)
         else:
@@ -1890,18 +1896,10 @@ def _filter_openrouter_request(payload: dict[str, Any]) -> dict[str, Any]:
             continue
 
         if key == "top_k":
-            if isinstance(value, (int, float)):
-                filtered[key] = float(value)
+            coerced = _coerce_openrouter_int(value)
+            if coerced is None:
                 continue
-            if isinstance(value, str):
-                stripped = value.strip()
-                if not stripped:
-                    continue
-                try:
-                    filtered[key] = float(stripped)
-                except ValueError:
-                    continue
-                continue
+            filtered[key] = coerced
             continue
 
         if key == "metadata":

@@ -139,6 +139,17 @@ async def read_model_response_content(
     return str(response or "")
 
 
+def _model_answer(message: dict[str, Any]) -> Any:
+    content_value = message.get("content")
+    if content_value is None or (isinstance(content_value, str) and not content_value.strip()):
+        for key in ("reasoning_content", "reasoning"):
+            candidate = message.get(key)
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate
+        return content_value
+    return content_value
+
+
 async def read_task_model_response_json(response: Any) -> dict[str, Any]:
     """Parse OWUI generate_chat_completion result into a JSON dict.
 
@@ -188,7 +199,14 @@ async def read_task_model_response_json(response: Any) -> dict[str, Any]:
             if not isinstance(content_list, list):
                 continue
             for content in content_list:
-                if isinstance(content, dict) and content.get("type") == "output_text":
+                if not isinstance(content, dict):
+                    continue
+                if content.get("type") == "refusal":
+                    part_refusal = content.get("refusal")
+                    if isinstance(part_refusal, str) and part_refusal.strip():
+                        raise TaskModelFault("task_model_refusal")
+                    continue
+                if content.get("type") == "output_text":
                     text_parts.append(str(content.get("text") or ""))
         if text_parts:
             joined = "\n".join(p for p in text_parts if p).strip()
@@ -216,7 +234,7 @@ async def read_task_model_response_json(response: Any) -> dict[str, Any]:
     if isinstance(refusal, str) and refusal.strip():
         raise TaskModelFault("task_model_refusal")
 
-    content_value = message.get("content")
+    content_value = _model_answer(message)
     if content_value is None:
         raise TaskModelFault("task_model_empty_response")
     if isinstance(content_value, list):

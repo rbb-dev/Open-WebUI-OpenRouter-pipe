@@ -21,7 +21,7 @@ from ..core.timing_logger import timed
 from ..storage.owui_files import is_linkable_chat
 
 # Import tool schema functions
-from .tool_schema import _root_was_wrapped, _strictify_schema
+from .tool_schema import _strictify_schema
 
 # Import runtime dependencies
 if TYPE_CHECKING:
@@ -320,9 +320,6 @@ def _build_collision_safe_tool_specs_and_registry(
                 "spec": spec,
                 "tool_cfg": tool_cfg,
                 "handed_back": handed_back,
-                "pre_strictify_parameters": (
-                    raw_tool.get("parameters") if isinstance(raw_tool.get("parameters"), dict) else None
-                ),
                 "origin_key": f"owui_request::{origin_name}",
             }
         )
@@ -402,9 +399,6 @@ def _build_collision_safe_tool_specs_and_registry(
                 "spec": spec,
                 "tool_cfg": tool_cfg,
                 "handed_back": False,
-                "pre_strictify_parameters": (
-                    raw_tool.get("parameters") if isinstance(raw_tool.get("parameters"), dict) else None
-                ),
                 "origin_key": f"extra::{origin_name}",
             }
         )
@@ -444,6 +438,10 @@ def _build_collision_safe_tool_specs_and_registry(
         exposed_name = _provider_tool_name(
             origin_name if not needs_rename else f"{prefix}{origin_name}", digest, used_names
         )
+        if exposed_name == "ask_user" and not is_builtin_ask_user(c.get("tool_cfg")):
+            exposed_name = _provider_tool_name(
+                origin_name, digest, used_names | {"ask_user"}
+            )
         used_names.add(exposed_name)
 
         spec = dict(c["spec"])
@@ -469,10 +467,6 @@ def _build_collision_safe_tool_specs_and_registry(
         cfg["origin_name"] = origin_name
         cfg["exposed_name"] = exposed_name
         cfg["spec_wire"] = copy.deepcopy(spec)
-        _pre = (tool_cfg.get("spec") or {}).get("parameters")
-        if not isinstance(_pre, dict):
-            _pre = c.get("pre_strictify_parameters")
-        cfg["spec_is_envelope"] = _root_was_wrapped(_pre if isinstance(_pre, dict) else {})
         cfg_spec = cfg.get("spec")
         if not _advertised_wire_is_admissible(cfg_spec, c["spec"].get("parameters"), spec):
             cfg["spec_wire"] = copy.deepcopy(cfg_spec) if isinstance(cfg_spec, dict) else cfg["spec_wire"]

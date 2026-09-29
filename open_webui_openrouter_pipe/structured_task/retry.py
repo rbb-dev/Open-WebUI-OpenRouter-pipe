@@ -17,6 +17,7 @@ from ..core.logging_system import SessionLogger
 from ..core.warn_latch import warn_level
 from .client import (
     TaskModelFault,
+    _model_answer,
     normalise_model_content,
     read_task_model_response_json,
 )
@@ -62,13 +63,21 @@ def _response_text(response: Any) -> str:
                 refusal = message.get("refusal")
                 if isinstance(refusal, str) and refusal.strip():
                     return refusal
-                content = message.get("content")
+                content = _model_answer(message)
                 if isinstance(content, str):
                     return content
                 if content is not None:
                     return normalise_model_content(content)
         output = response.get("output")
         if isinstance(output, list):
+            for item in output:
+                if not isinstance(item, dict) or item.get("type") != "message":
+                    continue
+                for part in item.get("content") or []:
+                    if isinstance(part, dict) and part.get("type") == "refusal":
+                        part_refusal = part.get("refusal")
+                        if isinstance(part_refusal, str) and part_refusal.strip():
+                            return part_refusal
             parts = [
                 str(part.get("text") or "")
                 for item in output

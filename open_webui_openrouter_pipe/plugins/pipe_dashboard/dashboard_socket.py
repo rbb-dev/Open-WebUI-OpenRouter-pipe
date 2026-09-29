@@ -57,6 +57,17 @@ async def _evict(sio: Any, sid: str, reason: str) -> None:
         logger.warning("pipe_dashboard viewer eviction failed for sid=%s", sid, exc_info=True)
 
 
+async def _deny(sio: Any, sid: str) -> None:
+    try:
+        await sio.leave_room(sid, VIEWERS_ROOM)
+    except Exception:
+        logger.debug("pipe_dashboard leave_room failed for sid=%s", sid, exc_info=True)
+    try:
+        await sio.emit(DENIED_EVENT, {}, room=sid)
+    except Exception:
+        logger.debug("pipe_dashboard denied-notice emit failed for sid=%s", sid, exc_info=True)
+
+
 async def _evict_every_viewer() -> None:
     try:
         from open_webui.socket.main import get_session_ids_from_room, sio
@@ -74,7 +85,7 @@ async def _pipe_dashboard_sub(sid: str, _data: Any = None) -> None:
         try:
             from open_webui.socket.main import sio
 
-            await sio.emit(DENIED_EVENT, {}, room=sid)
+            await _deny(sio, sid)
         except Exception:
             logger.debug("pipe_dashboard disabled-notice emit failed for sid=%s", sid, exc_info=True)
         return
@@ -84,7 +95,7 @@ async def _pipe_dashboard_sub(sid: str, _data: Any = None) -> None:
         try:
             from open_webui.socket.main import sio
 
-            await sio.emit(DENIED_EVENT, {}, room=sid)
+            await _deny(sio, sid)
         except Exception:
             logger.debug("pipe_dashboard denied-notice emit failed for sid=%s", sid, exc_info=True)
         return
@@ -185,6 +196,46 @@ def register_valve_event_sink() -> bool:
     except Exception:
         logger.debug("pipe_dashboard valve sink registration failed", exc_info=True)
         return False
+
+
+async def _publish_function_event(
+    name: str, pipe_id: str, actor: Any, request: Any, data: dict[str, Any] | None
+) -> bool:
+    try:
+        from open_webui.events import EVENTS, publish_event
+    except Exception:
+        _level = warn_level(_warned_import_sites, 'events')
+        logger.log(
+            _level,
+            "pipe_dashboard: Open WebUI events unavailable; dashboard writes are not "
+            "announced to event functions or webhooks",
+            exc_info=True,
+        )
+        return False
+    if request is None:
+        from .http_routes import get_owui_app
+
+        request = get_owui_app()
+    try:
+        await publish_event(
+            request, getattr(EVENTS, name), actor=actor, subject_id=pipe_id, data=data
+        )
+        return True
+    except Exception:
+        logger.debug("pipe_dashboard event publish failed", exc_info=True)
+        return False
+
+
+async def publish_valves_changed(pipe_id: str, actor: Any, request: Any = None) -> bool:
+    return await _publish_function_event(
+        "FUNCTION_VALVES_UPDATED", pipe_id, actor, request, None
+    )
+
+
+async def publish_function_updated(
+    pipe_id: str, actor: Any, request: Any = None, data: dict[str, Any] | None = None
+) -> bool:
+    return await _publish_function_event("FUNCTION_UPDATED", pipe_id, actor, request, data)
 
 
 def clear_socket_pipe_getter(instance: Any, name: str) -> None:

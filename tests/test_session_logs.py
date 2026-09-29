@@ -131,36 +131,6 @@ def test_write_session_log_archive_preserves_per_event_request_id(tmp_path, pipe
         assert [rec.get("request_id") for rec in records] == ["r1", "r2"]
 
 
-def test_enqueue_session_log_archive_skips_when_missing_ids(tmp_path, monkeypatch, pipe_instance) -> None:
-    pipe = pipe_instance
-
-    valves = pipe.Valves(
-        SESSION_LOG_STORE_ENABLED=True,
-        SESSION_LOG_DIR=str(tmp_path),
-        SESSION_LOG_ZIP_PASSWORD=EncryptedStr("secret"),
-    )
-
-    called = {"started": False}
-
-    def _noop_start() -> None:
-        called["started"] = True
-
-    monkeypatch.setattr(pipe._session_log_manager, "start_workers", _noop_start)
-    monkeypatch.setattr(pipe._session_log_manager, "_queue", None)
-
-    pipe._session_log_manager.enqueue_archive(
-        valves,
-        user_id="",
-        session_id="Ix-n1ptqDgmpL-8gAAAp",
-        chat_id="c",
-        message_id="m",
-        request_id="r",
-        log_events=[{"created": 1_700_000_000.0, "level": "INFO", "logger": "t", "message": "x"}],
-    )
-
-    assert called["started"] is False
-
-
 def test_session_log_buffer_captures_debug_even_when_console_level_warning() -> None:
     """The buffer keeps DEBUG; the console honours the per-request threshold.
 
@@ -217,7 +187,16 @@ class TestSessionLogArchiveEdgeCases:
 # pyright: reportArgumentType=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportRedeclaration=false, reportIncompatibleMethodOverride=false, reportGeneralTypeIssues=false, reportSelfClsParameterName=false, reportCallIssue=false, reportOptionalIterable=false
 
     def test_archive_with_missing_ids_skipped(self, tmp_path, pipe_instance) -> None:
-        """Archive not written when user_id/session_id/chat_id/message_id missing."""
+        """A missing user_id is published where the shared derivation puts it.
+
+        The assertion this replaces named `tmp_path / "" / <chat> / <message>.zip`, a
+        path the writer can never produce, so it passed whatever the writer did. The
+        path the writer actually derives is the one to check, and a turn with no usable
+        owner belongs in a directory of its own rather than in the bucket a real user id
+        named `user` owns.
+        """
+        from open_webui_openrouter_pipe.core.logging_system import _archive_file_path
+
         pipe = pipe_instance
         password = b"correct horse battery staple"
 
@@ -237,12 +216,21 @@ class TestSessionLogArchiveEdgeCases:
             log_events=[{"created": 1_700_000_000.0, "level": "INFO", "logger": "t", "message": "hello"}],
         )
 
-        # Should not create archive when user_id is missing
         pipe._session_log_manager._write_archive(job_missing_user)
 
-        # Verify no archive was created
-        out_path = tmp_path / job_missing_user.user_id / job_missing_user.chat_id / f"{job_missing_user.message_id}.zip"
-        assert not out_path.exists()
+        out_path = _archive_file_path(
+            tmp_path,
+            user_id=job_missing_user.user_id,
+            chat_id=job_missing_user.chat_id,
+            message_id=job_missing_user.message_id,
+        )
+        assert out_path.is_file(), (
+            f"the archive was not published at the path the writer derives: "
+            f"{sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob('*.zip'))}"
+        )
+        assert out_path.parent.parent.name != "user", (
+            "a turn with no usable owner was filed under the shared `user` bucket"
+        )
 
     def test_archive_password_encryption(self, tmp_path, pipe_instance) -> None:
         """Zip archive encrypted with AES and correct password."""
@@ -694,7 +682,7 @@ class TestReadSessionLogArchiveEvents:
                 zf.writestr("logs.jsonl", jsonl_content.encode("utf-8"))
 
             settings = ("/tmp", password, "deflated", 6)
-            result = pipe._session_log_manager.read_archive_events(zip_path, settings)
+            result = pipe._session_log_manager.read_archive(zip_path, settings)[1]
 
             assert len(result) == 2
             # Verify conversion happened
@@ -723,7 +711,7 @@ class TestReadSessionLogArchiveEvents:
                 zf.writestr("other.txt", b"not jsonl")
 
             settings = ("/tmp", password, "deflated", 6)
-            result = pipe._session_log_manager.read_archive_events(zip_path, settings)
+            result = pipe._session_log_manager.read_archive(zip_path, settings)[1]
 
             assert result == []
         finally:
@@ -756,7 +744,7 @@ class TestReadSessionLogArchiveEvents:
                 zf.writestr("logs.jsonl", jsonl_content.encode("utf-8"))
 
             settings = ("/tmp", password, "deflated", 6)
-            result = pipe._session_log_manager.read_archive_events(zip_path, settings)
+            result = pipe._session_log_manager.read_archive(zip_path, settings)[1]
 
             assert len(result) == 2
             assert result[0]["message"] == "valid"
@@ -789,7 +777,7 @@ class TestReadSessionLogArchiveEvents:
                 zf.writestr("logs.jsonl", jsonl_content.encode("utf-8"))
 
             settings = ("/tmp", password, "deflated", 6)
-            result = pipe._session_log_manager.read_archive_events(zip_path, settings)
+            result = pipe._session_log_manager.read_archive(zip_path, settings)[1]
 
             assert len(result) == 2
         finally:
@@ -1032,7 +1020,7 @@ def test_session_logger_concurrent_writes_same_request() -> None:
 
 def test_text_format_archive_still_contains_jsonl_and_is_mergeable(tmp_path, pipe_instance) -> None:
     """A 'text' log_format archive must still contain logs.jsonl (the canonical
-    machine-readable record) so read_archive_events can merge prior events on
+    machine-readable record) so read_archive can merge prior events on
     re-assembly. Previously text mode wrote only logs.txt, so a re-assembly for
     the same message_id silently dropped the earlier invocation's events."""
     import pyzipper
@@ -1073,7 +1061,7 @@ def test_text_format_archive_still_contains_jsonl_and_is_mergeable(tmp_path, pip
         assert "logs.jsonl" in names, "canonical jsonl must be written even in text mode"
 
     settings = (str(tmp_path), password, "lzma", None)
-    events = pipe._session_log_manager.read_archive_events(out_path, settings)
+    events = pipe._session_log_manager.read_archive(out_path, settings)[1]
     assert any(e.get("message") == "hello-text-mode" for e in events)
 
 

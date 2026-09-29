@@ -239,7 +239,17 @@ only through the card Open WebUI keeps for it in the browser, and none with card
   `[tool call failed; result not retained]` when the call did not complete. A round of Open WebUI's built-in
   `ask_user` is the exception: its question and the person's typed answer are always handed over, since the answer
   is the person's own words. The round is recognised by the tool behind it, not by the name it was advertised under,
-  so a third-party tool that happens to be called `ask_user` is a tool like any other and is withheld.
+  so a third-party tool that happens to be called `ask_user` is a tool like any other and is withheld. The
+  identity is carried two ways, and both are read before the request's own tool set: the pipe stamps the round's
+  own stored call when it runs the built-in, so a later turn reads the round's record rather than re-deciding it,
+  and the bare name `ask_user` is reserved for the built-in, so a user's own tool of that name is advertised (and,
+  with tool cards on, displayed) as `ask_user__<digest>` and a round recorded before this change stays
+  grandfathered until it ages out of `TOOL_OUTPUT_RETENTION_TURNS`. A round the pipe answers back to Open WebUI
+  instead of running -- which is what `Open-WebUI` mode does with the built-in, since the pipe never executes it --
+  is recorded the same way, as a stored call carrying no result, because Open WebUI writes that round into the chat
+  under the name the pipe handed back and that name is the bare one. A record is readable only through its marker
+  line on the assistant message and a store that answers, so a round whose rows are gone is judged by the request's
+  tool set as before.
   The exemption is also **per round**, not per call id: a model may reuse one `call_id` across two rounds, and on the
   replay path the exempt round is the one whose own stored call is the built-in, while the other round on that same
   id is withheld. Because each output is paired with its own call, a tool round that shares an id with a built-in

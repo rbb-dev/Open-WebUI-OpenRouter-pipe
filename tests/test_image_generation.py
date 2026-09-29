@@ -2350,6 +2350,8 @@ async def test_the_catalog_publishes_contracts_the_installer_can_actually_read(f
     valves.ENABLE_OPENROUTER_IMAGE_GENERATION = True
     valves.AUTO_INSTALL_IMAGE_FILTERS = filters_wanted
     valves.AUTO_ATTACH_IMAGE_FILTERS = filters_wanted
+    valves.AUTO_INSTALL_IMAGE_GEN_FILTER = filters_wanted
+    valves.AUTO_ATTACH_IMAGE_GEN_FILTER = filters_wanted
     valves.BASE_URL = "https://openrouter.ai/api/v1"
     valves.HTTP_REFERER_OVERRIDE = ""
 
@@ -3500,6 +3502,8 @@ async def test_the_catalogue_ttl_still_applies_when_no_filter_consumes_contracts
     valves.ENABLE_OPENROUTER_IMAGE_GENERATION = True
     valves.AUTO_INSTALL_IMAGE_FILTERS = False
     valves.AUTO_ATTACH_IMAGE_FILTERS = False
+    valves.AUTO_INSTALL_IMAGE_GEN_FILTER = False
+    valves.AUTO_ATTACH_IMAGE_GEN_FILTER = False
     valves.BASE_URL = "https://openrouter.ai/api/v1"
     valves.HTTP_REFERER_OVERRIDE = ""
 

@@ -31,9 +31,9 @@ Before sending requests to OpenRouter, the pipe filters request bodies to the al
 | `instructions` | Additional instructions passed through to OpenRouter when present. |
 | `metadata` | OpenRouter metadata map; sanitized to string→string with length/pair constraints (invalid entries dropped). |
 | `stream` | Enables streaming mode. |
-| `max_output_tokens` | Output token cap. The pipe may set/omit this depending on `USE_MODEL_MAX_OUTPUT_TOKENS` and routing decisions. |
+| `max_output_tokens` | Output token cap. The pipe may set/omit this depending on `USE_MODEL_MAX_OUTPUT_TOKENS` and routing decisions. A caller's own cap — `max_output_tokens`, or `max_completion_tokens` renamed to this name — occupies the field first, so only one cap is ever sent. |
 | `temperature` | Sampling parameter (passed through when present). |
-| `top_k` | Sampling parameter; numeric strings are coerced to numbers. When the pipe routes via `/chat/completions` (forced or fallback), `top_k` is rounded before sending upstream. |
+| `top_k` | Sampling parameter, sent as a JSON integer on both endpoints: a float is rounded, a numeric string is parsed and then rounded, and a value that is neither (a blank string, `nope`, a boolean, a list) is dropped. `0` is forwarded as the documented disabled value, and a negative value is forwarded unchanged and refused by OpenRouter. |
 | `top_p` | Sampling parameter (passed through when present). |
 | `reasoning` | Reasoning configuration; only recognized subfields are forwarded (unknown keys dropped). The recognized set is `context`, `effort`, `enabled`, `exclude`, `max_tokens`, `mode` and `summary`; a `reasoning` object that holds none of them is dropped rather than sent as `{}`. |
 | `include_reasoning` | OpenRouter's deprecated alias for `reasoning.exclude`. The pipe adds it only when every model the request can be served by lists it, checked against the primary `model` — where a routing variant with no catalog entry of its own is read from its base model's entry — and against every fallback in `models`; an id the catalogue does not know counts as not listing it. OpenRouter forwards the key to whichever model ends up serving, and a provider that does not know the parameter rejects the whole request: measured 2026-09-26, `/responses` with `models=[openai/gpt-4.1-mini]` and `include_reasoning: false` answered HTTP 400 from Azure, `Unknown parameter: 'include_reasoning'.` When the flag has to go and its value was `false` and the primary lists `reasoning`, thinking off is carried as `reasoning: {"effort": "none"}` instead, which the same session measured as accepted with zero reasoning tokens. |
@@ -71,9 +71,9 @@ Before sending requests to OpenRouter, the pipe filters request bodies to the al
 Operational note:
 - `previous_response_id` is deliberately **not** forwarded. OpenRouter's `/responses` endpoint is stateless and answers a non-null `previous_response_id` with a 400, so the pipe drops it and sends the whole conversation in `input` instead; the first drop in a worker is logged as a WARNING naming the field and the substitute. A host running Open WebUI with `ENABLE_RESPONSES_API_STATEFUL=true` is relying on the field — that setting replaces the outgoing messages with the system message plus the prior output, so the history the host stopped sending is the history this pipe cannot recover. Leave stateful mode off against OpenRouter.
 - The pipe always constructs a canonical "Responses-style" request first, then converts it to a Chat Completions payload only when needed (forced endpoint selection or automatic fallback).
-- Some parameters are Chat-only (for example `stop`, `seed`, `logprobs`, `preset`, `max_completion_tokens`). These are ignored when calling `/responses`, but are preserved so they can be used if the request is sent via `/chat/completions`. The `/responses` spelling of the same cap is `max_output_tokens`, and only `max_output_tokens` is sent on that endpoint.
+- Some parameters are Chat-only (for example `stop`, `seed`, `logprobs`, `preset`). These are ignored when calling `/responses`, but are preserved so they can be used if the request is sent via `/chat/completions`. The token cap is not one of them: a caller's `max_completion_tokens` is sent as itself on `/chat/completions` and renamed to `max_output_tokens` on `/responses`, so the same cap reaches either endpoint under that endpoint's own spelling and only `max_output_tokens` is sent on that one.
 - `service_tier` and `prompt_cache_key` are carried on **both** endpoints: whatever value the request carries is sent on `/responses` and on `/chat/completions`, unchanged, and the pipe neither substitutes nor validates it. A request that carries neither grows neither. `prompt_cache_key` is OpenRouter's sticky-routing cache key; it is only a fallback for `session_id` and `x-session-id`, so a `SEND_CACHE_SESSION_ID` install (the default) routes on `session_id` instead.
-- An explicit `max_completion_tokens` beats the pipe's automatic ceiling: when a request carries one, the value `USE_MODEL_MAX_OUTPUT_TOKENS` would otherwise fill is not sent, so only one token cap is ever on the wire. A `max_completion_tokens` below 1 is dropped exactly as a `max_tokens` below 1 is, so the valve's ceiling applies to it if enabled.
+- An explicit `max_completion_tokens` beats the pipe's automatic ceiling on **both** endpoints: when a request carries one, the value `USE_MODEL_MAX_OUTPUT_TOKENS` would otherwise fill is not sent, so only one token cap is ever on the wire. A `max_completion_tokens` below 1 is dropped exactly as a `max_tokens` below 1 is, so the valve's ceiling applies to it if enabled.
 - When a `preset` parameter is present in the request body, the pipe automatically forces `/chat/completions` because presets only work on that endpoint. For presets that work with `/responses`, use the VARIANT_MODELS approach with `@preset/slug` syntax instead. See [Model Variants & Presets](model_variants_and_presets.md#presets).
 
 ### 2.2 Advanced Model Parameters (per-model overrides)
@@ -261,6 +261,7 @@ This is a per-model “master kill switch” for the pipe’s Open WebUI model m
 - Custom param: `disable_capability_updates` (bool-ish)
 - Pipe behavior (when truthy):
   - Leaves `meta.capabilities` as-is for that model (no checkbox overwrites), even when `UPDATE_MODEL_CAPABILITIES=True`.
+  - A preserved `citations` value is honoured, not merely stored: on the chat path the pipe publishes no tool-derived source for a model whose row says citations are off, so Open WebUI persists no `sources` for that message either.
 
 ### 2.8 `disable_image_updates` → preserve the model icon
 - Custom param: `disable_image_updates` (bool-ish)
@@ -413,7 +414,7 @@ Per-model opt-outs:
 - `disable_image_updates`, `disable_description_updates`, `disable_capability_updates`: disable specific metadata fields for the model.
 
 Operational note:
-- This sync updates Open WebUI’s Models table using Open WebUI’s own helper APIs (not raw SQL), but it is still a **write** to Open WebUI’s model metadata. Disable the valves if you want to manage model icons/capabilities manually.
+- This sync updates Open WebUI’s Models table using Open WebUI’s own helper APIs (not raw SQL), but it is still a **write** to Open WebUI’s model metadata. Disable the valves if you want to manage model icons/capabilities manually — and note that the `web_search` and `Citations` boxes are left alone either way, so an admin’s tick or untick of either now survives every refresh and is honoured on the chat path rather than only stored.
 
 ---
 

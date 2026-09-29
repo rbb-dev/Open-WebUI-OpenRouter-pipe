@@ -1181,7 +1181,7 @@ default applies; the second gets no control.
 | `VIDEO_REFERENCE_IMAGES_JSON` | `str` (JSON array) | `""` | passthrough `images` | `"images"` in `allowed_passthrough_parameters` | Wan 2.7 |
 | `VIDEO_LAST_IMAGE_URL` | `str` | `""` | passthrough `last_image` | `"last_image"` in `allowed_passthrough_parameters` | Wan 2.7 |
 | `VIDEO_CREATIVITY` | `Literal['', '0', '1']` | `""` | top-level `creativity` | `creativity` published as a list | FLUX Video Upscale |
-| `VIDEO_UPSCALE_FACTOR` | `float` | `0.0` | top-level `upscale_factor` | `upscale_factor` published as a range | FLUX Video Upscale |
+| `VIDEO_UPSCALE_FACTOR` | `float` (`ge=1.5`, `le=3.0`, both read from the catalogue) | `0.0` | top-level `upscale_factor` | `upscale_factor` published as a range | FLUX Video Upscale |
 
 ### New typed UserValves added in this feature (passthrough-param wrappers)
 
@@ -1390,8 +1390,11 @@ same three limits are applied again to anything sent only as a reference
 (below), and there a file that breaks one is left out with a warning
 notice in the chat naming it and the reason, while the video still
 renders. References count against their own combined budget, separate
-from the frames'. A **picture** is never held back for its dimensions,
-because OpenRouter publishes no size range for one.
+from the frames'. A **picture** is held to the per-picture byte cap,
+whichever way it takes: one over `VIDEO_FRAME_IMAGE_MAX_BYTES` is left out
+of the request with a notice naming it, and the video still renders. What
+is never measured about a reference picture is its **pixel** dimensions,
+because OpenRouter publishes no pixel range for one.
 
 Per-model frame support:
 
@@ -1446,13 +1449,14 @@ combined budget is left out with a warning notice naming it and why, and
 the render still goes ahead; a clip that fails on pixel size
 is left out the same way, and one that is simply too large stops the
 request instead, so that nothing is generated and billed from a prompt the
-attachment was meant to anchor. A **picture** is not measured before it is
-sent: it is encoded at whatever size it was attached at and counts against
-the combined budget like any other reference, so on a turn carrying several
-references one large picture can push a later one out with a notice naming
-it. An image reference is sent as-is and the pipe cannot know whether the
-model read it, because nothing in the video catalog says which models honour
-image references.
+attachment was meant to anchor. A **picture** is decoded and measured like
+any other reference, and one over **Maximum single frame size** is left out
+of the request with a notice naming it, whichever way it travels. It counts
+against the combined budget like any other reference, so on a turn carrying
+several references one large picture can push a later one out with a notice
+naming it. An image reference is sent as-is and the pipe cannot know whether
+the model read it, because nothing in the video catalog says which models
+honour image references.
 
 A turn with attachments and **no typed words** is refused rather than
 submitted: the intent classifier is off for a textless turn, so nothing would

@@ -905,7 +905,7 @@ _PER_MODEL_HELP_DATA: dict[str, dict[str, Any]] = {
         ],
         "knob_descriptions": {
             "Safety tolerance": "How permissive Black Forest Labs' content check is: 0 for the strictest, 4 for the most permissive. Blank leaves it at 2.",
-            "Upscale factor": "How much bigger to make the video, 1.5 to 3 times its current size. 0 leaves it to the model.",
+            "Upscale factor": "How much bigger to make the video, 1.5 to 3 times its current size. Leave it on Default to let the model choose; a number outside that range is not accepted and falls back to Default.",
             "Creativity": "0 keeps the source exactly as it is and sharpens it; 1 restores and invents fine detail that was not there.",
             "Reference video URL": "The clip to be enlarged. Its length and dimensions decide the output.",
             "Provider options JSON": PROVIDER_OPTIONS_DESCRIPTION,

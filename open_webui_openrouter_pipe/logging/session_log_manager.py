@@ -22,7 +22,7 @@ import random
 import threading
 import time
 import weakref
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, MutableMapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -50,9 +50,13 @@ def _wait_alive(mgr_ref: Any, stop_event: threading.Event, seconds: float) -> bo
     return mgr_ref() is None or stop_event.is_set()
 
 
-def _truncate_latch(latch: dict[str, float], keep: int) -> None:
+def _truncate_latch(latch: MutableMapping[str, float] | set[str], keep: int) -> None:
     excess = len(latch) - int(keep)
     if excess <= 0:
+        return
+    if isinstance(latch, set):
+        for stale_key in list(latch)[:excess]:
+            latch.discard(stale_key)
         return
     for stale_key in sorted(latch, key=lambda k: latch[k])[:excess]:
         latch.pop(stale_key, None)
@@ -240,12 +244,6 @@ def _is_incomplete_marker(evt: Any) -> bool:
     return evt.get("lineno") == 0 and evt.get("level") == "WARNING"
 
 
-def _archive_file_name(message_id: str) -> str:
-    from ..core.utils import _sanitize_path_component
-
-    return f"{_sanitize_path_component(message_id, fallback='message')}.zip"
-
-
 def _incomplete_marker(
     request_id: str,
     session_id: str,
@@ -386,6 +384,13 @@ class SessionLogManager:
     - SessionLogger/write_session_log_archive for actual archive writing
     - Pipe instance for live valve configuration access
     """
+
+    _FAULT_LATCHES = (
+        "_unreadable_archive_warnings",
+        "_stale_filter_warnings",
+        "_read_fault_warnings",
+        "_captured_turns",
+    )
 
     def __init__(
         self,
@@ -655,104 +660,6 @@ class SessionLogManager:
 
         return base_dir, password.encode("utf-8"), zip_compression, zip_compresslevel
 
-    # =========================================================================
-    # Enqueue Archive Job
-    # =========================================================================
-
-    @timed
-    def enqueue_archive(
-        self,
-        valves: Any,
-        *,
-        user_id: str,
-        session_id: str,
-        chat_id: str,
-        message_id: str,
-        request_id: str,
-        log_events: list[dict[str, Any]],
-    ) -> None:
-        """Queue the current request's session logs for encrypted zip persistence."""
-        from ..core.config import EncryptedStr
-        from ..core.logging_system import _SessionLogArchiveJob
-        from ..storage.owui_files import is_temporary_chat
-
-        if not valves.SESSION_LOG_STORE_ENABLED:
-            return
-        if not (user_id and request_id):
-            if "ids" not in self._skip_info_emitted:
-                self._skip_info_emitted.add("ids")
-                self.logger.info(
-                    "Session log archive skipped (missing user_id or request_id): user_id=%s request_id=%s",
-                    bool(user_id),
-                    bool(request_id),
-                )
-            return
-        if is_temporary_chat(chat_id):
-            self._warn_temporary_chat_skip(
-                "archive", user_id, "Session log archive skipped (temporary chat): request_id=%s", request_id,
-            )
-            return
-        if not (chat_id and message_id):
-            if not getattr(valves, "SESSION_LOG_ARCHIVE_API_CALLS", True):
-                if "valve" not in self._skip_info_emitted:
-                    self._skip_info_emitted.add("valve")
-                    self.logger.info(
-                        "Session log archive skipped (no chat/message id and SESSION_LOG_ARCHIVE_API_CALLS is off): request_id=%s",
-                        request_id,
-                    )
-                return
-            chat_id = "api"
-            message_id = f"api-{request_id}"
-        if not log_events:
-            return
-        if pyzipper is None:
-            self._warn_once(
-                "pyzipper",
-                "Session log storage is enabled but the 'pyzipper' package is not available; skipping persistence.",
-            )
-            return
-
-        base_dir = valves.SESSION_LOG_DIR
-        if not base_dir:
-            self._warn_once(
-                "dir",
-                "Session log storage is enabled but SESSION_LOG_DIR is empty; skipping persistence.",
-            )
-            return
-
-        decrypted = EncryptedStr.read(valves.SESSION_LOG_ZIP_PASSWORD)
-        password = (decrypted or "").strip()
-        if not password:
-            self._warn_once(
-                "password",
-                "Session log storage is enabled but SESSION_LOG_ZIP_PASSWORD is not configured or cannot be decrypted with the current WEBUI_SECRET_KEY; skipping persistence. The stored value looks like a ciphertext but does not decode: it may be damaged, or it may be a passphrase typed with the 'encrypted:' prefix.",
-            )
-            return
-
-        zip_compression = valves.SESSION_LOG_ZIP_COMPRESSION
-        zip_compresslevel = valves.SESSION_LOG_ZIP_COMPRESSLEVEL
-        if zip_compression in {"stored", "lzma"}:
-            zip_compresslevel = None
-
-        with contextlib.suppress(Exception), self._lock:
-            self._dirs.add(base_dir)
-
-        job = _SessionLogArchiveJob(
-            base_dir=base_dir,
-            zip_password=password.encode("utf-8"),
-            zip_compression=zip_compression,
-            zip_compresslevel=zip_compresslevel,
-            user_id=user_id,
-            session_id=session_id,
-            chat_id=chat_id,
-            message_id=message_id,
-            request_id=request_id,
-            created_at=time.time(),
-            log_format=valves.SESSION_LOG_FORMAT,
-            log_events=log_events,
-        )
-        self._enqueue_archive_job(job)
-
     def _enqueue_archive_job(self, job: Any) -> None:
         if self._queue is None:
             self._queue = queue.Queue(maxsize=500)
@@ -813,13 +720,12 @@ class SessionLogManager:
                     )
             return
         if not (user_id and request_id):
-            if "ids" not in self._skip_info_emitted:
-                self._skip_info_emitted.add("ids")
-                self.logger.info(
-                    "Session log segment skipped (missing user_id or request_id): user_id=%s request_id=%s",
-                    bool(user_id),
-                    bool(request_id),
-                )
+            self.logger.log(
+                warn_level(self._skip_info_emitted, "ids"),
+                "Session log segment skipped (missing user_id or request_id): user_id=%s request_id=%s",
+                bool(user_id),
+                bool(request_id),
+            )
             return
         if temporary:
             self._warn_temporary_chat_skip(
@@ -829,12 +735,11 @@ class SessionLogManager:
         surrogate_in_play = False
         if not (chat_id and message_id):
             if not getattr(valves, "SESSION_LOG_ARCHIVE_API_CALLS", True):
-                if "valve" not in self._skip_info_emitted:
-                    self._skip_info_emitted.add("valve")
-                    self.logger.info(
-                        "Session log segment skipped (no chat/message id and SESSION_LOG_ARCHIVE_API_CALLS is off): request_id=%s",
-                        request_id,
-                    )
+                self.logger.log(
+                    warn_level(self._skip_info_emitted, "valve"),
+                    "Session log segment skipped (no chat/message id and SESSION_LOG_ARCHIVE_API_CALLS is off): request_id=%s",
+                    request_id,
+                )
                 return
             chat_id = "api"
             message_id = f"api-{request_id}"
@@ -979,6 +884,12 @@ class SessionLogManager:
         batch_size = self.valves.SESSION_LOG_ASSEMBLER_BATCH_SIZE
         lock_stale_seconds = self.valves.SESSION_LOG_LOCK_STALE_SECONDS
         stale_finalize_seconds = float(self.valves.SESSION_LOG_STALE_FINALIZE_SECONDS)
+        budget = float(self.valves.SESSION_LOG_ASSEMBLER_INTERVAL_SECONDS)
+        deadline = time.monotonic() + budget
+
+        with self._lock:
+            for _latch_name in self._FAULT_LATCHES:
+                _truncate_latch(getattr(self, _latch_name), _MAX_DRAIN_LATCH_KEYS)
 
         self._cleanup_stale_locks(model, session_factory, lock_stale_seconds)
 
@@ -988,7 +899,9 @@ class SessionLogManager:
             if assembled is not _LOCK_CONTENDED and assembled is not True and assembled is not False:
                 return
             with self._lock:
-                if assembled or key in self._rescue_pending:
+                if assembled:
+                    self._rescue_pending.discard(key)
+                if assembled or self._rescue_exempt(key):
                     self._assembler_recent_failures.pop(key, None)
                     self._assembly_failure_stale_arm.discard(key)
                 else:
@@ -998,9 +911,19 @@ class SessionLogManager:
                     else:
                         self._assembly_failure_stale_arm.discard(key)
 
-        for terminal, turns in self._candidate_turns(
+        candidates = self._candidate_turns(
             model, session_factory, batch_size, stale_finalize_seconds, backed_off
-        ):
+        )
+        for index, (terminal, turns) in enumerate(candidates):
+            if time.monotonic() >= deadline:
+                self.logger.debug(
+                    "Session log assembler pass stopped at %d of %d candidate turn(s) at its "
+                    "%.1fs wall-clock budget; the rest are offered again by the next pass",
+                    index,
+                    len(candidates),
+                    budget,
+                )
+                break
             if terminal:
                 assembled = self._assemble_and_write_bundle(turns[0], turns[1], terminal=True)
             else:
@@ -1009,6 +932,12 @@ class SessionLogManager:
                     stale_finalize_seconds=stale_finalize_seconds,
                 )
             _record(turns, assembled, stale_arm=not terminal)
+
+    def _rescue_exempt(self, key: tuple[str, str]) -> bool:
+        if key not in self._rescue_pending:
+            return False
+        turn = f"{key[0]}:{key[1]}"
+        return self._unreadable_archive_attempts.get(turn, 0) < _UNREADABLE_ARCHIVE_CAPTURE_AFTER
 
     def _backoff_exclusion(
         self, lock_stale_seconds: float
@@ -1186,23 +1115,26 @@ class SessionLogManager:
     # Archive Event Helpers
     # =========================================================================
 
-    def read_archive_events(
+    def read_archive(
         self,
         zip_path: Path,
         settings: tuple[str, bytes, str, int | None],
-    ) -> list[dict[str, Any]]:
-        """Read events from an existing session log archive.
-
-        Used during assembly to merge existing events with newly fetched DB events,
-        preventing data loss when multiple invocations share the same message_id.
-        """
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         import pyzipper
 
         _, zip_password, _, _ = settings
+        meta: dict[str, Any] = {}
         events: list[dict[str, Any]] = []
 
         with pyzipper.AESZipFile(zip_path, "r") as zf:
             zf.setpassword(zip_password)
+            if "meta.json" in zf.namelist():
+                try:
+                    loaded = json.loads(zf.read("meta.json").decode("utf-8"))
+                except (ValueError, RecursionError):
+                    loaded = None
+                if isinstance(loaded, dict):
+                    meta = loaded
             if "logs.jsonl" in zf.namelist():
                 content = zf.read("logs.jsonl").decode("utf-8")
                 for line in content.strip().split("\n"):
@@ -1213,7 +1145,7 @@ class SessionLogManager:
                             continue  # Skip malformed lines (JSONDecodeError ⊂ ValueError)
                         if isinstance(evt, dict):
                             events.append(self._convert_jsonl_to_internal(evt))
-        return events
+        return meta, events
 
     def _convert_jsonl_to_internal(self, evt: dict[str, Any]) -> dict[str, Any]:
         """Convert JSONL archive format back to internal event format.
@@ -1288,11 +1220,26 @@ class SessionLogManager:
         ids: list[str] | None = None,
     ) -> None:
 
-        from ..core.logging_system import _SessionLogArchiveJob
+        from ..core.logging_system import _archive_file_path, _SessionLogArchiveJob
         from ..core.utils import _stable_crockford_id
 
         key = f"{chat_id}:{message_id}"
         if key in self._captured_turns:
+            return
+        if not self.valves.SESSION_LOG_STORE_ENABLED:
+            self.logger.log(
+                warn_level(
+                    self._unreadable_archive_warnings,
+                    f"session_log_capture_skipped_store_disabled:{key}",
+                    cooldown_s=3600.0,
+                ),
+                "Skipped the separate archive for a stranded session log turn "
+                "(chat_id=%s message_id=%s): `Enable session log storage` is off, so the rescue "
+                "was not published and the staged segments stay in the database for a pass "
+                "after it is back.",
+                chat_id,
+                message_id,
+            )
             return
         attempts = self._unreadable_archive_attempts.get(key, 0) + 1
         self._unreadable_archive_attempts[key] = attempts
@@ -1318,7 +1265,9 @@ class SessionLogManager:
 
         meta_message_id, meta_task = _split_archive_key(message_id)
         fallback_message_id = f"{message_id}.{request_id}"
-        rescue_path = out_path.with_name(_archive_file_name(fallback_message_id))
+        rescue_path = _archive_file_path(
+            base_dir, user_id=user_id, chat_id=chat_id, message_id=fallback_message_id
+        )
         before_stat = None
         with contextlib.suppress(Exception):
             before_stat = rescue_path.stat()
@@ -1376,7 +1325,7 @@ class SessionLogManager:
             )
             return
 
-        self._unreadable_archive_attempts[key] = 0
+        self._unreadable_archive_attempts.pop(key, None)
         self._captured_turns.add(key)
         self._rescue_pending.discard((chat_id, message_id))
         self._release_assembly_lock(
@@ -1461,10 +1410,11 @@ class SessionLogManager:
     ) -> bool | _LockContended:
         """Assemble all segments for one message into a single zip, then delete DB rows."""
         from ..core.logging_system import (
+            _archive_file_path,
             _archive_publish_changed_file,
             _SessionLogArchiveJob,
         )
-        from ..core.utils import _sanitize_path_component, _stable_crockford_id
+        from ..core.utils import _stable_crockford_id
         from ..storage.owui_files import is_temporary_chat
 
         if not (chat_id and message_id):
@@ -1624,18 +1574,23 @@ class SessionLogManager:
             return False
         base_dir, zip_password, zip_compression, zip_compresslevel = settings
 
-        out_dir = Path(base_dir).expanduser() / _sanitize_path_component(resolved_user_id, fallback="user") / _sanitize_path_component(chat_id, fallback="chat")
-        out_path = out_dir / _archive_file_name(message_id)
+        out_path = _archive_file_path(
+            base_dir,
+            user_id=resolved_user_id,
+            chat_id=chat_id,
+            message_id=message_id,
+        )
         before_stat = None
         with contextlib.suppress(Exception):
             before_stat = out_path.stat()
 
         # Merge with existing archive events if the zip already exists.
         existing_raw: list[dict[str, Any]] = []
+        existing_meta: dict[str, Any] = {}
         read_failed = False
         if out_path.exists():
             try:
-                existing_raw = self.read_archive_events(out_path, settings)
+                existing_meta, existing_raw = self.read_archive(out_path, settings)
                 existing_events = existing_raw
                 if existing_events:
                     existing_events = [evt for evt in existing_events if not _is_incomplete_marker(evt)]
@@ -1667,6 +1622,15 @@ class SessionLogManager:
                     exc_info=True,
                 )
 
+        if not terminal and existing_raw and not any(_is_incomplete_marker(evt) for evt in existing_raw):
+            terminal = True
+        if not terminal and not existing_meta.get("terminal"):
+            merged_events.append(
+                _incomplete_marker(
+                    preferred_request_id, resolved_session_id, resolved_user_id, stale_finalize_seconds
+                )
+            )
+
         if read_failed:
             self._restore_touched_stamps(model, session_factory, stamps, list(ids), chat_id, message_id)
             self._release_assembly_lock(lock_id)
@@ -1678,7 +1642,7 @@ class SessionLogManager:
                 zip_password,
                 zip_compression,
                 zip_compresslevel,
-                resolved_user_id or "user",
+                resolved_user_id,
                 resolved_session_id,
                 segments,
                 list(ids),
@@ -1686,14 +1650,8 @@ class SessionLogManager:
             self._rescue_pending.add((chat_id, message_id))
             return False
 
-        if not terminal and existing_raw and not any(_is_incomplete_marker(evt) for evt in existing_raw):
+        if existing_meta.get("terminal"):
             terminal = True
-        if not terminal:
-            merged_events.append(
-                _incomplete_marker(
-                    preferred_request_id, resolved_session_id, resolved_user_id, stale_finalize_seconds
-                )
-            )
 
         meta_message_id, meta_task = _split_archive_key(message_id)
         job = _SessionLogArchiveJob(
@@ -1701,7 +1659,7 @@ class SessionLogManager:
             zip_password=zip_password,
             zip_compression=zip_compression,
             zip_compresslevel=zip_compresslevel,
-            user_id=resolved_user_id or "user",
+            user_id=resolved_user_id,
             session_id=resolved_session_id or "",
             chat_id=chat_id,
             message_id=message_id,
@@ -1711,9 +1669,26 @@ class SessionLogManager:
             log_events=merged_events,
             meta_message_id=meta_message_id,
             meta_task=meta_task,
+            terminal=terminal,
             status=resolved_status,
             reason=resolved_reason,
         )
+        if not self.valves.SESSION_LOG_STORE_ENABLED:
+            self.logger.log(
+                warn_level(
+                    self._unreadable_archive_warnings,
+                    f"session_log_write_skipped_store_disabled:{chat_id}:{message_id}",
+                    cooldown_s=3600.0,
+                ),
+                "Session log archive was not written for chat_id=%s message_id=%s: "
+                "`Enable session log storage` went off inside this pass, so the staged "
+                "segments stay in the database for a later pass.",
+                chat_id,
+                message_id,
+            )
+            self._restore_touched_stamps(model, session_factory, stamps, list(ids), chat_id, message_id)
+            self._release_assembly_lock(lock_id)
+            return False
         self._write_archive(job)
 
         wrote = _archive_publish_changed_file(out_path, before_stat)

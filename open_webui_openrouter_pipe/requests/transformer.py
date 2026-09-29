@@ -45,6 +45,7 @@ from ..core.url_scheme import (
 
 # Import utility functions
 from ..core.utils import (
+    BUILTIN_ASK_USER_ROUND_KEY,
     OPEN_WEBUI_TOOL_IMAGES_TEXT,
     PIPE_ONLY_TOOL_ROUND_KEY,
     REASONING_ANCHOR_KEYS,
@@ -153,7 +154,18 @@ def _as_replayed(item: dict[str, Any], fallback_id: Any = None) -> list[dict[str
     )
 
 
-def _is_ask_user_name(name: str, ask_user_names: frozenset[str]) -> bool:
+def _round_keeps_its_ask_user_answer(
+    call_id: Any,
+    name: str,
+    ask_user_names: frozenset[str],
+    recorded_rounds: frozenset[tuple[str, str]],
+    builtin_rounds: frozenset[tuple[str, str]],
+) -> bool:
+    key = (str(call_id or ""), name)
+    if key in builtin_rounds:
+        return True
+    if key in recorded_rounds:
+        return False
     return name in ask_user_names
 
 
@@ -172,12 +184,19 @@ def _without_tool_result(
     item: dict[str, Any],
     name: str,
     ask_user_names: frozenset[str],
+    recorded_rounds: frozenset[tuple[str, str]],
+    builtin_rounds: frozenset[tuple[str, str]],
 ) -> list[dict[str, Any]] | None:
     item_type = item.get("type")
     if item_type == "function_call":
-        return None if _is_ask_user_name(name, ask_user_names) else [{**item, "arguments": "{}"}]
+        exempt = _round_keeps_its_ask_user_answer(
+            item.get("call_id"), name, ask_user_names, recorded_rounds, builtin_rounds
+        )
+        return None if exempt else [{**item, "arguments": "{}"}]
     if item_type == "function_call_output":
-        if _is_ask_user_name(name, ask_user_names):
+        if _round_keeps_its_ask_user_answer(
+            item.get("call_id"), name, ask_user_names, recorded_rounds, builtin_rounds
+        ):
             return None
         text = tool_output_text_and_pictures(item.get("output"))[0]
         return [{**item, "output": unretained_tool_result(_tool_result_failed(text, item.get("status")))}]
@@ -522,7 +541,12 @@ def _reinterleave_reasoning_by_anchor(
 
 
 _PIPE_STORAGE_KEY = "_anchor_from_pipe_storage"
-_TRANSPORT_ONLY_KEYS = (_PIPE_STORAGE_KEY, PIPE_ONLY_TOOL_ROUND_KEY, TOOL_ROUND_SKELETON_KEY)
+_TRANSPORT_ONLY_KEYS = (
+    _PIPE_STORAGE_KEY,
+    PIPE_ONLY_TOOL_ROUND_KEY,
+    BUILTIN_ASK_USER_ROUND_KEY,
+    TOOL_ROUND_SKELETON_KEY,
+)
 _LIFTED_TEXT_IMAGE_PLACEHOLDER = "image"
 
 
@@ -968,6 +992,43 @@ async def transform_messages_to_input(
                 logger.warning("Artifact loader failed for chat_id=%s message_id=%s", chat_id, group_id, exc_info=True)
                 artifact_groups[group_id] = {}
 
+    recorded_rounds: set[tuple[str, str]] = set()
+    builtin_rounds: set[tuple[str, str]] = set()
+    for entry in messages:
+        if (entry.get("role") or "").lower() != "assistant":
+            continue
+        entry_content = entry.get("content", "")
+        entry_text = (
+            entry_content
+            if isinstance(entry_content, str)
+            else _extract_plain_text_content(entry_content)
+        )
+        if not contains_marker(entry_text):
+            continue
+        group_id = entry.get("message_id") or _message_identifier(entry)
+        batch = artifact_groups.get(group_id) or {}
+        for segment in split_text_by_markers(entry_text):
+            if segment.get("type") != "marker":
+                continue
+            payload = batch.get(segment["marker"])
+            if payload is None:
+                continue
+            stored = normalize_persisted_item(payload)
+            if not isinstance(stored, dict) or stored.get("type") != "function_call":
+                continue
+            if BUILTIN_ASK_USER_ROUND_KEY not in stored:
+                continue
+            call_id = str(stored.get("call_id") or "")
+            if not call_id:
+                continue
+            round_key = (call_id, str(stored.get("name") or ""))
+            if stored.get(BUILTIN_ASK_USER_ROUND_KEY):
+                builtin_rounds.add(round_key)
+            else:
+                recorded_rounds.add(round_key)
+    stamped_ask_user_rounds = frozenset(builtin_rounds)
+    recorded_ask_user_rounds = frozenset(recorded_rounds)
+
     missing_artifact_markers: list[str] = []
     for idx, msg in enumerate(messages):
         raw_role = msg.get("role")
@@ -1035,7 +1096,10 @@ async def transform_messages_to_input(
 
             round_name = tool_name_at[idx] or ""
             issuer = issuer_at[idx]
-            if not _is_ask_user_name(round_name, ask_user_names) and not (
+            round_exempt = _round_keeps_its_ask_user_answer(
+                call_id, round_name, ask_user_names, recorded_ask_user_rounds, stamped_ask_user_rounds
+            )
+            if not round_exempt and not (
                 issuer >= 0 and issuer in window_armed_at and not is_picture_output(raw_content)
             ):
                 last_image_blocks, last_image_turn = [], None
@@ -1058,7 +1122,7 @@ async def transform_messages_to_input(
                 last_image_blocks, last_image_turn = [], None
 
             if _tool_round_withheld(msg_turn_index):
-                if not _is_ask_user_name(round_name, ask_user_names):
+                if not round_exempt:
                     tool_content_text = unretained_tool_result(_tool_result_failed(tool_content_text))
                 tool_pictures = []
 
@@ -1638,7 +1702,7 @@ async def transform_messages_to_input(
                     if not data:
                         return None
                     stripped = data.strip()
-                    if stripped.lower().startswith("data:"):
+                    if stripped[:5].lower() == "data:":
                         parsed = await asyncio.to_thread(
                             pipe._multimodal_handler._parse_data_url, stripped
                         )
@@ -1731,7 +1795,6 @@ async def transform_messages_to_input(
 
                     if isinstance(audio_payload, str):
                         sanitized = audio_payload.strip()
-                        lowercase = sanitized.lower()
                         if is_http_or_https_url(sanitized):
                             pipe.logger.warning("Audio payload rejected: remote URLs are not supported.")
                             return _refuse_audio(
@@ -1742,7 +1805,7 @@ async def transform_messages_to_input(
                         if _inline_payload_bytes(sanitized) > max_inline_bytes:
                             return await _refuse_oversized_inline(_inline_payload_bytes(sanitized))
 
-                        if lowercase.startswith("data:"):
+                        if sanitized[:5].lower() == "data:":
                             parsed = await asyncio.to_thread(pipe._multimodal_handler._parse_data_url, sanitized if sanitized.startswith("data:") else f"data:{sanitized.split(':', 1)[1]}")
                             if not parsed or not parsed.get("mime_type", "").startswith("audio/"):
                                 pipe.logger.warning("Audio payload rejected: invalid data URL.")
@@ -2411,13 +2474,23 @@ async def transform_messages_to_input(
                             item_type, str(item.get("name") or ""), item.get("call_id"), replay_pending
                         )
                         if item_type == "function_call_output" and not (
-                            _is_ask_user_name(replay_round_name, ask_user_names)
+                            _round_keeps_its_ask_user_answer(
+                                item.get("call_id"),
+                                replay_round_name,
+                                ask_user_names,
+                                recorded_ask_user_rounds,
+                                stamped_ask_user_rounds,
+                            )
                             or (idx in window_armed_at and not is_picture_output(item.get("output")))
                         ):
                             last_image_blocks, last_image_turn = [], None
                         if _tool_round_withheld(msg_turn_index):
                             withheld_items = _without_tool_result(
-                                item, replay_round_name, ask_user_names
+                                item,
+                                replay_round_name,
+                                ask_user_names,
+                                recorded_ask_user_rounds,
+                                stamped_ask_user_rounds,
                             )
                             if withheld_items is not None:
                                 openai_input.extend(_from_pipe_storage(withheld) for withheld in withheld_items)
@@ -2474,7 +2547,9 @@ async def transform_messages_to_input(
                         args_text = json.dumps(arguments or {}, ensure_ascii=False)
                     except (TypeError, ValueError):
                         args_text = "{}"
-                if _tool_round_withheld(msg_turn_index) and not _is_ask_user_name(name, ask_user_names):
+                if _tool_round_withheld(msg_turn_index) and not _round_keeps_its_ask_user_answer(
+                    tool_call_id, name, ask_user_names, recorded_ask_user_rounds, stamped_ask_user_rounds
+                ):
                     args_text = "{}"
 
                 openai_input.append(

@@ -104,6 +104,7 @@ REASONING_TEXT_ORDINAL_KEY = "_anchor_text_ordinal"
 REASONING_FOLLOWING_SERVER_ITEM_KEY = "_anchor_following_server_item"
 TOOL_ROUND_SKELETON_KEY = "_anchor_tool_round_skeleton"
 PIPE_ONLY_TOOL_ROUND_KEY = "_anchor_pipe_only_tool_round"
+BUILTIN_ASK_USER_ROUND_KEY = "_anchor_builtin_ask_user"
 UNRETAINED_TOOL_RESULT = "[tool result not retained]"
 UNRETAINED_FAILED_TOOL_RESULT = "[tool call failed; result not retained]"
 TOOL_FAILURE_LINE = "Error: the tool call did not complete."
@@ -835,6 +836,8 @@ def contains_marker(text: str) -> bool:
 
 def is_hidden_marker_line(line: str) -> bool:
     stripped = line.strip()
+    if not stripped.startswith("["):
+        return False
     return (
         _extract_phase_marker_value(stripped) is not None
         or bool(_extract_marker_ulid(stripped))

@@ -4,7 +4,6 @@ import asyncio
 import contextlib
 import gc
 import importlib
-import inspect
 import logging
 import os
 import sys

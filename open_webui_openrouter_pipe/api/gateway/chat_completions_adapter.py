@@ -265,6 +265,8 @@ class ChatCompletionsAdapter:
         latest_usage: dict[str, Any] = {}
         seen_citation_urls: set[str] = set()
         latest_message_annotations: list[dict[str, Any]] = []
+        recorded_annotation_urls: set[str] = set()
+        recorded_annotation_keys: set[str] = set()
         reasoning_item_id: str | None = None
         reasoning_text_parts: list[str] = []
         reasoning_text_seen = False
@@ -350,6 +352,24 @@ class ChatCompletionsAdapter:
             return _should_retry_stream(delivered_any, exc)
 
         retryer = _transient_retry_policy(effective_valves, retry=_retry_streaming)
+
+        def _record_message_annotations(raw_annotations: list[Any]) -> None:
+            nonlocal latest_message_annotations
+            for entry in raw_annotations:
+                if not isinstance(entry, dict):
+                    continue
+                parsed = list(_parse_url_citation_annotations([entry]))
+                if parsed:
+                    key = parsed[0][0]
+                    if key in recorded_annotation_urls:
+                        continue
+                    recorded_annotation_urls.add(key)
+                else:
+                    key = json.dumps(entry, sort_keys=True, default=str)
+                    if key in recorded_annotation_keys:
+                        continue
+                    recorded_annotation_keys.add(key)
+                latest_message_annotations.append(dict(entry))
 
         @timed
         def _record_reasoning_detail(detail: dict[str, Any]) -> tuple[str, str] | None:
@@ -528,14 +548,13 @@ class ChatCompletionsAdapter:
             delta_annotations = delta_obj.get("annotations")
             if isinstance(delta_annotations, list) and delta_annotations:
                 annotations.extend(delta_annotations)
+                _record_message_annotations(delta_annotations)
             message_obj = choice0.get("message") if isinstance(choice0, dict) else None
             if isinstance(message_obj, dict):
                 message_annotations = message_obj.get("annotations")
                 if isinstance(message_annotations, list) and message_annotations:
                     annotations.extend(message_annotations)
-                    latest_message_annotations = [
-                        dict(a) for a in message_annotations if isinstance(a, dict)
-                    ]
+                    _record_message_annotations(message_annotations)
                 message_reasoning_details = message_obj.get("reasoning_details")
                 if isinstance(message_reasoning_details, list) and message_reasoning_details:
                     for entry in message_reasoning_details:
@@ -704,6 +723,8 @@ class ChatCompletionsAdapter:
                         reasoning_details_order.clear()
                         seen_citation_urls.clear()
                         latest_message_annotations = []
+                        recorded_annotation_urls.clear()
+                        recorded_annotation_keys.clear()
                         images_emitted = False
                         received_any = False
                         saw_choice_chunk = False

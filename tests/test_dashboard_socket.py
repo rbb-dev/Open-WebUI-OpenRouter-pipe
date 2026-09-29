@@ -266,6 +266,7 @@ class TestPipeDashboardSub:
     async def test_subscribe_no_user_denied(self, monkeypatch):
         mock_sio = Mock()
         mock_sio.enter_room = AsyncMock()
+        mock_sio.leave_room = AsyncMock()
         mock_sio.emit = AsyncMock()
         mock_sio.get_session = AsyncMock(side_effect=KeyError("Session not found"))
         dashboard_socket._resync = False
@@ -281,6 +282,7 @@ class TestPipeDashboardSub:
     async def test_subscribe_denied_emits_denied(self, monkeypatch):
         mock_sio = Mock()
         mock_sio.enter_room = AsyncMock()
+        mock_sio.leave_room = AsyncMock()
         mock_sio.emit = AsyncMock()
         mock_sio.get_session = AsyncMock(return_value={"user": {"id": "user-1"}})
         dashboard_socket._resync = False
@@ -292,6 +294,7 @@ class TestPipeDashboardSub:
         dashboard_socket._get_pipe = _plugin_on_pipe
         await _pipe_dashboard_sub("sid-denied")
         mock_sio.enter_room.assert_not_awaited()
+        mock_sio.leave_room.assert_awaited_with("sid-denied", VIEWERS_ROOM)
         mock_sio.emit.assert_awaited_once_with(dashboard_socket.DENIED_EVENT, {}, room="sid-denied")
         assert dashboard_socket._resync is False
 
@@ -527,6 +530,7 @@ class TestViewerIdentityOutlivesTheSessionPool:
     async def test_a_denied_subscriber_is_never_pinned(self, monkeypatch):
         mock_sio = Mock()
         mock_sio.enter_room = AsyncMock()
+        mock_sio.leave_room = AsyncMock()
         mock_sio.emit = AsyncMock()
         mock_sio.get_session = AsyncMock(side_effect=KeyError("not yet"))
         mock_sio.save_session = AsyncMock()

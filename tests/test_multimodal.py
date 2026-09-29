@@ -4527,13 +4527,18 @@ class TestUploadToOwuiStorageFromPath:
         self, pipe_instance_async, mock_request, mock_user, tmp_path,
         recording_handler, chat_id, carries_chat, carries_channel, monkeypatch,
     ):
-        """Parametrised so `is_linkable_chat` is load-bearing.
+        """Parametrised so `is_linkable_chat` is load-bearing **in the upload metadata**.
 
-        A single "chat-1" case is satisfied by `if normalized_chat_id:` — the gate has
-        to be given an id it must refuse. A channel is asked about FIRST, the way
-        `middleware.py:1839` makes it: `is_linkable_chat` correctly says no to `channel:`
-        (a channel has no `chat` row), so asking it first would drop the channel's own
-        key and the file would be attached to nothing.
+        This is the gateway's own routing, and it is unchanged: a channel still gets
+        `channel_id` and a `chat_files` row still needs a `chat` row, so a saved chat is
+        the only id that becomes `chat_id`. (The separate question of whether a chat may
+        cause bytes to leave the browser at all is asked with `is_temporary_chat` in
+        `tools/tool_executor.py`, not here.) A single "chat-1" case is satisfied by
+        `if normalized_chat_id:` — the gate has to be given an id it must refuse. A
+        channel is asked about FIRST, the way `middleware.py:1839` makes it:
+        `is_linkable_chat` correctly says no to `channel:` (a channel has no `chat` row),
+        so asking it first would drop the channel's own key and the file would be
+        attached to nothing.
         """
         async def _linked(**_kw):
             return True

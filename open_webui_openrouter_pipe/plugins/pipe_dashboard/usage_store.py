@@ -186,6 +186,9 @@ class UsageStore:
             if not store._create_table_with_race_guard(model.__table__, engine, table_name):
                 return False
             if not self._reconcile_schema(model.__table__, engine, table_name, schema_name, store):
+                self._store = None
+                self._model = None
+                self._table_name = None
                 self._signature = signature
                 self._reconcile_failed = signature
                 self._reconcile_failed_at = time.monotonic()
@@ -198,6 +201,9 @@ class UsageStore:
             self._reconcile_failed_at = 0.0
             return True
         except Exception:
+            self._store = None
+            self._model = None
+            self._table_name = None
             logger.debug("usage store ensure failed", exc_info=True)
             return False
 

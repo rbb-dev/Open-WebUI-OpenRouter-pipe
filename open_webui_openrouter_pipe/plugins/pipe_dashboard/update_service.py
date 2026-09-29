@@ -23,6 +23,7 @@ from typing import Any
 
 from ...core.utils import _await_if_needed
 from ...core.warn_latch import warn_level
+from .dashboard_socket import publish_function_updated
 
 logger = logging.getLogger(__name__)
 
@@ -964,30 +965,51 @@ class UpdateService:
         UpdateService._dispose_lock(lock)
 
     async def _commit(
-        self, content: str, rev: int, request: Any, actor: str, from_version: str
+        self,
+        content: str,
+        rev: int,
+        request: Any,
+        actor: str,
+        from_version: str,
+        actor_user: Any = None,
     ) -> dict[str, Any]:
         await self._rev_guard(rev)
         instance, frontmatter, final, restore = await self._reload_via_loader(content)
-        await self._rev_guard(rev)
-        pipe_id = self._pipe().id
-        functions = self._functions()
-        written = await functions.update_function_by_id(pipe_id, {"content": final})
-        if written is None:
-            await self._refused_write_repair(request, pipe_id, restore)
-            raise UpdateError(
-                "write_failed",
-                "the database rejected the function-row write; the previous version remains active",
-            )
-        merged = await functions.update_function_metadata_by_id(pipe_id, {"manifest": frontmatter})
-        if merged is None:
-            logger.warning(
-                "update: manifest merge was refused (cosmetic); content is persisted"
-            )
-        if request is not None:
-            import open_webui.utils.plugin as owp
+        try:
+            await self._rev_guard(rev)
+            pipe_id = self._pipe().id
+            functions = self._functions()
+            written = await functions.update_function_by_id(pipe_id, {"content": final})
+            if written is None:
+                await self._refused_write_repair(request, pipe_id, restore)
+                raise UpdateError(
+                    "write_failed",
+                    "the database rejected the function-row write; the previous version remains active",
+                )
+            merged = await functions.update_function_metadata_by_id(pipe_id, {"manifest": frontmatter})
+            if merged is None:
+                logger.warning(
+                    "update: manifest merge was refused (cosmetic); content is persisted"
+                )
+            if request is not None:
+                import open_webui.utils.plugin as owp
 
-            owp.get_functions_cache(request)[pipe_id] = instance
-            owp.get_function_contents_cache(request)[pipe_id] = final
+                owp.get_functions_cache(request)[pipe_id] = instance
+                owp.get_function_contents_cache(request)[pipe_id] = final
+            row = await self._row()
+            await publish_function_updated(
+                pipe_id,
+                actor_user,
+                request,
+                {"type": getattr(row, "type", None), "name": getattr(row, "name", None)},
+            )
+        except BaseException as exc:
+            restore()
+            logger.warning(
+                "update: restored the pre-attempt module after the commit failed (%s)",
+                getattr(exc, "code", type(exc).__name__),
+            )
+            raise
         to_version = str(frontmatter.get("version", "") or "")
         logger.info(
             "update: applied actor=%s from=%s to=%s sha256=%s",
@@ -1013,7 +1035,9 @@ class UpdateService:
             valves = await self._pre_attempt_valves()
             row = await self._pre_attempt_row()
             if valves is not None:
-                revived.valves = valves
+                revived.valves = type(revived).Valves(
+                    **{k: v for k, v in valves.items() if v is not None}
+                )
             self._repair_function_cache(request, pipe_id, revived, row)
         except Exception:
             logger.warning("update: refused-write rollback failed", exc_info=True)
@@ -1063,10 +1087,13 @@ class UpdateService:
         actor: str,
         from_version: str,
         xlock: Any | None = None,
+        actor_user: Any = None,
     ) -> dict[str, Any]:
         self._commit_inflight = True
         loop = asyncio.get_running_loop()
-        commit = asyncio.ensure_future(self._commit(content, rev, request, actor, from_version))
+        commit = asyncio.ensure_future(
+            self._commit(content, rev, request, actor, from_version, actor_user)
+        )
 
         def _settle(fut: Any) -> None:
             self._commit_inflight = False
@@ -1095,7 +1122,15 @@ class UpdateService:
         return await asyncio.shield(commit)
 
 
-    async def apply(self, args: dict, *, actor: str, actor_id: str, request: Any) -> dict[str, Any]:
+    async def apply(
+        self,
+        args: dict,
+        *,
+        actor: str,
+        actor_id: str,
+        request: Any,
+        actor_user: Any = None,
+    ) -> dict[str, Any]:
         if request is None and actor != "auto":
             raise UpdateError("internal", "request is required for manual updates")
         self._require_idle()
@@ -1135,7 +1170,8 @@ class UpdateService:
                 await self.snapshot_current(actor, owner)
                 handoff, xlock = xlock, None
                 result = await self._shielded_commit(
-                    content, rev, request, actor, from_version, xlock=handoff
+                    content, rev, request, actor, from_version, xlock=handoff,
+                    actor_user=actor_user,
                 )
                 self._auto_skip.clear()
                 return result
@@ -1143,7 +1179,15 @@ class UpdateService:
                 if xlock is not None:
                     await self._release_cross_worker(xlock)
 
-    async def restore(self, args: dict, *, actor: str, actor_id: str, request: Any) -> dict[str, Any]:
+    async def restore(
+        self,
+        args: dict,
+        *,
+        actor: str,
+        actor_id: str,
+        request: Any,
+        actor_user: Any = None,
+    ) -> dict[str, Any]:
         if request is None and actor != "auto":
             raise UpdateError("internal", "request is required for manual restores")
         self._require_idle()
@@ -1175,7 +1219,8 @@ class UpdateService:
                 await self.snapshot_current(actor, owner)
                 handoff, xlock = xlock, None
                 result = await self._shielded_commit(
-                    content, rev, request, actor, from_version, xlock=handoff
+                    content, rev, request, actor, from_version, xlock=handoff,
+                    actor_user=actor_user,
                 )
                 self._auto_skip.clear()
                 return result
@@ -1238,7 +1283,13 @@ class UpdateService:
         overridden by the very failure that hid it.
         """
         valves = self._valves()
-        merged: dict[str, Any] = {key: getattr(valves, key, None) for key in self._UPDATE_VALVE_KEYS}
+        fields = getattr(type(valves), "model_fields", None) or {}
+        merged: dict[str, Any] = {
+            key: fields[key].get_default(call_default_factory=True)
+            if key in fields
+            else getattr(valves, key, None)
+            for key in self._UPDATE_VALVE_KEYS
+        }
         stored: Any = None
         stored_read_ok = True
         try:

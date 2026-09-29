@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -782,3 +783,14 @@ def _declared(path: Path) -> tuple[object, ...] | None:
 
 _REQUEST = object()
 _STORAGE_FALLBACK_USER = SimpleNamespace(id="fallback-storage-user")
+
+
+_CANCEL_WAIT_POLLS = 600
+
+
+async def _wait_for(event: threading.Event) -> bool:
+    for _ in range(_CANCEL_WAIT_POLLS):
+        if event.is_set():
+            return True
+        await asyncio.sleep(0.01)
+    return event.is_set()

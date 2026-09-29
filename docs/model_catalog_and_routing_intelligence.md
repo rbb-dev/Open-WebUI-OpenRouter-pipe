@@ -60,9 +60,9 @@ For each model, the registry stores the full catalog entry (`full_model`) and de
   - `reasoning` and `reasoning_summary` (based on reasoning-related parameters)
   - modality flags: `vision`, `audio_input`, `video_input`, `file_input`
   - `image_gen_tool` (based on output modalities)
-- `capabilities`: a dictionary of Open WebUI “capability checkboxes” used for UI affordances (for example `vision`, `file_upload`, `web_search`, `image_generation`), plus always-on UI toggles (`code_interpreter`, `citations`, `status_updates`, `usage`).
+- `capabilities`: a dictionary of Open WebUI “capability checkboxes” used for UI affordances (for example `vision`, `file_upload`, `web_search`, `image_generation`), plus always-on UI toggles (`code_interpreter`, `citations`, `status_updates`, `usage`). The always-on list is what the *catalogue* writes: it always publishes `citations: True` for a chat model. What a row can *say* is a separate matter once an operator has taken the box over — `citations` is now seeded rather than assigned, like `web_search`, so an admin's untick survives a refresh, and the pipe honours it on the tool path by publishing no tool-derived source for that model (Open WebUI's own `url_citation` annotations and the pipe's Fusion item sources are not gated, because Open WebUI does not gate its own). A row that carries no `citations` key at all is on.
 - When enabled, the pipe can also sync these capability checkboxes into Open WebUI model metadata (`meta.capabilities`) so the UI reflects OpenRouter’s catalog.
-- `web_search` is seeded from the model’s published `web_search` pricing and is never overwritten once you have set it, so a model OpenRouter does not price for search can still get Open WebUI’s native search by a manual tick. This applies to rows the pipe writes; a row synced by an earlier version keeps whatever `web_search` value it already has until an admin edits it.
+- `web_search` is seeded from the model’s published `web_search` pricing and is never overwritten once you have set it, so a model OpenRouter does not price for search can still get Open WebUI’s native search by a manual tick. This applies to rows the pipe writes; a row synced by an earlier version keeps whatever `web_search` value it already has until an admin edits it. `citations` is seeded the same way, with the catalogue's own `True` as the value a row with no setting receives.
 - `max_completion_tokens`: taken from the model’s `top_provider.max_completion_tokens` field when present.
 
 The derived specs are shared with `ModelFamily` via `ModelFamily.set_dynamic_specs(...)`, so the rest of the pipe can use `ModelFamily.supports(...)`, `ModelFamily.capabilities(...)`, and `ModelFamily.supported_parameters(...)` without depending directly on the registry.
@@ -94,6 +94,7 @@ Behavior:
 
 At request time, the pipe computes the allowed model set based on `MODEL_ID` and the loaded catalog:
 
+- The catalog set, the allowlist set, the enforced set and the virtual-variant map are computed **once per (catalogue, specs, credential, valve snapshot)** on the pipe instance and reused while all four of those are unchanged. A change to any of them — a catalogue or spec refresh, a media-model registration, a different OpenRouter credential in play, or a change to `MODEL_ID`, `VARIANT_MODELS`, `FREE_MODEL_FILTER`, `TOOL_CALLING_FILTER` or `ZDR_MODELS_ONLY` — is visible on the very next request.
 - `VARIANT_MODELS` is a second source of admission: a variant whose base is outside `MODEL_ID` is refused at request time, however it is named.
 - For normal chat/API calls:
   - if the requested model is not in the allowed set, the pipe emits a user-facing error telling the user to choose an allowed model.
@@ -135,7 +136,7 @@ The pipe decides how to request reasoning from the selected model's catalog entr
 The pipe decides how to request reasoning from the model's catalog entry:
 
 - If the model supports `reasoning`, the pipe populates a `reasoning` object (with defaults from valves such as `REASONING_EFFORT` and `REASONING_SUMMARY_MODE`).
-- If the model does not support `reasoning` but supports the legacy `include_reasoning`, the pipe uses that fallback.
+- If the model does not support `reasoning` but supports the legacy `include_reasoning`, the pipe uses that fallback, and the flag is that model's only reasoning channel: an off the request itself carries (`reasoning.enabled` of `false`, `reasoning.exclude` of `true`, or an effort of `none`, including the `reasoning_effort` spelling that becomes that object) decides it, and `REASONING_EFFORT` decides it only when the request says nothing about reasoning. A request that asks for reasoning does not switch an install whose `REASONING_EFFORT` is `none` back on. An owned background task is the exception: it is the task valve that decides there.
 - If neither is supported, the pipe adds no reasoning field of its own; a reasoning effort or reasoning parameter the chat itself carries goes out as Open WebUI would send it.
 
 Gemini 2.5 models:
@@ -164,7 +165,7 @@ For the full User Interface story (Open WebUI Web Search vs OpenRouter Web Tools
 
 ### 4.5 Output token cap selection
 
-When `USE_MODEL_MAX_OUTPUT_TOKENS=True` and the request carries no limit of its own, the pipe fills `max_output_tokens` with the smaller of the provider-advertised `max_completion_tokens` in the catalog and half that model's context window, or the advertised value alone when its context window is unknown. When it is disabled, the pipe adds no limit of its own and provider defaults apply. The valve controls the pipe's automatic value, not the caller's: a `max_tokens` or `max_output_tokens` of 1 or above is forwarded unchanged. OpenRouter documents the parameter as "1 or above" and Open WebUI's slider reaches -2, so a value below 1 is sent as no cap — and the automatic ceiling then applies if the valve is on. A routing variant resolves through its base's row, so it gets the base's ceiling.
+When `USE_MODEL_MAX_OUTPUT_TOKENS=True` and the request carries no limit of its own, the pipe fills `max_output_tokens` with the smaller of the provider-advertised `max_completion_tokens` in the catalog and half that model's context window, or the advertised value alone when its context window is unknown. When it is disabled, the pipe adds no limit of its own and provider defaults apply. The valve controls the pipe's automatic value, not the caller's: a `max_tokens`, `max_output_tokens` or `max_completion_tokens` of 1 or above is forwarded unchanged. OpenRouter documents the parameter as "1 or above" and Open WebUI's slider reaches -2, so a value below 1 is sent as no cap — and the automatic ceiling then applies if the valve is on. A routing variant resolves through its base's row, so it gets the base's ceiling.
 
 On Gemini 2.5 the same cap bounds the thinking budget: `budget = min(budget, cap - 64)`, never the other way round, because reasoning tokens count against the cap and a budget equal to the cap is the documented failure boundary. When the cap leaves no room the pipe writes no bounded budget at all, writes no off flag, and leaves the cap as the caller sent it.
 
@@ -196,6 +197,7 @@ See: [OpenRouter Integrations & Telemetry](openrouter_integrations_and_telemetry
 - Refresh failures with no cache: the error propagates, and requests that require the catalog cannot proceed.
 - Empty catalog: the registry treats an empty model list as an error.
 - Missing provider dropdown: the provider map is retained per slug, so a frontend-catalog cycle that returns nothing for a model the catalog still lists keeps that slug's previously fetched providers instead of dropping them.
+- Failed stored-row read: a metadata pass reads its model rows in one batched query per chunk of 1000 ids. If that read raises, or answers with no rows at all, the pipe logs a warning naming the count of ids it could not read and falls back to reading each model on its own, so a broken batch can never be read as "these models do not exist" and cannot produce a duplicate overlay insert per model.
 
 Operator guidance:
 - Treat catalog failures like an upstream connectivity/credential issue first (API key, network egress, proxy/gateway, OpenRouter availability), then inspect logs for the last refresh failure.

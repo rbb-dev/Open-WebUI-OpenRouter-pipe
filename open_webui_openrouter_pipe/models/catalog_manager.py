@@ -178,34 +178,38 @@ _ROW_NOT_FETCHED = object()
 
 _warned_video_gen_filter_ensure: set[str] = set()
 
+_MODEL_ROW_READ_CHUNK = 1000
+
 
 async def _read_model_rows(ids: list[str], logger: Any) -> dict[str, Any] | None:
     from open_webui.models.models import Models
 
-    try:
-        rows = await Models.get_models_by_ids(ids)
-    except Exception as exc:
-        logger.warning(
-            "Stored model row read failed; every model will be read on its own: %s",
-            exc,
-            exc_info=True,
-        )
-        return None
-    if not rows:
-        logger.warning(
-            "Stored model row read returned no rows for %d ids; "
-            "every model will be read on its own",
-            len(ids),
-        )
-        return None
-
     stored: dict[str, Any] = {}
-    for row in rows:
-        model_id = getattr(row, "id", None)
-        if not isinstance(model_id, str) or not model_id:
-            continue
-        stored[model_id] = row
-    return stored
+    chunk = _MODEL_ROW_READ_CHUNK
+    for start in range(0, len(ids), chunk):
+        batch = ids[start : start + chunk]
+        try:
+            rows = await Models.get_models_by_ids(batch)
+        except Exception as exc:
+            logger.warning(
+                "Stored model row read failed; every model will be read on its own: %s",
+                exc,
+                exc_info=True,
+            )
+            return None
+        if not rows:
+            logger.warning(
+                "Stored model row read returned no rows for %d ids; "
+                "every model will be read on its own",
+                len(batch),
+            )
+            return None
+        for row in rows:
+            model_id = getattr(row, "id", None)
+            if not isinstance(model_id, str) or not model_id:
+                continue
+            stored[model_id] = row
+    return stored if ids else None
 
 
 async def _stored_profile_images(
@@ -2052,6 +2056,9 @@ class ModelCatalogManager:
                         if "web_search" in raw_caps:
                             capability_defaults["web_search"] = bool(raw_caps["web_search"])
                         capabilities.pop("web_search", None)
+                        if "citations" in raw_caps:
+                            capability_defaults["citations"] = bool(raw_caps["citations"])
+                        capabilities.pop("citations", None)
 
                 description = None
                 if valves.UPDATE_MODEL_DESCRIPTIONS:

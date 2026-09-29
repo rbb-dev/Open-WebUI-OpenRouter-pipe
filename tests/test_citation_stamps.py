@@ -60,7 +60,13 @@ PACKAGE = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 # 93 -> 94: the metadata pass's row read (`_read_model_rows` in models/catalog_manager.py)
 # batch-reads the Open WebUI `Models` table lazily for the whole pass, beside the icon
 # pass's own `get_models_by_ids` in `_stored_profile_images`, which keeps its own read.
-_EXPECTED_OWUI_IMPORTS = (25, 94)
+# 94 -> 95: the dashboard's two write-announcing helpers
+# (`publish_valves_changed` / `publish_function_updated` in
+# plugins/pipe_dashboard/dashboard_socket.py) import `EVENTS` and `publish_event` from
+# `open_webui.events` lazily, inside the one helper both share, exactly as the
+# `register_valve_event_sink` above takes `EVENT_SINKS` lazily -- so a host whose events
+# module is absent still runs the write, it just announces nothing.
+_EXPECTED_OWUI_IMPORTS = (25, 95)
 
 @pytest.mark.skipif(
     bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),
