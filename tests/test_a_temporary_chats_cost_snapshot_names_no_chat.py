@@ -8,13 +8,16 @@ usage row's half is in test_a_temporary_chats_spend_is_recorded_without_its_chat
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
 
+from open_webui_openrouter_pipe import EncryptedStr
 from open_webui_openrouter_pipe.core.costs import maybe_dump_costs_snapshot
 
 MODEL = "openai/gpt-5.4"
@@ -78,3 +81,23 @@ async def _through_the_pipe(monkeypatch, pipe, *, messages, chat_id, model=MODEL
     )
     async for _ in cast(Any, result):
         pass
+
+
+# =============================================================================
+# B515 H2459-1 · picture and video spend is written with no chat id
+#
+# The writer was already right: `core/costs.py:103-107` drops both ids for a temporary
+# chat and keeps them otherwise. The two callers that pass neither id are what made
+# every image and video snapshot unattributable, and they are the only two callers left.
+# The ids go in RAW here, so that single boundary stays the only place the temporary-chat
+# rule lives -- a call site that pre-screened them would be a second gate that can
+# disagree with the first.
+#
+# Every assertion below is on the JSON that lands in `_FakeRedis.writes`, never on a
+# call's kwargs: forwarding ids into a writer that drops them would satisfy a spy.
+# =============================================================================
+
+IMAGE_MODEL = "black-forest-labs.flux-1-schnell"
+CHANNEL = pytest.param("channel:ch-1", "msg-ch-1", id="channel:ch-1")
+def _records(redis: _FakeRedis) -> list[dict[str, Any]]:
+    return [payload for _key, payload, _ttl in redis.writes]

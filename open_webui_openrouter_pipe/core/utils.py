@@ -91,6 +91,7 @@ def owui_call_status(result_status: str | None) -> str:
 _TEMPLATE_IF_TOKEN_RE = re.compile(r"\{\{\s*(#if\s+(\w+)|/if)\s*\}\}")
 _TEMPLATE_PLACEHOLDER_RE = re.compile(r"\{(\w+)\}")
 _FENCE_RUN_RE = re.compile(r"(`{3,}|~{3,})")
+_BLOCKQUOTE_PREFIX_RE = re.compile(r"^(?:>[ \t]?)+")
 _FENCE_OWNED_KEYS = frozenset({"raw_body", "flagged_excerpt", "metadata_json", "provider_raw_json", "body_excerpt"})
 _MARKER_SUFFIX = "]: #"
 _CROCKFORD_SET = frozenset(CROCKFORD_ALPHABET)
@@ -611,20 +612,23 @@ def _render_error_template(template: str, values: dict[str, Any]) -> str:
             return []
         if len(closer.group(1)) < len(opener.group(1)):
             return []
-        label = line[: opener.start()].rstrip()
+        prefix = line[: opener.start()]
+        quoted = _BLOCKQUOTE_PREFIX_RE.match(prefix)
+        quote = quoted.group(0) if quoted else ""
+        label = prefix[len(quote) :].rstrip()
         tail = line[match.end() :][closer.end() :].strip()
         body = _strip_fence(str(values.get(match.group(1), "")))
         if not body:
-            return [label] if label else []
+            return [quote + label] if label else []
         language = _fence_language(opener.group(0), line[opener.end() : match.start()]) or _fence_language(
             opener.group(0), label
         )
         fence = _body_fence(opener.group(0), body)
-        block = ([label] if label else []) + [fence + language]
-        block.extend(body.splitlines())
-        block.append(fence)
+        block = ([quote + label] if label else []) + [quote + fence + language]
+        block.extend(quote + row if row else quote.rstrip() for row in body.split("\n"))
+        block.append(quote + fence)
         if tail:
-            block.append(tail)
+            block.append(quote + tail)
         return block
 
     def _wrapped_fence_key(line: str) -> bool:

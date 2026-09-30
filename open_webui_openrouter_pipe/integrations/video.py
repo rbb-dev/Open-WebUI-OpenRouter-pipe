@@ -1265,6 +1265,8 @@ class VideoGenerationAdapter:
         user_id: str,
         api_model_id: str,
         user_obj: Any,
+        chat_id: str | None = None,
+        message_id: str | None = None,
     ) -> None:
         """Record what a terminal poll says the job cost, once, whatever happens next.
 
@@ -1284,6 +1286,9 @@ class VideoGenerationAdapter:
                 usage=usage,
                 user_obj=user_obj,
                 pipe_id=self._pipe.id,
+                chat_id=str(chat_id or "") or None,
+                message_id=str(message_id or "") or None,
+                kind="generation",
             )
 
     async def _run_lifecycle_after_submit(
@@ -1466,6 +1471,8 @@ class VideoGenerationAdapter:
                 user_id=user_id,
                 api_model_id=api_model_id,
                 user_obj=user_obj,
+                chat_id=chat_id,
+                message_id=message_id,
             )
             return VideoLifecycleResult(
                 content=content,
@@ -1487,6 +1494,8 @@ class VideoGenerationAdapter:
                     user_id=user_id,
                     api_model_id=api_model_id,
                     user_obj=user_obj,
+                    chat_id=chat_id,
+                    message_id=message_id,
                 )
             )
             raise
@@ -1510,6 +1519,8 @@ class VideoGenerationAdapter:
                 user_id=user_id,
                 api_model_id=api_model_id,
                 user_obj=user_obj,
+                chat_id=chat_id,
+                message_id=message_id,
             )
             return VideoLifecycleResult(
                 content=content,
@@ -1540,6 +1551,8 @@ class VideoGenerationAdapter:
                 user_id=user_id,
                 api_model_id=api_model_id,
                 user_obj=user_obj,
+                chat_id=chat_id,
+                message_id=message_id,
             )
             return VideoLifecycleResult(
                 content=content,

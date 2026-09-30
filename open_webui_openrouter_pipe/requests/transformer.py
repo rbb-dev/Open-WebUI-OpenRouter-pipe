@@ -148,6 +148,22 @@ def _server_round(
     ]
 
 
+_NOT_A_TOOL_ROUND = frozenset({"message", "reasoning"})
+
+
+def _withheld_provider_round(item: dict[str, Any]) -> list[dict[str, Any]]:
+    item_type = str(item.get("type") or "")
+    call_id = str(item.get("call_id") or item.get("id") or "")
+    name = item.get("name")
+    return [
+        {"type": "function_call", "call_id": call_id,
+         "name": name.strip() if isinstance(name, str) and name.strip() else item_type,
+         "arguments": "{}"},
+        {"type": "function_call_output", "call_id": call_id,
+         "output": unretained_tool_result(server_tool_status(item) != "completed")},
+    ]
+
+
 def _as_replayed(item: dict[str, Any], fallback_id: Any = None) -> list[dict[str, Any]]:
     item_type = item.get("type")
     if not (isinstance(item_type, str) and item_type.startswith("openrouter:")) or (
@@ -242,7 +258,9 @@ def _without_tool_result(
         return [{**item, "output": unretained_tool_result(_tool_result_failed(text, item.get("status")))}]
     if isinstance(item_type, str) and item_type.startswith("openrouter:"):
         return _server_round(item, "{}", unretained_tool_result(server_tool_status(item) != "completed"))
-    return None
+    if isinstance(item_type, str) and item_type.lower() in _NOT_A_TOOL_ROUND:
+        return None
+    return _withheld_provider_round(item)
 
 
 _REUSE_DOWNLOAD_MEMO_MAX_BYTES = 8 * 1024 * 1024
@@ -2807,11 +2825,31 @@ async def transform_messages_to_input(
             if isinstance(raw_msg_annotations, list) and raw_msg_annotations
             else []
         )
+        msg_model = msg.get("model")
+        same_model = (
+            not isinstance(msg_model, str)
+            or not msg_model.strip()
+            or str(msg_model) == str(target_model_id)
+        )
         raw_msg_reasoning_details = msg.get("reasoning_details")
+        if (
+            not same_model
+            and isinstance(raw_msg_reasoning_details, list)
+            and raw_msg_reasoning_details
+        ):
+            pipe.logger.debug(
+                "Dropping %d reasoning detail(s) from message %s: produced by %s, this request "
+                "is answered by %s",
+                len(raw_msg_reasoning_details),
+                msg_id,
+                msg_model,
+                target_model_id,
+            )
         msg_reasoning_details: list[Any] = (
             list(raw_msg_reasoning_details)
             if (
                 active_valves.PERSIST_REASONING_TOKENS != "disabled"
+                and same_model
                 and isinstance(raw_msg_reasoning_details, list)
                 and raw_msg_reasoning_details
             )

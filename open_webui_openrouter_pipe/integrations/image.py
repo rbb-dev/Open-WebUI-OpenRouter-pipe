@@ -1113,6 +1113,7 @@ class ImageGenerationAdapter:
         api_model_id: str,
     ) -> None:
         try:
+            meta = metadata if isinstance(metadata, dict) else {}
             await maybe_dump_costs_snapshot(
                 self._pipe,
                 valves,
@@ -1121,6 +1122,9 @@ class ImageGenerationAdapter:
                 usage=usage,
                 user_obj=user_obj,
                 pipe_id=self._pipe.id,
+                chat_id=str(meta.get("chat_id") or "") or None,
+                message_id=str(meta.get("message_id") or "") or None,
+                kind="generation",
             )
         except asyncio.CancelledError:
             raise

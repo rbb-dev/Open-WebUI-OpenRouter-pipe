@@ -326,7 +326,10 @@ for this purpose: it stays inside its round's turn on both the generating and th
 the model had after the turn is replayed after it.
 
 On `/chat/completions` a replayed reasoning item rides on the assistant message that carries the tool calls, as
-`reasoning_details`, matching Open WebUI's `convert_output_to_messages(raw=True)`. That replayed block is
+`reasoning_details`, matching Open WebUI's `convert_output_to_messages(raw=True)`. A message that names a
+different `model` has its whole `reasoning_details` block dropped before the request is built, the way Open WebUI
+does at `utils/middleware.py:2516-2521`; a message that names no model, or a blank one, keeps it, because the
+pipe's own gateway puts `model` on the chunk and never on the message and a missing id cannot be attributed. That replayed block is
 byte-identical to the concatenation of the streamed `reasoning.text` deltas: never that run plus the terminal
 `message.reasoning_details` echo a provider may close the stream with, which carries the same bytes a second time.
 

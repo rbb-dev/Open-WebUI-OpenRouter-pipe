@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import typing
+from functools import lru_cache
 from typing import Any
 
 import annotated_types as at
@@ -103,6 +104,16 @@ def describe_valves(valves_cls: type) -> list[dict[str, Any]]:
 
     No live values — the caller merges the current saved values in separately.
     """
+    specs = [dict(spec) for spec in _describe_structure(valves_cls)]
+    for spec in specs:
+        fld = valves_cls.model_fields.get(spec["name"])
+        if fld is not None and fld.default_factory is not None and not spec["secret"]:
+            spec["default"] = json_safe(fld.get_default(call_default_factory=True))
+    return specs
+
+
+@lru_cache(maxsize=8)
+def _describe_structure(valves_cls: type) -> tuple[dict[str, Any], ...]:
     specs: list[dict[str, Any]] = []
     for name, fld in valves_cls.model_fields.items():
         annotation = fld.annotation
@@ -131,10 +142,10 @@ def describe_valves(valves_cls: type) -> list[dict[str, Any]]:
                 "nullable": nullable,
                 "secret": secret,
                 "is_template": _is_template_valve(name),
-                "default": None if secret else json_safe(fld.get_default(call_default_factory=True)),
+                "default": None if secret or fld.default_factory is not None else json_safe(fld.default),
             }
         )
-    return specs
+    return tuple(specs)
 
 
 def drift(valves_cls: type) -> dict[str, list[str]]:

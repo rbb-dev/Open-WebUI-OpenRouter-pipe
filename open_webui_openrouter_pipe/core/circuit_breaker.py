@@ -11,6 +11,7 @@ preventing cascading failures and providing graceful degradation.
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import time
 from collections import defaultdict, deque
@@ -127,17 +128,29 @@ class CircuitBreaker:
 
         return len(window) < self._threshold
 
-    def record_failure(self, user_id: str) -> None:
+    def record_failure(self, user_id: str) -> float | None:
         """Record a request failure for a user.
 
         Args:
             user_id: User identifier
         """
         if not user_id:
-            return
+            return None
         now = time.time()
         self._breaker_records[user_id].append(now)
         self._sweep_expired(now, force=True)
+        return now
+
+    def retract_failure(self, user_id: str, recorded_at: float | None) -> None:
+        if not user_id or recorded_at is None:
+            return
+        window = self._breaker_records.get(user_id)
+        if not window:
+            return
+        with contextlib.suppress(ValueError):
+            window.remove(recorded_at)
+        if not window:
+            self._breaker_records.pop(user_id, None)
 
     def reset(self, user_id: str) -> None:
         """Clear all failure records for a user, allowing requests again.

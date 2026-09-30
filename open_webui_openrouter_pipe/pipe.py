@@ -122,7 +122,7 @@ except ImportError:
     pyzipper = None  # type: ignore
 
 # Import subsystems
-from .api.gateway.responses_adapter import _drop_backlog_latch
+from .api.gateway.responses_adapter import _drop_backlog_latch, _FailureCharge
 from .core.circuit_breaker import CircuitBreaker
 from .core.config import (
     _OPENROUTER_CATEGORIES,
@@ -2098,10 +2098,10 @@ class Pipe:
     ) -> AsyncGenerator[dict[str, Any] | str, None] | dict[str, Any] | str | StreamingResponse | None | JSONResponse:
         """Entry point that enqueues work and awaits the isolated job result."""
         safe_event_emitter = None
+        wants_stream = bool(body.get("stream")) if isinstance(body, dict) else False
         owui_chat_id_token = OWUI_CHAT_ID.set(str((__metadata__ or {}).get("chat_id") or ""))
         _enqueued = False
         _early_request_id = ""
-        wants_stream = False
 
         try:
             from .core.timing_logger import set_timing_context, timing_mark
@@ -2148,7 +2148,6 @@ class Pipe:
                     )
             valves = self._merge_valves(self.valves, user_valves, rejected=rejected_user_valves)
             user_id = str(__user__.get("id") or __metadata__.get("user_id") or "")
-            wants_stream = bool(body.get("stream"))
 
             http_referer_override = (valves.HTTP_REFERER_OVERRIDE or "").strip()
             referer_override_invalid = bool(
@@ -2842,6 +2841,14 @@ class Pipe:
 
         await self._stop_redis_tasks()
 
+        for drain in (self._stop_video_tasks, self._stop_request_worker,
+                      self._stop_active_jobs, self._stop_log_worker,
+                      self._stop_session_log_workers):
+            try:
+                await drain()
+            except Exception:
+                self.logger.debug("Shutdown drain %s failed", drain.__name__, exc_info=True)
+
         pending_shutdown: list[Any] = []
         with contextlib.suppress(Exception):
             pending_shutdown = self.shutdown() or []
@@ -2851,13 +2858,6 @@ class Pipe:
                     asyncio.gather(*pending_shutdown, return_exceptions=True),
                     timeout=5.0,
                 )
-        for drain in (self._stop_video_tasks, self._stop_request_worker,
-                      self._stop_active_jobs, self._stop_log_worker,
-                      self._stop_session_log_workers):
-            try:
-                await drain()
-            except Exception:
-                self.logger.debug("Shutdown drain %s failed", drain.__name__, exc_info=True)
         await self._stop_redis()
 
         if self._http_session:
@@ -4033,6 +4033,7 @@ class Pipe:
         user: Any = None,
         owui_chat_id: str | None = None,
         files_inlined: bool = False,
+        charge_holder: _FailureCharge | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         async for event in self._ensure_responses_adapter().send_openai_responses_streaming_request(
             session, request_body, api_key, base_url, valves=valves, workers=workers,
@@ -4043,6 +4044,7 @@ class Pipe:
             user=user,
             owui_chat_id=owui_chat_id,
             files_inlined=files_inlined,
+            charge_holder=charge_holder,
         ):
             yield event
 
@@ -4580,6 +4582,7 @@ class Pipe:
         owui_chat_id: str | None = None,
         transient_retry: bool = True,
         files_inlined: bool = False,
+        charge_holder: _FailureCharge | None = None,
     ) -> dict[str, Any]:
         return await self._ensure_responses_adapter().send_openai_responses_nonstreaming_request(
             session, request_body, api_key, base_url, valves=valves, breaker_key=breaker_key,
@@ -4587,6 +4590,7 @@ class Pipe:
             owui_chat_id=owui_chat_id,
             transient_retry=transient_retry,
             files_inlined=files_inlined,
+            charge_holder=charge_holder,
         )
 
 

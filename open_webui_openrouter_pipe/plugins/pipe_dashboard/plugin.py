@@ -555,11 +555,12 @@ class PipeDashboardPlugin(PluginBase):
             pass
 
     async def on_generation_complete(self, usage: Any, status: str, **kwargs: Any) -> None:
-        try:
-            self._stored_usage_row = await self._read_stored_usage_row()
-        except Exception:
-            logger.debug("usage valve read failed; this turn finalizes without it", exc_info=True)
-            self._stored_usage_row = None
+        if self._tracker.has(str(kwargs.get("request_id") or "")):
+            try:
+                self._stored_usage_row = await self._read_stored_usage_row()
+            except Exception:
+                logger.debug("usage valve read failed; this turn finalizes without it", exc_info=True)
+                self._stored_usage_row = None
         try:
             self._tracker.finalize(str(kwargs.get("request_id") or ""), usage, str(status))
         except Exception:

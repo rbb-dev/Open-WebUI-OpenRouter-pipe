@@ -511,7 +511,7 @@ costs:{pipe_namespace}:{user_id}:{uuid}:{epoch_seconds}
 
 Payload fields include:
 - `guid`, `email`, `name`, `model`, `usage`, `ts`
-- On a snapshot for a chat's answer or background task: `kind` (`generation` or `task`), `chat_id` and `message_id`. A temporary chat's snapshot carries no `chat_id` or `message_id`; saved and channel chats keep both. Snapshots from picture-only image models and video models carry none of the three.
+- On a snapshot for a chat's answer, a background task, a picture or a clip: `kind` (`generation` or `task`), `chat_id` and `message_id`. A picture and a clip are the generation of that turn in that chat, so they carry `kind: "generation"` like an answer does. A temporary chat's snapshot carries no `chat_id` or `message_id`; saved and channel chats keep both. A call that arrives with no chat at all — the plain API route — keeps its `kind` and names neither id.
 
 Snapshots an earlier release wrote for a temporary chat are not rewritten; they expire after `COSTS_REDIS_TTL_SECONDS`.
 

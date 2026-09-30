@@ -708,6 +708,16 @@ class ArtifactStore:
         self._breaker_threshold = breaker_threshold
         self._breaker_window_seconds = self.valves.BREAKER_WINDOW_SECONDS
         self._db_breakers: dict[str, deque[float]] = defaultdict(deque)
+        self._db_sweep_after: float = 0.0
+
+    def _sweep_db_breakers(self, now: float, *, force: bool = False) -> None:
+        if not force and now < self._db_sweep_after:
+            return
+        self._db_sweep_after = now + self._breaker_window_seconds
+        window = self._breaker_window_seconds
+        for user_id, failures in list(self._db_breakers.items()):
+            if not failures or now - failures[-1] > window:
+                self._db_breakers.pop(user_id, None)
 
     def configure_breaker(self, threshold: int, window_seconds: int) -> None:
         """Update circuit breaker thresholds.
@@ -718,6 +728,7 @@ class ArtifactStore:
         """
         self._breaker_threshold = max(1, int(threshold))
         self._breaker_window_seconds = window_seconds
+        self._db_sweep_after = 0.0
 
     def _initialize_redis_state(self):
         """Initialize Redis caching state."""
@@ -3070,6 +3081,7 @@ class ArtifactStore:
     def _db_breaker_allows(self, user_id: str) -> bool:
         if not user_id:
             return True
+        self._sweep_db_breakers(time.time())
         window = self._db_breakers.get(user_id)
         if window is None:
             return True
@@ -3082,7 +3094,9 @@ class ArtifactStore:
 
     def _record_db_failure(self, user_id: str) -> None:
         if user_id:
-            self._db_breakers[user_id].append(time.time())
+            now = time.time()
+            self._sweep_db_breakers(now, force=True)
+            self._db_breakers[user_id].append(now)
 
     def _reset_db_failure(self, user_id: str) -> None:
         if user_id:

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import aiohttp
 
+from ..api.gateway.responses_adapter import _FailureCharge, _withdraw_repaired_failure
 from ..api.transforms import (
     _filter_openrouter_request,
     _parse_url_citation_annotations,
@@ -120,6 +121,8 @@ class NonStreamingAdapter:
                 return "".join(fragments)
             return ""
 
+        responses_charge = _FailureCharge()
+
         @timed
         async def _run_responses() -> AsyncGenerator[dict[str, Any], None]:
             request_payload = _filter_openrouter_request(dict(inlined_request_body or {}))
@@ -134,6 +137,7 @@ class NonStreamingAdapter:
                 owui_chat_id=owui_chat_id,
                 transient_retry=transient_retry,
                 files_inlined=True,
+                charge_holder=responses_charge,
             )
             output_items = response.get("output") if isinstance(response, dict) else None
             if isinstance(output_items, list):
@@ -432,6 +436,7 @@ class NonStreamingAdapter:
                     getattr(exc, "openrouter_code", None),
                     exc,
                 )
+                _withdraw_repaired_failure(self._pipe, breaker_key, responses_charge)
                 yield {"type": "openrouter_pipe.chat_fallback"}
                 async for event in _run_chat():
                     yield event

@@ -693,13 +693,21 @@ def _extract_frame_imageio_sync(
             raise FrameExtractionError(_ABANDONED)
         if declared is not None and _over_pixel_cap(*declared):
             raise _pixel_cap_refusal(*declared)
-        read_kwargs: dict[str, Any] = {
-            "plugin": "FFMPEG",
-            "input_params": ["-f", input_format, "-protocol_whitelist", "file"],
-        }
-        if declared is not None and declared[0] > _MAX_FRAME_WIDTH:
-            read_kwargs["output_params"] = ["-vf", f"scale={_MAX_FRAME_WIDTH}:-2"]
-        arr = iio.imread(str(path), index=frame_index, **read_kwargs)
+        if _ffmpeg_binary(cancel) is None:
+            with iio.imopen(
+                str(path), "r",
+                plugin="pyav",  # type: ignore[reportArgumentType]
+                format=input_format,
+            ) as opened:
+                arr = opened.read(index=frame_index)
+        else:
+            read_kwargs: dict[str, Any] = {
+                "plugin": "FFMPEG",
+                "input_params": ["-f", input_format, "-protocol_whitelist", "file"],
+            }
+            if declared is not None and declared[0] > _MAX_FRAME_WIDTH:
+                read_kwargs["output_params"] = ["-vf", f"scale={_MAX_FRAME_WIDTH}:-2"]
+            arr = iio.imread(str(path), index=frame_index, **read_kwargs)
         if arr is None or len(arr.shape) < 2:
             raise FrameExtractionError("imageio returned empty frame")
         h = int(arr.shape[0])

@@ -177,6 +177,10 @@ class SessionTracker:
                 if entry["status"] == "queued":
                     entry["status"] = "streaming"
 
+    def has(self, request_id: str) -> bool:
+        with self._lock:
+            return request_id in self._active
+
     def mark_stream_alive(self, request_id: str) -> None:
         if request_id not in self._active:
             return
@@ -292,9 +296,12 @@ class SessionTracker:
 
     def _trim_recent_locked(self) -> None:
         cutoff = time.time() - _ST_RECENT_MAX_AGE_S
-        self._recent = [item for item in self._recent if (item.get("done") or 0.0) >= cutoff]
-        if len(self._recent) > _ST_RECENT_CAP:
-            self._recent = self._recent[-_ST_RECENT_CAP:]
+        kept = [item for item in self._recent if (item.get("done") or 0.0) >= cutoff]
+        if len(kept) > _ST_RECENT_CAP:
+            chats = [item for item in kept if self._is_live_chat(item)][-_ST_RECENT_CAP:]
+            tasks = [item for item in kept if not self._is_live_chat(item)][-_ST_RECENT_CAP:]
+            kept = chats + tasks
+        self._recent = kept
 
     def _is_stale(self, entry: dict[str, Any], cutoff: float) -> bool:
         return (entry.get("seen", entry.get("started") or 0.0) or 0.0) < cutoff
@@ -347,14 +354,13 @@ class SessionTracker:
         return item.get("kind") != "task"
 
     def _live_sessions_locked(self, now: float) -> tuple[list[dict[str, Any]], int]:
-        active_total = sum(1 for item in self._active.values() if self._is_live_chat(item))
-        actives = sorted(self._active.values(), key=lambda item: item.get("started") or 0.0, reverse=True)[:_ST_ACTIVE_CAP]
+        live = [item for item in self._active.values() if self._is_live_chat(item)]
+        active_total = len(live)
+        actives = sorted(live, key=lambda item: item.get("started") or 0.0, reverse=True)[:_ST_ACTIVE_CAP]
         self._trim_recent_locked()
-        recents = list(reversed(self._recent))[:_ST_RECENT_CAP]
+        recents = [item for item in reversed(self._recent) if self._is_live_chat(item)][:_ST_RECENT_CAP]
         rows = []
         for item in actives + recents:
-            if not self._is_live_chat(item):
-                continue
             status = item.get("status") or "queued"
             if status == "tool":
                 status = f"tool:{item.get('current_tool') or '?'}"

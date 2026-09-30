@@ -238,12 +238,34 @@ def _body_not_an_object(endpoint: str, payload: Any, resp: Any) -> UpstreamBodyU
 
 
 
-def _record_failed_call(pipe: Pipe, breaker_key: str | None) -> None:
+class _FailureCharge:
+    __slots__ = ("recorded_at",)
+
+    def __init__(self) -> None:
+        self.recorded_at: float | None = None
+
+
+def _record_failed_call(
+    pipe: Pipe, breaker_key: str | None, charge_holder: _FailureCharge | None = None
+) -> None:
     if breaker_key:
-        pipe._circuit_breaker.record_failure(breaker_key)
+        recorded_at = pipe._circuit_breaker.record_failure(breaker_key)
+        if charge_holder is not None:
+            charge_holder.recorded_at = recorded_at
 
 
-def _once_only_charge(pipe: Pipe, breaker_key: str | None) -> Callable[[], None]:
+def _withdraw_repaired_failure(
+    pipe: Pipe, breaker_key: str | None, charge_holder: _FailureCharge | None
+) -> None:
+    if charge_holder is None:
+        return
+    pipe._circuit_breaker.retract_failure(breaker_key or "", charge_holder.recorded_at)
+    charge_holder.recorded_at = None
+
+
+def _once_only_charge(
+    pipe: Pipe, breaker_key: str | None, charge_holder: _FailureCharge | None = None
+) -> Callable[[], None]:
     charged = False
 
     def _charge() -> None:
@@ -251,7 +273,7 @@ def _once_only_charge(pipe: Pipe, breaker_key: str | None) -> Callable[[], None]
         if charged:
             return
         charged = True
-        _record_failed_call(pipe, breaker_key)
+        _record_failed_call(pipe, breaker_key, charge_holder)
 
     return _charge
 
@@ -276,7 +298,10 @@ def _split_sse_lines(buf: bytearray, scanned: int = 0) -> tuple[list[bytes], int
 
 @contextlib.asynccontextmanager
 async def _count_failed_call(
-    pipe: Pipe, breaker_key: str | None, charge: Callable[[], None] | None = None
+    pipe: Pipe,
+    breaker_key: str | None,
+    charge: Callable[[], None] | None = None,
+    charge_holder: _FailureCharge | None = None,
 ) -> AsyncGenerator[None, None]:
     try:
         yield
@@ -284,7 +309,7 @@ async def _count_failed_call(
         if charge is not None:
             charge()
         else:
-            _record_failed_call(pipe, breaker_key)
+            _record_failed_call(pipe, breaker_key, charge_holder)
         raise
 
 
@@ -326,6 +351,7 @@ class ResponsesAdapter:
         user: Any = None,
         owui_chat_id: str | None = None,
         files_inlined: bool = False,
+        charge_holder: _FailureCharge | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Producer/worker SSE pipeline with configurable delta batching."""
 
@@ -365,7 +391,7 @@ class ResponsesAdapter:
         idle_flush_seconds = float(idle_flush_ms) / 1000 if idle_flush_ms > 0 else None
         passthrough_deltas = delta_char_limit <= 0 and idle_flush_ms <= 0
         requested_model = request_body.get("model")
-        charge_failure = _once_only_charge(self._pipe, breaker_key)
+        charge_failure = _once_only_charge(self._pipe, breaker_key, charge_holder)
         producer_reported = False
 
         def _raise_in_band_error(current: dict[str, Any] | None):
@@ -812,6 +838,7 @@ class ResponsesAdapter:
         owui_chat_id: str | None = None,
         transient_retry: bool = True,
         files_inlined: bool = False,
+        charge_holder: _FailureCharge | None = None,
     ) -> dict[str, Any]:
         """Send a blocking request to the Responses API and return the JSON payload."""
         effective_valves = valves or self._pipe.valves
@@ -843,7 +870,7 @@ class ResponsesAdapter:
         if not transient_retry:
             retryer.stop = stop_after_attempt(1)
 
-        async with _count_failed_call(self._pipe, breaker_key):
+        async with _count_failed_call(self._pipe, breaker_key, charge_holder=charge_holder):
             async for attempt in retryer:
                 with attempt:
                     async with session.post(

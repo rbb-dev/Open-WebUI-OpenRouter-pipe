@@ -63,6 +63,7 @@ from .responses_adapter import (
     _body_not_an_object,
     _count_failed_call,
     _decode_json_body,
+    _FailureCharge,
     _record_failed_call,
     _responses_event_is_user_visible,
     _retry_nonstreaming,
@@ -70,6 +71,7 @@ from .responses_adapter import (
     _split_sse_lines,
     _transient_retry_policy,
     _warned_queue_backlog,
+    _withdraw_repaired_failure,
 )
 
 if TYPE_CHECKING:
@@ -1218,6 +1220,7 @@ class ChatCompletionsAdapter:
 
         responses_emitted_user_visible = False
         responses_buffer: list[dict[str, Any]] = []
+        responses_charge = _FailureCharge()
         inlined_request_body = await self._pipe._file_gateway.inline_internal_responses_input_files(
             responses_request_body or {},
             chunk_size=effective_valves.IMAGE_UPLOAD_CHUNK_BYTES,
@@ -1247,6 +1250,7 @@ class ChatCompletionsAdapter:
                 user=user,
                 owui_chat_id=owui_chat_id,
                 files_inlined=True,
+                charge_holder=responses_charge,
             ):
                 if not responses_emitted_user_visible and not _responses_event_is_user_visible(event):
                     responses_buffer.append(event)
@@ -1338,6 +1342,7 @@ class ChatCompletionsAdapter:
                     getattr(exc, "openrouter_code", None),
                     exc,
                 )
+                _withdraw_repaired_failure(self._pipe, breaker_key, responses_charge)
                 yield {"type": "openrouter_pipe.chat_fallback"}
                 async for event in nagle_coalesce_stream(
                     _run_chat(),

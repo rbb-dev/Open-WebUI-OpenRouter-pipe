@@ -2621,7 +2621,7 @@ class StreamingHandler:
                             should_persist = False
 
                         else:
-                            should_persist = persist_tools_enabled
+                            should_persist = True
 
                         if isinstance(item_type, str) and item_type.startswith("openrouter:") and item.get("id"):
                             for _pending_reasoning, _stream_pos, _text_pos in reasoning_anchor_state["awaiting"]:
@@ -4495,7 +4495,11 @@ class StreamingHandler:
             turn_values = {
                 "sources": emitted_citations,
                 "annotations": round_annotations,
-                "reasoning_details": round_reasoning_details,
+                "reasoning_details": (
+                    round_reasoning_details
+                    if valves.PERSIST_REASONING_TOKENS in {"next_reply", "conversation"}
+                    else []
+                ),
             }
             payload: dict[str, Any] = {
                 field: turn_values[field]
