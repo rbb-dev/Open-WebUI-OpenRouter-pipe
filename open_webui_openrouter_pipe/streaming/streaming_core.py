@@ -717,6 +717,7 @@ class StreamingHandler:
             processed_image_item_ids: set[str] = set()
             opened_image_windows: set[str] = set()
             generated_image_count = 0
+            skipped_image_reasons: list[str] = []
             thinking_mode = valves.THINKING_OUTPUT_MODE
             thinking_box_enabled = thinking_mode in {"open_webui", "both"}
             thinking_status_enabled = thinking_mode in {"status", "both"}
@@ -893,6 +894,9 @@ class StreamingHandler:
                     return None
                 if is_http_or_https_url(text):
                     if not is_linkable_chat(chat_id):
+                        if await self._pipe._multimodal_handler._is_safe_url(text) is not True:
+                            skipped_image_reasons.append("unlinkable_chat_unvetted")
+                            return None
                         return text
                     downloaded = await self._pipe._multimodal_handler._download_remote_url(text)
                     if downloaded:
@@ -900,6 +904,9 @@ class StreamingHandler:
                         if stored:
                             await self._pipe._event_emitter_handler._emit_status(event_emitter, StatusMessages.IMAGE_REMOTE_SAVED, done=False)
                             return f"/api/v1/files/{stored}/content"
+                    if await self._pipe._multimodal_handler._is_safe_url(text) is not True:
+                        skipped_image_reasons.append("unfetchable")
+                        return None
                     return text
                 if text.startswith("/"):
                     return text
@@ -1006,6 +1013,15 @@ class StreamingHandler:
                     label = item.get("label") or f"Generated image {generated_image_count}"
                     alt_text = re.sub(r"[\r\n]+", " ", str(label)).strip() or f"Generated image {generated_image_count}"
                     markdowns.append(f"![{alt_text}]({url})")
+                if skipped_image_reasons:
+                    await self._pipe._event_emitter_handler._emit_status(
+                        event_emitter,
+                        StatusMessages.IMAGES_SKIPPED_UNFETCHABLE.format(
+                            count=len(skipped_image_reasons)
+                        ),
+                        done=False,
+                    )
+                    skipped_image_reasons.clear()
                 return markdowns
 
             def _append_output_block(current: str, block: str) -> str:

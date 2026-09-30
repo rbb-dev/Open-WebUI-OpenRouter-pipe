@@ -1728,7 +1728,10 @@ class Pipe:
         return ok
 
     async def _keep_web_tools_filters_in_step(self, rows: Any = None) -> bool:
-        from .filters.filter_manager import _is_install_enumeration_failure
+        from .filters.filter_manager import (
+            _OPENROUTER_WEB_TOOLS_FILTER_MARKER,
+            _is_install_enumeration_failure,
+        )
 
         ok = True
         if self.valves.AUTO_INSTALL_WEB_TOOLS_FILTER and not every_web_tool_is_off(self.valves):
@@ -1748,6 +1751,20 @@ class Pipe:
                 self.logger.log(level, "AUTO_INSTALL_WEB_TOOLS_FILTER failed: %s", exc, exc_info=True)
                 if _is_install_enumeration_failure(exc):
                     raise
+        elif not every_web_tool_is_off(self.valves):
+            try:
+                await self._ensure_filter_manager().reactivate_filters_by_marker(
+                    _OPENROUTER_WEB_TOOLS_FILTER_MARKER, log_label="Web Tools", rows=rows
+                )
+            except Exception as exc:
+                ok = False
+                level = warn_level(_warned_pipes_maintenance, f"web_tools_rearm:{type(exc).__name__}")
+                self.logger.log(
+                    level,
+                    "Re-enabling the OpenRouter Web Tools filter failed: %s",
+                    exc,
+                    exc_info=True,
+                )
         try:
             if not await self._ensure_filter_manager().repair_web_tools_filters():
                 ok = False

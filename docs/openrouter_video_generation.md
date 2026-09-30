@@ -784,7 +784,11 @@ from a control here; the eight framings it publishes run from 21:9 down to
 - Batch small corrections into a single pass where you can, rather than
   sending a string of one-second fixes. What a model charges is on
   OpenRouter's pricing page.
-- `contentModeration` and `keyframes` are the provider parameters.
+- `contentModeration` and `keyframes` are the provider parameters, and both are JSON
+  documents rather than free text: whatever you type is carried into
+  `provider.options` as the string you typed, and the address gate looks inside it, so
+  a link written into either document is checked exactly as a link in a reference field
+  is, however deeply it is nested.
 
 ---
 
@@ -1135,8 +1139,8 @@ admin turns `VIDEO_INTENT_ENABLED` off, all four disappear from the filter.
 |------|------|--------|-------|
 | Aspect ratio | Literal | 16:9, 4:3, 3:2, 1:1, 2:3, 3:4, 9:16, 21:9 | |
 | Seed | int | 0 = model default | |
-| `contentModeration` | str | free text | Provider parameter; no values published. |
-| `keyframes` | str | free text | Provider parameter; show a moment rather than describing it. |
+| `contentModeration` | str | JSON object, typed as text | Provider parameter; no values published. The document is carried as the string you typed and the address gate looks inside it, so a link written into it is checked before the request goes out. |
+| `keyframes` | str | JSON list, typed as text | Provider parameter; show a moment rather than describing it. Carried and checked on the same terms. |
 | Provider options JSON | str | raw JSON | |
 
 **No duration, resolution, size or frames knob.** This is an in-context editor: the clip you attach sets the length and the dimensions of the result, so none of those are published and none are drawn. **No audio knob** (`generate_audio: false`).
@@ -2156,7 +2160,7 @@ Functions → OpenRouter pipe → Valves; the per-model filter ones live on each
 | `VIDEO_FRAME_TOTAL_MAX_BYTES` | `52_428_800` (50 MB) | 65536–134217728 | Combined frame-bytes cap across one request. |
 | `VIDEO_FRAME_IMAGE_MIME_ALLOWLIST` | `image/jpeg,image/png,image/webp` | comma-list | Allowed MIMEs for frame images. A frame extracted by the pipe from a prior video is re-encoded to the first listed type it can write (JPEG, then WebP, then PNG) before it is stored. |
 | `VIDEO_OUTPUT_MIME_ALLOWLIST` | `video/mp4,video/webm` | comma-list | Allowed MIMEs for downloaded video (header first; bytes consulted only when the header is unlisted). |
-| `VIDEO_REFERENCE_ALLOWED_DOMAINS` | `""` | comma-list | Hosts a per-user reference URL may name before this pipe forwards it. Applies to the filter's own reference fields **and** to any key under the free-text `provider.options` box, on the same check over every address in the built request. Exact-or-parent host match, case-insensitive; empty means unrestricted, which is the default. Additional to the `https://`/SSRF address check, which still runs either way; takes no `!` block entries and no CIDR ranges, and (unlike `ALLOW_INSECURE_HTTP_HOSTS`) a listed parent covers its subdomains. A link the media relay published for this request is recorded as the pipe's own and goes out whatever this holds; a host address a user typed is not recorded and is not exempt. |
+| `VIDEO_REFERENCE_ALLOWED_DOMAINS` | `""` | comma-list | Hosts a per-user reference URL may name before this pipe forwards it. Applies to the filter's own reference fields, **and** to any key under the free-text `provider.options` box and to the JSON controls (`VIDEO_KEYFRAMES`, `VIDEO_BACKGROUND`, `VIDEO_CAPTION`, `VIDEO_VOICE_SETTINGS`, `VIDEO_CONTENT_MODERATION`), on the same check over every address in the built request. Exact-or-parent host match, case-insensitive; empty means unrestricted, which is the default. Additional to the `https://`/SSRF address check, which still runs either way; takes no `!` block entries and no CIDR ranges, and (unlike `ALLOW_INSECURE_HTTP_HOSTS`) a listed parent covers its subdomains. A link the media relay published for this request is recorded as the pipe's own and goes out whatever this holds; a host address a user typed is not recorded and is not exempt. |
 | `VIDEO_AIGC_WATERMARK` | `str` | `""` | passthrough `aigc_watermark` | `"aigc_watermark"` allowed | H3, H3 Max |
 | `VIDEO_BACKGROUND` | `str` | `""` | passthrough `background` | `"background"` allowed | Avatar IV |
 | `VIDEO_CAPTION` | `str` | `""` | passthrough `caption` | `"caption"` allowed | Avatar IV |
@@ -2377,6 +2381,11 @@ user being told first, and only the owner of a file may publish it**. The
 upload is anonymous — that is what lets it work with no account — so it
 carries no credential anybody here could later use to delete it, and the
 notice says so rather than implying a takedown that nobody can perform.
+The notice is a precondition, not a formality, so it is refused — and the
+upload does not happen — when it is empty, when the chat will not carry
+it, and when the operator's own `FILE_HOST_NOTICE` template holds a
+placeholder the pipe cannot fill. That last one is named in the server log
+by the placeholder itself, so a typo is a repair rather than a mystery.
 Read access inside Open WebUI is granted by sharing a chat, a channel, a
 knowledge base or a workspace model; publication is not, so a reference
 the requester can open but does not own is withheld with a note.

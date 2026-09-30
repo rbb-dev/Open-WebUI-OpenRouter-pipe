@@ -23,7 +23,6 @@ import inspect
 import json
 import logging
 import math
-import os
 import re
 import uuid
 from collections.abc import Awaitable
@@ -36,6 +35,7 @@ from .config import (
     CROCKFORD_ALPHABET,
     DEFAULT_OPENROUTER_ERROR_TEMPLATE,
     ULID_LENGTH,
+    _application_secret,
 )
 from .url_scheme import loggable_link, media_type_or_empty, split_base64_data_url
 from .warn_latch import shared_latch, warn_level
@@ -542,7 +542,7 @@ def _stable_crockford_id(seed: str, *, length: int = ULID_LENGTH) -> str:
 
 def _sticky_session_key(chat_id: str) -> str | None:
     """Opaque keyed-HMAC routing key for sticky provider routing; None if WEBUI_SECRET_KEY is unset."""
-    secret = os.getenv("WEBUI_SECRET_KEY")
+    secret = _application_secret()
     if not secret:
         return None
     return hmac.new(secret.encode("utf-8"), chat_id.encode("utf-8"), hashlib.sha256).hexdigest()

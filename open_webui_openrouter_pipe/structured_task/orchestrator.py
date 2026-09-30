@@ -92,11 +92,7 @@ def merge_task_model_params(
     if not isinstance(payload, dict) or not isinstance(params, dict) or not params:
         return payload
 
-    mergeable = {
-        key: value
-        for key, value in params.items()
-        if key not in payload and key not in _OWUI_REQUEST_SCOPED_PARAM_KEYS
-    }
+    mergeable = {key: value for key, value in params.items() if key not in payload}
     custom_params = mergeable.pop("custom_params", None)
     if isinstance(custom_params, dict) and custom_params:
         decoded: dict[str, Any] = {}

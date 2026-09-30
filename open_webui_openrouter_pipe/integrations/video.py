@@ -430,6 +430,12 @@ _NOTICE_REFUSED_CAUSE = (
     "this chat would not accept the notice"
 )
 
+_UNRENDERABLE_NOTICE_CAUSE = (
+    "the FILE_HOST_NOTICE setting has a placeholder nothing fills: {name}"
+)
+
+_NOTICE_FILLABLE_WORDS = {"kind": "", "host": "", "retention": ""}
+
 _VIDEO_IS_STILL_RUNNING = (
     "OpenRouter is still working on this video. Nothing came back from the job for "
     "{waited}, so this message stopped waiting for it. The job was not cancelled and is "
@@ -2615,12 +2621,40 @@ class VideoGenerationAdapter:
         notice = self._file_host_notice(valves, pairs)
         if not notice.strip():
             return False, _BLANK_NOTICE_CAUSE
+        unrenderable = self._unrenderable_notice(valves, pairs)
+        if unrenderable:
+            return False, unrenderable
         delivered = bool(
             await self._pipe._event_emitter_handler._emit_notification(
                 event_emitter, notice, level="info"
             )
         )
         return delivered, "" if delivered else _NOTICE_REFUSED_CAUSE
+
+    @classmethod
+    def _unrenderable_notice(cls, valves: Any, relayed: set[tuple[str, str]]) -> str:
+        try:
+            cls._rendered_file_host_notice(valves, relayed)
+        except (KeyError, IndexError, ValueError) as exc:
+            return _UNRENDERABLE_NOTICE_CAUSE.format(
+                name=f"{{{cls._the_unfilled_field(valves, exc)}}}"
+            )
+        return ""
+
+    @classmethod
+    def _the_unfilled_field(cls, valves: Any, exc: BaseException) -> str:
+        if isinstance(exc, KeyError):
+            return str(exc.args[0])
+        if isinstance(exc, IndexError):
+            found = re.search(r"index (\d+)", str(exc))
+            return found.group(1) if found else "0"
+        template = str(getattr(valves, "FILE_HOST_NOTICE", "") or "")
+        for placeholder in re.findall(r"\{([^{}]*)\}", template):
+            try:
+                ("{" + placeholder + "}").format(**_NOTICE_FILLABLE_WORDS)
+            except (KeyError, IndexError, ValueError):
+                return placeholder
+        return str(exc)
 
     @staticmethod
     def _relay_hosts_named(relayed: set[tuple[str, str]]) -> list[str]:
@@ -2668,24 +2702,30 @@ class VideoGenerationAdapter:
 
     @classmethod
     def _file_host_notice(cls, valves: Any, relayed: set[tuple[str, str]]) -> str:
+        try:
+            return cls._rendered_file_host_notice(valves, relayed)
+        except (KeyError, IndexError, ValueError):
+            return str(getattr(valves, "FILE_HOST_NOTICE", "") or "")
+
+    @classmethod
+    def _rendered_file_host_notice(
+        cls, valves: Any, relayed: set[tuple[str, str]]
+    ) -> str:
         template = str(getattr(valves, "FILE_HOST_NOTICE", "") or "")
         groups = cls._relay_groups(relayed)
         if not groups:
             host = str(getattr(valves, "MEDIA_FILE_HOST", "litterbox"))
             groups = [(host, {(family, host) for family, _used in relayed})]
-        try:
-            return " ".join(
-                template.format(
-                    kind=cls._relay_kinds_spoken(pairs),
-                    host=host,
-                    retention=cls._relay_retention_words(
-                        valves, host, plural=len(cls._relay_kinds_named(pairs)) > 1
-                    ),
-                )
-                for host, pairs in groups
+        return " ".join(
+            template.format(
+                kind=cls._relay_kinds_spoken(pairs),
+                host=host,
+                retention=cls._relay_retention_words(
+                    valves, host, plural=len(cls._relay_kinds_named(pairs)) > 1
+                ),
             )
-        except (KeyError, IndexError, ValueError):
-            return template
+            for host, pairs in groups
+        )
 
     @classmethod
     def _with_the_file_host_record(

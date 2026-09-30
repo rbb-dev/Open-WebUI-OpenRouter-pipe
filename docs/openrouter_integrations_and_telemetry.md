@@ -368,11 +368,11 @@ Result:
 
 ### 2.16 Prompt-cache session affinity (`session_id`)
 
-To maximize prompt-cache hits, the pipe sends OpenRouter a stable per-conversation `session_id` so every turn of a conversation routes to the same provider, keeping that provider's prompt cache warm. A Fusion panel member is one turn of that conversation and is pinned like any other. The value is an opaque `HMAC-SHA256(WEBUI_SECRET_KEY, chat_id)` digest — never the raw chat id — and costs zero tokens. Any client-supplied `session_id` in the top-level wire field is dropped.
+To maximize prompt-cache hits, the pipe sends OpenRouter a stable per-conversation `session_id` so every turn of a conversation routes to the same provider, keeping that provider's prompt cache warm. A Fusion panel member is one turn of that conversation and is pinned like any other. The value is an opaque `HMAC-SHA256(`WEBUI_SECRET_KEY`, or the deprecated `WEBUI_JWT_SECRET_KEY` it falls back to (a default, so an empty primary is not a fallback), chat_id)` digest — never the raw chat id — and costs zero tokens. Any client-supplied `session_id` in the top-level wire field is dropped.
 
-A call that carries no `chat_id` — the plain API route — is pinned instead on `HMAC-SHA256(WEBUI_SECRET_KEY, "api-session:" + session_id)`, the caller's own `session_id` under a namespaced prefix. The raw caller value never reaches the wire, and the prefix namespaces the fallback so it cannot collide with a real chat id unless the caller deliberately chooses a `chat_id` of the form `api-session:<x>` — chat ids are caller-supplied, so that one shape does collide, and a chatless caller sending `session_id=<x>` gets the same pin. The fallback fires only when the caller actually sends a `session_id`; that caller is the only party that knows what "the same conversation" means for its own traffic. A call that sends `parent_id: null` is given a fresh conversation id by Open WebUI on every turn, so it is pinned to a new value each time and its cache never warms; the pipe does not override a real `chat_id`.
+A call that carries no `chat_id` — the plain API route — is pinned instead on `HMAC-SHA256(`WEBUI_SECRET_KEY`, or the deprecated `WEBUI_JWT_SECRET_KEY` it falls back to (a default, so an empty primary is not a fallback), "api-session:" + session_id)`, the caller's own `session_id` under a namespaced prefix. The raw caller value never reaches the wire, and the prefix namespaces the fallback so it cannot collide with a real chat id unless the caller deliberately chooses a `chat_id` of the form `api-session:<x>` — chat ids are caller-supplied, so that one shape does collide, and a chatless caller sending `session_id=<x>` gets the same pin. The fallback fires only when the caller actually sends a `session_id`; that caller is the only party that knows what "the same conversation" means for its own traffic. A call that sends `parent_id: null` is given a fresh conversation id by Open WebUI on every turn, so it is pinned to a new value each time and its cache never warms; the pipe does not override a real `chat_id`.
 
-Controlled by `SEND_CACHE_SESSION_ID` (default **on**); skipped when `WEBUI_SECRET_KEY` is unset. A manually pinned `provider.order` overrides it.
+Controlled by `SEND_CACHE_SESSION_ID` (default **on**); skipped when neither the primary name nor its deprecated fallback is set. A manually pinned `provider.order` overrides it.
 
 ---
 
@@ -443,7 +443,9 @@ Operational guidance:
   - When `ENABLE_STRICT_TOOL_CALLING=True`, the pipe strictifies tool schemas for more predictable function calling.
   - When `ENABLE_STRICT_TOOL_CALLING=True` and the pipe runs the tool (not `Open-WebUI` mode,
     and not under `ask` approval in a saved chat), the tools it advertises on the Responses route
-    carry `strict: true`. OpenRouter strips `strict` from a tool on Anthropic models unless the
+    carry `strict: true`. A tool the pipe does not strictify is sent there with an explicit
+    `strict: false`, so that endpoint's own `true` default never applies to a schema the pipe
+    did not strictify. OpenRouter strips `strict` from a tool on Anthropic models unless the
     `structured-outputs-2025-11-13` header is passed; the pipe does not pass that header, so on
     those models the field does not take effect and the call routes normally.
 

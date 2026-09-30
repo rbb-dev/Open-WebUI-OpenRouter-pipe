@@ -2008,12 +2008,23 @@ class ModelCatalogManager:
             if valves.AUTO_ATTACH_WEB_TOOLS_FILTER and not every_web_tool_is_off(valves):
                 if not web_tools_filter_function_id:
                     if a_filter_write_was_refused(_OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID):
-                        self.logger.warning(
-                            "AUTO_ATTACH_WEB_TOOLS_FILTER is enabled but the OpenRouter Web Tools filter is "
-                            "not installed: Open WebUI refused the write that installs it. The install valve is "
-                            "already doing its job, so this is a database fault rather than a setting to change; "
-                            "the pipe retries on every model-list build."
-                        )
+                        if valves.AUTO_INSTALL_WEB_TOOLS_FILTER:
+                            self.logger.warning(
+                                "AUTO_ATTACH_WEB_TOOLS_FILTER is enabled but the OpenRouter Web Tools filter is "
+                                "not installed: Open WebUI refused the write to %r that installs it. The install "
+                                "valve is already doing its job, so this is a database fault rather than a "
+                                "setting to change; the pipe retries on every model-list build.",
+                                _OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID,
+                            )
+                        else:
+                            self.logger.warning(
+                                "AUTO_ATTACH_WEB_TOOLS_FILTER is enabled but the OpenRouter Web Tools filter is "
+                                "not installed: Open WebUI refused a write to the %r row while "
+                                "AUTO_INSTALL_WEB_TOOLS_FILTER is off, so the pipe is not installing it itself. "
+                                "Switch that row on in Workspace > Functions, or turn the install valve on; the "
+                                "pipe retries on every model-list build.",
+                                _OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID,
+                            )
                     else:
                         self.logger.warning(
                             "AUTO_ATTACH_WEB_TOOLS_FILTER is enabled but the OpenRouter Web Tools filter is not installed. "
@@ -2029,12 +2040,23 @@ class ModelCatalogManager:
             if valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER:
                 if not direct_uploads_filter_function_id:
                     if a_filter_write_was_refused(_DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID):
-                        self.logger.warning(
-                            "AUTO_ATTACH_DIRECT_UPLOADS_FILTER is enabled but the OpenRouter Direct Uploads filter is "
-                            "not installed: Open WebUI refused the write that installs it. The install valve is "
-                            "already doing its job, so this is a database fault rather than a setting to change; "
-                            "the pipe retries on every model-list build."
-                        )
+                        if valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER:
+                            self.logger.warning(
+                                "AUTO_ATTACH_DIRECT_UPLOADS_FILTER is enabled but the OpenRouter Direct Uploads filter is "
+                                "not installed: Open WebUI refused the write to %r that installs it. The install "
+                                "valve is already doing its job, so this is a database fault rather than a "
+                                "setting to change; the pipe retries on every model-list build.",
+                                _DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID,
+                            )
+                        else:
+                            self.logger.warning(
+                                "AUTO_ATTACH_DIRECT_UPLOADS_FILTER is enabled but the OpenRouter Direct Uploads filter is "
+                                "not installed: Open WebUI refused a write to the %r row while "
+                                "AUTO_INSTALL_DIRECT_UPLOADS_FILTER is off, so the pipe is not installing it "
+                                "itself. Switch that row on in Workspace > Functions, or turn the install valve "
+                                "on; the pipe retries on every model-list build.",
+                                _DIRECT_UPLOADS_FILTER_PREFERRED_FUNCTION_ID,
+                            )
                     else:
                         self.logger.warning(
                             "AUTO_ATTACH_DIRECT_UPLOADS_FILTER is enabled but the OpenRouter Direct Uploads filter is not installed. "

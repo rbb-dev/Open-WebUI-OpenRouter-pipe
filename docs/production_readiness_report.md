@@ -24,7 +24,7 @@ Before enabling this pipe for end users, operators should decide and document:
 
 1. **Network egress posture** (especially remote downloads; SSRF risk).
 2. **Persistence posture** (what is stored, retention windows, and who can access it).
-3. **Key management posture** (`OPENROUTER_API_KEY`, `WEBUI_SECRET_KEY`, `ARTIFACT_ENCRYPTION_KEY`, session log zip password).
+3. **Key management posture** (`OPENROUTER_API_KEY`, the Open WebUI application secret, `ARTIFACT_ENCRYPTION_KEY`, session log zip password).
 4. **Concurrency posture** (request admission limits, tool concurrency, streaming queue sizing).
 5. **Telemetry posture** (whether to export cost snapshots to Redis; whether to send request identifiers).
 6. **Incident response posture** (templates, session logs, and attribution identifiers).
@@ -66,14 +66,14 @@ Related docs: [Persistence, Encryption & Storage](persistence_encryption_and_sto
 | Secret | Purpose | Notes |
 |---|---|---|
 | `OPENROUTER_API_KEY` (or valve `API_KEY`) | Provider authentication | Required for provider requests and catalog refresh. |
-| `WEBUI_SECRET_KEY` | Protects encrypted valve values (`EncryptedStr`) | Recommended in production if storing secrets in valves. |
+| `WEBUI_SECRET_KEY` (or the deprecated `WEBUI_JWT_SECRET_KEY` it falls back to) | Protects encrypted valve values (`EncryptedStr`) | Recommended in production if storing secrets in valves. |
 | `ARTIFACT_ENCRYPTION_KEY` | Enables artifact encryption at rest (when set) | Changing this changes the artifact table namespace (hash-suffixed table name). |
 | `SESSION_LOG_ZIP_PASSWORD` | Encrypts session log zip archives (when enabled) | Required to write session log archives; treat as a high-value secret. |
 
 Operational notes (code-aligned):
 
-- `WEBUI_SECRET_KEY` protects *stored secret valve values* (encryption/decryption via `EncryptedStr`).
-- If `WEBUI_SECRET_KEY` is missing/mismatched relative to how values were stored, those encrypted values may not decrypt to the intended plaintext at runtime, causing authentication failures or unexpected table namespaces/passwords.
+- The application secret — `WEBUI_SECRET_KEY`, or the deprecated `WEBUI_JWT_SECRET_KEY` it falls back to — protects *stored secret valve values* (encryption/decryption via `EncryptedStr`).
+- If that secret is missing/mismatched relative to how values were stored, those encrypted values may not decrypt to the intended plaintext at runtime, causing authentication failures or unexpected table namespaces/passwords.
 
 Related docs: [Security & Encryption](security_and_encryption.md).
 
@@ -240,7 +240,7 @@ Minimum functional:
 
 Recommended security:
 
-- `WEBUI_SECRET_KEY` is configured (so secret valves can be stored encrypted and decrypted reliably).
+- An application secret is configured (so secret valves can be stored encrypted and decrypted reliably).
 - SSRF protection is enabled, HTTPS-only defaults are in place, and network egress policy is configured.
 - Persistence posture is decided (encryption key set or intentionally left empty; retention windows set).
 

@@ -929,6 +929,26 @@ class FilterManager:
                 if matches_candidate(_stored_source(existing)) and _claimable_by(existing, owner):
                     if getattr(existing, "is_active", False):
                         return str(getattr(existing, "id", "") or ""), outcome
+                    if not (_pipe_owns_the_off(existing) or not _switched_off_by_pipe(existing)):
+                        chosen = existing
+                        break
+                    if await _write_function(
+                        Functions,
+                        candidate_id,
+                        {
+                            "is_active": True,
+                            "is_global": False,
+                            "meta": _merged_meta(
+                                existing,
+                                _manifest_id_for(desired_meta, candidate_id),
+                                off_by_pipe=False,
+                            ),
+                        },
+                        f"activating the inert {log_label} this pass found",
+                        self.logger,
+                    ):
+                        self.logger.info("Activated inert %s: %s", log_label, candidate_id)
+                        return candidate_id, outcome
                     outcome.refused = True
                     return None, outcome
                 suffix += 1
@@ -955,60 +975,61 @@ class FilterManager:
                     )
                     return None, outcome
 
-            try:
-                from open_webui.models.functions import (  # type: ignore
-                    FunctionForm,
-                    FunctionMeta,
-                )
-            except ImportError:
-                return None, outcome
-            except Exception:
-                logging.getLogger(__name__).warning(
-                    "open_webui.models.functions failed to import for a reason other than absence; "
-                    "the features that depend on it are now disabled",
-                    exc_info=True,
-                )
-                return None, outcome
-
-            desired_meta = _manifest_id_for(desired_meta, candidate_id)
-            meta_obj = FunctionMeta(**desired_meta)
-            form = FunctionForm(
-                id=candidate_id,
-                name=desired_name,
-                content=desired_source,
-                meta=meta_obj,
-            )
-            created = await Functions.insert_new_function("", "filter", form)
-            if not created:
-                created = await Functions.get_function_by_id(candidate_id)
-            if not created:
-                outcome.refused = True
-                return None, outcome
-            if not await _write_function(
-                Functions,
-                candidate_id,
-                {"is_active": True, "is_global": False, "name": desired_name, "meta": _merged_meta(created, desired_meta, off_by_pipe=False)},
-                f"activating the newly installed {log_label}",
-                self.logger,
-            ):
-                self.logger.log(
-                    warn_level(_warned_stale_filter_rows, f"not_activated:{candidate_id}"),
-                    "OpenRouter %s filter %r was not activated; treating it as not installed",
-                    log_label,
-                    candidate_id,
-                )
-                removed = await Functions.delete_function_by_id(candidate_id)
-                if not removed:
-                    self.logger.warning(
-                        "Open WebUI refused to remove the inert %s %r this pass created; it stays "
-                        "switched off, and the pipe switches it back on at the next pass "
-                        "that can write.",
-                        log_label, candidate_id,
+            if chosen is None:
+                try:
+                    from open_webui.models.functions import (  # type: ignore
+                        FunctionForm,
+                        FunctionMeta,
                     )
-                outcome.refused = True
-                return None, outcome
-            self.logger.info("Installed %s: %s", log_label, candidate_id)
-            return candidate_id, outcome
+                except ImportError:
+                    return None, outcome
+                except Exception:
+                    logging.getLogger(__name__).warning(
+                        "open_webui.models.functions failed to import for a reason other than absence; "
+                        "the features that depend on it are now disabled",
+                        exc_info=True,
+                    )
+                    return None, outcome
+
+                desired_meta = _manifest_id_for(desired_meta, candidate_id)
+                meta_obj = FunctionMeta(**desired_meta)
+                form = FunctionForm(
+                    id=candidate_id,
+                    name=desired_name,
+                    content=desired_source,
+                    meta=meta_obj,
+                )
+                created = await Functions.insert_new_function("", "filter", form)
+                if not created:
+                    created = await Functions.get_function_by_id(candidate_id)
+                if not created:
+                    outcome.refused = True
+                    return None, outcome
+                if not await _write_function(
+                    Functions,
+                    candidate_id,
+                    {"is_active": True, "is_global": False, "name": desired_name, "meta": _merged_meta(created, desired_meta, off_by_pipe=False)},
+                    f"activating the newly installed {log_label}",
+                    self.logger,
+                ):
+                    self.logger.log(
+                        warn_level(_warned_stale_filter_rows, f"not_activated:{candidate_id}"),
+                        "OpenRouter %s filter %r was not activated; treating it as not installed",
+                        log_label,
+                        candidate_id,
+                    )
+                    removed = await Functions.delete_function_by_id(candidate_id)
+                    if not removed:
+                        self.logger.warning(
+                            "Open WebUI refused to remove the inert %s %r this pass created; it stays "
+                            "switched off, and the pipe switches it back on at the next pass "
+                            "that can write.",
+                            log_label, candidate_id,
+                        )
+                    outcome.refused = True
+                    return None, outcome
+                self.logger.info("Installed %s: %s", log_label, candidate_id)
+                return candidate_id, outcome
 
         function_id = str(getattr(chosen, "id", "") or "").strip()
         if not function_id:
@@ -2556,7 +2577,14 @@ class FilterManager:
             variant_ids=variant_ids,
         )
         if not spec.contract_read:
-            return None, _WriteOutcome()
+            self.logger.info(
+                "No published contract for %s was in hand this pass, so its settings panel is "
+                "left exactly as it is rather than rebuilt from nothing",
+                spec.model_id,
+            )
+            outcome = _WriteOutcome()
+            outcome.refused = True
+            return None, outcome
 
         # Built with the same expression the renderer emits, not a reconstruction of it.
         # Rebuilding the literal by hand missed any id whose repr needs an escape -- an

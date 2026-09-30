@@ -1138,8 +1138,11 @@ class ToolExecutor:
         if not request or not user:
             return None
         metadata = context.metadata or {}
-        chat_id = metadata.get("chat_id")
-        message_id = metadata.get("message_id")
+        if context.fusion_inner:
+            chat_id = message_id = None
+        else:
+            chat_id = metadata.get("chat_id")
+            message_id = metadata.get("message_id")
         try:
             return await gateway.upload_to_owui_storage(
                 request=request,

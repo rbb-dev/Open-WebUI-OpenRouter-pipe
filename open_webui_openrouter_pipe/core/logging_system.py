@@ -892,7 +892,7 @@ def _write_session_log_archive_unclaimed(job: _SessionLogArchiveJob, out_dir: Pa
             "user_id": str(job.user_id or ""),
             "session_id": str(job.session_id or ""),
             "chat_id": str(job.chat_id or ""),
-            "message_id": str(job.message_id or ""),
+            "message_id": str(job.meta_message_id or job.message_id or ""),
             "event_type": str(event.get("event_type") or "pipe"),
             "module": str(event.get("module") or ""),
             "func": str(event.get("func") or ""),

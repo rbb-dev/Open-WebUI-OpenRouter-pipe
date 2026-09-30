@@ -700,7 +700,6 @@ def _reinterleave_region(region: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _reinterleave_reasoning_by_anchor(
     items: list[dict[str, Any]],
-    gated_pictures: dict[Any, list[str]],
 ) -> list[dict[str, Any]]:
     """Re-interleave reasoning to its true generated position, scoped per assistant
     turn. Turns are delimited by user messages so a reasoning anchor only binds to
@@ -711,18 +710,20 @@ def _reinterleave_reasoning_by_anchor(
     region: list[dict[str, Any]] = []
     for index, it in enumerate(items):
         if opens_a_turn(items, index):
-            out.extend(_reinterleave_region(_one_copy_per_round(region, gated_pictures)))
+            out.extend(_reinterleave_region(_one_copy_per_round(region)))
             region = []
             out.append(_strip_reasoning_anchor_keys(it))
         else:
             region.append(it)
-    out.extend(_reinterleave_region(_one_copy_per_round(region, gated_pictures)))
+    out.extend(_reinterleave_region(_one_copy_per_round(region)))
     return out
 
 
 _PIPE_STORAGE_KEY = "_anchor_from_pipe_storage"
+_REPLAY_GATED_PICTURES_KEY = "_gated_replay_pictures"
 _TRANSPORT_ONLY_KEYS = (
     _PIPE_STORAGE_KEY,
+    _REPLAY_GATED_PICTURES_KEY,
     PIPE_ONLY_TOOL_ROUND_KEY,
     BUILTIN_ASK_USER_ROUND_KEY,
     TOOL_ROUND_SKELETON_KEY,
@@ -795,7 +796,6 @@ def _move_kept_outputs_after_their_calls(kept: list[Any]) -> list[Any]:
 
 def _one_copy_per_round(
     region: list[Any],
-    gated_pictures: dict[Any, list[str]],
 ) -> list[Any]:
     supplied = {
         it.get("call_id")
@@ -835,6 +835,7 @@ def _one_copy_per_round(
             and it.get("type") == "function_call_output"
             and is_picture_output(it.get("output"))
         )
+        row_gated = it.get(_REPLAY_GATED_PICTURES_KEY) if replayed_pictures else None
         if isinstance(it, dict) and it.get("type") in ("function_call", "function_call_output"):
             from_pipe = bool(it.get(_PIPE_STORAGE_KEY))
             pipe_only = bool(it.get(PIPE_ONLY_TOOL_ROUND_KEY) or it.get(TOOL_ROUND_SKELETON_KEY))
@@ -854,7 +855,10 @@ def _one_copy_per_round(
         if replayed_pictures:
             text, shown = tool_output_text_and_pictures(it["output"])
             it = {**it, "output": text}
-            kept_shown = gated_pictures.get(it.get("call_id"), [])
+            if row_gated is not None:
+                kept_shown = row_gated
+            else:
+                kept_shown = []
             refused_pictures = refused_pictures or bool(shown) and not kept_shown
             pictures.extend(kept_shown)
         kept.append(it)
@@ -937,6 +941,8 @@ async def _tool_picture_gate_with_address(
     pictures: list[str],
     *,
     max_inline_bytes: int,
+    seen: dict[str, bool | None] | None = None,
+    deadline: float | None = None,
 ) -> tuple[list[str], list[tuple[str, str, str]]]:
     kept, refused = _tool_picture_gate(
         pictures,
@@ -945,11 +951,20 @@ async def _tool_picture_gate_with_address(
     )
     admitted: list[str] = []
     for url in kept:
-        if (
-            is_http_or_https_url(url)
-            and not names_an_owui_file_path(url)
-            and await pipe._multimodal_handler._is_safe_url(url) is not True
-        ):
+        if not (is_http_or_https_url(url) and not names_an_owui_file_path(url)):
+            admitted.append(url)
+            continue
+        if seen is not None and url in seen:
+            permitted = seen[url]
+        else:
+            if deadline is None:
+                deadline = time.monotonic() + ADDRESS_CHECK_BUDGET_SECONDS
+            permitted = await pipe._multimodal_handler._is_safe_url(
+                url, seconds=_remaining_address_seconds(deadline),
+            )
+            if seen is not None:
+                seen[url] = permitted
+        if permitted is not True:
             refused.append((url, "could not be fetched, so it was not sent", "remote_unfetched"))
             continue
         admitted.append(url)
@@ -1393,15 +1408,6 @@ async def transform_messages_to_input(
 
         if role != "tool" and (_deferred_tool_pictures or _deferred_tool_refusals):
             await _flush_deferred_tool_pictures()
-            for url, reason, refusal_cause in _deferred_tool_refusals:
-                pipe.logger.warning(
-                    "Not forwarding a tool's picture (%s): %s [cause=%s]",
-                    loggable_link(url), reason, refusal_cause,
-                )
-            await pipe._event_emitter_handler._emit_status(
-                event_emitter, _tool_picture_notice(_deferred_tool_refusals), done=False,
-            )
-            _deferred_tool_refusals.clear()
 
         if role in {"system", "developer"}:
             blocks: list[dict[str, Any]] = []
@@ -1495,6 +1501,7 @@ async def transform_messages_to_input(
             if tool_pictures and not _handoff_ahead(messages, idx):
                 admitted, tool_refusals = await _tool_picture_gate_with_address(
                     pipe, tool_pictures, max_inline_bytes=max_inline_bytes,
+                    seen=address_verdicts, deadline=address_deadline,
                 )
                 _deferred_tool_refusals.extend(tool_refusals)
                 _deferred_tool_pictures.extend(admitted)
@@ -1953,25 +1960,50 @@ async def transform_messages_to_input(
                             _name, _value
                         ):
                             continue
-                        if not await pipe._multimodal_handler._is_safe_url(_value):
-                            pipe.logger.error(
-                                "Blocked %s file link by security policy: %s",
-                                _name,
-                                loggable_link(_value),
+                        if not (
+                            _file_verdict := address_verdicts[_value]
+                            if _value in address_verdicts
+                            else address_verdicts.setdefault(
+                                _value,
+                                await pipe._multimodal_handler._is_safe_url(
+                                    _value,
+                                    seconds=_remaining_address_seconds(address_deadline),
+                                ),
                             )
-                            if not is_http_or_https_url(_value):
+                        ):
+                            if _file_verdict is None and is_http_or_https_url(_value):
+                                _reason = (
+                                    "not checked against the address policy in time, so it "
+                                    "was not sent"
+                                )
+                                _cause = "uncheckable_file_url"
+                                pipe.logger.warning(
+                                    "Address check for %s file link %s reached no verdict "
+                                    "within the request's address budget, so the link was "
+                                    "not sent",
+                                    _name, loggable_link(_value),
+                                )
+                            elif not is_http_or_https_url(_value):
                                 _reason = (
                                     "served from a link that is neither http nor https, "
                                     "which is blocked by security policy"
                                 )
                                 _cause = "unsupported_scheme_file"
+                                pipe.logger.error(
+                                    "Blocked %s file link by security policy: %s",
+                                    _name, loggable_link(_value),
+                                )
                             else:
                                 _reason = (
-                                    "served from a link on a private, link-local or unresolvable "
-                                    "address, which is blocked by security policy; set "
-                                    "ENABLE_SSRF_PROTECTION to False to permit it"
+                                    "served from a link on a private, link-local or "
+                                    "unresolvable address, which is blocked by security "
+                                    "policy; set ENABLE_SSRF_PROTECTION to False to permit it"
                                 )
                                 _cause = "private_network_file"
+                                pipe.logger.error(
+                                    "Blocked %s file link by security policy: %s",
+                                    _name, loggable_link(_value),
+                                )
                             if not file_id:
                                 return ImageRefusal(_reason, _cause, subject=_name)
                             if _name == "file_data":
@@ -3061,7 +3093,6 @@ async def transform_messages_to_input(
         spliced.append(item_out["content"][0]["text"][cursor:])
         item_out["content"][0]["text"] = "".join(spliced)
 
-    gated_replay_pictures: dict[Any, list[str]] = {}
     replay_refusals: list[tuple[str, str, str]] = []
     for row in openai_input:
         if not (
@@ -3082,13 +3113,13 @@ async def transform_messages_to_input(
                 loggable_link(url), reason, cause,
             )
         replay_refusals.extend(refused_shown)
-        gated_replay_pictures[row.get("call_id")] = admitted
+        row[_REPLAY_GATED_PICTURES_KEY] = admitted
     if replay_refusals:
         await pipe._event_emitter_handler._emit_status(
             event_emitter, _tool_picture_notice(replay_refusals), done=False,
         )
 
-    openai_input = _reinterleave_reasoning_by_anchor(openai_input, gated_replay_pictures)
+    openai_input = _reinterleave_reasoning_by_anchor(openai_input)
 
     _maybe_apply_anthropic_prompt_caching(
         openai_input,

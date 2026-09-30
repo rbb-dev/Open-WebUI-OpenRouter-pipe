@@ -698,9 +698,9 @@ class SessionLogManager:
         if self._queue.full():
             self._warn_archive_queue_full(job)
             return
-        self.start_workers()
         try:
             self._queue.put_nowait(job)
+            self.start_workers()
         except queue.Full:
             self._warn_archive_queue_full(job)
         except Exception:
@@ -835,55 +835,13 @@ class SessionLogManager:
             "payload": payload,
         }
 
+        persisted: list[str] = []
         try:
             # Best-effort: background workers may not be long-lived in some OWUI deployment
             # modes, so we also attempt to assemble terminal bundles inline (below).
             self.start_workers()
             self.start_assembler_worker()
             persisted = await self._artifact_store._db_persist([row]) if self._artifact_store else []
-            if not persisted and getattr(self._artifact_store, "_artifact_key_unreadable", False):
-                self.logger.debug(
-                    "Session log segment not staged (artifact storage refusing writes): "
-                    "chat_id=%s message_id=%s request_id=%s",
-                    chat_id,
-                    message_id,
-                    request_id,
-                )
-                return
-            if not persisted:
-                # Survivability guarantee: if DB staging isn't available (or breaker blocks writes),
-                # fall back to direct zip persistence so operators still get logs.
-                self.logger.warning(
-                    "Session log DB staging returned no ids; falling back to a queued zip write (chat_id=%s message_id=%s request_id=%s).",
-                    chat_id,
-                    message_id,
-                    request_id,
-                )
-                base_dir, zip_password, zip_compression, zip_compresslevel = archive_settings
-                meta_message_id, meta_task = _split_archive_key(message_id)
-                fallback_message_id = message_id if surrogate_in_play else f"{message_id}.{request_id}"
-                meta_message_id, meta_task = _split_archive_key(message_id)
-                self._enqueue_archive_job(
-                    _SessionLogArchiveJob(
-                        base_dir=base_dir,
-                        zip_password=zip_password,
-                        zip_compression=zip_compression,
-                        zip_compresslevel=zip_compresslevel,
-                        user_id=user_id,
-                        session_id=session_id,
-                        chat_id=chat_id,
-                        message_id=fallback_message_id,
-                        request_id=request_id,
-                        created_at=time.time(),
-                        log_format=valves.SESSION_LOG_FORMAT,
-                        log_events=log_events,
-                        meta_message_id=meta_message_id,
-                        meta_task=meta_task,
-                        terminal=bool(terminal),
-                        status=str(status or "").strip(),
-                        reason=str(reason or "").strip(),
-                    )
-                )
         except Exception:
             self.logger.debug(
                 "Failed to persist session log segment (chat_id=%s message_id=%s request_id=%s terminal=%s)",
@@ -892,6 +850,50 @@ class SessionLogManager:
                 request_id,
                 terminal,
                 exc_info=True,
+            )
+
+        if not persisted and getattr(self._artifact_store, "_artifact_key_unreadable", False):
+            self.logger.debug(
+                "Session log segment not staged (artifact storage refusing writes): "
+                "chat_id=%s message_id=%s request_id=%s",
+                chat_id,
+                message_id,
+                request_id,
+            )
+            return
+        if not persisted:
+            # Survivability guarantee: if DB staging isn't available (or breaker blocks writes),
+            # fall back to direct zip persistence so operators still get logs.
+            self.logger.warning(
+                "Session log DB staging returned no staged segment; falling back to a queued zip write (chat_id=%s message_id=%s request_id=%s).",
+                chat_id,
+                message_id,
+                request_id,
+            )
+            base_dir, zip_password, zip_compression, zip_compresslevel = archive_settings
+            meta_message_id, meta_task = _split_archive_key(message_id)
+            fallback_message_id = message_id if surrogate_in_play else f"{message_id}.{request_id}"
+            meta_message_id, meta_task = _split_archive_key(message_id)
+            self._enqueue_archive_job(
+                _SessionLogArchiveJob(
+                    base_dir=base_dir,
+                    zip_password=zip_password,
+                    zip_compression=zip_compression,
+                    zip_compresslevel=zip_compresslevel,
+                    user_id=user_id,
+                    session_id=session_id,
+                    chat_id=chat_id,
+                    message_id=fallback_message_id,
+                    request_id=request_id,
+                    created_at=time.time(),
+                    log_format=valves.SESSION_LOG_FORMAT,
+                    log_events=log_events,
+                    meta_message_id=meta_message_id,
+                    meta_task=meta_task,
+                    terminal=bool(terminal),
+                    status=str(status or "").strip(),
+                    reason=str(reason or "").strip(),
+                )
             )
 
     # =========================================================================

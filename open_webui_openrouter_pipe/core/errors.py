@@ -107,6 +107,9 @@ class StatusMessages:
     # Image processing
     IMAGE_BASE64_SAVED = "📥 Saved base64 image to storage"
     IMAGE_REMOTE_SAVED = "📥 Downloaded and saved image from remote URL"
+    IMAGES_SKIPPED_UNFETCHABLE = (
+        "Images: skipped {count} (could not be fetched, so it was not sent)."
+    )
 
     # Video processing
     VIDEO_BASE64 = "🎥 Processing base64 video input"

@@ -583,6 +583,13 @@ async def test_a_failing_filter_install_is_reported_once_across_repeated_pipes_c
         "enforcement_base_not_allowed",
         "enforcement_base_unnormalized",
         "chat_catalog_refresh",
+        # The re-enable arm of the same upkeep, which is the `elif` of the install
+        # valve's own branch: this drive runs with that valve on, so the arm is
+        # unreachable in it by construction. Turning the valve off here to reach it
+        # would un-arm `web_tools` instead, so the arm is driven where it lives --
+        # `tests/test_web_tools_comes_back_when_a_tool_does.py` -- and named here so
+        # this census still knows the site exists.
+        "web_tools_rearm",
     }
 
     # Frozen, NOT discovered. An inventory read from the same source being mutated
@@ -591,6 +598,7 @@ async def test_a_failing_filter_install_is_reported_once_across_repeated_pipes_c
     # below -- to catch a site ADDED without a driver, which a literal cannot see.
     expected_sites = {
         "catalog_refresh", "catalog_cached", "web_tools", "web_tools_repair", "web_tools_in_step",
+        "web_tools_rearm",
         "fusion", "image_gen",
         "image_gen_model",
         "video", "direct_uploads", "provider_routing", "provider_routing_probe", "stale_prune",

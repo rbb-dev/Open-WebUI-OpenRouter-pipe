@@ -1454,7 +1454,7 @@ is shared with chat/video catalogs (`MODEL_CATALOG_REFRESH_SECONDS`).
 | Valve | Default | Range | Purpose |
 |-------|---------|-------|---------|
 | `ENABLE_OPENROUTER_IMAGE_GENERATION` | `True` | bool | Master kill switch. False drops pure-image-only models from the model list AND clears them from OWUI's catalog on the next model-list build, ahead of the catalogue refresh window, so it does not wait on `MODEL_CATALOG_REFRESH_SECONDS`. Multimodal models stay since they're in the chat catalog. |
-| `AUTO_INSTALL_IMAGE_FILTERS` | `True` | bool | Install and keep current one settings panel per image model, built from what that model publishes. It is one of the four valves that pay for that read — `AUTO_ATTACH_IMAGE_FILTERS`, `AUTO_INSTALL_IMAGE_GEN_FILTER` and `AUTO_ATTACH_IMAGE_GEN_FILTER` read the same contracts for the Image Generation tool's own panel, and with all four off no contract is read at all. Every panel also carries `Output size`, where a tier is checked against the tiers that model publishes -- or against `512`, `1K`, `2K` and `4K` where it publishes none -- while exact pixels such as `1024x1024` travel as typed; and a model that answers with a picture and no text carries `Provider options`, `Reference images` and `Reference image links` on top of that. A model whose settings list has never been read gets no panel; one read before keeps its last successful set. |
+| `AUTO_INSTALL_IMAGE_FILTERS` | `True` | bool | Install and keep current one settings panel per image model, built from what that model publishes. It is one of the four valves that pay for that read — `AUTO_ATTACH_IMAGE_FILTERS`, `AUTO_INSTALL_IMAGE_GEN_FILTER` and `AUTO_ATTACH_IMAGE_GEN_FILTER` read the same contracts for the Image Generation tool's own panel, and with all four off no contract is read at all. Every panel also carries `Output size`, where a tier is checked against the tiers that model publishes -- or against `512`, `1K`, `2K` and `4K` where it publishes none -- while exact pixels such as `1024x1024` travel as typed; and a model that answers with a picture and no text carries `Provider options`, `Reference images` and `Reference image links` on top of that. A model whose settings list has never been read gets no panel; one read before keeps its last successful set -- and keeps it until a refresh does read the model, so a catalogue that is momentarily unreadable for one model costs it nothing. |
 | `AUTO_ATTACH_IMAGE_FILTERS` | `True` | bool | Attach each model's own settings panel to it, so its settings appear in the chat controls when that model is selected. A single model can opt out with the `disable_image_filter_auto_attach` advanced parameter. |
 | `AUTO_DEFAULT_IMAGE_FILTERS` | `True` | bool | Keep attached image filters enabled by default per chat. Re-asserted on every catalog metadata sync. |
 
@@ -1745,7 +1745,8 @@ pipes()
   └─ if AUTO_INSTALL_IMAGE_FILTERS:
         ensure_openrouter_image_filter_function_ids(available_models)
           ├─ one settings row per image model, built from its own contract
-          ├─ a model with no readable contract gets none
+          ├─ a model with no readable contract gets none, and one whose panel
+          │  is already installed keeps it until a refresh reads it
           ├─ each install in own try/except — partial failures isolated
           └─ retire rows left over from the fixed-variant design
 
@@ -1900,7 +1901,12 @@ Also involved, shared with other features:
   — reads `message.images` off a chat response.
 - [`streaming/streaming_core.py`](../open_webui_openrouter_pipe/streaming/streaming_core.py)
   — materialises those images, persists them and renders the markdown, via
-  `_persist_generated_image`.
+  `_persist_generated_image`. A picture that arrives as an `http(s)` address is put to
+  the SSRF address gate before it is published, on the same terms as one the person
+  typed: a chat that cannot store the file, a download that failed, and a store that did
+  not succeed all leave the provider's own link in play, and a refused one — or one the
+  gate reaches no verdict on — is left out of the reply with an `Images: skipped N (...)`
+  status. A public link the pipe merely failed to download is still published.
 - [`storage/owui_files.py`](../open_webui_openrouter_pipe/storage/owui_files.py)
   — `OwuiFileGateway.upload_to_owui_storage`, the single write into OWUI
   file storage used by both branches.

@@ -30,6 +30,7 @@ import time
 from functools import lru_cache
 from typing import Any
 
+from ...core.config import _application_secret
 from ...storage.owui_files import is_temporary_chat
 from ._collectors import (
     PROCESS_START,
@@ -153,7 +154,7 @@ def _worker_health(pipe: Any) -> dict[str, Any]:
 
 
 def _slice_chat_key(chat_id: str) -> str:
-    secret = os.getenv("WEBUI_SECRET_KEY")
+    secret = _application_secret()
     if not secret:
         return ""
     digest = hmac.new(secret.encode("utf-8"), b"pipe-dashboard live chat\x00" + chat_id.encode("utf-8"), hashlib.sha256)

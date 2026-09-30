@@ -1059,8 +1059,8 @@ class TestImageHandling:
             mock_family.supports.return_value = True
 
             # Mock the image processing to return simple results
-            async def mock_inline(*args, **kwargs):
-                return InlinedFile(data_url="data:image/png;base64,test", filename="test.png")
+            async def mock_inline(file_id, *args, **kwargs):
+                return InlinedFile(data_url=f"data:image/png;base64,{file_id}", filename=f"{file_id}.png")
 
             pipe_instance._file_gateway.inline_owui_file_id = mock_inline
 
@@ -1077,7 +1077,17 @@ class TestImageHandling:
 
             # Should have text + 2 images (limit is 2)
             image_blocks = [b for b in result[0]["content"] if b.get("type") == "input_image"]
-            assert len(image_blocks) <= 2
+            sent_urls = [b["image_url"].rsplit("base64,", 1)[-1] for b in image_blocks]
+            assert len(image_blocks) == 2, (
+                f"the cap of 2 was not enforced on the wire: {sent_urls}"
+            )
+            assert sent_urls == ["img1", "img2"], (
+                f"the first two pictures in attachment order are the ones that must travel: "
+                f"{sent_urls}"
+            )
+            assert [b["type"] for b in result[0]["content"]] == [
+                "input_text", "input_image", "input_image",
+            ], f"the text block did not survive beside the capped images: {result[0]['content']!r}"
 
     @pytest.mark.asyncio
     async def test_images_only_from_latest_user_message(self, pipe_instance):
@@ -1085,19 +1095,20 @@ class TestImageHandling:
         with patch("open_webui_openrouter_pipe.requests.transformer.ModelFamily") as mock_family:
             mock_family.supports.return_value = True
 
-            async def mock_inline(*args, **kwargs):
-                return InlinedFile(data_url="data:image/png;base64,test", filename="test.png")
+            async def mock_inline(file_id, *args, **kwargs):
+                return InlinedFile(data_url=f"data:image/png;base64,{file_id}", filename=f"{file_id}.png")
 
             pipe_instance._file_gateway.inline_owui_file_id = mock_inline
 
             messages = [
                 {"role": "user", "content": [
                     {"type": "text", "text": "First message with image"},
-                    {"type": "image_url", "image_url": {"url": "/api/v1/files/old_img/content"}}
+                    {"type": "image_url", "image_url": {"url": "/api/v1/files/old-img/content"}}
                 ]},
                 {"role": "assistant", "content": "I see the image."},
                 {"role": "user", "content": [
-                    {"type": "text", "text": "Second message, no image"}
+                    {"type": "text", "text": "Second message, with an image"},
+                    {"type": "image_url", "image_url": {"url": "/api/v1/files/new-img/content"}}
                 ]}
             ]
 
@@ -1108,6 +1119,19 @@ class TestImageHandling:
             assert first_user["role"] == "user"
             image_blocks = [b for b in first_user["content"] if b.get("type") == "input_image"]
             assert len(image_blocks) == 0
+
+            latest_user = result[-1]
+            assert latest_user["role"] == "user"
+            latest_image_blocks = [
+                b for b in latest_user["content"] if b.get("type") == "input_image"
+            ]
+            assert len(latest_image_blocks) == 1, (
+                f"the latest message's own picture did not travel alone: {latest_user['content']!r}"
+            )
+            assert latest_image_blocks[0]["image_url"].endswith("new-img"), (
+                f"the picture that travelled is not the one attached to the latest message: "
+                f"{latest_image_blocks[0]['image_url']!r}"
+            )
 
 
 # =============================================================================

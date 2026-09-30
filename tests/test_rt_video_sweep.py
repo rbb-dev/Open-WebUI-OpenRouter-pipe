@@ -122,11 +122,28 @@ def _choices(uv_cls, name):
     if "int" in s:
         vals = [v for v in {lo, hi} if v is not None and v != unset] or [7]
         return vals
-    if "JSON" in name:
-        return ['["https://example.com/a.mp4"]']
+    if "JSON" in f.title:
+        return [_a_json_document_for(name)]
     if name.endswith("_URL"):
         return ["https://example.com/a.bin"]
     return ["SENTINEL"]
+
+
+def _a_json_document_for(name: str) -> str:
+    """A document of the shape the control declares, not one shape for all of them.
+
+    The five controls whose title promises JSON are parsed before the request is sent --
+    `VIDEO_KEYFRAMES` as a list and the other four as objects -- so a sweep that fed every
+    one of them a list would be refused by the filter before the wire was ever reached.
+    The control is chosen by its declared kind, and the address inside is a public one so
+    the value still travels rather than being stopped at the address gate.
+    """
+    if name in ("VIDEO_BACKGROUND", "VIDEO_CAPTION", "VIDEO_VOICE_SETTINGS",
+                "VIDEO_CONTENT_MODERATION"):
+        return '{"image": "https://example.com/a.mp4"}'
+    if name == "VIDEO_KEYFRAMES":
+        return '["https://example.com/a.mp4"]'
+    return '["https://example.com/a.mp4"]'
 
 
 def _inlet_meta(F, UV, mid, cname, value) -> dict[str, Any]:
