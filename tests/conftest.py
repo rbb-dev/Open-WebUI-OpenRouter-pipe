@@ -612,6 +612,7 @@ def _reset_model_registry():
     reg._next_refresh_after = 0.0
     reg._consecutive_failures = 0
     reg._failure_counts = {}
+    reg._last_errors = {}
     reg._last_error = None
     reg._last_error_time = 0.0
     ModelFamily.set_dynamic_specs(None)

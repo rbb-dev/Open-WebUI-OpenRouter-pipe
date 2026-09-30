@@ -75,6 +75,7 @@ from ..integrations.provider_options import (
 )
 from ..media.image_conversion import normalise_mime
 from ..models.registry import ModelFamily, OpenRouterModelRegistry
+from ..storage.multimodal import Confidence, _sniff_evidence
 from ..storage.owui_files import (
     get_file_by_id,
     index_referenced_file_payloads,
@@ -821,7 +822,14 @@ class RequestOrchestrator:
                 if len(prefix) >= 2 and prefix[0] == 0xFF and (prefix[1] & 0xE0) == 0xE0:
                     return "mp3"
                 if len(prefix) >= 12 and prefix[4:8] == b"ftyp":
-                    return "m4a"
+                    found = _sniff_evidence(prefix)
+                    if (
+                        found is not None
+                        and found.confidence is Confidence.IDENTIFIED
+                        and found.mime == "audio/mp4"
+                    ):
+                        return "m4a"
+                    return ""
                 if prefix.startswith(b"fLaC"):
                     return "flac"
                 if prefix.startswith(b"OggS"):
@@ -1697,6 +1705,8 @@ class RequestOrchestrator:
                     await self._pipe._event_emitter_handler._emit_unstreamed_answer(
                         __event_emitter__, content=help_content,
                     )
+                if outcome_sink is not None:
+                    outcome_sink["error_occurred"] = False
                 return help_content
 
             if valves.ENABLE_OPENROUTER_IMAGE_GENERATION and uses_dedicated_image_api(video_spec):

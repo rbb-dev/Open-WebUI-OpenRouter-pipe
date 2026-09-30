@@ -53,7 +53,7 @@ def _member_failure_reason(exc: Exception) -> str:
 
 
 def _member_refused_before_send() -> str:
-    return "the model declined to answer"
+    return "the pipe refused this member before sending its request, and did not say why"
 
 
 _LOG_DRAIN_TIMEOUT_SECONDS = 1.0
@@ -824,6 +824,12 @@ async def run_internal_fusion(
                     "The final synthesis step failed, but the panel answers above are "
                     "complete and usable."
                 )
+                if not opened:
+                    yield {"type": "response.output_item.added", "output_index": 1,
+                           "item": {"type": "message"}}
+                    opened = True
+                yield {"type": "response.output_text.delta", "output_index": 1,
+                       "delta": final_text}
             if not opened:
                 yield {"type": "response.output_item.added", "output_index": 1,
                        "item": {"type": "message"}}

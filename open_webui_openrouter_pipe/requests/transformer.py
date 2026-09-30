@@ -390,7 +390,13 @@ class ImageRefusal(NamedTuple):
     subject: str = ""
 
 
-def _resolve_inline_type(head: str, body: str) -> tuple[str, ImageRefusal | None]:
+def _resolve_inline_type(
+    head: str,
+    body: str,
+    *,
+    cause: str = "reuse_untyped",
+    subject: str = "",
+) -> tuple[str, ImageRefusal | None]:
     declared = head[len("data:"):].split(";", 1)[0].strip().lower()
     try:
         sniffed = base64.b64decode(
@@ -400,7 +406,7 @@ def _resolve_inline_type(head: str, body: str) -> tuple[str, ImageRefusal | None
         sniffed = b""
     resolved = resolve_download_type(declared, _sniff_evidence(sniffed))
     if not resolved.startswith("image/"):
-        return head, ImageRefusal("not identifiable as an image", "reuse_untyped")
+        return head, ImageRefusal("not identifiable as an image", cause, subject=subject)
     if resolved != declared:
         return f"data:{resolved};base64,{body}", None
     return f"{head},{body}", None
@@ -1258,7 +1264,6 @@ async def transform_messages_to_input(
         return remote_limit[0]
 
     address_verdicts: dict[str, bool | None] = {}
-    address_deadline = time.monotonic() + ADDRESS_CHECK_BUDGET_SECONDS
     reuse_limit_seen: list[int | None] = [None]
     tool_name_at, issuer_at = _tool_names_by_position(messages)
 
@@ -1318,6 +1323,7 @@ async def transform_messages_to_input(
             for group_id, loaded in await asyncio.gather(*pending):
                 artifact_groups[group_id] = loaded
 
+    address_deadline = time.monotonic() + ADDRESS_CHECK_BUDGET_SECONDS
     normalized_rows: dict[int, Any] = {}
 
     def _normalized_row(row: Any) -> Any:
@@ -1754,9 +1760,8 @@ async def transform_messages_to_input(
                         url = inlined.data_url
 
                     if mode == "reuse":
-                        split = split_base64_data_url(url)
-                        head, body = split if split is not None else ("", "")
-                        if not body:
+                        reuse_split = split_base64_data_url(url)
+                        if not (reuse_split[1] if reuse_split is not None else ""):
                             if is_http_or_https_url(url):
                                 return _refuse(
                                     "could not be fetched, so it was not sent",
@@ -1768,7 +1773,15 @@ async def transform_messages_to_input(
                                 "reuse_unfetched",
                                 subject=_image_subject(url),
                             )
-                        url, refusal = _resolve_inline_type(head, body)
+
+                    split = split_base64_data_url(url)
+                    if split is not None and split[1]:
+                        url, refusal = _resolve_inline_type(
+                            split[0],
+                            split[1],
+                            cause="reuse_untyped" if mode == "reuse" else "inline_untyped",
+                            subject=loggable_link(url),
+                        )
                         if refusal is not None:
                             return refusal
 

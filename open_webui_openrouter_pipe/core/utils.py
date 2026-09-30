@@ -37,7 +37,7 @@ from .config import (
     DEFAULT_OPENROUTER_ERROR_TEMPLATE,
     ULID_LENGTH,
 )
-from .url_scheme import loggable_link, split_base64_data_url
+from .url_scheme import loggable_link, media_type_or_empty, split_base64_data_url
 from .warn_latch import shared_latch, warn_level
 
 logger = logging.getLogger(__name__)
@@ -258,12 +258,25 @@ _DATA_URL_NAME_PARAM = re.compile(r";name=[^;,]*", re.IGNORECASE)
 
 
 def _data_url_log_subject(text: str) -> str:
-    def _replace(match: re.Match[str]) -> str:
-        url = match.group(0)
-        media = url.partition(",")[0][len("data:") :].split(";", 1)[0][:64]
-        return f"data:{media} [redacted]"
-
-    return _DATA_URL_LOG_SCAN.sub(_replace, text)
+    out: list[str] = []
+    last = 0
+    for match in _DATA_URL_LOG_SCAN.finditer(text):
+        if match.start() < last:
+            continue
+        token = match.group(0)
+        comma = token.find(",")
+        head = token[:comma] if comma >= 0 else token
+        if comma >= 0 and ";base64" not in head.lower():
+            newline = text.find("\n", match.end())
+            end = len(text) if newline < 0 else newline
+        else:
+            end = match.end()
+        candidate = head.split()[0] if head.split() else head
+        out.append(text[last : match.start()])
+        out.append(f"data:{media_type_or_empty(candidate[len('data:') :])} [redacted]")
+        last = end
+    out.append(text[last:])
+    return "".join(out)
 
 
 def picture_output(text: str, pictures: list[str]) -> list[dict[str, Any]]:
@@ -541,6 +554,7 @@ def _render_error_template(template: str, values: dict[str, Any]) -> str:
     rendered_lines: list[str] = []
     condition_stack: list[bool] = []
     fence_marker = ""
+    emit_marker = ""
     fence_open = False
     fence_carried_content = False
     pending_opener = -1
@@ -659,6 +673,7 @@ def _render_error_template(template: str, values: dict[str, Any]) -> str:
         ):
             continue
         opened_on_this_line = fence_open
+        closed_here = False
         stripped = line.strip()
         if not opened_on_this_line and _wrapped_fence_key(line):
             rendered_lines.extend(_wrapped_fence_block(line))
@@ -671,17 +686,27 @@ def _render_error_template(template: str, values: dict[str, Any]) -> str:
                     rendered_lines.append(line)
                     continue
                 fence_marker = leading.group(0)
+                emit_marker = fence_marker
                 fence_open = True
                 fence_carried_content = False
                 pending_opener = len(rendered_lines)
-        elif stripped and set(stripped) == set(fence_marker):
+        elif stripped and set(stripped) == set(emit_marker) and len(stripped) >= len(emit_marker):
             fence_open = False
+            closed_here = True
             if not fence_carried_content:
                 del rendered_lines[pending_opener:]
+                emit_marker = ""
                 continue
         elif stripped:
             fence_carried_content = True
         line = _TEMPLATE_PLACEHOLDER_RE.sub(_replace, line)
+        if opened_on_this_line and not closed_here:
+            widened = _body_fence(emit_marker, line)
+            if len(widened) > len(emit_marker):
+                emit_marker = widened
+                rendered_lines[pending_opener] = widened + rendered_lines[pending_opener][
+                    len(fence_marker) :
+                ]
         rendered_lines.append(line)
     return "\n".join(rendered_lines).strip()
 

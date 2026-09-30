@@ -664,6 +664,8 @@ class VideoGenerationAdapter:
                 admin_valves=valves,
             )
             await self._emit_completion(event_emitter, content)
+            if outcome_sink is not None:
+                outcome_sink["error_occurred"] = False
             return content
 
         chat_id = _clean_str(metadata.get("chat_id"))

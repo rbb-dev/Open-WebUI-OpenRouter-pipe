@@ -1101,6 +1101,17 @@ class TestAudioFormatSniffing:
         assert len(audio) == 1, f"expected exactly one input_audio block, got {blocks}"
         return audio[0]["input_audio"]["format"]
 
+    @staticmethod
+    def _isobmff(brand: bytes) -> bytes:
+        """A 96-byte ISO base-media prefix whose only brand is the given major brand.
+
+        The box size is 0, which ISO-BMFF defines as "runs to the end of the file", so the
+        compatible-brand scan the storage sniffer runs for an unknown major brand has the
+        whole prefix to look at -- and finds only the zero padding. The label therefore
+        comes from the major brand alone, which is what these rows are about.
+        """
+        return b"\x00\x00\x00\x00ftyp" + brand + b"\x00" * 84
+
     async def _native_audio_result(self, orchestrator, pipe, mock_valves, mock_session,
                                    monkeypatch, *, payload, allowlist, operator_allowlist=None):
         direct_uploads = {

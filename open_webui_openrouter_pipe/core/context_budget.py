@@ -17,6 +17,7 @@ from .url_scheme import url_scheme
 from .utils import (
     TOOL_CALL_STATUSES,
     _coerce_positive_int,
+    clamp_text,
     is_picture_output,
     tool_output_text_and_pictures,
 )
@@ -692,7 +693,7 @@ def _apply_tool_output_budget(
                 omitted_call_ids.add(call_id)
             logger.warning(
                 "Omitted oversized tool result (call_id=%s): %d chars (remaining_budget=%d chars)",
-                call_id,
+                clamp_text(call_id, 120),
                 result_chars,
                 remaining_chars,
             )

@@ -456,9 +456,8 @@ def _apply_single_id_filter_ids(
     if hands_off:
         return False
     blank_id_release = bool(
-        blank_is_a_decision
-        and not filter_function_id
-        and (not supported or family_off or not auto_attach)
+        not filter_function_id
+        and (family_off or (blank_is_a_decision and (not supported or not auto_attach)))
     )
     blank_id_is_transient = not filter_function_id and not blank_id_release
     if blank_id_is_transient:
@@ -1799,6 +1798,9 @@ class ModelCatalogManager:
             web_valves = self._pipe.valves
             web_tools_filter_function_id: str | None = None
             web_tools_panel_withheld = every_web_tool_is_off(web_valves)
+            web_tools_family_off = not (
+                web_valves.AUTO_ATTACH_WEB_TOOLS_FILTER or web_valves.AUTO_INSTALL_WEB_TOOLS_FILTER
+            )
             if (
                 web_valves.AUTO_ATTACH_WEB_TOOLS_FILTER or web_valves.AUTO_INSTALL_WEB_TOOLS_FILTER
             ) and not web_tools_panel_withheld:
@@ -1816,6 +1818,7 @@ class ModelCatalogManager:
                         "OpenRouter Web Tools filter ensure failed: %s", exc, exc_info=True
                     )
                     web_tools_filter_function_id = None
+                    web_tools_family_off = False
 
             image_gen_filter_function_id: str | None = None
             image_gen_family_off = not (
@@ -2219,9 +2222,7 @@ class ModelCatalogManager:
                     or pipe_capabilities.get("audio_input")
                     or pipe_capabilities.get("video_input")
                 )
-                auto_attach_direct_uploads = bool(
-                    direct_uploads_filter_function_id and valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER
-                )
+                auto_attach_direct_uploads = bool(valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER)
                 video_gen_filter_function_id = ""
                 if pipe_capabilities.get("video_generation"):
                     video_gen_filter_function_id = (
@@ -2298,6 +2299,7 @@ class ModelCatalogManager:
                             ),
                             auto_default_filter=valves.AUTO_DEFAULT_WEB_TOOLS_FILTER,
                             web_tools_panel_withheld=web_tools_panel_withheld,
+                            web_tools_family_off=web_tools_family_off,
                             direct_uploads_filter_function_id=direct_uploads_filter_function_id,
                             direct_uploads_filter_supported=native_supported,
                             auto_attach_direct_uploads_filter=auto_attach_direct_uploads,
@@ -2482,6 +2484,7 @@ class ModelCatalogManager:
         auto_attach_filter: bool = False,
         auto_default_filter: bool = False,
         web_tools_panel_withheld: bool = False,
+        web_tools_family_off: bool = False,
         direct_uploads_filter_function_id: str | None = None,
         direct_uploads_filter_supported: bool = False,
         auto_attach_direct_uploads_filter: bool = False,
@@ -2667,6 +2670,7 @@ class ModelCatalogManager:
                 auto_attach=auto_attach_filter,
                 record_key="web_tools_attached_id",
                 hands_off="web_tools_attached_id" in hands_off,
+                family_off=web_tools_family_off,
             )
 
         def _apply_direct_uploads_filter_ids(meta_dict: dict) -> bool:

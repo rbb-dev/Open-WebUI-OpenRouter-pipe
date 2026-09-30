@@ -25,7 +25,7 @@ _XHIGH_EFFORT = "xhigh"
 _MAX_VERBOSITY = "max"
 _EFFORT_REASONING_OFF = frozenset({"none", ""})
 _NO_EFFORT = "none"
-_GEMINI_ANSWER_RESERVE_TOKENS = 64
+_ANSWER_RESERVE_TOKENS = 64
 
 
 def _normalised_effort(cfg: dict[str, Any]) -> str:
@@ -66,6 +66,24 @@ class ReasoningConfigManager:
             return True
         effort = cfg.get("effort")
         return isinstance(effort, str) and _normalised_effort(cfg) == _NO_EFFORT
+
+    @classmethod
+    def _reserve_the_answer_room(
+        cls, responses_body: ResponsesBody, cfg: dict[str, Any]
+    ) -> None:
+        cap = responses_body.max_output_tokens
+        if not isinstance(cap, int) or isinstance(cap, bool) or cap < 1:
+            return
+        if cls._request_asks_for_no_reasoning(cfg):
+            return
+        budget = cfg.get("max_tokens")
+        if not isinstance(budget, int) or isinstance(budget, bool) or budget < 1:
+            return
+        fitted = min(budget, cap - _ANSWER_RESERVE_TOKENS)
+        if fitted < 1:
+            cfg.pop("max_tokens", None)
+            return
+        cfg["max_tokens"] = fitted
 
     @classmethod
     def _refuse_off_on_mandatory_model(
@@ -118,6 +136,7 @@ class ReasoningConfigManager:
             cfg, refused = self._refuse_off_on_mandatory_model(
                 responses_body.model, cfg, off_from_settings=target_effort == _NO_EFFORT
             )
+            self._reserve_the_answer_room(responses_body, cfg)
             responses_body.reasoning = cfg or None
             self._set_include_reasoning(responses_body, None)
         elif supports_legacy_only:
@@ -150,6 +169,7 @@ class ReasoningConfigManager:
             cfg, refused = self._refuse_off_on_mandatory_model(
                 responses_body.model, cfg, off_from_settings=target_effort == _NO_EFFORT
             )
+            self._reserve_the_answer_room(responses_body, cfg)
             responses_body.reasoning = cfg
             self._set_include_reasoning(responses_body, None)
         elif supports_legacy_only:
@@ -215,7 +235,7 @@ class ReasoningConfigManager:
             cfg.setdefault("enabled", True)
         cap = responses_body.max_output_tokens
         if isinstance(cap, int) and not isinstance(cap, bool) and cap >= 1 and budget:
-            budget = min(budget, cap - _GEMINI_ANSWER_RESERVE_TOKENS)
+            budget = min(budget, cap - _ANSWER_RESERVE_TOKENS)
             if budget < 1:
                 responses_body.reasoning = None
                 self._set_include_reasoning(responses_body, None)

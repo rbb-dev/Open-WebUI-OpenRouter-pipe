@@ -43,9 +43,22 @@ async def test_supported_image_formats_are_inlined(
     mime_type,
     monkeypatch,
 ):
-    """All documented OpenRouter image formats survive the transform pipeline as they came, never stored."""
+    """All documented OpenRouter image formats survive the transform pipeline as they came, never stored.
 
-    data_url = f"data:{mime_type};base64,{sample_image_base64}"
+    Each row's payload now carries the signature of the format it declares. The pipe
+    types a `data:` URL from its own bytes, so a PNG declared as JPEG, WEBP or GIF is
+    re-spelled to `image/png` -- correctly, and the point of B454 -- but it would leave
+    this table asserting the same answer three times and covering none of the three
+    formats it names.
+    """
+
+    bodies = {
+        "image/png": base64.b64decode(sample_image_base64),
+        "image/jpeg": b"\xff\xd8\xff\xe0" + b"\x00" * 32,
+        "image/webp": b"RIFF" + b"\x1a\x00\x00\x00" + b"WEBP" + b"\x00" * 32,
+        "image/gif": b"GIF89a" + b"\x00" * 32,
+    }
+    data_url = f"data:{mime_type};base64,{base64.b64encode(bodies[mime_type]).decode('ascii')}"
     ext = mime_type.split("/")[-1]
     if ext == "jpeg":
         ext = "jpg"

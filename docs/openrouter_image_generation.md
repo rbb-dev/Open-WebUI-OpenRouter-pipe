@@ -101,6 +101,11 @@ it on each image model — the answers are different for every one. A
 routing variant of an image model (`:free`, `:nitro`, `@preset/…`, …) shows
 the same curated card as the model it is built from.
 
+On a Fusion panel turn whose text is exactly `help`, an image-model member
+**answers**: that card is its draft, carried into the panel item, the judge
+prompt and the synthesis material like any other. It is not a failed
+member.
+
 ### For administrators
 
 Out-of-the-box defaults are sensible for most deployments:

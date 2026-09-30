@@ -410,6 +410,7 @@ class OpenRouterModelRegistry:
     _next_refresh_after: float = 0.0
     _consecutive_failures: int = 0
     _failure_counts: ClassVar[dict[str, int]] = {}
+    _last_errors: ClassVar[dict[str, str]] = {}
     _last_error: str | None = None
     _last_error_time: float = 0.0
     _name_map: ClassVar[dict[str, str] | None] = None
@@ -549,7 +550,10 @@ class OpenRouterModelRegistry:
             if cls._specs:
                 cls._adopt_roster_for(api_key)
                 return
-            raise RuntimeError(cls._last_error or "OpenRouter model catalog unavailable")
+            raise RuntimeError(
+                cls._last_errors.get(_fingerprint(api_key))
+                or "OpenRouter model catalog unavailable"
+            )
 
         async with cls._catalog_lock():
             now = time.time()
@@ -557,7 +561,10 @@ class OpenRouterModelRegistry:
                 if cls._specs:
                     cls._adopt_roster_for(api_key)
                     return
-                raise RuntimeError(cls._last_error or "OpenRouter model catalog unavailable")
+                raise RuntimeError(
+                    cls._last_errors.get(_fingerprint(api_key))
+                    or "OpenRouter model catalog unavailable"
+                )
             rotating = cls._key_changed(api_key)
             prior_attempt = cls._zdr_attempted_key
             cls._zdr_attempted_key = _fingerprint(api_key)
@@ -778,6 +785,7 @@ class OpenRouterModelRegistry:
         cls._consecutive_failures = 0
         if api_key:
             cls._failure_counts.pop(_fingerprint(api_key), None)
+            cls._last_errors.pop(_fingerprint(api_key), None)
         cls._last_error = None
         cls._last_error_time = 0.0
 
@@ -790,6 +798,7 @@ class OpenRouterModelRegistry:
             key = _fingerprint(api_key)
             cls._failure_counts[key] = cls._failure_counts.get(key, 0) + 1
             failures = cls._failure_counts[key]
+            cls._last_errors[key] = str(exc)
         else:
             failures = cls._consecutive_failures + 1
         cls._consecutive_failures = failures

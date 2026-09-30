@@ -1925,8 +1925,8 @@ inline text.
 The video file itself is stored in Open WebUI's file storage backend
 (local, S3, GCS, or Azure depending on `STORAGE_PROVIDER`), inserted
 into the `files` table, and linked to the chat message via
-`Chats.insert_chat_files`. The file appears in the chat's Files panel
-and can be downloaded directly.
+`Chats.insert_chat_files`. When the turn carried a message id, the file
+appears in the chat's Files panel and can be downloaded directly.
 
 Which link is made depends on the conversation, and the pipe writes the
 upload metadata the way Open WebUI's own middleware reads it
@@ -1940,6 +1940,16 @@ chat are never both named:
   (`backend/open_webui/models/chats.py:2590-2607`, "Only link files the
   caller can read"), so a row naming an identity that cannot read the
   file is not written at all.
+- **A saved chat on a turn with no message id** — there is no link,
+  and none is attempted. `chat_file` has to name the message the file
+  belongs to, and Open WebUI's own read path gates on both ids
+  (`backend/open_webui/routers/images.py:544`); a row written under an
+  empty message id would attach the file to no message while still
+  granting it to every holder of the chat's share link, because
+  `get_shared_chat_ids_by_file_id` joins on `(chat_id, file_id)` and
+  never reads `message_id`. The file is still stored and still openable
+  by the account it was uploaded as, its link is still in the reply, and
+  one `DEBUG` line records that it was not linked.
 - **A channel conversation** (`chat_id = "channel:<id>"`) — the link is
   the channel's own `channel_file` row, and that row is the only thing
   that makes a generated file readable by a second member

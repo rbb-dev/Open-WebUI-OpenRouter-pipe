@@ -1344,11 +1344,9 @@ class OwuiFileGateway:
         if not normalized_user_id:
             return False
 
-        normalized_message_id: str | None = None
-        if isinstance(message_id, str):
-            candidate = message_id.strip()
-            if candidate:
-                normalized_message_id = candidate
+        if not isinstance(message_id, str) or not message_id.strip():
+            return False
+        normalized_message_id = message_id.strip()
 
         try:
             from open_webui.models.chats import Chats  # type: ignore[import-not-found]
@@ -1364,12 +1362,12 @@ class OwuiFileGateway:
             return await _linked_ok(
                 await Chats.insert_chat_files(
                     chat_id=normalized_chat_id,
-                    message_id=normalized_message_id or "",
+                    message_id=normalized_message_id,
                     file_ids=[target],
                     user_id=normalized_user_id,
                 ),
                 normalized_chat_id,
-                normalized_message_id or "",
+                normalized_message_id,
                 target,
             )
         except TypeError:
@@ -1377,12 +1375,12 @@ class OwuiFileGateway:
                 return await _linked_ok(
                     await Chats.insert_chat_files(
                         normalized_chat_id,
-                        normalized_message_id or "",
+                        normalized_message_id,
                         [target],
                         normalized_user_id,
                     ),
                     normalized_chat_id,
-                    normalized_message_id or "",
+                    normalized_message_id,
                     target,
                 )
             except Exception:

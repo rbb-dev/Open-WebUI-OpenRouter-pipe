@@ -1273,38 +1273,6 @@ class TestTryLinkFileToChat:
             chats_mod.Chats = original_chats
 
     @pytest.mark.asyncio
-    async def test_handles_none_message_id(self, pipe_instance_async):
-        """Should handle None message_id gracefully."""
-        chats_mod = sys.modules.get("open_webui.models.chats")
-        original_chats = chats_mod.Chats
-
-        class MockChats:
-            calls = []
-
-            @staticmethod
-            async def insert_chat_files(*, chat_id, message_id, file_ids, user_id):
-                MockChats.calls.append({
-                    "chat_id": chat_id,
-                    "message_id": message_id,
-                    "file_ids": file_ids,
-                    "user_id": user_id,
-                })
-                return True
-
-        try:
-            chats_mod.Chats = MockChats
-            result = await pipe_instance_async._file_gateway.try_link_file_to_chat(
-                chat_id="chat-123",
-                message_id=None,
-                file_id="file-789",
-                user_id="user-abc",
-            )
-            assert result is True
-            assert MockChats.calls[0]["message_id"] == ""
-        finally:
-            chats_mod.Chats = original_chats
-
-    @pytest.mark.asyncio
     async def test_handles_positional_args_exception(self, pipe_instance_async):
         """Should return False when both keyword and positional args fail."""
         chats_mod = sys.modules.get("open_webui.models.chats")
@@ -1330,6 +1298,7 @@ class TestTryLinkFileToChat:
             chats_mod.Chats = original_chats
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("message_id", ["msg-1", None], ids=["with-a-message", "with-no-message"])
     @pytest.mark.parametrize(
         ("chat_id", "linkable"),
         [
@@ -1340,7 +1309,7 @@ class TestTryLinkFileToChat:
         ],
     )
     async def test_ids_without_a_chat_row_never_reach_the_insert(
-        self, pipe_instance_async, monkeypatch, chat_id, linkable
+        self, pipe_instance_async, monkeypatch, chat_id, linkable, message_id
     ):
         """A channel invocation has no ``chat`` row, exactly like a Temporary Chat.
 
@@ -1354,6 +1323,10 @@ class TestTryLinkFileToChat:
 
         Asserts the call is never attempted rather than that it returned False, because
         returning False after a failed INSERT is the bug, not the fix.
+
+        A `message_id` of `None` is the other half of the same statement: an id with a
+        chat row and no message is refused before the INSERT too, which is why the
+        expected answer is the pair rather than the chat id alone.
         """
         import open_webui.models.chats as owui_chats
 
@@ -1361,15 +1334,16 @@ class TestTryLinkFileToChat:
         monkeypatch.setattr(owui_chats.Chats, "insert_chat_files", attempted, raising=False)
 
         await pipe_instance_async._file_gateway.try_link_file_to_chat(
-            chat_id=chat_id, message_id="msg-1", file_id="file-1", user_id="user-1"
+            chat_id=chat_id, message_id=message_id, file_id="file-1", user_id="user-1"
         )
 
-        assert attempted.called is linkable, (
-            f"chat_id {chat_id!r}: insert_chat_files was "
+        expected = linkable and message_id is not None
+        assert attempted.called is expected, (
+            f"chat_id {chat_id!r}, message_id {message_id!r}: insert_chat_files was "
             f"{'called' if attempted.called else 'not called'}, expected the opposite. "
-            "An id with no chat row must be rejected before the INSERT."
+            "An id with no chat row, and a message with no id, must both be rejected "
+            "before the INSERT."
         )
-
 
 class TestResolveStorageContext:
     """Tests for storage context resolution."""

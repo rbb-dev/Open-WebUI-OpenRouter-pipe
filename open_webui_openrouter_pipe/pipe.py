@@ -2657,6 +2657,12 @@ class Pipe:
                 drained,
             )
 
+    async def _stop_session_log_workers(self) -> None:
+        session_log_manager = getattr(self, "_session_log_manager", None)
+        if session_log_manager is None:
+            return
+        session_log_manager.stop_workers()
+
     @timed
     async def _stop_log_worker(self) -> None:
         """Stop this instance's log worker and clear the queue."""
@@ -2796,7 +2802,8 @@ class Pipe:
                     timeout=5.0,
                 )
         for drain in (self._stop_video_tasks, self._stop_request_worker,
-                      self._stop_active_jobs, self._stop_log_worker):
+                      self._stop_active_jobs, self._stop_log_worker,
+                      self._stop_session_log_workers):
             try:
                 await drain()
             except Exception:

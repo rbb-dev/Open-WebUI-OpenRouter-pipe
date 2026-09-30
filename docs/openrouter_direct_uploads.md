@@ -177,10 +177,10 @@ OpenRouter exposes multiple OpenAI-compatible endpoints. For direct uploads, the
 - **Direct video** → requires **`/chat/completions`** (current implementation). The `data:` head is grammar-checked before it is built: a declared type that is not a media type is refused and named on the `Direct Upload Issue` card, not sent with a malformed head.
 
 - **Direct audio**
-  - Eligible for **`/responses`** when the (sniffed) audio format is in `DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST` (default: `wav,mp3`)
+  - Eligible for **`/responses`** when the resolved audio format (sniffed from the bytes, else the declared one) is in `DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST` (default: `wav,mp3`)
   - Otherwise routes to **`/chat/completions`**
 
-The pipe does not trust upstream file metadata: it re-sniffs audio containers (for example `.m4a`) and then applies `DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST` for routing.
+The pipe does not trust upstream file metadata: it re-sniffs audio containers and then applies `DIRECT_RESPONSES_AUDIO_FORMAT_ALLOWLIST` for routing. The sniff is deliberately narrow where it claims a container of its own — an ISO base-media box is only labelled `m4a` when its major brand is one that names MPEG-4 audio (`M4A `, `F4A `, `M4B `). Any other brand, known or not, is left unlabelled, exactly like a header the pipe cannot read, and the declared format governs. Nothing is refused for that: the gate is unchanged, and a resolved format outside the nine the pipe sends natively is still refused (unless the operator has listed it in `DIRECT_AUDIO_FORMAT_ALLOWLIST`) and named on the `Direct Upload Issue` card.
 
 ### Conflict behavior (no silent degradation)
 

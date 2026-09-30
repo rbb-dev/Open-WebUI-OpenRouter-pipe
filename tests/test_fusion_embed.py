@@ -1,4 +1,7 @@
 import json
+import re
+
+import pytest
 
 from open_webui_openrouter_pipe.streaming.fusion_embed import (
     FusionDeliberationState,
@@ -614,3 +617,8 @@ def test_fusion_credentials_are_read_at_handshake():
     join = re.search(r'user-join",\s*\{\s*auth:\s*\{\s*token:\s*([^}]+?)\s*\}', html)
     assert join is not None, "user-join payload not found"
     assert join.group(1).strip().startswith("freshToken()"), "the captured token wins the fallback"
+
+
+def _names(html: str):
+    marker = "var NAMES = "
+    return json.JSONDecoder().raw_decode(html, html.index(marker) + len(marker))[0]

@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 import json
+import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -1397,6 +1399,17 @@ body{
 '''
 # === END GENERATED TEMPLATE ===
 
+_MARKER_RE = re.compile(
+    r"/\*__FUSION_EVENTS_JSON__\*/\[\]"
+    r"|/\*__FUSION_NAMES_JSON__\*/\{\}"
+    r"|/\*__FUSION_FINAL__\*/false"
+)
+_MARKER_VALUES: dict[str, Callable[[str, str, bool], str]] = {
+    "/*__FUSION_EVENTS_JSON__*/[]": lambda payload, _names, _final: payload,
+    "/*__FUSION_NAMES_JSON__*/{}": lambda _payload, names, _final: names,
+    "/*__FUSION_FINAL__*/false": lambda _payload, _names, final: "true" if final else "false",
+}
+
 
 _PANEL_DELTA_TYPES = (
     "response.fusion_call.panel.delta",
@@ -1642,6 +1655,7 @@ def build_fusion_embed_html(
         .replace(">", "\\u003e")
         .replace("&", "\\u0026")
     )
-    html = _FUSION_TEMPLATE_HTML.replace("/*__FUSION_EVENTS_JSON__*/[]", payload, 1)
-    html = html.replace("/*__FUSION_NAMES_JSON__*/{}", names_payload, 1)
-    return html.replace("/*__FUSION_FINAL__*/false", "true" if final else "false", 1)
+    return _MARKER_RE.sub(
+        lambda m: _MARKER_VALUES[m.group(0)](payload, names_payload, final),
+        _FUSION_TEMPLATE_HTML,
+    )

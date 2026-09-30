@@ -22,8 +22,8 @@ from open_webui_openrouter_pipe.storage.owui_files import InlinedFile
 
 
 def _m4a_like_base64() -> str:
-    """Create base64 data that sniffs as m4a format (ftyp signature at bytes[4:8])."""
-    payload = b"\x00\x00\x00\x18ftypisom\x00\x00\x00\x00"
+    """Create base64 data that sniffs as m4a (the `M4A ` major brand at bytes[8:12])."""
+    payload = b"\x00\x00\x00\x18ftypM4A \x00\x00\x00\x00"
     return base64.b64encode(payload).decode("ascii")
 
 
