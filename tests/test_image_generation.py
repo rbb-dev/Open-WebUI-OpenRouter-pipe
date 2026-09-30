@@ -900,12 +900,34 @@ async def test_image_catalog_network_failure_records_attempt_no_models():
 
 @pytest.mark.asyncio
 async def test_image_catalog_empty_response_records_attempt_warns():
-    """Empty fetch response: attempt bumped, fetch clock NOT bumped, warning logged."""
+    """Empty fetch response: attempt bumped, fetch clock NOT bumped, kept set reported.
+
+    The line is a `logger.log(level, ...)` through the `warn_level` latch, not a
+    `logger.warning`, so it repeats at DEBUG rather than once per model-list build for
+    as long as the fault lasts. The registry is seeded with one image model first, so the
+    line has a kept count to name: an empty answer no longer retires anything, and a line
+    that said it had would be the defect this file's sibling guards against.
+    """
     from open_webui_openrouter_pipe.integrations import image_catalog
 
     OpenRouterModelRegistry._specs = {}
     OpenRouterModelRegistry._id_map = {}
     OpenRouterModelRegistry._models = []
+    OpenRouterModelRegistry.register_image_models(
+        [
+            {
+                "id": "vendor/still",
+                "name": "Still",
+                "architecture": {
+                    "input_modalities": ["text"],
+                    "output_modalities": ["image"],
+                },
+                "pricing": {},
+            }
+        ]
+    )
+    kept = len(OpenRouterModelRegistry._image_catalog_norms)
+    assert kept == 1, f"the seed published {kept} image models, expected 1"
     OpenRouterModelRegistry._last_image_attempt = 0.0
     OpenRouterModelRegistry._last_image_fetch = 0.0
 
@@ -937,9 +959,20 @@ async def test_image_catalog_empty_response_records_attempt_warns():
 
     assert OpenRouterModelRegistry._last_image_attempt > 0.0
     assert OpenRouterModelRegistry._last_image_fetch == 0.0
-    assert logger.warning.called
-    warn_message = logger.warning.call_args[0][0]
+    assert logger.log.called
+    level, format_string = logger.log.call_args[0][0], logger.log.call_args[0][1]
+    assert level == logging.WARNING, (
+        f"the first empty answer was reported at level {level}, not WARNING; the latch is "
+        "meant to quiet repeats, not the first occurrence"
+    )
+    warn_message = format_string % logger.log.call_args[0][2:]
     assert "returned 0 models" in warn_message
+    assert "retired" not in warn_message, (
+        f"nothing was retired, and the line says so: {warn_message!r}"
+    )
+    assert str(kept) in warn_message, (
+        f"the line does not name the {kept} model(s) it kept: {warn_message!r}"
+    )
 
 
 # =============================================================================

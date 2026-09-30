@@ -141,6 +141,7 @@ class UsageStore:
         self._queue: queue.Queue[dict[str, Any] | None] = queue.Queue(maxsize=queue_max)
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        self._stopped = False
         self._dropped = 0
         self._persist_failed = 0
         self._warned: dict[str, float] = {}
@@ -454,7 +455,8 @@ class UsageStore:
         thread = self._thread
         if thread is not None and thread.is_alive():
             return
-        self._stop_event.clear()
+        if not self._stopped:
+            self._stop_event.clear()
         self._thread = threading.Thread(
             target=self._writer_loop,
             name="openrouter-usage-writer",
@@ -575,6 +577,8 @@ class UsageStore:
         self, retention_days_fn: Callable[[], int | Awaitable[int]]
     ) -> None:
         """Start the jittered retention purge loop on the running loop."""
+        if self._stopped:
+            return
         self._retention_days_fn = retention_days_fn
         task = self._purge_task
         if task is not None and not task.done():
@@ -767,6 +771,7 @@ class UsageStore:
         the event loop for that. Returns the cancelled purge task (awaitable)
         or ``None``.
         """
+        self._stopped = True
         self._stop_event.set()
         try:
             self._queue.put_nowait(None)

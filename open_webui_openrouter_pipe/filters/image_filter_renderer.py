@@ -466,6 +466,10 @@ _SIZE_OPENING = (
     "Either a size tier (512, 1K, 2K or 4K) or exact pixels written like 1024x1024."
 )
 
+_SIZE_PUBLISHED_BOUND = (
+    "A whole number this model publishes for output size, and the only form it takes."
+)
+
 _SIZE_TIER_CHECKED = (
     "This model publishes its own limit on output size, so a tier is checked against "
     "that. It still takes its shape from Aspect ratio."
@@ -574,6 +578,8 @@ def image_knob_text(name: str, spec: ImageModelFilterSpec) -> tuple[str, str]:
         for published, values in spec.enums
     ):
         return title, _SIZE_PUBLISHED_LIST
+    if any(published == name for published, _low, _high in spec.ranges):
+        return title, _SIZE_PUBLISHED_BOUND
     ratio = renders_control(spec, "aspect_ratio")
     tier = _SIZE_MEANING[(tier_state(spec), ratio)][0]
     pixels = _SIZE_MEANING[(drawn_tier_state(spec), ratio)][1]
@@ -1147,6 +1153,9 @@ def build_image_gen_tool_spec(spec: ImageModelFilterSpec) -> ImageModelFilterSpe
         if name == "size":
             if sized is not None:
                 enums.append(sized)
+            elif name in published_ranges:
+                low, high = published_ranges[name]
+                ranges.append((name, low, high))
             else:
                 schema_only.append("size")
             continue

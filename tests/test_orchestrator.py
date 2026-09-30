@@ -1785,23 +1785,31 @@ class TestFusionLiveGate:
     async def test_arms_for_every_fusion_id_form(self, orchestrator_and_pipe):
         orchestrator, _pipe = orchestrator_and_pipe
         for model in self._FUSION_FORMS:
-            assert orchestrator._resolve_fusion_live_enabled(_gate_valves(), is_fusion_model(model), False) is True
+            assert orchestrator._resolve_fusion_live_enabled(
+                _gate_valves(), is_fusion_model(model), False, None
+            ) is True
 
     @pytest.mark.asyncio
     async def test_never_arms_for_non_fusion_models(self, orchestrator_and_pipe):
         orchestrator, _pipe = orchestrator_and_pipe
         for model in self._NON_FUSION:
-            assert orchestrator._resolve_fusion_live_enabled(_gate_valves(), is_fusion_model(model), False) is False
+            assert orchestrator._resolve_fusion_live_enabled(
+                _gate_valves(), is_fusion_model(model), False, []
+            ) is False
 
     @pytest.mark.asyncio
     async def test_direct_connection_never_arms(self, orchestrator_and_pipe):
         orchestrator, _pipe = orchestrator_and_pipe
-        assert orchestrator._resolve_fusion_live_enabled(_gate_valves(), is_fusion_model("openrouter/fusion"), True) is False
+        assert orchestrator._resolve_fusion_live_enabled(
+            _gate_valves(), is_fusion_model("openrouter/fusion"), True, []
+        ) is False
 
     @pytest.mark.asyncio
     async def test_master_switch_off_never_arms(self, orchestrator_and_pipe):
         orchestrator, _pipe = orchestrator_and_pipe
-        assert orchestrator._resolve_fusion_live_enabled(_gate_valves(fusion_enabled=False), is_fusion_model("openrouter/fusion"), False) is False
+        assert orchestrator._resolve_fusion_live_enabled(
+            _gate_valves(fusion_enabled=False), is_fusion_model("openrouter/fusion"), False, []
+        ) is False
 
     @pytest.mark.asyncio
     async def test_process_request_threads_enabled_to_streaming_loop(
@@ -1851,8 +1859,13 @@ class TestFusionLiveGate:
         return [p for p in (plugins or []) if isinstance(p, dict) and p.get("id") == "fusion"]
 
     async def _run_call_site(self, orchestrator, pipe, mock_valves, mock_session,
-                             *, task=None, fusion_enabled=True, metadata=None):
+                             *, task=None, fusion_enabled=True, metadata=None,
+                             plugins=None, model="openrouter/fusion"):
         mock_valves.ENABLE_OPENROUTER_FUSION = fusion_enabled
+        # Off, so the `context-compression` entry the pipe appends to every request by default
+        # (`api/transforms.py:1974`) is not in the plugin list these rows compare against: the
+        # arms below are about what the fusion strip does to the caller's own entries.
+        mock_valves.AUTO_CONTEXT_TRIMMING = False
         captured: dict[str, Any] = {}
 
         async def fake_loop(*args, **kwargs):
@@ -1875,7 +1888,12 @@ class TestFusionLiveGate:
         pipe._ensure_task_model_adapter()._run_task_model_request = AsyncMock(side_effect=fake_task)
 
         await orchestrator.process_request(
-            body={"model": "openrouter/fusion", "messages": [{"role": "user", "content": "hi"}], "stream": True},
+            body={
+                "model": model,
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": True,
+                **({"plugins": plugins} if plugins is not None else {}),
+            },
             __user__={"id": "u"},
             __request__=None,
             __event_emitter__=None,
@@ -1886,9 +1904,9 @@ class TestFusionLiveGate:
             __task_body__=None,
             valves=mock_valves,
             session=mock_session,
-            openwebui_model_id="openrouter/fusion",
+            openwebui_model_id=model,
             pipe_identifier="test-pipe",
-            allowlist_norm_ids={"openrouter/fusion"},
+            allowlist_norm_ids={model},
             enforced_norm_ids=set(),
             catalog_norm_ids=set(),
             features={},
@@ -1907,9 +1925,12 @@ class TestFusionLiveGate:
     async def test_call_site_never_injects_for_task_requests(
         self, orchestrator_and_pipe, mock_valves, mock_session
     ):
+        """The caller's own entry is handed in: asserting "no fusion entry" while supplying none
+        passes today and after, so it proves nothing about the strip."""
         orchestrator, pipe = orchestrator_and_pipe
         captured = await self._run_call_site(orchestrator, pipe, mock_valves, mock_session,
-                                             task="title_generation")
+                                             task="title_generation",
+                                             plugins=[{"id": "fusion"}])
         assert "task_body" in captured
         assert self._fusion_entries(captured["task_body"]) == []
 
@@ -1917,10 +1938,18 @@ class TestFusionLiveGate:
     async def test_call_site_never_injects_with_master_switch_off(
         self, orchestrator_and_pipe, mock_valves, mock_session
     ):
+        """As above: the arm supplies the entry it asserts is removed."""
         orchestrator, pipe = orchestrator_and_pipe
         captured = await self._run_call_site(orchestrator, pipe, mock_valves, mock_session,
-                                             fusion_enabled=False)
+                                             fusion_enabled=False,
+                                             plugins=[{"id": "fusion"}])
         assert self._fusion_entries(captured["body"]) == []
+
+    _PANEL_ENTRY = {
+        "id": "fusion",
+        "preset": "general-fast",
+        "analysis_models": ["google/gemini-2.5-flash", "anthropic/claude-sonnet-4.5"],
+    }
 
     @pytest.mark.asyncio
     async def test_call_site_forces_tool_choice_for_fusion_chat(

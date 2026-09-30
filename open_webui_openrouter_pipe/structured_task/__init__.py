@@ -25,6 +25,7 @@ from .orchestrator import (
     read_task_model_params,
     resolve_task_model_candidates,
     select_task_model_candidates,
+    task_model_owned_by,
 )
 from .retry import call_with_candidates
 from .schema import (
@@ -50,4 +51,5 @@ __all__ = [
     "resolve_task_model_candidates",
     "safe_log_payload",
     "select_task_model_candidates",
+    "task_model_owned_by",
 ]

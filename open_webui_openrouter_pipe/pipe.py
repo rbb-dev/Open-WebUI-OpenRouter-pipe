@@ -2528,15 +2528,22 @@ class Pipe:
                 if hasattr(self, "logger"):
                     self.logger.debug("run_coroutine_threadsafe close scheduling failed", exc_info=True)
 
+    @staticmethod
+    def _stderr_breadcrumb_shown() -> bool:
+        return SessionLogger._passes_threshold(
+            logging.LogRecord("openrouter", logging.INFO, "", 0, "", None, None)
+        )
+
     def close_when_idle(self) -> None:
         if self._closing or self._draining:
             return
-        print(
-            f"[openrouter pid={os.getpid()} id={getattr(self, 'id', '?')}] "
-            f"hot-reload: close received (active_calls={self._active_pipes_calls})",
-            file=sys.stderr,
-            flush=True,
-        )
+        if self._stderr_breadcrumb_shown():
+            print(
+                f"[openrouter pid={os.getpid()} id={getattr(self, 'id', '?')}] "
+                f"hot-reload: close received (active_calls={self._active_pipes_calls})",
+                file=sys.stderr,
+                flush=True,
+            )
         self._draining = True
         if self._active_pipes_calls <= 0:
             self._schedule_close()
@@ -2736,12 +2743,13 @@ class Pipe:
                 with contextlib.suppress(Exception):
                     await asyncio.wrap_future(existing)
             return
-        print(
-            f"[openrouter pid={os.getpid()} id={getattr(self, 'id', '?')}] "
-            f"hot-reload: closing",
-            file=sys.stderr,
-            flush=True,
-        )
+        if self._stderr_breadcrumb_shown():
+            print(
+                f"[openrouter pid={os.getpid()} id={getattr(self, 'id', '?')}] "
+                f"hot-reload: closing",
+                file=sys.stderr,
+                flush=True,
+            )
         try:
             await self._do_close()
         finally:

@@ -12,8 +12,9 @@ panel, the judge, and the synthesizer all work with the chatting user's entire O
 workspace: knowledge bases, personal and workspace tools, and tool servers, always, plus the
 `openrouter:*` server tools. The Web Tools filter is never auto-attached to a fusion model, but
 its valves are still the source: a member's `openrouter:*` tools come from the admin's
-`ENABLE_*` valves **and** the Web Tools filter's stored per-user toggles for the chatting user, so
-a toggle the user set in another chat governs the panel. A tool whose `ENABLE_*` valve is off is
+`ENABLE_*` valves **and** the Web Tools filter's stored per-user toggles for the chatting user, read
+from the row the pipe installed, whatever id that row carries, so a toggle the user set in another
+chat governs the panel. A tool whose `ENABLE_*` valve is off is
 never sent to a member. Every call is cost-attributed. Each model streams its answer and its
 thinking into the live panel as it works. And where hosted Fusion loses the entire run to one
 dropped stream, the built-in engine marks the failed panelist and completes the run. The same
@@ -48,7 +49,9 @@ The filter has two distinct roles:
 2. **On any other model (admin opt-in via `ALLOW_ON_NON_FUSION_MODELS`): fusion as an add-on
    tool.** The filter offers OpenRouter's fusion plugin to an ordinary model, which then decides
    per prompt whether to deliberate — unless the user turns `Always run Fusion` on, which is the
-   only place that switch has an effect.
+   only place that switch has an effect. This add-on scope is scoped by the master switch in the
+   other direction too: with `ENABLE_OPENROUTER_FUSION` **on**, a Fusion entry on a non-fusion
+   model is honoured; with it **off**, that entry is removed there as well.
 
 ### Activation is guaranteed by the pipe
 
@@ -65,10 +68,16 @@ model is a different surface and stays optional by design. Exceptions, in the pi
   forcing — a chat title must not bill a full deliberation panel;
 - with `ENABLE_OPENROUTER_FUSION` off, nothing is injected or forced, and an activating
   `{"id": "fusion"}` entry the request already carries is removed before anything is sent — on any
-  model and on either engine — so the master switch genuinely turns Fusion off;
+  model and on either engine — so the master switch genuinely turns Fusion off. A task or title
+  request never carries one, whatever the valve says, and every other plugin entry survives, in
+  order;
 - while Fusion is enabled, a caller-supplied Fusion entry (including
-  `{"id": "fusion", "enabled": false}`) and a caller-supplied `tool_choice` are always left
-  untouched, so an explicit opt-out disables deliberation for that request.
+  `{"id": "fusion", "enabled": false}`) is left untouched, so an explicit opt-out disables
+  deliberation for that request — and that turn leaves **no panel** and no panel socket either, so
+  the message carries no Fusion card at all: a plain model call, and nothing to click.
+  A caller-supplied `tool_choice` is left untouched too — except that the master switch outranks a
+  caller-supplied `tool_choice: "required"`: once the entry is removed, the pipe's existing rules
+  clear a `required` that no tool can satisfy, on `/responses` and on `/chat/completions` alike.
 
 If a `/responses` request falls back to `/chat/completions`, the pipe strips the Fusion plugin entry:
 Fusion on that endpoint returns a flattened text transcript with no structured events, so the fallback
@@ -133,7 +142,7 @@ controls, and final answer look identical on both.
 | | `openrouter` | `internal` (default) |
 |---|---|---|
 | Where the panel runs | OpenRouter's servers | Inside the pipe, as ordinary pipe model calls |
-| Panel tools | OpenRouter web search + fetch only | The full Open WebUI tool surface, run inside the pipe in either outer mode: knowledge bases, tool servers, and the `openrouter:*` server tools. A member's `openrouter:*` tools come from the admin's `ENABLE_*` valves **and** the Web Tools filter's stored per-user toggles for the chatting user, so a per-chat toggle set on *another* chat governs the panel; a valve that is off sends no such tool. Image generation reaches every member and the synthesis call, cost-attributed like any other tool. **Known coupling, not a guarantee:** `collect_installed_web_tools_config` with a stored `{"WEB_SEARCH": false}` still returns a different tool set, so this row changes when the code half lands **Which row a member reads:** that is the row under the id `openrouter_web_tools`, so the one the first copy to install a Web Tools filter put there rather than whichever copy wrote it last; a second copy whose `ENABLE_*` valves differ installs its own row under a suffixed id, and this read does not follow it. Under `ask` approval a member is offered none of Open WebUI's tools |
+| Panel tools | OpenRouter web search + fetch only | The full Open WebUI tool surface, run inside the pipe in either outer mode: knowledge bases, tool servers, and the `openrouter:*` server tools. A member's `openrouter:*` tools come from the admin's `ENABLE_*` valves **and** the Web Tools filter's stored per-user toggles for the chatting user, read from the row the pipe installed whatever id that row carries, so a per-chat toggle set on *another* chat governs the panel; a valve that is off sends no such tool. Image generation reaches every member and the synthesis call, cost-attributed like any other tool. **Known coupling, not a guarantee:** `collect_installed_web_tools_config` with a stored `{"WEB_SEARCH": false}` still returns a different tool set, so this row changes when the code half lands **Which row a member reads:** the copy the pipe maintains — the row under the id `openrouter_web_tools` where the pipe owns one there, and otherwise the newest copy the pipe itself maintains, whatever id that copy ended up carrying. A row the pipe does not own is never read as configuration and never loaded as code. Under `ask` approval a member is offered none of Open WebUI's tools |
 | Per-model dials | OpenRouter's own settings | Every pipe dial per member: ZDR/provider routing, reasoning effort, max output tokens, identity headers |
 | Cost attribution | One OpenRouter charge | Every inner call is cost-attributed to the user like a normal chat; the run's footer shows the aggregated total |
 | Failure behaviour | A dropped stream loses the whole run | One failed member degrades that card — a member that exhausts its own chat retries is a failed member, like any other failure — and the judge works from the survivors; a member refused before its request was sent reports a short reason naming the control that refused it (Zero Data Retention routing, that OpenRouter's Zero Data Retention endpoint list could not be read, Direct Uploads injection, an endpoint override conflict, or the operator's model restrictions), never a copy of the rendered error card behind it, so nothing that card happened to quote reaches the panel, the judge or the synthesiser; the run completes. A member the pipe never asked is never reported as a member that refused. A synthesis member that dies mid-stream is the same shape on the answer stage: its partial is kept (the user watched it stream in, and it is not retried) and a marker naming the final-answer failure is appended and streamed. That marker is **part of the stored reply**, not a transient toast — it is in every `response.output_text.delta`, in the string the turn returns, and in the assistant message Open WebUI persists. A member whose context budget trimmed or dropped history, or whose reasoning dial could not be honoured, tells the person **once for the whole run**, naming the member — that is the row that answers "why did that panelist ignore my chat". When *every* member fails the run still returns a well-formed answer — on a **Direct Connection** too, which gets the answer text and the error archive row but no panel, no `fusion:event` stream and no embed — and the session-log archive records that turn as an error. A synthesis step that fails with no output of its own is the same for a Direct Connection: it also gets the answer text, and that turn archives `complete`, not `error`, because the panel did answer. On *any* total panel failure the outer archive row reads the fixed string `Every Fusion panel member failed; this run has no deliberated answer.` — the provider status is on the inner per-member rows only only when no member answered at all |
@@ -146,7 +155,9 @@ Behaviour shared by both engines:
 - Deliberation is **guaranteed** on fusion-model chats — the internal engine always
   deliberates; the OpenRouter engine is forced via `tool_choice: "required"`.
 - A caller-supplied `{"id": "fusion", "enabled": false}` plugins entry is an explicit
-  opt-out on **both** engines: the request runs as a plain model call.
+  opt-out on **both** engines: the request runs as a plain model call. The turn shows no
+  deliberation panel and no `fusion:event` either, so the message carries no Fusion card at all —
+  a plain model call, and nothing to click.
 - Task/title generation requests never deliberate.
 - The *Always run Fusion* user toggle is inert on fusion models for both engines, and
   the add-on server-tool surface on non-fusion models always uses OpenRouter's plugin
@@ -195,7 +206,7 @@ wiring. They are documented alongside the other pipe valves in
 
 | Valve | Default | Effect |
 |-------|---------|--------|
-| `ENABLE_OPENROUTER_FUSION` | `True` | Master switch; installs the filter, auto-wires it to the fusion models only, and gates the pipe's activation injection. `False` deactivates the installed filter on the next `pipes()` call, stops injecting the Fusion plugin entry, and removes an activating `{"id": "fusion"}` entry the request already carried, on any model and either engine — Fusion is then fully off for the first time. Setting it back to `True` re-activates the filter the pipe itself switched off, on the next `pipes()` call and whether or not `AUTO_INSTALL_FUSION_FILTER` is on — including an install-by-hand copy, which nothing else brings back. A filter an admin switched off by hand — after the pipe had switched it off — stays off. |
+| `ENABLE_OPENROUTER_FUSION` | `True` | Master switch; installs the filter, auto-wires it to the fusion models only, and gates the pipe's activation injection. `False` deactivates the installed filter on the next `pipes()` call, stops injecting the Fusion plugin entry, and removes an activating `{"id": "fusion"}` entry the request already carried, on any model and either engine — Fusion is then fully off for the first time — and a task or title request never carries one. Setting it back to `True` re-activates the filter the pipe itself switched off, on the next `pipes()` call and whether or not `AUTO_INSTALL_FUSION_FILTER` is on — including an install-by-hand copy, which nothing else brings back. A filter an admin switched off by hand — after the pipe had switched it off — stays off. |
 | `AUTO_INSTALL_FUSION_FILTER` | `True` | Install/update the filter function in OWUI. |
 | `AUTO_ATTACH_FUSION_FILTER` | `True` | Attach the filter to the fusion models **only** (never other models) — including their `:tag` variant and `@preset/…` rows. |
 | `AUTO_DEFAULT_FUSION_FILTER` | `True` | Pre-enable the filter per chat on the fusion models (does not force Fusion to run). |
@@ -265,7 +276,7 @@ streaming panel deltas, the cards simply fill in at completion as before.
   inside the pipe and the fusion model never reaches OpenRouter, so there is no endpoint conflict to refuse and the
   turn runs the panel.
 - No effect on **Direct Connections** — Open WebUI does not deliver in-chat embeds on that path. A valve-pinned Fusion model is still refused there with the endpoint-conflict card, as it is anywhere else on the hosted backend.
-- Automatic on the fusion models — `openrouter/fusion`, `openrouter/fusion-flash` and their `:tag` / `@preset/…` forms — whenever Fusion is enabled — the master `ENABLE_OPENROUTER_FUSION` switch turns it off along with the rest of Fusion. Non-fusion models are never affected.
+- Automatic on the fusion models — `openrouter/fusion`, `openrouter/fusion-flash` and their `:tag` / `@preset/…` forms — whenever Fusion is enabled: the master `ENABLE_OPENROUTER_FUSION` switch is on, the model is a fusion model, the turn is not a Direct Connection, **and** the turn's Fusion entry is not `enabled: false`. The master switch turns it off along with the rest of Fusion, and so does the per-request opt-out — a chat whose Fusion entry is disabled gets no panel and no panel socket. Non-fusion models are never affected.
 
 ### Socket transport — network & CSP requirements (admin)
 
@@ -276,6 +287,10 @@ Socket.IO connection back to this instance to receive `fusion:event` updates. It
 join that user's event room. No separate credential is minted or embedded — which is also why the
 **iframe same-origin** setting (above) is required: without it the iframe is a distinct origin, cannot
 read the token, and the panel stays static.
+
+Neither the panel nor its socket is created for a chat whose Fusion entry is `enabled: false`, and
+neither is created for a turn that will not deliberate for any other reason — so the token above is
+read only for a run that is actually going to stream events into it.
 
 Because the embed is a `srcdoc` document (origin `about:srcdoc`), it cannot reuse Open WebUI's bundled,
 module-scoped `socket.io-client`. Instead the Socket.IO client is **inlined directly into the panel

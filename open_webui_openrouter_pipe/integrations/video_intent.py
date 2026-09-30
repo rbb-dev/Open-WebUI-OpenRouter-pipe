@@ -36,6 +36,7 @@ from ..structured_task import (
     merge_task_model_params,
     read_task_model_config,
     select_task_model_candidates,
+    task_model_owned_by,
 )
 from ..structured_task.logging import _fault_code
 from .image_types import system_prompt_text
@@ -233,6 +234,7 @@ class VideoIntentResult:
     frames_retargeted: int = 0
     task_model_latency_ms: int = 0
     task_model_fallback_triggered: bool = False
+    task_model_absent: bool = False
 
 
 # -----------------------------------------------------------------------------
@@ -922,6 +924,9 @@ async def resolve_intent(
                 "task.model.default / task.model.external; the classifier is skipped "
                 "and this turn degrades open",
             )
+            fallback.classifier_failed = True
+            fallback.failure_reason = "no_task_model_candidates"
+            fallback.task_model_absent = True
             return fallback
 
         def _build_form_data(model_id: str) -> dict[str, Any]:
@@ -942,6 +947,7 @@ async def resolve_intent(
                     "metadata": {"task": INTENT_SCHEMA_NAME, "chat_id": chat_id},
                 },
                 task_model_params,
+                owned_by=task_model_owned_by(request, model_id),
             )
 
         if invoke_chat_completion is None:

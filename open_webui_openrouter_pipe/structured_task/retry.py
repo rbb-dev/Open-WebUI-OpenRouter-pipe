@@ -117,8 +117,16 @@ def _no_choices_reason(response: Any) -> str:
 
 
 def _sanitised_excerpt(text: str) -> str:
-    printable = "".join(ch for ch in text if ch == "\n" or ch.isprintable())
-    return printable.strip()[:_REPAIR_OUTPUT_CHARS]
+    buf: list[str] = []
+    for ch in text:
+        if ch != "\n" and not ch.isprintable():
+            continue
+        if not buf and ch.isspace():
+            continue
+        buf.append(ch)
+        if len(buf) > _REPAIR_OUTPUT_CHARS and not ch.isspace():
+            break
+    return "".join(buf).strip()[:_REPAIR_OUTPUT_CHARS]
 
 
 def _with_repair(

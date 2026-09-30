@@ -1114,7 +1114,8 @@ class StreamingHandler:
                 if emitter_supplied:
                     retry_barrier_crossed = True
                 pending = current_text[recorded_message_chars:]
-                if item.get("type") == "function_call" and not strip_hidden_marker_lines(pending).strip():
+                pending_shows_text = bool(strip_hidden_marker_lines(pending).strip())
+                if item.get("type") == "function_call" and not pending_shows_text:
                     recorded = [*(await _capture_seeded_output() or []), *emitted_output_items]
                     if recorded and recorded[-1].get("type") == "function_call_output":
                         divider: dict[str, Any] = {
@@ -1129,11 +1130,11 @@ class StreamingHandler:
                             "output_index": await _place_item(divider, current_text),
                             "item": divider,
                         })
-                if pending and not strip_hidden_marker_lines(pending).strip():
+                if pending and not pending_shows_text:
                     await _capture_seeded_output()
                     emitted_output_items.append(copy.deepcopy(item))
                     return _output_index_before_open_message(item)
-                if open_message_id is None and strip_hidden_marker_lines(pending).strip():
+                if open_message_id is None and pending_shows_text:
                     published = _flush_recorded_message(current_text)
                     if published is not None:
                         await event_emitter({

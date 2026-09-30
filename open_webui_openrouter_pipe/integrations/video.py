@@ -818,12 +818,15 @@ class VideoGenerationAdapter:
                         valves=valves,
                     )
                     if intent_result.classifier_failed:
-                        self._intent_record_failure(user_id if isinstance(user_id, str) else "")
-                        self.logger.warning(
-                            "video_intent classifier_failed=True; reason=%s; "
-                            "breaker tripped",
-                            intent_result.failure_reason or "<unknown>",
-                        )
+                        if not intent_result.task_model_absent:
+                            self._intent_record_failure(
+                                user_id if isinstance(user_id, str) else ""
+                            )
+                            self.logger.warning(
+                                "video_intent classifier_failed=True; reason=%s; "
+                                "breaker tripped",
+                                intent_result.failure_reason or "<unknown>",
+                            )
                         latch_key = self._intent_latch_key(chat_id)
                         log_key = self._intent_notice_key(chat_id) or "<not retained>"
                         if self._intent_was_failure_notified(latch_key):

@@ -317,11 +317,25 @@ def _entry_file_name(mime_type: str) -> str:
 
 _DATA_ENTRY_DECODE_QUANTUM = (65536 // 3) * 4
 
+_DATA_ENTRY_WHITESPACE = {
+    ord(char): None
+    for char in "".join(chr(code) for code in range(0x21))
+    + "\x7f\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007"
+    + "\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
+}
+
+
+def _compact_base64(payload: str) -> str:
+    if any(char.isspace() for char in payload):
+        return payload.translate(_DATA_ENTRY_WHITESPACE)
+    return payload
+
 
 async def _decode_data_entry(payload: str) -> bytes:
     raw = bytearray()
-    for offset in range(0, len(payload), _DATA_ENTRY_DECODE_QUANTUM):
-        raw += base64.b64decode(payload[offset : offset + _DATA_ENTRY_DECODE_QUANTUM], validate=True)
+    cleaned = _compact_base64(payload)
+    for offset in range(0, len(cleaned), _DATA_ENTRY_DECODE_QUANTUM):
+        raw += base64.b64decode(cleaned[offset : offset + _DATA_ENTRY_DECODE_QUANTUM], validate=True)
         await asyncio.sleep(0)
     return bytes(raw)
 

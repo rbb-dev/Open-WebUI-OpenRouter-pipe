@@ -362,40 +362,6 @@ class TestFailureMetadata:
         assert "RuntimeError" in res.failure_reason
         assert res.intent == "text_to_video"
 
-    def test_resolve_intent_no_candidates_does_not_set_classifier_failed(self):
-        # Admin hasn't configured a task model — that's not an infrastructure
-        # outage, and shouldn't trip the breaker.
-        from open_webui_openrouter_pipe.integrations.video_intent import (
-            resolve_intent,
-        )
-
-        async def main():
-            valves = SimpleNamespace(
-                VIDEO_INTENT_TASK_MODEL_MODE="external",
-                VIDEO_INTENT_TASK_MODEL_FALLBACK="none",
-                VIDEO_INTENT_TIMEOUT_S=2,
-                VIDEO_INTENT_MAX_CLARIFICATIONS=1,
-                VIDEO_INTENT_LOG_DECISIONS=False,
-            )
-            from open_webui.models.config import Config as _OwuiConfig
-
-            _OwuiConfig._rows["task.model.default"] = ""
-            _OwuiConfig._rows["task.model.external"] = ""
-            request = SimpleNamespace(
-                app=SimpleNamespace(state=SimpleNamespace(MODELS={})),
-            )
-            return await resolve_intent(
-                body={"model": "x/y", "messages": [{"role": "user", "content": "hi"}]},
-                video_meta={}, video_model={}, valves=valves, request=request,
-                user_obj=SimpleNamespace(id="u"), chat_id="c",
-                logger=logging.getLogger("test"),
-                fallback_prompt_text=_FALLBACK_PROMPT,
-            )
-
-        res = asyncio.run(main())
-        assert res.classifier_failed is False
-
-
 # -----------------------------------------------------------------------------
 # VIDEO_INTENT_CONFIRM_MODE + VIDEO_INTENT_FRAME_EXTRACTION_INDEX
 # -----------------------------------------------------------------------------

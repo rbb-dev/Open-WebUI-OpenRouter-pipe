@@ -1468,13 +1468,45 @@ class FilterManager:
         function_id = _OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID
         try:
             row = await Functions.get_function_by_id(function_id)
+            if (
+                row is None
+                or not getattr(row, "is_active", False)
+                or not _is_web_tools_filter(getattr(row, "content", None))
+            ):
+                row = None
+                picked = _newest_marked_row(
+                    await Functions.get_functions_by_type("filter", active_only=False),
+                    _OPENROUTER_WEB_TOOLS_FILTER_MARKER,
+                    prefer_id=_OPENROUTER_WEB_TOOLS_FILTER_PREFERRED_FUNCTION_ID,
+                )
+                if (
+                    picked is not None
+                    and getattr(picked, "is_active", False)
+                    and _is_web_tools_filter(getattr(picked, "content", None))
+                ):
+                    row = picked
+                    resolved = str(getattr(picked, "id", "") or "")
+                    if resolved and resolved != function_id:
+                        self.logger.log(
+                            warn_level(
+                                _warned_stale_filter_rows,
+                                f"web_tools_id_taken:{resolved}",
+                                cooldown_s=3600,
+                            ),
+                            "The OpenRouter Web Tools function id %r is held by a row this "
+                            "pipe does not own; the per-user configuration the panel "
+                            "members run against is read from %r instead.",
+                            function_id,
+                            resolved,
+                        )
+                        function_id = resolved
         except Exception as exc:
             self.logger.debug("Web tools filter lookup failed: %s", exc, exc_info=True)
             return None
-        if row is None or not getattr(row, "is_active", False):
+        if row is None:
             return None
         content = getattr(row, "content", None)
-        if not isinstance(content, str) or "class Filter" not in content:
+        if not isinstance(content, str):
             return None
         cache_key = str(hash(content))
         module_ns = self._inner_web_tools_module_cache.get(cache_key)

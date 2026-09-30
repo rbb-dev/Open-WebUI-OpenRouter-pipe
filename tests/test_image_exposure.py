@@ -1899,17 +1899,25 @@ def test_the_size_box_promises_a_tier_travels_only_where_one_actually_does(case)
 
 
 @pytest.mark.parametrize(
-    "case", sorted(set(_UNUSABLE_TIER_CONTRACTS) - {"a-usable-list", "nothing-of-its-own"})
+    "case",
+    sorted(
+        set(_UNUSABLE_TIER_CONTRACTS)
+        - {"a-usable-list", "nothing-of-its-own", "a-range-under-the-other-name"}
+    ),
 )
 def test_a_tier_the_model_refuses_outright_is_described_as_measured_not_as_passed_on(case):
-    """Three contracts the request path refuses every tier for, one sentence between them.
+    """Two contracts the request path refuses every tier for, one sentence between them.
 
-    Two publish a descriptor that yields no values a tier can match -- an empty list, and
-    a bound the fit reads as a number -- and one publishes the bound under `size` rather
-    than `resolution`. The adapter treats all three alike: it measures the tier against
-    what was published and drops it. The box has to describe them alike too, and the
-    sentence it must use is the one it already gives a model that publishes a list a tier
-    is measured against, read off the RENDERED box for such a model rather than named.
+    Both publish a descriptor that yields no values a tier can match -- an empty list, and
+    a bound the fit reads as a number. The adapter treats them alike: it measures the tier
+    against what was published and drops it. The box has to describe them alike too, and
+    the sentence it must use is the one it already gives a model that publishes a list a
+    tier is measured against, read off the RENDERED box for such a model rather than
+    named.
+
+    A bound published under `size` is not in this set. That contract draws a number box,
+    which carries no tier clause at all, so there is no tier sentence to compare -- it is
+    covered by the panel's own shape tests instead.
     """
     from open_webui_openrouter_pipe.filters.image_filter_renderer import image_knob_text
 

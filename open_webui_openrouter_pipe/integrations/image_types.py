@@ -131,13 +131,32 @@ def pixel_size(value: Any) -> tuple[int, int] | None:
     return (width, height) if width > 0 and height > 0 else None
 
 
+_RATIO_SIDE_RE = re.compile(r"([0-9]+)(?:\.([0-9]+))?")
+
+
+def _ratio_side(value: str) -> tuple[int, str] | None:
+    match = _RATIO_SIDE_RE.fullmatch(value)
+    return None if match is None else (int(match.group(1)), match.group(2) or "")
+
+
+def _scaled_ratio_side(side: tuple[int, str], places: int) -> int:
+    whole, decimals = side
+    return whole * 10**places + int(decimals.ljust(places, "0") or "0")
+
+
 def reduced_ratio(value: Any) -> tuple[int, int] | None:
     if not isinstance(value, str):
         return None
     parts = value.strip().split(":")
-    if len(parts) != 2 or not all(p.isascii() and p.isdigit() for p in parts):
+    if len(parts) != 2:
         return None
-    width, height = int(parts[0]), int(parts[1])
+    first = _ratio_side(parts[0])
+    second = _ratio_side(parts[1])
+    if first is None or second is None:
+        return None
+    places = max(len(first[1]), len(second[1]))
+    width = _scaled_ratio_side(first, places)
+    height = _scaled_ratio_side(second, places)
     if width <= 0 or height <= 0:
         return None
     common = math.gcd(width, height)

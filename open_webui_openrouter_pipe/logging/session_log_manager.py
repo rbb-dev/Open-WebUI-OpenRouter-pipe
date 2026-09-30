@@ -391,6 +391,7 @@ class SessionLogManager:
         "_read_fault_warnings",
         "_captured_turns",
         "_capture_exempt",
+        "_rescue_pending",
     )
 
     def __init__(
@@ -423,7 +424,7 @@ class SessionLogManager:
         self._lock = threading.Lock()
         self._dirs: set[str] = set()
         self._assembler_recent_failures: dict[tuple[str, str], float] = {}
-        self._rescue_pending: set[tuple[str, str]] = set()
+        self._rescue_pending: dict[tuple[str, str], float] = {}
         self._assembly_failure_stale_arm: set[tuple[str, str]] = set()
         self._warned: set[str] = set()
         self._unreadable_archive_warnings: dict[str, float] = {}
@@ -929,6 +930,13 @@ class SessionLogManager:
         budget = float(self.valves.SESSION_LOG_ASSEMBLER_INTERVAL_SECONDS)
 
         with self._lock:
+            for _turn in [
+                key
+                for key in self._rescue_pending
+                if self._unreadable_archive_attempts.get(f"{key[0]}:{key[1]}", 0)
+                >= _UNREADABLE_ARCHIVE_CAPTURE_AFTER
+            ]:
+                self._rescue_pending.pop(_turn, None)
             for _latch_name in self._FAULT_LATCHES:
                 _truncate_latch(getattr(self, _latch_name), _MAX_DRAIN_LATCH_KEYS)
 
@@ -948,7 +956,7 @@ class SessionLogManager:
                 return
             with self._lock:
                 if assembled:
-                    self._rescue_pending.discard(key)
+                    self._rescue_pending.pop(key, None)
                 if assembled or self._rescue_exempt(key) or key in self._capture_exempt:
                     self._assembler_recent_failures.pop(key, None)
                     self._assembly_failure_stale_arm.discard(key)
@@ -1413,7 +1421,7 @@ class SessionLogManager:
         self._unreadable_archive_attempts.pop(key, None)
         self._captured_turns.add(key)
         self._capture_exempt.add((chat_id, message_id))
-        self._rescue_pending.discard((chat_id, message_id))
+        self._rescue_pending.pop((chat_id, message_id), None)
         self._release_assembly_lock(
             _stable_crockford_id(f"{chat_id}:{message_id}:session_log_lock"), list(ids or [])
         )
@@ -1742,7 +1750,7 @@ class SessionLogManager:
                 list(ids),
             )
             if not captured:
-                self._rescue_pending.add((chat_id, message_id))
+                self._rescue_pending[(chat_id, message_id)] = time.monotonic()
             return False
 
         if existing_meta.get("terminal"):

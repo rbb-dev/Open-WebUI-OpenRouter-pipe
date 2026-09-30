@@ -274,9 +274,13 @@ async def test_claim_pipe_model_metadata_sync_merges_existing_capabilities(monke
             )
 
         @staticmethod
-        async def update_model_by_id(model_id: str, model_form: Any) -> None:
+        async def update_model_by_id(model_id: str, model_form: Any) -> Any:
+            # Truthy: the production path reads this return, and Open WebUI answers a
+            # landed write with the re-read row (`models.py:555-556`), so `None` means
+            # refused and the pass counts the model as not written.
             captured["model_id"] = model_id
             captured["meta"] = getattr(model_form, "meta", None)
+            return types.SimpleNamespace(id=model_id)
 
     # Add Models to stub module so catalog_manager can import it
     setattr(stub_models_mod, "Models", DummyModels)

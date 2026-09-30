@@ -147,6 +147,12 @@ def _responses_spec_from_owui_tool_cfg(tool_cfg: dict[str, Any], *, strictify: b
     return out
 
 
+def _bound_description_and_parameters(bound: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not bound:
+        return None
+    return {"description": bound["description"], "parameters": bound["parameters"]}
+
+
 def _tool_prefix_for_collision(source: str, tool_cfg: dict[str, Any] | None) -> str:
     """Return the prefix to apply when collision renaming is required."""
     if source == "owui_request_tools":
@@ -308,6 +314,17 @@ def _build_collision_safe_tool_specs_and_registry(
     def _registry_tools_named(name: str) -> int:
         return _owui_name_counts.get(name, 0)
 
+    _bound_specs: dict[int, dict[str, Any] | None] = {}
+
+    def _bound_spec(tool_cfg: Any) -> dict[str, Any] | None:
+        if not isinstance(tool_cfg, dict):
+            return None
+        key = id(tool_cfg)
+        if key not in _bound_specs:
+            built = _responses_spec_from_owui_tool_cfg(tool_cfg, strictify=False)
+            _bound_specs[key] = dict(built) if built is not None else None
+        return _bound_specs[key]
+
     candidates: list[dict[str, Any]] = []
     resolved_request_names: set[str] = set()
 
@@ -328,6 +345,10 @@ def _build_collision_safe_tool_specs_and_registry(
         handed_back = owui_tool_passthrough or not runnable
         if handed_back:
             spec = {**raw_tool, "name": origin_name}
+        else:
+            carried = _bound_description_and_parameters(_bound_spec(tool_cfg))
+            if carried:
+                spec = {**spec, **carried}
         resolved_request_names.add(origin_name)
         candidates.append(
             {
@@ -370,7 +391,7 @@ def _build_collision_safe_tool_specs_and_registry(
         )
 
     for key, tool_cfg in owui_entries:
-        spec = _responses_spec_from_owui_tool_cfg(tool_cfg, strictify=False)
+        spec = _bound_spec(tool_cfg)
         if not spec:
             continue
         if spec["name"] in resolved_request_names:

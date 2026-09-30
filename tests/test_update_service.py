@@ -2994,6 +2994,13 @@ def _serving_pipe(monkeypatch, *, in_cache=True, content=INSTALLED_CONTENT):
     return serving, old_module, req
 
 
+class _BundledModuleFinder:
+    """The shape `_install_bundled_finder()` puts at `sys.meta_path[0]`."""
+
+    def find_spec(self, fullname, path=None, target=None):
+        return None
+
+
 @lru_cache(maxsize=1)
 def _b358_revived_valves() -> Any:
     """A subclass of the pipe's own (plugin-extended) valve model, plus one row-only field."""

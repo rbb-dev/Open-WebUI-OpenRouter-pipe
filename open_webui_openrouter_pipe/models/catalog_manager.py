@@ -121,6 +121,22 @@ def _stampable_icon_source(url: str | None) -> str | None:
     return url
 
 
+def _icon_was_stored(meta_obj: Any) -> bool:
+    dump = getattr(meta_obj, "model_dump", None)
+    stored = dump() if callable(dump) else meta_obj
+    if not isinstance(stored, dict):
+        return True
+    return bool(stored.get("profile_image_url"))
+
+
+def _drop_unsaved_icon_source(meta_dict: dict[str, Any]) -> None:
+    pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
+    if not isinstance(pipe_meta, dict):
+        return
+    pipe_meta.pop("image_source_url", None)
+    pipe_meta.pop("image_source_kind", None)
+
+
 def _covered_icon(row: Any, icon_url: str) -> str | None:
     if row is None:
         return None
@@ -184,13 +200,18 @@ def _warn_on_empty_read(
 
 
 _ROW_NOT_FETCHED = object()
+_ROWS_UNREADABLE = object()
 
 _warned_video_gen_filter_ensure: set[str] = set()
 
 _MODEL_ROW_READ_CHUNK = 1000
 
 
-async def _read_model_rows(ids: list[str], logger: Any) -> dict[str, Any] | None:
+class _ModelWriteRefused(Exception):
+    pass
+
+
+async def _read_model_rows(ids: list[str], logger: Any) -> Any:
     from open_webui.models.models import Models
 
     stored: dict[str, Any] = {}
@@ -207,7 +228,18 @@ async def _read_model_rows(ids: list[str], logger: Any) -> dict[str, Any] | None
             )
             return None
         if not rows:
-            logger.warning(
+            try:
+                await Models.get_all_models()
+            except Exception as exc:
+                logger.warning(
+                    "Stored model row read could not be answered at all: the models table "
+                    "itself did not read (%s); every model on this pass is left exactly as "
+                    "it is, and nothing is written",
+                    exc,
+                    exc_info=True,
+                )
+                return _ROWS_UNREADABLE
+            logger.debug(
                 "Stored model row read returned no rows for %d ids; "
                 "every model will be read on its own",
                 len(batch),
@@ -1710,7 +1742,11 @@ class ModelCatalogManager:
             ]
             model_rows = await _read_model_rows(model_row_ids, self.logger)
             if valves.UPDATE_MODEL_IMAGES:
-                stored_icons = _stored_profile_images(model_row_ids, model_rows, self.logger)
+                stored_icons = _stored_profile_images(
+                    model_row_ids,
+                    None if model_rows is _ROWS_UNREADABLE else model_rows,
+                    self.logger,
+                )
                 missing_makers, seeded_makers = makers_needing_a_page(
                     models, icon_mapping, stored_icons, pipe_identifier, frontend_answered
                 )
@@ -2376,9 +2412,13 @@ class ModelCatalogManager:
                             update_descriptions=valves.UPDATE_MODEL_DESCRIPTIONS,
                             new_model_access_control=valves.NEW_MODEL_ACCESS_CONTROL,
                             existing=(
-                                model_rows.get(openwebui_model_id, _ROW_NOT_FETCHED)
-                                if model_rows is not None
-                                else _ROW_NOT_FETCHED
+                                _ROWS_UNREADABLE
+                                if model_rows is _ROWS_UNREADABLE
+                                else (
+                                    model_rows.get(openwebui_model_id, _ROW_NOT_FETCHED)
+                                    if model_rows is not None
+                                    else _ROW_NOT_FETCHED
+                                )
                             ),
                         )
                     except Exception as exc:
@@ -2479,7 +2519,10 @@ class ModelCatalogManager:
                     ),
                     is_active=model.is_active,
                 )
-                await Models.update_model_by_id(model.id, form)
+                if await Models.update_model_by_id(model.id, form) is None:
+                    raise _ModelWriteRefused(
+                        f"Open WebUI did not report the write to {model.id} as landed"
+                    )
             except Exception as exc:
                 self.logger.warning(
                     "Startup prune: model '%s' keeps its stale filter IDs (%s): Open WebUI would not save it: %s",
@@ -2562,6 +2605,11 @@ class ModelCatalogManager:
             return
         name = (name or "").strip() or openwebui_model_id
 
+        if existing is _ROWS_UNREADABLE:
+            raise _ModelWriteRefused(
+                f"the models table could not be read, so {openwebui_model_id} is left "
+                "exactly as it is"
+            )
         if existing is _ROW_NOT_FETCHED:
             existing = await Models.get_model_by_id(openwebui_model_id)
 
@@ -3206,6 +3254,9 @@ class ModelCatalogManager:
                 return
 
             meta_obj = ModelMeta(**meta_dict)
+            if meta_dict.get("profile_image_url") and not _icon_was_stored(meta_obj):
+                _drop_unsaved_icon_source(meta_dict)
+                meta_obj = ModelMeta(**meta_dict)
             model_form = self._build_model_form(
                 model_form_cls=ModelForm,
                 supports_access_control=supports_access_control,
@@ -3220,7 +3271,11 @@ class ModelCatalogManager:
                 ),
                 is_active=existing.is_active,
             )
-            await Models.update_model_by_id(openwebui_model_id, model_form)
+            if await Models.update_model_by_id(openwebui_model_id, model_form) is None:
+                raise _ModelWriteRefused(
+                    f"Open WebUI did not report the write to {openwebui_model_id} as "
+                    "landed, so it is counted as not written"
+                )
 
         else:
             meta_dict = {}
@@ -3344,6 +3399,9 @@ class ModelCatalogManager:
                 return
 
             meta_obj = ModelMeta(**meta_dict)
+            if meta_dict.get("profile_image_url") and not _icon_was_stored(meta_obj):
+                _drop_unsaved_icon_source(meta_dict)
+                meta_obj = ModelMeta(**meta_dict)
             params_obj = _params_without_tag_scanning(ModelParams, None)
 
             access_mode = new_model_access_control
@@ -3363,4 +3421,8 @@ class ModelCatalogManager:
                 access_payload=access_payload,
                 is_active=True,
             )
-            await Models.insert_new_model(model_form, user_id="")
+            if await Models.insert_new_model(model_form, user_id="") is None:
+                raise _ModelWriteRefused(
+                    f"Open WebUI did not report the insert of {openwebui_model_id} as "
+                    "landed, so it is counted as not written"
+                )

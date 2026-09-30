@@ -287,7 +287,9 @@ async def test_memo_returns_copy_and_quantizes_tz(seeded, monkeypatch):
     # 607 and 601 both quantize to 600 → same memo key; the cache must not be
     # poisoned by the r1 mutation.
     assert r2["totals"]["cost"] != 999.0
-    assert list(uq._UQ_MEMO.keys()) == [("dashboard_qpipe_ab12cd34", "24h", True, 600)]
+    assert list(uq._UQ_MEMO.keys()) == [
+        ("dashboard_qpipe_ab12cd34", "24h", True, 600, True, 30)
+    ]
 
 
 @pytest.mark.asyncio

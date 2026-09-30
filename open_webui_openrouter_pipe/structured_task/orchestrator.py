@@ -86,7 +86,9 @@ def _deep_update(target: dict[str, Any], source: Mapping[str, Any]) -> dict[str,
     return target
 
 
-def merge_task_model_params(payload: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+def merge_task_model_params(
+    payload: dict[str, Any], params: dict[str, Any], *, owned_by: str = ""
+) -> dict[str, Any]:
     if not isinstance(payload, dict) or not isinstance(params, dict) or not params:
         return payload
 
@@ -110,10 +112,29 @@ def merge_task_model_params(payload: dict[str, Any], params: dict[str, Any]) -> 
     else:
         effective = mergeable
 
+    contributed: dict[str, Any] = {}
     for key, value in effective.items():
         if value is not None and key not in payload and key not in _OWUI_REQUEST_SCOPED_PARAM_KEYS:
-            payload[key] = value
+            contributed[key] = value
+    if not contributed:
+        return payload
+    if owned_by == "ollama":
+        payload["options"] = {**contributed, **(payload.get("options") or {})}
+    else:
+        payload.update(contributed)
     return payload
+
+
+def task_model_owned_by(request: Any, model_id: str) -> str:
+    state = getattr(getattr(request, "app", None), "state", None)
+    models = getattr(state, "MODELS", None)
+    if not isinstance(models, dict):
+        return ""
+    row = models.get(model_id)
+    if not isinstance(row, dict):
+        return ""
+    owned_by = row.get("owned_by")
+    return owned_by if isinstance(owned_by, str) else ""
 
 
 def select_task_model_candidates(

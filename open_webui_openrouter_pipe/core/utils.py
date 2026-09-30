@@ -258,6 +258,9 @@ _DATA_URL_NAME_PARAM = re.compile(r";name=[^;,]*", re.IGNORECASE)
 
 
 def _data_url_log_subject(text: str) -> str:
+    if "data:" not in text and "data:" not in text.lower():
+        return text
+
     out: list[str] = []
     last = 0
     for match in _DATA_URL_LOG_SCAN.finditer(text):

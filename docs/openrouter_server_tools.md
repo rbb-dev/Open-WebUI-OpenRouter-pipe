@@ -173,7 +173,7 @@ box, not one of these settings.
 | `IMAGE_OUTPUT_FORMAT` | Output format | `Literal` over the published formats, otherwise `str` | Always. |
 | `IMAGE_OUTPUT_COMPRESSION` | Output compression | `int \| None`, bounded by the published range where there is one and by OpenRouter's documented 0-to-100 otherwise | Always. |
 | `IMAGE_RESOLUTION` | Resolution | `Literal` over the published tiers | The model publishes a tier list. |
-| `IMAGE_SIZE` | Output size | `str` | The model publishes no tier list. |
+| `IMAGE_SIZE` | Output size | `str`, or `int \| None` bounded by the published range where the model publishes `size` as one | The model publishes no tier list. |
 
 The last two are alternatives, never both at once: a model that publishes size tiers gets
 the **Resolution** dropdown, and one that does not gets **Output size** instead, where a
@@ -187,6 +187,11 @@ own range when it publishes one, and by OpenRouter's own 0-to-100 range otherwis
 is not a value list: `0` to `100` refuses only what OpenRouter itself refuses, and says
 nothing about which number this model honours, so it can come from the API-wide schema
 where a set of named choices cannot.
+
+A published numeric range for `size` is a third case rather than a fallback to `str`: the
+control is a whole number bounded by that range, its own description names no tier and no
+pixel form, and the request is measured against the same bound. No recorded model takes
+this path today, but where one does, this panel and the per-model panel agree.
 
 `IMAGE_SIZE` is the one control that is checked further along, and only on the
 server-tool path: the `size` the pipe sends is measured against the selected model's
@@ -274,6 +279,7 @@ Switching a web tool off affects **every** Web Tools filter this pipe maintains,
 - While at least one web tool is still on, every Web Tools filter this pipe maintains that still offers a switched-off tool is rewritten without it, whether it is on or off, so its Integrations toggle disappears at the next model-list refresh, or after the first message that still asks for it. Until then that chat gets neither search nor fetch.
 - With **every** web tool off, every Web Tools filter this pipe maintains is switched off. Nothing is added back. A filter you switch off yourself in Open WebUI's Functions list stays off: the pipe keeps its code up to date but never switches it back on. One this version switched off itself comes back on its own when you enable the feature again.
 - Where several copies exist, the pipe maintains and attaches the one with the id `openrouter_web_tools`, or the most recently updated copy if none has that id. Turning a web tool back on revives **the copy the pipe maintains** and leaves the others switched off until an admin switches them on in the Functions list.
+- The per-user configuration that Fusion's panel members and its judge run against is read from that same copy — the one the pipe maintains, whatever id it ends up carrying. A row the pipe does not own is never read as configuration and never loaded as code, so a third-party filter that happens to sit on the id `openrouter_web_tools` neither supplies your settings nor runs inside the pipe.
 - If the row you need was one **you** switched off, the pipe will not bring it back; switch it on there.
 - **Upgrading:** a filter that was already off before this version stays off. The pipe only re-arms a filter it switched off itself, and it records that in the filter's own meta. The same record is what makes retirement safe: turning an `AUTO_INSTALL_*` valve off switches off only the rows the pipe itself installed, so a copy an admin added by hand — Web Tools, Direct Uploads or anything else — is left alone. A row that was already off when you upgraded carries no such record. Switch it on in Workspace > Functions if you want it.
 
@@ -346,7 +352,8 @@ nothing. The pipe repairs the rows:
   switched-off web tool. That message has already gone out without Open WebUI's search; the repair is for the chats
   after it.
 - **With several copies:** the pipe maintains and attaches `openrouter_web_tools` whenever a row with that id exists, and
-  otherwise the copy the pipe most recently rewrote.
+  otherwise the copy the pipe most recently rewrote. The per-user configuration Fusion's members run against is read
+  from that same copy, by the installer's own rule; a row the pipe does not own is never read or executed.
 - **Turning a web tool back on** revives **the copy the pipe maintains** and leaves the others switched off until an
   admin switches them on in the Functions list.
 - **A filter you switched off yourself stays off:** the pipe keeps its code up to date but never switches it back on.

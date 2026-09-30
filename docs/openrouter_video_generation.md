@@ -2432,13 +2432,16 @@ Key files:
   composer refuses a picture at attach time rather than the pipe dropping it at
   send time. A model in both catalogs keeps its chat answer on both surfaces. A
   sweep that
-  completes with none calls `register_video_models([])`, which retires every
-  model the video catalog itself registered, so a provider withdrawal leaves
-  the picker; a model the chat `/models` catalog also publishes is spared by
-  that chat provenance, not by being unowned, and is retired only when
-  `/models` stops listing it. Spared is not the same as untouched: a model the
+  completes with none keeps every model the video catalog itself registered
+  and logs, once, that the previous set was kept, so a `200` with an empty
+  `data` array — which is what a proxy, a CDN or an upstream edge in front of
+  OpenRouter answers with — cannot empty the picker. A non-empty sweep that
+  stops listing a model does retire it; a model the chat `/models` catalog
+  also publishes is spared by that chat provenance, not by being unowned, and
+  is retired only when `/models` stops listing it. Spared is not the same as
+  untouched: a model the
   video catalog stops listing at all -- whether a sweep that publishes fewer
-  rows or none, and whether the rows are gone because the endpoint was retired
+  rows, and whether the rows are gone because the endpoint was retired
   or because `ENABLE_VIDEO_GENERATION` was turned off after a successful fetch
   -- is also returned to the chat catalog's own features, capability flags and
   tool-calling parameters, and loses the video contract with them. The
@@ -2446,7 +2449,13 @@ Key files:
   passthrough set and not the chat model's; a spec still carrying the video
   row's reads as tool-incapable to `TOOL_CALLING_FILTER` and to the request
   build, which then posts no tools at all. A fetch that raised retires
-  nothing. What is honoured is the model list, not the Open WebUI model row,
+  nothing. The cost of keeping the models is that a genuine *total* withdrawal
+  is not honoured until the worker restarts or `ENABLE_VIDEO_GENERATION` is
+  toggled off and on, because no non-empty answer will ever arrive to
+  reconcile it; Open WebUI keeps its previous base-model list on an empty
+  answer for the same reason, and the chat catalog raises and keeps its cache.
+  Turning the valve off still clears the catalog outright. What is honoured is
+  the model list, not the Open WebUI model row,
   which the model-editor flow retires.
 - [`models/catalog_manager.py`](../open_webui_openrouter_pipe/models/catalog_manager.py)
   — metadata sync that attaches and defaults filters.

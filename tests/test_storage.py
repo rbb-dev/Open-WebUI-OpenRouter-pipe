@@ -51,6 +51,9 @@ class _In:
 class _Field:
     def __init__(self, name: str) -> None:
         self.name = name
+    def __hash__(self) -> int:
+        return hash(self.name)
+
 
     def __eq__(self, other):
         return ("eq", self.name, other)
@@ -2154,6 +2157,9 @@ class _In:
 class _Field:
     def __init__(self, name: str) -> None:
         self.name = name
+    def __hash__(self) -> int:
+        return hash(self.name)
+
 
     def __eq__(self, other):  # type: ignore[override]
         return ("eq", self.name, other)

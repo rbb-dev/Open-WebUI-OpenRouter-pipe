@@ -644,12 +644,13 @@ class RequestOrchestrator:
             request_id=SessionLogger.request_id.get() or "",
         )
 
-    def _resolve_fusion_live_enabled(self, valves: Pipe.Valves, is_fusion: bool, is_direct: bool) -> bool:
-        return bool(
-            valves.ENABLE_OPENROUTER_FUSION
-            and is_fusion
-            and not is_direct
-        )
+    def _resolve_fusion_live_enabled(
+        self, valves: Pipe.Valves, is_fusion: bool, is_direct: bool, plugins: Any
+    ) -> bool:
+        if not (valves.ENABLE_OPENROUTER_FUSION and is_fusion and not is_direct):
+            return False
+        entry = find_fusion_entry(plugins)
+        return not (isinstance(entry, dict) and entry.get("enabled") is False)
 
     def _endpoint_is_valve_forced(
         self,
@@ -1527,10 +1528,13 @@ class RequestOrchestrator:
         if selected_endpoint == "responses":
             _rewrite_video_blocks_for_responses(responses_body.input)
         stripped_plugins = _fusion_plugin_stripped(
-            responses_body.plugins, fusion_enabled=fusion_live
+            responses_body.plugins, fusion_enabled=fusion_live and not use_task_model_adapter
         )
         if stripped_plugins is not None:
             responses_body.plugins = stripped_plugins or None
+            self.logger.debug(
+                "Removed the fusion plugin entry: fusion is off for this request"
+            )
         injected_plugins = _fusion_plugin_injection(
             responses_body.model,
             responses_body.plugins,
@@ -1555,7 +1559,9 @@ class RequestOrchestrator:
                 "Forcing tool_choice=required for dedicated fusion model=%s",
                 responses_body.model,
             )
-        fusion_live_enabled = self._resolve_fusion_live_enabled(valves, fusion_model, is_direct)
+        fusion_live_enabled = self._resolve_fusion_live_enabled(
+            valves, fusion_model, is_direct, responses_body.plugins
+        )
         self.logger.debug(
             "Fusion live UI gate: model=%s fusion=%s fusion_enable=%s direct=%s -> enabled=%s",
             responses_body.model, fusion_model, valves.ENABLE_OPENROUTER_FUSION, is_direct, fusion_live_enabled,

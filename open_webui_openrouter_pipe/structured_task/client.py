@@ -182,7 +182,6 @@ async def read_task_model_response_json(response: Any) -> dict[str, Any]:
         RuntimeError("task_model_empty_response") on empty/whitespace content.
         RuntimeError("task_model_no_choices") on missing choices.
         TypeError on unexpected response shape.
-        json.JSONDecodeError on unparseable JSON content.
     """
     if hasattr(response, "body_iterator"):
         content = await read_model_response_content(response)

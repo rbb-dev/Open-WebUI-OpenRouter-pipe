@@ -88,22 +88,56 @@ def _storage_unavailable_from(exc: Exception, message: str) -> UpdateError:
     return _storage_unavailable(f"{message} [{type(exc).__name__}]: {exc}")
 
 
-def _restorer(before: dict[str, Any], before_meta_path: list[Any]) -> Callable[[], None]:
+def _restorer(
+    before: dict[str, Any], before_meta_path: list[Any], pipe_id: str
+) -> Callable[[], None]:
     def _restore() -> None:
-        _restore_module_state(before, before_meta_path)
+        _restore_module_state(before, before_meta_path, pipe_id)
 
     return _restore
 
 
+def _attempt_owned_key(key: str, pipe_id: str) -> bool:
+    return (
+        key == f"function_{pipe_id}"
+        or key == FUNCTION_ID
+        or key.startswith(f"{FUNCTION_ID}.")
+    )
+
+
+def _is_bundled_finder(finder: Any) -> bool:
+    return type(finder).__name__ == "_BundledModuleFinder"
+
+
+def _restore_meta_path(before_meta_path: list[Any]) -> None:
+    current = list(sys.meta_path)
+    keep = [
+        finder
+        for finder in current
+        if not (_is_bundled_finder(finder)
+                and not any(finder is before for before in before_meta_path))
+    ]
+    for index, before in enumerate(before_meta_path):
+        if _is_bundled_finder(before) and not any(before is finder for finder in keep):
+            keep.insert(min(index, len(keep)), before)
+    if len(keep) == len(current) and all(
+        kept is finder for kept, finder in zip(keep, current)
+    ):
+        return
+    sys.meta_path[:] = keep
+
+
 def _restore_module_state(
-    before: dict[str, Any], before_meta_path: list[Any]
+    before: dict[str, Any], before_meta_path: list[Any], pipe_id: str
 ) -> None:
     for key, value in before.items():
+        if not _attempt_owned_key(key, pipe_id):
+            continue
         if sys.modules.get(key) is not value:
             sys.modules[key] = value
-    for key in [k for k in sys.modules if k not in before]:
+    for key in [k for k in sys.modules if k not in before and _attempt_owned_key(k, pipe_id)]:
         del sys.modules[key]
-    sys.meta_path[:] = before_meta_path
+    _restore_meta_path(before_meta_path)
 
 
 def _now() -> float:
@@ -645,7 +679,7 @@ class UpdateService:
                 pipe_id, content=content
             )
         except Exception as exc:
-            _restore_module_state(before, before_meta_path)
+            _restore_module_state(before, before_meta_path, pipe_id)
             try:
                 repaired = await self._functions().update_function_by_id(
                     pipe_id, {"is_active": True}
@@ -670,7 +704,7 @@ class UpdateService:
                 ) from exc
             raise UpdateError("exec_failed", str(exc)) from exc
         return instance, dict(frontmatter or {}), content, _restorer(
-            before, before_meta_path
+            before, before_meta_path, pipe_id
         )
 
     def _slot_ids(self) -> list[str]:

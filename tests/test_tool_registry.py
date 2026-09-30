@@ -704,7 +704,6 @@ class TestBuildCollisionSafeToolSpecsAndRegistry:
         assert [t["name"] for t in tools] == ["no_exec"]
         assert registry == {}
 
-
 class TestPickExecutorPreferences:
     """Tests specifically targeting _pick_executor preference branches."""
 

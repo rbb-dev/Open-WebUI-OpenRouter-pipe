@@ -1153,10 +1153,12 @@ off there is no published list to draw from, and the tool request ships whatever
 was typed.
 
 One control does appear on every per-model panel, because a request carries it
-for any model and no model's published list mentions it:
+for any model, and a contract that does describe it decides the shape of the box:
 
 - **Output size** — either a size tier (`512`, `1K`, `2K`, `4K`) or exact pixels
-  such as `1024x1024`. A tier sets the same thing as **Resolution** and still
+  such as `1024x1024`. Where a model instead publishes `size` as a numeric range,
+  this control is a whole number bounded by that range, names no tier and no pixel
+  form, and sends nothing but a number. A tier sets the same thing as **Resolution** and still
   takes its shape from **Aspect ratio**; what it is measured against depends on
   the model. Nineteen of the fifty-two publish a tier list of their own, and on those
   a tier outside the list is withheld rather than sent, and named. The other
@@ -1711,14 +1713,28 @@ pipes()
           │  means "not read yet", not "no options"
           └─ register_image_models()
                 ├─ skip multimodal (text in output_modalities)
-                ├─ a sweep that completes with 0 models calls this with
-                │  an empty list, which retires every model the image
-                │  catalog itself registered -- a provider withdrawal
-                │  is a catalog that comes back empty. A model the chat
-                │  /models catalog also publishes is spared by that chat
-                │  provenance, not by being unowned: it stays a chat-catalog
-                │  model and is retired only when /models stops listing it.
-                │  A fetch that raised retires nothing.
+                ├─ a sweep that completes with 0 models does NOT call
+                │  this with an empty list: it keeps every model the
+                │  image catalog itself registered and logs, once, that
+                │  the previous set was kept. A provider withdrawal is
+                │  not distinguishable from a 200 with an empty data
+                │  array -- which is what a proxy, a CDN or an upstream
+                │  edge in front of OpenRouter answers with -- and the
+                │  clients collapse a 200 with no data key, and a 200
+                │  carrying a proxy error body, to the same empty list.
+                │  A model the chat /models catalog also publishes is
+                │  spared by that chat provenance, not by being unowned:
+                │  it stays a chat-catalog model and is retired only when
+                │  /models stops listing it. A non-empty sweep that stops
+                │  listing a model still retires it. A fetch that raised
+                │  retires nothing.
+                │  The cost: a genuine *total* withdrawal is not honoured
+                │  until the worker restarts or
+                │  ENABLE_OPENROUTER_IMAGE_GENERATION is toggled off and
+                │  on, because no non-empty answer will ever arrive to
+                │  reconcile it. Open WebUI keeps its previous base-model
+                │  list on an empty answer for the same reason. Turning
+                │  the valve off still clears the catalog outright.
                 │  Honoured in the model list: the Open WebUI model row
                 │  is retired by the model-editor flow, not by this sweep
                 ├─ publish as one run of plain assignments with no await

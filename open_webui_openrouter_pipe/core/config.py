@@ -1789,7 +1789,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     SESSION_LOG_LOCK_STALE_SECONDS: int = Field(
         default=1800,
         ge=60,
-        description="Stale lock timeout (seconds) for DB-backed session log assembly locks; stale locks are reclaimed. It is also the write-failure backoff: a bundle whose archive could not be written is skipped for this long before it is retried, so one bundle the pipe cannot write does not hold the window. The one carve-out is the stranded-turn rescue: a turn whose existing archive could not be read is exempt from the backoff only while its own three-strike rescue budget lasts, and once that budget is spent it is set aside for this interval like any other bundle the pipe could not write. A lock held by another worker is not a write failure and is never backed off.",
+        description="Stale lock timeout (seconds) for DB-backed session log assembly locks; stale locks are reclaimed. It is also the write-failure backoff: a bundle whose archive could not be written is skipped for this long before it is retried, so one bundle the pipe cannot write does not hold the window. The one carve-out is the stranded-turn rescue: a turn whose existing archive could not be read is exempt from the backoff only while its own three-strike rescue budget lasts, and once that budget is spent it is set aside for this interval like any other bundle the pipe could not write. The rescue bookkeeping is itself bounded: at most 32 stranded turns are tracked at once, and beyond that the oldest is set aside early. A lock held by another worker is not a write failure and is never backed off.",
     )
     ENABLE_TIMING_LOG: bool = Field(
         default=False,
@@ -2440,6 +2440,8 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             + " and a `{\"id\": \"fusion\"}` plugin entry the request already carries is removed"
             + " before anything is sent - on any model and either engine - so an entry a filter"
             + " row, a saved chat or a direct API caller brought along cannot deliberate;"
+            + " a task or title request never carries one, whatever the valve says, so the off"
+            + " state does not wait for that refresh;"
             + " turning it back on re-activates the one the pipe itself switched off, whether or not"
             + " AUTO_INSTALL_FUSION_FILTER is on."
         ),
@@ -2715,7 +2717,12 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         default="other_task_model",
         description=(
             "Fallback strategy when the chosen task model fails. 'none' disables "
-            "fallback; 'other_task_model' switches between internal/external."
+            "fallback; 'other_task_model' switches between internal/external. If "
+            "neither task model is configured at all, the classifier is skipped for "
+            "the turn and the turn is recorded as a classifier failure with reason "
+            "'no_task_model_candidates' -- the video still generates, without "
+            "cross-turn intent analysis, and the person in the chat is warned once "
+            "per chat."
         ),
     )
     VIDEO_INTENT_SKIP_WHEN_EMPTY_CHAT: bool = Field(
@@ -2834,7 +2841,8 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "whether the classifier failed, and a failure_reason carrying a bounded "
             "fault code or the exception's class name - describing the last "
             "candidate's failure, so a later candidate's fault can displace an "
-            "earlier one's. Neither the user's verbatim prompt nor the task model's "
+            "earlier one's, or the bare code 'no_task_model_candidates' on a turn "
+            "where no candidate ran at all. Neither the user's verbatim prompt nor the task model's "
             "own free-text reason appears at any level. Off by default to keep this "
             "prompt-derived metadata out of normal INFO logs."
         ),

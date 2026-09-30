@@ -3485,7 +3485,10 @@ async def test_bulk_prune_removes_stale_ids_from_multiple_models(pipe_instance_a
     update_calls = {}
 
     async def capture_update(model_id, form):
+        # Truthy: Open WebUI answers a landed write with the re-read row
+        # (`models.py:555-556`), and the prune now reads that return.
         update_calls[model_id] = form
+        return SimpleNamespace(id=model_id)
 
     functions_mod = _make_functions_module(valid_filters)
 
@@ -3528,7 +3531,10 @@ async def test_bulk_prune_preserves_non_openrouter_filter_ids(pipe_instance_asyn
     update_calls = {}
 
     async def capture_update(model_id, form):
+        # Truthy: Open WebUI answers a landed write with the re-read row
+        # (`models.py:555-556`), and the prune now reads that return.
         update_calls[model_id] = form
+        return SimpleNamespace(id=model_id)
 
     functions_mod = _make_functions_module(valid_filters)
 

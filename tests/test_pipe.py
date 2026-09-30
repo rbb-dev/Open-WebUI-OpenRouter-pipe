@@ -5729,6 +5729,9 @@ class _Field:
     def __init__(self, name: str) -> None:
         self.name = name
         self.column: Any = None
+    def __hash__(self) -> int:
+        return hash(self.name)
+
 
     def __clause_element__(self):
         """Let the production code hand this field straight to ``sqlalchemy.func``.

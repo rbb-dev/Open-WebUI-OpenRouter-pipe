@@ -94,9 +94,16 @@ async def ensure_video_catalog_loaded(
             return
 
         if not models:
-            OpenRouterModelRegistry.register_video_models([])
             OpenRouterModelRegistry.record_video_attempt()
-            logger.warning("Video catalog fetch returned 0 models; video models retired.")
+            kept = len(OpenRouterModelRegistry._video_catalog_norms)
+            logger.log(
+                warn_level(_warned_video_catalog, "empty"),
+                "Video catalog fetch returned 0 models; keeping the %d video model(s) the "
+                "last refresh published. A catalogue that genuinely holds nothing is not "
+                "reconciled until the worker restarts or ENABLE_VIDEO_GENERATION is "
+                "toggled off and on.",
+                kept,
+            )
             return
 
         if with_modalities:

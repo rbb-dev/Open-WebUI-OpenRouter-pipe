@@ -211,11 +211,18 @@ async def _refresh_image_models(
         return []
 
     if not models:
-        OpenRouterModelRegistry.register_image_models([])
         OpenRouterModelRegistry.record_image_attempt()
         if wants_filters:
             OpenRouterModelRegistry.record_image_contract_attempt()
-        logger.warning("Image catalog fetch returned 0 models; image-only models retired.")
+        kept = len(OpenRouterModelRegistry._image_catalog_norms)
+        logger.log(
+            warn_level(_warned_image_catalog, "empty"),
+            "Image catalog fetch returned 0 models; keeping the %d image-only model(s) "
+            "the last sweep published. A catalogue that genuinely holds nothing is not "
+            "reconciled until the worker restarts or "
+            "ENABLE_OPENROUTER_IMAGE_GENERATION is toggled off and on.",
+            kept,
+        )
         return []
 
     OpenRouterModelRegistry.register_image_models(models)

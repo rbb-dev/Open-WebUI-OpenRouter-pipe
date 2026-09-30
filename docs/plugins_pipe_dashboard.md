@@ -164,8 +164,8 @@ builds — forks inherit the release workflow, so assets, digests, and the chang
   refuses the write that puts the row back, in which case the tab reports `exec_failed_inactive` and tells
   you to switch the pipe on in Workspace > Functions. And a **refused write of the
   newly loaded code** is the same: the freshly loaded bundle is un-installed from the running process
-  (every `sys.modules` key and `sys.meta_path` entry the loader touched is put back to its pre-attempt
-  state, including the keys the compressed bundle deletes), the serving instance is rebuilt from the
+  (every `sys.modules` key and `sys.meta_path` entry **the load itself** wrote is put back to its
+  pre-attempt state, including the keys the compressed bundle deletes), the serving instance is rebuilt from the
   restored module, and the function cache is repointed at it — so "the previous version remains active"
   is literally true and the next chat is served, on both the one-click and the automatic path. This is
   reported as `write_failed`, separately from a validation failure, because the code passed every check

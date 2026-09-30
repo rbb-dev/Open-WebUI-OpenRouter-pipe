@@ -108,6 +108,8 @@ class ReasoningConfigManager:
         )
         if lowest:
             repaired["effort"] = lowest
+        elif _normalised_effort(repaired) in _EFFORT_REASONING_OFF:
+            repaired.pop("effort", None)
         return repaired, True
 
     def _apply_reasoning_preferences(self, responses_body: ResponsesBody, valves: Pipe.Valves) -> str | None:
