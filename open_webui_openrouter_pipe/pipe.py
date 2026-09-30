@@ -109,7 +109,6 @@ except ImportError:
 
 # Timing instrumentation
 from .core.timing_logger import (
-    _timing_request_id,
     clear_timing_context,
     clear_timing_events,
     timed,
@@ -198,6 +197,7 @@ from .storage.persistence import ArtifactStore
 from .streaming.event_emitter import EventEmitter, EventEmitterHandler
 from .streaming.streaming_core import StreamingHandler, _wrap_event_emitter
 from .tools.tool_executor import (
+    _OWUI_PRE_DISPATCH_ERROR_PREFIXES,
     _QueuedToolCall,
     _ToolExecutionContext,
     resolved_tool_name,
@@ -226,6 +226,24 @@ def _detached_task(
     loop: asyncio.AbstractEventLoop, coro: Coroutine[Any, Any, Any], name: str
 ) -> asyncio.Task:
     return loop.create_task(coro, name=name, context=contextvars.Context())
+
+
+def _drop_task(task: asyncio.Task | None) -> None:
+    if task is not None and not task.done():
+        with contextlib.suppress(Exception):
+            task.cancel()
+
+
+def _wake_refused_stream(job: _PipeJob) -> None:
+    stream_queue = job.stream_queue
+    if stream_queue is None:
+        return
+    with contextlib.suppress(Exception):
+        stream_queue.put_nowait(
+            {"error": {"detail": "Server busy (503)"}, "done": True}
+        )
+    with contextlib.suppress(Exception):
+        stream_queue.put_nowait(None)
 
 
 _LIFECYCLE_REGISTRY_KEY = "_openrouter_pipe_lifecycle"
@@ -333,6 +351,8 @@ def _reports_transport_failure(result: Any) -> bool:
         return False
     body = result[0]
     error = body.get("error") if isinstance(body, dict) else None
+    if isinstance(error, str) and error.startswith(_OWUI_PRE_DISPATCH_ERROR_PREFIXES):
+        return False
     return bool(error.strip()) if isinstance(error, str) else bool(error)
 
 
@@ -477,6 +497,7 @@ class _PipeJob:
     rejected_user_valves: list[str] = field(default_factory=list)
     continued_reply: str | None = None
     counter_state: dict[str, bool] | None = None
+    admission_refused: bool = False
 
     @property
     @timed
@@ -669,6 +690,7 @@ class Pipe:
         )
 
         self._stale_filter_ids_pruned = False
+        self._generation_complete_dispatched: set[str] = set()
         self._provider_routing_filters_installed = False
         self._provider_routing_rows_probed = False
         self._provider_routing_rows_may_exist_flag = False
@@ -780,6 +802,7 @@ class Pipe:
                 current_loop = None
             if task_loop is not None and task_loop is current_loop:
                 return
+            _drop_task(self._startup_task)
             self._startup_task = None
             self._startup_checks_started = False
         if self._startup_task and self._startup_task.done():
@@ -1084,6 +1107,7 @@ class Pipe:
                 task_loop = None
             if task_loop is not None and task_loop is loop:
                 return
+            _drop_task(self._redis_ready_task)
             self._redis_ready_task = None
         if self._redis_retry_url != self._redis_url:
             self._redis_retry_at = 0.0
@@ -1116,6 +1140,7 @@ class Pipe:
                 task_loop = None
             if task_loop is not None and task_loop is loop:
                 return
+            _drop_task(self._cleanup_task)
             self._cleanup_task = None
         self._cleanup_task = _detached_task(
             loop,
@@ -1470,6 +1495,15 @@ class Pipe:
             level = warn_level(_warned_plugin_dispatch, f"{method}:{type(exc).__name__}")
             self.logger.log(level, "Plugin event %s dispatch failed", method, exc_info=True)
 
+    @timed
+    async def _dispatch_generation_complete(
+        self, usage: Any, status: str, **kwargs: Any
+    ) -> None:
+        rid = str(kwargs.get("request_id") or "")
+        if rid:
+            self._generation_complete_dispatched.add(rid)
+        await self._dispatch_plugin_event("dispatch_on_generation_complete", usage, status, **kwargs)
+
     def _ensure_plugin_registry(self) -> PluginRegistry:
         if self._plugin_registry is None:
             from .plugins.registry import PluginRegistry
@@ -1514,16 +1548,7 @@ class Pipe:
             switch_rows = await self._with_active_rows(switch_rows)
         if all_web_tools_disabled:
             try:
-                from open_webui.models.functions import Functions as _Funcs
-                wt = await _Funcs.get_function_by_id("openrouter_web_tools")
-                if wt and getattr(wt, "is_active", False) and await _write_function(
-                    _Funcs,
-                    "openrouter_web_tools",
-                    {"is_active": False, "meta": switched_off_meta(wt)},
-                    "disabling the OpenRouter Web Tools filter while every web tool is disabled",
-                    self.logger,
-                ):
-                    self.logger.info("Disabled OpenRouter Web Tools filter (all tools disabled)")
+                await self._ensure_filter_manager().repair_web_tools_filters(switch_rows)
             except Exception:
                 self.logger.debug("Disabling OpenRouter Web Tools filter failed", exc_info=True)
         if not self.valves.ENABLE_OPENROUTER_FUSION:
@@ -1593,7 +1618,7 @@ class Pipe:
                     self.logger.info("Disabled OpenRouter Image Generation filter (ENABLE_IMAGE_GENERATION=False)")
             except Exception:
                 self.logger.debug("Disabling OpenRouter Image Generation filter failed", exc_info=True)
-        else:
+        elif self.valves.AUTO_INSTALL_IMAGE_GEN_FILTER:
             try:
                 await self._ensure_filter_manager().reactivate_filters_by_marker(
                     _OPENROUTER_IMAGE_GEN_FILTER_MARKER, log_label="Image Generation"
@@ -1611,7 +1636,7 @@ class Pipe:
                 await self._ensure_filter_manager()._retire_variant_video_filters()
             except Exception as exc:
                 self.logger.debug("Retiring per-model video filters failed: %s", exc, exc_info=True)
-        else:
+        elif self.valves.AUTO_INSTALL_VIDEO_FILTERS:
             try:
                 await self._ensure_filter_manager().reactivate_video_gen_filters(switch_rows)
             except Exception:
@@ -1696,17 +1721,22 @@ class Pipe:
     @timed
     async def pipes(self):
         """Return the list of models exposed to Open WebUI."""
-        _pipe_id_token = ModelFamily._PIPE_ID.set(self.id)
+        self._active_pipes_calls += 1
         try:
-            _api_key, _api_key_error = self._resolve_openrouter_api_key(self.valves)
-        except Exception:  # noqa: BLE001 - the fault is the body's to degrade open
-            _api_key, _api_key_error = None, None
-        _zdr_key_token = OpenRouterModelRegistry.arm_zdr_key(_api_key if not _api_key_error else None)
-        try:
-            return await self._pipes()
+            _pipe_id_token = ModelFamily._PIPE_ID.set(self.id)
+            try:
+                _api_key, _api_key_error = self._resolve_openrouter_api_key(self.valves)
+            except Exception:  # noqa: BLE001 - the fault is the body's to degrade open
+                _api_key, _api_key_error = None, None
+            _zdr_key_token = OpenRouterModelRegistry.arm_zdr_key(_api_key if not _api_key_error else None)
+            try:
+                return await self._pipes()
+            finally:
+                OpenRouterModelRegistry._ZDR_KEY.reset(_zdr_key_token)
+                ModelFamily._PIPE_ID.reset(_pipe_id_token)
         finally:
-            OpenRouterModelRegistry._ZDR_KEY.reset(_zdr_key_token)
-            ModelFamily._PIPE_ID.reset(_pipe_id_token)
+            self._active_pipes_calls = max(0, self._active_pipes_calls - 1)
+            self._maybe_trigger_drain_close()
 
     @timed
     async def _pipes(self):
@@ -2006,6 +2036,7 @@ class Pipe:
         owui_chat_id_token = OWUI_CHAT_ID.set(str((__metadata__ or {}).get("chat_id") or ""))
         _enqueued = False
         _early_request_id = ""
+        wants_stream = False
 
         try:
             from .core.timing_logger import set_timing_context, timing_mark
@@ -2038,11 +2069,18 @@ class Pipe:
             user_valves, rejected_user_valves = await self._read_user_valves(__user__)
             for name in rejected_user_valves:
                 level = warn_level(_warned_user_valves, name)
-                self.logger.log(
-                    level,
-                    "User valve %s could not be read and is using its default",
-                    name,
-                )
+                if name in self.UserValves.model_fields:
+                    self.logger.log(
+                        level,
+                        "User valve %s could not be read and is using its default",
+                        name,
+                    )
+                else:
+                    self.logger.log(
+                        level,
+                        "User valve %s is not a setting this version knows; the site-wide value is in force",
+                        name,
+                    )
             valves = self._merge_valves(self.valves, user_valves, rejected=rejected_user_valves)
             user_id = str(__user__.get("id") or __metadata__.get("user_id") or "")
             wants_stream = bool(body.get("stream"))
@@ -2076,7 +2114,10 @@ class Pipe:
                         done=True,
                     )
                 SessionLogger.cleanup()
-                return self._degraded_result(__task__, message)
+                return self._refusal_result(
+                    __task__, message, status=429, request=__request__,
+                    metadata=__metadata__, wants_stream=wants_stream,
+                )
 
             if self._warmup_failed and (self._startup_task is None or self._startup_task.done()):
                 message = "Service unavailable due to startup issues"
@@ -2088,7 +2129,10 @@ class Pipe:
                         done=True,
                     )
                 SessionLogger.cleanup()
-                return self._degraded_result(__task__, message)
+                return self._refusal_result(
+                    __task__, message, status=503, request=__request__,
+                    metadata=__metadata__, wants_stream=wants_stream,
+                )
             await self._ensure_concurrency_controls(valves)
             timing_mark("after_concurrency_controls")
             queue = self._request_queue
@@ -2102,7 +2146,10 @@ class Pipe:
                         done=True,
                     )
                 SessionLogger.cleanup()
-                return self._degraded_result(__task__, "Service temporarily unavailable")
+                return self._refusal_result(
+                    __task__, "Service temporarily unavailable", status=503, request=__request__,
+                    metadata=__metadata__, wants_stream=wants_stream,
+                )
 
             loop = asyncio.get_running_loop()
             stream_queue: asyncio.Queue[dict[str, Any] | str | None] | None = None
@@ -2158,21 +2205,7 @@ class Pipe:
                     _admission_bound(type(self)._semaphore_limit or int(valves.MAX_CONCURRENT_REQUESTS), int(self._QUEUE_MAXSIZE)),
                     job.request_id,
                 )
-                if safe_event_emitter:
-                    await self._ensure_error_formatter()._emit_error(
-                        safe_event_emitter,
-                        "Server busy (503)",
-                        show_error_message=True,
-                        done=True,
-                    )
-                SessionLogger.cleanup()
-                if not wants_stream and not __task__ and _is_api_caller(__metadata__):
-                    escape = _admission_error_response(
-                        503, "Server busy (503)", request=__request__
-                    )
-                    if escape is not None:
-                        return escape
-                return self._degraded_result(__task__, "Server busy (503)")
+                return await self._refuse_at_admission(job, wants_stream=wants_stream)
             _enqueued = True
         except Exception:
             self.logger.exception("Pre-enqueue setup failed")
@@ -2190,7 +2223,10 @@ class Pipe:
                 SessionLogger.cleanup()
             except Exception:
                 self.logger.debug("SessionLogger.cleanup failed during pre-enqueue recovery", exc_info=True)
-            return self._degraded_result(__task__, "Request setup failed. Please retry.")
+            return self._refusal_result(
+                __task__, "Request setup failed. Please retry.", status=503, request=__request__,
+                metadata=__metadata__, wants_stream=wants_stream,
+            )
         finally:
             with contextlib.suppress(Exception):
                 OWUI_CHAT_ID.reset(owui_chat_id_token)
@@ -2229,6 +2265,8 @@ class Pipe:
                 finally:
                     if not future.done():
                         future.cancel()
+                    if job.admission_refused and future.cancelled():
+                        await self._refuse_at_admission(job, wants_stream=wants_stream)
                     SessionLogger.cleanup()
 
             return _stream()
@@ -2240,6 +2278,8 @@ class Pipe:
         except asyncio.CancelledError:
             if not future.done():
                 future.cancel()
+            if job.admission_refused:
+                return await self._refuse_at_admission(job, wants_stream=wants_stream)
             self.logger.debug("Pipe request cancelled by caller (request_id=%s)", job.request_id)
             raise
         except Exception:
@@ -2354,6 +2394,7 @@ class Pipe:
 
     def _init_minimal_for_tests(self) -> None:
         self.type = "manifold"
+        self._generation_complete_dispatched: set[str] = set()
         self.logger = SessionLogger.get_logger(__name__.split(".")[0])
         self._http_session = None
         self._initialized = False
@@ -2522,14 +2563,13 @@ class Pipe:
         if queue is None:
             return
         drained = 0
-        while True:
+        total = queue.qsize()
+        while drained < total:
             try:
                 abandoned = queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
             drained += 1
-            if drained > Pipe._QUEUE_MAXSIZE:
-                break
             if not abandoned.future.done():
                 with contextlib.suppress(RuntimeError):
                     abandoned.future.set_exception(
@@ -2839,6 +2879,7 @@ class Pipe:
                     self.logger.debug(
                         "Dropping stale request worker bound to a different event loop during setup."
                     )
+                    _drop_task(self._queue_worker_task)
                     self._queue_worker_task = None
                     self._abandon_request_queue()
 
@@ -2851,20 +2892,20 @@ class Pipe:
                     self.logger.debug(
                         "Dropping stale request queue bound to a different event loop during setup."
                     )
-                    self._abandon_request_queue()
+                    stale_worker = self._queue_worker_task
                     self._queue_worker_task = None
+                    _drop_task(stale_worker)
+                    self._abandon_request_queue()
 
             if self._request_queue is None:
                 self._request_queue = asyncio.Queue(maxsize=self._QUEUE_MAXSIZE)
                 self.logger.debug("Created request queue (maxsize=%s)", self._QUEUE_MAXSIZE)
 
             if self._queue_worker_task is None or self._queue_worker_task.done():
-                worker_ctx = contextvars.copy_context()
-                worker_ctx.run(_timing_request_id.set, None)
-                self._queue_worker_task = current_loop.create_task(
+                self._queue_worker_task = _detached_task(
+                    current_loop,
                     Pipe._request_worker_loop(self._request_queue),
-                    name="openrouter-pipe-dispatch",
-                    context=worker_ctx,
+                    "openrouter-pipe-dispatch",
                 )
                 self.logger.debug("Started request queue worker")
 
@@ -2879,6 +2920,8 @@ class Pipe:
                 if sem_loop is not current_loop:
                     setattr(cls, attr, None)
 
+            superseded = self._draining or self._closing
+
             self._apply_limit(
                 "MAX_CONCURRENT_REQUESTS",
                 valves.MAX_CONCURRENT_REQUESTS,
@@ -2888,6 +2931,7 @@ class Pipe:
                 lambda: cls._semaphore_limit,
                 lambda value: setattr(cls, "_semaphore_limit", value),
                 "request semaphore",
+                live=not superseded,
             )
             self._apply_limit(
                 "MAX_PARALLEL_TOOLS_GLOBAL",
@@ -2898,6 +2942,7 @@ class Pipe:
                 lambda: cls._tool_global_limit,
                 lambda value: setattr(cls, "_tool_global_limit", value),
                 "tool semaphore",
+                live=not superseded,
             )
 
 
@@ -2911,6 +2956,7 @@ class Pipe:
         read_limit: Any,
         write_limit: Any,
         what: str,
+        live: bool = True,
     ) -> None:
         from .integrations.video import VideoResizableSemaphore
 
@@ -2918,6 +2964,8 @@ class Pipe:
             write_sem(VideoResizableSemaphore(target))
             write_limit(target)
             self.logger.debug("Initialized %s (limit=%s)", what, target)
+            return
+        if not live:
             return
         if int(target) != int(read_limit()):
             previous = int(read_limit())
@@ -2983,13 +3031,29 @@ class Pipe:
     ) -> bool:
         if semaphore is not None:
             semaphore.release()
-        Pipe._put_missing_stream_terminator(job)
         queue.task_done()
         if cancel_future:
+            job.admission_refused = True
             job.future.cancel()
+            _wake_refused_stream(job)
         elif not job.future.cancelled():
             job.future.set_result("Server busy (503)")
+        Pipe._put_missing_stream_terminator(job)
         return True
+
+    async def _refuse_at_admission(self, job: _PipeJob, *, wants_stream: bool) -> Any:
+        if job.event_emitter:
+            await self._ensure_error_formatter()._emit_error(
+                job.event_emitter,
+                "Server busy (503)",
+                show_error_message=True,
+                done=True,
+            )
+        SessionLogger.cleanup()
+        return self._refusal_result(
+            job.task, "Server busy (503)", status=503, request=job.request,
+            metadata=job.metadata, wants_stream=wants_stream,
+        )
 
     @staticmethod
     @timed
@@ -3113,8 +3177,8 @@ class Pipe:
 
             permit_handed_to_manager = True
             async with self._acquire_semaphore(semaphore, job.request_id, held=semaphore_held):
-                session = await self._shared_request_session(job.valves)
                 tokens = self._apply_logging_context(job)
+                session = await self._shared_request_session(job.valves)
                 tokens.append(
                     (ModelFamily._PIPE_ID, ModelFamily._PIPE_ID.set(self.id))
                 )
@@ -3293,20 +3357,25 @@ class Pipe:
 
                 backstop_rid = job.request_id or SessionLogger.request_id.get() or ""
                 if backstop_rid:
-                    if job.future.cancelled():
-                        backstop_status = "cancelled"
-                    elif _future_failed(job.future):
-                        backstop_status = "failed"
-                    else:
-                        backstop_status = "ok"
-                    await self._dispatch_plugin_event(
-                        "dispatch_on_generation_complete",
-                        None,
-                        backstop_status,
-                        request_id=backstop_rid,
-                        metadata=job.metadata,
-                        task=job.task,
-                    )
+                    already = backstop_rid in self._generation_complete_dispatched
+                    try:
+                        if not already:
+                            if job.future.cancelled():
+                                backstop_status = "cancelled"
+                            elif _future_failed(job.future):
+                                backstop_status = "failed"
+                            else:
+                                backstop_status = "ok"
+                            await self._dispatch_plugin_event(
+                                "dispatch_on_generation_complete",
+                                None,
+                                backstop_status,
+                                request_id=backstop_rid,
+                                metadata=job.metadata,
+                                task=job.task,
+                            )
+                    finally:
+                        self._generation_complete_dispatched.discard(backstop_rid)
 
                 if tool_token is not None:
                     with contextlib.suppress(ValueError):
@@ -3832,6 +3901,7 @@ class Pipe:
         event_queue_warn_size: int = 1000,
         user: Any = None,
         owui_chat_id: str | None = None,
+        files_inlined: bool = False,
     ) -> AsyncGenerator[dict[str, Any], None]:
         async for event in self._ensure_responses_adapter().send_openai_responses_streaming_request(
             session, request_body, api_key, base_url, valves=valves, workers=workers,
@@ -3841,6 +3911,7 @@ class Pipe:
             event_queue_maxsize=event_queue_maxsize, event_queue_warn_size=event_queue_warn_size,
             user=user,
             owui_chat_id=owui_chat_id,
+            files_inlined=files_inlined,
         ):
             yield event
 
@@ -3855,11 +3926,13 @@ class Pipe:
         breaker_key: str | None = None,
         user: Any = None,
         owui_chat_id: str | None = None,
+        files_inlined: bool = False,
     ) -> AsyncGenerator[dict[str, Any], None]:
         async for event in self._ensure_chat_completions_adapter().send_openai_chat_completions_streaming_request(
             session, responses_request_body, api_key, base_url, valves=valves, breaker_key=breaker_key,
             user=user,
             owui_chat_id=owui_chat_id,
+            files_inlined=files_inlined,
         ):
             yield event
 
@@ -3875,12 +3948,14 @@ class Pipe:
         user: Any = None,
         owui_chat_id: str | None = None,
         transient_retry: bool = True,
+        files_inlined: bool = False,
     ) -> dict[str, Any]:
         return await self._ensure_chat_completions_adapter().send_openai_chat_completions_nonstreaming_request(
             session, responses_request_body, api_key, base_url, valves=valves, breaker_key=breaker_key,
             user=user,
             owui_chat_id=owui_chat_id,
             transient_retry=transient_retry,
+            files_inlined=files_inlined,
         )
 
     async def send_openrouter_nonstreaming_request_as_events(
@@ -4210,8 +4285,9 @@ class Pipe:
         timeout = ask_user_window if ask_user_window is not None else float(context.timeout)
 
         origin_name = str(item.tool_cfg.get("origin_name") or tool_name)
-        wire = item.tool_cfg.get("spec_wire") or item.tool_cfg.get("spec") or {}
-        declared = ((wire.get("parameters") or {}).get("properties") or {})
+        declared = item.tool_cfg.get("declared_params")
+        if declared is None:
+            declared = ((item.tool_cfg.get("spec") or {}).get("parameters") or {}).get("properties") or {}
         call_args = (
             {key: value for key, value in item.args.items() if key in declared} if isinstance(item.args, dict) else {}
         )
@@ -4361,12 +4437,14 @@ class Pipe:
         user: Any = None,
         owui_chat_id: str | None = None,
         transient_retry: bool = True,
+        files_inlined: bool = False,
     ) -> dict[str, Any]:
         return await self._ensure_responses_adapter().send_openai_responses_nonstreaming_request(
             session, request_body, api_key, base_url, valves=valves, breaker_key=breaker_key,
             user=user,
             owui_chat_id=owui_chat_id,
             transient_retry=transient_retry,
+            files_inlined=files_inlined,
         )
 
 
@@ -4439,6 +4517,9 @@ class Pipe:
                         connector._limit = target  # type: ignore[attr-defined]
                         connector._release_waiter()  # type: ignore[attr-defined]
                         self.logger.debug("Resized shared connector limit to %s", target)
+                if valves is not None:
+                    with contextlib.suppress(Exception):
+                        session._timeout = http_timeout(valves)  # type: ignore[attr-defined]
                 return session
             session = self._create_http_session(valves, shared=True)
             self._request_sessions[running] = session
@@ -5108,6 +5189,22 @@ class Pipe:
         if "title" in name:
             return json.dumps({"title": "Chat"})
         return ""
+
+    def _refusal_result(
+        self,
+        task: Any,
+        content: str,
+        *,
+        status: int,
+        request: Any,
+        metadata: Any,
+        wants_stream: bool,
+    ) -> str | StreamingResponse:
+        if not wants_stream and not task and _is_api_caller(metadata):
+            escape = _admission_error_response(status, content, request=request)
+            if escape is not None:
+                return escape
+        return self._degraded_result(task, content)
 
     def _degraded_result(self, task: Any, content: str) -> str:
         if TaskModelAdapter._uses_task_model_adapter(task):

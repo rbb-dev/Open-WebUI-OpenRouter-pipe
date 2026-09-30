@@ -49,8 +49,6 @@ async def maybe_dump_costs_snapshot(
         return
     if not (pipe._redis_enabled and pipe._redis_client):
         return
-    if not user_id:
-        return
 
     def _user_field(obj: Any, field: str) -> str | None:
         if obj is None:

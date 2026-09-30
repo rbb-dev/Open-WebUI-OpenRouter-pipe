@@ -29,6 +29,7 @@ from ...core.errors import (
     RequiredInternalFileError,
     _build_openrouter_api_error,
 )
+from ...core.logging_system import SessionLogger
 from ...core.timing_logger import timed, timing_mark
 from ...core.utils import _apply_retry_after_metadata, http_timeout
 from ...core.warn_latch import warn_level
@@ -54,6 +55,7 @@ from ..transforms import (
     _unhandled_citation_types,
 )
 from .responses_adapter import (
+    _backlog_cause,
     _body_not_an_object,
     _count_failed_call,
     _decode_json_body,
@@ -63,6 +65,7 @@ from .responses_adapter import (
     _should_retry_stream,
     _split_sse_lines,
     _transient_retry_policy,
+    _warned_queue_backlog,
 )
 
 if TYPE_CHECKING:
@@ -240,15 +243,18 @@ class ChatCompletionsAdapter:
         breaker_key: str | None = None,
         user: Any = None,
         owui_chat_id: str | None = None,
+        files_inlined: bool = False,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Send /chat/completions and adapt streaming output into Responses-style events."""
         effective_valves = valves or self._pipe.valves
-        responses_payload = await self._pipe._file_gateway.inline_internal_responses_input_files(
-            responses_request_body or {},
-            chunk_size=effective_valves.IMAGE_UPLOAD_CHUNK_BYTES,
-            max_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
-            user=user,
-        )
+        responses_payload = responses_request_body or {}
+        if not files_inlined:
+            responses_payload = await self._pipe._file_gateway.inline_internal_responses_input_files(
+                responses_request_body or {},
+                chunk_size=effective_valves.IMAGE_UPLOAD_CHUNK_BYTES,
+                max_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
+                user=user,
+            )
         chat_payload = _responses_payload_to_chat_completions_payload(
             responses_payload,
         )
@@ -273,6 +279,7 @@ class ChatCompletionsAdapter:
 
         tool_calls_by_index: dict[int, dict[str, Any]] = {}
         tool_call_added: set[int] = set()
+        minted_call_ids: dict[int, str] = {}
         tool_calls_completed = False
         cut_off = False
         truncating_reason: str | None = None
@@ -306,7 +313,10 @@ class ChatCompletionsAdapter:
             tid = current.get("id")
             if isinstance(tid, str) and tid.strip():
                 return tid.strip()
-            generated = ChatCompletionsAdapter._made_up_call_id(index)
+            generated = minted_call_ids.get(index)
+            if generated is None:
+                generated = ChatCompletionsAdapter._made_up_call_id(index)
+                minted_call_ids[index] = generated
             current["id"] = generated
             return generated
 
@@ -1039,15 +1049,18 @@ class ChatCompletionsAdapter:
         user: Any = None,
         owui_chat_id: str | None = None,
         transient_retry: bool = True,
+        files_inlined: bool = False,
     ) -> dict[str, Any]:
         """Send /chat/completions with stream=false and return the JSON payload."""
         effective_valves = valves or self._pipe.valves
-        responses_payload = await self._pipe._file_gateway.inline_internal_responses_input_files(
-            responses_request_body or {},
-            chunk_size=effective_valves.IMAGE_UPLOAD_CHUNK_BYTES,
-            max_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
-            user=user,
-        )
+        responses_payload = responses_request_body or {}
+        if not files_inlined:
+            responses_payload = await self._pipe._file_gateway.inline_internal_responses_input_files(
+                responses_request_body or {},
+                chunk_size=effective_valves.IMAGE_UPLOAD_CHUNK_BYTES,
+                max_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
+                user=user,
+            )
         chat_payload = _responses_payload_to_chat_completions_payload(
             responses_payload,
         )
@@ -1157,11 +1170,17 @@ class ChatCompletionsAdapter:
 
         responses_emitted_user_visible = False
         responses_buffer: list[dict[str, Any]] = []
+        inlined_request_body = await self._pipe._file_gateway.inline_internal_responses_input_files(
+            responses_request_body or {},
+            chunk_size=effective_valves.IMAGE_UPLOAD_CHUNK_BYTES,
+            max_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
+            user=user,
+        )
 
         @timed
         async def _run_responses() -> AsyncGenerator[dict[str, Any], None]:
             nonlocal responses_emitted_user_visible
-            request_payload = _filter_openrouter_request(dict(responses_request_body or {}))
+            request_payload = _filter_openrouter_request(dict(inlined_request_body or {}))
             async for event in self._pipe.send_openai_responses_streaming_request(
                 session,
                 request_payload,
@@ -1179,6 +1198,7 @@ class ChatCompletionsAdapter:
                 event_queue_warn_size=event_queue_warn_size,
                 user=user,
                 owui_chat_id=owui_chat_id,
+                files_inlined=True,
             ):
                 if not responses_emitted_user_visible and not _responses_event_is_user_visible(event):
                     responses_buffer.append(event)
@@ -1198,15 +1218,30 @@ class ChatCompletionsAdapter:
         async def _run_chat() -> AsyncGenerator[dict[str, Any], None]:
             async for event in self._pipe.send_openai_chat_completions_streaming_request(
                 session,
-                dict(responses_request_body or {}),
+                dict(inlined_request_body or {}),
                 api_key=api_key,
                 base_url=base_url,
                 valves=effective_valves,
                 breaker_key=breaker_key,
                 user=user,
                 owui_chat_id=owui_chat_id,
+                files_inlined=True,
             ):
                 yield event
+
+        def _warn_pump_backlog(qsize: int) -> None:
+            if not self._pipe._should_warn_event_queue_backlog(qsize, event_queue_warn_size):
+                return
+            self.logger.log(
+                warn_level(
+                    _warned_queue_backlog,
+                    _backlog_cause("chat_pump_queue", SessionLogger.request_id.get() or ""),
+                    cooldown_s=30.0,
+                ),
+                "Chat-completions pump queue backlog high: %d items (session=%s)",
+                qsize,
+                SessionLogger.session_id.get() or "unknown",
+            )
 
         if endpoint == "chat_completions":
             async for event in nagle_coalesce_stream(
@@ -1214,6 +1249,8 @@ class ChatCompletionsAdapter:
                 idle_flush_seconds=idle_flush_seconds,
                 passthrough=passthrough_deltas,
                 min_flush_chars=nagle_min_chars,
+                warn_size=event_queue_warn_size,
+                warn_sink=_warn_pump_backlog,
             ):
                 yield event
             return
@@ -1240,7 +1277,6 @@ class ChatCompletionsAdapter:
                         len(responses_buffer),
                         model_id,
                     )
-                    responses_buffer.clear()
                 self.logger.info(
                     "Falling back to /chat/completions for model=%s after /responses error (status=%s openrouter_code=%s): %s",
                     model_id,
@@ -1254,6 +1290,8 @@ class ChatCompletionsAdapter:
                     idle_flush_seconds=idle_flush_seconds,
                     passthrough=passthrough_deltas,
                     min_flush_chars=nagle_min_chars,
+                    warn_size=event_queue_warn_size,
+                    warn_sink=_warn_pump_backlog,
                 ):
                     yield event
                 return

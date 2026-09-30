@@ -601,10 +601,9 @@ class ImageGenerationAdapter:
                 _STALE_CONTRACT if fallback is not None else _NO_CONTRACT,
             )
             return fallback, unserved
+        client = self._client(session, valves, user=user, owui_chat_id=owui_chat_id)
         try:
-            records = await self._client(
-                session, valves, user=user, owui_chat_id=owui_chat_id
-            ).endpoints(api_model_id)
+            records = await client.endpoints(api_model_id)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -1099,8 +1098,7 @@ class ImageGenerationAdapter:
     async def _report_generation(
         self, usage: Any, status: str, metadata: dict[str, Any] | None
     ) -> None:
-        await self._pipe._dispatch_plugin_event(
-            "dispatch_on_generation_complete",
+        await self._pipe._dispatch_generation_complete(
             usage if isinstance(usage, dict) and usage else None,
             status,
             request_id=SessionLogger.request_id.get() or "",
@@ -1137,7 +1135,7 @@ class ImageGenerationAdapter:
         outcome_sink: dict[str, Any] | None = None,
         breaker_key: str | None = None,
     ) -> str:
-        outcome: _Outcome = {"usage": None, "reported": False, "costed": False, "sent": False, "delivered": False}
+        outcome: _Outcome = {"usage": None, "reported": False, "costed": False, "sent": False, "delivered": False, "degraded": False}
         try:
             content = await self._generate(
                 body=body,
@@ -1188,9 +1186,10 @@ class ImageGenerationAdapter:
     def _settle_request(
         self, outcome: _Outcome, outcome_sink: dict[str, Any] | None, breaker_key: str | None
     ) -> None:
+        failed = not outcome["delivered"] or bool(outcome["degraded"])
         if outcome_sink is not None:
-            outcome_sink["error_occurred"] = not outcome["delivered"]
-        if outcome["sent"] and not outcome["delivered"]:
+            outcome_sink["error_occurred"] = failed
+        if outcome["sent"] and failed:
             _record_failed_call(self._pipe, breaker_key)
 
     async def _settle(
@@ -1344,10 +1343,9 @@ class ImageGenerationAdapter:
             )
 
         started_at = time.monotonic()
+        client = self._client(session, valves, user=user_obj, owui_chat_id=chat_id)
         outcome["sent"] = True
-        result: ImageGenerationResult = await self._client(
-            session, valves, user=user_obj, owui_chat_id=chat_id
-        ).generate(
+        result: ImageGenerationResult = await client.generate(
             payload,
             max_decoded_bytes=int(getattr(valves, "BASE64_MAX_SIZE_MB", 0) or 0) * 1024 * 1024,
             on_progress=self._status_reporter(event_emitter),
@@ -1414,6 +1412,7 @@ class ImageGenerationAdapter:
 
         content = "\n\n".join(snippets)
         outcome["delivered"] = True
+        outcome["degraded"] = result.stream_broken
         outcome["reported"] = True
         await self._report_generation(result.usage, "ok", metadata)
         if event_emitter:

@@ -24,6 +24,7 @@ from urllib.parse import quote
 
 import aiohttp
 
+from ..core.logging_system import SessionLogger
 from ..core.timing_logger import timed
 from ..core.url_scheme import url_scheme
 from ..core.warn_latch import warn_level
@@ -219,37 +220,21 @@ async def _read_model_rows(ids: list[str], logger: Any) -> dict[str, Any] | None
     return stored if ids else None
 
 
-async def _stored_profile_images(
-    models: list[dict[str, Any]],
-    pipe_identifier: str,
+def _stored_profile_images(
+    ids: list[str],
+    rows: dict[str, Any] | None,
     logger: Any,
 ) -> dict[str, tuple[str | None, str | None, bool, bool, str | None]]:
-    from open_webui.models.models import Models
-
     from ..api.transforms import _get_disable_param
 
-    ids = [
-        f"{pipe_identifier}.{model['id']}"
-        for model in models
-        if isinstance(model.get("id"), str) and model["id"].strip()
-    ]
     if not ids:
-        return {}
-    try:
-        rows = await Models.get_models_by_ids(ids)
-    except Exception as exc:
-        logger.warning(
-            "Stored model icon read failed; every icon will be re-fetched: %s",
-            exc,
-            exc_info=True,
-        )
         return {}
     if not rows:
         _warn_on_empty_read(ids, rows, logger)
         return {}
 
     stored: dict[str, tuple[str | None, str | None, bool, bool, str | None]] = {}
-    for row in rows or []:
+    for row in (rows or {}).values():
         model_id = getattr(row, "id", None)
         if not isinstance(model_id, str) or not model_id:
             continue
@@ -448,10 +433,15 @@ def _apply_single_id_filter_ids(
     record_key: str,
     hands_off: bool = False,
     blank_is_a_decision: bool = False,
+    family_off: bool = False,
 ) -> bool:
     if hands_off:
         return False
-    blank_id_release = bool(blank_is_a_decision and not filter_function_id and not supported)
+    blank_id_release = bool(
+        blank_is_a_decision
+        and not filter_function_id
+        and (not supported or family_off)
+    )
     blank_id_is_transient = not filter_function_id and not blank_id_release
     if blank_id_is_transient:
         return False
@@ -472,7 +462,7 @@ def _apply_single_id_filter_ids(
     wanted = set(had)
     if owned_id:
         wanted.discard(owned_id)
-    attaching = supported and auto_attach
+    attaching = supported and auto_attach and bool(offered_id)
     if attaching:
         wanted.add(offered_id)
     elif not supported:
@@ -622,6 +612,7 @@ def _apply_video_gen_filter_ids(
     video_gen_filter_supported: bool,
     auto_attach_video_gen_filter: bool,
     hands_off: bool = False,
+    family_off: bool = False,
 ) -> bool:
     """Apply video-gen filter auto-attach to `meta_dict["filterIds"]`.
 
@@ -635,6 +626,7 @@ def _apply_video_gen_filter_ids(
         record_key="video_gen_filter_id",
         hands_off=hands_off,
         blank_is_a_decision=True,
+        family_off=family_off,
     )
 
 
@@ -1062,6 +1054,10 @@ class ModelCatalogManager:
             float(last_video_fetch or 0.0),
             float(last_image_fetch or 0.0),
             valves.MODEL_ID,
+            valves.FREE_MODEL_FILTER,
+            valves.TOOL_CALLING_FILTER,
+            valves.ZDR_MODELS_ONLY,
+            valves.VARIANT_MODELS,
             valves.UPDATE_MODEL_IMAGES,
             valves.UPDATE_MODEL_CAPABILITIES,
             valves.DISABLE_BUILTIN_TOOLS_ON_MEDIA_MODELS,
@@ -1679,8 +1675,14 @@ class ModelCatalogManager:
             maker_mapping: dict[str, str] = {}
             stored_icons: dict[str, tuple[str | None, str | None, bool, bool, str | None]] = {}
             frontend_answered = _frontend_catalog_answered(frontend_data)
+            model_row_ids = [
+                f"{pipe_identifier}.{model['id']}"
+                for model in models
+                if isinstance(model.get("id"), str) and model["id"].strip()
+            ]
+            model_rows = await _read_model_rows(model_row_ids, self.logger)
             if valves.UPDATE_MODEL_IMAGES:
-                stored_icons = await _stored_profile_images(models, pipe_identifier, self.logger)
+                stored_icons = _stored_profile_images(model_row_ids, model_rows, self.logger)
                 missing_makers, seeded_makers = makers_needing_a_page(
                     models, icon_mapping, stored_icons, pipe_identifier, frontend_answered
                 )
@@ -1803,6 +1805,10 @@ class ModelCatalogManager:
                     web_tools_filter_function_id = None
 
             image_gen_filter_function_id: str | None = None
+            image_gen_family_off = not (
+                (valves.AUTO_INSTALL_IMAGE_GEN_FILTER or valves.AUTO_ATTACH_IMAGE_GEN_FILTER)
+                and valves.ENABLE_IMAGE_GENERATION
+            )
             if (
                 valves.AUTO_INSTALL_IMAGE_GEN_FILTER or valves.AUTO_ATTACH_IMAGE_GEN_FILTER
             ) and valves.ENABLE_IMAGE_GENERATION:
@@ -1813,8 +1819,13 @@ class ModelCatalogManager:
                         "OpenRouter Image Gen filter ensure failed: %s", exc, exc_info=True
                     )
                     image_gen_filter_function_id = None
+                    image_gen_family_off = False
 
             video_gen_filter_function_ids: dict[str, str] = {}
+            video_family_off = not (
+                (valves.AUTO_INSTALL_VIDEO_FILTERS or valves.AUTO_ATTACH_VIDEO_FILTERS)
+                and valves.ENABLE_VIDEO_GENERATION
+            )
             if (
                 (valves.AUTO_INSTALL_VIDEO_FILTERS or valves.AUTO_ATTACH_VIDEO_FILTERS)
                 and valves.ENABLE_VIDEO_GENERATION
@@ -1829,6 +1840,7 @@ class ModelCatalogManager:
                         "OpenRouter Video Gen filter ensure failed: %s", exc, exc_info=True
                     )
                     video_gen_filter_function_ids = {}
+                    video_family_off = False
             elif not valves.ENABLE_VIDEO_GENERATION:
                 try:
                     await self._pipe._ensure_filter_manager()._retire_variant_video_filters()
@@ -1847,7 +1859,7 @@ class ModelCatalogManager:
             ):
                 _image_filter_manager = self._pipe._ensure_filter_manager()
                 try:
-                    image_filter_function_ids = (
+                    image_filter_function_ids, image_filter_ids_unresolved = (
                         await _image_filter_manager.ensure_openrouter_image_filter_function_ids(models)
                     )
                 except Exception as exc:
@@ -1855,7 +1867,6 @@ class ModelCatalogManager:
                         "OpenRouter Image filter ensure failed: %s", exc, exc_info=True
                     )
                     image_filter_ids_known = False
-                image_filter_ids_unresolved = _image_filter_manager.unresolved_image_filter_ids
             else:
                 # Retirement is not installation: it deactivates rows a previous design
                 # left behind. It has to run with the valves off too, because that is
@@ -1873,13 +1884,14 @@ class ModelCatalogManager:
                     )
 
             fusion_filter_function_id: str | None = None
+            fusion_filter_unresolved = False
             fusion_ids_known = True
             if valves.ENABLE_OPENROUTER_FUSION and (
                 valves.AUTO_INSTALL_FUSION_FILTER or valves.AUTO_ATTACH_FUSION_FILTER
             ):
                 _fusion_filter_manager = self._pipe._ensure_filter_manager()
                 try:
-                    fusion_filter_function_id = (
+                    fusion_filter_function_id, fusion_filter_unresolved = (
                         await _fusion_filter_manager.ensure_openrouter_fusion_filter_function_id()
                     )
                 except Exception as exc:
@@ -1887,10 +1899,14 @@ class ModelCatalogManager:
                         "OpenRouter Fusion filter ensure failed: %s", exc, exc_info=True
                     )
                     fusion_ids_known = False
-                if _fusion_filter_manager.unresolved_fusion_filter_id:
+                if fusion_filter_unresolved:
                     fusion_ids_known = False
 
             direct_uploads_filter_function_id: str | None = None
+            direct_uploads_family_off = not (
+                valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER
+                or valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER
+            )
             if (
                 valves.AUTO_ATTACH_DIRECT_UPLOADS_FILTER
                 or valves.AUTO_INSTALL_DIRECT_UPLOADS_FILTER
@@ -1902,6 +1918,7 @@ class ModelCatalogManager:
                         "OpenRouter Direct Uploads filter ensure failed: %s", exc, exc_info=True
                     )
                     direct_uploads_filter_function_id = None
+                    direct_uploads_family_off = False
 
             if valves.AUTO_ATTACH_WEB_TOOLS_FILTER and not every_web_tool_is_off(valves):
                 if not web_tools_filter_function_id:
@@ -2159,7 +2176,7 @@ class ModelCatalogManager:
                     or pipe_capabilities.get("video_generation")
                     or fusion_model
                 )
-                if not image_gen_filter_supported:
+                if not image_gen_filter_supported and SessionLogger.debug_enabled(self.logger):
                     self.logger.debug(
                         "Image Generation switch withheld for %s: %s.",
                         openrouter_id,
@@ -2235,7 +2252,7 @@ class ModelCatalogManager:
 
                 pr_filter_id = provider_routing_filter_map.get(original_id) if original_id else None
 
-                if provider_routing_filter_map:
+                if provider_routing_filter_map and SessionLogger.debug_enabled(self.logger):
                     self.logger.debug(
                         "PR lookup: original_id=%r, map_keys=%d, pr_filter_id=%r",
                         original_id,
@@ -2265,9 +2282,11 @@ class ModelCatalogManager:
                             direct_uploads_filter_function_id=direct_uploads_filter_function_id,
                             direct_uploads_filter_supported=native_supported,
                             auto_attach_direct_uploads_filter=auto_attach_direct_uploads,
+                            direct_uploads_family_off=direct_uploads_family_off,
                             image_gen_filter_function_id=image_gen_filter_function_id,
                             image_gen_filter_supported=image_gen_filter_supported,
                             auto_attach_image_gen_filter=bool(valves.AUTO_ATTACH_IMAGE_GEN_FILTER),
+                            image_gen_family_off=image_gen_family_off,
                             video_gen_filter_function_id=video_gen_filter_function_id,
                             video_gen_filter_supported=bool(pipe_capabilities.get("video_generation")),
                             auto_attach_video_gen_filter=auto_attach_video_gen,
@@ -2275,6 +2294,7 @@ class ModelCatalogManager:
                                 auto_attach_video_gen
                                 and valves.AUTO_DEFAULT_VIDEO_FILTERS
                             ),
+                            video_family_off=video_family_off,
                             image_filter_function_ids=image_filter_ids_for_model,
                             image_filter_supported=bool(pipe_capabilities.get("image_output")),
                             auto_attach_image_filter=auto_attach_image_filter,
@@ -2317,15 +2337,6 @@ class ModelCatalogManager:
                             exc,
                             exc_info=True,
                         )
-
-            model_rows = await _read_model_rows(
-                [
-                    f"{pipe_identifier}.{model['id']}"
-                    for model in models
-                    if isinstance(model.get("id"), str) and model["id"].strip()
-                ],
-                self.logger,
-            )
 
             apply_results = await asyncio.gather(
                 *(_apply(model) for model in models), return_exceptions=True
@@ -2373,10 +2384,18 @@ class ModelCatalogManager:
 
         updated = 0
         all_models = await Models.get_all_models()
+        own_prefix = f"{self._pipe.id}." if getattr(self._pipe, "id", None) else None
         for model in all_models:
-            if not model.meta:
+            meta = model.meta
+            if not meta:
                 continue
-            meta_dict = model.meta.model_dump()
+            if own_prefix is not None and not str(getattr(model, "id", "") or "").startswith(own_prefix):
+                stored_ids = getattr(meta, "filterIds", None)
+                if isinstance(stored_ids, list) and not any(
+                    isinstance(fid, str) and fid.startswith("openrouter_") for fid in stored_ids
+                ):
+                    continue
+            meta_dict = meta.model_dump()
             filter_ids = meta_dict.get("filterIds", [])
             if not isinstance(filter_ids, list) or not filter_ids:
                 continue
@@ -2446,13 +2465,16 @@ class ModelCatalogManager:
         direct_uploads_filter_function_id: str | None = None,
         direct_uploads_filter_supported: bool = False,
         auto_attach_direct_uploads_filter: bool = False,
+        direct_uploads_family_off: bool = False,
         image_gen_filter_function_id: str | None = None,
         image_gen_filter_supported: bool = True,
         auto_attach_image_gen_filter: bool = False,
+        image_gen_family_off: bool = False,
         video_gen_filter_function_id: str | None = None,
         video_gen_filter_supported: bool = False,
         auto_attach_video_gen_filter: bool = False,
         auto_default_video_gen_filter: bool = False,
+        video_family_off: bool = False,
         image_filter_function_ids: list[str] | None = None,
         image_filter_supported: bool = False,
         auto_attach_image_filter: bool = False,
@@ -2631,6 +2653,7 @@ class ModelCatalogManager:
                 record_key="direct_uploads_filter_id",
                 hands_off="direct_uploads_filter_id" in hands_off,
                 blank_is_a_decision=True,
+                family_off=direct_uploads_family_off,
             )
 
         def _apply_image_gen_filter_ids(meta_dict: dict) -> bool:
@@ -2641,6 +2664,7 @@ class ModelCatalogManager:
                 auto_attach=auto_attach_image_gen_filter,
                 record_key="image_gen_filter_id",
                 blank_is_a_decision=True,
+                family_off=image_gen_family_off,
             )
 
 
@@ -2785,11 +2809,13 @@ class ModelCatalogManager:
             """Attach provider routing filter to model if configured."""
             if not provider_routing_ids_known:
                 return False
-            self.logger.debug(
-                "PR attach attempt: model=%r, filter_id=%r",
-                openwebui_model_id,
-                provider_routing_filter_id,
-            )
+            pr_debug = SessionLogger.debug_enabled(self.logger)
+            if pr_debug:
+                self.logger.debug(
+                    "PR attach attempt: model=%r, filter_id=%r",
+                    openwebui_model_id,
+                    provider_routing_filter_id,
+                )
 
             normalized = _normalize_id_list(meta_dict, "filterIds")
             pipe_meta = meta_dict.get(_PIPE_METADATA_KEY)
@@ -2804,11 +2830,12 @@ class ModelCatalogManager:
 
             if not provider_routing_filter_id:
                 if recorded_id and recorded_id in normalized:
-                    self.logger.debug(
-                        "PR retire: detaching '%s' from model '%s'",
-                        recorded_id,
-                        openwebui_model_id,
-                    )
+                    if pr_debug:
+                        self.logger.debug(
+                            "PR retire: detaching '%s' from model '%s'",
+                            recorded_id,
+                            openwebui_model_id,
+                        )
                     meta_dict["filterIds"] = _dedupe_preserve_order(
                         [fid for fid in normalized if fid != recorded_id]
                     )
@@ -2816,7 +2843,8 @@ class ModelCatalogManager:
                     pipe_meta.pop("provider_routing_filter_id", None)
                     meta_dict[_PIPE_METADATA_KEY] = pipe_meta
                     return True
-                self.logger.debug("PR attach: filter_id is None/empty, skipping")
+                if pr_debug:
+                    self.logger.debug("PR attach: filter_id is None/empty, skipping")
                 return False
 
             had = set(normalized)
@@ -2825,13 +2853,14 @@ class ModelCatalogManager:
             if previous_id:
                 wanted.discard(previous_id)
 
-            self.logger.debug(
-                "PR attach: current_filterIds=%r, had=%r, wanted=%r, previous_id=%r",
-                normalized,
-                had,
-                wanted,
-                previous_id,
-            )
+            if pr_debug:
+                self.logger.debug(
+                    "PR attach: current_filterIds=%r, had=%r, wanted=%r, previous_id=%r",
+                    normalized,
+                    had,
+                    wanted,
+                    previous_id,
+                )
 
             if wanted == had:
                 if _record_needs_repair(
@@ -2841,7 +2870,8 @@ class ModelCatalogManager:
                     pipe_meta["provider_routing_filter_id"] = provider_routing_filter_id
                     meta_dict[_PIPE_METADATA_KEY] = pipe_meta
                     return True
-                self.logger.debug("PR attach: wanted==had, no change needed")
+                if pr_debug:
+                    self.logger.debug("PR attach: wanted==had, no change needed")
                 return False
 
             if provider_routing_filter_id not in normalized:
@@ -2852,10 +2882,11 @@ class ModelCatalogManager:
             pipe_meta["provider_routing_filter_id"] = provider_routing_filter_id
             meta_dict[_PIPE_METADATA_KEY] = pipe_meta
 
-            self.logger.debug(
-                "PR attach: SUCCESS - new filterIds=%r",
-                meta_dict["filterIds"],
-            )
+            if pr_debug:
+                self.logger.debug(
+                    "PR attach: SUCCESS - new filterIds=%r",
+                    meta_dict["filterIds"],
+                )
             return True
 
         if existing:
@@ -2945,7 +2976,7 @@ class ModelCatalogManager:
                 meta_dict, prune_key="direct_uploads_filter_id",
                 filter_function_ids=direct_uploads_ids_now,
             )
-            if direct_uploads_filter_supported and not direct_uploads_filter_function_id:
+            if direct_uploads_filter_supported and not direct_uploads_filter_function_id and not direct_uploads_family_off:
                 direct_uploads_detached = set()
             if _apply_direct_uploads_filter_ids(meta_dict):
                 meta_updated = True
@@ -2965,7 +2996,7 @@ class ModelCatalogManager:
                 meta_dict, prune_key="image_gen_filter_id",
                 filter_function_ids=image_gen_ids_now,
             )
-            if image_gen_filter_supported and not image_gen_filter_function_id:
+            if image_gen_filter_supported and not image_gen_filter_function_id and not image_gen_family_off:
                 image_gen_detached = set()
             if _apply_image_gen_filter_ids(meta_dict):
                 meta_updated = True
@@ -2986,7 +3017,7 @@ class ModelCatalogManager:
                 filter_function_ids=video_ids_now,
                 auto_default=auto_default_video_gen_filter,
             )
-            if not video_gen_filter_function_id and video_gen_filter_supported:
+            if not video_gen_filter_function_id and video_gen_filter_supported and not video_family_off:
                 video_detached = set()
             if _apply_video_gen_filter_ids(
                 meta_dict,
@@ -2994,6 +3025,7 @@ class ModelCatalogManager:
                 video_gen_filter_supported=video_gen_filter_supported,
                 auto_attach_video_gen_filter=auto_attach_video_gen_filter,
                 hands_off=video_hands_off,
+                family_off=video_family_off,
             ):
                 meta_updated = True
 

@@ -110,6 +110,16 @@ def _usage_model_columns() -> dict[str, Any]:
     }
 
 
+def _declared_lengths() -> dict[str, int | None]:
+    from sqlalchemy import String
+
+    out: dict[str, int | None] = {}
+    for name, column in _usage_model_columns().items():
+        col_type = column.type
+        out[name] = col_type.length if isinstance(col_type, String) else None
+    return out
+
+
 class UsageStore:
     """Per-worker usage writer mirroring the session-log manager thread pattern."""
 
@@ -126,6 +136,10 @@ class UsageStore:
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._dropped = 0
+        self._persist_failed = 0
+        self._declared_lengths = _declared_lengths()
+        self._effective_widths: dict[str, int | None] = dict(self._declared_lengths)
+        self._width_warned: set[str] = set()
         self._purge_task: asyncio.Task | None = None
         self._retention_days_fn: Callable[[], int] | None = None
 
@@ -143,8 +157,107 @@ class UsageStore:
         return self._dropped
 
     @property
+    def persist_failed(self) -> int:
+        return self._persist_failed
+
+    def _fit_row(self, data: dict[str, Any]) -> dict[str, Any]:
+        fitted = dict(data)
+        for name, width in self._effective_widths.items():
+            if width is None:
+                continue
+            value = fitted.get(name)
+            if isinstance(value, str) and len(value) > width:
+                fitted[name] = value[:width]
+        return fitted
+
+    @property
     def table_name(self) -> str | None:
         return self._table_name
+
+    def _reflected_widths(self, engine: Any, table_name: str, schema_name: str | None) -> dict[str, int | None]:
+        from sqlalchemy import String
+        from sqlalchemy import inspect as sa_inspect
+
+        if schema_name:
+            columns = sa_inspect(engine).get_columns(table_name, schema=schema_name)
+        else:
+            columns = sa_inspect(engine).get_columns(table_name)
+        out: dict[str, int | None] = {}
+        for column in columns:
+            col_type = column.get("type")
+            out[column["name"]] = col_type.length if isinstance(col_type, String) else None
+        return out
+
+    def _reconcile_widths(
+        self,
+        engine: Any,
+        table_name: str,
+        schema_name: str | None,
+        reflected: dict[str, int | None],
+    ) -> dict[str, int | None]:
+        effective = dict(self._declared_lengths)
+        for name, declared in self._declared_lengths.items():
+            actual = reflected.get(name, declared)
+            if declared is None or actual is None or actual >= declared:
+                continue
+            if self._widen_column(engine, table_name, schema_name, name, actual, declared):
+                effective[name] = declared
+            else:
+                if name not in self._width_warned:
+                    self._width_warned.add(name)
+                    logger.warning(
+                        "usage table %s column %s is VARCHAR(%s) on disk but this release "
+                        "declares VARCHAR(%s); the widen was refused, so usage rows will be "
+                        "fitted to %s characters. Widen it with: ALTER TABLE %s ALTER COLUMN "
+                        "%s TYPE VARCHAR(%s)",
+                        table_name, name, actual, declared, actual,
+                        ArtifactStore._quote_identifier(table_name), name, declared,
+                    )
+                else:
+                    logger.debug(
+                        "usage table %s column %s is still VARCHAR(%s) against a declared "
+                        "VARCHAR(%s); usage rows keep being fitted to %s characters",
+                        table_name, name, actual, declared, actual,
+                    )
+                effective[name] = actual
+        self._effective_widths = effective
+        return effective
+
+    def _widen_column(
+        self,
+        engine: Any,
+        table_name: str,
+        schema_name: str | None,
+        name: str,
+        actual: int | None,
+        declared: int | None,
+    ) -> bool:
+        from sqlalchemy import text
+
+        qualified = ArtifactStore._quote_identifier(table_name)
+        if schema_name:
+            qualified = f"{ArtifactStore._quote_identifier(schema_name)}.{qualified}"
+        column = ArtifactStore._quote_identifier(name)
+        statements = [
+            f"ALTER TABLE {qualified} ALTER COLUMN {column} TYPE VARCHAR({declared})",
+            f"ALTER TABLE {qualified} MODIFY COLUMN {column} VARCHAR({declared})",
+        ]
+        for statement in statements:
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text(statement))
+            except Exception as exc:  # noqa: BLE001 - any refusal leaves the width as it is
+                logger.debug(
+                    "usage table widen not accepted on this dialect: %s", type(exc).__name__
+                )
+                continue
+            try:
+                check = self._reflected_widths(engine, table_name, schema_name).get(name)
+            except Exception:  # noqa: BLE001 - an uninspectable table is not a widened one
+                check = None
+            if check is not None and actual is not None and check > actual:
+                return True
+        return False
 
     def ensure(self, store: Any) -> bool:
         """Build the usage model and create its table; idempotent, fail-safe."""
@@ -185,6 +298,8 @@ class UsageStore:
             for _name, _column in _usage_model_columns().items():
                 attrs[_name] = _column
             model = type(f"PipeUsage_{suffix[:12]}", (base,), attrs)
+            self._declared_lengths = _declared_lengths()
+            self._effective_widths = dict(self._declared_lengths)
             if not store._create_table_with_race_guard(model.__table__, engine, table_name):
                 return False
             if not self._reconcile_schema(model.__table__, engine, table_name, schema_name, store):
@@ -281,6 +396,9 @@ class UsageStore:
                     ", ".join(sorted(missing)),
                 )
                 return False
+            self._reconcile_widths(
+                engine, table_name, schema_name, self._reflected_widths(engine, table_name, schema_name)
+            )
             return True
         except Exception:
             logger.debug("usage table reconciliation failed", exc_info=True)
@@ -390,10 +508,31 @@ class UsageStore:
             if is_temporary_chat(data["chat_id"]):
                 data["chat_id"] = data["session_id"] = ""
             data["id"] = row.get("id") or generate_item_id()
-            instances.append(model(**data))
+            instances.append(model(**self._fit_row(data)))
+        rejected: list[tuple[Any, Exception]] = []
         with _db_session(session_factory) as session:
-            session.add_all(instances)
+            for instance in instances:
+                try:
+                    with session.begin_nested():
+                        session.add(instance)
+                        session.flush()
+                except Exception as exc:  # noqa: BLE001 - one row's failure costs one row
+                    rejected.append((instance, exc))
             session.commit()
+        if rejected:
+            self._persist_failed += len(rejected)
+            for instance, exc in rejected:
+                logger.warning(
+                    "usage row rejected by the store and dropped; the rest of the batch "
+                    "was written. id=%s chat_id=%r user_id=%r model_id=%r cost=%s: %s: %s",
+                    getattr(instance, "id", None),
+                    getattr(instance, "chat_id", None),
+                    getattr(instance, "user_id", None),
+                    getattr(instance, "model_id", None),
+                    getattr(instance, "cost", None),
+                    type(exc).__name__,
+                    exc,
+                )
         return True
 
     def start_purge_task(self, retention_days_fn: Callable[[], int]) -> None:
@@ -509,7 +648,11 @@ class UsageStore:
 
     def _table_info_sync(self) -> dict[str, Any]:
         """Record count + approximate on-disk size for the usage table."""
-        info: dict[str, Any] = {"records": None, "approx_bytes": None}
+        info: dict[str, Any] = {
+            "records": None,
+            "approx_bytes": None,
+            "persist_failed": self._persist_failed,
+        }
         store = self._store
         model = self._model
         if store is None or model is None or self._table_name is None:
@@ -548,7 +691,7 @@ class UsageStore:
         store = self._store
         executor = getattr(store, "_db_executor", None) if store is not None else None
         if executor is None:
-            return {"records": None, "approx_bytes": None}
+            return {"records": None, "approx_bytes": None, "persist_failed": self._persist_failed}
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(executor, self._table_info_sync)
 

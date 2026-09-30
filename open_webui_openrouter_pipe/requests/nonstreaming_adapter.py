@@ -94,6 +94,12 @@ class NonStreamingAdapter:
         forced_selected_endpoint, endpoint_forced = self._pipe._streaming_handler._select_llm_endpoint_with_forced(
             str(model_id), valves=effective_valves
         )
+        inlined_request_body = await self._pipe._file_gateway.inline_internal_responses_input_files(
+            responses_request_body or {},
+            chunk_size=effective_valves.IMAGE_UPLOAD_CHUNK_BYTES,
+            max_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
+            user=user,
+        )
 
         @timed
         def _extract_chat_message_text(message: Any) -> str:
@@ -114,7 +120,7 @@ class NonStreamingAdapter:
 
         @timed
         async def _run_responses() -> AsyncGenerator[dict[str, Any], None]:
-            request_payload = _filter_openrouter_request(dict(responses_request_body or {}))
+            request_payload = _filter_openrouter_request(dict(inlined_request_body or {}))
             response = await self._pipe.send_openai_responses_nonstreaming_request(
                 session,
                 request_payload,
@@ -125,6 +131,7 @@ class NonStreamingAdapter:
                 user=user,
                 owui_chat_id=owui_chat_id,
                 transient_retry=transient_retry,
+                files_inlined=True,
             )
             output_items = response.get("output") if isinstance(response, dict) else None
             if isinstance(output_items, list):
@@ -155,7 +162,7 @@ class NonStreamingAdapter:
         async def _run_chat() -> AsyncGenerator[dict[str, Any], None]:
             chat_response = await self._pipe.send_openai_chat_completions_nonstreaming_request(
                 session,
-                dict(responses_request_body or {}),
+                dict(inlined_request_body or {}),
                 api_key=api_key,
                 base_url=base_url,
                 valves=effective_valves,
@@ -163,6 +170,7 @@ class NonStreamingAdapter:
                 user=user,
                 owui_chat_id=owui_chat_id,
                 transient_retry=transient_retry,
+                files_inlined=True,
             )
             choices = chat_response.get("choices") if isinstance(chat_response, dict) else None
             message = None

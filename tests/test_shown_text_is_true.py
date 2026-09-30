@@ -4957,10 +4957,12 @@ async def test_a_contract_that_was_read_gets_a_panel_whether_or_not_it_names_a_k
     manager = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
     written: list[str] = []
     manager._ensure_filter_installed = AsyncMock(
-        side_effect=lambda **kw: (written.append(kw["desired_source"]), kw["preferred_id"])[1]
+        side_effect=lambda **kw: (
+            written.append(kw["desired_source"]), (kw["preferred_id"], False)
+        )[1]
     )
 
-    function_id = await manager._ensure_single_image_filter_function_id(
+    function_id, _write_not_installed = await manager._ensure_single_image_filter_function_id(
         model_id="vendor/probe",
         image_model={"id": "vendor/probe"},
         endpoint_record=records,

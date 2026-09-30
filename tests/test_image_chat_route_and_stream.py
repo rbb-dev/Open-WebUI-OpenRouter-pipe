@@ -98,10 +98,17 @@ class _Pipe:
         self.valves = _Valves()
         self.id = "orpipe"
         self.generations: list[dict[str, Any]] = []
+        self._generation_complete_dispatched: set[str] = set()
 
     async def _dispatch_plugin_event(self, method, *args, **kwargs):
         if method == "dispatch_on_generation_complete":
             self.generations.append({"usage": args[0], "status": args[1], **kwargs})
+
+    async def _dispatch_generation_complete(self, usage, status, **kwargs):
+        self._generation_complete_dispatched.add(str(kwargs.get("request_id") or ""))
+        await self._dispatch_plugin_event(
+            "dispatch_on_generation_complete", usage, status, **kwargs
+        )
 
     @staticmethod
     def _resolve_openrouter_api_key(valves) -> tuple[str | None, str | None]:

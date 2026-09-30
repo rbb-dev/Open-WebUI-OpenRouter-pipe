@@ -218,12 +218,6 @@ class PluginBase:
     ) -> None:
         """Observe a request reaching its terminal state.
 
-        Fires exactly once per turn (chat, streaming or not) and once per
-        task-model request. ``usage`` is the summed usage for the turn (may
-        be ``None`` when nothing was received); ``status`` is ``ok``,
-        ``failed``, or ``cancelled`` — derived from the pipe's own terminal
-        flags, never from emitted events.
-
         Extra kwargs: ``request_id`` — the pipe's per-request id,
         ``metadata`` — the request's OWUI metadata dict, ``task`` — task
         name string or ``None`` for chat turns.

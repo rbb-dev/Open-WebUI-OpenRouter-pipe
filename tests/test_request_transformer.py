@@ -3700,7 +3700,7 @@ class TestRemoteImageDownloadFailure:
             mock_family.supports.return_value = True
 
             # Mock download to raise exception
-            async def mock_download_fail(url):
+            async def mock_download_fail(url, **_kwargs):
                 raise ConnectionError("Network timeout")
 
             pipe_instance._multimodal_handler._download_remote_url = mock_download_fail
@@ -4430,7 +4430,7 @@ class TestImageReuseRegister:
         async def emitter(event):
             events.append(event)
 
-        async def oversized_download(_url):
+        async def oversized_download(_url, **_kwargs):
             return {"data": b"x" * 4_000_000, "mime_type": "image/png"}
 
         url = {

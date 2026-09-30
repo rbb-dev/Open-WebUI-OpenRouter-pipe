@@ -317,6 +317,8 @@ class ReplyMemory:
         self._clock = clock
         self._user_id = user_id or _current_user_id
         self._replies: OrderedDict[tuple[Any, Any, Any], tuple[float, dict[str, dict[str, Any]], int]] = OrderedDict()
+        self._total_bytes: int = 0
+
         self._sweep: asyncio.TimerHandle | None = None
         self._sweep_loop: asyncio.AbstractEventLoop | None = None
         self._lock = threading.RLock()
@@ -335,6 +337,8 @@ class ReplyMemory:
             if touched >= cutoff:
                 return
             replies.pop(key, None)
+            self._total_bytes -= _size
+
 
     def _arm(self) -> None:
         try:
@@ -346,7 +350,7 @@ class ReplyMemory:
         self._disarm()
         if not self._replies:
             return
-        earliest = min(touched for touched, _rows, _size in self._replies.values())
+        earliest = next(iter(self._replies.values()))[0]
         self._sweep = loop.call_later(max(0.0, earliest + self._idle_seconds - self._clock()), self._run_sweep_locked)
         self._sweep_loop = loop
 
@@ -421,17 +425,22 @@ class ReplyMemory:
             item_id = row.setdefault("id", generate_item_id())
             _touched, kept, size = self._replies[key]
             replaced = _retained_bytes(kept[item_id]) if item_id in kept else 0
+            charged = _retained_bytes(payload)
             kept[item_id] = payload
-            self._replies[key] = (self._clock(), kept, size - replaced + _retained_bytes(payload))
+            self._replies[key] = (self._clock(), kept, size - replaced + charged)
             self._replies.move_to_end(key)
+            self._total_bytes += charged - replaced
             held.append(item_id)
-        for key in {self._key(row.get("chat_id"), row.get("message_id")) for row in rows}:
+        offered_keys = {self._key(row.get("chat_id"), row.get("message_id")) for row in rows}
+        for key in offered_keys:
             if key in self._replies and self._replies[key][2] > self._max_bytes:
+                self._total_bytes -= self._replies[key][2]
                 del self._replies[key]
                 dropped += 1
                 oversized += 1
-        while self._replies and sum(size for _touched, _rows, size in self._replies.values()) > self._max_bytes:
-            self._replies.popitem(last=False)
+        while self._replies and self._total_bytes > self._max_bytes:
+            evicted = self._replies.popitem(last=False)[1]
+            self._total_bytes -= evicted[2]
             dropped += 1
         if dropped and self._logger is not None:
             with self._evict_latch:
@@ -443,7 +452,12 @@ class ReplyMemory:
                 "rounds and thinking for the rest of the stream",
                 self._max_bytes, dropped, "y" if dropped == 1 else "ies", oversized,
             )
-        kept_ids = {item_id for _touched, kept, _size in self._replies.values() for item_id in kept}
+        kept_ids = {
+            item_id
+            for entry in (self._replies.get(key) for key in offered_keys)
+            if entry is not None
+            for item_id in entry[1]
+        }
         self._arm()
         return [item_id for item_id in held if item_id in kept_ids]
 
@@ -467,7 +481,9 @@ class ReplyMemory:
             self._release(chat_id, message_id)
 
     def _release(self, chat_id: Any, message_id: Any) -> None:
-        self._replies.pop(self._key(chat_id, message_id), None)
+        entry = self._replies.pop(self._key(chat_id, message_id), None)
+        if entry is not None:
+            self._total_bytes -= entry[2]
 
     def holds(self, chat_id: Any) -> bool:
         with self._lock:
@@ -954,6 +970,16 @@ class ArtifactStore:
             self._artifact_store_signature = None
             return
 
+        if table_exists and not self._reconcile_artifact_schema(
+            item_model.__table__, engine, table_name, schema_name
+        ):
+            self._engine = None
+            self._session_factory = None
+            self._item_model = None
+            self._artifact_table_name = None
+            self._artifact_store_signature = None
+            return
+
         self._engine = engine
         self._session_factory = session_factory
         self._item_model = item_model
@@ -1074,6 +1100,94 @@ class ArtifactStore:
                     exc,
                     exc_info=True,
                 )
+
+    def _reconcile_artifact_schema(
+        self,
+        table: Any,
+        engine: Any,
+        table_name: str,
+        schema_name: str | None,
+    ) -> bool:
+        from sqlalchemy import inspect as sa_inspect
+        from sqlalchemy.exc import DuplicateColumnError
+        from sqlalchemy.schema import CreateColumn
+
+        def _present() -> set[str]:
+            if schema_name:
+                return {c["name"] for c in sa_inspect(engine).get_columns(table_name, schema=schema_name)}
+            return {c["name"] for c in sa_inspect(engine).get_columns(table_name)}
+
+        try:
+            present = _present()
+            qualified = self._quote_identifier(table_name)
+            if schema_name:
+                qualified = f"{self._quote_identifier(schema_name)}.{qualified}"
+            added: list[str] = []
+            for col in table.columns:
+                if col.primary_key or col.name in present:
+                    continue
+                was_nullable = col.nullable
+                try:
+                    if not col.nullable and col.server_default is None:
+                        col.nullable = True
+                    ddl = str(CreateColumn(col).compile(dialect=engine.dialect)).strip()
+                finally:
+                    col.nullable = was_nullable
+                try:
+                    with engine.begin() as conn:
+                        conn.execute(text(f"ALTER TABLE {qualified} ADD COLUMN {ddl}"))
+                except Exception as exc:
+                    message = str(exc).lower()
+                    if (
+                        "duplicate column" in message
+                        or "already exists" in message
+                        or isinstance(exc, DuplicateColumnError)
+                    ):
+                        self.logger.debug(
+                            "Artifact table column already added by another worker: %s", col.name
+                        )
+                        continue
+                    self.logger.warning(
+                        "Artifact persistence disabled: column %s could not be added to %s: %s: %s",
+                        col.name,
+                        table_name,
+                        type(exc).__name__,
+                        exc,
+                        exc_info=True,
+                    )
+                    return False
+                added.append(col.name)
+            if added:
+                self.logger.info(
+                    "Artifact table %s reconciled with columns: %s", table_name, ", ".join(added)
+                )
+                self._create_declared_indexes(table, engine, table_name)
+            missing_pk = [
+                col.name for col in table.columns if col.primary_key and col.name not in _present()
+            ]
+            if missing_pk:
+                self.logger.warning(
+                    "Artifact persistence disabled: %s is missing its primary key: %s; "
+                    "every write will fail",
+                    table_name,
+                    ", ".join(missing_pk),
+                )
+                return False
+            missing = {col.name for col in table.columns if not col.primary_key} - _present()
+            if missing:
+                self.logger.warning(
+                    "Artifact persistence disabled: %s still lacks columns after "
+                    "reconciliation: %s",
+                    table_name,
+                    ", ".join(sorted(missing)),
+                )
+                return False
+            return True
+        except Exception:
+            self.logger.warning(
+                "Artifact persistence disabled: reconciling %s failed", table_name, exc_info=True
+            )
+            return False
 
     @timed
     def _maybe_heal_index_conflict(
@@ -1893,6 +2007,25 @@ class ArtifactStore:
         try:
             sealed: set[str] = set()
             fetched = await self._db_fetch_direct(chat_id, message_id, missing_ids, sealed)
+        except Exception as exc:
+            self._record_db_failure(user_id)
+            self.logger.warning("Artifact fetch failed: %s", exc, exc_info=True)
+            context = self._TOOL_CONTEXT.get() if self._TOOL_CONTEXT else None
+            if self._emit_notification:
+                try:
+                    await self._emit_notification(
+                        context.event_emitter if context else None,
+                        "Earlier tool results could not be loaded, so the model did not receive them.",
+                        level="warning",
+                    )
+                except Exception:
+                    self.logger.debug(
+                        "Artifact fetch fault notice could not be delivered", exc_info=True
+                    )
+        else:
+            if user_id:
+                self._reset_db_failure(user_id)
+            cached.update(fetched)
             if fetched and self._redis_active():
                 cache_rows = []
                 for item_id, payload in fetched.items():
@@ -1905,21 +2038,13 @@ class ArtifactStore:
                         "is_encrypted": item_id in sealed,
                     }
                     cache_rows.append(row)
-                await self._seal_rows(cache_rows, form_settled=True)
-                await self._redis_cache_rows(cache_rows, chat_id=chat_id)
-            if user_id:
-                self._reset_db_failure(user_id)
-            cached.update(fetched)
-        except Exception as exc:
-            self._record_db_failure(user_id)
-            self.logger.warning("Artifact fetch failed: %s", exc, exc_info=True)
-            context = self._TOOL_CONTEXT.get() if self._TOOL_CONTEXT else None
-            if self._emit_notification:
-                await self._emit_notification(
-                    context.event_emitter if context else None,
-                    "Earlier tool results could not be loaded, so the model did not receive them.",
-                    level="warning",
-                )
+                try:
+                    await self._seal_rows(cache_rows, form_settled=True)
+                    await self._redis_cache_rows(cache_rows, chat_id=chat_id)
+                except Exception as exc:
+                    self.logger.warning(
+                        "Artifact cache refill failed (best-effort): %s", exc, exc_info=True
+                    )
         await self._touch_cached(chat_id, message_id, cache_hit_ids)
         return cached
 
@@ -2630,10 +2755,12 @@ class ArtifactStore:
                 if row_message_id != message_id:
                     continue
             payload = row_data.get("payload", row_data) if isinstance(row_data, dict) else row_data
+            recorded: Any = None
             is_encrypted = False
             if isinstance(row_data, dict):
-                is_encrypted = bool(row_data.get("is_encrypted"))
-            if not is_encrypted and isinstance(payload, dict) and "enc_v" in payload:
+                recorded = row_data.get("is_encrypted")
+                is_encrypted = bool(recorded)
+            if recorded is None and isinstance(payload, dict) and "enc_v" in payload:
                 is_encrypted = "ciphertext" in payload
             if is_encrypted:
                 ciphertext = ""

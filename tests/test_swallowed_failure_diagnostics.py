@@ -118,13 +118,31 @@ class TestDashboardSocketImportGuards:
         monkeypatch.setattr(builtins, "__import__", _blocking_import)
         dashboard_socket._warned_import_sites.clear()
         # These seams gate on the master switch before they reach the import, so a pipe
-        # carrying it is what lets the driver get as far as the seam under test.
+        # carrying it is what lets the driver get as far as the seam under test. The gate
+        # reads the PERSISTED dashboard valve, so the row has to be committed too or the
+        # read cannot be confirmed and the driver never reaches the seam it exists to
+        # drive. The valve class is a real `Valves` because that read validates against
+        # the class's pydantic schema and a `SimpleNamespace` has none.
+        from open_webui_openrouter_pipe.core.config import Valves
+
+        import open_webui.models.functions as owf
+
+        class _Row:
+            content = "def pipe():\n    pass"
+
+            async def get_function_by_id(self, id, db=None):
+                return types.SimpleNamespace(content=self.content)
+
+            async def get_function_valves_by_id(self, id, db=None):
+                return {"PIPE_DASHBOARD_ENABLE": True}
+
+        monkeypatch.setattr(owf, "Functions", _Row())
         monkeypatch.setattr(
             dashboard_socket,
             "_get_pipe",
             lambda: types.SimpleNamespace(
                 id="test-pipe",
-                valves=types.SimpleNamespace(ENABLE_PLUGIN_SYSTEM=True),
+                valves=Valves(ENABLE_PLUGIN_SYSTEM=True),
             ),
         )
 

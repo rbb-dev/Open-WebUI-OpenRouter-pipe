@@ -328,6 +328,7 @@ async def test_execute_function_calls_with_context_idle_timeout():
 
         try:
             async def my_tool(**kwargs):
+                await asyncio.sleep(30)
                 return "result"
 
             tools = {
@@ -340,13 +341,19 @@ async def test_execute_function_calls_with_context_idle_timeout():
 
             calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": "{}"}]
 
-            outputs = await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
+            executor = pipe._ensure_tool_executor()
+            context.workers.append(asyncio.create_task(executor._tool_worker_loop(context)))
+
+            outputs = await executor._execute_function_calls(calls, tools)
 
             assert len(outputs) == 1
             assert outputs[0]["type"] == "function_call_output"
             assert "timed out" in outputs[0]["output"].lower()
         finally:
             pipe._TOOL_CONTEXT.reset(token)
+            for worker in context.workers:
+                worker.cancel()
+            await asyncio.gather(*context.workers, return_exceptions=True)
     finally:
         await pipe.close()
 
@@ -388,9 +395,11 @@ async def test_idle_timeout_returns_failed_output_and_continues():
 
         try:
             async def tool_a(**_kwargs):
+                await asyncio.sleep(30)
                 return "a"
 
             async def tool_b(**_kwargs):
+                await asyncio.sleep(30)
                 return "b"
 
             tools = {
@@ -410,7 +419,15 @@ async def test_idle_timeout_returns_failed_output_and_continues():
                 {"type": "function_call", "call_id": "c2", "name": "tool_b", "arguments": "{}"},
             ]
 
-            outputs = await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
+            # Two calls, so two workers and two slots: with the one-slot context the second
+            # call would never be dequeued and this would measure the never-started path
+            # rather than the idle limit its name is about.
+            context.per_request_semaphore = asyncio.Semaphore(2)
+            executor = pipe._ensure_tool_executor()
+            for _ in range(2):
+                context.workers.append(asyncio.create_task(executor._tool_worker_loop(context)))
+
+            outputs = await executor._execute_function_calls(calls, tools)
 
             assert len(outputs) == 2
             for out in outputs:
@@ -418,6 +435,9 @@ async def test_idle_timeout_returns_failed_output_and_continues():
                 assert "timed out" in out["output"].lower()
         finally:
             pipe._TOOL_CONTEXT.reset(token)
+            for worker in context.workers:
+                worker.cancel()
+            await asyncio.gather(*context.workers, return_exceptions=True)
     finally:
         await pipe.close()
 
@@ -3064,6 +3084,7 @@ class TestToolWorkerLoop:
             token = pipe._TOOL_CONTEXT.set(context)
             try:
                 async def my_tool(**_kwargs):
+                    await asyncio.sleep(30)
                     return "result"
 
                 tools = {
@@ -3074,9 +3095,14 @@ class TestToolWorkerLoop:
                     }
                 }
                 calls = [{"type": "function_call", "call_id": "call-1", "name": "my_tool", "arguments": "{}"}]
-                outputs = await pipe._ensure_tool_executor()._execute_function_calls(calls, tools)
+                executor = pipe._ensure_tool_executor()
+                context.workers.append(asyncio.create_task(executor._tool_worker_loop(context)))
+                outputs = await executor._execute_function_calls(calls, tools)
             finally:
                 pipe._TOOL_CONTEXT.reset(token)
+                for worker in context.workers:
+                    worker.cancel()
+                await asyncio.gather(*context.workers, return_exceptions=True)
         finally:
             await pipe.close()
 
@@ -4463,8 +4489,10 @@ class TestEventEmitterFilesEmbeds:
 class TestProcessToolResultSafe:
     """The no-context / seam-unavailable fallback arm of `_process_tool_result_safe`.
 
-    All five pass `context=None`, which is exactly the gate at `tool_executor.py:469`:
-    with no context the seam is never reached and the result is rendered by `str()`. They
+    All six pass `context=None`, which is exactly the gate at `tool_executor.py:469`:
+    with no context the seam is never reached and the pipe renders the result itself, the
+    way Open WebUI would have -- a `dict` or a `list` through
+    `json.dumps(value, indent=2, ensure_ascii=False)`, everything else through `str()`. They
     pin that rendering -- a string, `None`, a dict, a list, an object that refuses to be
     stringified -- on every deployment where `open_webui.utils.middleware` failed to import.
     The arm that reaches the seam is `TestProcessToolResultSafeThroughOpenWebui` below.
@@ -4581,7 +4609,6 @@ class TestProcessToolResultSafe:
         assert "item1" in text
         assert files == []
         assert embeds == []
-
 
 class TestToolExecutionContextFields:
     """Tests for _ToolExecutionContext new fields."""

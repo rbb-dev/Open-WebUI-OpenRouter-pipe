@@ -434,6 +434,8 @@ class SessionLogManager:
         self._capture_exempt: set[tuple[str, str]] = set()
         self._skip_info_emitted: set[str] = set()
         self._warned_temporary_chat: dict[str, float] = {}
+        self._archive_queue_full_warnings: dict[str, float] = {}
+        self._archive_queue_drops: int = 0
 
     @property
     def _assembly_failures(self) -> dict[tuple[str, str], float]:
@@ -523,6 +525,24 @@ class SessionLogManager:
                 message,
                 *args,
             )
+
+    def _warn_archive_queue_full(self, job: Any) -> None:
+        with self._lock:
+            self._archive_queue_drops += 1
+            dropped = self._archive_queue_drops
+            level = warn_level(
+                self._archive_queue_full_warnings,
+                "session_log_archive_queue_full",
+                cooldown_s=300.0,
+            )
+        self.logger.log(
+            level,
+            "Session log archive queue is full; dropping archive for chat_id=%s "
+            "message_id=%s (%d dropped since this worker started).",
+            job.chat_id,
+            job.message_id,
+            dropped,
+        )
 
     @property
     def _warning_emitted(self) -> bool:
@@ -669,13 +689,13 @@ class SessionLogManager:
         if self._queue is None:
             self._queue = queue.Queue(maxsize=500)
         if self._queue.full():
-            self.logger.warning("Session log archive queue is full; dropping archive for chat_id=%s message_id=%s", job.chat_id, job.message_id)
+            self._warn_archive_queue_full(job)
             return
         self.start_workers()
         try:
             self._queue.put_nowait(job)
         except queue.Full:
-            self.logger.warning("Session log archive queue is full; dropping archive for chat_id=%s message_id=%s", job.chat_id, job.message_id)
+            self._warn_archive_queue_full(job)
         except Exception:
             self.logger.debug("Failed to enqueue session log archive job", exc_info=True)
 

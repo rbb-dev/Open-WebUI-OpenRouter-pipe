@@ -14,8 +14,9 @@ import asyncio
 import base64
 import json
 import sys
+import time
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
 
 import pytest

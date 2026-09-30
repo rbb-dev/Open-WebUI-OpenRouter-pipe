@@ -195,3 +195,4 @@ class ImageGenerationResult:
     warning: str = ""
     over_ceiling: int = 0
     over_ceiling_own: int = 0
+    stream_broken: bool = False

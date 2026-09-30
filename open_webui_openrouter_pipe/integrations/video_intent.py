@@ -140,6 +140,11 @@ _INTENT_END_RE = re.compile(
     re.DOTALL,
 )
 
+_INTENT_END_LINE_START_RE = re.compile(
+    r"(?m)^\[openrouter:v1:" + re.escape(INTENT_BLOCK_END) + r":[^\]]+\]: #\s*\n?",
+    re.DOTALL,
+)
+
 
 _PLACEHOLDER_RE = re.compile(r"\[(?:video|image):\d+\]")
 
@@ -234,11 +239,17 @@ class VideoIntentResult:
 # History hygiene
 # -----------------------------------------------------------------------------
 
+def _intent_block_end_match(content: str, start: re.Match[str]) -> re.Match[str] | None:
+    if start.start() == 0 or content[start.start() - 1] == "\n":
+        return _INTENT_END_LINE_START_RE.search(content, start.end())
+    return _INTENT_END_RE.search(content, start.end())
+
+
 def first_intent_block_region(content: str) -> str:
     if not content:
         return ""
     for match in _INTENT_START_RE.finditer(content):
-        end = _INTENT_END_RE.search(content, match.end())
+        end = _intent_block_end_match(content, match)
         if end is None:
             return ""
         return content[match.start() : end.end()]
@@ -257,7 +268,7 @@ def strip_intent_blocks(content: str) -> str:
     for match in _INTENT_START_RE.finditer(content):
         if match.start() < pos:
             continue
-        end = _INTENT_END_RE.search(content, match.end())
+        end = _intent_block_end_match(content, match)
         if end is None:
             pieces.append(content[pos:])
             return "".join(pieces)
@@ -1302,6 +1313,10 @@ def should_emit_confirmation_footer(
     return has_prior or multi_frame
 
 
+def _flatten_to_one_line(text: object) -> str:
+    return " ".join(str(text or "").split())
+
+
 def render_intent_disclosure_block(
     intent: VideoIntentResult,
     *,
@@ -1349,7 +1364,7 @@ def render_intent_disclosure_block(
                     lines.append(f"> ![ref]({url})")
         if intent.prompt:
             lines.append("> ")
-            lines.append(f"> Prompt: *\"{intent.prompt}\"*")
+            lines.append(f"> Prompt: *\"{_flatten_to_one_line(intent.prompt)}\"*")
         if intent.downgrades:
             for note in intent.downgrades:
                 lines.append("> ")
@@ -1379,11 +1394,11 @@ def render_clarification_message(intent: VideoIntentResult) -> str:
     lines.append("")
     lines.append("🤔 **Quick question**")
     lines.append("")
-    lines.append(intent.clarification.question)
+    lines.append(_flatten_to_one_line(intent.clarification.question))
     if intent.clarification.options:
         lines.append("")
         for i, opt in enumerate(intent.clarification.options, start=1):
-            lines.append(f"{i}. **{opt}**")
+            lines.append(f"{i}. **{_flatten_to_one_line(opt)}**")
         lines.append("")
         count = len(intent.clarification.options)
         choices = ", ".join(f"`{n}`" for n in range(1, count + 1))

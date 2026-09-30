@@ -29,9 +29,18 @@ def _rescale_deep_single_band(img: _Image.Image) -> _Image.Image:
     return img.convert("I").point(lambda v: v * _DEEP_RANGE_SCALE).convert("L")
 
 
+def open_upright(img: _Image.Image) -> _Image.Image:
+    from PIL import ImageOps
+
+    if img.getexif().get(274) not in (None, 1):
+        return ImageOps.exif_transpose(img)
+    return img
+
+
 def composite_on_white(img: _Image.Image) -> _Image.Image:
     from PIL import Image
 
+    img = open_upright(img)
     if img.mode == "RGB" and not _carries_transparency(img):
         return img
     if _carries_transparency(img):

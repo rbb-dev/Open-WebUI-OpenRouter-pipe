@@ -84,7 +84,7 @@ def _backlog_debug_due(queue: str, request_id: str) -> bool:
 def _drop_backlog_latch(request_id: str) -> None:
     if not request_id:
         return
-    for queue_name in ("chunk_queue", "event_queue"):
+    for queue_name in ("chunk_queue", "event_queue", "chat_pump_queue"):
         cause = _backlog_cause(queue_name, request_id)
         _warned_queue_backlog.pop(cause, None)
         _warned_queue_backlog_sample.pop(cause, None)
@@ -323,19 +323,19 @@ class ResponsesAdapter:
         event_queue_warn_size: int = 1000,
         user: Any = None,
         owui_chat_id: str | None = None,
+        files_inlined: bool = False,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Producer/worker SSE pipeline with configurable delta batching."""
 
         _backlog_request_id = SessionLogger.request_id.get() or ""
         effective_valves = valves or self._pipe.valves
-        chunk_size = effective_valves.IMAGE_UPLOAD_CHUNK_BYTES
-        max_bytes = effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024
-        request_body = await self._pipe._file_gateway.inline_internal_responses_input_files(
-            request_body,
-            chunk_size=chunk_size,
-            max_bytes=max_bytes,
-            user=user,
-        )
+        if not files_inlined:
+            request_body = await self._pipe._file_gateway.inline_internal_responses_input_files(
+                request_body,
+                chunk_size=effective_valves.IMAGE_UPLOAD_CHUNK_BYTES,
+                max_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
+                user=user,
+            )
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -790,17 +790,17 @@ class ResponsesAdapter:
         user: Any = None,
         owui_chat_id: str | None = None,
         transient_retry: bool = True,
+        files_inlined: bool = False,
     ) -> dict[str, Any]:
         """Send a blocking request to the Responses API and return the JSON payload."""
         effective_valves = valves or self._pipe.valves
-        chunk_size = effective_valves.IMAGE_UPLOAD_CHUNK_BYTES
-        max_bytes = effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024
-        request_params = await self._pipe._file_gateway.inline_internal_responses_input_files(
-            request_params,
-            chunk_size=chunk_size,
-            max_bytes=max_bytes,
-            user=user,
-        )
+        if not files_inlined:
+            request_params = await self._pipe._file_gateway.inline_internal_responses_input_files(
+                request_params,
+                chunk_size=effective_valves.IMAGE_UPLOAD_CHUNK_BYTES,
+                max_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
+                user=user,
+            )
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",

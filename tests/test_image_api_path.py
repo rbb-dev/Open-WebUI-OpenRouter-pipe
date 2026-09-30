@@ -1160,10 +1160,17 @@ class _KeyPipe:
         self.id = "orpipe"
         self.reports = _ReportRecorder() if record_errors else None
         self.generations: list[dict[str, Any]] = []
+        self._generation_complete_dispatched: set[str] = set()
 
     async def _dispatch_plugin_event(self, method, *args, **kwargs):
         if method == "dispatch_on_generation_complete":
             self.generations.append({"usage": args[0], "status": args[1], **kwargs})
+
+    async def _dispatch_generation_complete(self, usage, status, **kwargs):
+        self._generation_complete_dispatched.add(str(kwargs.get("request_id") or ""))
+        await self._dispatch_plugin_event(
+            "dispatch_on_generation_complete", usage, status, **kwargs
+        )
 
     def _ensure_error_formatter(self):
         from open_webui_openrouter_pipe.core.error_formatter import ErrorFormatter

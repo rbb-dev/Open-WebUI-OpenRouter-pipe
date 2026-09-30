@@ -51,6 +51,7 @@ from .runtime_metrics import (
     collect_medium_stats,
     collect_slow_stats,
 )
+from .session_tracker import _task_cost_key
 
 logger = logging.getLogger(__name__)
 
@@ -88,20 +89,23 @@ def _snapshot_safe() -> tuple[list[dict[str, Any]], dict[str, float], int]:
 def _fold_task_costs(rows: list[dict[str, Any]], task_costs: dict[str, float]) -> list[dict[str, Any]]:
     rows = [dict(r) for r in rows if isinstance(r, dict)]
     if task_costs:
-        by_chat: dict[str, dict[str, Any]] = {}
+        by_chat: dict[tuple[str, str], dict[str, Any]] = {}
         for r in rows:
-            cid = r.get("chat_id")
+            cid = str(r.get("chat_id") or "")
             if cid and r.get("kind") != "task":
-                cur = by_chat.get(cid)
+                key = (cid, str(r.get("user_id") or ""))
+                cur = by_chat.get(key)
                 if cur is None or (r.get("started") or 0.0) > (cur.get("started") or 0.0):
-                    by_chat[cid] = r
-        for cid, cost in task_costs.items():
-            parent = by_chat.get(cid)
+                    by_chat[key] = r
+        for composite, cost in task_costs.items():
+            cid, _, uid = str(composite).partition("\x1f")
+            parent = by_chat.get((cid, uid))
             if parent is not None and cost:
                 parent["cost"] = round((parent.get("cost") or 0.0) + cost, 6)
                 parent["task_cost"] = round((parent.get("task_cost") or 0.0) + cost, 6)
     for r in rows:
         r.pop("chat_id", None)
+        r.pop("user_id", None)
     return rows
 
 
@@ -159,10 +163,15 @@ def _collect_worker_payload(pipe: Any) -> dict[str, Any]:
     v = collect_video_pool(pipe)
     rows, costs, active_total = _snapshot_safe()
     task_costs: dict[str, float] = {}
-    for cid, cost in costs.items():
+    for composite, cost in costs.items():
+        cid, _, uid = str(composite).partition("\x1f")
         key = _slice_chat_key(cid) if is_temporary_chat(cid) else cid
         if key:
-            task_costs[key] = task_costs[key] + cost if key in task_costs else cost
+            task_costs[_task_cost_key(key, uid)] = (
+                task_costs[_task_cost_key(key, uid)] + cost
+                if _task_cost_key(key, uid) in task_costs
+                else cost
+            )
 
     return {
         "pid": os.getpid(),

@@ -105,6 +105,7 @@ def _image_stream_error(event: dict[str, Any], state: dict[str, Any]) -> str:
     if state["data"]:
         sentence = f"OpenRouter reported a problem after delivering the image: {reason}."
         state["warning"] = sentence
+        state["stream_broken"] = True
         return sentence
     billed = chat_usage_to_responses_usage(state.get("usage"))
     raise ImageGenerationError(
@@ -264,6 +265,7 @@ class OpenRouterImageClient:
                     "OpenRouter's image stream for this request stopped after the finished "
                     "image arrived: %s", clamp_text(str(exc) or type(exc).__name__, 160)
                 )
+                state["stream_broken"] = True
                 if not state["warning"]:
                     state["warning"] = (
                         "The image stream failed after the finished image had "
@@ -302,6 +304,7 @@ class OpenRouterImageClient:
                 )
             state: dict[str, Any] = {
                 "data": [], "usage": None, "previews": 0, "drawing": False, "warning": "",
+                "stream_broken": False,
             }
             if resp.content_type == _IMAGE_SSE_CONTENT_TYPE:
                 try:
@@ -320,6 +323,7 @@ class OpenRouterImageClient:
                         "Image stream failed after the finished image arrived; "
                         "delivering it anyway: %s", exc
                     )
+                    state["stream_broken"] = True
                     if not state["warning"]:
                         state["warning"] = (
                             "The image stream failed after the finished image had "
@@ -401,4 +405,5 @@ class OpenRouterImageClient:
         return ImageGenerationResult(
             images=images, usage=billed, rejected=rejected, warning=state.get("warning", ""),
             over_ceiling=over_ceiling, over_ceiling_own=over_ceiling_own,
+            stream_broken=bool(state.get("stream_broken")),
         )

@@ -735,10 +735,12 @@ class EventEmitterHandler:
         if not model_id:
             model_id = str(job.body.get("model") or "pipe")
 
-        answer_already_on_the_queue = ""
+        answer_pieces: list[str] = []
+
+        def materialise() -> str:
+            return "".join(answer_pieces)
 
         async def _emit(event: dict[str, Any]) -> bool | None:
-            nonlocal answer_already_on_the_queue
             if not isinstance(event, dict):
                 return
 
@@ -751,7 +753,7 @@ class EventEmitterHandler:
 
             if etype == "chat:message":
                 delta_text, next_on_queue = middleware_message_delta(
-                    answer_already_on_the_queue, data.get("delta"), data.get("content")
+                    materialise(), data.get("delta"), data.get("content")
                 )
                 if not (isinstance(delta_text, str) and delta_text):
                     return None
@@ -760,7 +762,7 @@ class EventEmitterHandler:
                     stream_queue,
                     openai_chat_chunk_message_template(model_id, delta_text),
                 ):
-                    answer_already_on_the_queue = next_on_queue
+                    answer_pieces[:] = [next_on_queue]
                     return True
                 return False
 
@@ -773,7 +775,7 @@ class EventEmitterHandler:
                         openai_chat_chunk_message_template(model_id, delta_text),
                     )
                     if published:
-                        answer_already_on_the_queue = answer_already_on_the_queue + delta_text
+                        answer_pieces.append(delta_text)
                     return published
                 return
 
@@ -823,7 +825,7 @@ class EventEmitterHandler:
                 if isinstance(completion_content, str):
                     carried = True
                     if await self._put_middleware_stream_item(job, stream_queue, {"event": event}):
-                        answer_already_on_the_queue = completion_content
+                        answer_pieces[:] = [completion_content]
                     else:
                         published = False
 

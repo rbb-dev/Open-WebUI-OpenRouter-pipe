@@ -205,3 +205,10 @@ class TestInnerBatchLimitCountsForTheTurn:
 
         assert "exceeded" in str(outputs[0])
         assert pipe._circuit_breaker.tool_allows("u1", "function", "mytool") is False
+
+
+class _Row:
+    def __init__(self, uid: str) -> None:
+        self.id = uid
+        self.role = "user"
+        self.name = "n"

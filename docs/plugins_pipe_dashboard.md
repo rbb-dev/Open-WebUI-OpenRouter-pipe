@@ -19,14 +19,14 @@ Selecting the **Pipe Dashboard** model in Open WebUI turns the chat box into an 
 
 The dashboard is part of the pipe's plugin system, which ships off. Two valves switch it on, in order:
 
-1. `ENABLE_PLUGIN_SYSTEM` — the master switch for the plugin system (default: off). Set it on before any plugin loads.
-2. `PIPE_DASHBOARD_ENABLE` — adds the Pipe Dashboard model to the selector.
+1. `ENABLE_PLUGIN_SYSTEM` — the master switch for the plugin system (default: off). Set it on before any plugin loads. The action route reads it from the persisted valve row on every request, so committing it off closes the route on every worker without a restart, and a row the store will not hand back refuses rather than serving the in-memory copy.
+2. `PIPE_DASHBOARD_ENABLE` — adds the Pipe Dashboard model to the selector. Read from the persisted valve row on every request, for the same reason.
 
 Three admin valves control the feature. They appear in Open WebUI's Settings once the plugin system is enabled.
 
 | Valve | Type | Default | What it does |
 |-------|------|---------|--------------|
-| `PIPE_DASHBOARD_ENABLE` | bool | `False` | Shows or hides the Pipe Dashboard model in the model selector, and closes the console behind it: with it off the action route answers 404, new dashboard subscriptions are refused, and viewers already watching are dropped so the live feed stops. Read from the stored row, so a toggle takes effect on the very next request on every worker, with no restart -- including on workers that never served a chat. |
+| `PIPE_DASHBOARD_ENABLE` | bool | `False` | Shows or hides the Pipe Dashboard model in the model selector, and closes the console behind it: with it off the action route answers 404, new dashboard subscriptions are refused, and viewers already watching are dropped so the live feed stops. Read from the stored row at the model list, the route, the subscription and the emit, so a toggle takes effect on the very next request on every worker, with no restart -- including on workers that never served a chat; a row the store will not hand back refuses rather than serving the worker's in-memory copy. A row that cannot be read is treated as off. |
 | `PIPE_DASHBOARD_USAGE_COLLECT` | bool | `False` | Records one usage entry per completed request (user, model, tokens, tools, cost) to power the Usage tab. Read live: turning it on starts recording without a restart. |
 | `PIPE_DASHBOARD_USAGE_RETENTION_DAYS` | int | `30` | How long usage records are kept. A background purge removes older records. Read live. |
 

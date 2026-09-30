@@ -457,9 +457,7 @@ async def _persist_config_edit(
     # An unreadable revision is a conflict on its own, independent of what the caller
     # sent. Open WebUI's get_function_by_id catches its own DB errors and returns None,
     # so the except arm below can never fire for a real fault -- and config_get then
-    # hands the client rev: null, which it echoes back, making `client_rev is not None`
-    # False and letting the write through with no concurrency check at all.
-    if current_rev is None or (client_rev is not None and client_rev != current_rev):
+    if current_rev is None or client_rev is None or client_rev != current_rev:
         effective, _dropped, stored, conflict_read_ok = await _effective_valves_and_state(pipe)
         if not conflict_read_ok and stored is None:
             return {

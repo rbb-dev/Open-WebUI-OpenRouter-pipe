@@ -87,7 +87,7 @@ The pipe **skips persistence** when any of the following are true:
 
 If persistence is skipped, the request still completes normally; the archive is simply not written.
 
-Each skip names itself at the level the code uses for it. On the segment-persist path the missing-id and valve-off skips warn once each at `WARNING` and record every later skip at `DEBUG`, the store-disabled, no-events and archive-settings-unavailable skips at `DEBUG`, and the passphrase, log-directory and `pyzipper` skips at `WARNING`. The store-disabled record names the `chat_id` and `message_id` it would otherwise have used, so an operator can find the archive that is not there, except for a temporary chat: its store-disabled record names the `request_id` alone, because a temporary chat's id is the browser's socket id and the record that follows the same convention on the enabled path names nothing but the request id. The temporary-chat skips on the two archive paths (segment persist, bundle assembly) warn again after a five-minute cooldown, each on the scope it can actually tell apart: the segment-persist skip is keyed on the user, so it warns once per person, and the bundle-assembly skip is called with a chat id and a message id and no user at all, so it warns once per worker process.
+Each skip names itself at the level the code uses for it. On the segment-persist path the missing-id and valve-off skips warn once each at `WARNING` and record every later skip at `DEBUG`, the store-disabled, no-events and archive-settings-unavailable skips at `DEBUG`, and the passphrase, log-directory and `pyzipper` skips at `WARNING`. An archive dropped because the writer queue is full also warns once per five-minute cooldown per worker and records every later drop at `DEBUG`, each record naming the running count of archives that worker has dropped. The store-disabled record names the `chat_id` and `message_id` it would otherwise have used, so an operator can find the archive that is not there, except for a temporary chat: its store-disabled record names the `request_id` alone, because a temporary chat's id is the browser's socket id and the record that follows the same convention on the enabled path names nothing but the request id. The temporary-chat skips on the two archive paths (segment persist, bundle assembly) warn again after a five-minute cooldown, each on the scope it can actually tell apart: the segment-persist skip is keyed on the user, so it warns once per person, and the bundle-assembly skip is called with a chat id and a message id and no user at all, so it warns once per worker process.
 
 ### Assembly timing
 
@@ -106,8 +106,8 @@ The incomplete marker appears **at most once** per archive: a later pass that fi
 Non-blocking behavior:
 
 - Archives are written asynchronously via a bounded internal queue.
-- If the archive queue is full, the pipe logs a warning and drops the archive for that request (it does not block the response).
-- When the archive cannot be staged in the database, the pipe writes it through that same bounded queue instead of writing it inline, so the request never waits for compression. The path is therefore lossy in the same way: during a long database outage a busy queue fills, and the session logs for later requests in that period are dropped with the warning above rather than queued indefinitely.
+- If the archive queue is full, the pipe drops the archive for that request (it does not block the response), and the notice is the rate-limited one below: a `WARNING` per five-minute cooldown window per worker, `DEBUG` on every later drop, every record carrying the running number of archives that worker has dropped.
+- When the archive cannot be staged in the database, the pipe writes it through that same bounded queue instead of writing it inline, so the request never waits for compression. The path is therefore lossy in the same way: during a long database outage a busy queue fills, and the session logs for later requests in that period are dropped with that same rate-limited notice rather than queued indefinitely.
 - On stop, a shutdown or an Open WebUI hot reload, the writer drains the archives it has already accepted within a bounded window (about one second) rather than abandoning the queue the moment the stop signal arrives, and reports at WARNING how many queued archives it could not write. A restart is therefore no longer the point at which an in-flight burst is lost, including on the route where the manager is collected during shutdown, where the same bounded drain runs and the count is reported through the module logger because there is no manager left to log through. A cleanup sweep that outlasts the bounded stop is repaired on the next start, per thread, and the restarted thread runs on a freshly armed stop event, so nothing accepted in that window is left unwritten. The request queue is drained on the same contract: `close()` finishes its drain even when the worker and its jobs are bound to a closed loop, and each abandoned job's counter is released rather than left held; the setup-time drop of a request queue bound to a dead loop drains the abandoned one the same way.
 
 ---
@@ -250,7 +250,7 @@ Enable timing when diagnosing performance issues:
 
 ### The in-memory copy
 
-Alongside the file the logger keeps an in-memory copy of each request's events, so a running request can be read without parsing the file. That copy is a duplicate of a durable record and is released as soon as the request's job completes — the file is what persists, and only the file. The timestamp index that says which requests are still in flight is released with that copy, and `SessionLogger.cleanup()`, which drops both maps for anything older than its one-hour cutoff, is the backstop for the index on a request that ends abnormally. `MAX_TIMING_REQUESTS` is the backstop for requests that end abnormally and never reach the release, not the normal retention path.
+Alongside the file the logger keeps an in-memory copy of each request's events, so a running request can be read without parsing the file. That copy is a duplicate of a durable record and is released as soon as the request's job completes — the file is what persists, and only the file. The timestamp index that says which requests are still in flight is released with that copy, and `SessionLogger.cleanup()`, which drops both maps for anything older than its one-hour cutoff, is the backstop for the index on a request that ends abnormally. `MAX_TIMING_REQUESTS` is the backstop for requests that end abnormally and never reach the release, not the normal retention path; at that bound the entry removed is the one whose last recorded event is oldest, so a request that is still recording is never the victim.
 
 ### Adding timing to new functions (for developers)
 
@@ -294,10 +294,11 @@ async def stream_events():
 **Notes:**
 
 - Timing only records when `ENABLE_TIMING_LOG=True` and a request context is active.
-- Zero overhead when disabled (context variable check short-circuits).
+- Near-zero overhead when disabled (the context variable check short-circuits). The one cost that survives it is the label string the `/responses` producer builds for each transport read before the mark is offered to the recorder; on a 50 KB reply that is about 10 µs in total.
 - Events are written immediately to `TIMING_LOG_FILE` (not session archives).
 - Each event includes a `request_id` field for correlation with session logs.
-- Maximum 10,000 events per request in memory (oldest dropped if exceeded).
+- Maximum 10,000 events per request in memory (oldest dropped if exceeded). That cap is a backstop, not a budget: a call made once per event or once per transport read used to fill it from within the stream and evict the request's own pipeline marks, and the flood that did so was removed rather than accommodated.
+- A generator abandoned mid-stream — built, then never iterated to exhaustion or closed — leaves an `enter` with no `exit`. That is ordinary span semantics, not a lost record: the `enter` says the function was called, and nothing says how long it ran.
 
 ---
 

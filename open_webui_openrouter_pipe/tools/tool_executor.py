@@ -35,7 +35,7 @@ _OWUI_RESULT_WARN_COOLDOWN_S = 300.0
 _OWUI_RESULT_WARN_CAP = 256
 from ..storage.owui_files import is_temporary_chat, owui_file_content_url
 from ..storage.persistence import generate_item_id
-from .tool_schema import _advertised_root_params
+from .tool_schema import _advertised_root_params, _declared_parameter_names
 
 if TYPE_CHECKING:
     from starlette.requests import Request
@@ -158,6 +158,14 @@ except Exception:
 _ASK_USER_GRACE_SECONDS = 15.0
 
 
+def _fallback_result_text(raw_result: Any) -> str:
+    if raw_result is None:
+        return ""
+    if isinstance(raw_result, (dict, list)):
+        return json.dumps(raw_result, indent=2, ensure_ascii=False)
+    return str(raw_result)
+
+
 def resolved_tool_name(call: dict[str, Any]) -> str:
     raw_name = call.get("name")
     return raw_name.strip() if isinstance(raw_name, str) else ""
@@ -169,6 +177,11 @@ _BROWSER_TRANSPORT_ERRORS = frozenset({
     "Tool Server Not Found",
 })
 _HTTP_ERROR_PREFIX = "HTTP error! Status:"
+_OWUI_PRE_DISPATCH_ERROR_PREFIXES = (
+    "No matching route found for operationId: ",
+    "No matching method found for operationId: ",
+    "Request body expected for operation '",
+)
 
 
 def _reports_a_browser_transport_failure(error: Any) -> bool:
@@ -317,11 +330,11 @@ def _entry_file_kind(entry: Any) -> str:
 
 def _idle_allowance(
     context: _ToolExecutionContext,
-    pending: list[tuple[int, dict[str, Any], asyncio.Future, float | None]],
+    pending: list[tuple[int, _QueuedToolCall, float | None]],
 ) -> float | None:
     allowance = context.idle_timeout
     if allowance:
-        for _index, _call, _future, window in pending:
+        for _index, _queued, window in pending:
             if window is not None:
                 allowance = max(allowance, window)
     return allowance
@@ -535,7 +548,7 @@ class ToolExecutor:
                     )
                     # Continue to fallback below
 
-            output_text = "" if raw_result is None else str(raw_result)
+            output_text = _fallback_result_text(raw_result)
             timing_mark(f"process_result:{tool_name}:fallback_done")
             return output_text, files, embeds
 
@@ -547,7 +560,7 @@ class ToolExecutor:
                 exc_info=True,
             )
             try:
-                output_text = "" if raw_result is None else str(raw_result)
+                output_text = _fallback_result_text(raw_result)
             except Exception:
                 self.logger.warning(
                     "Tool result for '%s' is not stringifiable; the model will receive a "
@@ -575,7 +588,7 @@ class ToolExecutor:
 
         loop = asyncio.get_running_loop()
         started_at = loop.time()
-        pending: list[tuple[int, dict[str, Any], asyncio.Future, float | None]] = []
+        pending: list[tuple[int, _QueuedToolCall, float | None]] = []
         batches: list[list[_QueuedToolCall]] = []
         slots: list[dict[str, Any] | None] = [None] * len(calls)
         _on_complete = context.on_complete
@@ -682,12 +695,12 @@ class ToolExecutor:
                 )
             else:
                 self.logger.debug("Enqueued tool %s (batch=%s)", call.get("name"), allow_batch)
-            pending.append((index, call, future, self._ask_user_window(tool_cfg, args)))
+            pending.append((index, queued, self._ask_user_window(tool_cfg, args)))
 
         self._ensure_tool_workers(context)
         pre_enqueue_at = loop.time()
         enqueue_allowance = context.batch_timeout
-        for _index, _call, _future, window in pending:
+        for _index, _queued, window in pending:
             if window is not None:
                 enqueue_allowance = max(enqueue_allowance or 0.0, window)
         enqueue_deadline = pre_enqueue_at + enqueue_allowance if enqueue_allowance else None
@@ -720,7 +733,9 @@ class ToolExecutor:
         collected: dict[int, Any] = {}
         notified: set[int] = set()
         deadline = _idle_deadline(allowance, started_at, pre_enqueue_at, loop.time())
-        for pending_index, (_index, call, future, _window) in enumerate(pending):
+        for pending_index, (_index, queued, _window) in enumerate(pending):
+            call = queued.call
+            future = queued.future
             try:
                 async with asyncio.timeout_at(deadline) if deadline is not None else contextlib.nullcontext():
                     collected[pending_index] = await future
@@ -744,7 +759,9 @@ class ToolExecutor:
                     await _on_complete(call, collected[pending_index])
             notified.add(pending_index)
 
-        for pending_index, (index, call, future, _window) in enumerate(pending):
+        for pending_index, (index, queued, _window) in enumerate(pending):
+            call = queued.call
+            future = queued.future
             result = collected.get(pending_index)
             if result is None and future.done() and not future.cancelled():
                 try:
@@ -761,14 +778,24 @@ class ToolExecutor:
             if result is None:
                 future.cancel()
                 tool_name = call.get("name")
-                message = (
-                    f"Tool '{tool_name}' timed out after {allowance:.0f}s (idle timeout)."
-                    if allowance
-                    else "Tool idle timeout exceeded."
-                )
+                if queued.holds_slot:
+                    message = (
+                        f"Tool '{tool_name}' timed out after {allowance:.0f}s (idle timeout)."
+                        if allowance
+                        else "Tool idle timeout exceeded."
+                    )
+                    self.logger.warning("Tool idle limit: %s", message)
+                else:
+                    message = (
+                        f"Tool '{tool_name}' was not started: it was still waiting for a tool "
+                        f"worker or a free slot {allowance:.0f}s after the round asked for it "
+                        f"(idle wait)."
+                        if allowance
+                        else "Tool was not started: it was still waiting for a tool worker or a free slot."
+                    )
+                    self.logger.warning("Tool never started: %s", message)
                 if context and not context.timeout_error:
                     context.timeout_error = message
-                self.logger.warning("Tool idle timeout: %s", message)
                 result = self._build_tool_output(call, message, status="failed")
             if _on_complete and pending_index not in notified:
                 with contextlib.suppress(Exception):
@@ -823,14 +850,15 @@ class ToolExecutor:
                             return [reply, None]
                         return reply
                     except Exception as exc:
+                        detail = str(exc) or type(exc).__name__
                         self.logger.debug("Direct tool '%s' failed: %s", tool_name, exc, exc_info=True)
                         with contextlib.suppress(Exception):
                             await self._pipe._event_emitter_handler._emit_notification(
                                 event_emitter,
-                                f"Tool '{tool_name}' failed: {exc}",
+                                f"Tool '{tool_name}' failed: {detail}",
                                 level="warning",
                             )
-                        return [{"error": str(exc)}, None]
+                        return [{"error": detail}, None]
 
                 return _direct_tool_callable
 
@@ -850,7 +878,10 @@ class ToolExecutor:
                     allowed_params: set[str] = set()
                     parameters = spec.get("parameters")
                     if isinstance(parameters, dict):
-                        allowed_params = _advertised_root_params(parameters, strictify=strictify)
+                        if not strictify:
+                            allowed_params = set(_declared_parameter_names(parameters))
+                        else:
+                            allowed_params = _advertised_root_params(parameters, strictify=True)
 
                     spec_payload = dict(spec)
                     spec_payload["name"] = name
@@ -1101,7 +1132,7 @@ class ToolExecutor:
 
     def _can_batch_tool_calls(self, first: _QueuedToolCall, candidate: _QueuedToolCall) -> bool:
         """Check if two tool calls can be batched together."""
-        if first.call.get("name") != candidate.call.get("name"):
+        if resolved_tool_name(first.call) != resolved_tool_name(candidate.call):
             return False
 
         first_id = first.call.get("call_id")

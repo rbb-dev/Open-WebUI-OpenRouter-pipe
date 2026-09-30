@@ -41,6 +41,19 @@ def _tool_counts(entry: dict[str, Any]) -> dict[str, int]:
     }
 
 
+def _task_cost_key(chat_id: Any, user_id: Any) -> str:
+    return f"{chat_id}\x1f{user_id or ''}"
+
+
+def _same_chat_and_user(candidate: dict[str, Any], entry: dict[str, Any]) -> bool:
+    return (
+        candidate.get("kind") == "chat"
+        and bool(candidate.get("chat_id"))
+        and candidate.get("chat_id") == entry.get("chat_id")
+        and (candidate.get("user_id") or "") == (entry.get("user_id") or "")
+    )
+
+
 def _usage_numbers(usage: Any) -> dict[str, float]:
     numbers = {"tin": 0, "tout": 0, "treason": 0, "tcached": 0, "cost": 0.0, "discount": 0.0}
     if not isinstance(usage, dict):
@@ -264,7 +277,7 @@ class SessionTracker:
         candidates = [
             item
             for item in list(self._active.values()) + self._recent
-            if item.get("kind") == "chat" and item.get("chat_id") == chat_id
+            if _same_chat_and_user(item, entry)
         ]
         if not candidates:
             return
@@ -358,12 +371,13 @@ class SessionTracker:
                 "task_cost": round(float(item.get("task_cost") or 0.0), 6),
                 "worker_pid": self._pid,
                 "chat_id": item.get("chat_id") or "",
+                "user_id": item.get("user_id") or "",
             })
         return rows, active_total
 
     def _task_costs_locked(self) -> dict[str, float]:
-        chat_ids = {
-            e.get("chat_id")
+        folded_here = {
+            _task_cost_key(e.get("chat_id"), e.get("user_id"))
             for e in list(self._active.values()) + self._recent
             if e.get("kind") == "chat" and e.get("chat_id")
         }
@@ -373,9 +387,12 @@ class SessionTracker:
                 continue
             cid = e.get("chat_id")
             cost = float(e.get("cost") or 0.0)
-            if not cid or not cost or cid in chat_ids:
+            if not cid or not cost:
                 continue
-            out[cid] = out.get(cid, 0.0) + cost
+            key = _task_cost_key(cid, e.get("user_id"))
+            if key in folded_here:
+                continue
+            out[key] = out.get(key, 0.0) + cost
         return out
 
     def db_row(self, entry: dict[str, Any]) -> dict[str, Any]:

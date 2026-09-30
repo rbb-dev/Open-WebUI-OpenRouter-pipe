@@ -41,11 +41,12 @@ Note: While these are not “direct identifiers” (like email), they may still 
 Depending on valves, the pipe can include:
 
 * `user` (top-level): the OWUI user GUID (`__user__["id"]`) — OpenRouter's end-user identifier for abuse detection
+* `safety_identifier` (top-level, `/responses` only): the same value as `user`, under the name OpenRouter's user-tracking guide gives the Responses field
 * `metadata` (top-level): a `Dict[str, str]` built by the pipe (not OWUI’s full `__metadata__` blob)
 
 `metadata` is only sent when at least one metadata entry is being populated. The pipe also sends a top-level `session_id`, but that is a prompt-cache pin (not an attribution field) — see [Prompt-cache session affinity](openrouter_integrations_and_telemetry.md#216-prompt-cache-session-affinity-session_id). Its source is the `chat_id`, or, for a call that carries none, the caller's own `session_id` under an `api-session:` prefix.
 
-Important: the pipe **removes** any user-supplied `user`, `session_id`, or `metadata` fields and replaces them with valve-gated values. This prevents clients/users from spoofing attribution identifiers.
+Important: the pipe **removes** any user-supplied `user`, `safety_identifier`, `session_id`, or `metadata` fields and replaces them with valve-gated values. This prevents clients/users from spoofing attribution identifiers.
 
 ### Identifier mapping
 
@@ -53,7 +54,7 @@ Each identifier is gated by a valve. When enabled, the pipe sources IDs from Ope
 
 | Valve | OpenRouter top-level | OpenRouter metadata key | Source in Open WebUI context |
 |---|---|---|---|
-| `SEND_END_USER_ID` | `user` | `user_id` | `__user__["id"]`, or `__user__["email"]` / `__user__["name"]` per `END_USER_ID_SOURCE` (metadata stays on the id) |
+| `SEND_END_USER_ID` | `user` and `safety_identifier` (both the same value) | `user_id` | `__user__["id"]`, or `__user__["email"]` / `__user__["name"]` per `END_USER_ID_SOURCE` (metadata stays on the id) |
 | `SEND_SESSION_ID` | *(none)* | `session_id` | `__metadata__["session_id"]` (never for a temporary chat) |
 | `SEND_CHAT_ID` | *(none)* | `chat_id` | `__metadata__["chat_id"]` (never for a temporary chat) |
 | `SEND_MESSAGE_ID` | *(none)* | `message_id` | `__metadata__["message_id"]` (never for a temporary chat) |
@@ -66,7 +67,7 @@ The pipe enforces OpenRouter’s documented `metadata` constraints:
 * Keys must be **≤ 64 chars** and must not contain `[` or `]`.
 * Values must be **≤ 512 chars**.
 
-Additionally, the top-level `user` field is capped at **128 characters**. If a source value is missing or invalid, the corresponding field is omitted even when its valve is enabled.
+Additionally, the top-level `user` and `safety_identifier` fields are each capped at **128 characters**. If a source value is missing or invalid, the corresponding field is omitted even when its valve is enabled. A caller's own `safety_identifier` is never sanitised, shortened or passed through: with the valve off it is dropped, and with it on it is replaced by the pipe's value, exactly as `user` is.
 
 **Temporary chats.** A chat id that marks a temporary chat — the `temporary:`, `local:` and whitespace-padded forms — never has its chat, session or message id placed in `metadata`, whichever of `SEND_SESSION_ID`, `SEND_CHAT_ID` and `SEND_MESSAGE_ID` are enabled. The verdict is computed once and applies to all three, so the valves cannot drift apart; the check is the boolean form rather than a chat/session match, because a browser reconnect re-sends the temporary chat id with a *new* session id, and a matching pair is exactly the case that must not be trusted to be caught later. Internal Fusion panel-member calls are covered too: a member's inner request carries the outer `chat_id` (restored by `run_fusion_member` beside `_inner_metadata`, which still strips it from the metadata the artifact path sees), so the same `is_temporary_chat` verdict is computed on that value and the guard reads it there. The guarantee covers those three ids; `SEND_END_USER_ID` is a separate valve and still writes `metadata.user_id` for a temporary chat, as does Open WebUI's own forwarded-header path for the raw chat id.
 

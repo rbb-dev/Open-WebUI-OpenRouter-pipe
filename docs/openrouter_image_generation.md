@@ -1358,7 +1358,13 @@ card rather than the fallback.
 A picture that arrives on the chat route is saved to Open WebUI's file
 store and shown inline, exactly as one from a dedicated image model is.
 Both end at the same stored file and the same message. Anything larger
-than `BASE64_MAX_SIZE_MB` is rejected rather than stored. In a
+than `BASE64_MAX_SIZE_MB` is rejected rather than stored, and the same
+now holds of a tool's picture, which is left out of its round and named on
+the turn whose round carries it. A blob that is not a picture is not stored
+either: the type written into the file name and the file's `content_type`
+is resolved from the bytes wherever the bytes identify themselves, the
+declaration decides only where they say nothing, and an entry that resolves
+to no storable image type is not materialised as a picture at all. In a
 temporary, legacy-temporary or channel chat there is no row to hold the
 file, so nothing is stored there at all: the picture stays in the
 message itself, as its own `data:` URL where the provider sent the bytes
@@ -1581,7 +1587,10 @@ exactly as they do otherwise.
 If a streamed generation stops before the finished image arrives, it is
 a failed generation and there is nothing to salvage. It costs nothing:
 OpenRouter bills image generation all or nothing, so previews already
-delivered are not charged. Re-submit to retry.
+delivered are not charged. Re-submit to retry. A stream that breaks
+*after* the finished image arrived is the other case: the picture is
+still delivered and still billed, and it is also counted as one request
+failure and clears none of that user's recorded failures.
 
 A stream that breaks *after* the finished image has arrived is different:
 that image is delivered as usual, and the run is billed for it. The
@@ -1936,7 +1945,8 @@ with a picture as well as text.
   delivered cost nothing and there is nothing to salvage. A stream that
   breaks after the finished image arrived still delivers that image, and
   is billed for it, and the user is told what went wrong in the answer
-  beside it.
+  beside it; it is also counted as one request failure and clears none of
+  that user's recorded failures.
 - **No batch generation.** One request, one image (or set of images
   the model emits per turn). For batch use, send multiple chats.
 - **Multimodal models may emit text without an image.** GPT-5 Image

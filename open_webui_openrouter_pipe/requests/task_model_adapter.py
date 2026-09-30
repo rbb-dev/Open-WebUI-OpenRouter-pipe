@@ -116,11 +116,11 @@ class TaskModelAdapter:
                     if content.get("type") == "output_text":
                         text_parts.append(content.get("text", "") or "")
 
-        fallback_text = response.get("output_text")
-        if isinstance(fallback_text, str):
-            text_parts.append(fallback_text)
-
         joined = "\n".join(part for part in text_parts if part)
+        if not joined.strip():
+            fallback_text = response.get("output_text")
+            if isinstance(fallback_text, str):
+                joined = "\n".join(part for part in [*text_parts, fallback_text] if part)
         return joined
 
     @staticmethod
@@ -244,8 +244,7 @@ class TaskModelAdapter:
 
                 message = self._extract_task_output_text(response).strip()
                 if message:
-                    await self._pipe._dispatch_plugin_event(
-                        "dispatch_on_generation_complete",
+                    await self._pipe._dispatch_generation_complete(
                         usage if isinstance(usage, dict) else None,
                         "ok",
                         request_id=SessionLogger.request_id.get() or "",
@@ -285,8 +284,7 @@ class TaskModelAdapter:
             f"error_id={error_id} request_id={SessionLogger.request_id.get() or ''}]"
         )
         self.logger.error(error_message, exc_info=last_error)
-        await self._pipe._dispatch_plugin_event(
-            "dispatch_on_generation_complete",
+        await self._pipe._dispatch_generation_complete(
             None,
             "failed",
             request_id=SessionLogger.request_id.get() or "",

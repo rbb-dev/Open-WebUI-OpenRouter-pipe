@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 from PIL import Image
 
-from .image_conversion import composite_on_white
+from .image_conversion import composite_on_white, open_upright
 
 _MAX_INPUT_BYTES = 50 * 1024 * 1024
 _MAX_INPUT_PIXELS = 50_000_000
@@ -57,6 +57,7 @@ def make_thumbnail(
             f"{_MAX_INPUT_PIXELS} pixel cap"
         )
     src.load()
+    src = open_upright(src)
     src = composite_on_white(src)
 
     canvas = Image.new("RGB", (target_size, target_size), (255, 255, 255))

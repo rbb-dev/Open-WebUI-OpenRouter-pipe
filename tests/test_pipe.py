@@ -1273,12 +1273,21 @@ class TestReasoningConfiguration:
             pipe.shutdown()
 
     def test_apply_task_reasoning_preferences_none_effort(self):
-        """Test that _apply_task_reasoning_preferences handles 'none' effort.
+        """The task applier and the fitter, driven as the orchestrator drives them.
 
-        Note: When 'none' is passed, the method still sets reasoning with effort='none'
-        for models that support reasoning parameter. It adds no `enabled` beside it:
-        `effort: "none"` is the documented disable, so `enabled: true` beside it asks
-        for the opposite (T401).
+        This used to call the applier alone and assert its intermediate. The wire
+        cannot observe that intermediate on any path -- the fitter runs two lines
+        later on the task path and is the last writer before the request goes out
+        -- so a test on it pinned a state no provider ever saw, and a second owner
+        of the `enabled` key grew up behind it. So the pair is driven here in the
+        shipped order and the pair's result is what is asserted.
+
+        `effort: "none"` is the documented disable and nothing else rides out with
+        it: `enabled: true` beside it asks for the opposite (T401), and the fitter
+        is what guarantees that, whether the effort it strips was written by the
+        chat applier or by this one. The wire guarantee is
+        `test_include_reasoning_reaches_only_models_that_list_it.py`'s
+        owned-task arms; this is the unit-level statement of the same rule.
         """
         pipe = Pipe()
 
@@ -1288,9 +1297,12 @@ class TestReasoningConfiguration:
 
         try:
             body = ResponsesBody(model="reason.model", input=[])
-            pipe._ensure_reasoning_config_manager()._apply_task_reasoning_preferences(body, "none")
+            reasoning = pipe._ensure_reasoning_config_manager()
+            reasoning._apply_task_reasoning_preferences(body, "none")
+            reasoning._fit_effort_none_to_model(body, settings_applied=True)
 
-            # When model supports reasoning, it sets effort to "none" (not None)
+            # When model supports reasoning, it sets effort to "none" (not None),
+            # and `enabled` does not survive beside it.
             assert body.reasoning == {"effort": "none"}
         finally:
             ModelFamily.set_dynamic_specs({})
@@ -2431,7 +2443,7 @@ class TestPipeEntryPointEdgeCases:
                 __tools__=None,
             )
 
-            assert "Temporarily disabled" in str(result)
+            assert "Temporarily disabled" in await _refusal_sentence(result)
         finally:
             await pipe.close()
 
@@ -2452,7 +2464,8 @@ class TestPipeEntryPointEdgeCases:
                 __tools__=None,
             )
 
-            assert "Service unavailable" in str(result) or "startup" in str(result).lower()
+            sentence = await _refusal_sentence(result)
+            assert "Service unavailable" in sentence or "startup" in sentence.lower()
         finally:
             await pipe.close()
 
@@ -2477,8 +2490,7 @@ class TestPipeEntryPointEdgeCases:
                     __tools__=None,
                 )
 
-                assert isinstance(result, str)
-                assert "unavailable" in result.lower()
+                assert "unavailable" in (await _refusal_sentence(result)).lower()
         finally:
             await pipe.close()
 
@@ -2555,8 +2567,7 @@ class TestPipeEntryPointEdgeCases:
                     __tools__=None,
                 )
 
-                assert isinstance(result, str)
-                assert "retry" in result.lower()
+                assert "retry" in (await _refusal_sentence(result)).lower()
         finally:
             await pipe.close()
 
@@ -2600,8 +2611,7 @@ class TestPipeEntryPointEdgeCases:
                     __tools__=None,
                 )
 
-                assert isinstance(result, str)
-                assert "retry" in result.lower()
+                assert "retry" in (await _refusal_sentence(result)).lower()
         finally:
             await pipe.close()
 
@@ -3854,8 +3864,17 @@ async def test_pipe_breaker_blocks_request(monkeypatch, pipe_instance_async) -> 
         None,
     )
 
-    assert "Temporarily disabled" in str(result)
-    assert emitted
+    # `{}` is the API-caller shape, so the refusal leaves as a status rather than as prose:
+    # a tripped breaker is a per-entity rate limit, which is what 429 is for.
+    assert isinstance(result, StreamingResponse), (
+        f"an API caller was handed {type(result).__name__} on a breaker refusal"
+    )
+    assert result.status_code == 429
+    body = b"".join([chunk async for chunk in result.body_iterator])
+    assert json.loads(body.decode("utf-8"))["error"]["message"].startswith("Temporarily disabled")
+    assert any("Temporarily disabled" in str(error["error"]) for error in emitted), (
+        f"the breaker refusal no longer announces its sentence to the chat: {emitted}"
+    )
 
 
 @pytest.mark.asyncio
@@ -3885,8 +3904,33 @@ async def test_pipe_warmup_failed_emits_error(monkeypatch, pipe_instance_async) 
         None,
     )
 
-    assert "Service unavailable" in str(result)
-    assert emitted
+    # The same API-caller shape as the breaker arm above, and a whole-process condition,
+    # so it is the whole-service status rather than the per-entity one.
+    assert isinstance(result, StreamingResponse), (
+        f"an API caller was handed {type(result).__name__} on a warmup refusal"
+    )
+    assert result.status_code == 503
+    body = b"".join([chunk async for chunk in result.body_iterator])
+    assert "Service unavailable" in json.loads(body.decode("utf-8"))["error"]["message"]
+    assert any("Service unavailable" in error for error in emitted), (
+        f"the warmup refusal no longer announces its sentence to the chat: {emitted}"
+    )
+
+
+async def _refusal_sentence(result: Any) -> str:
+    """The refusal sentence, from whichever shape the pipe returned it in.
+
+    `__metadata__={}` is the API-caller shape -- no chat to write a card into -- so a
+    pre-enqueue refusal there leaves as a status envelope rather than as the card a
+    saved chat would have been shown. The sentence is the same either way; only the
+    envelope differs, and these tests are about the sentence.
+    """
+    if isinstance(result, StreamingResponse):
+        body = b"".join(
+            [chunk async for chunk in result.body_iterator]  # pyright: ignore[reportArgumentType]
+        )
+        return json.loads(body.decode("utf-8"))["error"]["message"]
+    return str(result)
 
 
 @pytest.mark.asyncio
@@ -9204,8 +9248,12 @@ class TestFilterAutoInstallationPaths:
                 filters = pipe._ensure_filter_manager()
                 filters.ensure_openrouter_image_gen_filter_function_id = AsyncMock(return_value=None)
                 filters.ensure_openrouter_video_gen_filter_function_ids = AsyncMock(return_value={})
-                filters.ensure_openrouter_image_filter_function_ids = AsyncMock(return_value={})
-                filters.ensure_openrouter_fusion_filter_function_id = AsyncMock(return_value=None)
+                filters.ensure_openrouter_image_filter_function_ids = AsyncMock(
+                    return_value=({}, frozenset())
+                )
+                filters.ensure_openrouter_fusion_filter_function_id = AsyncMock(
+                    return_value=(None, False)
+                )
                 filters._retire_variant_image_filters = AsyncMock(return_value=None)
 
                 pipe.valves.UPDATE_MODEL_CAPABILITIES = False
@@ -9436,8 +9484,12 @@ class TestDirectUploadsFilterPaths:
                 filters.ensure_openrouter_web_tools_filter_function_id = AsyncMock(return_value=None)
                 filters.ensure_openrouter_image_gen_filter_function_id = AsyncMock(return_value=None)
                 filters.ensure_openrouter_video_gen_filter_function_ids = AsyncMock(return_value={})
-                filters.ensure_openrouter_image_filter_function_ids = AsyncMock(return_value={})
-                filters.ensure_openrouter_fusion_filter_function_id = AsyncMock(return_value=None)
+                filters.ensure_openrouter_image_filter_function_ids = AsyncMock(
+                    return_value=({}, frozenset())
+                )
+                filters.ensure_openrouter_fusion_filter_function_id = AsyncMock(
+                    return_value=(None, False)
+                )
                 filters._retire_variant_image_filters = AsyncMock(return_value=None)
 
                 pipe.valves.UPDATE_MODEL_CAPABILITIES = False

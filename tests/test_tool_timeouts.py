@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from open_webui_openrouter_pipe.integrations import image_catalog, video_catalog
 from aiohttp.helpers import TimerContext
 from tests._jumping_clock import event_loop_policy  # noqa: F401
 
@@ -943,7 +944,7 @@ async def test_a_call_the_idle_limit_gave_up_on_before_it_started_never_runs_lat
     pipe_instance_async, monkeypatch, slots
 ):
     # Calls that never return hold every slot. Each later send_email is still waiting for a slot when the idle limit
-    # tells the model it timed out; once a slot frees, the email must not go out after all.
+    # reports it as not started; once a slot frees, the email must not go out after all.
     trace: list[str] = []
     registry = {
         "hangs": _entry(_answers_after(NEVER, []), tool_type="function", name="hangs"),
@@ -961,8 +962,8 @@ async def test_a_call_the_idle_limit_gave_up_on_before_it_started_never_runs_lat
         TOOL_IDLE_TIMEOUT_SECONDS=30,
     )
 
-    assert "idle timeout" in _text(outputs["e1"]), _text(outputs["e1"])
-    assert "idle timeout" in _text(outputs["e2"]), _text(outputs["e2"])
+    assert "was not started" in _text(outputs["e1"]), _text(outputs["e1"])
+    assert "was not started" in _text(outputs["e2"]), _text(outputs["e2"])
     assert trace == []
 
 
@@ -988,7 +989,7 @@ async def test_an_ask_user_the_idle_limit_gave_up_on_before_it_started_never_ope
     pipe_instance_async, monkeypatch, slots
 ):
     # ask_user takes no tool slot, but it still needs a worker, and calls that never return keep every worker busy until
-    # the per-call limit cuts them. The idle limit tells the model the question timed out while it is still waiting; once
+    # the per-call limit cuts them. The idle limit reports the question as not started while it is still waiting; once
     # a worker frees up, the question must not open after all.
     asked: list[str] = []
     registry = {
@@ -1007,7 +1008,7 @@ async def test_an_ask_user_the_idle_limit_gave_up_on_before_it_started_never_ope
         TOOL_IDLE_TIMEOUT_SECONDS=30,
     )
 
-    assert "idle timeout" in _text(outputs["a1"]), _text(outputs["a1"])
+    assert "was not started" in _text(outputs["a1"]), _text(outputs["a1"])
     assert asked == []
 
 

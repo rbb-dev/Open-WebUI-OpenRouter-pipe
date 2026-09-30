@@ -532,15 +532,6 @@ def _foreign_filter_source() -> str:
     )
 
 
-# `pipes()` runs the filter switch-offs ahead of the model list, so one all-off
-# pass writes the literal-id rows (`_PIPE_LITERAL_ID_WRITES`) from that sweep as
-# well as the installer's candidates. Those two writers are kept apart: the
-# literal-id one is keyed by id and predates this batch, and the rule under test
-# is about the content-classified sweep, which cannot see a row that carries no
-# marker whatever id it holds.
-_PIPE_LITERAL_ID_WRITES = frozenset({"openrouter_web_tools"})
-
-
 _FUSION_MARKER = _OPENROUTER_FUSION_FILTER_MARKER
 _IMAGE_GEN_MARKER = _OPENROUTER_IMAGE_GEN_FILTER_MARKER
 def _marked_source(marker: str) -> str:

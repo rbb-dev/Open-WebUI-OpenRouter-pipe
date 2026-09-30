@@ -812,7 +812,8 @@ class MultimodalHandler:
     async def _download_remote_url(
         self,
         url: str,
-        timeout_seconds: int | None = None
+        timeout_seconds: int | None = None,
+        seconds: float | None = None
     ) -> dict[str, Any] | None:
         """Download file or image from remote URL with exponential backoff retry logic.
 
@@ -878,7 +879,7 @@ class MultimodalHandler:
         if not is_http_or_https_url(url):
             return None
 
-        pinned = await self._prepare_pinned_request(url)
+        pinned = await self._prepare_pinned_request(url, seconds)
         if pinned is None:
             self.logger.error(
                 "Remote download blocked by security policy (SSRF or HTTP disabled by default): %s",
@@ -1434,7 +1435,7 @@ class MultimodalHandler:
         return (request_url, headers, extensions)
 
     async def _prepare_pinned_request(
-        self, url: str
+        self, url: str, seconds: float | None = None
     ) -> tuple[str, dict[str, str], dict[str, Any]] | None:
         """Validate `url` against the SSRF guard and return (request_url,
         headers, extensions) for an IP-pinned httpx request, or None if blocked.
@@ -1444,15 +1445,17 @@ class MultimodalHandler:
         resolved+validated exactly once and the connection is pinned to a
         validated IP, so httpx cannot re-resolve to a rebound private address.
         """
+        if seconds is None:
+            seconds = ADDRESS_CHECK_SECONDS
         try:
             ips = await asyncio.wait_for(
                 _run_address(self, self._request_ips_blocking, url),
-                timeout=ADDRESS_CHECK_SECONDS,
+                timeout=max(0.0, seconds),
             )
         except TimeoutError:
             self.logger.warning(
                 "Address check for %s did not finish within %.1fs; treating it as unsafe",
-                loggable_link(url), ADDRESS_CHECK_SECONDS,
+                loggable_link(url), seconds,
             )
             return None
         if ips is None:

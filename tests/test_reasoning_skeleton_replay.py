@@ -81,9 +81,13 @@ async def _stage_a(pipe, monkeypatch, valves, rounds, *, stream=True, emitter=No
     [call ids]), which reason, have OpenRouter consult its advisor (item id "adv-<round>") or run a web search, reason
     again ("THOUGHT-<round>-AFTER"), write and call; or ("answer", reasons_first); or ("answer-then-reasoning", None),
     which writes and only then reports its reasoning, a provider that reasons after its own message item; or
-    ("call-then-thought", [call ids]), ("call-then-thought-done", [call ids]) and
+    ("call-then-thought", [call ids]), ("call-then-thought-done", [call ids]),
+    ("call-then-thought-then-text", [call ids]), ("call-then-thought-done-then-text", [call ids]) and
     ("call-thought-call-thought", [two call ids]), which call first and only then report their reasoning, the first
-    streamed as text and the second closed by its own `output_item.done` -- the shape whose box belongs under its call.
+    streamed as text and the second closed by its own `output_item.done` -- the shape whose box belongs under its call;
+    or ("call-then-text", [call ids]) and ("text-call-text", [call ids]), which keep writing after the call, the second
+    splitting one sentence around it. The two "-then-text" kinds keep the round going with answer text after the thought,
+    so the box has to be published before that text rather than at the end of the round.
     ``signed=False`` streams reasoning with
     no signature, which Anthropic cannot take back; ``signed="at-completion"`` streams it unsigned and signs it only in
     the completed response, as Anthropic does. ``message_id=None`` sends no message id, as an API request does;
@@ -150,13 +154,18 @@ async def _stage_a(pipe, monkeypatch, valves, rounds, *, stream=True, emitter=No
             yield {"type": "response.completed", "response": {"output": output, "usage": {}}}
             return
 
-        if kind in ("call-then-thought", "call-then-thought-done", "call-thought-call-thought"):
+        if kind in ("call-then-thought", "call-then-thought-done", "call-thought-call-thought",
+                    "call-then-thought-then-text", "call-then-thought-done-then-text"):
             # A provider that reports its reasoning *after* its own tool call. The order
             # is the point, so it is written out here rather than reused from the
             # "delta-calls" shape: no other kind has a call in front of the thought, and a
             # future edit that reasoned first would neuter the rows that depend on it, so
             # the tests assert this order off the record rather than assume it. Each call
-            # id is distinct per round, so a round's card is its own.
+            # id is distinct per round, so a round's card is its own. The two
+            # "-then-text" kinds keep the round going with answer text after the thought,
+            # so the box has to be published before that text rather than at the end of
+            # the round; the delta and the closed-item forms are both here because only
+            # the delta form reaches a registration site.
             for slot, call_id in enumerate(value):
                 call = {"type": "function_call", "call_id": call_id, "name": tool_name,
                         "arguments": json.dumps({"q": ARGUMENT_CANARY}), "status": "completed"}
@@ -177,7 +186,7 @@ async def _stage_a(pipe, monkeypatch, valves, rounds, *, stream=True, emitter=No
                     output.append({"type": "reasoning", "id": between, "status": "completed",
                                    "content": [{"type": "reasoning_text", "text": f"BETWEEN-{index}"}], "summary": []})
             reasoning_id = f"rs-{index}"
-            if kind == "call-then-thought-done":
+            if kind in ("call-then-thought-done", "call-then-thought-done-then-text"):
                 yield thought("")
             else:
                 yield {"type": "response.output_item.added", "output_index": 0,
@@ -186,6 +195,24 @@ async def _stage_a(pipe, monkeypatch, valves, rounds, *, stream=True, emitter=No
                        "delta": f"THOUGHT-{index} "}
                 output.append({"type": "reasoning", "id": reasoning_id, "status": "completed",
                                "content": [{"type": "reasoning_text", "text": f"THOUGHT-{index}"}], "summary": []})
+            if kind.endswith("-then-text"):
+                yield {"type": "response.output_text.delta", "delta": f"text {index} "}
+            yield {"type": "response.completed", "response": {"output": output, "usage": {}}}
+            return
+
+        if kind in ("call-then-text", "text-call-text"):
+            # A round that keeps writing after its call. The order is the point, so it is
+            # written out here: no other kind has answer text after a call, and the rows
+            # that pin where the card lands read the order off the wire rather than assume
+            # it. "text-call-text" is the round that splits a sentence in two.
+            if kind == "text-call-text":
+                yield {"type": "response.output_text.delta", "delta": f"t1-{index} "}
+            for call_id in value:
+                call = {"type": "function_call", "call_id": call_id, "name": tool_name,
+                        "arguments": json.dumps({"q": ARGUMENT_CANARY}), "status": "completed"}
+                yield {"type": "response.output_item.done", "item": call}
+                output.append(call)
+            yield {"type": "response.output_text.delta", "delta": f"t2-{index} "}
             yield {"type": "response.completed", "response": {"output": output, "usage": {}}}
             return
 

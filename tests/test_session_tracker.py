@@ -236,8 +236,10 @@ def test_task_costs_by_chat_excludes_same_worker_folded():
            metadata={"chat_id": "c-other", "session_id": "s1", "user_id": "u1"})
     tracker.finalize("task2", _usage(cost=0.002), "ok")
     tc = tracker.task_costs_by_chat()
-    assert list(tc.keys()) == ["c-other"]
-    assert tc["c-other"] == pytest.approx(0.002)
+    # The key is chat id AND user id, joined with the house separator: `chat_id` alone
+    # merges two members of one chat into one float before the publisher ever sees them.
+    assert list(tc.keys()) == ["c-other\x1fu1"]
+    assert tc["c-other\x1fu1"] == pytest.approx(0.002)
 
 
 def test_live_snapshot_returns_atomic_sessions_and_task_costs():
@@ -251,7 +253,7 @@ def test_live_snapshot_returns_atomic_sessions_and_task_costs():
     assert isinstance(rows, list) and isinstance(task_costs, dict)
     assert [r["kind"] for r in rows] == ["chat"]
     assert rows[0]["chat_id"] == "c1"
-    assert task_costs == {"c-other": pytest.approx(0.002)}
+    assert task_costs == {"c-other\x1fu1": pytest.approx(0.002)}
     assert rows == tracker.live_sessions()
     assert task_costs == tracker.task_costs_by_chat()
 

@@ -1972,7 +1972,11 @@ separately billed job.
 Every time `pipe()` is invoked for a video chat:
 
 1. The adapter looks up the assistant message and scans for an existing
-   marker.
+   marker. The markers it scans for are ones the pipe itself wrote: every
+   `videojob` marker is serialized by the pipe from a job id OpenRouter
+   returned, on a line of its own, and free text interpolated into a rendered
+   block beside it is whitespace-flattened onto a single line, so no line of
+   the message body can be one.
 2. If a marker is found AND a final `<video>` block also exists, the
    adapter returns the cached content (no re-poll, no double-submit).
 3. If a marker exists but no `<video>` block, the adapter resumes
@@ -2356,7 +2360,14 @@ Key files:
   name and capability flags alongside the video controls — but its tool-calling
   parameters are the video row's own, so `TOOL_CALLING_FILTER` does not apply to
   it and such a model is invisible to a tool-calling filter. A model only in the
-  video catalog registers with the video row's own values. A sweep that
+  video catalog registers with the video row's own values. Whether a video model
+  takes a picture is read from its `supported_frame_images` list, not from its
+  mere presence in `/videos/models`: the `vision` feature and the
+  `capabilities.vision` flag Open WebUI draws its checkbox from follow that one
+  fact, so a row publishing no frame images is unticked on both surfaces and the
+  composer refuses a picture at attach time rather than the pipe dropping it at
+  send time. A model in both catalogs keeps its chat answer on both surfaces. A
+  sweep that
   completes with none calls `register_video_models([])`, which retires every
   model the video catalog itself registered, so a provider withdrawal leaves
   the picker; a model the chat `/models` catalog also publishes is spared by

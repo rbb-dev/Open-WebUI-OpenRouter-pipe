@@ -11,6 +11,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from open_webui_openrouter_pipe.core.config import Valves
 from open_webui_openrouter_pipe.plugins.base import PluginBase, PluginContext
 from open_webui_openrouter_pipe.plugins.registry import PluginRegistry
 pytest.importorskip("open_webui_openrouter_pipe.plugins.pipe_dashboard")
@@ -66,13 +67,44 @@ def _authz_default_allow(monkeypatch):
     monkeypatch.setattr(_ppl, "can_view", AsyncMock(return_value=True))
 
 
+def _commit_dashboard_row(monkeypatch, pipe) -> None:
+    """Mirror the pipe's in-memory dashboard valve into the PERSISTED row.
+
+    `on_models` and `on_request` answer from the stored `Function.valves` row, so a
+    fixture that only sets `pipe.valves.PIPE_DASHBOARD_ENABLE` leaves the store saying
+    otherwise and every "disabled" arm below is decided by a row that never changed
+    rather than by the valve under test. The row is committed whenever the in-memory
+    copy is set, so the two agree and the arms still test the gate.
+    """
+    import open_webui.models.functions as owf
+
+    class _Row:
+        content = "def pipe():\n    pass"
+
+        async def get_function_by_id(self, id, db=None):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(content=self.content)
+
+        async def get_function_valves_by_id(self, id, db=None):
+            return {"PIPE_DASHBOARD_ENABLE": bool(pipe.valves.PIPE_DASHBOARD_ENABLE)}
+
+    monkeypatch.setattr(owf, "Functions", _Row())
+
+
 def _make_mock_pipe():
     """Create a minimal mock Pipe for Pipe Dashboard tests."""
     pipe = Mock()
     pipe.id = "test-pipe"
-    pipe.valves = Mock()
-    pipe.valves.ENABLE_PLUGIN_SYSTEM = True
-    pipe.valves.model_fields = {}
+    # A real `Valves` subclass, not a `Mock`: the dashboard gates read the PERSISTED row
+    # through `readable_stored`, which validates against this class's pydantic schema,
+    # and a `Mock` has no `model_fields` -- the read would raise and the gate would
+    # answer for the wrong reason. The dashboard valve is a declared plugin field, so it
+    # is a subclass attribute and each arm sets it.
+    class _DashboardValves(Valves):
+        PIPE_DASHBOARD_ENABLE: bool = True
+
+    pipe.valves = _DashboardValves(ENABLE_PLUGIN_SYSTEM=True)
     pipe._artifact_store = Mock()
     pipe._artifact_store._session_factory = None
     pipe._artifact_store._item_model = None
@@ -649,20 +681,22 @@ class TestMarkdownTablePipeEscape:
 class TestPipeDashboardValveGuards:
     """Tests for PIPE_DASHBOARD_ENABLE valve guards in on_models and on_request."""
 
-    def test_on_models_skips_when_disabled(self):
+    def test_on_models_skips_when_disabled(self, monkeypatch):
         """on_models does not inject pipe-dashboard when PIPE_DASHBOARD_ENABLE is False."""
         pipe = _make_mock_pipe()
         pipe.valves.PIPE_DASHBOARD_ENABLE = False
+        _commit_dashboard_row(monkeypatch, pipe)
         plugin = _make_plugin(pipe)
         models = [{"id": "gpt-4o", "name": "GPT-4o"}]
         asyncio.run(plugin.on_models(models))
         ids = [m["id"] for m in models]
         assert "pipe-dashboard" not in ids
 
-    def test_on_models_injects_when_enabled(self):
+    def test_on_models_injects_when_enabled(self, monkeypatch):
         """on_models injects pipe-dashboard when PIPE_DASHBOARD_ENABLE is True."""
         pipe = _make_mock_pipe()
         pipe.valves.PIPE_DASHBOARD_ENABLE = True
+        _commit_dashboard_row(monkeypatch, pipe)
         plugin = _make_plugin(pipe)
         models = [{"id": "gpt-4o", "name": "GPT-4o"}]
         asyncio.run(plugin.on_models(models))
@@ -670,10 +704,11 @@ class TestPipeDashboardValveGuards:
         assert "pipe-dashboard" in ids
 
     @pytest.mark.asyncio
-    async def test_on_request_returns_none_when_disabled(self):
+    async def test_on_request_returns_none_when_disabled(self, monkeypatch):
         """on_request returns None for pipe-dashboard model when PIPE_DASHBOARD_ENABLE is False."""
         pipe = _make_mock_pipe()
         pipe.valves.PIPE_DASHBOARD_ENABLE = False
+        _commit_dashboard_row(monkeypatch, pipe)
         plugin = _make_plugin(pipe)
         result = await plugin.on_request(
             _make_body("help"), {"role": "admin"}, {}, None, None,
@@ -681,10 +716,11 @@ class TestPipeDashboardValveGuards:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_on_request_responds_when_enabled(self):
+    async def test_on_request_responds_when_enabled(self, monkeypatch):
         """on_request handles pipe-dashboard model when PIPE_DASHBOARD_ENABLE is True."""
         pipe = _make_mock_pipe()
         pipe.valves.PIPE_DASHBOARD_ENABLE = True
+        _commit_dashboard_row(monkeypatch, pipe)
         plugin = _make_plugin(pipe)
         result = await plugin.on_request(
             _make_body("help"), {"role": "admin"}, {}, None, None,

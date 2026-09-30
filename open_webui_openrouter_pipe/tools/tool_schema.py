@@ -137,6 +137,25 @@ def _root_was_wrapped(parameters: dict[str, Any]) -> bool:
     return isinstance(parameters, dict) and not _root_is_object(parameters)
 
 
+def _declared_parameter_names(parameters: Any) -> frozenset[str]:
+    if not isinstance(parameters, dict):
+        return frozenset()
+    if isinstance(parameters.get("properties"), dict):
+        return frozenset(k for k in parameters["properties"] if isinstance(k, str))
+    defs_lookup: dict[str, Any] = {}
+    for defs_key in _DEFS_CONTAINER_KEYS:
+        defs = parameters.get(defs_key)
+        if isinstance(defs, dict):
+            for def_name, def_body in defs.items():
+                if isinstance(def_body, dict):
+                    defs_lookup[f"#/{defs_key}/{def_name}"] = def_body
+    node = {k: v for k, v in parameters.items() if k not in _DEFS_CONTAINER_KEYS}
+    _resolve_root_refs(node, defs_lookup, [64])
+    if isinstance(node.get("properties"), dict):
+        return frozenset(k for k in node["properties"] if isinstance(k, str))
+    return frozenset()
+
+
 def _advertised_root_params(parameters: Any, *, strictify: bool = True) -> set[str]:
     if not isinstance(parameters, dict):
         return set()

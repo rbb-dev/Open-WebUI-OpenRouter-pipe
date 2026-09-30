@@ -61,7 +61,7 @@ from ..core.utils import (
     tool_output_text_and_pictures,
 )
 from ..core.warn_latch import warn_level
-from ..filters.fusion_filter_renderer import is_fusion_model
+from ..filters.fusion_filter_renderer import _fusion_base_model_id, is_fusion_model
 from ..models.registry import ModelFamily
 from ..storage.owui_files import is_temporary_chat
 from ..tools.tool_schema import _strictify_schema
@@ -341,8 +341,10 @@ class ResponsesBody(BaseModel):
                 sanitized_params["max_output_tokens"] = cap
 
         if "max_completion_tokens" in completions_dict:
-            requested_completion_max = completions_dict["max_completion_tokens"]
-            if isinstance(requested_completion_max, int) and requested_completion_max >= 1:
+            requested_completion_max = _coerced_token_cap(
+                completions_dict["max_completion_tokens"]
+            )
+            if requested_completion_max is not None and requested_completion_max >= 1:
                 sanitized_params["max_output_tokens"] = requested_completion_max
 
         effort = completions_dict.get("reasoning_effort")
@@ -1363,7 +1365,9 @@ def _responses_payload_to_chat_completions_payload(
             chat_payload[key] = responses_payload[key]
 
     plugins = chat_payload.get("plugins")
-    if isinstance(plugins, list) and is_fusion_model(str(responses_payload.get("model") or "")):
+    if isinstance(plugins, list) and is_fusion_model(
+        _fusion_base_model_id(str(responses_payload.get("model") or ""))
+    ):
         kept = [p for p in plugins if not (isinstance(p, dict) and p.get("id") == "fusion")]
         if kept:
             chat_payload["plugins"] = kept
@@ -1853,6 +1857,8 @@ def _apply_identifier_valves_to_payload(
 
     metadata_out: dict[str, str] = {}
 
+    payload.pop("safety_identifier", None)
+
     if valves.SEND_END_USER_ID:
         user_value = (owui_user_id or "").strip()
         source = str(getattr(valves, "END_USER_ID_SOURCE", "id") or "id")
@@ -1871,6 +1877,7 @@ def _apply_identifier_valves_to_payload(
         )
         if display and len(display) <= _MAX_OPENROUTER_ID_CHARS:
             payload["user"] = display
+            payload["safety_identifier"] = display
             if user_value and len(user_value) <= _MAX_OPENROUTER_ID_CHARS:
                 metadata_out["user_id"] = user_value
         else:

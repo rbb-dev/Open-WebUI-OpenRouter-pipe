@@ -1624,10 +1624,13 @@ async def _install_ids(model_ids, endpoint_records):
     pipe.valves.AUTO_INSTALL_IMAGE_FILTERS = True
     pipe.valves.ENABLE_OPENROUTER_IMAGE_GENERATION = True
     fm = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
-    fm._ensure_filter_installed = AsyncMock(side_effect=lambda **kwargs: kwargs["preferred_id"])
+    fm._ensure_filter_installed = AsyncMock(
+        side_effect=lambda **kwargs: (kwargs["preferred_id"], False)
+    )
 
     models = OpenRouterModelRegistry.list_models()
-    return models, await fm.ensure_openrouter_image_filter_function_ids(models)
+    installed, _unresolved = await fm.ensure_openrouter_image_filter_function_ids(models)
+    return models, installed
 
 
 @pytest.mark.asyncio
@@ -2080,14 +2083,14 @@ async def test_one_models_install_failure_costs_only_that_model():
     async def _install(**kwargs):
         if kwargs["preferred_id"] == doomed:
             raise RuntimeError("the database is locked")
-        return kwargs["preferred_id"]
+        return kwargs["preferred_id"], False
 
     pipe = MagicMock()
     fm = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
     fm._ensure_filter_installed = AsyncMock(side_effect=_install)
 
     models = OpenRouterModelRegistry.list_models()
-    result = await fm.ensure_openrouter_image_filter_function_ids(models)
+    result, _unresolved = await fm.ensure_openrouter_image_filter_function_ids(models)
 
     assert fm._ensure_filter_installed.await_count == len(wanted), (
         f"every model must be attempted; only {fm._ensure_filter_installed.await_count} were"
@@ -2942,10 +2945,12 @@ async def test_a_contract_that_shrinks_to_nothing_replaces_the_old_controls():
     fm = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
     written: list[str] = []
     fm._ensure_filter_installed = AsyncMock(
-        side_effect=lambda **kw: (written.append(kw["desired_source"]), kw["preferred_id"])[1]
+        side_effect=lambda **kw: (
+            written.append(kw["desired_source"]), (kw["preferred_id"], False)
+        )[1]
     )
 
-    result = await fm._ensure_single_image_filter_function_id(
+    result, _write_not_installed = await fm._ensure_single_image_filter_function_id(
         model_id="v/m", image_model={"id": "v/m", "name": "M"}, endpoint_record=[wide, disjoint],
         dedicated_image_api=True,
     )
@@ -3717,9 +3722,9 @@ async def test_only_a_contract_that_was_read_may_blank_an_installed_filter(
 
     pipe = MagicMock()
     manager = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
-    manager._ensure_filter_installed = AsyncMock(side_effect=lambda **kw: kw["preferred_id"])
+    manager._ensure_filter_installed = AsyncMock(side_effect=lambda **kw: (kw["preferred_id"], False))
 
-    result = await manager._ensure_single_image_filter_function_id(
+    result, _write_not_installed = await manager._ensure_single_image_filter_function_id(
         model_id="v/m",
         image_model={"id": "v/m", "name": "M"},
         endpoint_record=endpoint_record,
@@ -4215,7 +4220,7 @@ async def test_the_installed_filter_is_built_for_the_model_its_own_valve_names(
 
     async def _record(**kwargs):
         captured.update(kwargs)
-        return "or_image_gen"
+        return "or_image_gen", False
 
     manager._ensure_filter_installed = _record
 
@@ -4517,7 +4522,7 @@ async def test_a_contract_that_shrank_to_nothing_overwrites_the_filter_it_left_b
     pipe.valves.AUTO_INSTALL_IMAGE_FILTERS = True
     manager = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
 
-    result = await manager._ensure_single_image_filter_function_id(
+    result, _write_not_installed = await manager._ensure_single_image_filter_function_id(
         model_id=model_id,
         image_model=image_model,
         endpoint_record=[],

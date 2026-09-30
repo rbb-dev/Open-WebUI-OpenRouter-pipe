@@ -608,8 +608,7 @@ class RequestOrchestrator:
     async def _note_provider_failure(self, exc: OpenRouterAPIError | UpstreamBodyUnreadable) -> None:
         if is_sign_in_failure(exc):
             self._pipe._note_auth_failure()
-        await self._pipe._dispatch_plugin_event(
-            "dispatch_on_generation_complete",
+        await self._pipe._dispatch_generation_complete(
             None,
             "failed",
             request_id=SessionLogger.request_id.get() or "",
@@ -976,6 +975,12 @@ class RequestOrchestrator:
                 self.logger.warning(
                     "Direct uploads could not be injected into the request", exc_info=True
                 )
+                if outcome_sink is not None:
+                    outcome_sink["member_refusal_reason"] = (
+                        f"{body.get('model') or ''} was refused by the pipe's Direct Uploads "
+                        f"injection: an attachment on this request could not be attached, so "
+                        f"it was not sent to the provider"
+                    )
                 return await self._pipe._ensure_error_formatter()._emit_templated_error(
                     __event_emitter__,
                     template=valves.DIRECT_UPLOAD_FAILURE_TEMPLATE,
@@ -1189,6 +1194,7 @@ class RequestOrchestrator:
                 t for t in (incoming_tools or [])
                 if not (isinstance(t, dict) and t.get("name") in resolved_names)
             ]
+            merged_extra_tools.clear()
 
         builtin_ask_user_names: set[str] = set(ask_user_origin_names)
         if not use_task_model_adapter:
@@ -1330,17 +1336,23 @@ class RequestOrchestrator:
         if enforce_zdr:
             is_zdr_capable = OpenRouterModelRegistry.is_zdr_capable(normalized_model_id)
             if is_zdr_capable is False:
+                zdr_labels = ", ".join(
+                    self._pipe._model_restriction_labels(
+                        [zdr_reason], valves=valves
+                    )
+                )
+                if outcome_sink is not None:
+                    outcome_sink["member_refusal_reason"] = (
+                        f"{responses_body.model} is not permitted under the pipe's Zero "
+                        f"Data Retention routing ({zdr_labels}); ask your admin to allow it"
+                    )
                 shown = await self._pipe._ensure_error_formatter()._emit_templated_error(
                     __event_emitter__,
                     template=valves.MODEL_RESTRICTED_TEMPLATE,
                     variables={
                         "requested_model": responses_body.model,
                         "normalized_model_id": normalized_model_id,
-                        "restriction_reasons": ", ".join(
-                            self._pipe._model_restriction_labels(
-                                [zdr_reason], valves=valves
-                            )
-                        ),
+                        "restriction_reasons": zdr_labels,
                         "model_id_filter": "",
                         "free_model_filter": "",
                         "tool_calling_filter": "",
@@ -1355,17 +1367,24 @@ class RequestOrchestrator:
                     return self._pipe._task_refusal_result(__task__, shown)
                 return shown
             if is_zdr_capable is None:
+                zdr_unavailable_labels = ", ".join(
+                    self._pipe._model_restriction_labels(
+                        [zdr_reason, "ZDR_LIST_UNAVAILABLE"], valves=valves
+                    )
+                )
+                if outcome_sink is not None:
+                    outcome_sink["member_refusal_reason"] = (
+                        f"{responses_body.model} is not permitted under the pipe's Zero "
+                        f"Data Retention routing ({zdr_unavailable_labels}); ask your admin "
+                        f"to allow it"
+                    )
                 shown = await self._pipe._ensure_error_formatter()._emit_templated_error(
                     __event_emitter__,
                     template=valves.MODEL_RESTRICTED_TEMPLATE,
                     variables={
                         "requested_model": responses_body.model,
                         "normalized_model_id": normalized_model_id,
-                        "restriction_reasons": ", ".join(
-                            self._pipe._model_restriction_labels(
-                                [zdr_reason, "ZDR_LIST_UNAVAILABLE"], valves=valves
-                            )
-                        ),
+                        "restriction_reasons": zdr_unavailable_labels,
                         "model_id_filter": "",
                         "free_model_filter": "",
                         "tool_calling_filter": "",
@@ -1542,7 +1561,6 @@ class RequestOrchestrator:
                 task_reasoning._apply_task_reasoning_preferences(responses_body, task_effort)
                 task_reasoning._apply_gemini_thinking_config(responses_body, valves, honour_existing_budget=False)
                 task_reasoning._fit_effort_none_to_model(responses_body, settings_applied=True)
-                task_reasoning._apply_anthropic_verbosity(responses_body, valves)
 
             result = await self._pipe._ensure_task_model_adapter()._run_task_model_request(
                 responses_body.model_dump(),
@@ -1884,8 +1902,7 @@ class RequestOrchestrator:
                 normalized_model_id=responses_body.model,
                 api_model_id=getattr(responses_body, "api_model", None),
             )
-            await self._pipe._dispatch_plugin_event(
-                "dispatch_on_generation_complete",
+            await self._pipe._dispatch_generation_complete(
                 None,
                 "failed",
                 request_id=SessionLogger.request_id.get() or "",
@@ -2159,8 +2176,7 @@ class RequestOrchestrator:
                            "reason": exc.evidence()},
                 log_message=f"Unexpected error in request loop: {exc}",
             )
-            await self._pipe._dispatch_plugin_event(
-                "dispatch_on_generation_complete",
+            await self._pipe._dispatch_generation_complete(
                 None,
                 "failed",
                 request_id=SessionLogger.request_id.get() or "",

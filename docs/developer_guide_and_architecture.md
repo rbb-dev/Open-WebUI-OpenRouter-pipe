@@ -52,7 +52,7 @@ At a high level, a request follows this shape:
 
 1. **Admission and isolation**
    - Requests are queued into a bounded per-process request queue and executed under a per-process concurrency semaphore.
-   - Each request gets its own per-request logging context, and shares one pooled `aiohttp.ClientSession` per event loop, which is closed at shutdown. Because that session outlives a single request, the timeout valves are applied per call at every site that issues an outbound request; the session also carries the values from the request that built it, and that default applies only to a site that supplies no `timeout=` of its own.
+   - Each request gets its own per-request logging context, and shares one pooled `aiohttp.ClientSession` per event loop, which is closed at shutdown. Because that session outlives a single request, the timeout valves are applied per call at every site that issues an outbound request; the pooled session's own default tracks the valves of the request that most recently took it, and that default applies only to a site that supplies no `timeout=` of its own.
 
 2. **Normalization and transforms**
    - The incoming Open WebUI payload is normalized into a `ResponsesBody` (history reconstruction, multimodal transforms, request defaults).
@@ -79,13 +79,13 @@ The pipe starts helper workers lazily:
 - **Request queue worker**: drains the bounded request queue and isolates per-request context.
 - **Log worker**: drains log records asynchronously so logging does not block request handling.
 - **Artifact cleanup loop** (when persistence is available): periodically deletes old rows based on retention valves.
-- **Redis workers** (when enabled and prerequisites are met): write-behind flush and pub/sub listeners for multi-worker cache behavior. Whatever is still in the pending queue is drained before these tasks are cancelled.
+- **Redis workers** (when enabled and prerequisites are met): write-behind flush and pub/sub listeners for multi-worker cache behavior. Whatever is still in the pending queue is drained before these tasks are cancelled. The artifact cleanup loop, the Redis workers and the warmup are never started on a superseded instance: the helpers that start them refuse once that instance has been closed, so a model-list refresh Open WebUI still makes on a retired generation cannot leave a worker nothing will ever stop.
 - **Session log writer/cleanup threads** (when enabled): writes encrypted session log archives and prunes old archives.
 - **Plain-function tool pool** (started on the first sync tool call): a `ThreadPoolExecutor` `min(MAX_PARALLEL_TOOLS_GLOBAL, 8)` threads wide that plain-`def` tool bodies run on, so a user-supplied blocking tool cannot take the threads Open WebUI's own requests and this pipe's storage work use. Its width is recomputed on every call, so a valve change resizes it without a restart, and a teardown or a resize never cancels work already admitted to it.
 
 **State ownership:**
 - **Instance-level**: request queue, log queue, worker tasks, and locks are owned by each Pipe instance (prevents event loop contamination across async contexts). The plain-function tool pool belongs here as well, not to the class-level half below.
-- **Class-level**: rate-limiting semaphores (`_global_semaphore`, `_tool_global_semaphore`) are shared across all instances in the same process to enforce global concurrency limits.
+- **Class-level**: rate-limiting semaphores (`_global_semaphore`, `_tool_global_semaphore`) are shared across all instances in the same process to enforce global concurrency limits, and are written only by a live (non-retired) instance.
 
 ---
 
@@ -113,6 +113,12 @@ from open_webui_openrouter_pipe.core.timing_logger import timed, timing_scope, t
 async def my_function():
     ...
 
+@timed
+async def my_generator():
+    # an async generator's span brackets its whole iteration,
+    # not its construction
+    yield "one"
+
 # 2. timing_scope() - time specific code blocks
 with timing_scope("expensive_operation"):
     do_work()
@@ -121,7 +127,7 @@ with timing_scope("expensive_operation"):
 timing_mark("first_chunk_received")
 ```
 
-All three record only when timing is enabled *at call entry*, and only when a request id is bound. A body that enables timing mid-flight gets no `enter`/`exit` for itself, and a function whose worker was started on an empty context records nothing at all — which frames a worker inherits decide what its jobs record, so a background loop started inside a request must be given its own context if its work is to be attributed anywhere.
+All three record only when timing is enabled *at call entry*, and only when a request id is bound. A body that enables timing mid-flight gets no `enter`/`exit` for itself, and a function whose worker was started on an empty context records nothing at all — which frames a worker inherits decide what its jobs record, so a background loop started inside a request must be given its own context if its work is to be attributed anywhere. The same holds for an async generator: its `enter`/`exit` pair is bound to the request id set at the moment the generator was *called*, and its span covers the whole iteration — first `__anext__` to exhaustion, `aclose()`, or a thrown exception — rather than the construction of the generator object. A generator built and then dropped without being iterated records its `enter` and no `exit`.
 
 Key functions already instrumented:
 

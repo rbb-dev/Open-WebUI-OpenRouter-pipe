@@ -180,26 +180,6 @@ def test_extract_task_output_text_fallback_output_text(pipe_instance):
     assert result == "Fallback text content"
 
 
-def test_extract_task_output_text_combined_output_and_fallback(pipe_instance):
-    """Test _extract_task_output_text combines output items and fallback (line 65)."""
-    pipe = pipe_instance
-    adapter = TaskModelAdapter(pipe, logging.getLogger(__name__))
-
-    # Both output items and fallback field
-    response = {
-        "output": [
-            {
-                "type": "message",
-                "content": [{"type": "output_text", "text": "From output"}],
-            }
-        ],
-        "output_text": "From fallback",
-    }
-    result = adapter._extract_task_output_text(response)
-    assert "From output" in result
-    assert "From fallback" in result
-
-
 def test_extract_task_output_text_fallback_not_string(pipe_instance):
     """Test _extract_task_output_text ignores non-string fallback (line 64)."""
     pipe = pipe_instance

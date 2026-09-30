@@ -146,12 +146,7 @@ class ReasoningConfigManager:
             )
             cfg = dict(cfg) if cfg else {}
             cfg["effort"] = target_effort
-            if _normalised_effort(cfg) != _NO_EFFORT or self._model_requires_reasoning(
-                responses_body.model
-            ):
-                cfg.setdefault("enabled", True)
-            else:
-                cfg.pop("enabled", None)
+            cfg.setdefault("enabled", True)
             cfg, refused = self._refuse_off_on_mandatory_model(
                 responses_body.model, cfg, off_from_settings=target_effort == _NO_EFFORT
             )

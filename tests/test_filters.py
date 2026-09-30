@@ -2552,7 +2552,7 @@ async def test_the_fusion_filter_install_is_wired_to_its_own_marker_valve_and_id
     pipe.valves.AUTO_INSTALL_FUSION_FILTER = auto_install
     manager = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
 
-    result = await manager.ensure_openrouter_fusion_filter_function_id()
+    result, _unresolved = await manager.ensure_openrouter_fusion_filter_function_id()
 
     if not auto_install:
         assert result is None, "AUTO_INSTALL_FUSION_FILTER off must install nothing"
@@ -3013,7 +3013,7 @@ async def test_a_row_that_will_never_be_updated_says_so_once(
     manager = FilterManager(pipe=pipe, valves=pipe.valves, logger=logger)
 
     async def _install():
-        return await manager._ensure_filter_installed(
+        function_id, _write_not_installed = await manager._ensure_filter_installed(
             desired_source="FRESH = 1\n",
             desired_name="N",
             desired_meta={},
@@ -3022,6 +3022,7 @@ async def test_a_row_that_will_never_be_updated_says_so_once(
             log_label=label,
             matches_candidate=lambda content: True,
         )
+        return function_id
 
     with caplog.at_level(logging.DEBUG, logger=logger.name):
         first = await _install()
@@ -3117,7 +3118,7 @@ async def test_a_valve_read_that_failed_leaves_the_installed_filter_alone():
 
     pipe = MagicMock()
     manager = FilterManager(pipe=pipe, valves=pipe.valves, logger=MagicMock())
-    manager._ensure_filter_installed = AsyncMock(return_value="openrouter_image_gen")
+    manager._ensure_filter_installed = AsyncMock(return_value=("openrouter_image_gen", False))
 
     installed = SimpleNamespace(id="openrouter_image_gen", content=_OPENROUTER_IMAGE_GEN_FILTER_MARKER)
 

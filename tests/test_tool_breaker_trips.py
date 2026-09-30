@@ -19,6 +19,7 @@ from typing import Any
 import aiohttp
 import pytest
 from aioresponses import aioresponses
+from starlette.responses import StreamingResponse
 
 from open_webui_openrouter_pipe import EncryptedStr, Pipe, _ToolExecutionContext
 
@@ -26,6 +27,20 @@ from open_webui_openrouter_pipe import EncryptedStr, Pipe, _ToolExecutionContext
 # batch (later in the same turn). Each wording is the one the model reads.
 _SKIP_BEFORE_QUEUEING = "skipped due to repeated failures"
 _SKIP_IN_BATCH = "temporarily disabled due to repeated errors"
+
+
+async def _refusal_text(result: Any) -> str:
+    """The refusal sentence, from whichever shape the pipe returned it in.
+
+    `_request` below sends `__metadata__={}`, which is the API-caller shape, so a refusal
+    there leaves as a status envelope rather than as the card a chat would have shown.
+    """
+    if isinstance(result, StreamingResponse):
+        body = b"".join(
+            [chunk async for chunk in result.body_iterator]  # pyright: ignore[reportArgumentType]
+        )
+        return json.loads(body.decode("utf-8"))["error"]["message"]
+    return str(result)
 
 
 def _is_skip(output: dict[str, Any]) -> bool:
@@ -387,7 +402,9 @@ async def test_the_request_breaker_uses_the_failure_count_saved_for_the_pipe(mon
         await pipe.close()
 
     assert first == "answered"
-    assert "Temporarily disabled due to repeated errors" in str(refused), refused
+    assert "Temporarily disabled due to repeated errors" in await _refusal_text(refused), (
+        f"the refusal carried neither the sentence nor a status: {refused}"
+    )
 
 
 @pytest.mark.asyncio
@@ -467,7 +484,9 @@ async def test_the_request_breaker_uses_the_window_saved_for_the_pipe(monkeypatc
     finally:
         await pipe.close()
 
-    assert ("Temporarily disabled due to repeated errors" in str(reply)) is refused, reply
+    assert ("Temporarily disabled due to repeated errors" in await _refusal_text(reply)) is refused, (
+        f"the reply says the wrong thing for this window: {reply}"
+    )
 
 
 @pytest.mark.asyncio

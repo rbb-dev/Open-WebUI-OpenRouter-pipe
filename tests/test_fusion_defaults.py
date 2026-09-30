@@ -13,6 +13,7 @@ from open_webui_openrouter_pipe.core.fusion_defaults import (
     MAX_FUSION_MAX_TOOL_CALLS,
     MAX_FUSION_PANEL_MODELS,
     find_fusion_entry,
+    has_active_fusion_entry,
     resolve_fusion_run,
 )
 

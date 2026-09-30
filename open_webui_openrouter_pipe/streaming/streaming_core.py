@@ -79,7 +79,7 @@ from ..core.logging_system import SessionLogger
 
 # Import timing instrumentation
 from ..core.timing_logger import clear_timing_events, timed, timing_mark
-from ..core.url_scheme import is_http_or_https_url
+from ..core.url_scheme import is_http_or_https_url, loggable_link
 
 # Imports from core.utils
 from ..core.utils import (
@@ -135,6 +135,10 @@ from ..requests.sanitizer import (
     _sanitize_request_input,
     budget_model_id,
 )
+from ..requests.transformer import (
+    _gate_round_output_pictures,
+    _tool_picture_notice,
+)
 
 _OWUI_ORIGIN_SOURCES = frozenset({"owui_registry_tools", "owui_request_tools"})
 
@@ -182,7 +186,13 @@ def _is_no_usable_member_event(event_source: Any, etype: Any, event: Any) -> boo
 
 
 # Imports from storage.persistence
-from ..storage.multimodal import _guess_image_mime_type, image_extension_for_mime
+from ..storage.multimodal import (
+    _SNIFF_PREFIX_BYTES,
+    _sniff_evidence,
+    canonical_image_mime,
+    image_extension_for_mime,
+    resolve_download_type,
+)
 from ..storage.owui_files import is_channel_chat, is_linkable_chat, is_temporary_chat
 from ..storage.persistence import generate_item_id, normalize_persisted_item
 from ..tools.citation_harvester import (
@@ -823,6 +833,19 @@ class StreamingHandler:
                     owui_user_id=user_id,
                 )
 
+            def _resolved_stored_mime(declared: str | None, decoded: bytes) -> str | None:
+                resolved = resolve_download_type(
+                    declared, _sniff_evidence(decoded[:_SNIFF_PREFIX_BYTES])
+                )
+                mime_type = canonical_image_mime(resolved)
+                if mime_type is None:
+                    self.logger.debug(
+                        "Not materialising an image entry: declared=%r resolves to %r, "
+                        "which is not a storable image type",
+                        declared, resolved,
+                    )
+                return mime_type
+
             @timed
             async def _materialize_image_from_str(data_str: str) -> str | None:
                 text = (data_str or "").strip()
@@ -861,7 +884,9 @@ class StreamingHandler:
                     decoded = base64.b64decode(cleaned, validate=True)
                 except (binascii.Error, ValueError):
                     return None
-                mime_type = _guess_image_mime_type("", None, decoded) or "image/png"
+                mime_type = _resolved_stored_mime(None, decoded)
+                if mime_type is None:
+                    return None
                 stored = await _persist_generated_image(decoded, mime_type)
                 if stored:
                     await self._pipe._event_emitter_handler._emit_status(event_emitter, StatusMessages.IMAGE_BASE64_SAVED, done=False)
@@ -898,12 +923,9 @@ class StreamingHandler:
                                 or entry.get("mimeType")
                                 or entry.get("content_type")
                             )
-                            mime_type = (
-                                _guess_image_mime_type("", explicit_mime, decoded)
-                                or "image/png"
-                            )
-                            if mime_type == "image/jpg":
-                                mime_type = "image/jpeg"
+                            mime_type = _resolved_stored_mime(explicit_mime, decoded)
+                            if mime_type is None:
+                                continue
                             stored = await _persist_generated_image(decoded, mime_type)
                             if stored:
                                 await self._pipe._event_emitter_handler._emit_status(event_emitter, StatusMessages.IMAGE_BASE64_SAVED, done=False)
@@ -1454,6 +1476,13 @@ class StreamingHandler:
                     if state["mono_close"] is None:
                         state["mono_close"] = now
 
+            def _rearm_reasoning_window(state: dict[str, Any]) -> None:
+                if state.get("published_round") is None or state["published_round"] == loop_index:
+                    return
+                state["wall_open"] = time.time()
+                state["mono_open"] = _monotonic()
+                state["mono_close"] = None
+
             async def _emit_reasoning_item(key: str, current_text: str) -> None:
                 nonlocal emitted_response_output_items
                 if event_emitter is None or not thinking_box_enabled:
@@ -1787,6 +1816,14 @@ class StreamingHandler:
                         continue
                     if item.get("role") != "assistant":
                         continue
+                    content = item.get("content")
+                    if isinstance(content, list):
+                        for part in content:
+                            if not isinstance(part, dict) or part.get("type") != "output_text":
+                                continue
+                            raw_part_annotations = part.get("annotations")
+                            if isinstance(raw_part_annotations, list) and raw_part_annotations:
+                                out_annotations.extend(raw_part_annotations)
                     raw_annotations = item.get("annotations")
                     if isinstance(raw_annotations, list) and raw_annotations:
                         out_annotations.extend(raw_annotations)
@@ -1984,6 +2021,7 @@ class StreamingHandler:
                             if append:
                                 note_generation_activity()
                                 display_state = _reasoning_display_state(key)
+                                _rearm_reasoning_window(display_state)
                                 display_state["mono_close"] = None
                                 if fusion_inner_call and event_emitter is not None:
                                     await event_emitter({"type": "fusion_inner:reasoning.delta", "data": {"delta": append}})
@@ -2471,6 +2509,8 @@ class StreamingHandler:
                                         f"{k}={json.dumps(v, ensure_ascii=False)}"
                                         for k, v in parsed_arguments.items()
                                     )
+                                    if len(args_formatted) > 1000:
+                                        args_formatted = args_formatted[:1000] + "…"
                                     invocation = (
                                         f"{item_name}({args_formatted})"
                                         if args_formatted
@@ -2798,6 +2838,9 @@ class StreamingHandler:
                                 reasoning_stream_active = True
                                 note_model_activity()
                                 note_generation_activity()
+                                opened = reasoning_display.get(key)
+                                if opened is not None:
+                                    _rearm_reasoning_window(opened)
                                 await _maybe_emit_reasoning_status(append)
                                 await _maybe_emit_reasoning_status("", force=True)
                             if emitter_supplied and calls_in_this_round:
@@ -3714,6 +3757,26 @@ class StreamingHandler:
                             self.logger.debug("Received tool result\n%s", _tool_result_for_log(output))
                         if loop_index > max_loops:
                             break
+                        round_refusals: list[tuple[str, str, str]] = []
+                        for position, round_output in enumerate(budgeted_outputs):
+                            if not isinstance(round_output, dict):
+                                continue
+                            gated_output, round_refused = await _gate_round_output_pictures(
+                                round_output.get("output"),
+                                self._pipe.valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
+                            )
+                            if round_refused:
+                                budgeted_outputs[position] = {**round_output, "output": gated_output}
+                                round_refusals.extend(round_refused)
+                        if round_refusals:
+                            for url, reason, cause in round_refusals:
+                                self.logger.warning(
+                                    "Not forwarding a tool's picture (%s): %s [cause=%s]",
+                                    loggable_link(url), reason, cause,
+                                )
+                            await self._pipe._event_emitter_handler._emit_status(
+                                event_emitter, _tool_picture_notice(round_refusals), done=False,
+                            )
                         body.input.extend(budgeted_outputs)
                         input_is_sanitized = False
                         shipped_budget = _sanitize_request_input(self._pipe, body)
@@ -3896,8 +3959,7 @@ class StreamingHandler:
             if not handed_back_for_retry:
                 try:
                     await asyncio.shield(
-                        self._pipe._dispatch_plugin_event(
-                            "dispatch_on_generation_complete",
+                        self._pipe._dispatch_generation_complete(
                             total_usage if isinstance(total_usage, dict) else None,
                             generation_status,
                             request_id=SessionLogger.request_id.get() or "",

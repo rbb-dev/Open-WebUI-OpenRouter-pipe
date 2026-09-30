@@ -18,9 +18,10 @@ def _reset_getter():
     sp._pd_snapshot_getter = original
 
 
-def _row(started: float, done: float | None = None, pid: int = 1) -> dict:
+def _row(started: float, done: float | None = None, pid: int = 1, user_id: str = "u1") -> dict:
     return {
         "user": "sam",
+        "user_id": user_id,
         "model_id": "m",
         "model_name": "M",
         "kind": "chat",
@@ -38,8 +39,7 @@ def _row(started: float, done: float | None = None, pid: int = 1) -> dict:
     }
 
 
-def test_worker_payload_includes_sessions_from_getter():
-    sp.set_snapshot_getter(lambda: ([_row(100.0)], {"c9": 0.003}, 1))
+def _bare_pipe() -> Mock:
     pipe = Mock()
     pipe._active_pipes_calls = 0
     pipe._global_semaphore = None
@@ -55,9 +55,15 @@ def test_worker_payload_includes_sessions_from_getter():
     pipe._video_global_semaphore = None
     pipe._video_global_limit = 0
     pipe._video_active_tasks = {}
-    payload = sp._collect_worker_payload(pipe)
+    return pipe
+
+
+def test_worker_payload_includes_sessions_from_getter():
+    sp.set_snapshot_getter(lambda: ([_row(100.0)], {"c9": 0.003}, 1))
+    payload = sp._collect_worker_payload(_bare_pipe())
     assert payload["sl"] == [_row(100.0)]
-    assert payload["tc"] == {"c9": 0.003}
+    # The stubbed key carries no user half, so the composite's user half is empty.
+    assert payload["tc"] == {"c9\x1f": 0.003}
     assert payload["sa"] == 1
 
 
@@ -103,11 +109,11 @@ def test_aggregate_folds_cross_worker_task_costs():
     # Worker 1 holds the parent chat; worker 2 holds only the task cost for it
     # (title/tag task fired on a different worker) plus a truly-orphan task cost.
     w1 = {"pid": 1, "uptime_s": 1.0, "sessions": {"in_flight": 0},
-          "sessions_live": [dict(_row(300.0), chat_id="c1", cost=0.10, task_cost=0.0)],
+          "sessions_live": [dict(_row(300.0, user_id="u1"), chat_id="c1", cost=0.10, task_cost=0.0)],
           "task_costs": {}}
     w2 = {"pid": 2, "uptime_s": 1.0, "sessions": {"in_flight": 0},
           "sessions_live": [],
-          "task_costs": {"c1": 0.004, "c-orphan": 0.002}}
+          "task_costs": {"c1\x1fu1": 0.004, "c-orphan\x1fu1": 0.002}}
     rows = sp.aggregate_worker_payloads([w1, w2])["sessions_live"]
     assert len(rows) == 1                              # truly-orphan cost dropped, no synthetic row
     assert rows[0]["cost"] == pytest.approx(0.104)     # 0.10 + cross-worker folded 0.004

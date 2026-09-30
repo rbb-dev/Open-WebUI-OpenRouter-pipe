@@ -179,15 +179,75 @@ _MARKDOWN_IMAGE_RE = re.compile(
 )
 
 
-def markdown_image_destinations(text: str) -> list[str]:
+_MARKDOWN_IMAGE_BODY_RE = re.compile(
+    r"data:[A-Za-z0-9#$&^_.+-]*/[A-Za-z0-9#$&^_.+-]*"
+    r"(?:;[A-Za-z0-9#$&^_.+-]+=[A-Za-z0-9#$&^_.+-]+)*"
+    r";base64,[A-Za-z0-9+/=]{4096,}"
+)
+_MARKDOWN_IMAGE_BLANK = "\x00" * 32
+
+
+def _blank_long_image_bodies(text: str) -> tuple[str, list[tuple[int, int, str]]]:
+    blanks: list[tuple[int, int, str]] = []
+    pieces: list[str] = []
+    cursor = 0
+    length = 0
+    for match in _MARKDOWN_IMAGE_BODY_RE.finditer(text):
+        pieces.append(text[cursor:match.start()])
+        length += match.start() - cursor
+        blanks.append((length, length + len(_MARKDOWN_IMAGE_BLANK), match.group(0)))
+        pieces.append(_MARKDOWN_IMAGE_BLANK)
+        length += len(_MARKDOWN_IMAGE_BLANK)
+        cursor = match.end()
+    pieces.append(text[cursor:])
+    return "".join(pieces), blanks
+
+
+def _restore_blanked_image_body(
+    shrunk: str, blanks: list[tuple[int, int, str]], start: int, end: int
+) -> tuple[str, int]:
+    parts: list[str] = []
+    cursor = start
+    shift = 0
+    for blank_start, blank_end, original in blanks:
+        if blank_end <= start:
+            shift += len(original) - (blank_end - blank_start)
+            continue
+        if blank_start >= end:
+            break
+        parts.append(shrunk[cursor:blank_start])
+        parts.append(original)
+        cursor = blank_end
+    parts.append(shrunk[cursor:end])
+    return "".join(parts), start + shift
+
+
+def markdown_image_spans(text: str) -> list[tuple[str, int, int]]:
     if not isinstance(text, str) or "](" not in text:
         return []
-    return [
-        destination
-        for match in _MARKDOWN_IMAGE_RE.finditer(text)
-        for destination in [(match.group("angled") or match.group("bare") or "").strip()]
-        if destination
-    ]
+    shrunk, blanks = _blank_long_image_bodies(text)
+    spans: list[tuple[str, int, int]] = []
+    for match in _MARKDOWN_IMAGE_RE.finditer(shrunk):
+        group = "angled" if match.group("angled") is not None else "bare"
+        destination = match.group(group)
+        if not destination:
+            continue
+        if blanks:
+            restored, start = _restore_blanked_image_body(
+                shrunk, blanks, *match.span(group)
+            )
+        else:
+            restored, start = destination, match.start(group)
+        destination = restored.strip()
+        if not destination:
+            continue
+        lead = len(restored) - len(restored.lstrip())
+        spans.append((destination, start + lead, start + lead + len(destination)))
+    return spans
+
+
+def markdown_image_destinations(text: str) -> list[str]:
+    return [url for url, _start, _end in markdown_image_spans(text)]
 
 
 _ENTRY_DATA_URL_KEYS = ("url", "content", "data")
@@ -967,8 +1027,9 @@ class Valves(BaseModel):
             "(e.g. 'anthropic/*, openai/gpt-4.1-mini'). Matches both slash and dotted model ids. "
             "Globs are literal about the `~` prefix; add '~anthropic/*' to cover router aliases. "
             "A match on a Fusion model is not overridden: on the hosted OpenRouter backend the valve "
-            "holds and the request is refused with the endpoint-conflict card, because the Fusion "
-            "plugin entry cannot travel to /chat/completions. On the internal backend the Fusion panel "
+            "holds and the request is refused with the endpoint-conflict card, because Fusion "
+            "renders only from /responses and on /chat/completions returns a flattened text "
+            "transcript with no structured events. On the internal backend the Fusion panel "
             "runs in the pipe and the model never reaches OpenRouter, so there is no conflict to refuse "
             "and the turn runs."
         ),
@@ -1104,7 +1165,7 @@ class Valves(BaseModel):
         default=50,
         ge=1,
         le=500,
-        description="Maximum size in MB for inline files, images and audio. A base64 payload is measured as its decoded size; any other inline payload is measured as its own length. Larger payloads are dropped, to prevent memory issues and excessive HTTP request sizes: an uploaded payload is left out with a note, a file a tool returned that the pipe could not store is not shown, and a warning names the tool that returned it, and a picture inside one generated-image reply is dropped from that reply and named in the chat, while the pictures in that reply that did fit are still delivered. It bounds a tool's file result too, which is then neither stored nor shown. A picture a tool returns as an inline `data:` URL is capped here too, where a file link a person attaches is not: the pipe forwards such a picture as it stands rather than downloading it, so the cap is what stands between it and the request.",
+        description="Maximum size in MB for inline files, images and audio. A base64 payload is measured as its decoded size; any other inline payload is measured as its own length. Larger payloads are dropped, to prevent memory issues and excessive HTTP request sizes: an uploaded payload is left out with a note, a file a tool returned that the pipe could not store is not shown, and a warning names the tool that returned it, and a picture inside one generated-image reply is dropped from that reply and named in the chat, while the pictures in that reply that did fit are still delivered. It bounds a tool's file result too, which is then neither stored nor shown. A picture a tool returns is capped here on every path, as its own picture: it is left out of that round and named on the turn whose round carries it, while the round's text result and lead-in still go out. A picture a tool returns as an inline `data:` URL is capped where a file link a person attaches is not: the pipe forwards such a picture as it stands rather than downloading it, so the cap is what stands between it and the request.",
     )
     IMAGE_UPLOAD_CHUNK_BYTES: int = Field(
         default=1 * 1024 * 1024,
@@ -1132,7 +1193,7 @@ class Valves(BaseModel):
     )
     ENABLE_SSRF_PROTECTION: bool = Field(
         default=True,
-description="Enable SSRF (Server-Side Request Forgery) protection for remote URL downloads. When enabled, a remote address is fetched only if it is provably globally routable, so loopback, 10.x/172.16.x/192.168.x, link-local, carrier-grade NAT (100.64.0.0/10 -- also Tailscale's default range) and IPv6 site-local are all refused, as is any range the registries do not mark as globally routable. IPv6 addresses that wrap an IPv4 one (::ffff:, 6to4, Teredo, NAT64) are judged on the address they carry. A refused address is not sent either: the person sees `Images: skipped N (could not be fetched, so it was not sent).` A picture a tool result carries as a link is covered by that too: the address the provider would reach is checked before the link is forwarded, and a refused one is neither forwarded nor counted towards the turn's pictures. A public `https://` link the pipe merely failed to download is still forwarded for the provider to fetch. It also gates every non-`data:` video link before it is passed on, whichever way it is written: the link is not downloaded, and the check is on the address the provider would reach, so a video link is refused when its host is not public and a link whose scheme is neither `http` nor `https` is refused outright. It walks a generation request's provider options too, including a value that is a JSON document containing an address, so an address written inside one is put to the same gate; a control too large or too deeply nested to certify is refused rather than sent, and the refusal names the path the address was found at. Every link in `file_data` or `file_url` that the provider would have to fetch is gated the same way, in both fields, and it is not downloaded either: a file link on a non-public host is refused, the person sees `Files: skipped N (...).`, and a block that also carries a `file_id` keeps that id and drops only the refused field. An inline `data:` URL, raw base64 in `file_data` and an Open WebUI file path are not links and are never checked. Those file checks are not on the request-wide budget, so N attached links cost up to N x `ADDRESS_CHECK_SECONDS` serially, before the first byte goes upstream. A deployment whose users attach documents by link to an internal host is refused with this valve on, exactly as pictures and videos are; set it to False to restore the old forwarding, which also restores the plaintext exposure this valve exists to close. A failed download costs one further address check, so an unreachable resolver can add up to two `ADDRESS_CHECK_SECONDS` per picture, sequentially. A turn's remote video links draw on the same request-wide `ADDRESS_CHECK_BUDGET_SECONDS` as its pictures, so a message with many links is bounded by that budget rather than by one check per link, and a video link that is left with no time is not sent. The address checks run on a dedicated bounded thread pool, so a stalled resolver is bounded there rather than queued behind everything else the process does; with this valve on, a check that cannot start inside its own budget reaches no verdict at all: on a download or generation path that still sends no bytes, while a stalled re-check of a picture the pipe already holds no longer drops the stored copy. The pool's width follows `MAX_CONCURRENT_REQUESTS` and is re-made when that valve changes, in both directions. HTTP is disabled by default; see ALLOW_INSECURE_HTTP_* for explicit opt-in.",
+description="Enable SSRF (Server-Side Request Forgery) protection for remote URL downloads. When enabled, a remote address is fetched only if it is provably globally routable, so loopback, 10.x/172.16.x/192.168.x, link-local, carrier-grade NAT (100.64.0.0/10 -- also Tailscale's default range) and IPv6 site-local are all refused, as is any range the registries do not mark as globally routable. IPv6 addresses that wrap an IPv4 one (::ffff:, 6to4, Teredo, NAT64) are judged on the address they carry. A refused address is not sent either: the person sees `Images: skipped N (could not be fetched, so it was not sent).` A picture a tool result carries as a link is covered by that too: the address the provider would reach is checked before the link is forwarded, and a refused one is neither forwarded nor counted towards the turn's pictures. A public `https://` link the pipe merely failed to download is still forwarded for the provider to fetch. It also gates every non-`data:` video link before it is passed on, whichever way it is written: the link is not downloaded, and the check is on the address the provider would reach, so a video link is refused when its host is not public and a link whose scheme is neither `http` nor `https` is refused outright. It walks a generation request's provider options too, including a value that is a JSON document containing an address, so an address written inside one is put to the same gate; a control too large or too deeply nested to certify is refused rather than sent, and the refusal names the path the address was found at. Every link in `file_data` or `file_url` that the provider would have to fetch is gated the same way, in both fields, and it is not downloaded either: a file link on a non-public host is refused, the person sees `Files: skipped N (...).`, and a block that also carries a `file_id` keeps that id and drops only the refused field. An inline `data:` URL, raw base64 in `file_data` and an Open WebUI file path are not links and are never checked. Those file checks are not on the request-wide budget, so N attached links cost up to N x `ADDRESS_CHECK_SECONDS` serially, before the first byte goes upstream. A deployment whose users attach documents by link to an internal host is refused with this valve on, exactly as pictures and videos are; set it to False to restore the old forwarding, which also restores the plaintext exposure this valve exists to close. A failed download costs one further address check, and the download's own check and that further one both draw on the same request-wide `ADDRESS_CHECK_BUDGET_SECONDS` as the video links, each check still held to at most one `ADDRESS_CHECK_SECONDS`; a picture left with no time is not sent, and a repeated link is checked once per request. A turn's remote video links draw on the same request-wide `ADDRESS_CHECK_BUDGET_SECONDS` as its pictures, so a message with many links is bounded by that budget rather than by one check per link, and a video link that is left with no time is not sent. The address checks run on a dedicated bounded thread pool, so a stalled resolver is bounded there rather than queued behind everything else the process does; with this valve on, a check that cannot start inside its own budget reaches no verdict at all: on a download or generation path that still sends no bytes, while a stalled re-check of a picture the pipe already holds no longer drops the stored copy, and a stalled check on a video link is refused with its own wording, naming the check that did not finish rather than a private network address. The pool's width follows `MAX_CONCURRENT_REQUESTS` and is re-made when that valve changes, in both directions. HTTP is disabled by default; see ALLOW_INSECURE_HTTP_* for explicit opt-in.",
     )
     ALLOW_INSECURE_HTTP: bool = Field(
         default=False,
@@ -1516,7 +1577,11 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "`strict: true`, so the provider enforces the strictified schema. The strictified schema is not "
             "renamed to meet strict mode's property-name rules, so a tool whose author gave a property a name "
             "with a dot, a space, or more than 64 characters, or a free-form array whose `items` declare no "
-            "properties, can be rejected by a strict provider; turn this valve off for such a tool."
+            "properties, can be rejected by a strict provider; turn this valve off for such a tool. "
+            "When False, the schema is forwarded untouched and the executor still filters a call's arguments "
+            "against the names that schema declares, with a root carried by `$ref` or `allOf` resolved for that "
+            "purpose only; a root that is not an object and is not advertised under the pipe's `value` envelope "
+            "declares no names, so nothing is delivered for it."
         ),
     )
     MAX_FUNCTION_CALL_LOOPS: int = Field(
@@ -1723,7 +1788,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         default=200,
         ge=1,
         le=2000,
-        description="Maximum number of in-flight OpenRouter requests allowed per process. Takes effect without a restart, in both directions: a higher value admits more requests at once, and a lower one binds from the moment it is saved, counting the requests already running, which finish first. A request holds its slot until its own tool calls have finished cleanup, so a tool-bearing request occupies its slot a little longer than its answer; a request the person stopped, or one that failed before its request body ran, returns its slot immediately, and so does one the worker is shut down while it is still running — a code reload cancels it and gives the slot back before the new worker starts taking work. The wait list behind this limit is bounded: the pipe queues further requests and sheds load once that queue is full — a chat caller sees a \"Server busy (503)\" card, and an API caller gets a 503 response carrying the same sentence.",
+        description="Maximum number of in-flight OpenRouter requests allowed per process. Takes effect without a restart, in both directions: a higher value admits more requests at once, and a lower one binds from the moment it is saved, counting the requests already running, which finish first. A request holds its slot until its own tool calls have finished cleanup, so a tool-bearing request occupies its slot a little longer than its answer; a request the person stopped, or one that failed before its request body ran, returns its slot immediately, and so does one the worker is shut down while it is still running — a code reload cancels it and gives the slot back before the new worker starts taking work. The wait list behind this limit is bounded: the pipe queues further requests and sheds load once that queue is full — a chat caller sees a \"Server busy (503)\" card, and an API caller gets a 503 response carrying the same sentence. The same refusal reaches a request already waiting for a permit when the pipe is superseded, and is answered rather than cancelled.",
     )
     SSE_WORKERS_PER_REQUEST: int = Field(
         default=4,
@@ -1750,7 +1815,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     STREAMING_EVENT_QUEUE_WARN_SIZE: int = Field(
         default=1000,
         ge=100,
-        description="Log a warning when the decoded-event backlog reaches this many events, so an unbounded buffer is still watched. What bounds those log records is time rather than this threshold: the queue logs one `WARNING` at the crossing and repeats it at `DEBUG` at most once every second while the backlog stays high, so a long turn costs a handful of lines instead of one per buffered event, and raising this threshold does not reduce that volume. The minimum of 100 keeps the crossing a sign of real pressure rather than of ordinary queue depth.",
+        description="Log a warning when a buffered-event backlog reaches this many events, so an unbounded buffer is still watched. It covers two queues: the decoded-event backlog of the `/responses` path, and the pump queue that sits behind a `/chat/completions` reply, whose own buffer limit does not reach it. What bounds those log records is time rather than this threshold: the queue logs one `WARNING` at the crossing and repeats it at `DEBUG` at most once every second while the backlog stays high, so a long turn costs a handful of lines instead of one per buffered event, and raising this threshold does not reduce that volume. The minimum of 100 keeps the crossing a sign of real pressure rather than of ordinary queue depth.",
     )
     STREAMING_DELTA_CHAR_LIMIT: int = Field(
         default=256,
@@ -1788,14 +1853,15 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         description=(
             "Maximum number of per-request items buffered for the Open WebUI layer that streams the reply to the browser. "
             "The cap bounds incremental items: the item that reports a turn's failure and the item that ends the turn are put past it on a ceiling of their own. "
-            "0=unbounded (default behavior)."
+            "0=unbounded (default behavior). A dropped item is re-sent by the next whole-message frame rather than lost."
         ),
     )
     MIDDLEWARE_STREAM_QUEUE_PUT_TIMEOUT_SECONDS: float = Field(
         default=1.0,
         ge=0,
         description=(
-            "When MIDDLEWARE_STREAM_QUEUE_MAXSIZE>0, maximum seconds to wait while adding one item to that buffer before dropping that single item and continuing the stream. "
+            "When MIDDLEWARE_STREAM_QUEUE_MAXSIZE>0, maximum seconds to wait while adding one item to that buffer; "
+            "if the wait expires the update is re-sent by the next whole-message frame rather than lost, and the stream continues. "
             "A dropped item is not recorded as sent, so the next snapshot re-derives the text this one would have carried. "
             "This wait covers incremental items only: the item that reports a turn's failure and the item that ends the turn are put past that valve on a ceiling of their own, which 0 does not remove. "
             "0 disables the timeout (not recommended; a stalled browser can hold up the pipe indefinitely)."
@@ -1815,8 +1881,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         description=(
             "Markdown template used when a request and the endpoint its model is forced to disagree: a request that "
             "requires /chat/completions (e.g. direct video uploads) on a model explicitly forced to /responses by "
-            "endpoint override valves, or a request that requires /responses (e.g. a Fusion model, whose plugin entry "
-            "cannot travel) on a model forced to /chat/completions."
+            "endpoint override valves, or a request that requires /responses (e.g. a Fusion model, whose panel "
+            "renders only from /responses — on /chat/completions Fusion returns a flattened text transcript "
+            "with no structured events) on a model forced to /chat/completions."
         ),
     )
     DIRECT_UPLOAD_FAILURE_TEMPLATE: str = Field(
@@ -1963,7 +2030,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         ge=1,
         le=50,
         description=(
-            "Number of failures one user may accumulate before their requests are refused, a failing tool is skipped, or their database reads and writes are skipped; raise it for fewer trips in noisy environments. A request failure is a failed chat call to OpenRouter (an error reply; a connection that cannot be opened, drops or times out; an error reported inside a response; or a stream that stops before its final event). A request counts once however many attempts it took: a 429, a 5xx, a 408 that names the provider-timeout kind, or that failure reported inside a response before anything has been shown is retried first, up to TRANSIENT_RETRY_MAX_ATTEMPTS extra tries, and the request is a single failure whichever attempt gave up on it. A body carrying a content decision is the exception and is never retried, whatever status it arrived on. A generation on a picture-only image model or a video model that fails after it was sent to OpenRouter is also a request failure, counted once. Request and database failures count within BREAKER_WINDOW_SECONDS. Raising or lowering the setting mid-session re-reads the failures already recorded: it does not discard them, and a lowered setting applies from the next request without evicting anything. Request failures clear when a request ends without an error (for a picture-only image model or a video model, only once its result is delivered; for an internal Fusion run, only if a panel model answered); a request the user stops clears no request failures. Housekeeping tasks such as title generation neither count nor clear; Open WebUI's merge-responses task counts but never clears. Database failures also clear when a database operation succeeds. The request breaker never refuses a request whose last message is a tool result, or is Open WebUI's own message that comes right after a tool result and hands the model a tool's images; a question or picture the user sends is refused like any other request. Each tool counts its failures in a row: errors it raises, per-call timeouts, running calls cut off by TOOL_BATCH_TIMEOUT_SECONDS, and calls whose tool server cannot be reached or answers with an HTTP error status; an ask_user timeout and a call to an MCP tool whose session has closed do not count. The count belongs to the tool the call resolved to, so a name the model padded with surrounding whitespace is the same tool and spends the same budget. A SystemExit, KeyboardInterrupt or GeneratorExit from a tool is shown as failed but is not a failure of that tool: it signals the process rather than the tool, and it never adds to the count or clears it. An error the tool reports in a result it returns normally is shown as failed but neither adds to the count nor clears it, whether the judgement is made by Open WebUI's own classifier or by the pipe's copy of it."
+            "Number of failures one user may accumulate before their requests are refused, a failing tool is skipped, or their database reads and writes are skipped; raise it for fewer trips in noisy environments. A request failure is a failed chat call to OpenRouter (an error reply; a connection that cannot be opened, drops or times out; an error reported inside a response; or a stream that stops before its final event). A request counts once however many attempts it took: a 429, a 5xx, a 408 that names the provider-timeout kind, or that failure reported inside a response before anything has been shown is retried first, up to TRANSIENT_RETRY_MAX_ATTEMPTS extra tries, and the request is a single failure whichever attempt gave up on it. A body carrying a content decision is the exception and is never retried, whatever status it arrived on. A generation on a picture-only image model or a video model that fails after it was sent to OpenRouter is also a request failure, counted once. Request and database failures count within BREAKER_WINDOW_SECONDS. Raising or lowering the setting mid-session re-reads the failures already recorded: it does not discard them, and a lowered setting applies from the next request without evicting anything. Request failures clear when a request ends without an error (for a picture-only image model or a video model, only once its result is delivered whole; a stream that breaks after the finished image arrived is a delivered result and a failed call, counted once and clearing nothing, and for an internal Fusion run, only if a panel model answered); a request the user stops clears no request failures. Housekeeping tasks such as title generation neither count nor clear; Open WebUI's merge-responses task counts but never clears. Database failures also clear when a database operation succeeds. The request breaker never refuses a request whose last message is a tool result, or is Open WebUI's own message that comes right after a tool result and hands the model a tool's images; a question or picture the user sends is refused like any other request. Each tool counts its failures in a row: errors it raises, per-call timeouts, running calls cut off by TOOL_BATCH_TIMEOUT_SECONDS, and calls whose tool server cannot be reached or answers with an HTTP error status; an ask_user timeout and a call to an MCP tool whose session has closed do not count. The count belongs to the tool the call resolved to, so a name the model padded with surrounding whitespace is the same tool and spends the same budget. A SystemExit, KeyboardInterrupt or GeneratorExit from a tool is shown as failed but is not a failure of that tool: it signals the process rather than the tool, and it never adds to the count or clears it. An error the tool reports in a result it returns normally is shown as failed but neither adds to the count nor clears it, whether the judgement is made by Open WebUI's own classifier or by the pipe's copy of it."
         ),
     )
     BREAKER_WINDOW_SECONDS: int = Field(
@@ -2008,7 +2075,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         default=None,
         ge=1,
         description=(
-            "Maximum seconds to wait in total for one response's tool results, counted once from when the model asked; every call whose result has not arrived by then is reported as timed out, however long that call has been running; Open WebUI's ask_user waits at least its question window. On timeout, a call that is already running continues until it finishes, another tool limit ends it, or request cleanup cancels it after TOOL_SHUTDOWN_TIMEOUT_SECONDS (inside internal Fusion, without that wait, as soon as the calling model's answer ends). The model never receives the late result. Outside internal Fusion, files or embeds the call returns still appear in the chat: a streamed reply waits for the call, bounded by TOOL_SHUTDOWN_TIMEOUT_SECONDS, so a call that returns during that wait is read before the reply ends, and a file it shows through Open Terminal opens in the preview panel (or nowhere for a person whose Open WebUI shows terminal files inline). A call still waiting for a slot or a worker never starts. Null means no limit, leaving TOOL_TIMEOUT_SECONDS and TOOL_BATCH_TIMEOUT_SECONDS in charge. It is not the limit on getting calls started: a round whose calls outnumber the free workers is additionally bounded by TOOL_BATCH_TIMEOUT_SECONDS, and the calls it never started are reported as not started rather than as idle timeouts."
+            "Maximum seconds to wait in total for one response's tool results, counted once from when the model asked; every call that had started and whose result has not arrived by then is reported as timed out, however long it has been running, and one still waiting for a tool worker or a free slot is reported as not started rather than as an idle timeout; Open WebUI's ask_user waits at least its question window. On timeout, a call that is already running continues until it finishes, another tool limit ends it, or request cleanup cancels it after TOOL_SHUTDOWN_TIMEOUT_SECONDS (inside internal Fusion, without that wait, as soon as the calling model's answer ends). The model never receives the late result. Outside internal Fusion, files or embeds the call returns still appear in the chat: a streamed reply waits for the call, bounded by TOOL_SHUTDOWN_TIMEOUT_SECONDS, so a call that returns during that wait is read before the reply ends, and a file it shows through Open Terminal opens in the preview panel (or nowhere for a person whose Open WebUI shows terminal files inline). A call still waiting for a slot or a worker never starts. Null means no limit, leaving TOOL_TIMEOUT_SECONDS and TOOL_BATCH_TIMEOUT_SECONDS in charge. It is not the limit on getting calls started: a round whose calls outnumber the free workers is additionally bounded by TOOL_BATCH_TIMEOUT_SECONDS, and the calls it never started are reported as not started rather than as idle timeouts."
         ),
     )
     TOOL_SHUTDOWN_TIMEOUT_SECONDS: float = Field(
@@ -2070,7 +2137,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     )
     USE_MODEL_MAX_OUTPUT_TOKENS: bool = Field(
         default=False,
-        description="When enabled, and the request does not already set a limit, fill in an output allowance: the smaller of the model's advertised max_output_tokens and half its context window, or the advertised value alone when no context window is known. Models advertising neither are left unset. Disable to send no limit of the pipe's own. A routing variant such as base:nitro resolves through its base's catalog row, so it inherits the base's ceiling. This valve controls the automatic value, not yours: a max_tokens, max_output_tokens or max_completion_tokens of 1 or above is forwarded as a whole number whatever its spelling. OpenRouter documents the parameters as 1 or above and Open WebUI's slider reaches -2, so a value below 1 is sent as no cap -- which means the automatic ceiling applies if this valve is on.",
+        description="When enabled, and the request does not already set a limit, fill in an output allowance: the smaller of the model's advertised max_output_tokens and half its context window, or the advertised value alone when no context window is known. Models advertising neither are left unset. Disable to send no limit of the pipe's own. A routing variant such as base:nitro resolves through its base's catalog row, so it inherits the base's ceiling. This valve controls the automatic value, not yours: a max_tokens, max_output_tokens or max_completion_tokens of 1 or above is forwarded as a whole number whatever its spelling, and a fractional value rounds. OpenRouter documents the parameters as 1 or above and Open WebUI's slider reaches -2, so a value below 1 is sent as no cap -- which means the automatic ceiling applies if this valve is on.",
     )
     SHOW_FINAL_USAGE_STATUS: bool = Field(
         default=True,
@@ -2090,7 +2157,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     )
     SEND_END_USER_ID: bool = Field(
         default=False,
-        description="When True, send OpenRouter `user` (value chosen by END_USER_ID_SOURCE), and also include `metadata.user_id` with the Open WebUI user GUID.",
+        description="When True, send OpenRouter `user` and `safety_identifier` (both carrying the value chosen by END_USER_ID_SOURCE), and also include `metadata.user_id` with the Open WebUI user GUID. A `user` or `safety_identifier` a client supplies is discarded, so neither can be forged.",
     )
     END_USER_ID_SOURCE: Literal["id", "email", "name"] = Field(
         default="id",
@@ -2178,27 +2245,27 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     )
     ENABLE_WEB_SEARCH: bool = Field(
         default=True,
-        description="Enable the OpenRouter Web Search server tool. When disabled, web search toggles are hidden from users, and the pipe stops sending the tool at once, even while an out-of-date filter or the request itself still asks for it; every Web Tools filter that still offers it is rewritten without it at the next model-list refresh, or after the first message that still asks for it.",
+        description="Enable the OpenRouter Web Search server tool. When disabled, web search toggles are hidden from users, and the pipe stops sending the tool at once, even while an out-of-date filter or the request itself still asks for it; every Web Tools filter this pipe maintains (one it installed, or one carrying no install record) that still offers it is rewritten without it, whether it is on or off, at the next model-list refresh, or after the first message that still asks for it. On a Fusion model the panel is never attached, so there is no per-chat switch there: the setting stored for you governs what the internal Fusion panel may use.",
     )
     ENABLE_WEB_FETCH: bool = Field(
         default=True,
-        description="Enable the OpenRouter Web Fetch server tool. When disabled, web fetch toggles are hidden from users, and the pipe stops sending the tool at once, even while an out-of-date filter or the request itself still asks for it; every Web Tools filter that still offers it is rewritten without it at the next model-list refresh, or after the first message that still asks for it.",
+        description="Enable the OpenRouter Web Fetch server tool. When disabled, web fetch toggles are hidden from users, and the pipe stops sending the tool at once, even while an out-of-date filter or the request itself still asks for it; every Web Tools filter this pipe maintains (one it installed, or one carrying no install record) that still offers it is rewritten without it, whether it is on or off, at the next model-list refresh, or after the first message that still asks for it.",
     )
     ENABLE_DATETIME: bool = Field(
         default=True,
-        description="Enable the OpenRouter Datetime server tool (free, no additional cost). When disabled, datetime toggles are hidden from users, and the pipe stops sending the tool at once, even while an out-of-date filter or the request itself still asks for it; every Web Tools filter that still offers it is rewritten without it at the next model-list refresh, or after the first message that still asks for it.",
+        description="Enable the OpenRouter Datetime server tool (free, no additional cost). When disabled, datetime toggles are hidden from users, and the pipe stops sending the tool at once, even while an out-of-date filter or the request itself still asks for it; every Web Tools filter this pipe maintains (one it installed, or one carrying no install record) that still offers it is rewritten without it, whether it is on or off, at the next model-list refresh, or after the first message that still asks for it.",
     )
     ENABLE_ADVISOR: bool = Field(
         default=True,
-        description="Enable the OpenRouter Advisor server tool (consult a higher-intelligence model mid-generation). When disabled, advisor toggles are hidden from users, and the pipe stops sending the tool at once, even while an out-of-date filter or the request itself still asks for it; every Web Tools filter that still offers it is rewritten without it at the next model-list refresh, or after the first message that still asks for it.",
+        description="Enable the OpenRouter Advisor server tool (consult a higher-intelligence model mid-generation). When disabled, advisor toggles are hidden from users, and the pipe stops sending the tool at once, even while an out-of-date filter or the request itself still asks for it; every Web Tools filter this pipe maintains (one it installed, or one carrying no install record) that still offers it is rewritten without it, whether it is on or off, at the next model-list refresh, or after the first message that still asks for it.",
     )
     ENABLE_SUBAGENT: bool = Field(
         default=True,
-        description="Enable the OpenRouter Subagent server tool (delegate tasks to a worker model an admin chooses). When disabled, subagent toggles are hidden from users, and the pipe stops sending the tool at once, even while an out-of-date filter or the request itself still asks for it; every Web Tools filter that still offers it is rewritten without it at the next model-list refresh, or after the first message that still asks for it.",
+        description="Enable the OpenRouter Subagent server tool (delegate tasks to a worker model an admin chooses). When disabled, subagent toggles are hidden from users, and the pipe stops sending the tool at once, even while an out-of-date filter or the request itself still asks for it; every Web Tools filter this pipe maintains (one it installed, or one carrying no install record) that still offers it is rewritten without it, whether it is on or off, at the next model-list refresh, or after the first message that still asks for it.",
     )
     ENABLE_SEARCH_MODELS: bool = Field(
         default=True,
-        description="Enable the OpenRouter model-search server tool (let the model search the OpenRouter catalog). When disabled, model-search toggles are hidden from users, and the pipe stops sending the tool at once, even while an out-of-date filter or the request itself still asks for it; every Web Tools filter that still offers it is rewritten without it at the next model-list refresh, or after the first message that still asks for it.",
+        description="Enable the OpenRouter model-search server tool (let the model search the OpenRouter catalog). When disabled, model-search toggles are hidden from users, and the pipe stops sending the tool at once, even while an out-of-date filter or the request itself still asks for it; every Web Tools filter this pipe maintains (one it installed, or one carrying no install record) that still offers it is rewritten without it, whether it is on or off, at the next model-list refresh, or after the first message that still asks for it.",
     )
     ENABLE_IMAGE_GENERATION: bool = Field(
         default=True,
@@ -2212,8 +2279,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "excludes them unless OpenRouter lists a ZDR endpoint for them."
             + _PIPE_OFF_COMES_BACK
             + " Turning it off deactivates all installed per-model video filter rows on the next model-list refresh;"
-            + " turning it back on re-activates the ones still in the catalogue, whether or not"
-            + " AUTO_INSTALL_VIDEO_FILTERS is on. The rows are identified by their source, so a copy you"
+            + " turning it back on re-activates the ones still in the catalogue while"
+            + " AUTO_INSTALL_VIDEO_FILTERS is on; with that valve off its retirement governs, and the rows"
+            + " stay off until it comes back on. The rows are identified by their source, so a copy you"
             + " made by hand of one of these filters' source is switched off too."
         ),
     )
@@ -2221,9 +2289,10 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     AUTO_INSTALL_WEB_TOOLS_FILTER: bool = Field(
         default=True,
         description=(
-            "Automatically install/update the OpenRouter Web Tools filter function in Open WebUI. When off, the pipe neither installs nor updates it, except that a web tool switched off on the pipe is taken out of every Web Tools filter: that filter's code is replaced with the pipe's current version for the tools it still offers (hand edits in it are lost), and a warning is logged. Switching the tool back on does not add it back."
-            + " With every web tool off, every Web Tools filter is switched off, and one you "
-            "switch off yourself there stays off until you switch it on again."
+            "Automatically install/update the OpenRouter Web Tools filter function in Open WebUI. When off, the pipe neither installs nor updates it, except that a web tool switched off on the pipe is taken out of every Web Tools filter this pipe maintains (one it installed, or one carrying no install record): that filter's code is replaced with the pipe's current version for the tools it still offers (hand edits in it are lost), and a warning is logged. Switching the tool back on does not add it back."
+            + " With every web tool off, every Web Tools filter is switched off that this "
+            "pipe installed or that carries no install record, and one you switch off "
+            "yourself there stays off until you switch it on again."
         ),
     )
     AUTO_ATTACH_WEB_TOOLS_FILTER: bool = Field(

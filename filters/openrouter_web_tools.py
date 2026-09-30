@@ -176,7 +176,7 @@ class Filter:
 
         WEB_SEARCH: bool = Field(
             default=True,
-            description="Enable OpenRouter web search for this chat.",
+            description="Enable OpenRouter web search for you.",
         )
         WEB_SEARCH_CONTEXT_SIZE: Literal["low", "medium", "high"] = Field(
             default="medium",
@@ -200,11 +200,11 @@ class Filter:
         )
         WEB_FETCH: bool = Field(
             default=False,
-            description="Enable OpenRouter web fetch (URL reading) for this chat.",
+            description="Enable OpenRouter web fetch (URL reading) for you.",
         )
         DATETIME: bool = Field(
             default=True,
-            description="Enable OpenRouter datetime tool for this chat (free, no extra cost).",
+            description="Enable OpenRouter datetime tool for you (free, no extra cost).",
         )
         DATETIME_TIMEZONE: str = Field(
             default="",

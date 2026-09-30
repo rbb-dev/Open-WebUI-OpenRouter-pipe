@@ -406,6 +406,7 @@ async def run_usage_query(plugin: Any, pipe: Any, args: dict[str, Any]) -> dict[
     result["meta"].update(base_meta)
     result["meta"]["records"] = info.get("records")
     result["meta"]["approx_bytes"] = info.get("approx_bytes")
+    result["meta"]["persist_failed"] = info.get("persist_failed")
     if len(_UQ_MEMO) >= _UQ_MEMO_MAX:
         for stale_key in [k for k, (ts, _) in _UQ_MEMO.items() if now - ts >= _UQ_MEMO_TTL]:
             _UQ_MEMO.pop(stale_key, None)

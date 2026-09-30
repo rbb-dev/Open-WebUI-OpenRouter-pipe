@@ -133,6 +133,11 @@ The strip is a **line** filter, so it removes a line by its whole content rather
 marker-shaped line a user typed **on a line of its own** — in any of the three families above — is removed too, while
 the same text inline is preserved. Only whole lines are affected; a marker that is part of a sentence is left alone.
 
+Because the strip works on whole lines, the pipe's own side of this is enforced at the renderer rather than here:
+model-authored and user-authored text interpolated into a rendered block is whitespace-flattened onto one line
+before it is written, so no user or task-model text can be read back as a marker line. The renderer is the only
+place that knows which lines it owns; leaving it to the strip would mean the strip had to guess.
+
 For each marker segment:
 - the pipe looks up the referenced persisted artifact payload (via `artifact_loader` when available;
   the lookups are batched across the whole rebuild, one call per distinct `message_id` rather than one

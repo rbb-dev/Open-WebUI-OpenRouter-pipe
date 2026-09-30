@@ -185,7 +185,26 @@ _EXPECTED: dict[str, int] = {
     # line either way, and a task object that refuses to be cancelled must not stop the
     # fresh worker from being started on this loop. Its loop is closed, so there is
     # nothing on it left to log the failure to.
-    "pipe.py": 35,
+    # 36th (B325/H1428-2): `cancel()` on a task whose loop is closed raises `RuntimeError`
+    # out of `call_soon`. `_drop_task` is the shared helper every per-loop task slot uses
+    # when it replaces a task bound to a loop that is not the current one, and it is called
+    # from `__init__` and `_pipes` where there may be no running loop at all. The task is
+    # dead either way -- nothing will ever run it -- so the drop must still happen rather
+    # than faulting the caller.
+    # 37th, 38th (B325/H1316-3): the two `put_nowait` calls in `_wake_refused_stream`, which
+    # wake a refused job's stream generator with the terminal item and the end-of-turn
+    # sentinel. A full queue is the only failure mode, and the generator's own `finally`
+    # still answers the caller; letting the refusal raise out of the worker's admission
+    # path would fault the request queue instead of the one job being shed.
+    # B325's own count for this module was 38 on the 00c4bb62b tree, where the backstop still
+    # read the future through its own `suppress(Exception)`; B288 replaced that read with
+    # `_future_failed`, and B382 added the 35th above, so B325's three land on 35: 35 + 3 = 38.
+    # 39th (B300, H1134-1): the pooled session's own timeout refresh in
+    # `_shared_request_session`. It writes aiohttp's private `_timeout`, the same idiom the
+    # 33rd above already uses for the connector; the write is guarded by `valves is not
+    # None` and the new test asserts the value actually changed, so a suppression that hid
+    # a no-op would fail there rather than pass silently.
+    "pipe.py": 39,
     "storage/persistence.py": 3,
     # 1st: the caller-supplied fallback in `_emit_templated_error_event`. It is reached only because the
     # admin's own template already failed to render, and the generic card below it is the answer if the

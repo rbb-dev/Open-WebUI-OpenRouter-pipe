@@ -61,6 +61,15 @@ def is_fusion_model(model_id: str) -> bool:
     return bool(_FUSION_DOTTED_PATTERN.search(model_id))
 
 
+def _fusion_base_model_id(model_id: str) -> str:
+    if "@" not in model_id:
+        return model_id
+    base, _sep, suffix = model_id.rpartition("@")
+    if base and suffix.startswith("preset/"):
+        return base
+    return model_id
+
+
 # The rendered filter source. ``__MARKER__`` / ``__FILTER_ID__`` are substituted
 # by render_openrouter_fusion_filter_source(). The body is a plain string (not an
 # f-string) so dict/brace literals need no escaping.

@@ -9,7 +9,6 @@ Ensures collision-safe tool names and builds execution registry for dispatcher.
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import itertools
 import logging
@@ -21,7 +20,10 @@ from ..core.timing_logger import timed
 from ..storage.owui_files import is_linkable_chat
 
 # Import tool schema functions
-from .tool_schema import _strictify_schema
+from .tool_schema import (
+    _declared_parameter_names,
+    _strictify_schema,
+)
 
 # Import runtime dependencies
 if TYPE_CHECKING:
@@ -468,10 +470,10 @@ def _build_collision_safe_tool_specs_and_registry(
         cfg["origin_source"] = c["origin_source"]
         cfg["origin_name"] = origin_name
         cfg["exposed_name"] = exposed_name
-        cfg["spec_wire"] = copy.deepcopy(spec)
+        cfg["declared_params"] = _declared_parameter_names(spec.get("parameters"))
         cfg_spec = cfg.get("spec")
-        if not _advertised_wire_is_admissible(cfg_spec, c["spec"].get("parameters"), spec):
-            cfg["spec_wire"] = copy.deepcopy(cfg_spec) if isinstance(cfg_spec, dict) else cfg["spec_wire"]
+        if not _advertised_wire_is_admissible(cfg_spec, c["spec"].get("parameters"), spec) and isinstance(cfg_spec, dict):
+            cfg["declared_params"] = _declared_parameter_names(cfg_spec.get("parameters"))
         if isinstance(cfg_spec, dict):
             updated_spec = dict(cfg_spec)
             updated_spec["name"] = origin_name

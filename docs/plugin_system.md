@@ -226,7 +226,7 @@ Fires when the request orchestrator decides to retry an OpenRouter call after a 
 
 ### on_generation_complete — Observe Terminal State
 
-Fires when a request reaches its terminal state — every chat turn (streaming or not) and every task-model call (title/tags/emoji). You receive the summed `usage` for the turn (which may be `None` if nothing was received) and a `status` of `ok`, `failed`, or `cancelled`, derived from the pipe's own terminal flags rather than from emitted events. A per-request backstop guards early-return and exception paths, so it fires **at least once** — observers that count or accumulate must **dedupe by `request_id`**. Observe-only. Ideal for completion counters, cost accounting, and usage analytics. Like the other observer hooks, it runs as a plain await with no timeout.
+Fires when a request reaches its terminal state — every chat turn (streaming or not) and every task-model call (title/tags/emoji). You receive the summed `usage` for the turn (which may be `None` if nothing was received) and a `status` of `ok`, `failed`, or `cancelled`, derived from the pipe's own terminal flags rather than from emitted events. It fires **exactly once per request id**: the site that watched the turn end emits it, and a per-request backstop covers the early-return and exception paths the primary missed. The backstop skips itself for a request id a primary already reported, so no two reports for one id ever disagree. A Fusion turn runs `_run_streaming_loop` once per panel member under its own id, so such a turn is once per member plus once for the turn. Observe-only. Ideal for completion counters, cost accounting, and usage analytics. Like the other observer hooks, it runs as a plain await with no timeout.
 
 ### on_shutdown — Cleanup
 
@@ -941,12 +941,12 @@ async def on_generation_complete(
 ) -> None:
 ```
 
-**When:** Fires **at least once** when a request reaches its terminal state. `usage` is the summed usage for the turn (or `None` if nothing was received); `status` is `ok`, `failed`, or `cancelled`, derived from the pipe's own terminal flags (never from emitted events). Because a per-request backstop guards early-return and exception paths, observers that count or accumulate **must dedupe by `request_id`** (a real terminal and the backstop can both fire for one request). Four code paths emit it:
+**When:** Fires **exactly once per request id** when a request reaches its terminal state. `usage` is the summed usage for the turn (or `None` if nothing was received); `status` is `ok`, `failed`, or `cancelled`, derived from the pipe's own terminal flags (never from emitted events). A per-request backstop guards the early-return and exception paths the primary misses, and skips itself for a request id a primary already reported, so a real terminal and the backstop never both fire for one request. Five code paths reach the dispatch:
 
 - **Chat turns** — the streaming core's terminal `finally` block emits `ok`/`failed`/`cancelled` (from `was_cancelled` / `error_occurred`). It is **skipped** when the error is handed back to the orchestrator (`handed_back_for_retry`) — whether the hand-back is a retry or an unreadable upstream body, which is not a retry — so the turn still fires exactly once, at its true terminal, dispatched by the component that owns it.
 - **Orchestrator give-up** — when all retries are exhausted, the orchestrator emits `failed` with `usage=None`.
 - **Task-model calls** (title/tags/emoji) — the task-model adapter emits `ok` (with usage) on success, or `failed` when all attempts fail.
-- **Terminal backstop** — `_execute_pipe_job` re-emits `ok`/`failed`/`cancelled` (with `usage=None`) for any job with a `request_id`, covering early-return and exception paths the three primary emitters miss. This is the source of a possible duplicate — dedupe by `request_id`.
+- **Terminal backstop** — `_execute_pipe_job` emits `ok`/`failed`/`cancelled` (with `usage=None`) for any job with a `request_id` whose turn no primary reached, covering the early-return and exception paths above. It is a fallback, not a second opinion: it skips a request id a primary has already marked, and the mark is released as soon as the job's `finally` runs, so the set it consults is bounded by the jobs running concurrently.
 
 **Extra kwargs:** `request_id` — the pipe's per-request id, `metadata` — the request's OWUI metadata dict, `task` — the task name string, or `None` for chat turns. (`metadata` and `task` are omitted on the orchestrator give-up path.)
 
@@ -955,8 +955,7 @@ async def on_generation_complete(
 generation_status = "cancelled" if was_cancelled else ("failed" if error_occurred else "ok")
 if not handed_back_for_retry:  # skip when the error goes back for a retry
     await asyncio.shield(
-        self._pipe._dispatch_plugin_event(
-            "dispatch_on_generation_complete",
+        self._pipe._dispatch_generation_complete(
             total_usage if isinstance(total_usage, dict) else None,
             generation_status,
             request_id=SessionLogger.request_id.get() or "",
@@ -1391,13 +1390,8 @@ class CounterPlugin(PluginBase):
         **kwargs: Any,
     ) -> None:
         # Observe only — count terminal completions by status and sum tokens.
-        # on_generation_complete fires at least once per request (a backstop may
-        # re-emit), so dedupe by request_id before counting.
-        request_id = kwargs.get("request_id")
-        if request_id and request_id in self.seen_request_ids:
-            return
-        if request_id:
-            self.seen_request_ids.add(request_id)
+        # on_generation_complete fires exactly once per request id, so this counts
+        # without a dedupe set of its own.
         self.counts[status] += 1
         if isinstance(usage, dict):
             self.total_tokens += usage.get("total_tokens", 0)

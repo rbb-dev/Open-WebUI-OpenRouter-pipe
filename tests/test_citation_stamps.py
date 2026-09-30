@@ -59,7 +59,7 @@ PACKAGE = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 # the classifier with the payload it would have sent.
 # 93 -> 94: the metadata pass's row read (`_read_model_rows` in models/catalog_manager.py)
 # batch-reads the Open WebUI `Models` table lazily for the whole pass, beside the icon
-# pass's own `get_models_by_ids` in `_stored_profile_images`, which keeps its own read.
+# pass's own `get_models_by_ids` in `_stored_profile_images`, which kept its own read.
 # 94 -> 95: the dashboard's two write-announcing helpers
 # (`publish_valves_changed` / `publish_function_updated` in
 # plugins/pipe_dashboard/dashboard_socket.py) import `EVENTS` and `publish_event` from
@@ -78,7 +78,17 @@ PACKAGE = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 # gone. The count DROPS by one because a session and its import are both gone, not because
 # an import was hoisted or dropped on the floor; the import that remains is still inside
 # the same broad `try`, so a host that cannot supply the table still runs the classifier.
-_EXPECTED_OWUI_IMPORTS = (25, 95)
+# 95 -> 94 (B477): `Pipe._deactivate_switched_off_filters` no longer imports
+# `open_webui.models.functions` for the all-web-tools-off arm. That arm delegates to
+# `FilterManager.repair_web_tools_filters`, which the manager already holds and which
+# classifies the Web Tools rows by their content, so the pipe no longer fetches one row
+# by its literal id. The fusion and image-generation arms keep their own guarded import.
+# 94 -> 93 with B466/H1870-2: the icon map became a projection of the pass's one
+# stored-row read, so the second lazy `from open_webui.models.models import Models` --
+# the one `_stored_profile_images` held beside its own `get_models_by_ids` -- is gone.
+# Nothing became less guarded: `_read_model_rows` is still the single lazy, function-local
+# reader of that table, and the icon projection still answers from its rows.
+_EXPECTED_OWUI_IMPORTS = (25, 93)
 
 @pytest.mark.skipif(
     bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -214,6 +214,8 @@ async def nagle_coalesce_stream(
     idle_flush_seconds: float | None = 0.03,
     passthrough: bool = False,
     min_flush_chars: int = 1,
+    warn_size: int = 0,
+    warn_sink: Callable[[int], None] | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """Wrap an async generator with Nagle-style multi-buffer coalescing.
 
@@ -265,6 +267,9 @@ async def nagle_coalesce_stream(
             # -- sentinel: source exhausted --
             if event is None:
                 break
+
+            if warn_size > 0 and warn_sink is not None and queue.qsize() >= warn_size:
+                warn_sink(queue.qsize())
 
             yield_queue: list[dict[str, Any]] = []
             source_done = False

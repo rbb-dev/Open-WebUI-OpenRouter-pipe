@@ -457,7 +457,7 @@ class TestExtractFrame:
         calls: list[bool] = []
 
         async def _scripted_ffmpeg(path, *, timestamp_seconds, logger, from_end=False,
-                                   saw_damage=None, max_frame_bytes=0):
+                                   saw_damage=None, max_frame_bytes=0, hop_index=None):
             calls.append(from_end)
             if not from_end:
                 raise FrameExtractionError(
@@ -465,7 +465,7 @@ class TestExtractFrame:
                 )
             return await real_ffmpeg(
                 path, timestamp_seconds=timestamp_seconds, logger=logger, from_end=True,
-                max_frame_bytes=max_frame_bytes,
+                max_frame_bytes=max_frame_bytes, hop_index=hop_index,
             )
 
         monkeypatch.setattr(fe, "_extract_frame_ffmpeg", _scripted_ffmpeg)

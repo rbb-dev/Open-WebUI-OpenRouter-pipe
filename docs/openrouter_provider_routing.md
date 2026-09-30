@@ -359,6 +359,18 @@ names this pipe, so a recordless row is claimed on the first refresh **on which 
 is on** and retired only from that refresh on. A copy an admin installed by hand keeps
 no record either, and is never retired.
 
+Switching the Fusion or Image Generation feature valve **off** is a separate decision
+from the install valve, and it reaches a recordless row whether or not it has been
+claimed: a row still filtering requests has to go off with the feature that uses it, and
+the claim that would identify it belongs to the installer, which never runs while that
+valve is off. The two clauses that keep this from reaching too far are unchanged — a row
+carrying another copy's `openrouter_pipe:installed_by` is never selected, and a row that
+carries no marker at all is never written — so the arms select in one order: a row this
+copy installed, else a marked row with no record at all, else nothing. What no valve can
+recover is the id: a row keeps the id it was installed under, so an admin who wants the
+canonical id back removes the row holding it and lets the next refresh install a fresh
+one.
+
 A row stamped with a *previous* id of this pipe — the pipe function was renamed or
 re-created, so the id changed while the rows kept the old one — is not retired either, and
 nothing on the row says which install wrote it. The refresh names that row and the id it

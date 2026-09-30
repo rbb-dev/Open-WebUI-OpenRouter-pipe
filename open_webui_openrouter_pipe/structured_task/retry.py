@@ -172,7 +172,21 @@ async def call_with_candidates(
         return params
 
     for index, model_id in enumerate(candidates):
-        form_data = build_form_data(model_id)
+        try:
+            form_data = build_form_data(model_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            logger.log(
+                warn_level(
+                    _warned_task_candidate,
+                    f"{model_id}:{type(exc).__name__}",
+                    cooldown_s=_TASK_CANDIDATE_WARN_COOLDOWN_S,
+                ),
+                "structured_task candidate '%s' failed: %s", model_id, type(exc).__name__,
+            )
+            continue
         for attempt in range(1, max(1, attempts_per_candidate) + 1):
             repair = None
             if attempt > 1 and repair_messages is not None and seen_output:

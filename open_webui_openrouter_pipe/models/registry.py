@@ -182,9 +182,6 @@ class ModelFamily:
             candidates.append(base)
             if cls._DATE_RE.search(base):
                 candidates.append(cls._DATE_RE.sub("", base))
-        undated = cls.undated(norm)
-        if undated not in candidates:
-            candidates.append(undated)
         return candidates
 
     @classmethod
@@ -193,6 +190,11 @@ class ModelFamily:
         for candidate in candidates:
             if candidate in specs:
                 return candidate
+        undated = cls.undated(norm)
+        if undated not in candidates:
+            if undated in specs:
+                return undated
+            candidates.append(undated)
         return candidates[1] if len(candidates) > 1 else norm
 
     @classmethod
@@ -457,7 +459,11 @@ class OpenRouterModelRegistry:
 
     @classmethod
     def _adopt_roster_for(cls, api_key: str) -> None:
+        fingerprint = _fingerprint(api_key)
         cls._zdr_model_ids = cls._zdr_roster_for(api_key)
+        if fingerprint != cls._zdr_attempted_key and cls._zdr_model_ids is not None:
+            for norm_id, spec in cls._specs.items():
+                cls._stamp_zdr_capable(spec, norm_id, cls._zdr_model_ids, cls._specs)
 
     @classmethod
     def _catalog_lock(cls) -> asyncio.Lock:
@@ -1001,6 +1007,7 @@ class OpenRouterModelRegistry:
 
             supported_frames = item.get("supported_frame_images")
             accepts_frame_images = isinstance(supported_frames, list) and bool(supported_frames)
+            accepts_uploads = accepts_frame_images and not is_direct_upload_blocklisted(original_id)
             allowed_params = item.get("allowed_passthrough_parameters")
             allowed_set = {
                 param
@@ -1009,15 +1016,14 @@ class OpenRouterModelRegistry:
             } if isinstance(allowed_params, list) else set()
             pricing = item.get("pricing") if isinstance(item.get("pricing"), dict) else {}
             features = {"video_generation", "video_output"}
-            if accepts_frame_images and not is_direct_upload_blocklisted(original_id):
+            if accepts_uploads:
                 features.update({"vision", "file_input"})
             features |= prior_features
 
             capabilities = dict(prior.get("capabilities") or {})
             for capability, value in {
-                "vision": True,
-                "file_upload": accepts_frame_images
-                and not is_direct_upload_blocklisted(original_id),
+                "vision": accepts_uploads,
+                "file_upload": accepts_uploads,
                 "web_search": False,
                 "image_generation": True,
                 "video_generation": True,
@@ -1311,8 +1317,10 @@ class OpenRouterModelRegistry:
             } if isinstance(allowed_params, list) else set()
             pricing = item.get("pricing") if isinstance(item.get("pricing"), dict) else {}
 
+            upload_blocked = is_direct_upload_blocklisted(original_id)
+
             features: set[str] = {"image_output", "image_gen_tool"}
-            if accepts_image_input and not is_direct_upload_blocklisted(original_id):
+            if accepts_image_input and not upload_blocked:
                 features.update({"vision", "file_input"})
 
             owned_image_norms.add(norm_id)
@@ -1328,7 +1336,7 @@ class OpenRouterModelRegistry:
                 "capabilities": {
                     "vision": accepts_image_input,
                     "file_upload": accepts_image_input
-                    and not is_direct_upload_blocklisted(original_id),
+                    and not upload_blocked,
                     "web_search": False,
                     "image_generation": True,
                     "video_generation": False,

@@ -534,7 +534,7 @@ def _extract_frame_imageio_sync(
 async def _extract_frame_ffmpeg(
     path: Path, *, timestamp_seconds: float, logger: logging.Logger,
     from_end: bool = False, saw_damage: list[bool] | None = None,
-    max_frame_bytes: int = 0,
+    max_frame_bytes: int = 0, hop_index: list[int] | None = None,
 ) -> tuple[bytes, int, int]:
     """Fallback frame extraction via ffmpeg subprocess.
 
@@ -564,7 +564,7 @@ async def _extract_frame_ffmpeg(
         vf = f"scale='min({_MAX_FRAME_WIDTH},iw)':-2"
     last_no_frame: FrameExtractionError | None = None
     walked_past_damage = False
-    for seek_args in seek_arg_sets:
+    for hop, seek_args in enumerate(seek_arg_sets):
         if deadline is not None and time.monotonic() >= deadline:
             break
         cmd = [
@@ -618,6 +618,8 @@ async def _extract_frame_ffmpeg(
             stdout, width, height = await asyncio.to_thread(_normalise_frame_sync, stdout)
             if saw_damage is not None:
                 saw_damage.append(walked_past_damage)
+            if hop_index is not None:
+                hop_index.append(hop)
             return stdout, width, height
         except asyncio.CancelledError:
             if proc is not None:
@@ -629,6 +631,8 @@ async def _extract_frame_ffmpeg(
             raise
         except FrameExtractionError as exc:
             if not exc.no_frame and exc.returncode not in _RETRYABLE_FFMPEG_EXITS:
+                if stderr_task is not None and not stderr_task.done():
+                    stderr_task.cancel()
                 raise
             if exc.returncode in _RETRYABLE_FFMPEG_EXITS:
                 walked_past_damage = True
@@ -643,6 +647,8 @@ async def _extract_frame_ffmpeg(
             raise FrameExtractionError(f"ffmpeg extract failed: {exc}") from exc
     if saw_damage is not None:
         saw_damage.append(walked_past_damage)
+    if hop_index is not None:
+        hop_index.append(len(seek_arg_sets))
     if last_no_frame is not None:
         raise last_no_frame
     raise FrameExtractionError("ffmpeg extract failed: no seek attempted")
@@ -819,12 +825,22 @@ async def _extract_frame_with_budget(
                 )
 
         direct_saw_damage: list[bool] = []
+        direct_hop: list[int] = []
         try:
             png_bytes, w, h = await _extract_frame_ffmpeg(
                 path, timestamp_seconds=actual_ts, logger=logger, from_end=use_end_seek,
                 saw_damage=direct_saw_damage, max_frame_bytes=max_frame_bytes,
+                hop_index=direct_hop,
             )
-            if not downgrade_note and direct_saw_damage and direct_saw_damage[0]:
+            walked_past_first_hop = bool(direct_hop and direct_hop[0] > 0)
+            if (
+                not downgrade_note
+                and direct_saw_damage
+                and (
+                    direct_saw_damage[0]
+                    or (use_end_seek and target == "last_frame" and walked_past_first_hop)
+                )
+            ):
                 downgrade_note = _ladder_note(direct_saw_damage[0])
             elif not downgrade_note and overshoot_measured:
                 downgrade_note = overshoot_downgrade

@@ -31,7 +31,7 @@ When OpenRouter Web Search is enabled for a request, the Web Tools filter sets `
 - paying twice,
 - ambiguous citation sources.
 
-If OpenRouter Web Search is **disabled** (the user turns off the `WEB_SEARCH` toggle in the filter, or an admin switches `ENABLE_WEB_SEARCH` off on the pipe), the filter no longer sets that flag, so OWUI Web Search is left untouched and works normally. The pipe rewrites every Web Tools filter, whichever copy holds it, so the suppression stops everywhere and not only in the row you happened to look at.
+If OpenRouter Web Search is **disabled** (the user turns off the `WEB_SEARCH` toggle in the filter, or an admin switches `ENABLE_WEB_SEARCH` off on the pipe), the filter no longer sets that flag, so OWUI Web Search is left untouched and works normally. The pipe rewrites every Web Tools filter it installed, and every Web Tools row that carries no install record, so the suppression stops everywhere it is this pipe's to stop and not only in the row you happened to look at.
 
 ---
 
@@ -41,7 +41,7 @@ Open WebUI does not provide a "pipe can inject new toggles" frontend extension p
 
 The pipe implements OpenRouter Web Search as part of the **OpenRouter Web Tools** toggleable filter:
 
-- The pipe can **auto-install / auto-update** this filter when `AUTO_INSTALL_WEB_TOOLS_FILTER` is enabled. A switch-off reaches every copy of the filter whether it is on or off.
+- The pipe can **auto-install / auto-update** this filter when `AUTO_INSTALL_WEB_TOOLS_FILTER` is enabled. A switch-off reaches every copy this pipe installed, and every copy that carries no install record, whether it is on or off.
 - The pipe can **auto-attach** it to pipe models when `AUTO_ATTACH_WEB_TOOLS_FILTER` is enabled.
 - The pipe can **enable it by default** on models when `AUTO_DEFAULT_WEB_TOOLS_FILTER` is enabled.
 
@@ -120,8 +120,9 @@ Result: Users see **OpenRouter Web Tools** on every pipe model that is not an im
 ### "Open WebUI's search stopped after OpenRouter web search was switched off"
 - Expected, and it clears itself. The Web Tools filter suppresses Open WebUI's search, so a filter that still offers
   web search keeps it off even after the switch.
-- The pipe rewrites every Web Tools filter without the switched-off tool at the next model-list refresh, or in the
-  background after the first message that still asks for it. A message sent before the rewrite lands gets neither
+- The pipe rewrites every Web Tools filter it installed, and every Web Tools row that carries no install
+  record, without the switched-off tool at the next model-list refresh, or in the background after the first
+  message that still asks for it. A message sent before the rewrite lands gets neither
   search; later ones get Open WebUI's.
 - If a log warning says a filter's code could not be read, the pipe left that filter alone: update it or remove it.
 - If you refreshed and the toggle is still there, the row you are looking at is often the **wrong row**. With several

@@ -12,6 +12,7 @@ from pydantic import Field
 from .._utils import extract_task_name, extract_user_message
 from ..base import PluginBase, PluginContext
 from ..registry import PluginRegistry
+from .actions import _dashboard_enabled
 from .auth import ACCESS_DENIED_MD
 from .authz import can_view, model_id, resolve_user
 from .command_registry import CommandRegistry
@@ -124,7 +125,9 @@ class PipeDashboardPlugin(PluginBase):
         "PIPE_DASHBOARD_ENABLE": (bool, Field(
             default=False,
             title="Enable Pipe Dashboard plugin",
-            description="Enable the Pipe Dashboard virtual model in the model selector.",
+            description="Enable the Pipe Dashboard virtual model in the model selector. "
+                        "Read from the persisted row, so a committed change holds on every "
+                        "worker without a restart; an unreadable row refuses.",
         )),
         "PIPE_DASHBOARD_USAGE_COLLECT": (bool, Field(
             default=False,
@@ -272,7 +275,7 @@ class PipeDashboardPlugin(PluginBase):
     async def on_models(self, models: list[dict[str, Any]], **kwargs: Any) -> None:
         if not hasattr(self, "ctx"):
             return
-        if not self.ctx.valves.PIPE_DASHBOARD_ENABLE:
+        if not await _dashboard_enabled(self.ctx.pipe):
             return
         _display_name = "Pipe Dashboard"
         _description = (
@@ -379,7 +382,7 @@ class PipeDashboardPlugin(PluginBase):
             return None  # Not for us — let the request continue
 
         # Plugin disabled — don't handle requests for our model
-        if not self.ctx.valves.PIPE_DASHBOARD_ENABLE:
+        if not await _dashboard_enabled(self.ctx.pipe):
             return None
 
         acting_user = await resolve_user(user.get("id"))

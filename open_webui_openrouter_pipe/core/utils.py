@@ -905,13 +905,16 @@ def split_text_by_phase_markers(text: str) -> list[dict[str, Any]]:
         segments.append(
             {
                 "text": text[last:span["start"]],
+                "start": last,
                 "phase": None if span["phase_token"] == "null" else span["phase_token"],
                 "phase_present": True,
             }
         )
         last = span["end"]
     if last < len(text):
-        segments.append({"text": text[last:], "phase": None, "phase_present": False})
+        segments.append(
+            {"text": text[last:], "start": last, "phase": None, "phase_present": False}
+        )
     return segments
 
 

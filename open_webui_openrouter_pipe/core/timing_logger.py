@@ -24,10 +24,11 @@ from __future__ import annotations
 import asyncio
 import datetime
 import functools
+import inspect
 import json
 import threading
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from collections.abc import Callable
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
@@ -44,7 +45,7 @@ _timing_file_path: Path | None = None
 _timing_file_handle: Any | None = None  # File object when open
 
 # Per-request timing buffer (kept for session log integration if needed)
-_timing_events: dict[str, deque[dict[str, Any]]] = {}
+_timing_events: OrderedDict[str, deque[dict[str, Any]]] = OrderedDict()
 _timing_lock = threading.RLock()
 
 # Context variables for per-request state
@@ -91,16 +92,17 @@ def _format_iso_utc(wall_ts: float) -> str:
         ).replace("+00:00", "Z")
 
 
-def _record_event(event: TimingEvent) -> None:
+def _record_event(event: TimingEvent, request_id: str | None = None) -> None:
     """Write timing event directly to the configured file.
 
     Events are written immediately in JSONL format. Thread-safe via file lock.
     """
-    if not _timing_enabled.get():
-        return
-    request_id = _timing_request_id.get()
-    if not request_id:
-        return
+    if request_id is None:
+        if not _timing_enabled.get():
+            return
+        request_id = _timing_request_id.get()
+        if not request_id:
+            return
 
     record: dict[str, Any] = {
         "ts": _format_iso_utc(event.wall_ts),
@@ -125,13 +127,13 @@ def _record_event(event: TimingEvent) -> None:
     # Also store in per-request buffer for potential session log integration
     with _timing_lock:
         if request_id not in _timing_events:
-            # Bound the number of retained requests (dicts are insertion-ordered,
-            # so the first key is the oldest). Evict oldest before inserting.
+            if event.event == "exit":
+                return
             while len(_timing_events) >= MAX_TIMING_REQUESTS:
-                oldest = next(iter(_timing_events))
-                _timing_events.pop(oldest, None)
+                _timing_events.popitem(last=False)
             _timing_events[request_id] = deque(maxlen=MAX_TIMING_EVENTS)
         _timing_events[request_id].append(record)
+        _timing_events.move_to_end(request_id)
 
 
 # -----------------------------------------------------------------------------
@@ -396,6 +398,38 @@ def timing_scope(label: str):
 F = TypeVar("F", bound=Callable[..., Any])
 
 
+async def _bracket_generator(
+    agen: Any, label: str, rid: str, start: float
+) -> Any:
+    inner, send, exc = agen, None, None
+    try:
+        while True:
+            try:
+                item = await (inner.asend(send) if exc is None else inner.athrow(exc))
+            except StopAsyncIteration:
+                return
+            try:
+                send = yield item
+                exc = None
+            except GeneratorExit:
+                await inner.aclose()
+                raise
+            except BaseException as thrown:  # noqa: BLE001
+                exc, send = thrown, None
+    finally:
+        end = time.perf_counter()
+        _record_event(
+            TimingEvent(
+                ts=end,
+                wall_ts=time.time(),
+                event="exit",
+                label=label,
+                elapsed_ms=(end - start) * 1000,
+            ),
+            request_id=rid,
+        )
+
+
 def timed(func: F) -> F:
     """Decorator for timing function entrance/exit.
 
@@ -426,6 +460,30 @@ def timed(func: F) -> F:
 
     label = f"{module}.{qualname}" if module else qualname
 
+    if inspect.isasyncgenfunction(func):
+
+        @functools.wraps(func)
+        def call_wrapper(*args: Any, **kwargs: Any) -> Any:
+            if not _timing_enabled.get():
+                return func(*args, **kwargs)
+            rid = _timing_request_id.get()
+            if not rid:
+                return func(*args, **kwargs)
+            start_perf = time.perf_counter()
+            _record_event(
+                TimingEvent(
+                    ts=start_perf,
+                    wall_ts=time.time(),
+                    event="enter",
+                    label=label,
+                ),
+                request_id=rid,
+            )
+            return _bracket_generator(
+                func(*args, **kwargs), label, rid, start_perf
+            )
+
+        return call_wrapper  # type: ignore[return-value]
     if asyncio.iscoroutinefunction(func):
 
         @functools.wraps(func)
