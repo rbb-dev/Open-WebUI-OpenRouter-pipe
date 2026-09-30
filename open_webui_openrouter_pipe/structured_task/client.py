@@ -164,14 +164,22 @@ async def read_model_response_content(
     return str(response or "")
 
 
+def _model_content_is_absent(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, (str, list)):
+        return not normalise_model_content(value).strip()
+    return False
+
+
 def _model_answer(message: dict[str, Any]) -> Any:
     content_value = message.get("content")
-    if content_value is None or (isinstance(content_value, str) and not content_value.strip()):
-        for key in ("reasoning_content", "reasoning"):
-            candidate = message.get(key)
-            if isinstance(candidate, str) and candidate.strip():
-                return candidate
+    if not _model_content_is_absent(content_value):
         return content_value
+    for key in ("reasoning_content", "reasoning"):
+        candidate = message.get(key)
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate
     return content_value
 
 

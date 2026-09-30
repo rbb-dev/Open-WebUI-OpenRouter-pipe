@@ -22,18 +22,17 @@ from open_webui_openrouter_pipe.integrations.provider_options import (
     options_key,
 )
 from open_webui_openrouter_pipe.requests.fusion_engine import item_text, latest_user_text
-
 from tests.test_image_api_path import (  # noqa: F401
     _Emitter,
-    _event_data,
     _KeyPipe,
     _StubResponsesBody,
     _StubValves,
     _adapter,
+    _event_data,
     _posted,
     _posted_payload,
+    _seed_contract,
 )
-
 
 # ----------------------------------------------------------------- SYS
 
@@ -48,7 +47,8 @@ from tests.test_image_api_path import (  # noqa: F401
 @pytest.mark.asyncio
 async def test_the_models_own_system_prompt_reaches_the_image_prompt(house, wanted):
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
     payload = await _posted_payload(
         adapter,
         body={},
@@ -139,11 +139,12 @@ def test_item_text_separates_no_text_from_empty_text(content, expected):
 @pytest.mark.asyncio
 async def test_a_region_sharded_slug_is_keyed_and_pinned_by_its_bare_name(sharded, bare):
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{
+    _seed_contract(adapter, "m/x", [{
         "provider_slug": sharded,
         "allowed_passthrough_parameters": ["style"],
         "supported_parameters": {"n": {"type": "range", "min": 1, "max": 4}},
-    }])
+    }], at=time.monotonic())
+
     result = await _posted(
         adapter,
         body={"image_config": {"style": "digital_illustration", "n": 2}},
@@ -244,11 +245,12 @@ def test_a_pin_no_record_carries_is_still_reported_as_unserved(pin, expected):
 @pytest.mark.asyncio
 async def test_provider_options_are_fanned_to_every_carrier_and_directives_are_not(slugs, bare):
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [
+    _seed_contract(adapter, "m/x", [
         {"provider_slug": slug, "allowed_passthrough_parameters": ["style"],
          "supported_parameters": {}}
         for slug in slugs
-    ])
+    ], at=time.monotonic())
+
     result = await _posted(
         adapter,
         body={"image_config": {"style": "digital_illustration"}},

@@ -62,10 +62,14 @@ class ReasoningConfigManager:
 
     @staticmethod
     def _request_asks_for_no_reasoning(cfg: dict[str, Any]) -> bool:
-        if cfg.get("enabled") is False or cfg.get("exclude") is True:
+        if cfg.get("enabled") is False:
             return True
         effort = cfg.get("effort")
         return isinstance(effort, str) and _normalised_effort(cfg) == _NO_EFFORT
+
+    @staticmethod
+    def _request_hides_the_reasoning_trace(cfg: dict[str, Any]) -> bool:
+        return cfg.get("exclude") is True
 
     @classmethod
     def _reserve_the_answer_room(
@@ -144,7 +148,11 @@ class ReasoningConfigManager:
         elif supports_legacy_only:
             carried = responses_body.reasoning if isinstance(responses_body.reasoning, dict) else {}
             responses_body.reasoning = None
-            off = target_effort in _EFFORT_REASONING_OFF or self._request_asks_for_no_reasoning(carried)
+            asks_off = target_effort in _EFFORT_REASONING_OFF or self._request_asks_for_no_reasoning(carried)
+            off = asks_off or self._request_hides_the_reasoning_trace(carried)
+            if asks_off and self._model_requires_reasoning(responses_body.model):
+                off = False
+                refused = True
             self._set_include_reasoning(responses_body, not off)
 
         return responses_body.model if refused else None
@@ -177,6 +185,9 @@ class ReasoningConfigManager:
         elif supports_legacy_only:
             responses_body.reasoning = None
             desired = target_effort not in _EFFORT_REASONING_OFF
+            if not desired and self._model_requires_reasoning(responses_body.model):
+                desired = True
+                refused = True
             self._set_include_reasoning(responses_body, desired)
 
         return responses_body.model if refused else None

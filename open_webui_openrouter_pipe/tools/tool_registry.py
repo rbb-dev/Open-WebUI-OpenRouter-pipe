@@ -217,7 +217,8 @@ def _advertised_names_for_replayed_calls(items: Any, exposed_to_origin: dict[str
             item["name"] = exposed_by_origin[name]
         else:
             digest = hashlib.sha1(f"replayed::{name}".encode()).hexdigest()[:8]
-            item["name"] = _provider_tool_name(name, digest, set())
+            reserved = {name} if name in shared_origins else set()
+            item["name"] = _provider_tool_name(name, digest, reserved)
 
 
 

@@ -26,6 +26,7 @@ from open_webui_openrouter_pipe.integrations.image_client import (
     OpenRouterImageClient,
 )
 from open_webui_openrouter_pipe.integrations.image_types import ImageGenerationError
+from tests.test_image_api_path import _seed_contract
 
 BASE = "https://openrouter.ai/api/v1"
 
@@ -737,7 +738,8 @@ async def test_the_stream_flag_reaches_the_request_for_the_models_that_publish_o
 
     pipe = _Pipe()
     made = adapter(pipe)
-    made._endpoint_cache[model_id] = (time.monotonic(), records(model_id))
+    _seed_contract(made, model_id, records(model_id), at=time.monotonic())
+
 
     with aioresponses() as mocked:
         mocked.post(

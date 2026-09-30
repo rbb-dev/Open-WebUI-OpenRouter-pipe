@@ -347,7 +347,10 @@ Riverflow variants, all 4 FLUX.2 variants, ByteDance Seedream 4.5.
   `register_image_models` skips it (those stay in the chat catalog).
 - **Master-disable**: setting `ENABLE_OPENROUTER_IMAGE_GENERATION=False`
   stops the pipe reading the image list at all, and drops the models
-  registered while it was on. Both happen on the next model-list build —
+  registered while it was on along with the published contracts of exactly
+  those models — the narrowing is to the ids the registry can still route
+  to, so a multimodal row keeps its contract. Both happen on the next
+  model-list build —
   the next time Open WebUI asks the pipe for its models — and the drop runs
   ahead of the catalogue refresh window, so it does not wait on
   `MODEL_CATALOG_REFRESH_SECONDS`. The models are already gone from that
@@ -1453,7 +1456,7 @@ is shared with chat/video catalogs (`MODEL_CATALOG_REFRESH_SECONDS`).
 
 | Valve | Default | Range | Purpose |
 |-------|---------|-------|---------|
-| `ENABLE_OPENROUTER_IMAGE_GENERATION` | `True` | bool | Master kill switch. False drops pure-image-only models from the model list AND clears them from OWUI's catalog on the next model-list build, ahead of the catalogue refresh window, so it does not wait on `MODEL_CATALOG_REFRESH_SECONDS`. Multimodal models stay since they're in the chat catalog. |
+| `ENABLE_OPENROUTER_IMAGE_GENERATION` | `True` | bool | Master kill switch. False drops pure-image-only models from the model list AND clears them from OWUI's catalog on the next model-list build, ahead of the catalogue refresh window, so it does not wait on `MODEL_CATALOG_REFRESH_SECONDS`. It withdraws the published contracts of the models it drops as well, narrowed to the ids the registry can still route to; a text+image chat model is not one of them, so its own contract and its `image_config` vetting are untouched. Multimodal models stay since they're in the chat catalog. |
 | `AUTO_INSTALL_IMAGE_FILTERS` | `True` | bool | Install and keep current one settings panel per image model, built from what that model publishes. It is one of the four valves that pay for that read — `AUTO_ATTACH_IMAGE_FILTERS`, `AUTO_INSTALL_IMAGE_GEN_FILTER` and `AUTO_ATTACH_IMAGE_GEN_FILTER` read the same contracts for the Image Generation tool's own panel, and with all four off no contract is read at all. Every panel also carries `Output size`, where a tier is checked against the tiers that model publishes -- or against `512`, `1K`, `2K` and `4K` where it publishes none -- while exact pixels such as `1024x1024` travel as typed; and a model that answers with a picture and no text carries `Provider options`, `Reference images` and `Reference image links` on top of that. A model whose settings list has never been read gets no panel; one read before keeps its last successful set -- and keeps it until a refresh does read the model, so a catalogue that is momentarily unreadable for one model costs it nothing. |
 | `AUTO_ATTACH_IMAGE_FILTERS` | `True` | bool | Attach each model's own settings panel to it, so its settings appear in the chat controls when that model is selected. A single model can opt out with the `disable_image_filter_auto_attach` advanced parameter. |
 | `AUTO_DEFAULT_IMAGE_FILTERS` | `True` | bool | Keep attached image filters enabled by default per chat. Re-asserted on every catalog metadata sync. |
@@ -1462,7 +1465,7 @@ Related (existing) valves:
 
 | Valve | Default | Purpose |
 |-------|---------|---------|
-| `MODEL_CATALOG_REFRESH_SECONDS` | `3600` | TTL governing how often the image catalog is re-fetched from `/api/v1/models?output_modalities=image`. |
+| `MODEL_CATALOG_REFRESH_SECONDS` | `3600` | TTL governing how often the image catalog is re-fetched from `/api/v1/models?output_modalities=image`. A change of `API_KEY` refetches immediately rather than waiting the window out: both the model-list clock and the contract-sweep clock are stamped with the credential that asked, so the new account is never answered from the previous one's state, and the same account inside the window still reads from cache. |
 | `BASE64_MAX_SIZE_MB` | (multimodal section) | Cap on decoded image size before file persistence. |
 
 Tuning hints:
@@ -1681,11 +1684,17 @@ pipes()
         cancellation between them leaves the models registered and the
         model clock stamped -- strictly better than one lock held across
         both halves, where a cancellation mid-sweep lost the models and
-        the clock together.
+        the clock together. Both clocks are stamped with the credential
+        that asked, under one shared account stamp, so a key change reads
+        as stale on both at once and the new account is never answered
+        from the old one's state.
           ├─ if ENABLE_OPENROUTER_IMAGE_GENERATION is off: drop any models
-          │  registered while it was on, then return -- ahead of the TTL
-          │  check, which is why the picker empties on this build rather
-          │  than a TTL later
+          │  registered while it was on, then call set_image_endpoints({})
+          │  with known_ids = the ids the registry can still route to -- so
+          │  the contracts of the models just dropped go with them and a
+          │  text+image chat model's own contract stays -- then return,
+          │  ahead of the TTL check, which is why the picker empties on
+          │  this build rather than a TTL later
           ├─ TTL-gated fetch (cache_seconds = MODEL_CATALOG_REFRESH_SECONDS)
           ├─ /api/v1/models?output_modalities=image via OpenRouterImageClient
           ├─ if any of the four image filter valves is on —
@@ -1818,7 +1827,11 @@ multimodal models, staying on chat completions, that actually carry it.
 
 **Turning the feature off.** With `ENABLE_OPENROUTER_IMAGE_GENERATION` set
 to `False`, the pipe stops reading the image catalog and drops the models
-registered while it was on. The drop runs on the next model-list build,
+registered while it was on, together with the published contracts of the
+models it dropped -- a server tool still naming one of them in its metadata
+finds no contract to read. The narrowing is to the ids the registry can
+still route to, so a text+image chat model, which this valve does not
+drop, keeps its own. The drop runs on the next model-list build,
 ahead of the catalogue refresh window, so the models are gone from that
 same model list rather than lingering for up to
 `MODEL_CATALOG_REFRESH_SECONDS`.

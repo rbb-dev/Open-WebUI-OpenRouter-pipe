@@ -1172,12 +1172,14 @@ class OpenRouterModelRegistry:
 
     _last_image_fetch: float = 0.0
     _last_image_attempt: float = 0.0
+    _last_image_account: str = ""
     _image_catalog_norms: frozenset[str] = frozenset()
     _chat_catalog_norms: frozenset[str] = frozenset()
     _image_endpoints: ClassVar[dict[str, list[dict[str, Any]]]] = {}
     _image_endpoint_alias: ClassVar[dict[str, list[dict[str, Any]]]] = {}
     _image_endpoint_alias_of: ClassVar[dict[str, list[dict[str, Any]]] | None] = None
     _last_image_contract_attempt: float = 0.0
+    _last_image_contract_account: str = ""
     _image_contract_retry_after: float = 0.0
     _image_contract_owed: frozenset[str] = frozenset()
     _image_contract_target: ClassVar[tuple[str, str] | None] = None
@@ -1210,12 +1212,19 @@ class OpenRouterModelRegistry:
         return cls._last_image_contract_attempt
 
     @classmethod
-    def record_image_contract_attempt(cls) -> None:
+    def record_image_contract_attempt(cls, api_key: str) -> None:
         cls._last_image_contract_attempt = time.time()
+        cls._last_image_contract_account = _fingerprint(api_key)
+        cls._last_image_account = cls._last_image_contract_account
 
     @classmethod
     def clear_image_contract_attempt(cls) -> None:
         cls._last_image_contract_attempt = 0.0
+        cls._last_image_contract_account = ""
+
+    @classmethod
+    def image_accounts_match(cls, api_key: str) -> bool:
+        return _fingerprint(api_key) == cls._last_image_account == cls._last_image_contract_account
 
     @classmethod
     def mark_image_contract_retry(cls, cache_seconds: int) -> None:
@@ -1275,6 +1284,10 @@ class OpenRouterModelRegistry:
         cls._image_endpoints = published
 
     @classmethod
+    def listed_model_ids(cls) -> set[str]:
+        return {value for value in cls._id_map.values() if isinstance(value, str) and value.strip()}
+
+    @classmethod
     def image_endpoint(cls, model_id: str) -> list[dict[str, Any]] | None:
         """Return every published contract for a model, by original or sanitized id."""
         if not isinstance(model_id, str) or not model_id.strip():
@@ -1301,13 +1314,16 @@ class OpenRouterModelRegistry:
         return cls._last_image_attempt
 
     @classmethod
-    def record_image_attempt(cls) -> None:
+    def record_image_attempt(cls, api_key: str) -> None:
         """Stamp `_last_image_attempt` with the current time."""
         cls._last_image_attempt = time.time()
+        cls._last_image_account = _fingerprint(api_key)
+        cls._last_image_contract_account = cls._last_image_account
 
     @classmethod
     def reset_image_attempt(cls) -> None:
         cls._last_image_attempt = 0.0
+        cls._last_image_account = ""
 
     @classmethod
     def reset_image_fetch_timestamp(cls) -> None:

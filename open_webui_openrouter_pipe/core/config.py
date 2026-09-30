@@ -1297,9 +1297,12 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "How long to cache the OpenRouter model catalog (in seconds) before refreshing. "
             "The refresh backoff after a failed fetch is tracked per OpenRouter account, so "
             "one account's outage never holds up another account's catalog read. The image "
-            "models' published settings are cached on the same window, and that cache is "
-            "dropped at once when the base URL or the API key changes, rather than being "
-            "kept for the rest of the window. The 30-second window a failed read of one "
+            "catalog's model-list clock and its published-settings clock are stamped with the "
+            "same account and keyed the same way, so a changed key refetches the image list and "
+            "re-reads every model's settings at once rather than answering the new account from "
+            "the old one's state. The image models' published settings are cached on the same "
+            "window, and that cache is dropped at once when the base URL or the API key changes, "
+            "rather than being kept for the rest of the window. The 30-second window a failed read of one "
             "model's published settings opens is dropped on that same event, so the new "
             "base URL or key makes its first read rather than waiting out a pause that "
             "belongs to the credential before it. A request arriving during a media-catalog "
@@ -1477,8 +1480,12 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         description=(
             "Default reasoning effort to request from supported models. 'none' switches reasoning off where the "
             "model allows it; a model that always reasons gets the lightest level its catalog entry lists other than "
-            "`none` instead, and no level at all when it lists no other level. On such a model the pipe keeps asking "
-            "regardless, and in a chat it says so in a status line naming the model; a background task shows nothing. "
+            "`none` instead, and no level at all when it lists no other level. On a model that takes only the legacy "
+            "`include_reasoning` there is no effort to substitute, so the pipe writes `true` instead of the off. "
+            "On such a model the pipe keeps asking regardless, and in a chat it says so in a status line naming the "
+            "model; a background task shows nothing. "
+            "A request that only hides the reasoning trace (`reasoning.exclude` of `true`) is not one of these offs: "
+            "it keeps the depth this setting chose and draws no status line. "
             "A request that carries its own reasoning.max_tokens overrides this default, except while this setting "
             "is 'none': there a per-chat thinking budget is ignored, because 'none' switches reasoning off on every "
             "path. Use 'xhigh' when maximum depth is desired (only on supporting models)."
@@ -1519,7 +1526,11 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "Low is the default balance between speed and quality; set to 'minimal' to prioritize fastest runs, "
             "or use medium/high for progressively deeper background reasoning at higher cost. "
             "Use 'none' to switch reasoning off for those tasks, where the model allows it; a model that always "
-            "reasons gets the lightest level its catalog entry lists other than 'none' instead."
+            "reasons gets the lightest level its catalog entry lists other than 'none' instead, or, on a model that "
+            "takes only the legacy `include_reasoning`, `include_reasoning: true` since there is no effort to "
+            "substitute. A task request "
+            "that only hides the reasoning trace (`reasoning.exclude` of `true`) is not one of these offs: it "
+            "keeps the depth this setting chose and draws no status line."
         ),
     )
 
@@ -1607,7 +1618,10 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "`null` branch added to it with the node itself kept as the first branch. A missing field type is filled in "
             "too: a property, an array's `items` and an `anyOf`/`oneOf` branch whose values are pinned by `enum` or "
             "`const` is given the type those values have - `string`, `integer`, `number`, `boolean` or `null` - and one "
-            "that pins no values is given `object`, or `array` where it declares `items`. "
+            "that pins no values is given `object`, or `array` where it declares `items`. A node that declares "
+            "`anyOf`, `oneOf` or `allOf` states its own type, so none of those three places gives it one: the "
+            "composition is left as it was written rather than constrained by a type beside it that no value would "
+            "satisfy. "
             "Annotations and definitions a node carries are kept, not only its resolved properties: a single-`$ref` "
             "`allOf` unwrap leaves the node's own `title` and `description` in place, and a definition a nested node "
             "carries is reachable from the document root and strictified in place. A name the root already uses is the "
@@ -2331,10 +2345,11 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "excludes them unless OpenRouter lists a ZDR endpoint for them."
             + _PIPE_OFF_COMES_BACK
             + " Turning it off deactivates all installed per-model video filter rows on the next model-list refresh;"
-            + " turning it back on re-activates the ones still in the catalogue while"
-            + " AUTO_INSTALL_VIDEO_FILTERS is on; with that valve off its retirement governs, and the rows"
-            + " stay off until it comes back on. The rows are identified by their source, so a copy you"
-            + " made by hand of one of these filters' source is switched off too."
+            + " AUTO_INSTALL_VIDEO_FILTERS is the install valve for that family. Turning it back on re-activates"
+            + " the ones still in the catalogue that the pipe itself switched off, while that valve is on;"
+            + " with that valve off its retirement governs, and the rows stay off until it comes back on."
+            + " The rows are identified by their source, so a copy you made by hand of one of these"
+            + " filters' source is switched off too."
         ),
     )
 
@@ -2385,7 +2400,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "Expose OpenRouter's image-generation models (Sourceful, Flux, Seedream and "
             "the rest) as models you can pick in chat. Models that produce both text and "
             "images stay where they already are in the chat list; this only adds the "
-            "image-only ones."
+            "image-only ones. Turning it off also withdraws the published contracts of the "
+            "models it drops; a text+image chat model's own contract is untouched, so its "
+            "image_config vetting continues."
         ),
     )
     AUTO_INSTALL_IMAGE_FILTERS: bool = Field(
@@ -2473,8 +2490,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             + " row, a saved chat or a direct API caller brought along cannot deliberate;"
             + " a task or title request never carries one, whatever the valve says, so the off"
             + " state does not wait for that refresh;"
-            + " turning it back on re-activates the one the pipe itself switched off, whether or not"
-            + " AUTO_INSTALL_FUSION_FILTER is on."
+            + " AUTO_INSTALL_FUSION_FILTER is the install valve for that family. Turning it back on re-activates a"
+            + " filter the pipe itself switched off whose family's install valve is still on; a row that valve has"
+            + " retired stays off until that valve comes back on."
         ),
     )
     AUTO_INSTALL_FUSION_FILTER: bool = Field(
@@ -2793,7 +2811,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "decides the frame when the seek to an in-range moment comes back empty, "
             "and the frame the pixel cap makes the pipe substitute for a refused one: "
             "that substitute is a smaller copy of the frame the cap would not decode, "
-            "and the disclosure footer says so. "
+            "and the disclosure footer says so. On a model accepting only a first frame "
+            "the first frame is substituted there whatever this setting says, and the "
+            "disclosure names it. "
             "A request that names a first or last frame directly gets that frame - "
             "except on a damaged clip whose length the host cannot measure, where no "
             "end-seek hop reads a frame at all and the file's first frame is "
@@ -3002,7 +3022,7 @@ class UserValves(BaseModel):
     REASONING_EFFORT: Literal["none", "minimal", "low", "medium", "high", "xhigh"] = Field(
         default="medium",
         title="Reasoning depth",
-        description="Choose how much thinking the AI should do before answering (higher depth is slower but more thorough). 'none' switches reasoning off where the model allows it; a model that always reasons gets the lightest level its catalog entry lists other than `none` instead, and no level at all when it lists no other level. Use 'xhigh' for maximum depth when available.",
+        description="Choose how much thinking the AI should do before answering (higher depth is slower but more thorough). 'none' switches reasoning off where the model allows it; a model that always reasons gets the lightest level its catalog entry lists other than `none` instead, and no level at all when it lists no other level. A request that only hides the reasoning trace (`reasoning.exclude` of `true`) is not one of these offs: it keeps the depth you chose here and draws no status line. Use 'xhigh' for maximum depth when available.",
     )
     REASONING_SUMMARY_MODE: Literal["auto", "concise", "detailed", "disabled"] = Field(
         default="auto",

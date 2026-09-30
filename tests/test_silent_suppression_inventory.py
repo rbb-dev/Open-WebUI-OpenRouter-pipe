@@ -238,10 +238,7 @@ _EXPECTED: dict[str, int] = {
     # fallback fails too -- letting it out would replace the failure being reported with a template error.
     "streaming/event_emitter.py": 1,
     # 1st: the roster task teardown above, whose only failure mode is a second
-    # cancellation arriving while the loop is already unwinding. 2nd: awaiting that task
-    # after the hand-back has cancelled it, where the await exists to finalise it and a
-    # failure to do so changes nothing the caller can act on -- the terminal writes it
-    # feeds are all gated off this path anyway.
+    # cancellation arriving while the loop is already unwinding.
     # 3rd: the loop-limit note's write of `{"error": {"content": …}}` to the saved chat row, so the
     # banner survives a reload the way Open WebUI's own `emit_message_error` makes it survive. It
     # runs after the notification has already reached the caller, so a storage failure costs the
@@ -253,7 +250,16 @@ _EXPECTED: dict[str, int] = {
     # response -- which the garbage collector would eventually do anyway -- and must not replace the
     # turn's result or mask the exception that ended it. It also swallows `CancelledError` for the same
     # reason the two beside it do: a turn being torn down must not raise out of its own teardown.
-    "streaming/streaming_core.py": 4,
+    # 3 after B518 (H2437-1): the roster task's teardown. It carried two -- the task's own
+    # cancellation on the way down, and the await of that task after the hand-back had
+    # cancelled it. The second one existed to finalise a task nobody ever awaited, because
+    # the guard skipped the await exactly when the task was finished: the only state that
+    # has an exception. So the one suppression whose whole job was to hide a lost raise was
+    # itself hiding the loss, and a card that could not be built reached nobody. The guard
+    # now retrieves the exception unconditionally and reports a non-cancellation one by
+    # model, and the cancellation arm is an explicit `except asyncio.CancelledError` that
+    # ruff and this census both see.
+    "streaming/streaming_core.py": 3,
     # 5th: the tool card emitted as each call's result is collected, the twin of the one in the loop that
     # follows. The card is what the person sees; a failure emitting it must not lose the tool result the
     # loop is in the middle of collecting, which is the model's answer.

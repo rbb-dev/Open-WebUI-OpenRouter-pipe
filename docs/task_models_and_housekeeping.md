@@ -80,11 +80,11 @@ Important nuance:
 
 For housekeeping tasks targeting models the pipe “owns”, the pipe overrides the request’s reasoning configuration using `TASK_MODEL_REASONING_EFFORT` (default: `low`):
 
-- If the model supports the modern `reasoning` parameter, the pipe sets `reasoning.effort` and keeps reasoning enabled. A `none` on a model whose reasoning is mandatory becomes the lowest level its catalog entry lists other than `none`, and no level at all when it lists no other level. On any other model, an effort of `none` is the one that turns reasoning off, and the reasoning pass that runs after the task override is what decides it: it rebuilds the `reasoning` object, so the `enabled` key nothing else wrote is not on the request a task asking for no effort goes out with.
-- If the model supports only the legacy `include_reasoning` flag, the pipe toggles it based on the configured effort.
+- If the model supports the modern `reasoning` parameter, the pipe sets `reasoning.effort` and keeps reasoning enabled. A `none` on a model whose reasoning is mandatory becomes the lowest level its catalog entry lists other than `none`, and no level at all when it lists no other level. On any other model, an effort of `none` is the one that turns reasoning off, and the reasoning pass that runs after the task override is what decides it: it rebuilds the `reasoning` object, so the `enabled` key nothing else wrote is not on the request a task asking for no effort goes out with. A task request that only hides the trace (`reasoning.exclude` of `true`) is not an off: it keeps the depth the valve chose and draws no status line about it.
+- If the model supports only the legacy `include_reasoning` flag, the pipe toggles it based on the configured effort — except on a row whose reasoning is mandatory, where there is no effort to substitute and the flag goes out as `true` whatever the configured effort says.
 - If the model supports neither, the pipe adds no reasoning field; any the task request itself carries (for example Open WebUI's task-model parameters) goes out as sent.
 
-A model the catalogue marks `reasoning.mandatory` is not asked to stop, whatever this valve says — the pipe substitutes an effort the row supports. Nothing is reported about it, because a task emits no status line of its own; the status line a chat shows does not apply here.
+A model the catalogue marks `reasoning.mandatory` is not asked to stop, whatever this valve says — the pipe substitutes an effort the row supports. On a row whose only reasoning channel is the legacy `include_reasoning` flag there is no effort to substitute, so the pipe writes `true` instead of the off. Nothing is reported about it, because a task emits no status line of its own; the status line a chat shows does not apply here.
 
 ### Request-field filtering still applies
 
@@ -171,7 +171,7 @@ Housekeeping tasks run frequently. The safest approach is to configure housekeep
 - Configured to produce concise strings (titles/tags/summaries) rather than long prose.
 - Not dependent on external tools or plugins (task requests do not execute tool loops, and a housekeeping request builds no tool specs at all).
 
-If you need tasks to be as fast as possible, reduce `TASK_MODEL_REASONING_EFFORT` (for example to `minimal` or `none`). `none` switches reasoning off where the model allows it; a model whose reasoning is mandatory answers at the lowest level its catalog entry lists other than `none` instead. If task quality is inadequate, increase it (for example `medium`).
+If you need tasks to be as fast as possible, reduce `TASK_MODEL_REASONING_EFFORT` (for example to `minimal` or `none`). `none` switches reasoning off where the model allows it; a model whose reasoning is mandatory answers at the lowest level its catalog entry lists other than `none` instead, and a request that only hides the trace (`reasoning.exclude` of `true`) is not a `none` at all. If task quality is inadequate, increase it (for example `medium`).
 
 ---
 

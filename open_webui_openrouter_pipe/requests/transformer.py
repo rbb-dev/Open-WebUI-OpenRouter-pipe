@@ -954,21 +954,16 @@ def _tool_picture_gate(
     return kept, refused
 
 
-async def _tool_picture_gate_with_address(
+async def _tool_picture_address_gate(
     pipe: Pipe,
     pictures: list[str],
     *,
-    max_inline_bytes: int,
     seen: dict[str, bool | None] | None = None,
     deadline: float | None = None,
 ) -> tuple[list[str], list[tuple[str, str, str]]]:
-    kept, refused = _tool_picture_gate(
-        pictures,
-        max_inline_bytes=max_inline_bytes,
-        allow_insecure=pipe._multimodal_handler._is_insecure_http_allowed,
-    )
     admitted: list[str] = []
-    for url in kept:
+    refused: list[tuple[str, str, str]] = []
+    for url in pictures:
         if not (is_http_or_https_url(url) and not names_an_owui_file_path(url)):
             admitted.append(url)
             continue
@@ -986,6 +981,26 @@ async def _tool_picture_gate_with_address(
             refused.append((url, "could not be fetched, so it was not sent", "remote_unfetched"))
             continue
         admitted.append(url)
+    return admitted, refused
+
+
+async def _tool_picture_gate_with_address(
+    pipe: Pipe,
+    pictures: list[str],
+    *,
+    max_inline_bytes: int,
+    seen: dict[str, bool | None] | None = None,
+    deadline: float | None = None,
+) -> tuple[list[str], list[tuple[str, str, str]]]:
+    kept, refused = _tool_picture_gate(
+        pictures,
+        max_inline_bytes=max_inline_bytes,
+        allow_insecure=pipe._multimodal_handler._is_insecure_http_allowed,
+    )
+    admitted, unfetchable = await _tool_picture_address_gate(
+        pipe, kept, seen=seen, deadline=deadline,
+    )
+    refused.extend(unfetchable)
     return admitted, refused
 
 
@@ -3141,10 +3156,14 @@ async def transform_messages_to_input(
         ):
             continue
         _replay_text, shown = tool_output_text_and_pictures(row["output"])
-        admitted, refused_shown = await _gate_inline_tool_pictures(
+        _typed, refused_shown = await _gate_inline_tool_pictures(
             shown, max_inline_bytes,
             allow_insecure=pipe._multimodal_handler._is_insecure_http_allowed,
         )
+        admitted, unfetchable = await _tool_picture_address_gate(
+            pipe, _typed, seen=address_verdicts, deadline=address_deadline,
+        )
+        refused_shown = list(refused_shown) + list(unfetchable)
         for url, reason, cause in refused_shown:
             logger.warning(
                 "Not replaying a stored tool's picture (%s): %s [cause=%s]",

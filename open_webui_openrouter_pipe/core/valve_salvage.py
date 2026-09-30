@@ -50,12 +50,15 @@ def _field_annotation(cls: type, name: str) -> Any:
     return None if field is None else field.annotation
 
 
-def is_secret_field(cls: type, name: str) -> bool:
-    annotation = _field_annotation(cls, name)
+def is_secret_annotation(annotation: Any) -> bool:
     secret = _encrypted_type()
     if annotation is secret:
         return True
     return any(arg is secret for arg in typing.get_args(annotation))
+
+
+def is_secret_field(cls: type, name: str) -> bool:
+    return is_secret_annotation(_field_annotation(cls, name))
 
 
 def _admits_none(cls: type, name: str) -> bool:

@@ -3260,6 +3260,7 @@ class VideoGenerationAdapter:
                         continue
 
                     substitutable = entry.target != "last_frame"
+                    effective_fallback: Literal["first", "last"] = reused_frame_index
                     try:
                         if entry.source == "prior_video_first_frame":
                             target = "first_frame"
@@ -3311,12 +3312,12 @@ class VideoGenerationAdapter:
                                     tmp_path,
                                     target=(
                                         "at_timestamp"
-                                        if reused_frame_index == "first"
+                                        if effective_fallback == "first"
                                         else "last_frame"
                                     ),
                                     timestamp_seconds=0.0,
                                     fallback_to_last_on_overshoot=True,
-                                    reused_frame_index=reused_frame_index,
+                                    reused_frame_index=effective_fallback,
                                     logger=self.logger,
                                     max_frame_bytes=frame_max_bytes,
                                     meta=probed.get(file_id),
@@ -3338,7 +3339,7 @@ class VideoGenerationAdapter:
                                 f"frame_pixel_cap_used_scaled_frame_idx_{entry.source_index}_at_{position}"
                             )
                             intent.downgrades.append(
-                                f"frame_over_pixel_cap_used_{reused_frame_index}_frame"
+                                f"frame_over_pixel_cap_used_{effective_fallback}_frame"
                             )
                             if frame.downgrade_note:
                                 intent.downgrades.append(frame.downgrade_note)

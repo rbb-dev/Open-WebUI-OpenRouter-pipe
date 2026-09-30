@@ -21,7 +21,7 @@ from ..core.logging_system import SessionLogger
 from ..core.utils import clamp_text, summarise_names
 from ..core.warn_latch import warn_level
 from ..filters.image_filter_renderer import IMAGE_KNOB_TITLES
-from ..models.registry import _contract_target
+from ..models.registry import _contract_target, _fingerprint
 from ..requests.fusion_engine import latest_user_text
 from ..storage.multimodal import (
     _NO_VERDICT,
@@ -218,9 +218,16 @@ class ImageGenerationAdapter:
     def __init__(self, *, pipe: Pipe, logger: logging.Logger) -> None:
         self._pipe = pipe
         self._logger = logger
-        self._endpoint_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
-        self._endpoint_failed_at: dict[str, float] = {}
+        self._endpoint_cache: dict[tuple[str, str], tuple[float, list[dict[str, Any]]]] = {}
+        self._endpoint_failed_at: dict[tuple[str, str], float] = {}
         self._contract_target: tuple[str, str] | None = None
+
+    def _endpoint_cache_key(self, valves: Any, api_model_id: str) -> tuple[str, str]:
+        try:
+            api_key, _error = self._pipe._resolve_openrouter_api_key(valves)
+        except Exception:  # noqa: BLE001 - a key that cannot be resolved is an identity, not a failure
+            api_key = None
+        return (_fingerprint(api_key or ""), api_model_id)
 
     def _resolve_api_key(self, valves: Any) -> str:
         api_key, api_key_error = self._pipe._resolve_openrouter_api_key(valves)
@@ -580,7 +587,7 @@ class ImageGenerationAdapter:
         model's filter -- built from the intersection -- does not draw.
         """
         await self._endpoint_record(session, valves, api_model_id, **kwargs)
-        cached = self._endpoint_cache.get(api_model_id)
+        cached = self._endpoint_cache.get(self._endpoint_cache_key(valves, api_model_id))
         return list(cached[1]) if cached else []
 
     async def _endpoint_record(
@@ -602,10 +609,11 @@ class ImageGenerationAdapter:
         raw_ttl = getattr(valves, "MODEL_CATALOG_REFRESH_SECONDS", 0)
         ttl = float(raw_ttl) if isinstance(raw_ttl, (int, float)) and not isinstance(raw_ttl, bool) else 0.0
         ttl = ttl or 3600.0
-        cached = self._endpoint_cache.get(api_model_id)
+        cache_key = self._endpoint_cache_key(valves, api_model_id)
+        cached = self._endpoint_cache.get(cache_key)
         if cached is not None and (time.monotonic() - cached[0]) < ttl:
             return self._select_endpoint(cached[1], requested)
-        failed_at = self._endpoint_failed_at.get(api_model_id)
+        failed_at = self._endpoint_failed_at.get(cache_key)
         if failed_at is not None and (time.monotonic() - failed_at) < _ENDPOINT_FAILURE_BACKOFF_SECONDS:
             fallback, unserved = (
                 self._select_endpoint(cached[1], requested) if cached is not None else (None, "")
@@ -627,7 +635,7 @@ class ImageGenerationAdapter:
                 self._select_endpoint(cached[1], requested) if cached is not None else (None, "")
             )
             if self._contract_target == identity:
-                self._endpoint_failed_at[api_model_id] = time.monotonic()
+                self._endpoint_failed_at[cache_key] = time.monotonic()
             self._logger.log(
                 warn_level(_warned_image_endpoints, f"{api_model_id}:{type(exc).__name__}"),
                 "Image endpoint lookup failed for %r (%s); %s",
@@ -642,7 +650,7 @@ class ImageGenerationAdapter:
                 self._select_endpoint(cached[1], requested) if cached is not None else (None, "")
             )
             if self._contract_target == identity:
-                self._endpoint_failed_at[api_model_id] = time.monotonic()
+                self._endpoint_failed_at[cache_key] = time.monotonic()
             self._logger.log(
                 warn_level(_warned_image_endpoints, f"{api_model_id}:empty"),
                 "OpenRouter returned no endpoint record for %r; %s",
@@ -652,8 +660,8 @@ class ImageGenerationAdapter:
             return fallback, unserved
         if self._contract_target != identity:
             return self._select_endpoint(records, requested)
-        self._endpoint_cache[api_model_id] = (time.monotonic(), records)
-        self._endpoint_failed_at.pop(api_model_id, None)
+        self._endpoint_cache[cache_key] = (time.monotonic(), records)
+        self._endpoint_failed_at.pop(cache_key, None)
         return self._select_endpoint(records, requested)
 
     @staticmethod
@@ -1308,7 +1316,7 @@ class ImageGenerationAdapter:
             for item in ((record or {}).get("allowed_passthrough_parameters") or [])
             if isinstance(item, str)
         )
-        cached = self._endpoint_cache.get(api_model_id)
+        cached = self._endpoint_cache.get(self._endpoint_cache_key(valves, api_model_id))
         records = list(cached[1]) if cached else []
         reachable_records = (
             self._reachable_records(records, requested_provider) if record is not None else []

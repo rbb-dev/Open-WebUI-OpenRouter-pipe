@@ -26,6 +26,8 @@ _FREE_FORM_ITEMS_KEY = "_pipe_free_form_items"
 
 _DEFS_CONTAINER_KEYS = ("$defs", "definitions")
 
+_COMPOSITION_KEYS = ("anyOf", "oneOf", "allOf")
+
 _STRICT_UNSUPPORTED_KEYS = (
     "default",
     "$schema",
@@ -586,6 +588,7 @@ def _strictify_schema_impl(schema: dict[str, Any]) -> dict[str, Any]:
                 and "properties" not in items
                 and "items" not in items
                 and "$ref" not in items
+                and not any(k in items for k in _COMPOSITION_KEYS)
             ):
                 items["type"] = _type_from_pinned_values(items) or "object"
                 logger.debug(
@@ -611,6 +614,7 @@ def _strictify_schema_impl(schema: dict[str, Any]) -> dict[str, Any]:
                             and "properties" not in br
                             and "items" not in br
                             and "$ref" not in br
+                            and not any(k in br for k in _COMPOSITION_KEYS)
                         ):
                             br["type"] = _type_from_pinned_values(br) or "object"
                             logger.debug(

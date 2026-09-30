@@ -407,16 +407,20 @@ def is_real_owui_file_record(file_obj: Any) -> bool:
     return bool(getattr(file_obj, "id", None))
 
 
+def _requester_field(user: Any, field: str) -> Any:
+    return user.get(field) if isinstance(user, dict) else getattr(user, field, None)
+
+
 @timed
 async def authorize_file_read(file_obj: Any, user: Any, logger: logging.Logger) -> bool:
     """Authorise reading a real OWUI file: owner, admin, or has_access_to_file. Fail closed."""
     if user is None:
         return False
     owner_id = getattr(file_obj, "user_id", None)
-    requester_id = getattr(user, "id", None)
+    requester_id = _requester_field(user, "id")
     if owner_id and requester_id and owner_id == requester_id:
         return True
-    if getattr(user, "role", None) == "admin":
+    if _requester_field(user, "role") == "admin":
         return True
     file_id = getattr(file_obj, "id", None)
     if not file_id:
@@ -444,11 +448,11 @@ PUBLISHING_NEEDS_OWNERSHIP = (
 def authorize_file_publication(file_obj: Any, user: Any) -> bool:
     if user is None:
         return False
-    role = user.get("role") if isinstance(user, dict) else getattr(user, "role", None)
+    role = _requester_field(user, "role")
     if role == "admin":
         return True
     owner_id = getattr(file_obj, "user_id", None)
-    requester_id = user.get("id") if isinstance(user, dict) else getattr(user, "id", None)
+    requester_id = _requester_field(user, "id")
     return bool(
         isinstance(owner_id, str)
         and owner_id

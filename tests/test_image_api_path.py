@@ -185,7 +185,8 @@ async def test_generate_reports_undecodable_base64():
 @pytest.mark.asyncio
 async def test_the_valve_governs_the_decode_ceiling(ceiling_mb, rejected):
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
 
     result = await _posted(
         adapter,
@@ -211,7 +212,8 @@ async def test_the_valve_governs_the_decode_ceiling(ceiling_mb, rejected):
 @pytest.mark.asyncio
 async def test_a_reply_that_is_not_an_image_is_reported_not_stored():
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
 
     result = await _posted(
         adapter,
@@ -279,7 +281,8 @@ async def test_an_unrecognised_container_with_an_image_media_type_is_kept(declar
 @pytest.mark.asyncio
 async def test_a_turn_with_an_image_and_no_caption_is_reported_not_raised():
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
     emitter = _Emitter()
 
     image_only = _StubResponsesBody(
@@ -325,7 +328,8 @@ async def test_a_turn_with_an_image_and_no_caption_is_reported_not_raised():
 @pytest.mark.asyncio
 async def test_a_transport_failure_never_renders_a_dangling_reason(exc, monkeypatch):
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
 
     class _Boom:
         async def generate(self, *_a, **_k):
@@ -357,7 +361,8 @@ async def test_a_transport_failure_never_renders_a_dangling_reason(exc, monkeypa
 @pytest.mark.asyncio
 async def test_the_requests_own_provider_block_survives():
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["recraft/recraft-v3"] = (time.monotonic(), [RECRAFT_RECORD])
+    _seed_contract(adapter, "recraft/recraft-v3", [RECRAFT_RECORD], at=time.monotonic())
+
     responses_body = _user_turn_with_images(
         0,
         provider={
@@ -422,7 +427,8 @@ async def test_the_configured_ceiling_reaches_the_client_from_the_valve():
     import aiohttp
 
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
     valves = _StubValves("sk-x", base64_max_size_mb=1)
     emitter = _Emitter()
 
@@ -835,7 +841,8 @@ def test_reference_limit_distinguishes_unsupported_from_unknown(record, expected
 @pytest.mark.asyncio
 async def test_references_are_omitted_when_the_endpoint_does_not_support_them():
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{"supported_parameters": {}}])
+    _seed_contract(adapter, "m/x", [{"supported_parameters": {}}], at=time.monotonic())
+
 
     payload = await _posted_payload(
         adapter,
@@ -999,7 +1006,8 @@ async def test_references_are_capped_to_the_endpoint_maximum(
     model_id, record, supplied, kept, dropped
 ):
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache[model_id] = (time.monotonic(), [record])
+    _seed_contract(adapter, model_id, [record], at=time.monotonic())
+
     emitter = _Emitter()
 
     result = await _posted(
@@ -1039,7 +1047,8 @@ async def test_provider_options_are_keyed_by_the_endpoint_slug_not_the_model_pre
     model_id, record, slug
 ):
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache[model_id] = (time.monotonic(), [record])
+    _seed_contract(adapter, model_id, [record], at=time.monotonic())
+
     knob = record["allowed_passthrough_parameters"][0]
 
     result = await _posted(
@@ -1068,7 +1077,8 @@ async def test_the_users_prompt_and_the_resolved_model_are_what_reach_the_reques
     prompt, api_model_id
 ):
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache[api_model_id] = (time.monotonic(), [{}])
+    _seed_contract(adapter, api_model_id, [{}], at=time.monotonic())
+
 
     result = await _posted(
         adapter,
@@ -1101,7 +1111,8 @@ async def test_the_saved_file_carries_the_sniffed_container_not_the_declared_one
     raw, declared, extension, mime
 ):
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
 
     result = await _posted(
         adapter,
@@ -1202,7 +1213,8 @@ async def test_the_configured_api_key_reaches_the_authorization_header(api_key):
     import aiohttp
 
     adapter = _adapter(_KeyPipe(api_key))
-    adapter._endpoint_cache["qwen/qwen-image-3"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "qwen/qwen-image-3", [{}], at=time.monotonic())
+
 
     with aioresponses() as mocked:
         mocked.post(
@@ -1233,7 +1245,8 @@ async def test_the_configured_api_key_reaches_the_authorization_header(api_key):
 @pytest.mark.asyncio
 async def test_a_missing_api_key_is_reported_to_the_user_not_swallowed():
     adapter = _adapter(_MissingKeyPipe(""))
-    adapter._endpoint_cache["qwen/qwen-image-3"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "qwen/qwen-image-3", [{}], at=time.monotonic())
+
     emitter = _Emitter()
 
     result = await adapter.generate(
@@ -1297,7 +1310,7 @@ async def test_a_failed_endpoint_lookup_yields_unknown_not_an_empty_contract():
         "an empty dict means 'this model advertises nothing', which silently drops every "
         "provider knob; a failed lookup must be distinguishable from that"
     )
-    assert "m/x" not in adapter._endpoint_cache, (
+    assert "m/x" not in _cached_model_ids(adapter), (
         "caching a failed lookup freezes the degradation for the whole TTL"
     )
 
@@ -1317,7 +1330,7 @@ async def test_a_reshaped_endpoints_envelope_is_not_cached_as_an_empty_contract(
             record, _unserved = await adapter._endpoint_record(session, valves, "m/x")
 
     assert record is None
-    assert "m/x" not in adapter._endpoint_cache
+    assert "m/x" not in _cached_model_ids(adapter)
 
 
 @pytest.mark.asyncio
@@ -1341,7 +1354,8 @@ async def test_the_configured_referer_and_base_url_are_the_ones_used(referer):
     import aiohttp
 
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
     valves = _StubValves("sk-x")
     valves.HTTP_REFERER_OVERRIDE = referer
 
@@ -1379,7 +1393,8 @@ async def test_the_configured_referer_and_base_url_are_the_ones_used(referer):
 @pytest.mark.asyncio
 async def test_usage_from_the_response_reaches_the_completion_event():
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
 
     result = await _posted(
         adapter,
@@ -1528,7 +1543,8 @@ async def test_every_provider_routing_key_the_filter_emits_reaches_the_wire():
     requested: dict[str, Any] = {key: "x" for key in emitted}
     requested["options"] = {"recraft": {"controls": {}}}
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["recraft/recraft-v3"] = (time.monotonic(), [RECRAFT_RECORD])
+    _seed_contract(adapter, "recraft/recraft-v3", [RECRAFT_RECORD], at=time.monotonic())
+
 
     result = await _posted(
         adapter,
@@ -1567,7 +1583,8 @@ def test_the_user_object_outranks_the_metadata_user_id(uid, meta):
 @pytest.mark.asyncio
 async def test_the_requester_id_reaches_the_upload(uid):
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
 
     result = await _posted(
         adapter,
@@ -1592,7 +1609,8 @@ async def test_the_requester_id_reaches_the_upload(uid):
 @pytest.mark.asyncio
 async def test_the_final_status_honours_the_usage_valve(show, expected):
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
     valves = _StubValves("sk-x")
 
     result = await _posted(
@@ -1634,7 +1652,8 @@ async def test_an_upstream_contract_failure_is_visible_at_the_default_log_level(
     adapter = ImageGenerationAdapter(
         pipe=cast(Any, _KeyPipe("sk-x")), logger=_logging.getLogger("test.image.contract")
     )
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
 
     with caplog.at_level(_logging.WARNING), aioresponses() as mocked:
         mocked.post(f"{BASE}/images", payload=reply)
@@ -1696,7 +1715,8 @@ async def test_cancellation_is_never_swallowed_by_any_handler(seam, monkeypatch)
             )
         return
 
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
 
     class _CancelsGenerate:
         async def generate(self, _payload, **_k):
@@ -1797,7 +1817,8 @@ async def test_a_cancel_after_the_billed_post_still_settles_and_propagates(usage
     gateway = _ParkingGateway()
     pipe._file_gateway = gateway
     adapter = _adapter(pipe)
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
 
     class _Billed:
         async def generate(self, _payload, **_k):
@@ -1923,7 +1944,8 @@ async def test_a_malformed_contract_degrades_instead_of_failing_the_generation(
     record, provider, label
 ):
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [record])
+    _seed_contract(adapter, "m/x", [record], at=time.monotonic())
+
 
     result = await _posted(
         adapter,
@@ -1961,16 +1983,19 @@ async def test_request_text_cannot_size_the_log_line_or_the_notification(
     provider: dict[str, Any] | None = None
 
     if source == "image_config":
-        adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+        _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
         body = {"image_config": {key: "v" * payload_size}}
     elif source == "provider":
-        adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+        _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
         provider = {key: "on", "zdr": True}
     else:
-        adapter._endpoint_cache["m/x"] = (
-            time.monotonic(),
-            [{"allowed_passthrough_parameters": [key]}],
-        )
+        _seed_contract(adapter, "m/x", [{"allowed_passthrough_parameters": [key]}], at=time.monotonic())
+
+
+
+
         body = {"image_config": {key: "on"}}
 
     with caplog.at_level(_logging.DEBUG):
@@ -2017,7 +2042,8 @@ async def test_an_unusable_entry_removes_only_itself_from_a_billed_batch(entries
         "not-an-image": {"b64_json": _b64(b"plain text bytes"), "media_type": "text/plain"},
     }
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
 
     result = await _posted(
         adapter,
@@ -2042,7 +2068,8 @@ async def test_an_unusable_entry_removes_only_itself_from_a_billed_batch(entries
 @pytest.mark.asyncio
 async def test_a_paid_generation_is_not_lost_to_a_status_line(digits):
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
     pipe = cast(Any, adapter._pipe)
 
     result = await _posted(
@@ -2077,7 +2104,8 @@ async def test_a_failure_after_the_billed_call_still_reports_what_it_cost(seam, 
     from open_webui_openrouter_pipe.integrations import image as image_module
 
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
     pipe = cast(Any, adapter._pipe)
 
     snapshots: list[dict[str, Any]] = []
@@ -2133,10 +2161,11 @@ async def test_a_failure_after_the_billed_call_still_reports_what_it_cost(seam, 
 @pytest.mark.asyncio
 async def test_an_unserved_pin_cannot_size_the_note_it_appears_in(pin_length):
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (
-        time.monotonic(),
-        [{"provider_slug": "alpha", "supported_parameters": {}}],
-    )
+    _seed_contract(adapter, "m/x", [{"provider_slug": "alpha", "supported_parameters": {}}], at=time.monotonic())
+
+
+
+
 
     result = await _posted(
         adapter,
@@ -2162,16 +2191,23 @@ async def test_an_unserved_pin_cannot_size_the_note_it_appears_in(pin_length):
 @pytest.mark.asyncio
 async def test_a_pin_we_hold_no_contract_for_never_borrows_another_providers_contract(pin):
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (
-        time.monotonic(),
-        [
+    _seed_contract(adapter, "m/x", [
             {
                 "provider_slug": "alpha",
                 "allowed_passthrough_parameters": ["style"],
                 "supported_parameters": {"n": {"type": "range", "min": 1, "max": 4}},
             }
-        ],
-    )
+        ], at=time.monotonic())
+
+
+
+
+
+
+
+
+
+
 
     result = await _posted(
         adapter,
@@ -2201,7 +2237,8 @@ async def test_a_pin_we_hold_no_contract_for_never_borrows_another_providers_con
 @pytest.mark.asyncio
 async def test_one_request_never_dispatches_two_contradictory_generation_events():
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
     pipe = cast(Any, adapter._pipe)
 
     class _FailsOnCompletion:
@@ -2291,7 +2328,8 @@ async def test_a_lookup_failure_says_whether_a_stale_contract_is_in_play(caplog)
     warm = ImageGenerationAdapter(
         pipe=cast(Any, _KeyPipe("sk-x")), logger=_logging.getLogger("test.image.warm")
     )
-    warm._endpoint_cache["m/y"] = (time.monotonic() - 99999.0, [{"provider_slug": "alpha"}])
+    _seed_contract(warm, "m/y", [{"provider_slug": "alpha"}], at=time.monotonic() - 99999.0)
+
     monkeypatch_client(warm, _Raises())
 
     with caplog.at_level(_logging.DEBUG):
@@ -2317,7 +2355,8 @@ async def test_upstream_text_cannot_size_the_failure_message(entry_count, key_le
     import logging as _logging
 
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
 
     with caplog.at_level(_logging.WARNING):
         result = await _posted(
@@ -2398,7 +2437,8 @@ async def test_a_failing_endpoint_lookup_warns_once_per_model(mode, caplog, monk
 @pytest.mark.asyncio
 async def test_the_knobs_the_endpoint_advertises_reach_the_top_level_of_the_request(config):
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["qwen/qwen-image-3"] = (time.monotonic(), [QWEN_RECORD])
+    _seed_contract(adapter, "qwen/qwen-image-3", [QWEN_RECORD], at=time.monotonic())
+
 
     result = await _posted(
         adapter,
@@ -2428,7 +2468,8 @@ async def test_an_upstream_status_is_reported_through_the_shared_error_formatter
 
     pipe = _KeyPipe("sk-x", record_errors=True)
     adapter = _adapter(pipe)
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
     emitter = _Emitter()
 
     with aioresponses() as mocked:
@@ -2485,7 +2526,8 @@ async def test_a_failed_refresh_keeps_the_previously_cached_contract(reply):
     import aiohttp
 
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic() - 10_000, [RECRAFT_RECORD])
+    _seed_contract(adapter, "m/x", [RECRAFT_RECORD], at=time.monotonic() - 10_000)
+
 
     with aioresponses() as mocked:
         mocked.get(f"{BASE}/images/models/m/x/endpoints", **reply)
@@ -2504,7 +2546,8 @@ async def test_the_refresh_valve_governs_the_endpoint_cache_window(refresh_secon
     import aiohttp
 
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic() - 3_600, [RECRAFT_RECORD])
+    _seed_contract(adapter, "m/x", [RECRAFT_RECORD], at=time.monotonic() - 3_600)
+
     valves = _StubValves("sk-x")
     valves.MODEL_CATALOG_REFRESH_SECONDS = refresh_seconds
 
@@ -2527,7 +2570,8 @@ async def test_the_refresh_valve_governs_the_endpoint_cache_window(refresh_secon
 @pytest.mark.asyncio
 async def test_a_partly_persisted_multi_image_reply_keeps_the_survivors_and_says_so(failing_index):
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
     gateway = cast(Any, adapter._pipe)._file_gateway
     original = gateway.upload_to_owui_storage
 
@@ -2560,7 +2604,8 @@ async def test_a_partly_persisted_multi_image_reply_keeps_the_survivors_and_says
 @pytest.mark.asyncio
 async def test_nothing_is_rendered_when_storage_has_no_context():
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
 
     async def _no_context(request, user_obj):
         return None, None
@@ -2658,7 +2703,8 @@ def test_a_count_is_fitted_to_both_ends_of_the_published_range(asked, expected):
 @pytest.mark.asyncio
 async def test_the_prompt_falls_back_to_the_chat_messages(prompt):
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
 
     result = await _posted(
         adapter,
@@ -2680,7 +2726,8 @@ async def test_the_prompt_falls_back_to_the_chat_messages(prompt):
 @pytest.mark.asyncio
 async def test_the_transformed_prompt_outranks_the_raw_chat_messages(responses_text, chat_text):
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
 
     result = await _posted(
         adapter,
@@ -2705,7 +2752,8 @@ async def test_the_provider_block_is_read_from_pipe_metadata_when_the_request_ha
     from open_webui_openrouter_pipe.core.config import _PIPE_METADATA_KEY
 
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["recraft/recraft-v3"] = (time.monotonic(), [RECRAFT_RECORD])
+    _seed_contract(adapter, "recraft/recraft-v3", [RECRAFT_RECORD], at=time.monotonic())
+
 
     result = await _posted(
         adapter,
@@ -2875,7 +2923,8 @@ async def test_the_base_url_valve_decides_where_the_request_goes(base_url):
     import aiohttp
 
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
     valves = _StubValves("sk-x")
     valves.BASE_URL = base_url
 
@@ -2928,10 +2977,11 @@ async def test_a_blank_api_key_never_reaches_the_network():
 @pytest.mark.asyncio
 async def test_a_knob_that_cannot_be_keyed_is_reported_not_swallowed(knob):
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (
-        time.monotonic(),
-        [{"allowed_passthrough_parameters": [knob], "supported_parameters": {}}],
-    )
+    _seed_contract(adapter, "m/x", [{"allowed_passthrough_parameters": [knob], "supported_parameters": {}}], at=time.monotonic())
+
+
+
+
 
     result = await _posted(
         adapter,
@@ -2965,7 +3015,8 @@ async def test_losing_every_image_is_not_quieter_than_losing_some(image_count, c
     adapter = ImageGenerationAdapter(
         pipe=cast(Any, _KeyPipe("sk-x")), logger=_logging.getLogger("test.image.totalloss")
     )
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
 
     async def _no_context(request, user_obj):
         return None, None
@@ -2999,7 +3050,8 @@ async def test_losing_every_image_is_not_quieter_than_losing_some(image_count, c
 @pytest.mark.asyncio
 async def test_a_successful_generation_reports_its_cost_to_the_plugin_layer():
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
 
     result = await _posted(
         adapter,
@@ -3027,7 +3079,8 @@ async def test_a_failed_generation_is_reported_as_failed():
 
     pipe = _KeyPipe("sk-x")
     adapter = _adapter(pipe)
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
 
     with aioresponses() as mocked:
         mocked.post(f"{BASE}/images", payload={"data": []})
@@ -3067,7 +3120,8 @@ async def test_an_image_generation_reaches_the_redis_cost_export(cost, monkeypat
 
     monkeypatch.setattr(image_module, "maybe_dump_costs_snapshot", _snapshot)
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
 
     await _posted(
         adapter,
@@ -3097,7 +3151,8 @@ async def test_an_image_generation_reaches_the_redis_cost_export(cost, monkeypat
 async def test_a_generation_that_could_not_be_stored_is_reported_as_failed_with_its_cost(cost):
     pipe = _KeyPipe("sk-x")
     adapter = _adapter(pipe)
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
 
     async def _no_context(request, user_obj):
         return None, None
@@ -3152,7 +3207,8 @@ async def test_a_dropped_image_knob_is_findable_in_the_log_without_an_emitter(
     adapter = ImageGenerationAdapter(
         pipe=cast(Any, _KeyPipe("sk-x")), logger=_logging.getLogger("test.image.drops")
     )
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{"supported_parameters": {}}])
+    _seed_contract(adapter, "m/x", [{"supported_parameters": {}}], at=time.monotonic())
+
 
     with caplog.at_level(_logging.DEBUG):
         await _posted(
@@ -3226,7 +3282,8 @@ async def test_the_endpoint_contract_follows_the_operator_pin(pin, state):
     if state == "cache-hit":
         await adapter._endpoint_record(None, _StubValves("sk-x"), "m/x")
     elif state != "fresh-fetch":
-        adapter._endpoint_cache["m/x"] = (time.monotonic() - 99999.0, records)
+        _seed_contract(adapter, "m/x", records, at=time.monotonic() - 99999.0)
+
         monkeypatch_client(adapter, _Raises() if state == "stale-refresh-raises" else _Empty())
 
     record, _unserved = await adapter._endpoint_record(
@@ -3296,7 +3353,7 @@ async def test_an_empty_endpoint_reply_leaves_the_cache_untouched():
             record, _unserved = await adapter._endpoint_record(session, _StubValves("sk-x"), "m/x")
 
     assert record is None
-    assert "m/x" not in adapter._endpoint_cache, (
+    assert "m/x" not in _cached_model_ids(adapter), (
         "caching an empty reply freezes 'this model advertises nothing' for the whole TTL, so "
         "every provider knob is dropped until it expires"
     )
@@ -3363,7 +3420,8 @@ async def test_an_http_failure_on_the_endpoint_lookup_reads_as_a_transport_failu
 @pytest.mark.asyncio
 async def test_a_reply_whose_entries_are_all_unusable_blames_the_envelope_not_storage():
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
 
     result = await _posted(
         adapter,
@@ -3394,7 +3452,8 @@ async def test_the_error_card_names_the_model_that_was_requested(status):
 
     pipe = _KeyPipe("sk-x", record_errors=True)
     adapter = _adapter(pipe)
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
 
     with aioresponses() as mocked:
         mocked.post(f"{BASE}/images", status=status, payload={"error": {"message": "nope"}})
@@ -3437,7 +3496,8 @@ async def test_the_final_status_reports_a_real_duration(step, monkeypatch):
     ticks = itertools.count(100.0, step)
     monkeypatch.setattr(image_module.time, "monotonic", lambda: next(ticks))
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (1e9, [{}])
+    _seed_contract(adapter, "m/x", [{}], at=1e9)
+
 
     result = await _posted(
         adapter,
@@ -3461,7 +3521,8 @@ async def test_the_final_status_reports_a_real_duration(step, monkeypatch):
 @pytest.mark.asyncio
 async def test_the_user_is_told_generation_started():
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
 
     result = await _posted(
         adapter,
@@ -3484,7 +3545,8 @@ async def test_the_user_is_told_generation_started():
 @pytest.mark.asyncio
 async def test_a_dropped_knob_notice_arrives_as_a_warning():
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{"supported_parameters": {}}])
+    _seed_contract(adapter, "m/x", [{"supported_parameters": {}}], at=time.monotonic())
+
 
     result = await _posted(
         adapter,
@@ -3509,7 +3571,8 @@ async def test_a_dropped_knob_notice_arrives_as_a_warning():
 @pytest.mark.asyncio
 async def test_the_requester_id_falls_back_to_the_metadata_user_id(uid):
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
 
     result = await _posted(
         adapter,
@@ -3533,10 +3596,11 @@ async def test_one_model_never_inherits_another_models_contract():
     import aiohttp
 
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["a/one"] = (
-        time.monotonic(),
-        [{"provider_slug": "alpha", "allowed_passthrough_parameters": ["style"]}],
-    )
+    _seed_contract(adapter, "a/one", [{"provider_slug": "alpha", "allowed_passthrough_parameters": ["style"]}], at=time.monotonic())
+
+
+
+
 
     with aioresponses() as mocked:
         mocked.get(f"{BASE}/images/models/b/two/endpoints", status=500, payload={})
@@ -3559,7 +3623,8 @@ async def test_the_dropped_knob_latch_does_not_widen_with_the_rejected_value(cap
     adapter = ImageGenerationAdapter(
         pipe=cast(Any, _KeyPipe("sk-x")), logger=_logging.getLogger("test.image.latchkey")
     )
-    adapter._endpoint_cache["qwen/qwen-image-3"] = (time.monotonic(), [QWEN_RECORD])
+    _seed_contract(adapter, "qwen/qwen-image-3", [QWEN_RECORD], at=time.monotonic())
+
 
     with caplog.at_level(_logging.DEBUG):
         for ratio in ("21:9", "99:1", "7:3", "5:2"):
@@ -3632,7 +3697,8 @@ async def test_a_billed_reply_the_pipe_cannot_decode_is_still_costed(cost, monke
     monkeypatch.setattr(image_module, "maybe_dump_costs_snapshot", _snapshot)
     pipe = _KeyPipe("sk-x")
     adapter = _adapter(pipe)
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{}])
+    _seed_contract(adapter, "m/x", [{}], at=time.monotonic())
+
     oversized = _b64(_png(4, 4) + b"\x00" * (4 * 1024 * 1024))
 
     with aioresponses() as mocked:
@@ -3678,7 +3744,8 @@ async def test_the_latch_key_does_not_widen_with_an_unknown_request_key():
     adapter = ImageGenerationAdapter(
         pipe=cast(Any, _KeyPipe("sk-x")), logger=_logging.getLogger("test.image.latchkeys")
     )
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [{"supported_parameters": {}}])
+    _seed_contract(adapter, "m/x", [{"supported_parameters": {}}], at=time.monotonic())
+
 
     for suffix in ("alpha", "beta", "gamma"):
         await _posted(
@@ -3959,10 +4026,11 @@ async def test_the_previews_a_streamed_generation_delivers_reach_the_user_as_sta
 
     adapter = _adapter(_KeyPipe("sk-stream"))
     model_id = "openai/gpt-image-2"
-    adapter._endpoint_cache[model_id] = (
-        time.monotonic(),
-        [{"provider_slug": "openai", "supports_streaming": True}],
-    )
+    _seed_contract(adapter, model_id, [{"provider_slug": "openai", "supports_streaming": True}], at=time.monotonic())
+
+
+
+
     emitter = _Emitter()
     events = [
         {
@@ -4065,17 +4133,25 @@ async def _krea_generation(passthrough: dict[str, Any], refuse: tuple[str, ...])
     cast(Any, pipe)._multimodal_handler = handler
 
     adapter = _adapter(pipe)
-    adapter._endpoint_cache["krea/krea-2-large"] = (
-        time.monotonic(),
-        [
+    _seed_contract(adapter, "krea/krea-2-large", [
             {
                 "provider_name": "Krea",
                 "provider_slug": "krea",
                 "allowed_passthrough_parameters": ["image_style_references", "moodboards"],
                 "supported_parameters": {},
             }
-        ],
-    )
+        ], at=time.monotonic())
+
+
+
+
+
+
+
+
+
+
+
     client = _PayloadCapturingClient()
     monkeypatch_client(adapter, client)
 
@@ -4147,3 +4223,28 @@ def _labels(content: str) -> list[str]:
         for line in content.split("\n\n")
         if line.startswith("![")
     ]
+
+
+def _seed_contract(
+    adapter: Any,
+    model_id: str,
+    records: list[dict[str, Any]],
+    *,
+    at: float,
+) -> None:
+    """Seed the adapter's contract cache under the key its own pipe's valves resolve to.
+
+    The cache is keyed on `(fingerprint(api_key), api_model_id)`, and every test here
+    builds its adapter with the same key it passes to the call under test, so the
+    adapter's own pipe is the source of truth for the seed. A bare model id would be a
+    silent cache miss and the test would go on to assert against an empty cache.
+    """
+    adapter._endpoint_cache[adapter._endpoint_cache_key(adapter._pipe.valves, model_id)] = (
+        at,
+        records,
+    )
+
+
+def _cached_model_ids(adapter: Any) -> set[str]:
+    """The model ids the cache holds, whatever account each entry was fetched under."""
+    return {key[1] for key in adapter._endpoint_cache}

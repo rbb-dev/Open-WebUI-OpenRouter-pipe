@@ -1830,6 +1830,11 @@ class FilterManager:
                 "Could not list the installed %s filters", log_label, exc_info=True
             )
             return
+        retired_valves = {
+            family_marker: valve
+            for valve, family_marker in _AUTO_INSTALL_FAMILY_MARKERS
+            if not getattr(self.valves, valve, False)
+        }
         for row in found or []:
             if not _is_filter_carrying(getattr(row, "content", ""), marker):
                 continue
@@ -1838,6 +1843,8 @@ class FilterManager:
             if not _pipe_owns_the_off(row):
                 continue
             if not _claimable_by(row, owner):
+                continue
+            if marker in retired_valves and owner and _installed_by(row) == owner:
                 continue
             if await _write_function(
                 Functions,

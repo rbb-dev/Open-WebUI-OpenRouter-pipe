@@ -191,7 +191,7 @@ def test_register_image_models_last_image_fetch_bumps_only_on_non_empty():
 
 def test_record_image_attempt_updates_clock():
     OpenRouterModelRegistry._last_image_attempt = 0.0
-    OpenRouterModelRegistry.record_image_attempt()
+    OpenRouterModelRegistry.record_image_attempt("sk-test-key")
     assert OpenRouterModelRegistry._last_image_attempt > 0.0
 
 
@@ -618,8 +618,12 @@ async def test_image_catalog_ttl_gate_skips_within_window():
     from open_webui_openrouter_pipe.integrations.image_catalog import ensure_image_catalog_loaded
 
     now = time.time()
+    # Both clocks, and the credential both were stamped under: the gate refuses a
+    # refetch only when the account that stamped them is the one asking.
     OpenRouterModelRegistry._last_image_attempt = now  # just now
     OpenRouterModelRegistry._last_image_contract_attempt = now
+    OpenRouterModelRegistry.record_image_attempt("test")
+    OpenRouterModelRegistry.record_image_contract_attempt("test")
     OpenRouterModelRegistry._last_image_fetch = 0.0
 
     valves = MagicMock()

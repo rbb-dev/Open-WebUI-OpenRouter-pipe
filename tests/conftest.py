@@ -599,6 +599,8 @@ def _reset_model_registry():
     reg._image_endpoints = {}
     reg._last_image_contract_attempt = 0.0
     reg._last_image_attempt = 0.0
+    reg._last_image_account = ""
+    reg._last_image_contract_account = ""
     reg._image_contract_retry_after = 0.0
     reg._image_contract_target = None
     reg._image_contract_owed = frozenset()

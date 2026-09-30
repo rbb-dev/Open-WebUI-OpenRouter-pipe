@@ -103,14 +103,23 @@ def _wants_contracts(valves: Any) -> bool:
     return any(getattr(valves, name, False) for name in _CONTRACT_VALVES)
 
 
-def _stale_contracts(wants_filters: bool, cache_seconds: int, valves: Any) -> bool:
+def _image_catalog_stale(
+    *, cache_seconds: int, wants_filters: bool, api_key: str, valves: Any
+) -> tuple[bool, bool]:
+    account_changed = not OpenRouterModelRegistry.image_accounts_match(api_key)
+    last_attempt = OpenRouterModelRegistry.last_image_attempt()
+    stale_models = (
+        account_changed or not last_attempt or (time.time() - last_attempt) >= cache_seconds
+    )
     contract_attempt = OpenRouterModelRegistry.last_image_contract_attempt()
-    return wants_filters and (
-        OpenRouterModelRegistry.image_contract_retry_pending()
+    stale_contracts = wants_filters and (
+        account_changed
+        or OpenRouterModelRegistry.image_contract_retry_pending()
         or not contract_attempt
         or (time.time() - contract_attempt) >= cache_seconds
         or OpenRouterModelRegistry.image_contract_target() != _contract_target(valves)
     )
+    return stale_models, stale_contracts
 
 
 def _image_contract_sweep_in_progress() -> bool:
@@ -143,9 +152,11 @@ async def ensure_image_catalog_loaded(
             continue
 
         if getattr(valves, "ENABLE_OPENROUTER_IMAGE_GENERATION", False):
-            last_attempt = OpenRouterModelRegistry.last_image_attempt()
-            stale_models = not last_attempt or (time.time() - last_attempt) >= cache_seconds
-            if not stale_models and not _stale_contracts(wants_filters, cache_seconds, valves):
+            stale_models, stale_contracts = _image_catalog_stale(
+                cache_seconds=cache_seconds, wants_filters=wants_filters, api_key=api_key,
+                valves=valves,
+            )
+            if not stale_models and not stale_contracts:
                 return []
             if not wait_for_in_flight and _image_sweep_in_flight():
                 logger.debug(
@@ -160,6 +171,9 @@ async def ensure_image_catalog_loaded(
                 if not getattr(valves, "ENABLE_OPENROUTER_IMAGE_GENERATION", False):
                     if OpenRouterModelRegistry.last_image_fetch() > 0:
                         OpenRouterModelRegistry.register_image_models([])
+                        OpenRouterModelRegistry.set_image_endpoints(
+                            {}, known_ids=OpenRouterModelRegistry.listed_model_ids()
+                        )
                         OpenRouterModelRegistry.reset_image_fetch_timestamp()
                         OpenRouterModelRegistry.reset_image_attempt()
                         OpenRouterModelRegistry.clear_image_contract_attempt()
@@ -172,9 +186,11 @@ async def ensure_image_catalog_loaded(
                         )
                     return []
 
-                last_attempt = OpenRouterModelRegistry.last_image_attempt()
-                stale_models = not last_attempt or (time.time() - last_attempt) >= cache_seconds
-                if not stale_models and not _stale_contracts(wants_filters, cache_seconds, valves):
+                stale_models, stale_contracts = _image_catalog_stale(
+                    cache_seconds=cache_seconds, wants_filters=wants_filters, api_key=api_key,
+                    valves=valves,
+                )
+                if not stale_models and not stale_contracts:
                     return []
 
                 if not wait_for_in_flight and _image_sweep_in_flight():
@@ -192,6 +208,7 @@ async def ensure_image_catalog_loaded(
                         "Image contract cache dropped: the base URL or the API key changed."
                     )
 
+                account_changed = not OpenRouterModelRegistry.image_accounts_match(api_key)
                 repair = OpenRouterModelRegistry.image_contract_retry_pending()
                 OpenRouterModelRegistry.clear_image_contract_retry()
                 _set_image_sweep_in_flight(asyncio.get_running_loop(), True)
@@ -207,8 +224,11 @@ async def ensure_image_catalog_loaded(
 
             async with _current_image_contract_lock():
                 if not fetched or not (
-                    (wants_filters and repair)
-                    or _stale_contracts(wants_filters, cache_seconds, valves)
+                    (wants_filters and (repair or account_changed))
+                    or _image_catalog_stale(
+                        cache_seconds=cache_seconds, wants_filters=wants_filters, api_key=api_key,
+                        valves=valves,
+                    )[1]
                 ):
                     return []
                 await _sweep_image_contracts(
@@ -247,9 +267,9 @@ async def _refresh_image_models(
     try:
         models = await client.list_models()
     except (TimeoutError, aiohttp.ClientError, OSError) as exc:
-        OpenRouterModelRegistry.record_image_attempt()
+        OpenRouterModelRegistry.record_image_attempt(api_key)
         if wants_filters:
-            OpenRouterModelRegistry.record_image_contract_attempt()
+            OpenRouterModelRegistry.record_image_contract_attempt(api_key)
         logger.log(
             warn_level(_warned_image_catalog, type(exc).__name__),
             "Image catalog fetch failed (/models?output_modalities=image): %s — chat catalog kept, image-only models will not appear.",
@@ -258,9 +278,9 @@ async def _refresh_image_models(
         return []
 
     if not models:
-        OpenRouterModelRegistry.record_image_attempt()
+        OpenRouterModelRegistry.record_image_attempt(api_key)
         if wants_filters:
-            OpenRouterModelRegistry.record_image_contract_attempt()
+            OpenRouterModelRegistry.record_image_contract_attempt(api_key)
         kept = len(OpenRouterModelRegistry._image_catalog_norms)
         logger.log(
             warn_level(_warned_image_catalog, "empty"),
@@ -273,7 +293,7 @@ async def _refresh_image_models(
         return []
 
     OpenRouterModelRegistry.register_image_models(models)
-    OpenRouterModelRegistry.record_image_attempt()
+    OpenRouterModelRegistry.record_image_attempt(api_key)
     logger.info(
         "Registered %d OpenRouter image-output model(s) into the catalog.",
         len(models),
@@ -314,7 +334,7 @@ async def _sweep_image_contracts(
                 if isinstance(model, dict) and str(model.get("id") or "").strip()
             },
         )
-        OpenRouterModelRegistry.record_image_contract_attempt()
+        OpenRouterModelRegistry.record_image_contract_attempt(api_key)
         if abandoned:
             OpenRouterModelRegistry.set_image_contract_owed(abandoned)
             if not repair:

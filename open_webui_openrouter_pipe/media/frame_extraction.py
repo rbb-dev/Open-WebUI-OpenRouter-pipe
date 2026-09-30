@@ -79,6 +79,7 @@ _PLAYLIST_HEAD_BYTES = 64
 
 _extraction_semaphores: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 _ACTIVE_SLOT: contextvars.ContextVar = contextvars.ContextVar("extraction_slot", default=None)
+_admitted: contextvars.ContextVar[bool] = contextvars.ContextVar("_admitted", default=False)
 _ABANDONED = "extraction abandoned: the awaiting task was cancelled"
 
 
@@ -153,6 +154,16 @@ class _ExtractionSpend:
 
 def _extraction_slot() -> _ExtractionSlot:
     return _ExtractionSlot(_ensure_extraction_semaphore(), asyncio.get_running_loop())
+
+
+@contextlib.asynccontextmanager
+async def _admitted_slot():
+    async with _extraction_slot():
+        token = _admitted.set(True)
+        try:
+            yield
+        finally:
+            _admitted.reset(token)
 
 
 async def _abandonable(
@@ -557,9 +568,14 @@ async def probe_video(path: Path) -> VideoMetadata:
 
     Raises FrameExtractionError on any failure (corrupt file, unsupported codec).
     """
-    return await _abandonable(
-        _probe_video_sync, path, deadline=_PROBE_DEADLINE_S, label="probe_video",
-    )
+    if _admitted.get():
+        return await _abandonable(
+            _probe_video_sync, path, deadline=_PROBE_DEADLINE_S, label="probe_video",
+        )
+    async with _admitted_slot():
+        return await _abandonable(
+            _probe_video_sync, path, deadline=_PROBE_DEADLINE_S, label="probe_video",
+        )
 
 
 async def _pictures_own_length(meta: VideoMetadata, path: Path) -> float:
@@ -756,8 +772,13 @@ async def _extract_frame_ffmpeg(
     last_no_frame: FrameExtractionError | None = None
     walked_past_damage = False
     for hop, seek_args in enumerate(seek_arg_sets):
-        if deadline is not None and time.monotonic() >= deadline:
+        remaining = None if deadline is None else deadline - time.monotonic()
+        if remaining is not None and remaining <= 0:
             break
+        rung_timeout = (
+            _FFMPEG_TIMEOUT_S if remaining is None
+            else min(_FFMPEG_TIMEOUT_S, remaining)
+        )
         cmd = [
             ffmpeg_bin,
             "-protocol_whitelist", "file",
@@ -787,12 +808,18 @@ async def _extract_frame_ffmpeg(
                     _read_bounded(
                         stdout_stream, _read_cap(max_frame_bytes), max_frame_bytes,
                     ),
-                    timeout=_FFMPEG_TIMEOUT_S,
+                    timeout=rung_timeout,
                 )
             except TimeoutError:
                 await _stop_child(proc, stderr_task)
+                if remaining is not None and rung_timeout < _FFMPEG_TIMEOUT_S:
+                    last_no_frame = FrameExtractionError(
+                        f"end-seek ladder spent its {_END_SEEK_BUDGET_SECONDS}s budget",
+                        no_frame=True,
+                    )
+                    break
                 raise FrameExtractionError(
-                    f"ffmpeg timed out after {_FFMPEG_TIMEOUT_S}s",
+                    f"ffmpeg timed out after {rung_timeout}s",
                 ) from None
             except FrameExtractionError:
                 await _stop_child(proc, stderr_task)
@@ -946,7 +973,7 @@ async def _extract_frame_with_budget(
             "at_timestamp requires a finite non-negative timestamp_seconds"
         )
 
-    async with _extraction_slot():
+    async with _admitted_slot():
         downgrade_note = ""
         requested_ts = timestamp_seconds if target == "at_timestamp" else None
         use_end_seek = False

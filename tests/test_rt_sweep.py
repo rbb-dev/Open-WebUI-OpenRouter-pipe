@@ -26,8 +26,16 @@ from open_webui_openrouter_pipe.filters.image_filter_renderer import (
     render_image_model_filter_source,
 )
 from tests.test_image_api_path import (  # noqa: F401
-    BASE, _adapter, _Emitter, _event_data, _KeyPipe, _posted, _StubValves,
-    _user_turn_with_images, _StubResponsesBody,
+    BASE,
+    _adapter,
+    _Emitter,
+    _event_data,
+    _KeyPipe,
+    _posted,
+    _seed_contract,
+    _StubResponsesBody,
+    _StubValves,
+    _user_turn_with_images,
 )
 from tests.test_image_generation import _load_filter_from_source
 
@@ -86,7 +94,8 @@ async def test_every_published_value_reaches_the_wire(path):
             body = F.inlet({"model": model_id.replace("/", ".")}, {}, {"valves": uv})
             cfg = dict(body.get("image_config") or {})
             adapter = _adapter(_KeyPipe("sk-x"))
-            adapter._endpoint_cache[model_id] = (_t.monotonic(), records)
+            _seed_contract(adapter, model_id, records, at=_t.monotonic())
+
             emitter = _Emitter()
             result = await _posted(
                 adapter,

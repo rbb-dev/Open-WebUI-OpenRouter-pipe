@@ -12,7 +12,7 @@ from pydantic import ValidationError
 from pydantic_core import PydanticUndefined
 
 from ...core.config import EncryptedStr, _is_template_valve, _valve_schema
-from ...core.valve_salvage import carry_renamed_valves
+from ...core.valve_salvage import carry_renamed_valves, is_secret_annotation
 from ...storage.persistence import raw_valve_column_decodes
 from .config_meta import CONFIG_META
 
@@ -28,9 +28,7 @@ _BRAND = {"OPENROUTER": "OpenRouter", "WEBUI": "WebUI", "OWUI": "Open WebUI"}
 
 def is_secret(annotation: Any) -> bool:
     """True iff the field is an ``EncryptedStr`` (directly or under Optional)."""
-    if annotation is EncryptedStr:
-        return True
-    return any(arg is EncryptedStr for arg in typing.get_args(annotation))
+    return is_secret_annotation(annotation)
 
 
 def _literal_options(annotation: Any) -> list[Any] | None:

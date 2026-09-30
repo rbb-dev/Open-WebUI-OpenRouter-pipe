@@ -37,6 +37,7 @@ from tests.test_image_api_path import (  # noqa: F401 - shared stubs, one defini
     _event_data,
     _KeyPipe,
     _posted,
+    _seed_contract,
     _StubResponsesBody,
     _StubValves,
     _user_turn_with_images,
@@ -140,7 +141,8 @@ def test_a_provider_options_value_that_is_not_an_object_is_refused_by_name(typed
 @pytest.mark.asyncio
 async def test_the_escape_hatch_survives_the_adapter_and_reaches_the_wire(slug, option, value):
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [_RECRAFT])
+    _seed_contract(adapter, "m/x", [_RECRAFT], at=time.monotonic())
+
 
     result = await _posted(
         adapter,
@@ -199,7 +201,8 @@ async def test_a_narrowed_value_is_sent_or_reported_by_the_provider_that_serves(
     """The offer is safe because the adapter still fits the value to the record that
     serves the request, and says so when it does not fit."""
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), _gemini_records())
+    _seed_contract(adapter, "m/x", _gemini_records(), at=time.monotonic())
+
 
     result = await _posted(
         adapter,
@@ -354,7 +357,8 @@ def test_a_refused_tier_size_does_not_evict_the_resolution_that_passed_the_contr
 @pytest.mark.asyncio
 async def test_a_schema_only_value_reaches_the_wire(chosen):
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [_RECRAFT])
+    _seed_contract(adapter, "m/x", [_RECRAFT], at=time.monotonic())
+
 
     result = await _posted(
         adapter,
@@ -379,11 +383,13 @@ async def test_the_reference_mode_decides_how_many_attachments_are_sent(mode, ke
     """Sixteen of the forty-four recorded contracts accept a single reference, and the
     adapter picked which one by document order with no way to choose."""
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (
-        time.monotonic(),
-        [{**_RECRAFT, "supported_parameters": {**_RECRAFT["supported_parameters"],
-                                               "input_references": {"type": "range", "min": 0, "max": 4}}}],
-    )
+    _seed_contract(adapter, "m/x", [{**_RECRAFT, "supported_parameters": {**_RECRAFT["supported_parameters"],
+                                               "input_references": {"type": "range", "min": 0, "max": 4}}}], at=time.monotonic())
+
+
+
+
+
 
     result = await _posted(
         adapter,
@@ -413,7 +419,8 @@ async def test_a_typed_link_is_sent_ahead_of_the_attachments(link):
     pipe = _KeyPipe("sk-x")
     cast(Any, pipe)._multimodal_handler = _AllowAll()
     adapter = _adapter(pipe)
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [_RECRAFT])
+    _seed_contract(adapter, "m/x", [_RECRAFT], at=time.monotonic())
+
 
     result = await _posted(
         adapter,
@@ -456,7 +463,8 @@ async def test_a_typed_link_goes_through_the_same_gate_as_every_other_fetched_ur
     pipe = _KeyPipe("sk-x")
     cast(Any, pipe)._multimodal_handler = handler
     adapter = _adapter(pipe)
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [_RECRAFT])
+    _seed_contract(adapter, "m/x", [_RECRAFT], at=time.monotonic())
+
 
     with aioresponses() as mocked:
         mocked.post(f"{BASE}/images", payload={"data": []})
@@ -503,7 +511,8 @@ def _gated_adapter(allow: set[str] | None = None) -> tuple[Any, _Gate]:
     pipe = _KeyPipe("sk-x")
     cast(Any, pipe)._multimodal_handler = gate
     adapter = _adapter(pipe)
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [_OPENAI])
+    _seed_contract(adapter, "m/x", [_OPENAI], at=time.monotonic())
+
     return adapter, gate
 
 
@@ -714,7 +723,8 @@ def test_a_typed_option_replaces_the_free_text_one_rather_than_joining_it():
 @pytest.mark.asyncio
 async def test_a_typed_option_still_lands_under_the_company_serving_the_request(chosen):
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [_OPENAI])
+    _seed_contract(adapter, "m/x", [_OPENAI], at=time.monotonic())
+
 
     result = await _posted(
         adapter,
@@ -988,7 +998,8 @@ async def test_a_value_one_provider_alone_accepts_is_pinned_to_a_provider_that_a
     )
 
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), records)
+    _seed_contract(adapter, "m/x", records, at=time.monotonic())
+
     result = await _posted(
         adapter,
         body={"image_config": {"resolution": "4K"}},
@@ -1043,7 +1054,8 @@ async def test_the_image_path_pins_the_tag_and_keys_its_options_by_the_slug(tag,
         },
     ]
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), records)
+    _seed_contract(adapter, "m/x", records, at=time.monotonic())
+
     result = await _posted(
         adapter,
         body={"image_config": {"resolution": "4K", "style": "realistic_image"}},
@@ -1089,7 +1101,8 @@ async def test_a_reference_the_user_pasted_inline_is_sent_without_being_asked_of
     pipe = _KeyPipe("sk-x")
     cast(Any, pipe)._multimodal_handler = handler
     adapter = _adapter(pipe)
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [_RECRAFT])
+    _seed_contract(adapter, "m/x", [_RECRAFT], at=time.monotonic())
+
 
     result = await _posted(
         adapter,
@@ -1349,7 +1362,8 @@ async def test_a_tier_only_one_company_publishes_travels_as_the_size_box_promise
     """
     records = _TIER_CONTRACTS["no-list-they-all-share"]
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), records)
+    _seed_contract(adapter, "m/x", records, at=time.monotonic())
+
 
     result = await _posted(
         adapter,
@@ -1656,7 +1670,8 @@ async def test_a_setting_withheld_for_want_of_a_company_is_one_the_request_canno
     assert spec.passthrough_unaddressable is not keyed
 
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), records)
+    _seed_contract(adapter, "m/x", records, at=time.monotonic())
+
     result = await _posted(
         adapter,
         body={"image_config": {"steps": 8}},

@@ -30,11 +30,12 @@ from open_webui_openrouter_pipe.integrations.provider_options import (
     restrict_provider_block,
 )
 from tests.test_image_api_path import (  # noqa: F401 - shared stubs, one definition
-    _adapter,
     _Emitter,
     _KeyPipe,
-    _posted,
     _StubValves,
+    _adapter,
+    _posted,
+    _seed_contract,
     _user_turn_with_images,
 )
 from tests.test_filters import _load_filter_from_source
@@ -128,7 +129,8 @@ async def test_a_control_the_image_picker_still_draws_reaches_the_image_request(
     )
 
     adapter = _adapter(_KeyPipe("sk-x"))
-    adapter._endpoint_cache["m/x"] = (time.monotonic(), [RECORD])
+    _seed_contract(adapter, "m/x", [RECORD], at=time.monotonic())
+
     result = await _posted(
         adapter,
         body={},

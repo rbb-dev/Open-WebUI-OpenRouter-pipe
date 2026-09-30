@@ -31,6 +31,7 @@ from open_webui_openrouter_pipe.integrations.image_types import ImageGenerationE
 from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
 from open_webui_openrouter_pipe.models.registry import OpenRouterModelRegistry
 from open_webui_openrouter_pipe.plugins.base import PluginBase
+from tests.test_image_api_path import _seed_contract
 
 BASE = "https://openrouter.ai/api/v1"
 IMAGE_MODEL = "openai/gpt-image-2"
@@ -158,7 +159,8 @@ async def test_a_generated_image_reaches_open_webui_on_the_channel_it_accumulate
     try:
         uploads = _hand_back_file_id(pipe, file_id)
         adapter = ImageGenerationAdapter(pipe=cast(Any, pipe), logger=_logger())
-        adapter._endpoint_cache[IMAGE_MODEL] = (time.monotonic(), [{}])
+        _seed_contract(adapter, IMAGE_MODEL, [{}], at=time.monotonic())
+
         queue: asyncio.Queue[Any] = asyncio.Queue()
         emitter = _stream_emitter(pipe, queue)
 
@@ -226,7 +228,8 @@ async def test_a_failed_image_generation_reaches_open_webui_on_the_channel_it_ac
     pipe = _image_pipe()
     try:
         adapter = ImageGenerationAdapter(pipe=cast(Any, pipe), logger=_logger())
-        adapter._endpoint_cache[IMAGE_MODEL] = (time.monotonic(), [{}])
+        _seed_contract(adapter, IMAGE_MODEL, [{}], at=time.monotonic())
+
 
         built: list[dict[str, Any]] = []
         attempted: list[dict[str, Any]] = []
@@ -503,7 +506,8 @@ async def test_a_rejected_image_generation_hands_back_the_card_it_showed(status,
 
     try:
         adapter = ImageGenerationAdapter(pipe=cast(Any, pipe), logger=_logger())
-        adapter._endpoint_cache[IMAGE_MODEL] = (time.monotonic(), [{}])
+        _seed_contract(adapter, IMAGE_MODEL, [{}], at=time.monotonic())
+
 
         import aiohttp
 

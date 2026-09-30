@@ -46,6 +46,7 @@ from sqlalchemy import (
     String,
     Table,
     func,
+    or_,
     text,
 )
 from sqlalchemy import inspect as sa_inspect
@@ -2978,6 +2979,7 @@ class ArtifactStore:
         cutoff_days = self.valves.ARTIFACT_CLEANUP_DAYS
         cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=cutoff_days)
         await self._purge_expired_cache_entries(cutoff)
+        await self._purge_temporary_cache_entries()
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             self._db_executor,
@@ -3003,6 +3005,50 @@ class ArtifactStore:
             if after_id is not None:
                 query = query.filter(model.id > after_id)
             return [(row[1], row[0]) for row in query.order_by(model.id).limit(limit)]
+
+    def _temporary_cache_key_batch(
+        self, after_id: str | None, limit: int
+    ) -> list[tuple[str, str]]:
+        if not (self._session_factory and self._item_model):
+            return []
+        model = self._item_model
+        with _db_session(self._session_factory) as session:
+            query = session.query(model.id, model.chat_id).filter(
+                or_(*[model.chat_id.startswith(p) for p in temporary_chat_prefixes()])
+            )
+            if after_id is not None:
+                query = query.filter(model.id > after_id)
+            return [(row[1], row[0]) for row in query.order_by(model.id).limit(limit)]
+
+    async def _purge_temporary_cache_entries(self) -> int:
+        if not (self._redis_enabled and self._redis_client):
+            return 0
+        loop = asyncio.get_running_loop()
+        after_id: str | None = None
+        purged = 0
+        while True:
+            batch = await loop.run_in_executor(
+                self._db_executor,
+                functools.partial(
+                    self._temporary_cache_key_batch,
+                    after_id,
+                    _RETENTION_CACHE_PURGE_BATCH,
+                ),
+            )
+            if not batch:
+                return purged
+            keys = [key for key in (self._redis_cache_key(chat_id, row_id) for chat_id, row_id in batch) if key]
+            if keys:
+                try:
+                    await _await_if_needed(self._redis_client.delete(*keys))
+                except Exception as exc:
+                    self.logger.warning(
+                        "Redis cache invalidation of temporary-chat artifacts failed (best-effort): %s",
+                        exc, exc_info=True,
+                    )
+                    return purged
+            purged += len(batch)
+            after_id = batch[-1][1]
 
     async def _purge_expired_cache_entries(self, cutoff: datetime.datetime) -> int:
         if not (self._redis_enabled and self._redis_client):

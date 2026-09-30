@@ -759,12 +759,12 @@ class StreamingHandler:
                 nonlocal fusion_embed_emitted
                 if fusion_embed_emitted or not (fusion_armed and fusion_state is not None and event_emitter):
                     return
-                fusion_embed_emitted = True
                 _prior = 0
                 if retry_handoff is not None:
                     _prior = retry_handoff.get(FUSION_EMBED_ATTEMPTS, 0)
                     retry_handoff[FUSION_EMBED_ATTEMPTS] = _prior + 1
                 _card = build_fusion_embed_html(fusion_state, _fusion_model_names())
+                fusion_embed_emitted = True
                 _set = [_card]
                 if _prior > 0 and chat_id and message_id and Chats is not None:
                     try:
@@ -1168,15 +1168,23 @@ class StreamingHandler:
                     emitted_output_items.append(copy.deepcopy(item))
                     return _output_index_before_open_message(item)
                 if open_message_id is None and pending_shows_text:
-                    published = _flush_recorded_message(current_text)
-                    if published is not None:
-                        await event_emitter({
-                            "type": "response.output_item.added",
-                            "output_index": _output_index(published),
-                            "item": published,
-                        })
+                    await _publish_pending_message(current_text)
                 await _record_output_item(item, current_text)
                 return _output_index(item)
+
+            async def _publish_pending_message(current_text: str) -> None:
+                if open_message_id is not None:
+                    return
+                pending_now = current_text[recorded_message_chars:]
+                if not strip_hidden_marker_lines(pending_now).strip():
+                    return
+                published_segment = _flush_recorded_message(current_text)
+                if published_segment is not None:
+                    await event_emitter({
+                        "type": "response.output_item.added",
+                        "output_index": _output_index(published_segment),
+                        "item": published_segment,
+                    })
 
             async def _open_message() -> None:
                 nonlocal open_message_id
@@ -1596,6 +1604,7 @@ class StreamingHandler:
                     "ended_at": time.time(),
                     "duration": duration,
                 }
+                await _publish_pending_message(current_text)
                 await _record_output_item(reasoning_item, current_text)
                 reasoning_index = _output_index(reasoning_item)
                 tail = text[published:]
@@ -4248,11 +4257,19 @@ class StreamingHandler:
                         exc_info=True,
                     )
 
-            if fusion_embed_task is not None and not fusion_embed_task.done():
+            if fusion_embed_task is not None:
                 if was_cancelled or handed_back_for_retry:
                     fusion_embed_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
+                try:
                     await fusion_embed_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    self.logger.warning(
+                        "The Fusion panel card could not be built (model=%s); the turn continues without it",
+                        body.model,
+                        exc_info=True,
+                    )
 
             if (
                 fusion_armed and fusion_state is not None

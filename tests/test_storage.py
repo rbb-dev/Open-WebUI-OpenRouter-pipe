@@ -698,11 +698,20 @@ async def test_redis_fetch_rows_no_client(pipe_instance):
 
 @pytest.mark.asyncio
 async def test_redis_fetch_rows_no_chat_id(pipe_instance):
-    """Test _redis_fetch_rows returns empty without chat_id."""
+    """Test _redis_fetch_rows returns empty without chat_id.
+
+    The store gets its own Redis state back before the test returns, not at fixture
+    teardown: a bare Mock client answers every lpop with a truthy Mock, so the close's
+    queue drain would never find the queue empty, and a monkeypatch undo can run after
+    the pipe closes when an autouse fixture created monkeypatch first (T876)."""
     store = pipe_instance._artifact_store
+    enabled, client = store._redis_enabled, store._redis_client
     store._redis_enabled = True
     store._redis_client = Mock()
-    result = await store._redis_fetch_rows(None, ["id1"])
+    try:
+        result = await store._redis_fetch_rows(None, ["id1"])
+    finally:
+        store._redis_enabled, store._redis_client = enabled, client
     assert result == {}
 
 

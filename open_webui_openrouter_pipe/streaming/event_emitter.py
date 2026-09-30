@@ -843,7 +843,7 @@ class EventEmitterHandler:
                 completion_content = data.get("content")
                 if isinstance(completion_content, str):
                     carried = True
-                    if await self._put_middleware_stream_item(job, stream_queue, {"event": event}):
+                    if await self._put_middleware_stream_terminal(job, stream_queue, {"event": event}):
                         answer_pieces[:] = [completion_content]
                     else:
                         published = False
