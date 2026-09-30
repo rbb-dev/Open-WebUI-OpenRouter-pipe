@@ -1293,7 +1293,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "kept for the rest of the window. The 30-second window a failed read of one "
             "model's published settings opens is dropped on that same event, so the new "
             "base URL or key makes its first read rather than waiting out a pause that "
-            "belongs to the credential before it."
+            "belongs to the credential before it. A request arriving during a media-catalog "
+            "refresh is answered from the previous catalog rather than waiting for it, so "
+            "a newly registered media model appears on the next turn."
         ),
     )
     NEW_MODEL_ACCESS_CONTROL: Literal["public", "admins"] = Field(
@@ -2586,7 +2588,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "With the fallback taken, the correction naming the host that keeps the file "
             "is a precondition too, so while TELL_USERS_ABOUT_THE_FILE_HOST is on a chat "
             "that will not accept it gets the request failed and an error naming the host "
-            "that took the file."
+            "that took the file. The 300s upload budget is shared across the turn's "
+            "attachments rather than given to the first one, so a slow first upload does "
+            "not spend the time the ones behind it were going to get."
         ),
     )
     MEDIA_FILE_HOST_MAX_SIZE_MB: int = Field(

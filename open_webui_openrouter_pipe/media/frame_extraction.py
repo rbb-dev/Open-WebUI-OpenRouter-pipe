@@ -109,9 +109,10 @@ class _ExtractionSlot:
             self._given_back = True
         self._sem.release()
 
-    def spend(self) -> None:
+    def spend(self) -> _ExtractionSpend:
         with self._lock:
             self._pending += 1
+        return _ExtractionSpend(self)
 
     def reclaim(self) -> None:
         with self._lock:
@@ -125,26 +126,55 @@ class _ExtractionSlot:
             pass
 
 
+class _ExtractionSpend:
+    def __init__(self, slot: _ExtractionSlot) -> None:
+        self._slot = slot
+        self._lock = threading.Lock()
+        self._entered = False
+        self._abandoned = False
+
+    def enter(self) -> bool:
+        with self._lock:
+            if self._abandoned:
+                return False
+            self._entered = True
+            return True
+
+    def abandon(self) -> None:
+        with self._lock:
+            if self._entered or self._abandoned:
+                return
+            self._abandoned = True
+        self._slot.reclaim()
+
+    def finish(self) -> None:
+        self._slot.reclaim()
+
+
 def _extraction_slot() -> _ExtractionSlot:
     return _ExtractionSlot(_ensure_extraction_semaphore(), asyncio.get_running_loop())
 
 
 async def _abandonable(
     func, /, *args, deadline: float | None = None, label: str = "", **kwargs
-):
+) -> Any:
     cancel = threading.Event()
     slot = _ACTIVE_SLOT.get()
+    spend: _ExtractionSpend | None = None
     if slot is None:
         offload = asyncio.to_thread(func, *args, cancel=cancel, **kwargs)
     else:
-        slot.spend()
+        charge = slot.spend()
 
-        def _run():
+        def _run(charge: _ExtractionSpend = charge):
+            if not charge.enter():
+                return None
             try:
                 return func(*args, cancel=cancel, **kwargs)
             finally:
-                slot.reclaim()
+                charge.finish()
 
+        spend = charge
         offload = asyncio.to_thread(_run)
     try:
         if deadline is None:
@@ -152,9 +182,13 @@ async def _abandonable(
         return await asyncio.wait_for(offload, timeout=deadline)
     except asyncio.CancelledError:
         cancel.set()
+        if spend is not None:
+            spend.abandon()
         raise
     except TimeoutError:
         cancel.set()
+        if spend is not None:
+            spend.abandon()
         raise FrameExtractionError(f"{label} timed out after {deadline}s") from None
 
 

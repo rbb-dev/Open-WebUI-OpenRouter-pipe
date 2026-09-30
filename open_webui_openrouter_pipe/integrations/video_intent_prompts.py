@@ -92,7 +92,7 @@ A JSON payload with:
 - `latest_user_text`: verbatim latest user message text. Nothing else is folded into it.
 - `standing_instructions`: styling and constraints configured on the model itself and applied to every turn of this chat. NOT something the user typed, and never a request in its own right. Empty string when the model carries none.
 - `conversation`: ordered list of {message_index, role, text, has_video_marker, attached_image_count}. `text` has inline markdown stripped.
-- `prior_videos`: ordered list of prior assistant videos in chronological order. Each entry: {index, message_index, file_url, model_id_if_known, duration_seconds_if_known}. `index` 0 is oldest, last is most recent. -1 conventionally means most recent.
+- `prior_videos`: ordered list of prior assistant videos in chronological order, and it is the most recent N of them, not the whole history. Each entry: {index, message_index, file_url, model_id_if_known, duration_seconds_if_known}. `index` 0 is the oldest **in the list shown**, the last entry is the most recent, and -1 conventionally means most recent.
 - `attachments`: files the user attached on THIS turn via the OWUI filter. Each: {index, kind: "image" | "video" | "other", mime_type, width?, height?}. Index is attachment order.
 - `selected_model`: {id, supported_frame_images: ["first_frame"] | ["last_frame"] | ["first_frame","last_frame"] | []}. Bias frame target to a supported value but do not refuse to set first_frame/last_frame just because of the model — pipe will downgrade if needed.
 

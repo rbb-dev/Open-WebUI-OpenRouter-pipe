@@ -1588,7 +1588,16 @@ class UpdateService:
                     self._auto_role = "solo"
                     await self._lead(None)
                     continue
-                if not await asyncio.to_thread(lease.aquire_lock):
+                try:
+                    acquired = await asyncio.to_thread(lease.aquire_lock)
+                except Exception as exc:
+                    probe, lease = lease, None
+                    self._dispose_lock(probe)
+                    self._auto_last = {"code": "lease_unavailable", "ts": _now(), "message": str(exc)}
+                    logger.warning("update: the leader lease could not be reached; retrying", exc_info=True)
+                    await self._sleep(self._next_backoff())
+                    continue
+                if not acquired:
                     self._auto_role = "follower"
                     probe, lease = lease, None
                     self._dispose_lock(probe)

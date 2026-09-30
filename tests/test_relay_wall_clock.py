@@ -10,6 +10,7 @@ import asyncio
 import base64
 import logging
 import time
+from typing import Any, Callable
 from unittest.mock import MagicMock
 
 import aiohttp
@@ -93,26 +94,97 @@ def test_the_default_budget_is_finite_and_shorter_than_the_old_worst_case():
     assert 0 < MAX_RELAY_SECONDS_PER_REQUEST < 906
 
 
-@pytest.mark.parametrize("references", [2, 3])
+class _VirtualClock:
+    """A monotonic clock the relay stub drives, so the request budget drains exactly.
+
+    The relay accounting is the only thing under test that reads a clock, and it reads it
+    twice per attachment: once to derive the request deadline and once to hand the
+    transport what is left of it. On a real clock those two reads differ by microseconds,
+    which would force a tolerance into every assertion below and hide a share that is
+    wrong by a whole second. Advancing the clock only when the stub says an upload
+    finished makes the hand-outs exact, and the values asserted are then the values the
+    production arithmetic produced.
+    """
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += max(0.0, seconds)
+
+    def __getattr__(self, name: str):
+        return getattr(time, name)
+
+
+@pytest.mark.parametrize("references", [2, 3, 16])
 @pytest.mark.asyncio
 async def test_one_request_shares_a_single_upload_budget_across_its_references(
     references, monkeypatch
 ):
-    """A budget re-derived per reference is a budget multiplied by the attachment count.
+    """Nobody is offered more than an equal share of the whole request's upload budget.
 
-    Sixteen references would restore the unbounded wall clock while every single-file
-    test still passed. Two counts, so a production rule keyed to one cannot pass.
+    A budget re-derived per reference is a budget multiplied by the attachment count, and
+    sixteen references would restore the unbounded wall clock while every single-file test
+    still passed. Sixteen is in the parametrisation for exactly that reason, and two and
+    three are here so a production rule keyed to one count cannot pass either.
+
+    The first hand-out is the assertion that forbids the multiplication: a fresh
+    ``MAX_RELAY_SECONDS_PER_REQUEST`` per attachment satisfies ``max(handed) <= budget``
+    for ever, and only the equal-share bound reds it. The strict-decreasing assertion this
+    test used to carry is deliberately gone -- it forbade any fair division at all,
+    because unused time is meant to flow forward to the attachments behind it. The sum of
+    the hand-outs is not asserted either: the individual shares ARE the property, and
+    their sum is not a meaningful total once time is shared out of a common pool.
+
+    Each stub upload spends one second, so the shares are distinguishable and the
+    equal-share bound is tested against a clock that has actually moved.
+    """
+    handed, _encoded = await _relay_every_reference(references, monkeypatch, spend=1.0)
+
+    assert len(handed) == references, handed
+    assert handed[0] <= MAX_RELAY_SECONDS_PER_REQUEST / references, (
+        f"the first of {references} attachments was offered {handed[0]}s, more than its "
+        f"equal share of the {MAX_RELAY_SECONDS_PER_REQUEST}s request budget: {handed}"
+    )
+    assert max(handed) <= MAX_RELAY_SECONDS_PER_REQUEST, (
+        f"an attachment was offered more time than the whole request has: {handed}"
+    )
+
+
+async def _relay_every_reference(
+    references: int,
+    monkeypatch: Any,
+    *,
+    spend: float | Callable[[float], float],
+) -> tuple[list[float], list[Any]]:
+    """Drive the real encoder over N real references; return the budgets handed out.
+
+    The real `VideoGenerationAdapter._encode_input_references` and the real relay
+    accounting run; only the file lookup, the file read, the clock and the socket are
+    doubles. ``spend`` is how many seconds each stub upload takes, as a float or as a
+    callable of the budget it was handed; the clock advances by exactly that, so the
+    next attachment is offered what is genuinely left.
+
+    Returns ``(handed, encoded)`` -- the ``seconds_left`` each attachment was offered,
+    in order, and the rows that reached the request.
     """
     handed: list[float] = []
+    clock = _VirtualClock()
 
     async def _relay(_session, _blob, **kwargs):
-        handed.append(kwargs["seconds_left"])
-        await asyncio.sleep(0.05)
-        return "https://files.catbox.moe/a.mp4"
+        budget: float = kwargs["seconds_left"]
+        handed.append(budget)
+        spent: float = spend(budget) if callable(spend) else spend
+        clock.advance(spent)
+        return f"https://files.catbox.moe/{len(handed)}.mp4"
+
+    from types import SimpleNamespace
 
     from open_webui_openrouter_pipe.integrations import video as video_module
     from open_webui_openrouter_pipe.storage.owui_files import infer_file_mime_type
-    from types import SimpleNamespace
 
     pipe = MagicMock()
     pipe.logger = logging.getLogger("relay-clock")
@@ -132,6 +204,7 @@ async def test_one_request_shares_a_single_upload_budget_across_its_references(
     monkeypatch.setattr(video_module, "get_file_by_id", _file)
     monkeypatch.setattr(video_module, "infer_file_mime_type", infer_file_mime_type)
     monkeypatch.setattr(video_module, "relay_to_public_url", _relay)
+    monkeypatch.setattr(video_module, "time", clock)
 
     valves = Valves()
     valves.SEND_MEDIA_VIA_FILE_HOST = True
@@ -141,7 +214,7 @@ async def test_one_request_shares_a_single_upload_budget_across_its_references(
 
     async with aiohttp.ClientSession() as session:
         pipe._create_http_session = lambda *_a, **_k: _Ctx(session)
-        await adapter._encode_input_references(
+        encoded = await adapter._encode_input_references(
             {
                 "input_references": [{"id": f"f{i}"} for i in range(references)],
                 "model_id": "runway/aleph-2",
@@ -156,11 +229,7 @@ async def test_one_request_shares_a_single_upload_budget_across_its_references(
             event_emitter=_emitter,
         )
 
-    assert len(handed) == references, handed
-    assert all(later < earlier for earlier, later in zip(handed, handed[1:])), (
-        f"each reference was handed its own fresh budget: {handed}"
-    )
-    assert handed[0] <= MAX_RELAY_SECONDS_PER_REQUEST
+    return handed, encoded
 
 
 class _AlwaysHeard:

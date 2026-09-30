@@ -1108,6 +1108,7 @@ class ModelCatalogManager:
             valves.UPDATE_MODEL_CAPABILITIES,
             valves.DISABLE_BUILTIN_TOOLS_ON_MEDIA_MODELS,
             valves.UPDATE_MODEL_DESCRIPTIONS,
+            valves.NEW_MODEL_ACCESS_CONTROL,
             valves.AUTO_ATTACH_WEB_TOOLS_FILTER,
             valves.AUTO_INSTALL_WEB_TOOLS_FILTER,
             valves.AUTO_DEFAULT_WEB_TOOLS_FILTER,

@@ -14,6 +14,7 @@ These tests target coverage of model catalog operations including:
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import copy
 
@@ -31,6 +32,7 @@ from aioresponses import aioresponses
 
 from open_webui_openrouter_pipe import Pipe
 from open_webui_openrouter_pipe.filters import FilterManager
+from open_webui_openrouter_pipe.models import catalog_manager as _catalog_manager
 from open_webui_openrouter_pipe.storage.multimodal import (
     _extract_openrouter_og_image,
     _guess_image_mime_type,

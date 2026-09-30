@@ -32,6 +32,7 @@ _image_catalog_locks: weakref.WeakKeyDictionary[Any, asyncio.Lock] = (
 _image_contract_locks: weakref.WeakKeyDictionary[Any, asyncio.Lock] = (
     weakref.WeakKeyDictionary()
 )
+_image_sweeps_in_flight: weakref.WeakKeyDictionary[Any, bool] = weakref.WeakKeyDictionary()
 
 
 def _current_image_catalog_lock() -> asyncio.Lock:
@@ -64,6 +65,24 @@ def _current_image_contract_lock() -> asyncio.Lock:
             existing = asyncio.Lock()
             _image_contract_locks[running] = existing
     return existing
+
+
+def _image_sweep_in_flight() -> bool:
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    with _image_catalog_lock_guard:
+        return bool(_image_sweeps_in_flight.get(running))
+
+
+def _set_image_sweep_in_flight(running: asyncio.AbstractEventLoop, value: bool) -> None:
+    with _image_catalog_lock_guard:
+        if value:
+            _image_sweeps_in_flight[running] = True
+        else:
+            _image_sweeps_in_flight.pop(running, None)
+
 
 _SWEEP_BUDGET_SECONDS = 45
 """How long the whole published-contract sweep may take.
@@ -106,6 +125,7 @@ async def ensure_image_catalog_loaded(
     logger: Any,
     cache_seconds: int,
     with_contracts: bool = True,
+    wait_for_in_flight: bool = True,
 ) -> list[dict[str, Any]]:
     """Fetch image-output models and register them into the shared model registry.
 
@@ -127,63 +147,84 @@ async def ensure_image_catalog_loaded(
             stale_models = not last_attempt or (time.time() - last_attempt) >= cache_seconds
             if not stale_models and not _stale_contracts(wants_filters, cache_seconds, valves):
                 return []
+            if not wait_for_in_flight and _image_sweep_in_flight():
+                logger.debug(
+                    "Image catalog sweep already in flight on this loop; answering from the "
+                    "catalogue already in the registry."
+                )
+                return []
 
-        async with _current_image_catalog_lock():
-            if not getattr(valves, "ENABLE_OPENROUTER_IMAGE_GENERATION", False):
-                if OpenRouterModelRegistry.last_image_fetch() > 0:
-                    OpenRouterModelRegistry.register_image_models([])
-                    OpenRouterModelRegistry.reset_image_fetch_timestamp()
-                    OpenRouterModelRegistry.reset_image_attempt()
-                    OpenRouterModelRegistry.clear_image_contract_attempt()
-                    logger.info(
-                        "Image catalog cleared: ENABLE_OPENROUTER_IMAGE_GENERATION is False."
-                    )
-                else:
+        swept = False
+        try:
+            async with _current_image_catalog_lock():
+                if not getattr(valves, "ENABLE_OPENROUTER_IMAGE_GENERATION", False):
+                    if OpenRouterModelRegistry.last_image_fetch() > 0:
+                        OpenRouterModelRegistry.register_image_models([])
+                        OpenRouterModelRegistry.reset_image_fetch_timestamp()
+                        OpenRouterModelRegistry.reset_image_attempt()
+                        OpenRouterModelRegistry.clear_image_contract_attempt()
+                        logger.info(
+                            "Image catalog cleared: ENABLE_OPENROUTER_IMAGE_GENERATION is False."
+                        )
+                    else:
+                        logger.debug(
+                            "Image catalog skipped: ENABLE_OPENROUTER_IMAGE_GENERATION is False."
+                        )
+                    return []
+
+                last_attempt = OpenRouterModelRegistry.last_image_attempt()
+                stale_models = not last_attempt or (time.time() - last_attempt) >= cache_seconds
+                if not stale_models and not _stale_contracts(wants_filters, cache_seconds, valves):
+                    return []
+
+                if not wait_for_in_flight and _image_sweep_in_flight():
                     logger.debug(
-                        "Image catalog skipped: ENABLE_OPENROUTER_IMAGE_GENERATION is False."
+                        "Image catalog sweep already in flight; the caller queued behind it "
+                        "and is answering from the catalogue already in the registry."
                     )
-                return []
+                    return []
 
-            last_attempt = OpenRouterModelRegistry.last_image_attempt()
-            stale_models = not last_attempt or (time.time() - last_attempt) >= cache_seconds
-            if not stale_models and not _stale_contracts(wants_filters, cache_seconds, valves):
-                return []
+                if wants_filters and _image_contract_sweep_in_progress():
+                    continue
 
-            if wants_filters and _image_contract_sweep_in_progress():
-                continue
+                if OpenRouterModelRegistry.adopt_image_contract_target(_contract_target(valves)):
+                    logger.info(
+                        "Image contract cache dropped: the base URL or the API key changed."
+                    )
 
-            if OpenRouterModelRegistry.adopt_image_contract_target(_contract_target(valves)):
-                logger.info(
-                    "Image contract cache dropped: the base URL or the API key changed."
+                repair = OpenRouterModelRegistry.image_contract_retry_pending()
+                OpenRouterModelRegistry.clear_image_contract_retry()
+                _set_image_sweep_in_flight(asyncio.get_running_loop(), True)
+                swept = True
+                fetched = await _refresh_image_models(
+                    session,
+                    valves=valves,
+                    api_key=api_key,
+                    logger=logger,
+                    wants_filters=wants_filters,
+                    cache_seconds=cache_seconds,
                 )
 
-            repair = OpenRouterModelRegistry.image_contract_retry_pending()
-            OpenRouterModelRegistry.clear_image_contract_retry()
-            fetched = await _refresh_image_models(
-                session,
-                valves=valves,
-                api_key=api_key,
-                logger=logger,
-                wants_filters=wants_filters,
-                cache_seconds=cache_seconds,
-            )
-
-        async with _current_image_contract_lock():
-            if not fetched or not (
-                (wants_filters and repair) or _stale_contracts(wants_filters, cache_seconds, valves)
-            ):
-                return []
-            await _sweep_image_contracts(
-                session,
-                valves=valves,
-                api_key=api_key,
-                logger=logger,
-                wants_filters=wants_filters,
-                cache_seconds=cache_seconds,
-                models=fetched,
-                repair=repair,
-            )
-        return fetched
+            async with _current_image_contract_lock():
+                if not fetched or not (
+                    (wants_filters and repair)
+                    or _stale_contracts(wants_filters, cache_seconds, valves)
+                ):
+                    return []
+                await _sweep_image_contracts(
+                    session,
+                    valves=valves,
+                    api_key=api_key,
+                    logger=logger,
+                    wants_filters=wants_filters,
+                    cache_seconds=cache_seconds,
+                    models=fetched,
+                    repair=repair,
+                )
+            return fetched
+        finally:
+            if swept:
+                _set_image_sweep_in_flight(asyncio.get_running_loop(), False)
 
 
 async def _refresh_image_models(

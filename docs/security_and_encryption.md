@@ -75,7 +75,7 @@ The pipe can persist response artifacts (reasoning payloads, tool results, and r
 
 - `ARTIFACT_ENCRYPTION_KEY` (enables encryption when non-empty)
 - `ENCRYPT_ALL` (default `True`)
-- `ENABLE_LZ4_COMPRESSION` and `MIN_COMPRESS_BYTES` (optional compression for stored payloads)
+- `ENABLE_LZ4_COMPRESSION` and `MIN_COMPRESS_BYTES` (optional compression for stored payloads; a native library that raises switches compression off for the rest of the process, and only a restart re-arms it)
 
 See also: [Persistence, Encryption & Storage](persistence_encryption_and_storage.md).
 

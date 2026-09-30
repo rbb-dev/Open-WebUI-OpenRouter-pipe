@@ -26,6 +26,7 @@ _video_catalog_lock_guard = threading.Lock()
 _video_catalog_locks: weakref.WeakKeyDictionary[Any, asyncio.Lock] = (
     weakref.WeakKeyDictionary()
 )
+_video_sweeps_in_flight: weakref.WeakKeyDictionary[Any, bool] = weakref.WeakKeyDictionary()
 
 
 def _current_video_catalog_lock() -> asyncio.Lock:
@@ -44,6 +45,23 @@ def _current_video_catalog_lock() -> asyncio.Lock:
     return existing
 
 
+def _video_sweep_in_flight() -> bool:
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    with _video_catalog_lock_guard:
+        return bool(_video_sweeps_in_flight.get(running))
+
+
+def _set_video_sweep_in_flight(running: asyncio.AbstractEventLoop, value: bool) -> None:
+    with _video_catalog_lock_guard:
+        if value:
+            _video_sweeps_in_flight[running] = True
+        else:
+            _video_sweeps_in_flight.pop(running, None)
+
+
 async def ensure_video_catalog_loaded(
     session: aiohttp.ClientSession,
     *,
@@ -52,11 +70,18 @@ async def ensure_video_catalog_loaded(
     logger: Any,
     cache_seconds: int,
     with_modalities: bool = True,
+    wait_for_in_flight: bool = True,
 ) -> None:
     """Fetch video models and register them into the shared model registry."""
     if getattr(valves, "ENABLE_VIDEO_GENERATION", False):
         last_attempt = OpenRouterModelRegistry.last_video_attempt()
         if last_attempt and (time.time() - last_attempt) < cache_seconds:
+            return
+        if not wait_for_in_flight and _video_sweep_in_flight():
+            logger.debug(
+                "Video modality sweep already in flight on this loop; answering from the "
+                "catalogue already in the registry."
+            )
             return
 
     async with _current_video_catalog_lock():
@@ -73,47 +98,59 @@ async def ensure_video_catalog_loaded(
         last_attempt = OpenRouterModelRegistry.last_video_attempt()
         if last_attempt and (time.time() - last_attempt) < cache_seconds:
             return
+        if not wait_for_in_flight and _video_sweep_in_flight():
+            logger.debug(
+                "Video modality sweep already in flight; the caller queued behind it and "
+                "is answering from the catalogue already in the registry."
+            )
+            return
 
-        client = _build_catalog_client(
-            OpenRouterVideoClient,
-            session,
-            valves=valves,
-            api_key=api_key,
-            logger=logger,
-        )
-
+        _set_video_sweep_in_flight(asyncio.get_running_loop(), True)
         try:
-            models = await client.list_models()
-        except (TimeoutError, aiohttp.ClientError, OSError) as exc:
-            OpenRouterModelRegistry.record_video_attempt()
-            logger.log(
-                warn_level(_warned_video_catalog, type(exc).__name__),
-                "Video catalog fetch failed (/videos/models): %s — chat catalog kept, video models will not appear.",
-                exc,
+            client = _build_catalog_client(
+                OpenRouterVideoClient,
+                session,
+                valves=valves,
+                api_key=api_key,
+                logger=logger,
             )
-            return
 
-        if not models:
+            try:
+                models = await client.list_models()
+            except (TimeoutError, aiohttp.ClientError, OSError) as exc:
+                OpenRouterModelRegistry.record_video_attempt()
+                logger.log(
+                    warn_level(_warned_video_catalog, type(exc).__name__),
+                    "Video catalog fetch failed (/videos/models): %s — chat catalog kept, video models will not appear.",
+                    exc,
+                )
+                return
+
+            if not models:
+                OpenRouterModelRegistry.record_video_attempt()
+                kept = len(OpenRouterModelRegistry._video_catalog_norms)
+                logger.log(
+                    warn_level(_warned_video_catalog, "empty"),
+                    "Video catalog fetch returned 0 models; keeping the %d video model(s) the "
+                    "last refresh published. A catalogue that genuinely holds nothing is not "
+                    "reconciled until the worker restarts or ENABLE_VIDEO_GENERATION is "
+                    "toggled off and on.",
+                    kept,
+                )
+                return
+
+            if with_modalities:
+                await _attach_declared_input_modalities(client, models, logger)
+            else:
+                _carry_declared_input_modalities(models)
+
+            OpenRouterModelRegistry.register_video_models(models)
             OpenRouterModelRegistry.record_video_attempt()
-            kept = len(OpenRouterModelRegistry._video_catalog_norms)
-            logger.log(
-                warn_level(_warned_video_catalog, "empty"),
-                "Video catalog fetch returned 0 models; keeping the %d video model(s) the "
-                "last refresh published. A catalogue that genuinely holds nothing is not "
-                "reconciled until the worker restarts or ENABLE_VIDEO_GENERATION is "
-                "toggled off and on.",
-                kept,
+            logger.info(
+                "Registered %d OpenRouter video model(s) into the catalog.", len(models)
             )
-            return
-
-        if with_modalities:
-            await _attach_declared_input_modalities(client, models, logger)
-        else:
-            _carry_declared_input_modalities(models)
-
-        OpenRouterModelRegistry.register_video_models(models)
-        OpenRouterModelRegistry.record_video_attempt()
-        logger.info("Registered %d OpenRouter video model(s) into the catalog.", len(models))
+        finally:
+            _set_video_sweep_in_flight(asyncio.get_running_loop(), False)
 
 
 def _carry_declared_input_modalities(models: list[dict[str, Any]]) -> None:

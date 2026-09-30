@@ -436,15 +436,17 @@ class ReplyMemory:
         return self._key(chat_id, message_id) in self._replies
 
     def hold(self, rows: list[dict[str, Any]]) -> list[str]:
+        prepared = [(row, json.loads(json.dumps(row.get("payload"), default=str))) for row in rows]
+        sized = [(row, payload, _retained_bytes(payload)) for row, payload in prepared]
         with self._lock:
-            return self._hold(rows)
+            return self._hold(sized)
 
-    def _hold(self, rows: list[dict[str, Any]]) -> list[str]:
+    def _hold(self, sized: list[tuple[dict[str, Any], Any, int]]) -> list[str]:
         self._expire()
         held: list[str] = []
         dropped = 0
         oversized = 0
-        for row in rows:
+        for row, payload, payload_bytes in sized:
             key = self._key(row.get("chat_id"), row.get("message_id"))
             if key not in self._replies:
                 logging.getLogger(__name__).warning(
@@ -456,17 +458,16 @@ class ReplyMemory:
                     row.get("item_type"),
                 )
                 continue
-            payload = json.loads(json.dumps(row.get("payload"), default=str))
             item_id = row.setdefault("id", generate_item_id())
             _touched, kept, size = self._replies[key]
             replaced = _retained_bytes(kept[item_id]) if item_id in kept else 0
-            charged = _retained_bytes(payload)
+            charged = payload_bytes
             kept[item_id] = payload
             self._replies[key] = (self._clock(), kept, size - replaced + charged)
             self._replies.move_to_end(key)
             self._total_bytes += charged - replaced
             held.append(item_id)
-        offered_keys = {self._key(row.get("chat_id"), row.get("message_id")) for row in rows}
+        offered_keys = {self._key(row.get("chat_id"), row.get("message_id")) for row, _payload, _size in sized}
         for key in offered_keys:
             if key in self._replies and self._replies[key][2] > self._max_bytes:
                 self._total_bytes -= self._replies[key][2]

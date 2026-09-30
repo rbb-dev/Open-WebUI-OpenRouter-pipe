@@ -2279,7 +2279,6 @@ class VideoGenerationAdapter:
         chunk_size = int(getattr(valves, "IMAGE_UPLOAD_CHUNK_BYTES", 1024 * 1024))
         encoded: list[dict[str, Any]] = []
         total_bytes = int(spent["total"]) if spent else 0
-        seen_frame_types: set[str] = set()
         seen_file_ids: set[str] = set()
 
         for item in raw_frames:
@@ -2338,7 +2337,6 @@ class VideoGenerationAdapter:
                     "image_url": {"url": f"data:{mime};base64,{b64}"},
                 }
             )
-            seen_frame_types.add(frame_type)
             seen_file_ids.add(file_id)
         if spent is not None:
             spent["total"] = total_bytes
@@ -2533,6 +2531,7 @@ class VideoGenerationAdapter:
             self._relay_hosts(valves)[0],
         )
         relay_deadline = time.monotonic() + MAX_RELAY_SECONDS_PER_REQUEST
+        attachments_left = sum(1 for entry in accepted if entry.via_file_host)
         async with contextlib.AsyncExitStack() as relay_stack:
             relay_session: Any = None
             for entry in accepted:
@@ -2541,12 +2540,18 @@ class VideoGenerationAdapter:
                         relay_session = await relay_stack.enter_async_context(
                             self._pipe._create_http_session(valves)
                         )
+                    remaining = max(0.0, relay_deadline - time.monotonic())
                     link, host = await self._relay_reference(
                         valves, entry.blob, filename=entry.filename,
                         mime=entry.mime, family=entry.family,
-                        deadline=relay_deadline, session=relay_session,
+                        deadline=min(
+                            relay_deadline,
+                            time.monotonic() + remaining / max(1, attachments_left),
+                        ),
+                        session=relay_session,
                         event_emitter=event_emitter,
                     )
+                    attachments_left -= 1
                     encoded.append({"type": entry.kind, entry.kind: {"url": link}})
                     if vetted is not None:
                         vetted[link] = True
@@ -3037,9 +3042,15 @@ class VideoGenerationAdapter:
             )
         ]
         ordered_attachments.sort(key=lambda entry: _attachment_position(entry))
+        planned: dict[int, str] = {}
+        for entry in intent.frame_plan:
+            if entry.source != "uploaded_attachment":
+                continue
+            idx = entry.source_index
+            if isinstance(idx, int) and 0 <= idx < len(ordered_attachments):
+                planned[id(ordered_attachments[idx])] = entry.target
         retargeted = 0
         moved: list[dict[str, Any]] = []
-        demoted: list[dict[str, Any]] = []
         for entry in intent.frame_plan:
             if entry.source != "uploaded_attachment":
                 continue
@@ -3049,46 +3060,47 @@ class VideoGenerationAdapter:
                     f"retarget_skipped_invalid_index_{idx}"
                 )
                 continue
-            target = ordered_attachments[idx]
-            if not isinstance(target, dict):
+            attachment = ordered_attachments[idx]
+            if not isinstance(attachment, dict):
                 continue
             if entry.target == "input_reference":
-                if target in frame_images:
-                    moved.append(target)
+                if attachment in frame_images:
+                    moved.append(attachment)
                 continue
-            if target not in frame_images:
-                if not _promotable_as_frame(target, valves):
-                    intent.downgrades.append(f"retarget_skipped_non_image_frame_{idx}")
-                    continue
-                displaced = next(
-                    (
-                        other
-                        for other in frame_images
-                        if isinstance(other, dict)
-                        and other.get("frame_type") == entry.target
-                        and other is not target
-                    ),
-                    None,
-                )
-                if displaced is not None:
-                    frame_images[frame_images.index(displaced)] = target
-                    demoted.append(displaced)
-                else:
-                    frame_images.append(target)
+            if attachment not in frame_images and not _promotable_as_frame(attachment, valves):
+                intent.downgrades.append(f"retarget_skipped_non_image_frame_{idx}")
+                continue
+            target = entry.target
+            holder = next(
+                (
+                    other
+                    for other in frame_images
+                    if isinstance(other, dict)
+                    and other.get("frame_type") == target
+                    and other is not attachment
+                    and planned.get(id(other), target) == target
+                ),
+                None,
+            )
+            if holder is not None:
+                intent.downgrades.append(f"retarget_skipped_slot_taken_{target}")
+                continue
+            if attachment not in frame_images:
+                frame_images.append(attachment)
                 claimed = video_meta.get(_reference_slot(video_meta))
-                if isinstance(claimed, list) and target in claimed:
-                    claimed.remove(target)
-            existing_frame_type = target.get("frame_type")
-            if existing_frame_type != entry.target:
-                target["frame_type"] = entry.target
+                if isinstance(claimed, list) and attachment in claimed:
+                    claimed.remove(attachment)
+            existing_frame_type = attachment.get("frame_type")
+            if existing_frame_type != target:
+                attachment["frame_type"] = target
                 retargeted += 1
-        if moved or demoted:
+        if moved:
             references = video_meta.setdefault(_reference_slot(video_meta), [])
             if not isinstance(references, list):
                 references = []
                 video_meta["input_references"] = references
             ordered: list[dict[str, Any]] = []
-            for item in list(demoted) + list(moved):
+            for item in moved:
                 if not any(item is seen for seen in ordered):
                     ordered.append(item)
             for item in ordered:

@@ -3745,6 +3745,7 @@ class Pipe:
                 logger=self.logger,
                 cache_seconds=valves.MODEL_CATALOG_REFRESH_SECONDS,
                 with_modalities=False,
+                wait_for_in_flight=False,
             )
             await ensure_image_catalog_loaded(
                 session,
@@ -3753,6 +3754,7 @@ class Pipe:
                 logger=self.logger,
                 cache_seconds=valves.MODEL_CATALOG_REFRESH_SECONDS,
                 with_contracts=False,
+                wait_for_in_flight=False,
             )
         except ValueError:
             self.logger.exception("OpenRouter catalog configuration error")

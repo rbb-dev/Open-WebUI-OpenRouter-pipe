@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import contextlib
 import contextvars
 import gc
 import io
@@ -31,7 +33,7 @@ from open_webui_openrouter_pipe.media import (
     probe_video,
 )
 import imageio.v3 as iio
-from typing import Any, cast
+from typing import Any, Self, cast
 
 
 # -----------------------------------------------------------------------------

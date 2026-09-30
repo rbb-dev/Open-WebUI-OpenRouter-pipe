@@ -205,8 +205,10 @@ builds — forks inherit the release workflow, so assets, digests, and the chang
   *next* cycle rather than the current one, and turning the master switch back on resumes on the
   cycle after that with no restart — backs off on GitHub rate limits (honoring the reset header) and network
   failures without ever losing an update, and pauses a release on that worker after a deterministic
-  failure until a restart, a newer release, or a successful manual apply. The tab's Auto-update line
-  shows this worker's role (leader/follower), successes, and pauses.
+  failure until a restart, a newer release, or a successful manual apply. An I/O error reaching the
+  leader lease itself backs the loop off and retries rather than ending it, so a Redis blip costs
+  one interval and not the rest of the worker's life. The tab's Auto-update line
+  shows this worker's role (leader/follower), successes, pauses, and an unreachable leader lease.
 
 Requirements for the checks and downloads: unauthenticated GitHub API (shared 60/hour budget per
 egress IP — checks are memoized, and only one worker per deployment polls in the background).

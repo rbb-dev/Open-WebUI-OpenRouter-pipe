@@ -919,12 +919,12 @@ def _tool_picture_gate(
             refused.append((url, "not a link the pipe can resolve into an image", "unusable_link"))
             continue
         if is_inline_data_url(url):
-            split = split_base64_data_url(url)
-            if split is None:
+            payload_len = base64_data_url_payload_len(url)
+            if payload_len is None:
                 refused.append((url, ("a data URL that is not base64-encoded, which OpenRouter "
                                       "does not accept"), "unencoded_inline"))
                 continue
-            if (len(split[1]) * 3) // 4 > max_inline_bytes:
+            if (payload_len * 3) // 4 > max_inline_bytes:
                 refused.append((url, f"larger than the {max_inline_bytes}-byte inline limit",
                                 "oversized_inline"))
                 continue

@@ -61,6 +61,7 @@ UPDATE_TAB_JS = """
       write_failed: 'The database refused the write, so the freshly loaded code was rolled back and the previous version remains active.',
       incompatible_owui: 'This release needs a newer Open WebUI than this server runs. Upgrade Open WebUI first.',
       update_in_progress: 'Another update is already running. Wait for it to finish, then press Check now.',
+      lease_unavailable: 'The server could not reach Redis, which is where workers elect the single auto-updater. This worker applied nothing; it will try again and the tab will say so when it can.',
       disabled: 'Updates are switched off by the "Enable the Update tab" valve.',
       plugin_system_off: 'The plugin system is switched off, so no Pipe Dashboard action can run. Turn "Enable plugin system" back on in the Config tab.',
       valve_unreadable: 'The stored update settings could not be read, so every stored setting has fallen back to its default and every update action is refused until the server can read it again. A rotated WEBUI_SECRET_KEY with valve encryption on does this; the server log has the warning.',
@@ -221,6 +222,9 @@ UPDATE_TAB_JS = """
           autoTxt += ' \\u2014 paused for ' + esc(String(auto.this_worker.paused_for_version))
             + ' on this worker after ' + esc(String(auto.this_worker.code))
             + ' (apply manually or restart to re-arm)';
+        } else if (auto.this_worker && auto.this_worker.code) {
+          autoTxt += ' \\u2014 ' + updErrText(auto.this_worker)
+            + ' (' + updFmtDate(auto.this_worker.ts) + ')';
         }
         if (auto.last_success) {
           autoTxt += ' \\u2014 last auto-update ' + esc(String(auto.last_success.from_version || '?'))

@@ -113,8 +113,11 @@ def is_inline_data_url(url: Any) -> bool:
 def _data_url_header(value: Any) -> tuple[bool, str] | None:
     if not isinstance(value, str) or url_scheme(value) != "data":
         return None
-    header, sep, _ = value[value.find(":") + 1:].partition(",")
-    return (bool(sep), header)
+    colon = value.find(":")
+    comma = value.find(",", colon + 1)
+    if comma == -1:
+        return (False, value[colon + 1 :][:64])
+    return (True, value[colon + 1 : comma])
 
 
 def loggable_link(url: Any) -> str:
@@ -175,3 +178,13 @@ def base64_data_url_payload_len(value: Any) -> int | None:
     if _base64_marker_end(value[:comma]) is None:
         return None
     return len(value) - comma - 1
+
+
+def base64_data_url_media_type(value: Any) -> str:
+    if not isinstance(value, str) or url_scheme(value) != "data":
+        return ""
+    colon = value.find(":")
+    comma = value.find(",", colon + 1)
+    if comma == -1 or _base64_marker_end(value[colon + 1 : comma]) is None:
+        return ""
+    return media_type_or_empty(value[colon + 1 : comma])

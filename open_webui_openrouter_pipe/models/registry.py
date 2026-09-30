@@ -201,13 +201,15 @@ class ModelFamily:
     def _lookup_spec(cls, model_id: str) -> dict[str, Any]:
         """Return the stored spec for ``model_id`` or an empty dict."""
         specs = cls._DYNAMIC_SPECS
-        norm = _norm_for_lookup(model_id, _NO_PIPE_ID)
         pipe_id = cls._PIPE_ID.get()
-        for candidate in _lookup_candidates(
-            norm, _NO_PIPE_ID if pipe_id is None else pipe_id
-        ):
+        key = _NO_PIPE_ID if pipe_id is None else pipe_id
+        for candidate in _lookup_candidates(_norm_for_lookup(model_id, _NO_PIPE_ID), key):
             if candidate in specs:
                 return specs[candidate] or {}
+        if pipe_id is not None:
+            for candidate in _lookup_candidates(_norm_for_lookup(model_id, pipe_id), key):
+                if candidate in specs:
+                    return specs[candidate] or {}
         return {}
 
     @classmethod
@@ -1087,20 +1089,6 @@ class OpenRouterModelRegistry:
                 features.update({"vision", "file_input"})
             features |= prior_features
 
-            capabilities = dict(prior.get("capabilities") or {})
-            for capability, value in {
-                "vision": accepts_uploads,
-                "file_upload": accepts_uploads,
-                "web_search": False,
-                "image_generation": True,
-                "video_generation": True,
-                "code_interpreter": False,
-                "citations": False,
-                "status_updates": True,
-                "usage": True,
-            }.items():
-                capabilities.setdefault(capability, value)
-
             item_architecture = item.get("architecture")
             item_architecture = item_architecture if isinstance(item_architecture, dict) else {}
             if prior_architecture:
@@ -1115,6 +1103,20 @@ class OpenRouterModelRegistry:
                     ]
             else:
                 architecture = dict(item_architecture)
+
+            capabilities = dict(prior.get("capabilities") or {})
+            for capability, value in {
+                "vision": accepts_uploads,
+                "file_upload": accepts_uploads,
+                "web_search": False,
+                "image_generation": is_image_output_architecture(architecture),
+                "video_generation": True,
+                "code_interpreter": False,
+                "citations": False,
+                "status_updates": True,
+                "usage": True,
+            }.items():
+                capabilities.setdefault(capability, value)
 
             full_model = dict(item)
             full_model.update(dict(prior.get("full_model") or {}))

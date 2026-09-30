@@ -391,21 +391,38 @@ _REASONING_HEAD_CHARS = 1024
 
 
 class _ReasoningTextBox:
-    __slots__ = ("head", "length", "parts")
+    __slots__ = ("head", "length", "parts", "tail")
 
     def __init__(self) -> None:
         self.parts: list[str] = []
         self.length = 0
         self.head = ""
+        self.tail = ""
 
     def add(self, append: str) -> None:
         if len(self.head) < _REASONING_HEAD_CHARS:
             self.head += append[: _REASONING_HEAD_CHARS - len(self.head)]
         self.parts.append(append)
         self.length += len(append)
+        self.tail = (self.tail + append)[-_REASONING_HEAD_CHARS:]
 
     def text(self) -> str:
         return "".join(self.parts)
+
+    def ends_with(self, candidate: str) -> bool:
+        if not candidate or len(candidate) > len(self.tail):
+            return False
+        return self.tail.endswith(candidate)
+
+    def is_prefix_of(self, text: str) -> bool:
+        if not text or len(text) < self.length:
+            return False
+        offset = 0
+        for part in self.parts:
+            if text[offset : offset + len(part)] != part:
+                return False
+            offset += len(part)
+        return True
 
 
 class StreamingHandler:
@@ -589,7 +606,7 @@ class StreamingHandler:
             return origin_name in BUILTIN_CITATION_TOOLS and _is_owui_builtin_tool(exposed_name)
 
         tool_call_item_ids: dict[str, str] = {}
-        streamed_tool_call_args: dict[str, str] = {}
+        streamed_tool_call_args: dict[str, _ReasoningTextBox] = {}
         streamed_tool_call_name_sent: set[str] = set()
         emitted_tool_call_items: set[str] = set()
         calls_carded_this_round: set[str] = set()
@@ -1454,8 +1471,7 @@ class StreamingHandler:
                     if box.head.startswith(candidate):
                         append = ""
                     else:
-                        current = box.text()
-                        append = "" if current.endswith(candidate) else (candidate if allow_misaligned else "")
+                        append = "" if box.ends_with(candidate) else (candidate if allow_misaligned else "")
                 else:
                     current = box.text()
                     append = (
@@ -1498,7 +1514,7 @@ class StreamingHandler:
                 state["mono_open"] = _monotonic()
                 state["mono_close"] = None
 
-            async def _emit_reasoning_item(key: str, current_text: str) -> None:
+            async def _emit_reasoning_item(key: str, current_text: str, *, closing: bool = False) -> None:
                 nonlocal emitted_response_output_items
                 if event_emitter is None or not thinking_box_enabled:
                     return
@@ -1512,7 +1528,7 @@ class StreamingHandler:
                 if not text.strip():
                     return
                 if state.get("published_round") == loop_index:
-                    await _replace_published_reasoning_item(key, text, state, current_text)
+                    await _replace_published_reasoning_item(key, text, state, current_text, closing=closing)
                     return
                 mono_end = state["mono_close"] if state["mono_close"] is not None else _monotonic()
                 duration = max(0.1, round(mono_end - state["mono_open"], 1))
@@ -1545,12 +1561,13 @@ class StreamingHandler:
                 state["published_id"] = item_id
 
             async def _replace_published_reasoning_item(
-                key: str, text: str, state: dict[str, Any], current_text: str
+                key: str, text: str, state: dict[str, Any], current_text: str, *, closing: bool = False
             ) -> None:
                 item_id = state.get("published_id")
                 if not item_id:
                     return
-                if len(text) <= int(state.get("published_len", 0) or 0):
+                published = int(state.get("published_len", 0) or 0)
+                if len(text) <= published:
                     return
                 mono_end = state["mono_close"] if state["mono_close"] is not None else _monotonic()
                 duration = max(0.1, round(mono_end - state["mono_open"], 1))
@@ -1565,19 +1582,31 @@ class StreamingHandler:
                 }
                 await _record_output_item(reasoning_item, current_text)
                 reasoning_index = _output_index(reasoning_item)
-                await event_emitter(
-                    {
-                        "type": "response.output_item.done",
-                        "output_index": reasoning_index,
-                        "item": reasoning_item,
-                    }
-                )
+                tail = text[published:]
+                if closing or not tail:
+                    await event_emitter(
+                        {
+                            "type": "response.output_item.done",
+                            "output_index": reasoning_index,
+                            "item": reasoning_item,
+                        }
+                    )
+                else:
+                    await event_emitter(
+                        {
+                            "type": "response.reasoning_summary_text.delta",
+                            "item_id": item_id,
+                            "output_index": reasoning_index,
+                            "summary_index": 0,
+                            "delta": tail,
+                        }
+                    )
                 state["published_len"] = len(text)
 
             async def _close_and_emit_reasoning_items(current_text: str) -> None:
                 _close_open_reasoning_windows()
                 for reasoning_key in list(reasoning_display):
-                    await _emit_reasoning_item(reasoning_key, current_text)
+                    await _emit_reasoning_item(reasoning_key, current_text, closing=True)
 
             def _defer_reasoning_keys_after_a_call(completed: Any) -> None:
                 if not isinstance(completed, dict):
@@ -1610,7 +1639,7 @@ class StreamingHandler:
                     return
                 for reasoning_key in list(reasoning_display):
                     try:
-                        await _emit_reasoning_item(reasoning_key, current_text)
+                        await _emit_reasoning_item(reasoning_key, current_text, closing=True)
                     except Exception:
                         self.logger.exception("Failed to emit trailing reasoning item")
 
@@ -2279,8 +2308,7 @@ class StreamingHandler:
                                 if not delta_text:
                                     continue
                                 streamed_tool_call_ids.add(call_id)
-                                prev_args = streamed_tool_call_args.get(call_id, "")
-                                streamed_tool_call_args[call_id] = f"{prev_args}{delta_text}"
+                                streamed_tool_call_args.setdefault(call_id, _ReasoningTextBox()).add(delta_text)
                                 include_name = call_id not in streamed_tool_call_name_sent
                                 if include_name:
                                     streamed_tool_call_name_sent.add(call_id)
@@ -2308,17 +2336,20 @@ class StreamingHandler:
                             raw_args = event.get("arguments")
                             args_text = raw_args.strip() if isinstance(raw_args, str) else ""
                             if args_text:
-                                prev_args = streamed_tool_call_args.get(call_id, "")
+                                args_box = streamed_tool_call_args.get(call_id)
                                 suffix = ""
-                                if not prev_args:
+                                if args_box is None or args_box.length == 0:
                                     suffix = args_text
-                                elif args_text.startswith(prev_args):
-                                    suffix = args_text[len(prev_args) :]
+                                elif args_box.is_prefix_of(args_text):
+                                    suffix = args_text[args_box.length :]
                                 if not suffix:
                                     continue
 
                                 streamed_tool_call_ids.add(call_id)
-                                streamed_tool_call_args[call_id] = f"{prev_args}{suffix}"
+                                if args_box is None:
+                                    args_box = _ReasoningTextBox()
+                                    streamed_tool_call_args[call_id] = args_box
+                                args_box.add(suffix)
                                 include_name = call_id not in streamed_tool_call_name_sent
                                 if include_name:
                                     streamed_tool_call_name_sent.add(call_id)
@@ -3467,12 +3498,12 @@ class StreamingHandler:
                                     idx = streamed_tool_call_indices.setdefault(
                                         call_id, len(streamed_tool_call_indices)
                                     )
-                                    prev_args = streamed_tool_call_args.get(call_id, "")
+                                    args_box = streamed_tool_call_args.get(call_id)
                                     suffix = ""
-                                    if not prev_args:
+                                    if args_box is None or args_box.length == 0:
                                         suffix = args_text
-                                    elif args_text.startswith(prev_args):
-                                        suffix = args_text[len(prev_args) :]
+                                    elif args_box.is_prefix_of(args_text):
+                                        suffix = args_text[args_box.length :]
 
                                     include_name = call_id not in streamed_tool_call_name_sent
                                     if include_name:
@@ -3486,7 +3517,10 @@ class StreamingHandler:
                                             function_obj["arguments"] = suffix
                                         streamed_tool_call_ids.add(call_id)
                                         if suffix:
-                                            streamed_tool_call_args[call_id] = f"{prev_args}{suffix}"
+                                            if args_box is None:
+                                                args_box = _ReasoningTextBox()
+                                                streamed_tool_call_args[call_id] = args_box
+                                            args_box.add(suffix)
                                         if owui_tool_passthrough:
                                             _reserve_host_slot(call_id)
                                         await event_emitter(

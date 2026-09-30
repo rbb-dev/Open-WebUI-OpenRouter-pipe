@@ -324,6 +324,8 @@ _FILE_URL_SHAPE_RE = re.compile(r"^/api/v1/files/[A-Za-z0-9_-]{1,128}(/content)?
 
 def collect_prior_videos_from_messages(
     messages: list[dict[str, Any]],
+    *,
+    truncated: list[bool] | None = None,
 ) -> list[dict[str, Any]]:
     """Extract prior assistant videos from chat history.
 
@@ -366,7 +368,12 @@ def collect_prior_videos_from_messages(
                 "job_id": job_id,
                 "model_id_if_known": model_id,
             })
-    return results
+    tail = results[-_MAX_PRIOR_VIDEOS:]
+    for position, row in enumerate(tail):
+        row["index"] = position
+    if truncated is not None:
+        truncated.append(len(tail) < len(results))
+    return tail
 
 
 _ATTACHMENT_SOURCES = (
@@ -492,6 +499,8 @@ _VALID_SOURCES = {
 _VALID_TARGETS = {"first_frame", "last_frame", "input_reference"}
 _VALID_CONFIDENCE = {"high", "medium", "low"}
 _PROMPT_MAX_LEN = 2000
+_MAX_CONVERSATION_ROWS = 24
+_MAX_PRIOR_VIDEOS = 8
 _FRAME_PLAN_MAX = 4
 _CLARIFICATION_MAX_OPTIONS = 5
 _CLARIFICATION_MAX_OPTION_LEN = 200
@@ -880,13 +889,17 @@ async def resolve_intent(
     """
     fallback = fallback_intent_result(fallback_prompt_text)
     _t0: float | None = None
+    conversation_window: list[bool] = []
+    prior_videos_window: list[bool] = []
 
     try:
         messages = body.get("messages") if isinstance(body, dict) else None
         if not isinstance(messages, list):
             return fallback
-        conversation = _build_conversation(messages)
-        prior_videos = collect_prior_videos_from_messages(messages)
+        conversation = _build_conversation(messages, truncated=conversation_window)
+        prior_videos = collect_prior_videos_from_messages(
+            messages, truncated=prior_videos_window
+        )
         attachments = collect_attachments_from_video_meta(video_meta)
         explicit_frame_images_present = bool(
             isinstance(video_meta, dict) and video_meta.get("frame_images")
@@ -981,6 +994,10 @@ async def resolve_intent(
             fallback_prompt=fallback_prompt_text,
         )
         result.prior_videos = prior_videos
+        if conversation_window and conversation_window[0]:
+            result.downgrades.append("conversation_truncated")
+        if prior_videos_window and prior_videos_window[0]:
+            result.downgrades.append("prior_videos_truncated")
         result.task_model_latency_ms = _latency_ms
         result.task_model_fallback_triggered = int(_outcome.get("index", 0)) > 0
         return result
@@ -1015,7 +1032,11 @@ def _video_intent_repair_turns(previous_output: str) -> list[dict[str, Any]]:
     ]
 
 
-def _build_conversation(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _build_conversation(
+    messages: list[dict[str, Any]],
+    *,
+    truncated: list[bool] | None = None,
+) -> list[dict[str, Any]]:
     """Compact conversation snapshot for the task-model payload.
 
     Strips intent disclosure blocks. Reports per-turn:
@@ -1047,11 +1068,14 @@ def _build_conversation(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         out.append({
             "message_index": i,
             "role": role,
-            "text": text[:2000],  
+            "text": text[:2000],
             "has_video_marker": has_video,
             "attached_image_count": attached,
         })
-    return out
+    tail = out[-_MAX_CONVERSATION_ROWS:]
+    if truncated is not None:
+        truncated.append(len(tail) < len(out))
+    return tail
 
 
 def _make_default_invoke(
@@ -1161,6 +1185,17 @@ _DOWNGRADE_USER_MESSAGES: dict[str, str] = {
     ),
     "retarget_skipped_no_frame_images": (
         "A frame the chat asked for could not be applied."
+    ),
+    "retarget_skipped_slot_taken": (
+        "That picture was already set as this frame, so it was left where you put it."
+    ),
+    "conversation_truncated": (
+        "Only the most recent turns of this chat were read, so the classifier worked "
+        "from a window rather than the whole conversation."
+    ),
+    "prior_videos_truncated": (
+        "Only the most recent videos from this chat were listed, so the classifier chose "
+        "from those rather than the whole history."
     ),
     "dropped_invalid_prior_video_index": (
         "That previous video is not in this chat, so no frame was taken from it."

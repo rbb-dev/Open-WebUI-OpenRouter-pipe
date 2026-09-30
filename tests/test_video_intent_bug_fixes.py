@@ -12,6 +12,7 @@ import pytest
 
 from open_webui_openrouter_pipe.integrations.video_intent import (
     FramePlanEntry,
+    FrameTargetLiteral,
     VideoIntentResult,
     emit_telemetry_log,
 )

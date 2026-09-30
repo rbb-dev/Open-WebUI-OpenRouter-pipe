@@ -1299,7 +1299,11 @@ rules:
     not dropped. Nothing you attach is discarded. The middle images keep
     the order you attached them in and follow the two keyframes in the
     request, so the first keyframe is never pushed back by however many
-    middle images there are.
+    middle images there are. A classifier instruction that collides with
+    one of the two slots the dropdown filled is resolved in the dropdown's
+    favour and named with a ⚠️ note: the slot keeps the picture you set, and
+    the request carries one frame per slot rather than two rows competing
+    for the same one.
 - Setting `Size` to exact pixel dimensions settles any argument with the
   other two shape knobs: a `Resolution` tier that disagrees with those
   pixels, or an `Aspect ratio` that is not the shape of those pixels, is
@@ -1465,6 +1469,12 @@ the classifier was told the user had attached nothing, so a turn whose
 only attachment was a clip was downgraded to `text_to_video` and paid for
 a render that carried the clip along unreferenced. A clip-only turn now
 keeps the intent the user's own attachment implies.
+
+A frame slot holds one frame. Two attached pictures fill the two slots,
+and a classifier instruction that names a slot the other picture already
+holds is resolved rather than obeyed: the picture you set in the Frames
+control keeps the slot, and the collision is named in the disclosure
+block. The turn still goes out with one frame per slot.
 
 Frames set to `none` is the one case that sends no picture: you asked for
 none, so no image is sent as a frame or as a reference. Every picture is
@@ -2293,7 +2303,9 @@ pipe()
         │        stored record names its media type, at most sixteen per
         │        request and at most MEDIA_FILE_HOST_MAX_SIZE_MB of them
         │        put together, inside one wall-clock budget for the whole
-        │        request; the chat is told which host and for how long
+        │        request, shared evenly across the turn's attachments
+        │        rather than first-come; the chat is told which host and
+        │        for how long
         │        BEFORE the first byte is sent, and nothing is uploaded
         │        when that could not be delivered. A file that did go out
         │        is written into the message Open WebUI stores, so the
@@ -2445,7 +2457,10 @@ Key files:
   `capabilities.vision` flag Open WebUI draws its checkbox from follow that one
   fact, so a row publishing no frame images is unticked on both surfaces and the
   composer refuses a picture at attach time rather than the pipe dropping it at
-  send time. A model in both catalogs keeps its chat answer on both surfaces. A
+  send time. `capabilities.image_generation` follows the row's own output
+  modalities the same way, so Open WebUI draws no Image Generation row for a
+  model that cannot draw. A model in both catalogs keeps its chat answer on both
+  surfaces. A
   sweep that
   completes with none keeps every model the video catalog itself registered
   and logs, once, that the previous set was kept, so a `200` with an empty

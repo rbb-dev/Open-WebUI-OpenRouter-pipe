@@ -408,7 +408,7 @@ Controls:
 - `UPDATE_MODEL_IMAGES` (default `True`): enable/disable profile image sync.
 - `UPDATE_MODEL_DESCRIPTIONS` (default `False`): enable/disable model description sync.
 - `UPDATE_MODEL_CAPABILITIES` (default `True`): enable/disable capability checkbox sync.
-- `NEW_MODEL_ACCESS_CONTROL` (default `admins`): sets the access grants applied when the pipe **inserts** a new OpenRouter model overlay into Open WebUI (existing access grants are preserved on update). One pass uses one value for all of its rows, and it is read once per pass, so a pass already running when you save the valve finishes under the value it started with. Use `admins` to create no access grants (private), which relies on Open WebUI's `BYPASS_ADMIN_ACCESS_CONTROL` for admin access.
+- `NEW_MODEL_ACCESS_CONTROL` (default `admins`): sets the access grants applied when the pipe **inserts** a new OpenRouter model overlay into Open WebUI (existing access grants are preserved on update). One pass uses one value for all of its rows, and it is read once per pass, so a pass already running when you save the valve finishes under the value it started with. Saving it also schedules a pass, because the valve is a term of the sync key, so the value you just chose applies to every model the pipe imports next. Use `admins` to create no access grants (private), which relies on Open WebUI's `BYPASS_ADMIN_ACCESS_CONTROL` for admin access.
 Per-model opt-outs:
 - `disable_model_metadata_sync`: disables all metadata sync for the model.
 - `disable_image_updates`, `disable_description_updates`, `disable_capability_updates`: disable specific metadata fields for the model.
@@ -526,7 +526,7 @@ Relevant valves:
 - `PERSIST_REASONING_TOKENS` (system default `conversation`)
 - `ARTIFACT_ENCRYPTION_KEY` (enables encryption when set)
 - `ENCRYPT_ALL` (default `True`; when encryption is enabled, encrypts all artifacts vs reasoning-only; a row already stored encrypted stays encrypted, in the table and in the cache, whatever it is set to)
-- `ENABLE_LZ4_COMPRESSION` (default `True`, when `lz4` is available)
+- `ENABLE_LZ4_COMPRESSION` (default `True`, when `lz4` is available. If a compression attempt raises, the failure is logged once and compression stays off for the rest of the process, so a broken native library is not retried on every request; only a restart re-arms it.)
 
 See [Persistence, Encryption & Storage](persistence_encryption_and_storage.md) for the full behavior description.
 
