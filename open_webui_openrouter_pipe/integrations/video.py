@@ -277,8 +277,32 @@ def _reference_family(label: str) -> str:
     return head if head in _REFERENCE_FAMILY_FIELDS else ""
 
 
+_B64_WHITESPACE = " \n\r\t\v\f"
+
+_B64_ALPHABET = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+)
+
+
 async def _decoded_length(b64: str) -> int:
-    return len(await asyncio.to_thread(base64.b64decode, b64, validate=False))
+    core = b64
+    if any(char in core for char in _B64_WHITESPACE):
+        core = "".join(char for char in core if char not in _B64_WHITESPACE)
+    length = len(core)
+    if length == 0:
+        return 0
+    if length % 4:
+        raise binascii.Error("Invalid base64-encoded string: number of characters is not a multiple of 4")
+    pad = core[-4:].count("=")
+    body = core[: length - pad]
+    if (
+        pad > 2
+        or length - pad < 0
+        or len(body) % 4 != (4 - pad) % 4
+        or not _B64_ALPHABET.issuperset(body)
+    ):
+        raise binascii.Error("Invalid base64-encoded string")
+    return (length // 4) * 3 - pad
 
 
 async def _decoded_payload(b64: str) -> bytes:
@@ -1844,8 +1868,9 @@ class VideoGenerationAdapter:
                     provider_params[target] = value
                     continue
                 documented = _clean_str(key) in _DOCUMENTED_TOP_LEVEL_VIDEO_FIELDS
+                latch_name = key if key in _DOCUMENTED_TOP_LEVEL_VIDEO_FIELDS else "*"
                 self.logger.log(
-                    warn_level(_warned_dropped_video_param, f"{api_model_id}:{key}"),
+                    warn_level(_warned_dropped_video_param, f"{api_model_id}:{latch_name}"),
                     "Dropping video parameter %r for %r: %s",
                     key,
                     api_model_id,
@@ -2403,8 +2428,13 @@ class VideoGenerationAdapter:
             if not b64:
                 _skip(file_id, "unencodable", "it could not be encoded")
                 continue
+            blob = b""
             try:
-                blob = await _decoded_payload(b64)
+                if via_file_host:
+                    blob = await _decoded_payload(b64)
+                    decoded_len = len(blob)
+                else:
+                    decoded_len = await _decoded_length(b64)
             except Exception as exc:
                 self.logger.debug(
                     "input_references asset %s is not valid base64: %s", file_id, exc,
@@ -2412,7 +2442,6 @@ class VideoGenerationAdapter:
                 )
                 _skip(file_id, "not-base64", "it contains invalid base64 data")
                 continue
-            decoded_len = len(blob)
             if family == "image":
                 if decoded_len > image_max:
                     _skip(file_id, "over-single", _over_reference_single)
@@ -2801,6 +2830,7 @@ class VideoGenerationAdapter:
         """Apply short-circuit conditions for the intent classifier.
 
         """
+        self._prune_intent_day_tally()
         if not bool(_admin_intent_floor(valves, "VIDEO_INTENT_ENABLED", True)):
             return False
         if not bool(resolve_intent_user_setting(
@@ -2843,16 +2873,25 @@ class VideoGenerationAdapter:
             while len(per_chat) > _INTENT_CHAT_COUNT_WINDOW:
                 per_chat.popitem(last=False)
         if charge_day:
-            if self._intent_pruned_day != day:
-                self._intent_call_counts_per_user_day = {
-                    key: count for key, count in self._intent_call_counts_per_user_day.items()
-                    if key[1] == day
-                }
-                self._intent_pruned_day = day
             self._intent_call_counts_per_user_day[(user_id, day)] = (
                 self._intent_call_counts_per_user_day.get((user_id, day), 0) + 1
             )
         return True
+
+    def _prune_intent_day_tally(self) -> None:
+        if not self._intent_call_counts_per_user_day:
+            return
+        from datetime import datetime
+
+        day = datetime.now(tz=UTC).strftime("%Y-%m-%d")
+        if self._intent_pruned_day == day:
+            return
+        self._intent_call_counts_per_user_day = {
+            key: count
+            for key, count in self._intent_call_counts_per_user_day.items()
+            if key[1] == day
+        }
+        self._intent_pruned_day = day
 
     def _intent_record_call(self, chat_id: str, user_id: str, *, valves: Any) -> None:
         return
@@ -3408,11 +3447,9 @@ class VideoGenerationAdapter:
                 video_model.get("supported_size_options"), list
             ):
                 top_level.add("size")
-            if "seed" in video_model and not capability_declared_off(video_model.get("seed")):
+            if not capability_declared_off(video_model.get("seed")):
                 top_level.add("seed")
-            if "generate_audio" in video_model and not capability_declared_off(
-                video_model.get("generate_audio")
-            ):
+            if not capability_declared_off(video_model.get("generate_audio")):
                 top_level.add("generate_audio")
             if isinstance(video_model.get("upscale_factor"), dict):
                 top_level.add("upscale_factor")

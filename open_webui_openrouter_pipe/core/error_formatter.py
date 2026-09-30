@@ -68,6 +68,7 @@ def _in_band_status(code: Any, error_type: str, *, default: int = 400) -> int:
     named_code = code.strip().lower() if isinstance(code, str) else ""
     for table, named in (
         (_IN_BAND_STATUS_BY_ERROR_TYPE, error_type.strip().lower()),
+        (_IN_BAND_STATUS_BY_NATIVE_CODE, error_type.strip().lower()),
         (_IN_BAND_STATUS_BY_ERROR_TYPE, named_code),
         (_IN_BAND_STATUS_BY_NATIVE_CODE, named_code),
     ):
@@ -534,12 +535,10 @@ class ErrorFormatter:
         elif total_tokens is not None:
             tokens_for_tps = total_tokens
 
-        cached_tokens = _to_int(
-            (usage.get("input_tokens_details") or {}).get("cached_tokens")
-        )
-        reasoning_tokens = _to_int(
-            (usage.get("output_tokens_details") or {}).get("reasoning_tokens")
-        )
+        input_detail = usage.get("input_tokens_details")
+        output_detail = usage.get("output_tokens_details")
+        cached_tokens = _to_int(input_detail.get("cached_tokens")) if isinstance(input_detail, dict) else None
+        reasoning_tokens = _to_int(output_detail.get("reasoning_tokens")) if isinstance(output_detail, dict) else None
 
         def _token_detail(label: str, icon: str, value: int) -> str:
             if use_icons and icon:

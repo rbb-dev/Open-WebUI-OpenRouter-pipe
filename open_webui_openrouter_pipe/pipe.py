@@ -1882,6 +1882,8 @@ class Pipe:
         admin_routing = (self.valves.ADMIN_PROVIDER_ROUTING_MODELS or "").strip()
         user_routing = (self.valves.USER_PROVIDER_ROUTING_MODELS or "").strip()
         if admin_routing or user_routing:
+            self._provider_routing_rows_probed = False
+            self._provider_routing_rows_may_exist_flag = False
             if await self._run_routing_pass(
                 admin_routing, user_routing, selected_models, install=True, rows=read_rows
             ):
@@ -1891,9 +1893,9 @@ class Pipe:
             await self._run_routing_pass("", "", selected_models, install=False, rows=read_rows)
 
         if not self._stale_filter_ids_pruned:
-            self._stale_filter_ids_pruned = True
             try:
                 count = await self._ensure_catalog_manager().prune_stale_openrouter_filter_ids()
+                self._stale_filter_ids_pruned = True
                 if count:
                     self.logger.info(
                         "Pruned stale openrouter_* filter IDs from %d model(s) on startup.", count

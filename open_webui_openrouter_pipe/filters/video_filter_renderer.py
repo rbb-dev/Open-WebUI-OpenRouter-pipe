@@ -578,7 +578,10 @@ def _seed_meaning(declared: bool) -> str:
 
 
 _FRAME_MODE_MEANINGS: dict[str, str] = {
-    "auto": "auto follows the model",
+    "auto": (
+        "auto takes the first picture you attach as the opening frame, and the last one "
+        "as the closing frame when this model takes one and you attach more than one"
+    ),
     "none": "none ignores them",
     "first_only": "first_only opens the shot with one",
     "first_last": "first_last pins the opening and the closing still, and sends the rest as references",
@@ -709,10 +712,9 @@ def build_video_filter_spec(
         upscale_bounds=upscale_bounds,
         creativity_modes=creativity_modes,
         contract_read=contract_read,
-        seed_capable="seed" in model and not capability_declared_off(model.get("seed")),
+        seed_capable=not capability_declared_off(model.get("seed")),
         seed_declared=model.get("seed") is True,
-        audio_capable="generate_audio" in model
-        and not capability_declared_off(model.get("generate_audio")),
+        audio_capable=not capability_declared_off(model.get("generate_audio")),
         intent_classifier_admin_enabled=intent_admin_enabled,
         intent_enabled_default=intent_enabled_default,
         intent_max_clarifications_default=intent_max_clar,
@@ -1586,10 +1588,24 @@ def _render_frame_block(spec: VideoFilterSpec) -> str:
     )
 
     return f'''        files = body.get("files")
-        if not (isinstance(files, list) and files) and isinstance(__metadata__, dict):
-            user_message = __metadata__.get("user_message")
-            if isinstance(user_message, dict):
-                files = user_message.get("files")
+        _body_files = files if isinstance(files, list) else []
+        _extra: list[Any] = []
+        if isinstance(__metadata__, dict):
+            _user_message = __metadata__.get("user_message")
+            if isinstance(_user_message, dict):
+                _um_files = _user_message.get("files")
+                if isinstance(_um_files, list):
+                    _seen: set[str] = set()
+                    for _item in _body_files:
+                        if isinstance(_item, dict):
+                            _fid = self._file_id(_item)
+                            if _fid:
+                                _seen.add(_fid)
+                    for _item in _um_files:
+                        if isinstance(_item, dict) and self._file_id(_item) in _seen:
+                            continue
+                        _extra.append(_item)
+        files = [*_body_files, *_extra]
         retained: list[Any] = []
         claimed: list[Any] = []
         unclaimed: list[Any] = []

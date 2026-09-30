@@ -16,6 +16,11 @@ from typing import Any
 import pytest
 
 from open_webui_openrouter_pipe.core.utils import _serialize_kind_marker
+from open_webui_openrouter_pipe.storage.owui_files import (
+    is_channel_chat,
+    is_linkable_chat,
+    is_temporary_chat,
+)
 from open_webui_openrouter_pipe.storage.video_persistence import (
     VideoPersistence,
     is_local_chat_id,

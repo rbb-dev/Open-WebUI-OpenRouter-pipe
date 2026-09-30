@@ -43,6 +43,7 @@ from open_webui_openrouter_pipe.api.gateway.chat_completions_adapter import Chat
 from open_webui_openrouter_pipe.storage.persistence import (
     ArtifactStore,
     _assembler_index_name,
+    _retention_index_name,
     _sanitize_table_fragment,
 )
 from open_webui_openrouter_pipe.core.errors import OpenRouterAPIError
@@ -10308,3 +10309,126 @@ async def _persist(manager, valve_obj, chat_id="c", message_id="m"):
         terminal=True,
         status="ok",
     )
+
+
+def _real_artifact_table(name: str = "response_items_stale_probe"):
+    """A table declared exactly as `persistence.py` declares the artifact table.
+
+    `created_at` is a bare `DateTime` with no `timezone=True`, which is the whole reason
+    the stale pass has to build a naive cutoff: the column stores a naive wall clock on
+    every supported dialect. `item_type` deliberately carries no index.
+    """
+    from sqlalchemy.orm import declarative_base, sessionmaker
+
+    base = declarative_base()
+    attrs = {
+        "__tablename__": name,
+        "__table_args__": (
+            Index(
+                _assembler_index_name(name),
+                "item_type",
+                "created_at",
+            ),
+            {
+                "extend_existing": True,
+                "sqlite_autoincrement": False,
+            },
+        ),
+        "id": Column(String(26), primary_key=True),
+        "chat_id": Column(String(64), index=True, nullable=False),
+        "message_id": Column(String(64), index=True, nullable=False),
+        "model_id": Column(String(128), nullable=True),
+        "item_type": Column(String(64), nullable=False),
+        "payload": Column(__import__("sqlalchemy").JSON, nullable=False, default=dict),
+        "is_encrypted": Column(Boolean, nullable=False, default=False),
+        "created_at": Column(DateTime, nullable=False),
+    }
+    model = type("ResponseItem_stale_probe", (base,), attrs)
+    return base, model
+
+
+def _real_store_manager(pipe_instance, model, session_factory):
+    """Point a real Pipe's manager at a real table and session factory."""
+    pipe = pipe_instance
+    store_any = cast(Any, pipe._artifact_store)
+    store_any._item_model = model
+    store_any._session_factory = session_factory
+    manager = pipe._session_log_manager
+    manager._artifact_store = cast(Any, store_any)
+    return pipe, manager
+
+
+def _real_archive_manager(pipe_instance, tmp_path, age_s=400.0):
+    """A manager on a real table, a real session factory and a real archive directory.
+
+    The store's own lock, fetch and delete are wired to the same engine, so the tick
+    runs the production path end to end: acquire the lock, read the segment rows, write
+    the encrypted zip, delete what it consumed. The valve is set to the minimum the field
+    declares -- `run_assembler_once` applies `SESSION_LOG_STALE_FINALIZE_SECONDS` as it
+    stands, and 300 is what the model accepts -- so a segment 400s old is exactly the
+    shape a real install sees at the minimum setting.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    base, model = _real_artifact_table()
+    engine = create_engine("sqlite://")
+    base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    pipe, manager = _real_store_manager(pipe_instance, model, factory)
+    store = cast(Any, pipe._artifact_store)
+    store._engine = engine
+    store._encryption_key = ""
+    store._encrypt_all = False
+    store._compression_enabled = False
+    pipe.valves.SESSION_LOG_STORE_ENABLED = True
+    pipe.valves.SESSION_LOG_DIR = str(tmp_path)
+    pipe.valves.SESSION_LOG_ZIP_PASSWORD = EncryptedStr("pass")
+    pipe.valves.SESSION_LOG_ZIP_COMPRESSION = "stored"
+    pipe.valves.SESSION_LOG_STALE_FINALIZE_SECONDS = 300
+    return pipe, manager, model, factory, age_s
+
+
+def _stage_real_segment(factory, model, chat_id, message_id, tag, *, age_s, terminal=False):
+    """One real segment row carrying exactly one real event, at an explicit age."""
+    from sqlalchemy.orm import sessionmaker as _sm
+
+    item_type = "session_log_segment_terminal" if terminal else "session_log_segment"
+    created = datetime.datetime.now(datetime.UTC).replace(tzinfo=None) - datetime.timedelta(seconds=age_s)
+    session = factory()
+    try:
+        session.add(
+            model(
+                id=generate_item_id(),
+                chat_id=chat_id,
+                message_id=message_id,
+                model_id=None,
+                item_type=item_type,
+                payload={
+                    "type": item_type,
+                    "user_id": "u1",
+                    "session_id": "s1",
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "request_id": f"req-{tag}",
+                    "created_at": 1.0,
+                    "events": [
+                        {
+                            "created": 1.0,
+                            "level": "INFO",
+                            "logger": "test",
+                            "request_id": f"req-{tag}",
+                            "session_id": "s1",
+                            "user_id": "u1",
+                            "message": tag,
+                        }
+                    ],
+                },
+                is_encrypted=False,
+                created_at=created,
+            )
+        )
+        session.commit()
+    finally:
+        session.close()
+    assert _sm is not None

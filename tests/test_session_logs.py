@@ -432,26 +432,56 @@ class TestSessionLogArchiveEdgeCases:
         assert not chat_dir.exists()
         assert not user_dir.exists()
 
-# ===== From test_session_log_merge.py =====
+    @staticmethod
+    def _assembler_on_a_real_table(pipe_instance, tmp_path):
+        """A real artifact table, one staged terminal segment, and a spy on the seal.
 
-"""Tests for session log archive merging functionality.
+        The valve is assigned AFTER construction on purpose: `_real_archive_manager`
+        hard-codes it to True and three other files import that helper, so adding a
+        keyword would change their harness too. The listener is attached to the engine
+        the store actually uses, and the spy replaces the bound method on this manager
+        only.
+        """
+        from sqlalchemy import event as sa_event
 
-These tests verify the merge helpers that prevent data loss when multiple
-pipe invocations share the same message_id (main response, title generation,
-tool calls, etc.).
-"""
+        from test_pipe import _real_archive_manager, _stage_real_segment
 
+        chat_id, message_id = "chat-gate", "msg-gate"
+        pipe, manager, model, factory, age = _real_archive_manager(pipe_instance, tmp_path)
+        _stage_real_segment(factory, model, chat_id, message_id, "GATE-SEGMENT", age_s=age, terminal=True)
 
-import io
-import json
-import tempfile
-import time
-from pathlib import Path
-from typing import Any
+        offers: list[tuple[str, str]] = []
+        statements: list[str] = []
+        real_seal = manager._assemble_and_write_bundle
 
-import pytest
+        def _assemble(chat_id_, message_id_, **kwargs) -> bool:
+            offers.append((chat_id_, message_id_))
+            return real_seal(chat_id_, message_id_, **kwargs)
 
-from open_webui_openrouter_pipe import Pipe
+        manager._assemble_and_write_bundle = _assemble  # type: ignore[method-assign]
+        sa_event.listen(manager._artifact_store._engine, "before_cursor_execute",
+                        lambda *_a, **kw: statements.append(str(kw.get("statement", ""))))
+        return manager, model, factory, (chat_id, message_id), offers, statements
+
+    @staticmethod
+    def _assert_the_staged_turn_was_offered_by_a_live_pass(manager, model, factory, staged) -> None:
+        """The load-bearing setup guard: the staged key IS a candidate on this table.
+
+        A green off-arm means nothing on a table where `_candidate_turns` returns nothing,
+        so the fixture is checked against the same query the pass uses before the property
+        under test is asserted. It is a guard, not an extra assertion: it holds on the
+        control manager and is what makes the off-arm's silence mean something.
+        """
+        model_obj, session_factory = manager._db_handles()
+        assert model_obj is model and session_factory is factory, (
+            f"the manager is not wired to the table the test staged a row on: "
+            f"{model_obj!r} / {session_factory!r}"
+        )
+        candidates = manager._candidate_turns(model, factory, 10, 300.0, ())
+        assert staged in [(chat_id, message_id) for _terminal, (chat_id, message_id) in candidates], (
+            f"the staged turn {staged} is not among the candidates {candidates}, so a pass "
+            f"that skipped it would look exactly like a pass the gate stopped"
+        )
 
 
 class TestConvertJsonlToInternal:
@@ -854,6 +884,34 @@ class TestMergeIntegration:
         assert events[2]["message"] == "C"
 
 
+
+
+
+
+
+
+# ===== From test_session_log_merge.py =====
+
+"""Tests for session log archive merging functionality.
+
+These tests verify the merge helpers that prevent data loss when multiple
+pipe invocations share the same message_id (main response, title generation,
+tool calls, etc.).
+"""
+
+
+import io
+import json
+import tempfile
+import time
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from open_webui_openrouter_pipe import Pipe
+
+
 # ===== From test_session_logger_thread_safety.py =====
 
 import logging
@@ -1190,3 +1248,13 @@ from sqlalchemy import orm as _sa_orm
 
 from open_webui_openrouter_pipe.core.utils import _stable_crockford_id
 from open_webui_openrouter_pipe.storage import persistence as _persistence_module
+
+
+def _assemble(pipe, chat_id, message_id, *, terminal, logs, password=b"pw", stale=3600):
+    return pipe._session_log_manager._assemble_and_write_bundle(
+        chat_id,
+        message_id,
+        terminal=terminal,
+        stale_finalize_seconds=stale,
+        archive_settings=(str(logs), password, "lzma", None),
+    )

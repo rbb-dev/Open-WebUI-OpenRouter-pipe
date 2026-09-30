@@ -106,6 +106,25 @@ class TestUnicodePromptInjection:
 # B.6 information disclosure — downgrade messages are user-friendly
 # -----------------------------------------------------------------------------
 
+def _intent(downgrades):
+    return VideoIntentResult(
+        intent="modify_prior_video",
+        frame_plan=[FramePlanEntry(source="prior_video_first_frame", source_index=0,
+                                   timestamp_seconds=None, target="first_frame")],
+        prompt="x", use_user_prompt=False, language="en", confidence="high",
+        clarification=None, reason="x", downgrades=list(downgrades),
+    )
+
+
+CODES = ["frame_extract_failed_idx_0", "frame_source_mismatch_used_first_frame",
+         "prior_video_index_0_unresolvable"]
+
+
+def _visible(out):
+    return [line for line in out.split("[openrouter:v1:intent_block_end")[0].splitlines()
+            if line.startswith(">")]
+
+
 class TestDowngradeUserFacingMessages:
     def test_known_codes_have_user_messages(self):
         msg = _user_facing_downgrade_message("frame_extract_failed_idx_0")
@@ -137,20 +156,32 @@ class TestDowngradeUserFacingMessages:
         assert "last frame" in msg.lower()
 
     def test_disclosure_block_uses_user_facing_messages(self):
-        intent = VideoIntentResult(
-            intent="modify_prior_video",
-            frame_plan=[FramePlanEntry(
-                source="prior_video_first_frame", source_index=0,
-                timestamp_seconds=None, target="first_frame",
-            )],
-            prompt="x", use_user_prompt=False, language="en", confidence="high",
-            clarification=None, reason="x",
-            downgrades=["frame_extract_failed_idx_0"],
-        )
-        out = render_intent_disclosure_block(intent, thumb_urls=["/api/v1/files/T/content"])
-        # The raw code should NOT appear in the user-visible block
-        assert "frame_extract_failed_idx_0" not in out.split("[openrouter:v1:intent_block_end")[0].split(">")[-1]
+        """Every note is user-facing prose, and every note gets its own ⚠️ line.
 
+        `docs/openrouter_video_intent_classifier.md:215` records the shape as
+        deliberate: two entries that fail the same way read as two *identical* ⚠️ lines,
+        not one deduplicated line. So the property is per note over the whole visible
+        region -- reading the text after the last `>` examines the final note only, and
+        on a multi-note block the first is never looked at at all.
+
+        Three codes spanning what the validator emits: a trailing index, a mapped
+        positional code, and a middle-index one. The `> ⚠️` count is the control that
+        keeps the block from being emptied to satisfy the absence checks.
+        """
+        intent = _intent(CODES)
+        out = render_intent_disclosure_block(intent, thumb_urls=["/api/v1/files/T/content"])
+        visible = _visible(out)
+        assert visible, f"the disclosure block rendered no visible lines: {out!r}"
+        for code in intent.downgrades:
+            for line in visible:
+                assert code not in line, (
+                    f"the internal downgrade code {code!r} reached the user on a visible "
+                    f"line, so the disclosure block leaks a code the person cannot act "
+                    f"on: {line!r}"
+                )
+        assert len([ln for ln in visible if ln.strip().startswith("> ⚠️")]) == len(CODES), (
+            f"expected one ⚠️ line per downgrade ({len(CODES)}), got {visible!r}"
+        )
 
 # -----------------------------------------------------------------------------
 # A.1 / A.2 path-and-auth checks (smoke tests via mock)

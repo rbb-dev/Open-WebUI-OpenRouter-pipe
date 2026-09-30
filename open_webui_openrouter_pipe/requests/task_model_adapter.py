@@ -26,6 +26,7 @@ from ..core.timing_logger import timed
 from ..core.utils import _render_error_template
 from ..models.registry import OpenRouterModelRegistry
 from ..storage.owui_files import is_temporary_chat
+from ..structured_task.client import output_message_text
 
 if TYPE_CHECKING:
     from ..pipe import Pipe
@@ -105,16 +106,7 @@ class TaskModelAdapter:
             return ""
 
         text_parts: list[str] = []
-        output_items = response.get("output", [])
-        if isinstance(output_items, list):
-            for item in output_items:
-                if not isinstance(item, dict) or item.get("type") != "message":
-                    continue
-                for content in item.get("content", []):
-                    if not isinstance(content, dict):
-                        continue
-                    if content.get("type") == "output_text":
-                        text_parts.append(content.get("text", "") or "")
+        text_parts.append(output_message_text(response.get("output")))
 
         joined = "\n".join(part for part in text_parts if part)
         if not joined.strip():

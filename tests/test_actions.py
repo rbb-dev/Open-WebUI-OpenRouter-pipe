@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import logging
+import weakref
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 

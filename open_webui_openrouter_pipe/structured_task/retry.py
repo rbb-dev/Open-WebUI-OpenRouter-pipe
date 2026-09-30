@@ -19,6 +19,7 @@ from .client import (
     TaskModelFault,
     _model_answer,
     normalise_model_content,
+    output_message_text,
     read_task_model_response_json,
 )
 from .logging import _fault_code, safe_log_payload
@@ -78,15 +79,9 @@ def _response_text(response: Any) -> str:
                         part_refusal = part.get("refusal")
                         if isinstance(part_refusal, str) and part_refusal.strip():
                             return part_refusal
-            parts = [
-                str(part.get("text") or "")
-                for item in output
-                if isinstance(item, dict) and item.get("type") == "message"
-                for part in (item.get("content") or [])
-                if isinstance(part, dict) and part.get("type") == "output_text"
-            ]
-            if parts:
-                return "\n".join(p for p in parts if p)
+            output_text = output_message_text(output)
+            if output_text:
+                return output_text
         if not isinstance(choices, list) or not choices:
             return _no_choices_reason(response)
     return ""

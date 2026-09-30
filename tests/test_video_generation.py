@@ -82,7 +82,6 @@ VIDEO_MODELS = json.loads(_VIDEO_CATALOG_FIXTURE.read_text())["data"]
 VIDEO_BY_ID = {item["id"]: item for item in VIDEO_MODELS}
 MP4_BYTES = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 32
 
-
 def _reference_png(width: int, height: int) -> bytes:
     import io
 
@@ -4985,21 +4984,6 @@ def test_an_explicit_false_still_hides_the_control(field):
     source = render_video_filter_source(model_id="minimax/hailuo-2.3", video_model=model)
 
     assert valve not in source
-
-
-@pytest.mark.parametrize("field", ["seed", "generate_audio"])
-def test_a_capability_the_catalog_never_mentions_renders_no_control(field):
-    """Absent is not null. `dict.get` answers None for both and they decide oppositely."""
-    model = {k: v for k, v in VIDEO_BY_ID["minimax/hailuo-2.3"].items() if k != field}
-    valve = "VIDEO_SEED" if field == "seed" else "VIDEO_GENERATE_AUDIO"
-
-    source = render_video_filter_source(model_id="minimax/hailuo-2.3", video_model=model)
-
-    assert valve not in source
-    top_level, _ = VideoGenerationAdapter._split_allowed_parameters(
-        object.__new__(VideoGenerationAdapter), model
-    )
-    assert field not in top_level
 
 
 @pytest.mark.parametrize(

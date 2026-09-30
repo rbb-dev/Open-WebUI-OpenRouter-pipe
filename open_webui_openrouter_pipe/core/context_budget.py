@@ -488,16 +488,16 @@ def _wire_chars(text: str) -> int:
 
 
 def _output_floor_chars(
-    text: str, build_stub: Callable[..., str] | None = None
+    text: str, build_stub: Callable[..., str] | None = None, *, wire_chars: int | None = None
 ) -> int:
     if is_tool_omission_stub(text):
-        return _wire_chars(text)
+        return _wire_chars(text) if wire_chars is None else wire_chars
     builder = build_stub or build_replayed_tool_omission_stub
     stub = builder(result_chars=len(text), remaining_tokens=0)
     stub_wire = _wire_chars(stub)
     if len(text) >= stub_wire:
         return stub_wire
-    return min(_wire_chars(text), stub_wire)
+    return min(_wire_chars(text) if wire_chars is None else wire_chars, stub_wire)
 
 
 def estimate_serialized_chars(
@@ -646,11 +646,20 @@ def _apply_tool_output_budget(
     fixed_chars = estimate_serialized_chars(
         _baseline_without_tool_outputs(items), referenced_sizes=referenced_sizes
     )
-    irreducible_chars = fixed_chars + max(fixed_overhead_chars, 0) + sum(
-        _output_floor_chars(_output_text_of(item), _builder(index))
-        for index, item in enumerate(items)
-        if isinstance(item, dict) and item.get("type") == "function_call_output"
-    )
+    measured: dict[int, tuple[str, int, int, int]] = {}
+    floor_chars_total = 0
+    for index, item in enumerate(items):
+        if not isinstance(item, dict) or item.get("type") != "function_call_output":
+            continue
+        output_text, pictures = tool_output_text_and_pictures(item.get("output"))
+        picture_chars = len(pictures) * _PICTURE_FLOOR_CHARS
+        wire_chars = _wire_chars(output_text)
+        floor_chars = _output_floor_chars(
+            output_text, _builder(index), wire_chars=wire_chars
+        )
+        measured[index] = (output_text, wire_chars, floor_chars, picture_chars)
+        floor_chars_total += floor_chars
+    irreducible_chars = fixed_chars + max(fixed_overhead_chars, 0) + floor_chars_total
     futile = bool(prompt_limit_chars) and irreducible_chars >= prompt_limit_chars
     if futile:
         logger.warning(futile_message, irreducible_chars, prompt_limit_chars)
@@ -663,13 +672,11 @@ def _apply_tool_output_budget(
         raw_call_id = item.get("call_id") or item.get("id")
         call_id = raw_call_id.strip() if isinstance(raw_call_id, str) else ""
 
-        output_text = _output_text_of(item)
-        picture_chars = _output_picture_chars(item)
+        output_text, wire_chars, floor_chars, picture_chars = measured[index]
 
         build_stub = _builder(index)
         result_chars = len(output_text) + picture_chars
-        floor_chars = _output_floor_chars(output_text, build_stub)
-        excess_chars = _wire_chars(output_text) + picture_chars - floor_chars
+        excess_chars = wire_chars + picture_chars - floor_chars
 
         if excess_chars <= remaining_chars:
             remaining_chars = max(remaining_chars - excess_chars, 0)

@@ -36,7 +36,7 @@ Provider routing filters support **two visibility modes** that control who can c
 | Mode | Who Configures | Can Users Disable? | Use Case |
 |------|---------------|-------------------|----------|
 | **Admin-only** | Admins only (Valves) | No (`toggle=False`) | Enforce provider policies |
-| **User-configurable** | Users (UserValves) | Yes (`toggle=True`) | Let users choose preferences |
+| **User-configurable** | Users (UserValves) | Yes (`toggle=True`) | Let users choose preferences (the sort key stays an admin knob: OWUI reads `priority` from the admin class only, so this mode also gets a one-field admin `Valves`) |
 | **Both** | Both (user overrides admin) | Yes | Admin defaults + user choice |
 
 An admin-only row carries `toggle=False`, and Open WebUI runs a filter whose module has no truthy `toggle` on *every* model on the instance rather than only the ones you listed. So a per-slug row that an admin ticks Global stops being per-slug: its provider preferences would apply to every model in the workspace. The pipe writes `is_global: False` on every update to a row it owns, so a Global tick on a routing entry is undone on the next model-list refresh.
@@ -185,6 +185,7 @@ Each generated filter has its own valves based on visibility:
 
 | Valve | Type | Default | Maps to OpenRouter API |
 |-------|------|---------|----------------------|
+| `priority` | `int` | `0` | Nothing — it is a sort key, not a request field. Filter execution order. OWUI runs a chat's attached filters sorted by (priority, id), lowest first. |
 | `ORDER` | `Literal[...]` | `"(no preference)"` | `provider.order` |
 | `ALLOW_FALLBACKS` | `bool` | `True` | `provider.allow_fallbacks` |
 | `REQUIRE_PARAMETERS` | `bool` | `False` | `provider.require_parameters` |
@@ -206,7 +207,11 @@ Each generated filter has its own valves based on visibility:
 
 #### User valves (`UserValves`) — for user-configurable or "both" visibility
 
-Same fields as admin valves, but configured by users per-chat.
+The routing controls, but configured by users per-chat. The two classes are not the same
+any more: `priority` is on `Valves` for all three visibilities and on `UserValves` for none.
+OWUI reads the sort key from the admin class alone, so on a user-configurable row the
+admin `Valves` holds `priority` and nothing else — a one-field panel, and the only place
+that row's order can be set.
 
 ---
 

@@ -230,7 +230,7 @@ class CircuitBreaker:
         if not scope_key:
             return
 
-        ttl = int(ttl_seconds or cls._AUTH_FAILURE_TTL_SECONDS)
+        ttl = cls._AUTH_FAILURE_TTL_SECONDS if ttl_seconds is None else int(ttl_seconds)
         if ttl <= 0:
             return
 

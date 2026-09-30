@@ -1696,11 +1696,21 @@ class TestProviderRoutingFilter:
         assert valves.ZDR is False
 
     def test_provider_filter_user_initializes(self, provider_filter_user):
-        """Test user provider filter initializes correctly."""
+        """Test user provider filter initializes correctly.
+
+        The instance carries an admin `valves` on every visibility: Open WebUI's
+        `apply_filter_valves` (utils/filter.py:121) returns early unless the instance
+        has both the attribute and the class, so a user-visibility row without them can
+        never have a stored value applied. What a user-visibility row must NOT publish
+        is an admin routing *control* -- those are what the admin valves are for, and
+        `priority` is the one field on that class (the sort key Open WebUI reads at
+        utils/filter.py:88-97, which has no per-user meaning).
+        """
         filt = provider_filter_user()
         assert filt.toggle is True
         assert hasattr(filt, 'user_valves')
-        assert not hasattr(filt, 'valves')
+        assert hasattr(filt, 'valves')
+        assert not hasattr(filt.valves, 'ORDER')
 
     def test_provider_filter_user_valves_has_fields(self, provider_filter_user):
         """Test user UserValves has all expected fields."""

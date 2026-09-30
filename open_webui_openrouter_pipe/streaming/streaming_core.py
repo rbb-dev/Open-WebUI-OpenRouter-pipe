@@ -671,11 +671,11 @@ class StreamingHandler:
                 and valves.API_CALL_ARTIFACT_MEMORY
             ):
                 api_hold_key = SessionLogger.request_id.get() or ""
-            if api_hold_key:
-                self._pipe._artifact_store._api_reply_memory.open("", api_hold_key)
-                holds_the_reply = True
             persist_chat_id = None if fusion_inner_call else chat_id
             persist_message_id = message_id if message_id else (api_hold_key or None)
+            if api_hold_key:
+                self._pipe._artifact_store._api_reply_memory.open(persist_chat_id, persist_message_id)
+                holds_the_reply = True
             model_started = asyncio.Event()
             responding_status_sent = False
             provider_status_seen = False
@@ -4214,7 +4214,7 @@ class StreamingHandler:
             if reply_over:
                 self._pipe._artifact_store._reply_memory.release(chat_id, message_id)
             if api_hold_key:
-                self._pipe._artifact_store._api_reply_memory.release("", api_hold_key)
+                self._pipe._artifact_store._api_reply_memory.release(persist_chat_id, persist_message_id)
 
             terminal_output: list[dict[str, Any]] = []
             if (
@@ -4422,7 +4422,7 @@ class StreamingHandler:
         self, body: ResponsesBody, valves: Pipe.Valves, message_id: str | None = None
     ) -> None:
         """Delete once-used reasoning artifacts when retention is limited to the next reply."""
-        if valves.PERSIST_REASONING_TOKENS != "next_reply":
+        if valves.PERSIST_REASONING_TOKENS == "conversation":
             return
         refs = getattr(body, "_replayed_reasoning_refs", None)
         if not refs:
@@ -4432,13 +4432,12 @@ class StreamingHandler:
             setattr(body, "_replayed_reasoning_refs", [])  # noqa: B010 - undeclared dynamic attribute; setattr keeps pyright quiet
 
 
-    def _select_llm_endpoint(
+    def _resolve_llm_endpoint(
         self,
         model_id: str,
         *,
         valves: Pipe.Valves,
-    ) -> Literal["responses", "chat_completions"]:
-        """Choose which OpenRouter endpoint to use for a given model id."""
+    ) -> tuple[Literal["responses", "chat_completions"], bool]:
         base_id = ModelFamily.base_model(model_id or "") or (model_id or "")
         undated_id = ModelFamily.undated(base_id) or base_id
         force_chat = _parse_model_patterns(valves.FORCE_CHAT_COMPLETIONS_MODELS)
@@ -4453,7 +4452,7 @@ class StreamingHandler:
                     base_id,
                     force_responses,
                 )
-            return "responses"
+            return "responses", True
         if _matches_any_model_pattern(base_id, force_chat) or _matches_any_model_pattern(
             undated_id, force_chat
         ):
@@ -4464,7 +4463,7 @@ class StreamingHandler:
                     base_id,
                     force_chat,
                 )
-            return "chat_completions"
+            return "chat_completions", True
         default_endpoint = valves.DEFAULT_LLM_ENDPOINT
         selected = "chat_completions" if default_endpoint == "chat_completions" else "responses"
         if self.logger.isEnabledFor(logging.DEBUG):
@@ -4475,7 +4474,16 @@ class StreamingHandler:
                 default_endpoint,
                 selected,
             )
-        return selected
+        return selected, False
+
+
+    def _select_llm_endpoint(
+        self,
+        model_id: str,
+        *,
+        valves: Pipe.Valves,
+    ) -> Literal["responses", "chat_completions"]:
+        return self._resolve_llm_endpoint(model_id, valves=valves)[0]
 
 
     def _select_llm_endpoint_with_forced(
@@ -4485,19 +4493,7 @@ class StreamingHandler:
         valves: Pipe.Valves,
     ) -> tuple[Literal["responses", "chat_completions"], bool]:
         """Return (endpoint, forced) where forced=True when a FORCE_* valve matched the model id."""
-        base_id = ModelFamily.base_model(model_id or "") or (model_id or "")
-        undated_id = ModelFamily.undated(base_id) or base_id
-        force_chat = _parse_model_patterns(valves.FORCE_CHAT_COMPLETIONS_MODELS)
-        force_responses = _parse_model_patterns(valves.FORCE_RESPONSES_MODELS)
-        if _matches_any_model_pattern(base_id, force_responses) or _matches_any_model_pattern(
-            undated_id, force_responses
-        ):
-            return "responses", True
-        if _matches_any_model_pattern(base_id, force_chat) or _matches_any_model_pattern(
-            undated_id, force_chat
-        ):
-            return "chat_completions", True
-        return self._select_llm_endpoint(model_id, valves=valves), False
+        return self._resolve_llm_endpoint(model_id, valves=valves)
 
 
     @staticmethod

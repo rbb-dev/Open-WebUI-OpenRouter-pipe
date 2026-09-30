@@ -983,7 +983,7 @@ class OpenRouterModelRegistry:
         chat_specs = _chat_merge_base(cls._specs)
 
         old_video_norms = (
-            set(cls._video_catalog_norms) - set(cls._chat_catalog_norms)
+            set(cls._video_catalog_norms)
             if isinstance(video_models, list) and not video_models
             else {
                 norm_id
@@ -1018,11 +1018,11 @@ class OpenRouterModelRegistry:
             capabilities = cls._derive_capabilities(
                 full.get("architecture") or {}, full.get("pricing") or {}
             )
-            capabilities["image_generation"] = False
             capabilities["video_generation"] = False
             restored = dict(merged)
             restored["features"] = features
             restored["capabilities"] = capabilities
+            restored["supported_parameters"] = frozenset(full.get("supported_parameters") or set())
             restored.pop("video_model", None)
             new_specs[norm_id] = restored
 

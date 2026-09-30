@@ -43,6 +43,73 @@ _STRICT_UNSUPPORTED_KEYS = (
     "format",
 )
 
+_JSON_TYPE_OF_VALUE = {
+    type(None): "null",
+    bool: "boolean",
+    int: "integer",
+    float: "number",
+    str: "string",
+}
+
+
+def _type_from_pinned_values(node: dict[str, Any]) -> str | None:
+    if isinstance(node.get("enum"), list):
+        values = node["enum"]
+    elif "const" in node:
+        values = [node["const"]]
+    else:
+        return None
+    if not values:
+        return None
+    kinds: set[str] = set()
+    for value in values:
+        kind = _JSON_TYPE_OF_VALUE.get(type(value))
+        if kind is None:
+            return None
+        kinds.add(kind)
+    if kinds == {"integer", "number"}:
+        return "number"
+    return kinds.pop() if len(kinds) == 1 else None
+
+
+def _strip_unsupported(node: dict[str, Any]) -> None:
+    for unsupported_key in _STRICT_UNSUPPORTED_KEYS:
+        node.pop(unsupported_key, None)
+
+
+def _admits_null(node: Any) -> bool:
+    if not isinstance(node, dict):
+        return False
+    ptype = node.get("type")
+    if ptype == "null" or (isinstance(ptype, list) and "null" in ptype):
+        return True
+    return any(
+        _admits_null(branch)
+        for key in ("anyOf", "oneOf")
+        for branch in (node.get(key) or [])
+    )
+
+
+def _make_optional_nullable(node: dict[str, Any]) -> None:
+    ptype = node.get("type")
+    if isinstance(ptype, str):
+        if ptype != "null":
+            node["type"] = [ptype, "null"]
+        return
+    if isinstance(ptype, list):
+        if "null" not in ptype:
+            node["type"] = ptype + ["null"]
+        return
+    for key in ("anyOf", "oneOf"):
+        branches = node.get(key)
+        if isinstance(branches, list) and branches:
+            if not _admits_null(node):
+                branches.append({"type": "null"})
+            return
+    inner = copy.deepcopy(node)
+    node.clear()
+    node["anyOf"] = [inner, {"type": "null"}]
+
 
 def _inline_allof(
     node: dict[str, Any],
@@ -374,13 +441,13 @@ def _strictify_schema_impl(schema: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(node, dict):
             continue
 
-        for unsupported_key in _STRICT_UNSUPPORTED_KEYS:
-            node.pop(unsupported_key, None)
+        _strip_unsupported(node)
 
         if "$ref" in node:
             continue
 
         _inline_allof(node, defs_lookup, resolve_budget)
+        _strip_unsupported(node)
         if "$ref" in node:
             if node.pop(_FREE_FORM_ITEMS_KEY, None) is not None:
                 logger.debug("Dropped the free-form marker from a node the unwrap turned into a $ref.")
@@ -423,12 +490,19 @@ def _strictify_schema_impl(schema: dict[str, Any]) -> dict[str, Any]:
                 if not isinstance(p, dict):
                     continue
 
-                for unsupported_key in _STRICT_UNSUPPORTED_KEYS:
-                    p.pop(unsupported_key, None)
+                _strip_unsupported(p)
+                _inline_allof(p, defs_lookup, resolve_budget)
+                _strip_unsupported(p)
                 if "$ref" in p:
+                    if name in optional_candidates:
+                        _make_optional_nullable(p)
                     continue
 
                 # Ensure every property schema has a type key (strict mode requirement)
+                if "type" not in p:
+                    pinned_type = _type_from_pinned_values(p)
+                    if pinned_type is not None:
+                        p["type"] = pinned_type
                 if "type" not in p:
                     schema_structure_keys = {"properties", "items", "anyOf", "oneOf", "allOf"}
                     has_nested_structure = any(k in p for k in schema_structure_keys)
@@ -462,11 +536,7 @@ def _strictify_schema_impl(schema: dict[str, Any]) -> dict[str, Any]:
 
                 # Handle optional fields by adding null to type
                 if name in optional_candidates:
-                    ptype = p.get("type")
-                    if isinstance(ptype, str) and ptype != "null":
-                        p["type"] = [ptype, "null"]
-                    elif isinstance(ptype, list) and "null" not in ptype:
-                        p["type"] = ptype + ["null"]
+                    _make_optional_nullable(p)
                 stack.append(p)
 
         items = node.get("items")
@@ -478,8 +548,11 @@ def _strictify_schema_impl(schema: dict[str, Any]) -> dict[str, Any]:
                 and "items" not in items
                 and "$ref" not in items
             ):
-                items["type"] = "object"
-                logger.debug("Added default type 'object' to empty items schema")
+                items["type"] = _type_from_pinned_values(items) or "object"
+                logger.debug(
+                    "Added default type '%s' to items schema with no type or schema structure",
+                    items["type"],
+                )
             if _is_free_form_items_node(items):
                 items[_FREE_FORM_ITEMS_KEY] = True
             stack.append(items)
@@ -500,8 +573,10 @@ def _strictify_schema_impl(schema: dict[str, Any]) -> dict[str, Any]:
                             and "items" not in br
                             and "$ref" not in br
                         ):
-                            br["type"] = "object"
-                            logger.debug("Added default type 'object' to empty %s branch", key)
+                            br["type"] = _type_from_pinned_values(br) or "object"
+                            logger.debug(
+                                "Added default type '%s' to empty %s branch", br["type"], key
+                            )
                         stack.append(br)
 
     return schema

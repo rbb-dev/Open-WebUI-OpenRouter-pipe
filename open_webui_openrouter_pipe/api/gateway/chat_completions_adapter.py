@@ -1180,10 +1180,10 @@ class ChatCompletionsAdapter:
         idle_flush_seconds = float(idle_flush_ms) / 1000 if idle_flush_ms > 0 else None
         passthrough_deltas = delta_char_limit <= 0 and idle_flush_ms <= 0
         model_id = (responses_request_body or {}).get("model") or ""
-        endpoint = endpoint_override or self._pipe._streaming_handler._select_llm_endpoint(str(model_id), valves=effective_valves)
         forced_selected_endpoint, endpoint_forced = self._pipe._streaming_handler._select_llm_endpoint_with_forced(
             str(model_id), valves=effective_valves
         )
+        endpoint = endpoint_override or forced_selected_endpoint
 
         responses_emitted_user_visible = False
         responses_buffer: list[dict[str, Any]] = []

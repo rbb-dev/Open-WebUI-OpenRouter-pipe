@@ -234,7 +234,7 @@ _CAPABILITY_KNOB = {"seed": "- `Seed`", "generate_audio": "- `Audio`"}
         pytest.param(True, True, "yes", id="declared-on"),
         pytest.param(False, False, "no", id="declared-off"),
         pytest.param(None, True, "not published", id="declared-nothing"),
-        pytest.param(_ABSENT, False, "no", id="not-in-the-contract"),
+        pytest.param(_ABSENT, True, "not published", id="not-in-the-contract"),
     ],
 )
 def test_video_help_reports_the_capability_its_own_panel_draws(field, published, drawn, reads):
@@ -243,6 +243,12 @@ def test_video_help_reports_the_capability_its_own_panel_draws(field, published,
     `null` declares nothing: the filter offers the control and the model applies its own
     default. Help judged it with `is True`, so a model publishing `seed: null` was told
     "Deterministic seed: no" beside a panel that draws a Seed control.
+
+    The `not-in-the-contract` row was inverted on 2026-09-30 by H1855-2: a key the
+    catalogue omits has said nothing, which is not a refusal, so the filter now draws the
+    control on it too and help reads it the way the null row does. Only a published
+    `false` withholds it. See
+    `tests/test_a_video_model_that_says_nothing_about_a_seed_still_gets_the_control.py`.
     """
     model = dict(VIDEO_BY_ID["google/veo-3.1"])
     if published is _ABSENT:

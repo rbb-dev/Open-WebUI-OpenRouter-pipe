@@ -1179,8 +1179,8 @@ default applies; the second gets no control.
 | `VIDEO_SIZE` | `Literal["", …]` | `""` | top-level `size` | `supported_sizes` non-empty | 19 of 29 |
 | `VIDEO_FRAME_MODE` | `Literal["auto", "none", "first_only"(, "first_last")]` | `"auto"` | controls which chat-attached images become `frame_images[]` keyframes and which are sent as references instead (the keyframes go first and the references after them, in the order you attached them, however many there are); under `"none"` no picture is sent as a reference either and every picture is left in the request; a clip or a sound file attached alongside is not a picture and is still sent as a reference | `supported_frame_images` non-empty | 24 of 29 |
 | `VIDEO_NEGATIVE_PROMPT` | `str` | `""` | passthrough `negative_prompt` (or `negativePrompt` on Veo) | `"negative_prompt"` or `"negativePrompt"` in `allowed_passthrough_parameters` | 8 of 29 |
-| `VIDEO_GENERATE_AUDIO` | `Literal["model_default", "on", "off"]` | `"model_default"` | top-level `generate_audio` (boolean) | `generate_audio` present and not published as `false` | 22 of 29 |
-| `VIDEO_SEED` | `int` (`ge=0`) | `0` | top-level `seed` | `seed` present and not published as `false` | 19 of 29 |
+| `VIDEO_GENERATE_AUDIO` | `Literal["model_default", "on", "off"]` | `"model_default"` | top-level `generate_audio` (boolean) | not published as `false` | 22 of 29 |
+| `VIDEO_SEED` | `int` (`ge=0`) | `0` | top-level `seed` | not published as `false` | 19 of 29 |
 | `VIDEO_AUDIO_URL` | `str` | `""` | passthrough `audio` (URL) | `"audio"` allowed, **and** `audio` withheld only while the model publishes an `input_modalities` list that omits it. A model whose sweep has not been read publishes no such list and is offered every reference control, so the draw set depends on sweep state and reopens on every sweep timeout | none with the recorded sweep; Wan 2.6 and 2.7 draw it while the sweep is unread |
 | `VIDEO_REFERENCE_VIDEO_URL` | `str` | `""` | passthrough `video` | `"video"` allowed, **and** `video` withheld only while the model publishes an `input_modalities` list that omits it — sweep-state dependent as above | none with the recorded sweep; Wan 2.7 draws it while the sweep is unread |
 | `VIDEO_REFERENCE_VIDEOS_JSON` | `str` (JSON array) | `""` | passthrough `videos` | `"videos"` allowed, **and** `video` withheld only while the model publishes an `input_modalities` list that omits it — sweep-state dependent as above | none with the recorded sweep; Wan 2.7 draws it while the sweep is unread |
@@ -1438,6 +1438,11 @@ images, a second image on a first-frame-only model, a clip, a sound file,
 or any image at all on a model with no frame support — is sent to the
 model as a **reference**: material for it to draw on rather than a fixed
 start or end point. Nothing you attach is silently discarded any more.
+
+Open WebUI keeps pictures out of the request-level file list — it feeds
+them to a chat as `image_url` parts — so the filter reads the turn's own
+attachment list off `metadata["user_message"]` and merges the two. A
+picture attached beside a document still anchors the clip.
 
 The intent classifier sees the same list. Before this was fixed, a
 reference was invisible to it while remaining visible to the video model:
@@ -2407,9 +2412,18 @@ Key files:
   model the video catalog itself registered, so a provider withdrawal leaves
   the picker; a model the chat `/models` catalog also publishes is spared by
   that chat provenance, not by being unowned, and is retired only when
-  `/models` stops listing it. A fetch that raised retires nothing. What is
-  honoured is the model list, not the Open WebUI model row, which the
-  model-editor flow retires.
+  `/models` stops listing it. Spared is not the same as untouched: a model the
+  video catalog stops listing at all -- whether a sweep that publishes fewer
+  rows or none, and whether the rows are gone because the endpoint was retired
+  or because `ENABLE_VIDEO_GENERATION` was turned off after a successful fetch
+  -- is also returned to the chat catalog's own features, capability flags and
+  tool-calling parameters, and loses the video contract with them. The
+  tool-calling parameters matter because they are the video endpoint's
+  passthrough set and not the chat model's; a spec still carrying the video
+  row's reads as tool-incapable to `TOOL_CALLING_FILTER` and to the request
+  build, which then posts no tools at all. A fetch that raised retires
+  nothing. What is honoured is the model list, not the Open WebUI model row,
+  which the model-editor flow retires.
 - [`models/catalog_manager.py`](../open_webui_openrouter_pipe/models/catalog_manager.py)
   — metadata sync that attaches and defaults filters.
 - [`core/config.py`](../open_webui_openrouter_pipe/core/config.py)

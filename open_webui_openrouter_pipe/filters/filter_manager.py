@@ -78,6 +78,13 @@ _ROUTING_CONTROL_KEYS: dict[str, str] = {
 
 _QUANTIZATION_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 
+_PRIORITY_FIELD = (
+    '        priority: int = Field(\n'
+    '            default=0,\n'
+    '            description="Priority level for the filter operations.",\n'
+    '        )'
+)
+
 if TYPE_CHECKING:
     from ..pipe import Pipe
 
@@ -3497,14 +3504,29 @@ __KEEP_WHAT_STILL_FITS__
                 return field.get_default(call_default_factory=True)
             return value
 ''' if dropped else ""
+        priority_guard = '''
+        @field_validator("priority", mode="before")
+        @classmethod
+        def _drop_unusable_priority(cls, value: Any, info: ValidationInfo) -> Any:
+            field = cls.model_fields[info.field_name]
+            try:
+                TypeAdapter(field.annotation).validate_python(value)
+            except ValidationError:
+                _warn_unusable_setting(info.field_name, value, field.get_default())
+                return field.get_default(call_default_factory=True)
+            return value
+'''
 
-        valves_class = ""
-        if visibility in ("admin", "both"):
-            valves_class = f'''
+        admin_controls = (
+            f"{rendered_controls}\n{stale_choice_guard}{stale_value_guard}"
+            if visibility in ("admin", "both")
+            else ""
+        )
+        valves_class = f'''
     class Valves(BaseModel):
         """Admin-level provider routing preferences."""
-{rendered_controls}
-{stale_choice_guard}{stale_value_guard}'''
+{_PRIORITY_FIELD}
+{admin_controls}{priority_guard}'''
 
         user_valves_class = ""
         if visibility in ("user", "both"):
@@ -3516,8 +3538,7 @@ __KEEP_WHAT_STILL_FITS__
 
         # Generate init based on visibility
         init_body = "        self.log = logging.getLogger(f\"openrouter.provider.{MODEL_SLUG}\")\n        self.log.setLevel(SRC_LOG_LEVELS.get(\"OPENAI\", logging.INFO))"
-        if visibility in ("admin", "both"):
-            init_body += "\n        self.valves = self.Valves()"
+        init_body += "\n        self.valves = self.Valves()"
         if visibility in ("user", "both"):
             init_body += "\n        self.user_valves = self.UserValves()"
 

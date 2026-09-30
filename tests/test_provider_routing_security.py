@@ -384,7 +384,14 @@ class TestGeneratedInletMethod:
         assert "class UserValves" not in source
 
     def test_user_only_filter_structure(self):
-        """User-only filters should have toggle=True and no Valves."""
+        """User-only filters publish no admin routing *control*, on any class.
+
+        The row does carry an admin `Valves` class, because the only field on it is
+        `priority` -- the sort key Open WebUI reads at utils/filter.py:88-97, and it
+        only reads it from there, so a user-visibility row without the class could
+        never be ordered. What must stay admin-only is the routing control surface:
+        the pickers, the toggles and the ceilings all appear under `Valves` here.
+        """
         source = FilterManager._render_provider_routing_filter_source(
             model_slug="test/model",
             providers=["openai"],
@@ -395,8 +402,18 @@ class TestGeneratedInletMethod:
         assert "toggle = True" in source
         assert "class UserValves(BaseModel):" in source
         lines = source.split("\n")
-        has_admin_valves = any("class Valves(BaseModel):" in line for line in lines)
-        assert not has_admin_valves
+        admin_class = lines.index("    class Valves(BaseModel):")
+        user_class = lines.index("    class UserValves(BaseModel):")
+        admin_body = "\n".join(lines[admin_class:user_class])
+        user_body = "\n".join(lines[user_class:])
+        admin_controls = re.findall(r"^        ([A-Z][A-Z_0-9]+): ", admin_body, re.M)
+        assert not admin_controls, (
+            f"a user-visibility row's admin Valves publishes routing controls "
+            f"{sorted(set(admin_controls))}; users configure those per chat through "
+            f"UserValves, and the admin class is only there for the sort key"
+        )
+        assert "priority: int = Field(" in admin_body
+        assert "priority: int = Field(" not in user_body
 
     def test_both_visibility_has_both_valves(self):
         """Both visibility should have both Valves and UserValves."""

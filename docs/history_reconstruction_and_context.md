@@ -25,7 +25,7 @@ Inputs (high level):
     without an id at all, so the id a batched call passes is `None`.
 - Retention/pruning:
   - `pruning_turns` (from `TOOL_OUTPUT_RETENTION_TURNS`)
-  - `replayed_reasoning_refs` (for `PERSIST_REASONING_TOKENS="next_reply"` cleanup)
+  - `replayed_reasoning_refs` (for the `PERSIST_REASONING_TOKENS="next_reply"` and `"disabled"` cleanup)
 - Runtime context for multimodal conversion:
   - `user_obj`, `event_emitter`
   - `valves` (or defaults to `self.valves`)
@@ -286,7 +286,7 @@ cleanup. It is never published as an output item, so Open WebUI neither draws it
 
 ## 6. Reasoning replay and `PERSIST_REASONING_TOKENS`
 
-When replayed artifacts include reasoning items, the pipe can optionally record references in `replayed_reasoning_refs` so the caller can delete those artifacts after replay when reasoning retention is limited to a single turn. Under `next_reply`, the cleanup runs only on a generation that finished the reply: it must not have been cancelled or errored, and it must not have handed its tool calls back for another request to answer. The two ways a reply is not finished are both guarded by the same clause. A Continue keeps the rows of the message that request is still writing, so continuing an answer does not delete the reasoning of the generation it continues; a hand-back keeps them, because the request that comes back to answer the tool results is the one that will need them, and when that request arrives it is the one that deletes them; if it never arrives -- the user stops, or the sender errors -- the rows wait for the housekeeping sweep, because no generation finished the reply and `next_reply` has nothing to bind to. The tool-round copies of §5.4 are not reasoning and are not deleted with it.
+When replayed artifacts include reasoning items, the pipe can optionally record references in `replayed_reasoning_refs` so the caller can delete those artifacts after replay when reasoning retention is limited to a single turn. Under `next_reply` and `disabled` alike, the cleanup runs only on a generation that finished the reply: it must not have been cancelled or errored, and it must not have handed its tool calls back for another request to answer. The two ways a reply is not finished are both guarded by the same clause. A Continue keeps the rows of the message that request is still writing, so continuing an answer does not delete the reasoning of the generation it continues; a hand-back keeps them, because the request that comes back to answer the tool results is the one that will need them, and when that request arrives it is the one that deletes them; if it never arrives -- the user stops, or the sender errors -- the rows wait for the housekeeping sweep, because no generation finished the reply and `next_reply` has nothing to bind to. The tool-round copies of §5.4 are not reasoning and are not deleted with it.
 
 System default is `PERSIST_REASONING_TOKENS="conversation"`; see [Valves & Configuration Atlas](valves_and_configuration_atlas.md) for the exact semantics and defaults.
 

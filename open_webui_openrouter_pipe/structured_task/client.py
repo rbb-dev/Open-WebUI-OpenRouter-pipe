@@ -16,6 +16,26 @@ _TASK_RESPONSE_MAX_BYTES = 256 * 1024
 _DEFAULT_MAX_HOLD_BYTES = 4 * _TASK_RESPONSE_MAX_BYTES
 
 
+def output_message_text(output: Any) -> str:
+    if not isinstance(output, list):
+        return ""
+    texts: list[str] = []
+    for item in output:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        parts = item.get("content") or []
+        if not isinstance(parts, list):
+            continue
+        text = "".join(
+            str(part.get("text") or "")
+            for part in parts
+            if isinstance(part, dict) and part.get("type") == "output_text"
+        )
+        if text and not text.isspace():
+            texts.append(text)
+    return "\n".join(texts)
+
+
 def _content_part_text(item: Any) -> str | None:
     if not isinstance(item, dict):
         return str(item)
@@ -191,7 +211,6 @@ async def read_task_model_response_json(response: Any) -> dict[str, Any]:
 
     output_items = response.get("output")
     if isinstance(output_items, list) and output_items:
-        text_parts: list[str] = []
         for item in output_items:
             if not isinstance(item, dict):
                 continue
@@ -210,18 +229,14 @@ async def read_task_model_response_json(response: Any) -> dict[str, Any]:
                     part_refusal = content.get("refusal")
                     if isinstance(part_refusal, str) and part_refusal.strip():
                         raise TaskModelFault("task_model_refusal")
-                    continue
-                if content.get("type") == "output_text":
-                    text_parts.append(str(content.get("text") or ""))
-        if text_parts:
-            joined = "\n".join(p for p in text_parts if p).strip()
-            if len(joined) > _TASK_RESPONSE_MAX_BYTES:
-                raise TaskModelFault("task_model_response_too_large", f"{len(joined)}")
-            if joined:
-                try:
-                    return json.loads(joined)
-                except json.JSONDecodeError as exc:
-                    raise TaskModelFault("task_model_invalid_json", f"{exc}") from exc
+        joined = output_message_text(output_items).strip()
+        if len(joined) > _TASK_RESPONSE_MAX_BYTES:
+            raise TaskModelFault("task_model_response_too_large", f"{len(joined)}")
+        if joined:
+            try:
+                return json.loads(joined)
+            except json.JSONDecodeError as exc:
+                raise TaskModelFault("task_model_invalid_json", f"{exc}") from exc
 
     choices = response.get("choices")
     if not isinstance(choices, list) or not choices:

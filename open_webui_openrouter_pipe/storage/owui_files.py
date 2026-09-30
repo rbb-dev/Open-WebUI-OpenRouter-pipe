@@ -665,6 +665,39 @@ def _referenced_file_ids(items: Any) -> dict[str, str]:
     return found
 
 
+def _names_an_internal_reference(input_items: Any) -> bool:
+    if _referenced_file_ids(input_items):
+        return True
+    for item in input_items if isinstance(input_items, list) else ():
+        if not isinstance(item, dict):
+            continue
+        parts = item.get("output") if item.get("type") == "function_call_output" else item.get("content")
+        if not isinstance(parts, list):
+            continue
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") == "input_image":
+                url = part.get("image_url")
+                if isinstance(url, str) and url.strip() and names_an_owui_file_path(url.strip()):
+                    return True
+                continue
+            if part.get("type") != "input_file":
+                continue
+            raw_id = part.get("file_id")
+            if (
+                isinstance(raw_id, str)
+                and raw_id.strip()
+                and not raw_id.strip().startswith("file-")
+            ):
+                return True
+            for key in ("file_data", "file_url"):
+                raw = part.get(key)
+                if isinstance(raw, str) and raw.strip() and names_an_owui_file_path(raw.strip()):
+                    return True
+    return False
+
+
 async def _file_records_by_id(
     ids: Iterable[str], logger: logging.Logger
 ) -> dict[str, Any]:
@@ -1016,6 +1049,8 @@ class OwuiFileGateway:
                 )
             part["image_url"] = inlined.data_url
 
+        if not _names_an_internal_reference(input_items):
+            return {**request_body, "input": list(input_items)}
         working = copy.deepcopy(input_items)
         for item in working:
             if not isinstance(item, dict):

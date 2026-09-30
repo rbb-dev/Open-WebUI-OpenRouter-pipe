@@ -110,7 +110,7 @@ def open_live_listener_sync(
 
 
 def vetting_handler(**valve_over: Any) -> MultimodalHandler:
-    """A real handler with only the valves the address gate and the referer stamp read."""
+    """A real handler with only the valves the address gate, the size gate and the referer stamp read."""
     valves = SimpleNamespace(
         ALLOW_INSECURE_HTTP=False,
         ALLOW_INSECURE_HTTP_HOSTS="",

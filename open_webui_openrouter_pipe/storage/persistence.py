@@ -200,6 +200,11 @@ def _assembler_index_name(table_name: str) -> str:
     return f"ix_{tail}_item_type_created"
 
 
+def _retention_index_name(table_name: str) -> str:
+    tail = table_name.rsplit("_", 1)[-1][:8]
+    return f"ix_{tail}_created_at"
+
+
 @contextlib.contextmanager
 def _db_session(factory: Callable[..., Session]):
     """Open a SQLAlchemy session, ensuring rollback-on-error and safe close.
@@ -577,6 +582,7 @@ class ArtifactStore:
         self._fernet: Fernet | None = None
         self._fernet_key_source: str | None = None
         self._lz4_warning_emitted = False
+        self._lz4_faulted: bool = False
 
     def _raw_valve_column(self) -> tuple[Any, bool]:
         session_factory = self._session_factory
@@ -683,6 +689,8 @@ class ArtifactStore:
         self._artifact_table_name: str | None = None
         self._db_executor: ThreadPoolExecutor | None = None
         self._artifact_store_signature: tuple[str, str] | None = None
+        self._closed: bool = False
+        self._store_lock = threading.Lock()
 
     def _initialize_cleanup_state(self):
         """Initialize cleanup worker state."""
@@ -694,6 +702,9 @@ class ArtifactStore:
         """Configure encryption/compression + ensure the backing table exists."""
         from open_webui_openrouter_pipe.core.config import EncryptedStr
 
+        if self._closed:
+            return
+
         plaintext = EncryptedStr.read(valves.ARTIFACT_ENCRYPTION_KEY)
         encryption_key = (plaintext or "").strip()
         if encryption_key != self._encryption_key:
@@ -704,7 +715,7 @@ class ArtifactStore:
         self._compression_min_bytes = valves.MIN_COMPRESS_BYTES
 
         wants_compression = valves.ENABLE_LZ4_COMPRESSION
-        compression_enabled = wants_compression and lz4frame is not None
+        compression_enabled = wants_compression and lz4frame is not None and not self._lz4_faulted
         if wants_compression and lz4frame is None and not self._lz4_warning_emitted:
             self.logger.warning("LZ4 compression requested but the 'lz4' package is not available. Artifacts will be stored without compression.")
             self._lz4_warning_emitted = True
@@ -715,21 +726,25 @@ class ArtifactStore:
         pipe_identifier = pipe_identifier or self.id
         if not pipe_identifier:
             raise RuntimeError("Pipe identifier is missing; Open WebUI did not assign an id to this manifold.")
+        self._ensure_store_locked(pipe_identifier)
+
+    def _ensure_store_locked(self, pipe_identifier: str) -> None:
         table_fragment = _sanitize_table_fragment(pipe_identifier)
         desired_signature = (table_fragment, self._table_key)
-        if (
-            self._artifact_store_signature == desired_signature
-            and self._item_model is not None
-            and self._session_factory is not None
-            and self._engine is not None
-            and self._db_executor is not None
-        ):
-            return
+        with self._store_lock:
+            if (
+                self._artifact_store_signature == desired_signature
+                and self._item_model is not None
+                and self._session_factory is not None
+                and self._engine is not None
+                and self._db_executor is not None
+            ):
+                return
 
-        self._init_artifact_store(
-            pipe_identifier=pipe_identifier,
-            table_fragment=table_fragment,
-        )
+            self._init_artifact_store(
+                pipe_identifier=pipe_identifier,
+                table_fragment=table_fragment,
+            )
 
     def _reconcile_redis_valve(self, valves: Any) -> None:
         loop = self._resolve_valve_loop()
@@ -932,6 +947,10 @@ class ArtifactStore:
                 Index(
                     _assembler_index_name(table_name),
                     "item_type",
+                    "created_at",
+                ),
+                Index(
+                    _retention_index_name(table_name),
                     "created_at",
                 ),
                 table_args,
@@ -1306,8 +1325,9 @@ class ArtifactStore:
             return serialized, False
         try:
             compressed = lz4frame.compress(serialized)
-        except Exception as exc:  # pragma: no cover - depends on native lib
+        except Exception as exc:
             self.logger.warning("LZ4 compression failed; disabling compression for the remainder of this process: %s", exc, exc_info=True)
+            self._lz4_faulted = True
             self._compression_enabled = False
             return serialized, False
         if not compressed or len(compressed) >= len(serialized):
@@ -2923,8 +2943,10 @@ class ArtifactStore:
 
     def close(self) -> None:
         """Close background resources cleanly (formerly 'shutdown')."""
-        executor = self._db_executor
-        self._db_executor = None
+        with self._store_lock:
+            self._closed = True
+            executor = self._db_executor
+            self._db_executor = None
         if executor:
             try:
                 executor.shutdown(wait=False, cancel_futures=True)

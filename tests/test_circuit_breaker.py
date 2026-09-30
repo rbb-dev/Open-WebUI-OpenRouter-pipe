@@ -297,18 +297,6 @@ class TestCircuitBreakerAuthFailure:
         # Verify no state was created
         assert len(CircuitBreaker._AUTH_FAILURE_UNTIL) == 0
 
-    def test_note_auth_failure_uses_default_ttl_for_zero(self) -> None:
-        """Note auth failure treats ttl_seconds=0 as default (60s) due to 'or' fallback.
-
-        This is a subtle behavior: `0 or 60` evaluates to `60` in Python.
-        """
-        with patch.object(time, "time", return_value=1000.0):
-            CircuitBreaker.note_auth_failure("scope-1", ttl_seconds=0)
-
-        # 0 is falsy, so it falls back to default 60 seconds
-        assert "scope-1" in CircuitBreaker._AUTH_FAILURE_UNTIL
-        assert CircuitBreaker._AUTH_FAILURE_UNTIL["scope-1"] == 1060.0
-
     def test_note_auth_failure_does_nothing_for_negative_ttl(self) -> None:
         """Note auth failure should return early for negative TTL (lines 230-231)."""
         CircuitBreaker.note_auth_failure("scope-2", ttl_seconds=-10)

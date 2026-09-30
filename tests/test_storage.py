@@ -1057,7 +1057,25 @@ async def test_flush_drops_unpersistable_rows_instead_of_requeueing_them(pipe_in
 
 @pytest.mark.asyncio
 async def test_flush_redis_queue_lock_release_failure(pipe_instance, caplog):
-    """Test _flush_redis_queue handles lock release failure."""
+    """A release that RAISES is swallowed, and the swallow is the whole of the contract.
+
+    The other fake in this pair returns 0 from `eval` and the sibling test asserts the
+    WARNING that says the lock was not released. This one raises instead, which reaches
+    the handler that catches it -- and a handler that logged nothing, or logged at
+    WARNING, would leave this test as green as the one that asserts nothing at all,
+    which is what it used to be.
+
+    Reaching the assertions is itself the first assertion: the rows were popped and
+    committed inside the `try` that runs BEFORE the `finally` this raise happens in, so
+    a release error that propagated would make the periodic flusher count a committed
+    flush as a failure and, after `failure_limit` of them, log CRITICAL and back off --
+    for an error that cannot be recovered.
+
+    The lock key staying in place is the consequence that makes the test able to fail
+    for the right reason: the fake's `eval` raises before deleting anything, and Redis
+    would have expired the key on its own TTL, so the only thing that makes the failure
+    survivable is that nothing raised.
+    """
     _install_fake_store(pipe_instance)
     store = pipe_instance._artifact_store
     store._redis_enabled = True
@@ -1077,8 +1095,28 @@ async def test_flush_redis_queue_lock_release_failure(pipe_instance, caplog):
         def eval(self, script, numkeys, key, token):
             raise RuntimeError("Lock release failed")
 
-    store._redis_client = _FakeRedis()
+    client = _FakeRedis()
+    store._redis_client = client
     await store._flush_redis_queue()
+
+    assert store._redis_flush_lock_key in client.storage, (
+        f"the lock was never taken, so the release failure this test drives never happened: "
+        f"{sorted(client.storage)}"
+    )
+    reported = [
+        rec
+        for rec in caplog.records
+        if rec.levelno == logging.DEBUG and "Failed to release Redis flush lock" in rec.message
+    ]
+    assert len(reported) == 1, (
+        f"one raised release is reported by {len(reported)} DEBUG record(s); the handler is "
+        f"what keeps the exception from reaching the flusher's failure counter: "
+        f"{[rec.getMessage() for rec in caplog.records]}"
+    )
+    assert not [rec for rec in caplog.records if rec.levelno >= logging.WARNING], (
+        f"a Redis hiccup on the release path is a DEBUG, not something an operator has to "
+        f"read: {[rec.getMessage() for rec in caplog.records if rec.levelno >= logging.WARNING]}"
+    )
 
 
 @pytest.mark.asyncio
@@ -1699,8 +1737,13 @@ def test_redis_state_multi_worker_warnings(caplog, monkeypatch):
 
     pipe = Pipe()
     try:
-        # Multiple workers without REDIS_URL should warn
-        pass
+        # Multiple workers without REDIS_URL should warn. The name is misleading --
+        # ENABLE_REDIS_CACHE defaults True, so this setup exercises the REDIS_URL arm
+        # and not the valve arm -- and it is kept as it is.
+        assert any("REDIS_URL is unset" in rec.message for rec in caplog.records), (
+            f"a multi-worker install with no REDIS_URL was told nothing: "
+            f"{[rec.getMessage() for rec in caplog.records]}"
+        )
     finally:
         asyncio.run(pipe.close())
 
@@ -1717,7 +1760,10 @@ def test_redis_state_websocket_manager_not_redis(caplog, monkeypatch):
         store = pipe._artifact_store
         store.valves.ENABLE_REDIS_CACHE = True
         store._initialize_redis_state()
-        # Should have warned
+        assert any("WEBSOCKET_MANAGER is not 'redis'" in rec.message for rec in caplog.records), (
+            f"a multi-worker install whose socket manager is not redis was told nothing: "
+            f"{[rec.getMessage() for rec in caplog.records]}"
+        )
     finally:
         asyncio.run(pipe.close())
 

@@ -186,17 +186,26 @@ def collect_rate_limits(pipe: Any) -> dict[str, Any]:
     tracked = 0
     with_failures = 0
     tripped = 0
-    for dq in records.values():
+    for dq in list(records.values()):
         if dq and (not cutoff or dq[-1] > cutoff):
             tracked += 1
         if cutoff:
             recent = 0
-            for recent, ts in enumerate(reversed(dq), start=1):
-                if ts <= cutoff:
-                    recent -= 1
-                    break
-                if recent >= threshold:
-                    break
+            try:
+                for recent, ts in enumerate(reversed(dq), start=1):
+                    if ts <= cutoff:
+                        recent -= 1
+                        break
+                    if recent >= threshold:
+                        break
+            except RuntimeError:
+                recent = 0
+                for recent, ts in enumerate(reversed(list(dq)), start=1):
+                    if ts <= cutoff:
+                        recent -= 1
+                        break
+                    if recent >= threshold:
+                        break
         else:
             recent = len(dq)
         if recent > 0:
@@ -209,8 +218,8 @@ def collect_rate_limits(pipe: Any) -> dict[str, Any]:
     tool_tracked = 0
     tool_tripped = 0
     tool_with_failures = 0
-    for user_tools in tool_breakers.values():
-        for dq in user_tools.values():
+    for user_tools in list(tool_breakers.values()):
+        for dq in list(user_tools.values()):
             tool_count = counted_tool_failures(dq, now, window)
             if tool_count > 0:
                 tool_tracked += 1

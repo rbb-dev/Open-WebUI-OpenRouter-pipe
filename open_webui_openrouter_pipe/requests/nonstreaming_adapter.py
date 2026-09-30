@@ -90,7 +90,6 @@ class NonStreamingAdapter:
         """Send a non-streaming request and yield Responses-style events."""
         effective_valves = valves or self._pipe.valves
         model_id = (responses_request_body or {}).get("model") or ""
-        endpoint = endpoint_override or self._pipe._streaming_handler._select_llm_endpoint(str(model_id), valves=effective_valves)
         forced_selected_endpoint, endpoint_forced = self._pipe._streaming_handler._select_llm_endpoint_with_forced(
             str(model_id), valves=effective_valves
         )
@@ -100,6 +99,7 @@ class NonStreamingAdapter:
             max_bytes=effective_valves.BASE64_MAX_SIZE_MB * 1024 * 1024,
             user=user,
         )
+        endpoint = endpoint_override or forced_selected_endpoint
 
         @timed
         def _extract_chat_message_text(message: Any) -> str:

@@ -3544,6 +3544,7 @@ def test_strictify_unwraps_single_element_allof():
     schema = {
         "type": "object",
         "properties": {"cfg": {"allOf": [{"$ref": "#/$defs/Cfg"}], "description": "c"}},
+        "required": ["cfg"],
         "$defs": {"Cfg": {"type": "object", "properties": {"x": {"type": "integer"}}}},
     }
     out = _strictify_schema(schema)

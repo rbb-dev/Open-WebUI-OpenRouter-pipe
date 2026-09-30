@@ -12,7 +12,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, cast
 
 from pydantic import ValidationError
 
@@ -269,7 +269,11 @@ def _pipe_dashboard_plugin(pipe: Any) -> Any:
 @register_action(
     "usage_stats",
     permission="read",
-    schema={"range": str, "tz_offset_min": int, "include_tasks": bool},
+    schema={
+        "range": optional(str),
+        "tz_offset_min": optional(int),
+        "include_tasks": optional(bool),
+    },
 )
 async def _usage_stats(pipe: Any, user: Any, args: Any) -> dict[str, Any]:
     plugin = _pipe_dashboard_plugin(pipe)
@@ -442,8 +446,23 @@ async def _config_set(
 
 
 def _config_write_lock(pipe_id: str) -> asyncio.Lock:
-    key = (pipe_id, id(asyncio.get_running_loop()))
+    running = asyncio.get_running_loop()
+    for key in [
+        k
+        for k, lock in _config_write_locks.items()
+        if k[0] == pipe_id
+        and (getattr(lock, "_loop", None) or running).is_closed()
+    ]:
+        del _config_write_locks[key]
+    key = (pipe_id, id(running))
     lock = _config_write_locks.get(key)
+    if lock is not None:
+        try:
+            lock_loop = getattr(cast(Any, lock), "_get_loop", lambda: None)()
+            if lock_loop is not running:
+                lock = None
+        except RuntimeError:
+            lock = None
     if lock is None:
         lock = _config_write_locks[key] = asyncio.Lock()
     return lock

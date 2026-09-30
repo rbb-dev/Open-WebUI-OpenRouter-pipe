@@ -162,6 +162,22 @@ async def _read_attachment(
     return b64, file_obj
 
 
+def _video_data_url(
+    attachment_bytes: dict[Any, Any],
+    file_id: str,
+    user_id: str,
+    content_type: str,
+    b64: str,
+) -> str:
+    memo_key = ("video_url", file_id, user_id, content_type)
+    cached = attachment_bytes.get(memo_key)
+    if isinstance(cached, str):
+        return cached
+    url = f"data:{content_type};base64,{b64}"
+    attachment_bytes[memo_key] = url
+    return url
+
+
 def _provider_error_response(
     exc: OpenRouterAPIError, *, stream: bool, request: Any
 ) -> StreamingResponse | None:
@@ -906,7 +922,9 @@ class RequestOrchestrator:
                         f"Native video attachment declared type {mime!r} is not a media "
                         f"type, so there is no honest way to declare the clip to a provider."
                     )
-                data_url = f"data:{content_type};base64,{b64}"
+                data_url = _video_data_url(
+                    attachment_bytes, file_id, user_id, content_type, b64
+                )
                 _append(
                     ("video", file_id),
                     {

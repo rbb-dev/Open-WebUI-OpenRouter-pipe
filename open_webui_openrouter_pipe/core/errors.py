@@ -333,7 +333,7 @@ def _extract_openrouter_error_details(body_text: str | None) -> dict[str, Any]:
     upstream_type = upstream_error.get("type") if isinstance(upstream_error, dict) else None
     openrouter_error_type = metadata_dict.get("error_type") or (
         parsed.get("error_type") if isinstance(parsed, dict) else None
-    )
+    ) or error_section.get("error_type")
 
     request_id = (
         metadata_dict.get("request_id")
@@ -650,8 +650,12 @@ def channel_safe_values(values: dict[str, Any]) -> dict[str, Any]:
     return {k: ("" if k in _CHANNEL_WITHHELD_TEMPLATE_KEYS else v) for k, v in values.items()}
 
 
-_BLOCKED_RATHER_THAN_REJECTED = frozenset({"content_policy_violation", "refusal", "permission_denied"})
-_BLOCKED_NATIVE_CODES = frozenset({"image_content_policy_violation"})
+_BLOCKED_RATHER_THAN_REJECTED = frozenset(
+    name
+    for table in (_IN_BAND_STATUS_BY_ERROR_TYPE, _IN_BAND_STATUS_BY_NATIVE_CODE)
+    for name, status in table.items()
+    if status == 403
+)
 
 
 def is_sign_in_failure(exc: Any) -> bool:
@@ -663,10 +667,9 @@ def is_sign_in_failure(exc: Any) -> bool:
     if _carries_a_content_decision(exc):
         return False
     kind = (getattr(exc, "openrouter_error_type", None) or "").strip().lower()
-    if kind:
-        return kind not in _BLOCKED_RATHER_THAN_REJECTED
     code = getattr(exc, "openrouter_code", None)
-    return not (isinstance(code, str) and code.strip().lower() in _BLOCKED_NATIVE_CODES)
+    named_code = code.strip().lower() if isinstance(code, str) else ""
+    return kind not in _BLOCKED_RATHER_THAN_REJECTED and named_code not in _BLOCKED_RATHER_THAN_REJECTED
 
 
 def _resolve_error_model_context(

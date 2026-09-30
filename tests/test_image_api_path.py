@@ -741,7 +741,7 @@ def test_a_knob_the_endpoint_does_not_advertise_is_not_sent():
 @pytest.mark.parametrize(
     ("record", "sent", "dropped"),
     [
-        (RECRAFT_RECORD, {"aspect_ratio": "1:1"}, "resolution"),
+        (RECRAFT_RECORD, {"aspect_ratio": "1:1", "size": "2K"}, ""),
         (QWEN_RECORD, {"aspect_ratio": "1:1", "resolution": "2K"}, ""),
     ],
 )
@@ -752,8 +752,11 @@ def test_top_level_knobs_are_gated_on_what_the_endpoint_advertises(record, sent,
         record=record,
     )
     assert top_level == sent, (
-        "the endpoint record is the authority on which top-level knobs this model takes; "
-        f"recraft-v3 does not advertise resolution and qwen-image-3 does. got {top_level!r}"
+        "the endpoint record is the authority on which *published spelling* goes out, and a "
+        "deprecated twin of a published spelling is measured against the ungated equivalent "
+        "rather than refused: recraft-v3 advertises neither resolution nor size, so the "
+        "retired `image_size` is sent as `size` under its modern name, while qwen-image-3 "
+        f"advertises resolution and that is where the value still goes. got {top_level!r}"
     )
     if dropped:
         assert any(dropped in note.text for note in notes)
@@ -3121,9 +3124,28 @@ async def test_a_generation_that_could_not_be_stored_is_reported_as_failed_with_
     )
 
 
-@pytest.mark.parametrize("knob", ["image_size", "aspect_ratio"])
+@pytest.mark.parametrize(
+    ("knob", "value", "expected"),
+    [
+        ("image_size", "banana", "size"),
+        ("image_size", "2K", None),
+        ("aspect_ratio", "21:9", "aspect_ratio"),
+    ],
+    ids=["retired-size-unrecognised", "retired-size-sent", "aspect-ratio"],
+)
 @pytest.mark.asyncio
-async def test_a_dropped_image_knob_is_findable_in_the_log_without_an_emitter(knob, caplog):
+async def test_a_dropped_image_knob_is_findable_in_the_log_without_an_emitter(
+    knob, value, expected, caplog
+):
+    """A value the pipe refuses is traceable in the log; a value it sends is not.
+
+    ``image_size`` is the retired spelling of the output size, and on a model advertising
+    nothing it now goes out as ``size`` rather than being refused, so the ``"2K"`` cell
+    asserts that nothing is logged -- the cell that stops this guarantee being read off a
+    knob that is no longer dropped. The ``"banana"`` cell keeps the guarantee itself: a size
+    fits a value against the tier list or an exact pixel pair, and a value that is neither
+    is still refused, and the log must say so.
+    """
     import logging as _logging
 
     adapter = ImageGenerationAdapter(
@@ -3134,7 +3156,7 @@ async def test_a_dropped_image_knob_is_findable_in_the_log_without_an_emitter(kn
     with caplog.at_level(_logging.DEBUG):
         await _posted(
             adapter,
-            body={"image_config": {knob: "2K" if knob == "image_size" else "21:9"}},
+            body={"image_config": {knob: value}},
             responses_body=_StubResponsesBody(
                 [{"role": "user", "content": [{"type": "input_text", "text": "a leaf"}]}]
             ),
@@ -3144,8 +3166,13 @@ async def test_a_dropped_image_knob_is_findable_in_the_log_without_an_emitter(kn
             api_model_id="m/x",
         )
 
-    expected = "resolution" if knob == "image_size" else "aspect_ratio"
     records = [r for r in caplog.records if "not sent" in r.getMessage()]
+    if expected is None:
+        assert records == [], (
+            "a value the pipe sent must not also be reported as dropped; records were "
+            f"{[r.getMessage() for r in records]}"
+        )
+        return
     assert any(expected in r.getMessage() and "m/x" in r.getMessage() for r in records), (
         "the notification channel vanishes when there is no emitter; an operator asked why a "
         f"knob never applied has nothing to read. records were {[r.getMessage() for r in records]}"

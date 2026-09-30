@@ -122,6 +122,8 @@ _LEGACY_PARAM_NAMES = {
     "image_size": "resolution",
 }
 
+_TIER_TWIN = {equivalent: name for name, equivalent in TIER_EQUIVALENT.items()}
+
 _warned_image_endpoints: set[str] = set()
 
 _ENDPOINT_FAILURE_BACKOFF_SECONDS = 30.0
@@ -462,6 +464,8 @@ class ImageGenerationAdapter:
             # rename would route it into a different published parameter and silently
             # overwrite whatever the user chose there.
             name = key if key in allowed_passthrough else _LEGACY_PARAM_NAMES.get(key, key)
+            if name != key and declared is not None and name not in declared:
+                name = _TIER_TWIN.get(name, name)
             if name != key and raw.get(name) not in (None, ""):
                 # Both spellings of one parameter were supplied -- the compatibility one
                 # from the older filter and the published one from this model's own. They

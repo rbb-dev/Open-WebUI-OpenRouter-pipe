@@ -955,13 +955,28 @@ def _remaining_address_seconds(deadline: float) -> float:
     return min(ADDRESS_CHECK_SECONDS, deadline - time.monotonic())
 
 
+async def _effective_remote_bytes(pipe: Pipe, seen: list[int | None] | None) -> int:
+    if seen is not None and seen[0] is not None:
+        return seen[0]
+    limit = await pipe._multimodal_handler._get_effective_remote_file_limit_mb() * 1024 * 1024
+    if seen is not None:
+        seen[0] = limit
+    return limit
+
+
 async def _memo_hit_is_still_permitted(
     pipe: Pipe,
     memo_key: Any,
     url: str,
     seen: dict[str, bool | None] | None = None,
     deadline: float | None = None,
+    *,
+    payload_bytes: int | None = None,
+    size_seen: list[int | None] | None = None,
 ) -> bool:
+    if payload_bytes is not None and payload_bytes > await _effective_remote_bytes(pipe, size_seen):
+        _reuse_download_memo.pop(memo_key, None)
+        return False
     if seen is not None and url in seen:
         permitted = seen[url]
     else:
@@ -1210,6 +1225,7 @@ async def transform_messages_to_input(
 
     address_verdicts: dict[str, bool | None] = {}
     address_deadline = time.monotonic() + ADDRESS_CHECK_BUDGET_SECONDS
+    reuse_limit_seen: list[int | None] = [None]
     tool_name_at, issuer_at = _tool_names_by_position(messages)
 
     def _withheld(turn_index: int | None) -> bool:
@@ -1441,7 +1457,7 @@ async def transform_messages_to_input(
             )
             if tool_images:
                 last_image_blocks, last_image_turn = [], None
-            if tool_images and _withheld(msg_turn_index):
+            if tool_images and _tool_round_withheld(msg_turn_index):
                 continue
             raw_content_value = msg.get("content")
             content_blocks = raw_content_value or []
@@ -1574,7 +1590,8 @@ async def transform_messages_to_input(
                         )
                         if remembered is not None and not await (
                             _memo_hit_is_still_permitted(
-                                pipe, memo_key, url, address_verdicts, address_deadline
+                                pipe, memo_key, url, address_verdicts, address_deadline,
+                                payload_bytes=len(remembered[1]), size_seen=reuse_limit_seen,
                             )
                         ):
                             remembered = None
@@ -2243,7 +2260,9 @@ async def transform_messages_to_input(
 
                     if not is_inline_data_url(url) and names_an_owui_file_path(url):
                         raise RequiredInternalFileError(
-                            "Internal video URLs cannot be forwarded to the provider.",
+                            "A video link whose path names this Open WebUI's own file "
+                            "endpoint, which a provider cannot fetch and the pipe will "
+                            "not forward.",
                             kind="video",
                         )
 
@@ -2685,7 +2704,11 @@ async def transform_messages_to_input(
         raw_msg_reasoning_details = msg.get("reasoning_details")
         msg_reasoning_details: list[Any] = (
             list(raw_msg_reasoning_details)
-            if isinstance(raw_msg_reasoning_details, list) and raw_msg_reasoning_details
+            if (
+                active_valves.PERSIST_REASONING_TOKENS != "disabled"
+                and isinstance(raw_msg_reasoning_details, list)
+                and raw_msg_reasoning_details
+            )
             else []
         )
         assistant_text = (
@@ -2750,6 +2773,7 @@ async def transform_messages_to_input(
             appended.extend(chunk_items)
 
         if contains_marker(assistant_text):
+            withhold_replayed_reasoning = active_valves.PERSIST_REASONING_TOKENS == "disabled"
             segments = split_text_by_markers(assistant_text)
             segment_cursor = 0
             markers = [seg["marker"] for seg in segments if seg.get("type") == "marker"]
@@ -2800,6 +2824,8 @@ async def transform_messages_to_input(
                         and chat_id
                     ):
                         replayed_reasoning_refs.append((chat_id, segment["marker"]))
+                        if withhold_replayed_reasoning:
+                            continue
                     item = replayable.get(segment["marker"])
                     if item is not None:
                         item_type = ((item.get("type") or "").lower())

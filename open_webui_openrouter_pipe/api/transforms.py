@@ -758,6 +758,8 @@ def _normalise_openrouter_responses_text_format(payload: dict[str, Any]) -> None
     response_format_as_text = _chat_response_format_to_responses_text_format(response_format)
 
     existing_text = payload.get("text")
+    if isinstance(existing_text, dict):
+        existing_text = dict(existing_text)
     if existing_text is None:
         existing_text = {}
     if not isinstance(existing_text, dict):
@@ -789,8 +791,10 @@ def _normalise_openrouter_responses_text_format(payload: dict[str, Any]) -> None
     payload.pop("response_format", None)
 
     if final_format is None:
-        if isinstance(existing_text, dict) and len(existing_text) == 0:
+        if len(existing_text) == 0:
             payload.pop("text", None)
+        else:
+            payload["text"] = existing_text
         return
 
     existing_text["format"] = final_format

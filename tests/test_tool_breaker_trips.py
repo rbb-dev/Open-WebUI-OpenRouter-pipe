@@ -62,8 +62,16 @@ def _call(index: int) -> dict[str, Any]:
     return {"name": "flaky", "call_id": f"call-{index}", "arguments": "{}"}
 
 
-async def _with_tool_context(pipe, body, *, workers=1, batch_cap=1, request_slots=1, global_slots=None):
-    """Run ``body(executor)`` inside a real tool context; by default one worker, one call per batch and one slot."""
+async def _with_tool_context(
+    pipe, body, *, workers=1, batch_cap=1, request_slots=1, global_slots=None, event_emitter=None
+):
+    """Run ``body(executor)`` inside a real tool context; by default one worker, one call per batch and one slot.
+
+    ``event_emitter`` is the context's own sink, so a test that wants to read what the tool
+    path tells the user attaches a recorder here rather than rebuilding the context. It is
+    the only keyword added for that purpose; the thirteen call sites below already pass
+    keywords and are unchanged by it.
+    """
     context = _ToolExecutionContext(
         queue=asyncio.Queue(maxsize=50),
         per_request_semaphore=asyncio.Semaphore(request_slots),
@@ -72,7 +80,7 @@ async def _with_tool_context(pipe, body, *, workers=1, batch_cap=1, request_slot
         batch_timeout=5.0,
         idle_timeout=None,
         user_id="user-1",
-        event_emitter=None,
+        event_emitter=event_emitter,
         batch_cap=batch_cap,
     )
     executor = pipe._ensure_tool_executor()
@@ -182,6 +190,10 @@ async def test_a_tool_that_keeps_failing_is_skipped_later_in_the_same_turn(pipe_
 
     assert len(ran) == threshold
     assert [_is_skip(output) for output in outputs] == [False] * threshold + [True, True]
+
+
+def _statuses(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [event for event in events if event.get("type") == "status"]
 
 
 def _failing_after_a_moment(ran: list[str]):
@@ -1900,6 +1912,26 @@ _BLOCK_SHAPES = {
     "a-blocked-image-named-by-its-own-code": (
         "responses", 200,
         {"type": "error", "error": {"code": "image_content_policy_violation", "message": "This image was declined."}},
+        False,
+    ),
+    # The same block string, this time in the typed-kind field beside a native code that is not
+    # itself a block: `image_content_policy_violation` is documented as a Responses *code*
+    # (`responses/error-handling.md:39`), and reaching it here means a gateway or a provider that
+    # echoes that code into `error_type`. A stock Responses body does not look like this.
+    "a-blocked-image-named-by-its-typed-kind": (
+        "responses", 200,
+        {"id": "resp-1", "status": "failed",
+         "error": {"code": "server_error", "message": "This image was declined."},
+         "error_type": "image_content_policy_violation"},
+        False,
+    ),
+    # The Anthropic Messages envelope, whose `error.error_type` is the third position the canonical
+    # kind can arrive in. A gateway configured in front of the pipe is what puts this skin on the
+    # wire; `DEFAULT_LLM_ENDPOINT` is a two-member `Literal`, so no stock install sends it.
+    "a-block-on-the-anthropic-skin": (
+        "responses", 403,
+        {"type": "error",
+         "error": {"type": "invalid_request_error", "error_type": "content_policy_violation"}},
         False,
     ),
     "a-mid-reply-block-with-no-typed-kind": (

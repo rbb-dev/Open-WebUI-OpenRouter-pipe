@@ -436,6 +436,7 @@ class SessionLogManager:
         self._warned_temporary_chat: dict[str, float] = {}
         self._archive_queue_full_warnings: dict[str, float] = {}
         self._archive_queue_drops: int = 0
+        self._temporary_chat_sweep_at: float = 0.0
 
     @property
     def _assembly_failures(self) -> dict[tuple[str, str], float]:
@@ -510,12 +511,14 @@ class SessionLogManager:
         cooldown_s = 300.0
         now = time.monotonic()
         with self._lock:
-            for key in [
-                k
-                for k, armed_at in self._warned_temporary_chat.items()
-                if now - armed_at >= cooldown_s
-            ]:
-                self._warned_temporary_chat.pop(key, None)
+            if now - self._temporary_chat_sweep_at >= cooldown_s:
+                self._temporary_chat_sweep_at = now
+                for key in [
+                    k
+                    for k, armed_at in self._warned_temporary_chat.items()
+                    if now - armed_at >= cooldown_s
+                ]:
+                    self._warned_temporary_chat.pop(key, None)
             self.logger.log(
                 warn_level(
                     self._warned_temporary_chat,
@@ -590,9 +593,10 @@ class SessionLogManager:
             self._queue = queue.Queue(maxsize=500)
         writer_live = bool(self._worker_thread and self._worker_thread.is_alive())
         cleanup_live = bool(self._cleanup_thread and self._cleanup_thread.is_alive())
-        if not (writer_live and cleanup_live) and (
-            self._stop_event is None or self._stop_event.is_set()
-        ):
+        both_live_on_a_stop = bool(
+            self._stop_event is not None and self._stop_event.is_set() and writer_live and cleanup_live
+        )
+        if self._stop_event is None or self._stop_event.is_set():
             self._stop_event = threading.Event()
 
         mgr_ref = weakref.ref(self)
@@ -604,7 +608,7 @@ class SessionLogManager:
                 daemon=True,
             )
             self._worker_thread.start()
-        if not cleanup_live:
+        if not cleanup_live or both_live_on_a_stop:
             self._cleanup_thread = threading.Thread(
                 target=_cleanup_loop,
                 args=(mgr_ref, self._stop_event),
@@ -1123,24 +1127,26 @@ class SessionLogManager:
                 )
                 query = session.query(model.chat_id, model.message_id)  # type: ignore[attr-defined]
                 query = query.filter(model.item_type.in_(["session_log_segment", "session_log_segment_terminal"]))  # type: ignore[attr-defined]
-                if exclude:
-                    query = query.filter(
-                        ~tuple_(model.chat_id, model.message_id).in_(list(exclude))  # type: ignore[attr-defined]
-                    )
-                rows = (
+                query = (
                     query
                     .group_by(model.chat_id, model.message_id)  # type: ignore[attr-defined]
                     .having(func.max(model.created_at) < cutoff)  # type: ignore[attr-defined]
                     .having(terminal_count == 0)  # type: ignore[attr-defined]
+                )
+                if exclude:
+                    query = query.having(
+                        ~tuple_(model.chat_id, model.message_id).in_(list(exclude))  # type: ignore[attr-defined]
+                    )
+                rows = (
+                    query
                     .order_by(func.max(model.created_at).asc())  # type: ignore[attr-defined]
-                    .limit(int(limit) * 5 + len(exclude))
+                    .limit(int(limit))
                     .all()
                 )
                 out = [
                     (chat_id, message_id)
                     for chat_id, message_id in rows
                     if isinstance(chat_id, str) and isinstance(message_id, str)
-                    and (chat_id, message_id) not in exclude
                 ][: int(limit)]
                 return out
         except Exception as exc:
@@ -1349,6 +1355,7 @@ class SessionLogManager:
         )
         if not wrote:
             self._unreadable_archive_attempts[key] = attempts
+            _truncate_latch(self._unreadable_archive_warnings, _MAX_DRAIN_LATCH_KEYS)
             self.logger.log(
                 warn_level(
                     self._unreadable_archive_warnings,
@@ -1370,6 +1377,7 @@ class SessionLogManager:
             _stable_crockford_id(f"{chat_id}:{message_id}:session_log_lock"), list(ids or [])
         )
 
+        _truncate_latch(self._unreadable_archive_warnings, _MAX_DRAIN_LATCH_KEYS)
         self.logger.log(
             warn_level(
                 self._unreadable_archive_warnings,
@@ -1415,6 +1423,7 @@ class SessionLogManager:
                     )
                 session.commit()
         except Exception:
+            _truncate_latch(self._stale_filter_warnings, _MAX_DRAIN_LATCH_KEYS)
             self.logger.log(
                 warn_level(
                     self._stale_filter_warnings,
@@ -1597,6 +1606,7 @@ class SessionLogManager:
 
         settings = archive_settings or self.resolve_archive_settings(self.valves)
         if settings is None:
+            _truncate_latch(self._unreadable_archive_warnings, _MAX_DRAIN_LATCH_KEYS)
             self.logger.log(
                 warn_level(
                     self._unreadable_archive_warnings,
@@ -1647,6 +1657,7 @@ class SessionLogManager:
                         )
             except Exception:
                 read_failed = True
+                _truncate_latch(self._unreadable_archive_warnings, _MAX_DRAIN_LATCH_KEYS)
                 self.logger.log(
                     warn_level(
                         self._unreadable_archive_warnings,
@@ -1767,6 +1778,7 @@ class SessionLogManager:
         # If writing failed, keep segments for retry and allow lock reaping.
         self._restore_touched_stamps(model, session_factory, stamps, list(ids), chat_id, message_id)
         self._release_assembly_lock(lock_id)
+        _truncate_latch(self._unreadable_archive_warnings, _MAX_DRAIN_LATCH_KEYS)
         self.logger.log(
             warn_level(
                 self._unreadable_archive_warnings,
