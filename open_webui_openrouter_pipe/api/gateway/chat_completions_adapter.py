@@ -298,6 +298,8 @@ class ChatCompletionsAdapter:
         provider_refusal_full: str | None = None
         refusal_text_seen = False
         assistant_text_seen = False
+        message_text_published = False
+        message_refusal_published = False
 
         @timed
         def _ensure_tool_call_id(index: int, current: dict[str, Any]) -> str:
@@ -389,16 +391,16 @@ class ChatCompletionsAdapter:
                 latest_message_annotations.append(dict(entry))
 
         @timed
-        def _record_reasoning_detail(detail: dict[str, Any]) -> tuple[str, str] | None:
+        def _record_reasoning_detail(detail: dict[str, Any]) -> bool:
             key = _reasoning_detail_key(detail, len(reasoning_details_order))
             if key is None:
-                return None
+                return False
             dtype = key[0]
             existing = reasoning_details_by_key.get(key)
             if existing is None:
                 reasoning_details_order.append(key)
                 reasoning_details_by_key[key] = dict(detail)
-                return key
+                return True
             merged = dict(existing)
             if dtype == "reasoning.text":
                 prev_text = merged.get("text")
@@ -429,7 +431,7 @@ class ChatCompletionsAdapter:
                     continue
                 merged[k] = v
             reasoning_details_by_key[key] = merged
-            return key
+            return False
 
         @timed
         def _final_reasoning_details() -> list[dict[str, Any]]:
@@ -452,7 +454,7 @@ class ChatCompletionsAdapter:
                 image_output_item, images_emitted, refusal_text_seen, provider_refusal_full, \
                 tool_calls_completed, \
                 truncating_reason, delivered_any, saw_choice_chunk, assistant_text_seen, \
-                unhandled_citations_signalled
+                unhandled_citations_signalled, message_text_published, message_refusal_published
             try:
                 chunk_obj = json.loads(data_blob.decode("utf-8"))
             except (RecursionError, UnicodeDecodeError, ValueError) as exc:
@@ -492,7 +494,8 @@ class ChatCompletionsAdapter:
                     if not isinstance(entry, dict):
                         continue
                     reasoning_details_seen = True
-                    detail_key = _record_reasoning_detail(entry)
+                    detail_key = _reasoning_detail_key(entry, len(reasoning_details_order))
+                    _record_reasoning_detail(entry)
                     rtype = entry.get("type")
                     if not isinstance(rtype, str) or not rtype:
                         continue
@@ -582,8 +585,54 @@ class ChatCompletionsAdapter:
                     and message_reasoning_details
                 ):
                     for entry in message_reasoning_details:
-                        if isinstance(entry, dict):
-                            _record_reasoning_detail(entry)
+                        if not isinstance(entry, dict):
+                            continue
+                        detail_key = _reasoning_detail_key(entry, len(reasoning_details_order))
+                        if not _record_reasoning_detail(entry):
+                            continue
+                        rtype = entry.get("type")
+                        if not isinstance(rtype, str) or not rtype:
+                            continue
+                        if reasoning_item_id is None:
+                            candidate_id = entry.get("id")
+                            if isinstance(candidate_id, str) and candidate_id.strip():
+                                reasoning_item_id = candidate_id.strip()
+                            else:
+                                reasoning_item_id = f"reasoning-{generate_item_id()}"
+                            delivered_any = True
+                            yield {
+                                "type": "response.output_item.added",
+                                "item": {
+                                    "type": "reasoning",
+                                    "id": reasoning_item_id,
+                                    "status": "in_progress",
+                                },
+                            }
+                        if rtype == "reasoning.text":
+                            text = entry.get("text")
+                            if isinstance(text, str) and text:
+                                reasoning_text_parts.append(text)
+                                reasoning_text_seen = True
+                                delivered_any = True
+                                yield {
+                                    "type": "response.reasoning_text.delta",
+                                    "item_id": reasoning_item_id,
+                                    "delta": text,
+                                }
+                        elif rtype == "reasoning.summary" and detail_key is not None:
+                            summary = entry.get("summary")
+                            if isinstance(summary, str) and summary.strip():
+                                if detail_key not in reasoning_summary_parts:
+                                    reasoning_summary_order.append(detail_key)
+                                reasoning_summary_parts[detail_key] = summary.strip()
+                                delivered_any = True
+                                yield {
+                                    "type": "response.reasoning_summary_text.done",
+                                    "item_id": reasoning_item_id,
+                                    "text": "".join(
+                                        reasoning_summary_parts[k] for k in reasoning_summary_order
+                                    ),
+                                }
                 if not reasoning_text_seen:
                     message_reasoning_text = None
                     for key in ("reasoning", "reasoning_content"):
@@ -613,15 +662,16 @@ class ChatCompletionsAdapter:
                         }
                 message_refusal = message_obj.get("refusal")
                 if isinstance(message_refusal, str) and message_refusal.strip():
-                    delivered_any = True
                     provider_refusal_full = message_refusal.strip()
                     refusal_text_seen = True
+                    message_refusal_published = True
                 if not assistant_text_seen:
                     message_text = _chat_message_text(message_obj)
                     if message_text:
                         assistant_text_parts.append(message_text)
                         assistant_text_seen = True
                         delivered_any = True
+                        message_text_published = True
                         yield {"type": "response.output_text.delta", "delta": message_text}
                 message_images = message_obj.get("images")
                 if (
@@ -676,15 +726,14 @@ class ChatCompletionsAdapter:
                     }
 
             content_delta = delta_obj.get("content")
-            if isinstance(content_delta, str) and content_delta:
+            if isinstance(content_delta, str) and content_delta and not message_text_published:
                 assistant_text_parts.append(content_delta)
                 assistant_text_seen = True
                 delivered_any = True
                 yield {"type": "response.output_text.delta", "delta": content_delta}
 
             delta_refusal = delta_obj.get("refusal")
-            if provider_refusal_full is None and isinstance(delta_refusal, str) and delta_refusal.strip():
-                delivered_any = True
+            if isinstance(delta_refusal, str) and delta_refusal.strip() and not message_refusal_published:
                 provider_refusal_parts.append(delta_refusal)
                 refusal_text_seen = True
 
@@ -748,6 +797,8 @@ class ChatCompletionsAdapter:
                         provider_refusal_parts.clear()
                         provider_refusal_full = None
                         refusal_text_seen = False
+                        message_text_published = False
+                        message_refusal_published = False
                         reasoning_text_parts.clear()
                         reasoning_summary_parts.clear()
                         reasoning_summary_order.clear()
@@ -873,6 +924,11 @@ class ChatCompletionsAdapter:
                         break
 
         if cut_off:
+            refusal_cut, _ = _refusal_split(
+                "".join(assistant_text_parts), provider_refusal_full or "".join(provider_refusal_parts)
+            )
+            if refusal_cut is not None:
+                yield {"type": "response.output_text.delta", "delta": refusal_cut}
             return
 
         if reasoning_item_id is not None:

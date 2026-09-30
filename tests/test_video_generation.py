@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from open_webui_openrouter_pipe import EncryptedStr, Pipe
+from open_webui_openrouter_pipe.core.config import _PIPE_METADATA_KEY
 from open_webui_openrouter_pipe.core.errors import (
     OpenRouterAPIError,
     RequiredInternalFileError,
@@ -25,8 +26,15 @@ from open_webui_openrouter_pipe.core.errors import (
 )
 from open_webui_openrouter_pipe.filters import FilterManager
 from open_webui_openrouter_pipe.filters.video_filter_renderer import (
+    _CONTROL_TEXT,
+    _PASSTHROUGH_CONTROLS,
     build_video_filter_spec,
     render_video_filter_source,
+)
+from open_webui_openrouter_pipe.integrations.provider_options import (
+    payload_addresses,
+    requested_provider_block,
+    requested_provider_options,
 )
 from open_webui_openrouter_pipe.integrations.video import VideoGenerationAdapter
 from open_webui_openrouter_pipe.integrations.video_intent import (
@@ -52,6 +60,7 @@ from open_webui_openrouter_pipe.storage.video_persistence import VideoPersistenc
 from open_webui_openrouter_pipe.integrations.video_intent import VideoIntentResult
 from open_webui_openrouter_pipe.integrations import video as video_module
 from open_webui_openrouter_pipe.storage import owui_files as owui_files_module
+from tests.test_filters import _load_filter_from_source as _compile_rendered_filter
 import pytest_asyncio
 
 

@@ -177,10 +177,19 @@ def query_usage_stats(
             continue
 
         b = int((ts + off) // bucket_s * bucket_s - off)
-        bucket = buckets.setdefault(b, {"tokens": 0, "cost": 0.0, "sessions": 0, "tools": 0})
+        bucket = buckets.setdefault(
+            b,
+            {"tokens": 0, "cost": 0.0, "sessions": 0, "tools": 0,
+             "failed": 0, "tokens_in": 0, "tokens_cached": 0},
+        )
         bucket["tokens"] += (r.tokens_in or 0) + (r.tokens_out or 0)
         bucket["cost"] += r.cost or 0.0
-        bucket["sessions"] += 0 if is_task else 1
+        if not is_task:
+            bucket["sessions"] += 1
+            if r.status == "failed":
+                bucket["failed"] += 1
+        bucket["tokens_in"] += r.tokens_in or 0
+        bucket["tokens_cached"] += r.tokens_cached or 0
         bucket["tools"] += (r.tools_ok or 0) + (r.tools_failed or 0)
 
         uid = r.user_id or "?"
@@ -239,7 +248,9 @@ def query_usage_stats(
 
     bucket_rows = [
         {"t": t, "tokens": int(v["tokens"]), "cost": round(v["cost"], 6),
-         "sessions": int(v["sessions"]), "tools": int(v["tools"])}
+         "sessions": int(v["sessions"]), "tools": int(v["tools"]),
+         "err_rate": round(v["failed"] / v["sessions"], 4) if v["sessions"] else 0.0,
+         "cached_pct": round(v["tokens_cached"] / v["tokens_in"], 4) if v["tokens_in"] else 0.0}
         for t, v in sorted(buckets.items())
     ]
 

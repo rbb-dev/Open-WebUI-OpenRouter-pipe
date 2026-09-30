@@ -11,6 +11,7 @@ import functools
 import inspect
 import json
 import logging
+from collections import OrderedDict
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -63,7 +64,7 @@ from ..core.utils import (
     continued_turn_counts,
     ends_on_hidden_marker_line,
 )
-from ..core.warn_latch import warn_level
+from ..core.warn_latch import bounded_warn_level
 from ..filters.fusion_filter_renderer import is_fusion_model
 from ..integrations.image_help import render_image_help
 from ..integrations.provider_options import (
@@ -344,8 +345,10 @@ def _fusion_plugin_injection(
     return [*items, {"id": "fusion"}]
 
 
-_warned_chat_provider_keys: set[str] = set()
-_warned_ruled_out_tool_use: set[str] = set()
+_PER_MODEL_WARN_WINDOW = 300
+
+_warned_chat_provider_keys: OrderedDict[str, None] = OrderedDict()
+_warned_ruled_out_tool_use: OrderedDict[str, None] = OrderedDict()
 
 
 _FUSION_CONTINUE_NOTICE = "Continue is not available for Fusion replies. Regenerate the reply to run Fusion again."
@@ -514,23 +517,30 @@ def _apply_server_tools_metadata(
     server_tools = pipe_meta.get("server_tools", {})
     if isinstance(server_tools, dict) and server_tools:
         tools_list = list(responses_body.tools or [])
+        wanted_server_tools = {
+            key: value
+            for key, value in server_tools.items()
+            if not isinstance(key, str) or _server_tool_type(key) not in switched_off
+        }
         entries, superseded = _build_server_tool_entries(
-            {
-                key: value
-                for key, value in server_tools.items()
-                if not isinstance(key, str) or _server_tool_type(key) not in switched_off
-            },
+            wanted_server_tools,
             records=records,
             model_resolver=model_resolver,
         )
+        injected_types = {e.get("type") for e in entries if isinstance(e, dict)}
+        if injected_types:
+            tools_list = [
+                t for t in tools_list
+                if not (isinstance(t, dict) and t.get("type") in injected_types)
+            ]
         tools_list.extend(entries)
         if tools_list:
             responses_body.tools = tools_list
-            if logger is not None:
+            if entries and logger is not None and SessionLogger.debug_enabled(logger):
                 logger.debug(
                     "Injected %d OpenRouter server tool(s): %s",
-                    len(server_tools),
-                    ", ".join(server_tools.keys()),
+                    len(wanted_server_tools),
+                    ", ".join(str(key) for key in wanted_server_tools),
                 )
     stop_when = pipe_meta.get("stop_server_tools_when")
     if isinstance(stop_when, list) and stop_when and _has_server_tool(responses_body.tools):
@@ -1147,8 +1157,8 @@ class RequestOrchestrator:
                 if not (isinstance(t, dict) and t.get("name") in unreachable_direct_names)
             ]
 
+        is_builtin_ask_user = self._pipe._ensure_tool_executor()._is_builtin_ask_user
         if fusion_inner:
-            is_builtin_ask_user = self._pipe._ensure_tool_executor()._is_builtin_ask_user
             owui_registry = {name: cfg for name, cfg in owui_registry.items() if not is_builtin_ask_user(cfg)}
 
         request_params = __metadata__.get("params")
@@ -1166,6 +1176,11 @@ class RequestOrchestrator:
                 )
             )
         )
+        ask_user_origin_names: set[str] = {
+            name
+            for name, cfg in owui_registry.items()
+            if isinstance(name, str) and name.strip() and is_builtin_ask_user(cfg)
+        }
         if withhold_owui_tools:
             resolved_names = _resolved_tool_names(owui_registry, direct_registry) | unreachable_direct_names
             owui_registry = {}
@@ -1175,7 +1190,7 @@ class RequestOrchestrator:
                 if not (isinstance(t, dict) and t.get("name") in resolved_names)
             ]
 
-        builtin_ask_user_names: set[str] = set()
+        builtin_ask_user_names: set[str] = set(ask_user_origin_names)
         if not use_task_model_adapter:
             tools, exec_registry, exposed_to_origin = _build_collision_safe_tool_specs_and_registry(
                 request_tool_specs=incoming_tools if incoming_tools else None,
@@ -1642,9 +1657,10 @@ class RequestOrchestrator:
             responses_body.provider = kept or None
             if unsupported:
                 self.logger.log(
-                    warn_level(
+                    bounded_warn_level(
                         _warned_chat_provider_keys,
                         f"{responses_body.model}:unsupported",
+                        _PER_MODEL_WARN_WINDOW,
                     ),
                     "Provider preferences the chat request format does not define "
                     "were not sent for %r: %s.",
@@ -1812,9 +1828,10 @@ class RequestOrchestrator:
             if ruled_out is not None:
                 responses_body.tools = ruled_out or None
                 self.logger.log(
-                    warn_level(
+                    bounded_warn_level(
                         _warned_ruled_out_tool_use,
                         f"{responses_body.model}:tools",
+                        _PER_MODEL_WARN_WINDOW,
                     ),
                     "Model %s is ruled out for tool use by the catalogue; the tools Open "
                     "WebUI and this pipe added were not sent.",
@@ -2033,34 +2050,6 @@ class RequestOrchestrator:
                                     supported_values,
                                 )
                                 if fallback_effort:
-                                    self.logger.info(
-                                        "Reasoning effort '%s' not supported by model %s. Retrying with '%s'. Supported values: %s",
-                                        original_effort,
-                                        responses_body.model,
-                                        fallback_effort,
-                                        ", ".join(supported_values),
-                                    )
-                                    if __event_emitter__:
-                                        try:
-                                            await __event_emitter__(
-                                                {
-                                                    "type": "status",
-                                                    "data": {
-                                                        "description": (
-                                                            f"Adjusting reasoning effort from '{original_effort}' to "
-                                                            f"'{fallback_effort}' (model doesn't support '{original_effort}')"
-                                                        ),
-                                                        "done": False,
-                                                    },
-                                                }
-                                            )
-                                        except Exception as emit_error:
-                                            self.logger.debug(
-                                                "Failed to emit status update: %s",
-                                                emit_error,
-                                                exc_info=True,
-                                            )
-
                                     if not isinstance(responses_body.reasoning, dict):
                                         responses_body.reasoning = {}
                                     responses_body.reasoning["effort"] = fallback_effort
@@ -2074,6 +2063,42 @@ class RequestOrchestrator:
                                         responses_body, valves, honour_existing_budget=False
                                     )
                                     self._pipe._ensure_reasoning_config_manager()._apply_anthropic_verbosity(responses_body, valves)
+                                    self._pipe._ensure_reasoning_config_manager()._fit_effort_none_to_model(
+                                        responses_body, settings_applied=False
+                                    )
+                                    sent_effort = (
+                                        responses_body.reasoning.get("effort")
+                                        if isinstance(responses_body.reasoning, dict)
+                                        else None
+                                    )
+                                    sent_level = sent_effort if sent_effort is not None else "the model's own level"
+                                    self.logger.info(
+                                        "Reasoning effort '%s' not supported by model %s. Retrying with '%s'. Supported values: %s",
+                                        original_effort,
+                                        responses_body.model,
+                                        sent_level,
+                                        ", ".join(supported_values),
+                                    )
+                                    if __event_emitter__:
+                                        try:
+                                            await __event_emitter__(
+                                                {
+                                                    "type": "status",
+                                                    "data": {
+                                                        "description": (
+                                                            f"Adjusting reasoning effort from '{original_effort}' to "
+                                                            f"'{sent_level}' (model doesn't support '{original_effort}')"
+                                                        ),
+                                                        "done": False,
+                                                    },
+                                                }
+                                            )
+                                        except Exception as emit_error:
+                                            self.logger.debug(
+                                                "Failed to emit status update: %s",
+                                                emit_error,
+                                                exc_info=True,
+                                            )
                                     continue
 
                     if (

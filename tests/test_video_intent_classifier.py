@@ -240,11 +240,15 @@ class TestCollectPriorVideos:
         "//evil.example/x",
         "<script>x</script>",
         "/etc/passwd",
+        "/api/v1/files/abc/content//",
+        "/api/v1/files/abc/content/../x",
     ]
 
     _CONTROL_BODIES: ClassVar[list[str]] = [
         "/api/v1/files/deadbeef-9_X/content",
         "/api/v1/files/GOOD",
+        "/api/v1/files/abc/content/",
+        "/api/v1/files/abc/",
     ]
 
     @staticmethod

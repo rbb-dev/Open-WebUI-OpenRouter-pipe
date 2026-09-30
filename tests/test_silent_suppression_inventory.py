@@ -106,7 +106,15 @@ _EXPECTED: dict[str, int] = {
     # the latter -- so an escaping `ProcessLookupError` would fall to the outer
     # `except Exception` and degrade to a generic `materialise_failed` instead of
     # the honest `frame_extract_failed_idx_*` disclosure.
-    "media/frame_extraction.py": 3,
+    # 4th: `_stop_child`, the shared kill-and-reap the read-cap abort and the timeout
+    # both use. `kill()` on a child asyncio has already reaped raises
+    # `ProcessLookupError`, and a `wait()` on a closed transport raises too, so the
+    # suppression is what keeps the byte-budget refusal a `FrameExtractionError` with
+    # `byte_budget=True` rather than a `ProcessLookupError` the caller does not catch;
+    # the stderr drain is inside the same shape for the same reason. Suppressing a
+    # `CancelledError` there would swallow the caller's cancellation, which is why it
+    # is listed explicitly rather than caught by the broad arm.
+    "media/frame_extraction.py": 4,
     "models/catalog_manager.py": 2,
     # 19th: `MultimodalHandler.aclose()` during shutdown, closing the vetted transport's
     # session and its decode pool. It sits among the teardown steps either side of it,
@@ -170,7 +178,14 @@ _EXPECTED: dict[str, int] = {
     # first and falls back to the future only where it recorded none, and that read is
     # `_future_failed` -- a named predicate with its own narrow `except`, rather than a
     # context manager that hid the whole status derivation from the census and from ruff.
-    "pipe.py": 34,
+    # 35th (B382, H1624-4): the cancel of a log worker stranded on a closed loop, in
+    # `_maybe_start_log_worker`. Same reason as the one the loop-swap block above it
+    # already takes for the same class of task, and the same shape: the worker is being
+    # discarded because its loop can never run it again, the slot is nulled on the next
+    # line either way, and a task object that refuses to be cancelled must not stop the
+    # fresh worker from being started on this loop. Its loop is closed, so there is
+    # nothing on it left to log the failure to.
+    "pipe.py": 35,
     "storage/persistence.py": 3,
     # 1st: the caller-supplied fallback in `_emit_templated_error_event`. It is reached only because the
     # admin's own template already failed to render, and the generic card below it is the answer if the

@@ -241,3 +241,83 @@ async def test_a_size_superseding_a_ratio_on_the_image_tool_is_told_to_the_user(
         f"aspect_ratio={ratio!r} was removed because size={size!r} is {shape}, and the "
         f"user was never told; the notifications were {told!r}"
     )
+
+
+async def _drive_request(
+    server_tools: dict[str, Any], provider: dict[str, Any] | None = None,
+    body_tools: list[dict[str, Any]] | None = None,
+) -> tuple[Any, list[dict[str, Any]]]:
+    """Run one real `process_request` and hand back the body it sent and every event.
+
+    Only the HTTP boundary is stubbed: the orchestrator builds the real `ResponsesBody`
+    and hands it to the real streaming loop, which is what sees the tool array. `body_tools`
+    lands in the request body, which is where a caller's own `openrouter:*` entries arrive;
+    `None` sends no `tools` key at all, as every other arm here does.
+    """
+    pipe = Pipe()
+    captured: dict[str, Any] = {}
+
+    try:
+        orchestrator = RequestOrchestrator(pipe, logging.getLogger("test_contract_split"))
+        events: list[dict[str, Any]] = []
+
+        async def emitter(event):
+            events.append(event)
+
+        pipe._artifact_store._db_fetch = AsyncMock(return_value=None)
+        pipe._ensure_reasoning_config_manager()._apply_reasoning_preferences = Mock()
+        pipe._ensure_reasoning_config_manager()._apply_gemini_thinking_config = Mock()
+        pipe._ensure_tool_executor()._build_direct_tool_server_registry = Mock(
+            return_value={}
+        )
+        pipe._streaming_handler._select_llm_endpoint_with_forced = Mock(
+            return_value=("chat_completions", False)
+        )
+        pipe._streaming_handler._run_streaming_loop = AsyncMock(return_value="done")
+
+        valves = Mock()
+        for name, value in _CHAT_VALVES.items():
+            setattr(valves, name, value)
+
+        async def _loop(session, responses_request_body, api_key, base_url, **kwargs):
+            captured["body"] = responses_request_body
+            yield {"type": "response.completed", "response": {"output": [], "usage": {}}}
+
+        pipe.send_openrouter_streaming_request = _loop
+        real_loop = pipe._streaming_handler._run_streaming_loop
+
+        async def _run_loop(body, *args, **kwargs):
+            captured["body"] = body
+            return await real_loop(body, *args, **kwargs)
+
+        pipe._streaming_handler._run_streaming_loop = _run_loop
+
+        pipe_metadata: dict[str, Any] = {"server_tools": server_tools}
+        if provider is not None:
+            pipe_metadata["provider"] = provider
+        body: dict[str, Any] = {"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "hi"}]}
+        if body_tools is not None:
+            body["tools"] = body_tools
+        await orchestrator.process_request(
+            body=body,
+            __user__={"id": "user1"},
+            __request__=None,
+            __event_emitter__=emitter,
+            __event_call__=None,
+            __metadata__={"openrouter_pipe": pipe_metadata},
+            __tools__=None,
+            __task__=None,
+            __task_body__=None,
+            valves=valves,
+            session=AsyncMock(spec=aiohttp.ClientSession),
+            openwebui_model_id="openai/gpt-4o",
+            pipe_identifier="test-pipe",
+            allowlist_norm_ids={"openai.gpt-4o", "openai/gpt-4o"},
+            enforced_norm_ids=set(),
+            catalog_norm_ids=set(),
+            features={},
+        )
+    finally:
+        await pipe.close()
+
+    return captured.get("body"), events

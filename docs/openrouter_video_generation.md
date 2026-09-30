@@ -1567,6 +1567,15 @@ never applied, and the same knob written directly under the slug taking effect.
 Which placement a provider reads is the operator's call, so the pipe does not
 choose one for them.
 
+An address written into a provider option is address-checked before the request
+is sent, exactly like a link typed into one of the typed valves. The check reads
+the value rather than recognising a key, so it reaches inside a value that is a
+JSON document as well as inside a bare link; a refusal names the path the
+address was found at, for example `provider.options.runway.keyframes[0].image`.
+Nothing is rewritten on the way out, so a value that passes the check is
+forwarded exactly as it was written, and a provider option too large or too
+deeply nested for the check to certify is refused rather than sent.
+
 OpenRouter's video request schema defines exactly one provider property,
 `options`. Chat-routing and privacy fields — `only`, `order`, `sort`,
 `max_price`, `zdr`, `data_collection` and the rest — are not part of it, and

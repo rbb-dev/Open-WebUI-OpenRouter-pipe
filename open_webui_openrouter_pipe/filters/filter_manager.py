@@ -442,32 +442,40 @@ def _newest_marked_row(rows, marker, *, prefer_id=None, tie_break_id=False, owne
 
 
 def _sweep_candidate_index(
-    rows: list[Any], name: str
+    rows: list[Any], name: str, marker: str
 ) -> tuple[dict[str, list[Any]], list[Any]]:
-    prefix = f"{name} = "
+    assign = f"{name} = "
     index: dict[str, list[Any]] = {}
     unindexed: list[Any] = []
     for row in rows or []:
         content = getattr(row, "content", None)
         if not isinstance(content, str) or not content:
             continue
-        at = content.find(prefix)
-        if at < 0:
+        if marker not in content or "class Filter" not in content:
             continue
-        if at and content[at - 1] != "\n":
+        keys: list[str] = []
+        unparsed = False
+        start = 0
+        while True:
+            at = content.find(assign, start)
+            if at < 0:
+                break
+            start = at + len(assign)
+            end = content.find("\n", start)
+            rhs = (content[start:] if end < 0 else content[start:end]).strip()
+            try:
+                value = ast.literal_eval(rhs)
+            except (ValueError, SyntaxError):
+                unparsed = True
+                break
+            if not isinstance(value, str) or isinstance(value, bool):
+                unparsed = True
+                break
+            keys.append(f"{assign}{value!r}")
+        if unparsed or not keys:
             unindexed.append(row)
-            continue
-        end = content.find("\n", at)
-        key = (content[at:] if end < 0 else content[at:end]).rstrip()
-        raw = key[len(prefix) :]
-        try:
-            value = ast.literal_eval(raw) if key.startswith(prefix) and raw else None
-        except (ValueError, SyntaxError):
-            value = None
-        if isinstance(value, str) and f"{name} = {value!r}" == key:
+        for key in keys:
             index.setdefault(key, []).append(row)
-        else:
-            unindexed.append(row)
     return index, unindexed
 
 
@@ -475,9 +483,12 @@ def _sweep_candidates(
     index: dict[str, list[Any]], unindexed: list[Any], *tokens: str
 ) -> list[Any]:
     candidates: list[Any] = []
-    for token in tokens:
-        candidates.extend(index.get(token, ()))
-    candidates.extend(unindexed)
+    seen: set[int] = set()
+    for row in itertools.chain(*(index.get(token, ()) for token in tokens), unindexed):
+        if id(row) in seen:
+            continue
+        seen.add(id(row))
+        candidates.append(row)
     return candidates
 
 
@@ -1675,7 +1686,7 @@ class FilterManager:
                 continue
             if getattr(row, "is_active", False):
                 continue
-            if not _switched_off_by_pipe(row):
+            if not _pipe_owns_the_off(row):
                 continue
             if not _claimable_by(row, owner):
                 continue
@@ -1928,7 +1939,9 @@ class FilterManager:
             rows = _FilterRows(prefetched, None, prefetched is not None)
         if not rows.available or rows.all_rows is None:
             return {}
-        index, unindexed = _sweep_candidate_index(rows.all_rows, "VIDEO_MODEL_ID")
+        index, unindexed = _sweep_candidate_index(
+            rows.all_rows, "VIDEO_MODEL_ID", _OPENROUTER_VIDEO_GEN_FILTER_MARKER
+        )
 
         installed: dict[str, str] = {}
         for model in models:
@@ -2034,12 +2047,15 @@ class FilterManager:
         endpoint_record: list[dict[str, Any]] | dict[str, Any] | None = None,
         dedicated_image_api: bool,
         variant_ids: tuple[str, ...] = (),
+        spec: Any = None,
     ) -> str:
         from .image_filter_renderer import (
             build_image_model_filter_spec,
             render_image_model_filter_source,
         )
 
+        if spec is not None:
+            return render_image_model_filter_source(spec)
         return render_image_model_filter_source(
             build_image_model_filter_spec(
                 model_id,
@@ -2172,7 +2188,9 @@ class FilterManager:
         self._unresolved_image_filter_ids = frozenset()
         unresolved: set[str] = set()
         installed: dict[str, list[str]] = {}
-        index, unindexed = _sweep_candidate_index(rows.all_rows, "IMAGE_FILTER_MODEL_ID")
+        index, unindexed = _sweep_candidate_index(
+            rows.all_rows, "IMAGE_FILTER_MODEL_ID", _OPENROUTER_IMAGE_FILTER_MARKER
+        )
 
         variant_ids_by_canonical: dict[str, set[str]] = {}
         for model in models:
@@ -2253,7 +2271,7 @@ class FilterManager:
                     unresolved.add(original_id)
 
         self._unresolved_image_filter_ids = frozenset(unresolved)
-        await self._retire_variant_image_filters()
+        await self._retire_variant_image_filters(rows)
         return installed
 
     async def _retire_variant_image_filters(self, rows: _FilterRows | None = None) -> set[str]:
@@ -2269,10 +2287,14 @@ class FilterManager:
         try:
             from open_webui.models.functions import Functions
 
-            if rows is None or rows.active_rows is None:
+            if rows is None:
                 active = await Functions.get_functions_by_type("filter", active_only=True)
-            else:
+            elif rows.active_rows is not None:
                 active = rows.active_rows
+            elif rows.all_rows is not None:
+                active = [r for r in rows.all_rows if getattr(r, "is_active", False)]
+            else:
+                active = await Functions.get_functions_by_type("filter", active_only=True)
         except Exception as exc:
             self.logger.debug("Could not list filters to retire old ones: %s", exc, exc_info=True)
             return retired
@@ -2385,6 +2407,7 @@ class FilterManager:
             endpoint_record=endpoint_record,
             dedicated_image_api=dedicated_image_api,
             variant_ids=variant_ids,
+            spec=spec,
         ).strip() + "\n"
         return await self._ensure_filter_installed(
             desired_source=desired_source,

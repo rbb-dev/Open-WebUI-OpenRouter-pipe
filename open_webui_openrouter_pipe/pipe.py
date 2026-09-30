@@ -151,6 +151,7 @@ from .core.error_formatter import ErrorFormatter, _admission_error_response
 from .core.errors import (
     OpenRouterAPIError,
     RequiredInternalFileError,
+    channel_safe_values,
 )
 from .core.logging_system import SessionLogger, resolve_level
 from .core.url_scheme import is_http_or_https_url
@@ -192,7 +193,7 @@ from .models.registry import (
 from .requests import NonStreamingAdapter, TaskModelAdapter
 from .requests.orchestrator import _is_api_caller
 from .storage.multimodal import MultimodalHandler
-from .storage.owui_files import OwuiFileGateway
+from .storage.owui_files import OwuiFileGateway, is_channel_chat
 from .storage.persistence import ArtifactStore
 from .streaming.event_emitter import EventEmitter, EventEmitterHandler
 from .streaming.streaming_core import StreamingHandler, _wrap_event_emitter
@@ -431,6 +432,8 @@ _warned_pipes_maintenance: set[str] = set()
 _WEB_TOOLS_REPAIR_COOLDOWN_S = 300.0
 _LEGACY_VIDEO_FILTER_ID = "openrouter_video_openrouter_video"
 _WARMUP_RETRY_SECONDS = 300.0
+_REDIS_RETRY_SECONDS = 300.0
+_USER_VALVE_CACHE_MAX = 512
 _warned_user_valves: set[str] = set()
 _warned_timing_file: set[str] = set()
 _SEMAPHORE_NOT_GIVEN: Any = object()
@@ -679,10 +682,14 @@ class Pipe:
         self._warmup_retry_at = 0.0
         self._warmup_failed_key: str | None = None
 
+        self._user_valve_cache: dict[str, tuple[str, Any]] = {}
+
         self._redis_url, self._websocket_manager, self._websocket_redis_url, self._redis_candidate = (
             _detect_redis_config(self.valves, self.logger)
         )
 
+        self._redis_retry_at = 0.0
+        self._redis_retry_url: str | None = None
         self._redis_enabled = False
         self._redis_client = None
         self._redis_loop: asyncio.AbstractEventLoop | None = None
@@ -835,6 +842,18 @@ class Pipe:
             SessionLogger.set_log_queue(self._log_queue)
         SessionLogger.set_main_loop(loop)
 
+        worker = self._log_worker_task
+        if worker is not None and not worker.done():
+            try:
+                worker_loop: Any = worker.get_loop()
+            except AttributeError:  # pragma: no cover - defensive for older asyncio implementations
+                worker_loop = None
+            if worker_loop is loop:
+                return
+            with contextlib.suppress(Exception):
+                worker.cancel()
+            self._log_worker_task = None
+
         pipe_ref = weakref.ref(self)
 
         @timed
@@ -919,17 +938,27 @@ class Pipe:
         """
         if stored != {}:
             return False
+        blob = self._stored_valve_blob(__user__)
+        return isinstance(blob, str) and bool(blob.strip())
+
+    def _stored_valve_blob(self, __user__: dict[str, Any]) -> Any:
         settings = __user__.get("settings")
         if not isinstance(settings, Mapping):
-            return False
+            return None
         functions = settings.get("functions")
         if not isinstance(functions, Mapping):
-            return False
+            return None
         valves = functions.get("valves")
         if not isinstance(valves, Mapping):
-            return False
-        blob = valves.get(self.id)
-        return isinstance(blob, str) and bool(blob.strip())
+            return None
+        return valves.get(self.id)
+
+    def _stored_valve_fingerprint(self, blob: Any) -> str:
+        if isinstance(blob, str):
+            return blob
+        if isinstance(blob, Mapping):
+            return json.dumps(blob, sort_keys=True, default=str)
+        return ""
 
     async def _read_user_valves(self, __user__: dict[str, Any]) -> tuple[Any, list[str]]:
         """The one place a request turns `__user__` into (UserValves, rejected).
@@ -947,7 +976,17 @@ class Pipe:
         `"REQUEST_ZDR" in rejected` -- then do so with no new signal to thread through
         the job.
         """
-        stored = await self._stored_user_valves(__user__)
+        user_id = str(__user__.get("id") or "")
+        fingerprint = self._stored_valve_fingerprint(self._stored_valve_blob(__user__))
+        cached = self._user_valve_cache.get(user_id) if user_id else None
+        if cached is not None and cached[0] == fingerprint:
+            stored: Any = cached[1]
+        else:
+            stored = await self._stored_user_valves(__user__)
+            if user_id and fingerprint and isinstance(stored, Mapping):
+                if len(self._user_valve_cache) >= _USER_VALVE_CACHE_MAX:
+                    self._user_valve_cache.clear()
+                self._user_valve_cache[user_id] = (fingerprint, stored)
         user_valves, rejected = parse_user_valves(stored, model=self.UserValves)
         if self._user_valve_blob_is_rejected(__user__, stored):
             self.logger.log(
@@ -1029,6 +1068,9 @@ class Pipe:
             return
         self._refresh_redis_candidate()
         if not self._redis_allowed or self._redis_enabled:
+            if not self._redis_allowed:
+                self._redis_retry_at = 0.0
+                self._redis_retry_url = None
             return
         try:
             loop = asyncio.get_running_loop()
@@ -1043,6 +1085,11 @@ class Pipe:
             if task_loop is not None and task_loop is loop:
                 return
             self._redis_ready_task = None
+        if self._redis_retry_url != self._redis_url:
+            self._redis_retry_at = 0.0
+            self._redis_retry_url = self._redis_url
+        if time.monotonic() < self._redis_retry_at:
+            return
         self._redis_ready_task = _detached_task(
             loop, self._init_redis_client(), "openrouter-redis-init"
         )
@@ -1120,6 +1167,8 @@ class Pipe:
                     await client.aclose()
             self._redis_enabled = False
             self._redis_client = None
+            self._redis_retry_at = time.monotonic() + _REDIS_RETRY_SECONDS
+            self._redis_retry_url = self._redis_url
             store = getattr(self, "_artifact_store", None)
             if store is not None:
                 store._redis_enabled = False
@@ -1127,6 +1176,8 @@ class Pipe:
             self.logger.warning("Redis cache disabled (%s)", exc, exc_info=True)
             return
 
+        self._redis_retry_at = 0.0
+        self._redis_retry_url = None
         self._redis_client = client
         self._redis_enabled = True
         store = getattr(self, "_artifact_store", None)
@@ -2324,6 +2375,7 @@ class Pipe:
         self._warmup_failed = False
         self._warmup_retry_at = 0.0
         self._warmup_failed_key: str | None = None
+        self._user_valve_cache = {}
         self._redis_url = None
         self._websocket_manager = None
         self._websocket_redis_url = None
@@ -2333,6 +2385,8 @@ class Pipe:
         self._redis_listener_task = None
         self._redis_flush_task = None
         self._redis_ready_task = None
+        self._redis_retry_at = 0.0
+        self._redis_retry_url = None
         self._video_active_tasks: dict[tuple[str, str], asyncio.Task] = {}
 
     def _attach_to_lifecycle_registry(self) -> None:
@@ -2491,12 +2545,36 @@ class Pipe:
                 "Discarded %d queued request(s) bound to a replaced request queue", drained
             )
 
+    def _abandon_log_queue(
+        self, owned_queue: asyncio.Queue[logging.LogRecord] | None
+    ) -> None:
+        if owned_queue is None:
+            return
+        drained = 0
+        while True:
+            try:
+                record = owned_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            drained += 1
+            if drained > Pipe._QUEUE_MAXSIZE:
+                break
+            SessionLogger.process_record(record)
+            with contextlib.suppress(ValueError):
+                owned_queue.task_done()
+        if drained:
+            self.logger.warning(
+                "Drained %d queued log record(s) from a log worker that could not drain them",
+                drained,
+            )
+
     @timed
     async def _stop_log_worker(self) -> None:
         """Stop this instance's log worker and clear the queue."""
         owned_queue = self._log_queue
         owned_loop = self._log_queue_loop
         worker = self._log_worker_task
+        drained_by_worker = False
         if worker:
             with contextlib.suppress(RuntimeError):
                 worker.cancel()
@@ -2512,6 +2590,7 @@ class Pipe:
                     if "cannot reuse already awaited coroutine" not in str(exc):
                         raise
                     self.logger.debug("Ignoring log worker shutdown error: %s", exc)
+                drained_by_worker = True
             else:
                 self.logger.debug(
                     "Skipping await for log worker bound to a different event loop during close()."
@@ -2527,6 +2606,8 @@ class Pipe:
                 SessionLogger.set_main_loop(None)
         except Exception:
             self.logger.debug("Releasing global log queue/loop references failed", exc_info=True)
+        if worker is None or not drained_by_worker:
+            self._abandon_log_queue(owned_queue)
 
     @timed
     async def _stop_video_tasks(self) -> None:
@@ -3074,16 +3155,8 @@ class Pipe:
                     metadata=job.metadata,
                     request_id=job.request_id,
                     messages=job.body.get("messages") or [],
+                    parallel_tools=job.valves.MAX_PARALLEL_TOOLS_PER_REQUEST,
                 )
-                worker_count = job.valves.MAX_PARALLEL_TOOLS_PER_REQUEST
-                tool_executor = self._ensure_tool_executor()
-                for worker_idx in range(worker_count):
-                    tool_context.workers.append(
-                        asyncio.create_task(
-                            tool_executor._tool_worker_loop(tool_context),
-                            name=f"openrouter-tool-worker-{job.request_id}-{worker_idx}",
-                        )
-                    )
                 tool_token = self._TOOL_CONTEXT.set(tool_context)
                 try:
                     result = await self._handle_pipe_call(
@@ -3203,6 +3276,7 @@ class Pipe:
                                     status=status,
                                     reason=reason,
                                     pipe_identifier=self.id,
+                                    task=str(job.metadata.get("task") or ""),
                                 )
                             )
                         except Exception:
@@ -3415,7 +3489,7 @@ class Pipe:
 
         __event_emitter__ = _task_visible_channel_emitter(__event_emitter__, __task__)
         if use_task_model_adapter and self._auth_failure_active():
-            reason = "OpenRouter access is temporarily disabled after repeated authentication failures."
+            reason = "OpenRouter access is temporarily disabled after an authentication failure."
             await self._event_emitter_handler._emit_notification(
                 __event_emitter__, reason, level="warning"
             )
@@ -3426,7 +3500,6 @@ class Pipe:
 
         api_key_value, api_key_error = self._resolve_openrouter_api_key(valves)
         if api_key_error:
-            self._note_auth_failure()
             if use_task_model_adapter:
                 await self._event_emitter_handler._emit_notification(
                     __event_emitter__, api_key_error, level="warning"
@@ -3453,8 +3526,20 @@ class Pipe:
 
             error_id, context_defaults = self._ensure_error_formatter()._build_error_context()
             enriched_variables = {**context_defaults, **variables}
+            self.logger.warning(
+                "[%s] Auth configuration error (session=%s, user=%s): %s",
+                error_id,
+                enriched_variables.get("session_id") or "",
+                enriched_variables.get("user_id") or "",
+                api_key_error,
+            )
             try:
-                markdown = _render_error_template(template, enriched_variables)
+                markdown = _render_error_template(
+                    template,
+                    channel_safe_values(enriched_variables)
+                    if is_channel_chat(OWUI_CHAT_ID.get())
+                    else enriched_variables,
+                )
             except Exception:
                 self.logger.debug("Auth error template rendering failed; using fallback", exc_info=True)
                 markdown = (
@@ -3463,13 +3548,6 @@ class Pipe:
                     f"**Error ID:** `{error_id}`\n\n"
                     "Verify the API key configured for this pipe."
                 )
-            self.logger.warning(
-                "[%s] Auth configuration error (session=%s, user=%s): %s",
-                error_id,
-                enriched_variables.get("session_id") or "",
-                enriched_variables.get("user_id") or "",
-                api_key_error,
-            )
             return self._build_chat_completion_payload(
                 model=str(body.get("model") or openwebui_model_id or "pipe"),
                 content=join_answer_and_card("", markdown),
@@ -3911,6 +3989,8 @@ class Pipe:
                     task.cancel()
             if context.workers:
                 await asyncio.gather(*context.workers, return_exceptions=True)
+            else:
+                await asyncio.sleep(0)
 
     # Tool Execution Methods
 

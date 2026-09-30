@@ -55,7 +55,7 @@ PACKAGE = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 # `Functions` import became `get_async_db_context` + `Function`, inside the same guarded `try`.
 # 92 -> 93: `read_task_model_params` (structured_task/orchestrator.py) reads the admin's
 # `task.model.params` row from Open WebUI's config table lazily, beside the two-key
-# `_owui_task_model_ids` read beside it, so a host that cannot supply the table still runs
+# candidate-id read beside it, so a host that cannot supply the table still runs
 # the classifier with the payload it would have sent.
 # 93 -> 94: the metadata pass's row read (`_read_model_rows` in models/catalog_manager.py)
 # batch-reads the Open WebUI `Models` table lazily for the whole pass, beside the icon
@@ -71,7 +71,14 @@ PACKAGE = Path(__file__).resolve().parents[1] / "open_webui_openrouter_pipe"
 # must answer the row rather than the in-memory copy. `config_service` cannot import
 # `actions` (the cycle `dashboard_socket` forbids), so the reader cannot reuse
 # `actions._read_stored_valves` and does the guarded import itself.
-_EXPECTED_OWUI_IMPORTS = (25, 96)
+# 96 -> 95 (B383 item 6): the two lazy `Config` imports in
+# structured_task/orchestrator.py -- one per read -- became one, because
+# `read_task_model_config` now asks for `task.model.default`, `task.model.external` and
+# `task.model.params` in a single `Config.get_many` and the separate candidate-id reader is
+# gone. The count DROPS by one because a session and its import are both gone, not because
+# an import was hoisted or dropped on the floor; the import that remains is still inside
+# the same broad `try`, so a host that cannot supply the table still runs the classifier.
+_EXPECTED_OWUI_IMPORTS = (25, 95)
 
 @pytest.mark.skipif(
     bool(os.environ.get("OWUI_PIPE_BUNDLE_PATH")),

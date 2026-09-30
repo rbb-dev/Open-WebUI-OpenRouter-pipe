@@ -431,7 +431,7 @@ Operational guidance:
 ## 5. Tooling and plugins
 
 - Web search:
-  - When the **OpenRouter Web Tools** toggle is enabled for the request (per chat, or enabled by default via Default Filters), and the selected model/provider supports OpenRouter web search, the pipe attaches OpenRouter web search as a server tool (`tools: [{"type": "openrouter:web_search", ...}]`).
+  - When the **OpenRouter Web Tools** toggle is enabled for the request (per chat, or enabled by default via Default Filters), and the selected model/provider supports OpenRouter web search, the pipe attaches OpenRouter web search as a server tool (`tools: [{"type": "openrouter:web_search", ...}]`). One entry per type per request, and where a filter and the request body both name the type, the filter's parameters are the ones sent.
   - The filter's admin valves (`WEB_SEARCH_MAX_RESULTS`, `WEB_SEARCH_ENGINE`, etc.) control search parameters.
 - Response healing:
   - The OpenRouter response-healing plugin is intentionally **not** exposed by this pipe.

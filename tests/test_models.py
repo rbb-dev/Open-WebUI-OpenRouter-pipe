@@ -4825,6 +4825,23 @@ def test_the_sync_s_gate_is_a_strict_subset_of_the_scheduler_s():
     )
 
 
+"""The valves that make the scheduler start a metadata sync, written down independently.
+
+This literal is the reference the two predicates are compared against, so it is the one
+place the contract lives: a valve added to `syncs_owui_models` and not here is a
+difference, and a valve dropped from both the production gate and here is also a
+difference. A reference derived from the production code cannot do that job -- both
+functions lose a term together, so a derived reference loses it too.
+
+`AUTO_DEFAULT_VIDEO_FILTERS`, `AUTO_DEFAULT_IMAGE_FILTERS` and
+`AUTO_DEFAULT_FUSION_FILTER` are deliberately absent: each appears in `sync_key`, but only
+`and`-ed with its `AUTO_ATTACH_*` partner, so none of them can make a sync happen alone.
+If one of them ever stops being paired, it belongs here.
+"""
+
+"""The second input to both predicates, which no valve names: provider routing enabled."""
+
+
 @pytest.mark.parametrize("answer", [False, True])
 def test_the_scheduler_asks_the_predicate_rather_than_its_own_or_chain(
     pipe_instance, monkeypatch, answer

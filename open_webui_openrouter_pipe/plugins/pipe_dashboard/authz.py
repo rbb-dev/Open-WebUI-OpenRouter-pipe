@@ -10,7 +10,12 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from ...core.warn_latch import warn_level
+
 logger = logging.getLogger(__name__)
+
+UNDETERMINED = object()
+_warned_undeterminable: dict[str, float] = {}
 
 _PD_MODEL_SUFFIX = "pipe-dashboard"
 
@@ -47,9 +52,19 @@ async def resolve_user(user_id: str | None) -> Any | None:
         return None
     try:
         return await _owui().Users.get_user_by_id(user_id)
-    except Exception:
-        logger.debug("pipe_dashboard: could not resolve user %s", user_id, exc_info=True)
-        return None
+    except Exception as exc:
+        _level = warn_level(
+            _warned_undeterminable,
+            f"viewer_authz:{type(exc).__name__}",
+            cooldown_s=300.0,
+        )
+        logger.log(
+            _level,
+            "pipe_dashboard: could not resolve user %s; the viewer sweep asks again next tick",
+            user_id,
+            exc_info=True,
+        )
+        return UNDETERMINED
 
 
 VIEWER_ID_KEY = "openrouter_pipe_dashboard_user_id"
@@ -101,7 +116,9 @@ async def resolve_socket_user_id(sid: str) -> str | None:
         return None
 
 
-async def _authorized(user: Any, pipe: Any, permission: str) -> bool:
+async def _authorized(user: Any, pipe: Any, permission: str, model: Any = None) -> bool | None:
+    from fastapi import HTTPException
+
     if user is None:
         return False
     mid = model_id(pipe)
@@ -110,7 +127,8 @@ async def _authorized(user: Any, pipe: Any, permission: str) -> bool:
     try:
         o = _owui()
         o.get_verified_user(user)
-        model = await o.Models.get_model_by_id(mid)
+        if model is None:
+            model = await o.Models.get_model_by_id(mid)
         if permission == "read":
             await o.check_model_access(user, model, bypass_filter=o.BYPASS_MODEL)
             return True
@@ -123,20 +141,59 @@ async def _authorized(user: Any, pipe: Any, permission: str) -> bool:
         return await o.AccessGrants.has_access(
             user_id=user.id, resource_type="model", resource_id=mid, permission="write",
         )
-    except Exception:
+    except HTTPException:
         logger.debug(
-            "pipe_dashboard: %s access denied or undeterminable for user %s on %s",
+            "pipe_dashboard: %s access denied for user %s on %s",
             permission,
             getattr(user, "id", None),
             mid,
             exc_info=True,
         )
         return False
+    except Exception as exc:
+        _level = warn_level(
+            _warned_undeterminable,
+            f"viewer_authz:{type(exc).__name__}",
+            cooldown_s=300.0,
+        )
+        logger.log(
+            _level,
+            "pipe_dashboard: %s access undeterminable for user %s on %s; the viewer sweep "
+            "asks again next tick",
+            permission,
+            getattr(user, "id", None),
+            mid,
+            exc_info=True,
+        )
+        return None
 
 
-async def can_view(user: Any, pipe: Any) -> bool:
-    return await _authorized(user, pipe, "read")
+async def dashboard_model(pipe: Any) -> Any:
+    mid = model_id(pipe)
+    if not mid:
+        return None
+    try:
+        return await _owui().Models.get_model_by_id(mid)
+    except Exception:
+        logger.debug("pipe_dashboard: dashboard model row unreadable", exc_info=True)
+        return None
+
+
+async def can_view_known(user: Any, pipe: Any, model: Any = None) -> bool | None:
+    if user is UNDETERMINED:
+        return None
+    return await _authorized(user, pipe, "read", model)
+
+
+async def can_act_known(user: Any, pipe: Any) -> bool | None:
+    if user is UNDETERMINED:
+        return None
+    return await _authorized(user, pipe, "write")
+
+
+async def can_view(user: Any, pipe: Any, model: Any = None) -> bool:
+    return await can_view_known(user, pipe, model) is True
 
 
 async def can_act(user: Any, pipe: Any) -> bool:
-    return await _authorized(user, pipe, "write")
+    return await can_act_known(user, pipe) is True

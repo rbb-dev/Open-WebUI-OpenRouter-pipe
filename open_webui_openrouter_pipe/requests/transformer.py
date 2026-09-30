@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 from ..core.config import (
     _NON_REPLAYABLE_TOOL_ARTIFACTS,
     _RAW_REPLAYED_SERVER_TOOLS,
+    OPENAI_ATTACHMENT_NOT_SENT_PREFIX,
     OPENAI_EMPTY_USER_TURN_FALLBACK,
     markdown_image_destinations,
 )
@@ -2148,7 +2149,7 @@ async def transform_messages_to_input(
                             subject="video",
                         )
 
-                    if names_an_owui_file_path(url):
+                    if not is_inline_data_url(url) and names_an_owui_file_path(url):
                         raise RequiredInternalFileError(
                             "Internal video URLs cannot be forwarded to the provider.",
                             kind="video",
@@ -2295,6 +2296,7 @@ async def transform_messages_to_input(
             refused_images: list[str] = []
             refused_files: list[str] = []
             status_files: list[str] = []
+            carded_refusals: list[str] = []
             encountered_user_images = False
             reusable_image_blocks: list[dict[str, Any]] = []
             vision_warning_sent = False
@@ -2337,6 +2339,9 @@ async def transform_messages_to_input(
                                 "Model does not accept image inputs; skipping user attachments.",
                                 done=False,
                             )
+                            vision_refusal = "the selected model does not accept picture inputs"
+                            refused_images.append(vision_refusal)
+                            carded_refusals.append(vision_refusal)
                             vision_warning_sent = True
                         continue
                     if not tool_images and user_images_used >= image_limit:
@@ -2511,9 +2516,10 @@ async def transform_messages_to_input(
                 last_image_turn = msg_turn_index
 
             image_notices: list[str] = []
-            if refused_images:
+            unreported_images = [r for r in refused_images if r not in carded_refusals]
+            if unreported_images:
                 image_notices.append(
-                    f"skipped {len(refused_images)} ({'; '.join(refused_images)})"
+                    f"skipped {len(unreported_images)} ({'; '.join(unreported_images)})"
                 )
             if dropped_images:
                 image_notices.append(
@@ -2542,7 +2548,7 @@ async def transform_messages_to_input(
                         )
                         converted_blocks.append({
                             "type": "input_text",
-                            "text": f"[An attached item was not sent: {reasons}.]",
+                            "text": f"{OPENAI_ATTACHMENT_NOT_SENT_PREFIX}{reasons}.]",
                         })
                     else:
                         converted_blocks.append({

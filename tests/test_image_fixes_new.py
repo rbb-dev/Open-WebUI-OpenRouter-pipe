@@ -1,13 +1,17 @@
 """New coverage for the image-path fixes (SYS, P1/P1b, P2, S2b, BCAST)."""
 from __future__ import annotations
 
+import json
+import logging
 import time
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
+from open_webui_openrouter_pipe import Pipe
 from open_webui_openrouter_pipe.integrations.image import ImageGenerationAdapter
 from open_webui_openrouter_pipe.integrations.image_types import (
+    ImageGenerationError,
     pixel_size,
     prompt_with_system,
     reduced_ratio,

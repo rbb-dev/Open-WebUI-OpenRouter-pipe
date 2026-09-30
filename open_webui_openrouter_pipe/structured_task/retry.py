@@ -98,6 +98,9 @@ def _no_choices_reason(response: Any) -> str:
         message = error.get("message")
         if isinstance(message, str) and message.strip():
             return message
+        detail = error.get("detail")
+        if isinstance(detail, str) and detail.strip():
+            return detail
         code = error.get("code")
         if code not in (None, ""):
             return f"error code {code}"

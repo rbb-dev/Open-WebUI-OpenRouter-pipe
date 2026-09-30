@@ -3327,7 +3327,15 @@ async def test_the_refresh_retires_superseded_filters_whether_or_not_it_installs
     from open_webui_openrouter_pipe.filters.filter_manager import FilterManager
 
     deactivated: list[str] = []
-    rows = [SimpleNamespace(id="old_variant", content=f'M = "{_OPENROUTER_IMAGE_FILTER_MARKER}"')]
+    # `is_active` is a column on Open WebUI's own FunctionModel and every row this fake
+    # hands back stands in for an `active_only=True` read, so the row carries it.
+    rows = [
+        SimpleNamespace(
+            id="old_variant",
+            content=f'M = "{_OPENROUTER_IMAGE_FILTER_MARKER}"',
+            is_active=True,
+        )
+    ]
 
     class _Functions:
         @staticmethod

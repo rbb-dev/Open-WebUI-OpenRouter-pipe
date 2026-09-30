@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterator
 from typing import Any
@@ -201,6 +202,16 @@ def label_segment(key: Any) -> str:
     return clamp_text(inert, MAX_LABEL_SEGMENT) if inert else "?"
 
 
+def _container_behind(value: str) -> Any:
+    if value[:1] not in ("[", "{", '"'):
+        return None
+    try:
+        parsed = json.loads(value)
+    except (ValueError, RecursionError):
+        return None
+    return parsed if isinstance(parsed, (dict, list, str)) else None
+
+
 def _addresses_in(
     value: Any, path: str, depth: int, remaining: list[int]
 ) -> Iterator[tuple[str, str]]:
@@ -211,6 +222,10 @@ def _addresses_in(
         cleaned = value.strip()
         if _ABSOLUTE_URL_RE.match(cleaned):
             yield cleaned, path
+            return
+        nested = _container_behind(cleaned)
+        if nested is not None:
+            yield from _addresses_in(nested, path, depth + 1, remaining)
         return
     if isinstance(value, dict):
         refuse_past_the_scan_depth(depth)

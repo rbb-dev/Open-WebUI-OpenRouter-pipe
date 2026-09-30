@@ -16,6 +16,7 @@ from ..core.utils import (
     summarise_names,
 )
 from ..core.utils import OWUI_FUNCTION_ID_ILLEGAL_RE as _FILTER_ID_RE
+from ..core.warn_latch import warn_level
 from ..integrations.image_types import (
     PASSTHROUGH_DESCRIPTION,
     PROVIDER_OPTIONS_DESCRIPTION,
@@ -25,6 +26,8 @@ from ..integrations.image_types import (
 from ..integrations.video_types import VIDEO_REQ_KEY_DESCRIPTION
 
 logger = logging.getLogger(__name__)
+
+_warned_unrenderable_params: set[str] = set()
 
 _LITERAL_VALUE_RE = re.compile(r"^[a-zA-Z0-9:._ -]{1,64}$")
 
@@ -737,7 +740,11 @@ def render_video_filter_source(
         - _purpose_built_published_names(spec)
     )
     if unreachable:
-        logger.warning(
+        logger.log(
+            warn_level(
+                _warned_unrenderable_params,
+                f"{spec.model_id}:{','.join(unreachable)}",
+            ),
             "Model %r publishes parameter(s) %s whose names cannot become form fields, so "
             "they are not offered. Every other parameter it publishes is.",
             spec.model_id,

@@ -65,10 +65,26 @@ property of the conversation, not of the frame:
 The five pre-job refusals (a tripped circuit breaker, warmup, a missing stream queue, a
 full queue's 503, and a pre-enqueue failure) never build a stream queue and so never
 install the middleware emitter: they emit straight to the channel emitter and take the
-same channel path as any other card. A template author does not need to write anything
-differently for a channel — the pipe routes the card — but a template that ends its card
-early, or that relies on the
-`Error: ` prefix being visible, will read differently in a channel than in a saved chat.
+same channel path as any other card.
+
+**A channel card is reduced, a saved-chat card is not.** Every member of a channel can
+read what the pipe writes there, so a card that reaches a channel is rendered as though
+twelve of its placeholders were empty: `session_id`, `user_id`, `detail`,
+`sanitized_detail`, `reason`, `openrouter_message`, `upstream_message`,
+`moderation_reasons`, `flagged_excerpt`, `raw_body`, `metadata_json` and
+`provider_raw_json`. Those are the requester's identifiers, the text they wrote and the
+provider's own prose about it — and a provider's rejection body routinely quotes the
+prompt back, so the prose *can* be their words. The reduction happens at the render, on
+every path that can reach a channel, and it is keyed on the surface rather than on the
+template: an admin's custom template gets the same answer, and there is no valve to put
+the ids back. `error_id`, the model, the provider, `openrouter_code`, `status_code`, the
+limits and the rate or balance fields still render, so the card still says what failed.
+
+A template author therefore does have to write one thing differently for a channel: a
+line whose placeholder came out empty is omitted, so a line that exists only to show the
+session id or the flagged excerpt simply is not there in a room. A card that ends early,
+or that relies on the `Error: ` prefix being visible, also reads differently in a channel
+than in a saved chat. Nothing else about the routing changes.
 
 ---
 
@@ -77,10 +93,12 @@ early, or that relies on the
 For templated errors, the pipe generates:
 - `error_id`: 16 hex characters (`secrets.token_hex(8)`)
 - `timestamp`: ISO 8601 UTC timestamp
-- `session_id` and `user_id` (when available)
+- `session_id` and `user_id` (when available) — withheld from a card that reaches a channel, because every
+  member of the room would otherwise read them
 - `support_email` and `support_url` (from valves `SUPPORT_EMAIL` and `SUPPORT_URL`)
 
-Operator logs include the `error_id`, and templates can include it in user-facing text for support correlation.
+Operator logs include the `error_id`, and templates can include it in user-facing text for support correlation. On a
+channel it is also the only correlation handle the reader has, which is why it is never withheld.
 
 ---
 
@@ -263,6 +281,14 @@ This behavior is intended to convert certain provider-side “configuration mism
 
 A row the catalogue marks `reasoning.mandatory` is the exception: the pipe does not retry it, because stripping reasoning from a request that must think is the very shape the row refuses. The first response is returned to the user with the provider's own diagnostic rather than a resend that would fail the same way and hide it.
 
+### When the endpoint rejects the effort itself
+
+A second, separate retry fires on a rejection of `reasoning.effort` as a value rather than of reasoning as such: the provider names `reasoning.effort` with code `unsupported_value` and lists the levels it accepts (`Supported values are: …`). The pipe then resends once at the level nearest the one that was refused, measured in the order `none`, `minimal`, `low`, `medium`, `high`, `xhigh`; where two supported levels are the same distance away the lower of the two is chosen. A request at or below the lowest level the endpoint accepts is retried at that lowest, and a request at or above the highest at that highest.
+
+The chat sees a status line, `Adjusting reasoning effort from '<refused>' to '<retried>' (model doesn't support '<refused>')`, naming the level the resend actually carries — on a model whose reasoning is mandatory that is the level the resend goes out with after the rule below has been applied, not the one the endpoint's list offered.
+
+The `reasoning.mandatory` rule described in [Model catalog and routing intelligence](model_catalog_and_routing_intelligence.md) is re-established on this arm as well as on the two build sites: after the retry writes `reasoning["effort"]`, a body carrying `none` is sent only to a model that is allowed to stop reasoning, and a model that must think receives the lowest level its catalogue row lists, or no `effort` key at all when the row lists none other than `none`. A model that can stop keeps the object the first attempt built, so the retry does not strip the `enabled` and `summary` the pipe's own settings had already put there.
+
 ---
 
 ## Valve configuration (where to customize)
@@ -360,7 +386,7 @@ does not fence the value is unaffected. The same holds for `{raw_body}`, `{flagg
 
 1. Ask the user for the `error_id` displayed in the UI.
 2. Search backend logs for `[{error_id}]`.
-3. Use `session_id` and `user_id` (when available) to correlate with other telemetry (Redis cost snapshots, session log archives, etc.).
+3. Use `session_id` and `user_id` (when available) to correlate with other telemetry (Redis cost snapshots, session log archives, etc.). On a channel those two are withheld from the card the reader sees, so the `error_id` is the handle to start from there; the ids are still in the operator's log line, which the card's audience never sees.
 
 See also: [Session Log Storage](session_log_storage.md) and [Request Identifiers & Abuse Attribution](request_identifiers_and_abuse_attribution.md).
 

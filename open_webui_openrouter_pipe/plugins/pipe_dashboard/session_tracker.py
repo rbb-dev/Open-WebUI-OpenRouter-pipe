@@ -313,23 +313,28 @@ class SessionTracker:
 
     def live_sessions(self) -> list[dict[str, Any]]:
         with self._lock:
-            return self._live_sessions_locked(time.time())
+            return self._live_sessions_locked(time.time())[0]
 
     def task_costs_by_chat(self) -> dict[str, float]:
         with self._lock:
             return self._task_costs_locked()
 
-    def live_snapshot(self) -> tuple[list[dict[str, Any]], dict[str, float]]:
+    def live_snapshot(self) -> tuple[list[dict[str, Any]], dict[str, float], int]:
         with self._lock:
-            return self._live_sessions_locked(time.time()), self._task_costs_locked()
+            rows, active_total = self._live_sessions_locked(time.time())
+            return rows, self._task_costs_locked(), active_total
 
-    def _live_sessions_locked(self, now: float) -> list[dict[str, Any]]:
+    def _is_live_chat(self, item: dict[str, Any]) -> bool:
+        return item.get("kind") != "task"
+
+    def _live_sessions_locked(self, now: float) -> tuple[list[dict[str, Any]], int]:
+        active_total = sum(1 for item in self._active.values() if self._is_live_chat(item))
         actives = sorted(self._active.values(), key=lambda item: item.get("started") or 0.0, reverse=True)[:_ST_ACTIVE_CAP]
         self._trim_recent_locked()
         recents = list(reversed(self._recent))[:_ST_RECENT_CAP]
         rows = []
         for item in actives + recents:
-            if item.get("kind") == "task":
+            if not self._is_live_chat(item):
                 continue
             status = item.get("status") or "queued"
             if status == "tool":
@@ -354,7 +359,7 @@ class SessionTracker:
                 "worker_pid": self._pid,
                 "chat_id": item.get("chat_id") or "",
             })
-        return rows
+        return rows, active_total
 
     def _task_costs_locked(self) -> dict[str, float]:
         chat_ids = {

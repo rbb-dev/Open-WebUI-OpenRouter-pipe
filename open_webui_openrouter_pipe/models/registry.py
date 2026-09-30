@@ -404,6 +404,14 @@ class OpenRouterModelRegistry:
         return 0.0
 
     @classmethod
+    def _throttled(cls, api_key: str, cache_seconds: int, now: float) -> bool:
+        if cls._specs:
+            return now < cls._settled_until(api_key, cache_seconds)
+        entry = cls._credential_settle(api_key)
+        window = entry[1] if entry is not None else 0.0
+        return bool(window) and now < window
+
+    @classmethod
     def _record_settle(cls, api_key: str, until: float) -> None:
         prior = cls._credential_settle(api_key)
         cls._zdr_settle[_fingerprint(api_key)] = (
@@ -465,7 +473,6 @@ class OpenRouterModelRegistry:
             if existing is None:
                 existing = asyncio.Lock()
                 cls._locks[running] = existing
-                cls._lock = existing
         return existing
 
     @classmethod
@@ -487,15 +494,19 @@ class OpenRouterModelRegistry:
 
         cls._ZDR_KEY.set(_fingerprint(api_key))
         now = time.time()
-        if cls._specs and now < cls._settled_until(api_key, cache_seconds):
-            cls._adopt_roster_for(api_key)
-            return
+        if cls._throttled(api_key, cache_seconds, now):
+            if cls._specs:
+                cls._adopt_roster_for(api_key)
+                return
+            raise RuntimeError(cls._last_error or "OpenRouter model catalog unavailable")
 
         async with cls._catalog_lock():
             now = time.time()
-            if cls._specs and now < cls._settled_until(api_key, cache_seconds):
-                cls._adopt_roster_for(api_key)
-                return
+            if cls._throttled(api_key, cache_seconds, now):
+                if cls._specs:
+                    cls._adopt_roster_for(api_key)
+                    return
+                raise RuntimeError(cls._last_error or "OpenRouter model catalog unavailable")
             rotating = cls._key_changed(api_key)
             prior_attempt = cls._zdr_attempted_key
             cls._zdr_attempted_key = _fingerprint(api_key)
@@ -734,7 +745,6 @@ class OpenRouterModelRegistry:
         raw_backoff = base_backoff * (2 ** exponent)
         capped_backoff = min(cache_seconds, raw_backoff)
         backoff_until = cls._last_error_time + max(base_backoff, capped_backoff)
-        cls._next_refresh_after = max(cls._next_refresh_after, backoff_until)
         return backoff_until
 
     @staticmethod

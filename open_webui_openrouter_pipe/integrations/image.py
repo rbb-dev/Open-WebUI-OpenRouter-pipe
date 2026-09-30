@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 from ..api.gateway.responses_adapter import _record_failed_call
 from ..core.config import (
     _PIPE_METADATA_KEY,
+    OPENAI_ATTACHMENT_NOT_SENT_PREFIX,
     OPENAI_EMPTY_USER_TURN_FALLBACK,
     _select_openrouter_http_referer,
 )
@@ -202,7 +203,10 @@ def size_consistency_notes(
 
 
 def _is_only_the_empty_turn_marker(items: Any) -> bool:
-    return latest_user_text(items).strip() == OPENAI_EMPTY_USER_TURN_FALLBACK
+    text = latest_user_text(items).strip()
+    return text == OPENAI_EMPTY_USER_TURN_FALLBACK or text.startswith(
+        OPENAI_ATTACHMENT_NOT_SENT_PREFIX
+    )
 
 
 class ImageGenerationAdapter:

@@ -218,6 +218,7 @@ class OpenRouterAPIError(RuntimeError):
         normalized_model_id: str | None = None,
         api_model_id: str | None = None,
         context: dict[str, Any] | None = None,
+        shared: bool = False,
     ) -> str:
         """Return a user-friendly markdown block describing the failure."""
         provider_label = (self.provider or "").strip()
@@ -241,7 +242,10 @@ class OpenRouterAPIError(RuntimeError):
             api_model_id=api_model_id,
             context=context,
         )
-        return _render_error_template(template or DEFAULT_OPENROUTER_ERROR_TEMPLATE, replacements)
+        return _render_error_template(
+            template or DEFAULT_OPENROUTER_ERROR_TEMPLATE,
+            channel_safe_values(replacements) if shared else replacements,
+        )
 
 
 class EmptyAnswerError(OpenRouterAPIError, aiohttp.ClientError):
@@ -632,6 +636,18 @@ def _build_error_template_values(
         "diagnostics": "\n".join(diagnostics),
     }
     return replacements
+
+
+_CHANNEL_WITHHELD_TEMPLATE_KEYS = frozenset({
+    "session_id", "user_id",
+    "flagged_excerpt", "raw_body", "metadata_json", "provider_raw_json",
+    "detail", "sanitized_detail", "reason", "openrouter_message", "upstream_message",
+    "moderation_reasons",
+})
+
+
+def channel_safe_values(values: dict[str, Any]) -> dict[str, Any]:
+    return {k: ("" if k in _CHANNEL_WITHHELD_TEMPLATE_KEYS else v) for k, v in values.items()}
 
 
 _BLOCKED_RATHER_THAN_REJECTED = frozenset({"content_policy_violation", "refusal", "permission_denied"})

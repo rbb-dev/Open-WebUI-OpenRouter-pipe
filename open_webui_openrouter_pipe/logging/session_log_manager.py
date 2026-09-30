@@ -390,6 +390,7 @@ class SessionLogManager:
         "_stale_filter_warnings",
         "_read_fault_warnings",
         "_captured_turns",
+        "_capture_exempt",
     )
 
     def __init__(
@@ -430,6 +431,7 @@ class SessionLogManager:
         self._stale_filter_warnings: dict[str, float] = {}
         self._read_fault_warnings: dict[str, float] = {}
         self._captured_turns: set[str] = set()
+        self._capture_exempt: set[tuple[str, str]] = set()
         self._skip_info_emitted: set[str] = set()
         self._warned_temporary_chat: dict[str, float] = {}
 
@@ -540,9 +542,10 @@ class SessionLogManager:
 
     def stop_workers(self) -> None:
         """Stop session log background threads (best effort)."""
-        if self._stop_event:
+        signalled = self._stop_event
+        if signalled:
             with contextlib.suppress(Exception):
-                self._stop_event.set()
+                signalled.set()
         if self._queue:
             with contextlib.suppress(Exception):
                 self._queue.put_nowait(None)  # type: ignore[arg-type]
@@ -555,7 +558,9 @@ class SessionLogManager:
             _thread = getattr(self, _name)
             if _thread is None or not _thread.is_alive():
                 setattr(self, _name, None)
-        if not any(thread is not None and thread.is_alive() for thread in threads):
+        if self._stop_event is signalled and not any(
+            thread is not None and thread.is_alive() for thread in threads
+        ):
             self._stop_event = None
 
     @timed
@@ -633,7 +638,7 @@ class SessionLogManager:
             )
             return None
 
-        base_dir = valves.SESSION_LOG_DIR
+        base_dir = str(valves.SESSION_LOG_DIR or "").strip()
         if not base_dir:
             self._warn_once(
                 "dir",
@@ -693,6 +698,7 @@ class SessionLogManager:
         status: str,
         reason: str = "",
         pipe_identifier: str | None = None,
+        task: str = "",
     ) -> None:
         """Persist one invocation's session log events into the DB for later assembly.
 
@@ -734,6 +740,13 @@ class SessionLogManager:
             return
         surrogate_in_play = False
         if not (chat_id and message_id):
+            if task and not message_id:
+                self.logger.log(
+                    warn_level(self._skip_info_emitted, "task"),
+                    "Session log segment skipped (task resolves to no message id): request_id=%s",
+                    request_id,
+                )
+                return
             if not getattr(valves, "SESSION_LOG_ARCHIVE_API_CALLS", True):
                 self.logger.log(
                     warn_level(self._skip_info_emitted, "valve"),
@@ -820,6 +833,7 @@ class SessionLogManager:
                     request_id,
                 )
                 base_dir, zip_password, zip_compression, zip_compresslevel = archive_settings
+                meta_message_id, meta_task = _split_archive_key(message_id)
                 fallback_message_id = message_id if surrogate_in_play else f"{message_id}.{request_id}"
                 self._enqueue_archive_job(
                     _SessionLogArchiveJob(
@@ -835,6 +849,8 @@ class SessionLogManager:
                         created_at=time.time(),
                         log_format=valves.SESSION_LOG_FORMAT,
                         log_events=log_events,
+                        meta_message_id=meta_message_id,
+                        meta_task=meta_task,
                         status=str(status or "").strip(),
                         reason=str(reason or "").strip(),
                     )
@@ -901,7 +917,7 @@ class SessionLogManager:
             with self._lock:
                 if assembled:
                     self._rescue_pending.discard(key)
-                if assembled or self._rescue_exempt(key):
+                if assembled or self._rescue_exempt(key) or key in self._capture_exempt:
                     self._assembler_recent_failures.pop(key, None)
                     self._assembly_failure_stale_arm.discard(key)
                 else:
@@ -1218,14 +1234,15 @@ class SessionLogManager:
         session_id: str,
         segments: list[dict[str, Any]],
         ids: list[str] | None = None,
-    ) -> None:
+    ) -> bool:
 
         from ..core.logging_system import _archive_file_path, _SessionLogArchiveJob
         from ..core.utils import _stable_crockford_id
 
         key = f"{chat_id}:{message_id}"
         if key in self._captured_turns:
-            return
+            self._capture_exempt.discard((chat_id, message_id))
+            return True
         if not self.valves.SESSION_LOG_STORE_ENABLED:
             self.logger.log(
                 warn_level(
@@ -1240,11 +1257,11 @@ class SessionLogManager:
                 chat_id,
                 message_id,
             )
-            return
+            return False
         attempts = self._unreadable_archive_attempts.get(key, 0) + 1
         self._unreadable_archive_attempts[key] = attempts
         if attempts < _UNREADABLE_ARCHIVE_CAPTURE_AFTER:
-            return
+            return False
 
         events: list[dict[str, Any]] = []
         request_id = _preferred_request_id(segments)
@@ -1261,7 +1278,7 @@ class SessionLogManager:
             if isinstance(seg_events, list):
                 events.extend(e for e in seg_events if isinstance(e, dict))
         if not events or not request_id:
-            return
+            return False
 
         meta_message_id, meta_task = _split_archive_key(message_id)
         fallback_message_id = f"{message_id}.{request_id}"
@@ -1300,7 +1317,7 @@ class SessionLogManager:
                 message_id,
                 exc_info=True,
             )
-            return
+            return False
 
         after_stat = None
         with contextlib.suppress(Exception):
@@ -1323,10 +1340,11 @@ class SessionLogManager:
                 chat_id,
                 message_id,
             )
-            return
+            return False
 
         self._unreadable_archive_attempts.pop(key, None)
         self._captured_turns.add(key)
+        self._capture_exempt.add((chat_id, message_id))
         self._rescue_pending.discard((chat_id, message_id))
         self._release_assembly_lock(
             _stable_crockford_id(f"{chat_id}:{message_id}:session_log_lock"), list(ids or [])
@@ -1351,6 +1369,7 @@ class SessionLogManager:
                 message_id,
                 rescue_path.name,
         )
+        return True
 
     def _restore_touched_stamps(
         self,
@@ -1424,7 +1443,7 @@ class SessionLogManager:
                 "assembly", _TEMPORARY_CHAT_PROCESS_SCOPE,
                 "Session log assembly skipped (temporary chat): message_id=%s", message_id,
             )
-            return False
+            return _LOCK_CONTENDED
         model, session_factory = self._db_handles()
         if not model or not session_factory:
             return False
@@ -1624,6 +1643,9 @@ class SessionLogManager:
 
         if not terminal and existing_raw and not any(_is_incomplete_marker(evt) for evt in existing_raw):
             terminal = True
+            if not resolved_status:
+                resolved_status = str(existing_meta.get("status") or "")
+                resolved_reason = str(existing_meta.get("reason") or "")
         if not terminal and not existing_meta.get("terminal"):
             merged_events.append(
                 _incomplete_marker(
@@ -1634,7 +1656,7 @@ class SessionLogManager:
         if read_failed:
             self._restore_touched_stamps(model, session_factory, stamps, list(ids), chat_id, message_id)
             self._release_assembly_lock(lock_id)
-            self._capture_unassemblable_turn(
+            captured = self._capture_unassemblable_turn(
                 chat_id,
                 message_id,
                 out_path,
@@ -1647,7 +1669,8 @@ class SessionLogManager:
                 segments,
                 list(ids),
             )
-            self._rescue_pending.add((chat_id, message_id))
+            if not captured:
+                self._rescue_pending.add((chat_id, message_id))
             return False
 
         if existing_meta.get("terminal"):
@@ -1689,7 +1712,22 @@ class SessionLogManager:
             self._restore_touched_stamps(model, session_factory, stamps, list(ids), chat_id, message_id)
             self._release_assembly_lock(lock_id)
             return False
-        self._write_archive(job)
+        try:
+            self._write_archive(job)
+        except Exception:
+            self._restore_touched_stamps(model, session_factory, stamps, list(ids), chat_id, message_id)
+            self._release_assembly_lock(lock_id)
+            self.logger.log(
+                warn_level(
+                    self._unreadable_archive_warnings,
+                    f"session_log_write_failed:{chat_id}:{message_id}",
+                    cooldown_s=3600.0,
+                ),
+                "Session log archive write failed for chat_id=%s message_id=%s path=%s; keeping staged segments for retry.",
+                chat_id, message_id, str(out_path),
+                exc_info=True,
+            )
+            return False
 
         wrote = _archive_publish_changed_file(out_path, before_stat)
         if self.logger.isEnabledFor(logging.DEBUG):

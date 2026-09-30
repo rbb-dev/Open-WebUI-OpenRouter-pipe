@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Mapping
 from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
@@ -37,7 +38,7 @@ _OWUI_REQUEST_SCOPED_PARAM_KEYS = frozenset(
 )
 
 
-async def read_task_model_params() -> dict[str, Any]:
+async def read_task_model_config() -> tuple[dict[str, str] | None, dict[str, Any]]:
     try:
         from open_webui.models.config import Config as _OwuiConfig
     except Exception:
@@ -45,21 +46,44 @@ async def read_task_model_params() -> dict[str, Any]:
             "structured_task: Open WebUI's config table is not importable",
             exc_info=True,
         )
-        return {}
+        return None, {}
 
     try:
-        rows = await _OwuiConfig.get_many(_OWUI_TASK_MODEL_PARAMS_KEY)
+        rows = await _OwuiConfig.get_many(*_OWUI_TASK_MODEL_KEYS, _OWUI_TASK_MODEL_PARAMS_KEY)
     except Exception:
         logger.debug(
-            "structured_task: Open WebUI's Task Model params could not be read",
+            "structured_task: Open WebUI's Task Model settings could not be read",
             exc_info=True,
         )
-        return {}
+        return None, {}
 
     raw = rows.get(_OWUI_TASK_MODEL_PARAMS_KEY) if isinstance(rows, dict) else None
-    if not isinstance(raw, dict):
-        return {}
-    return {key: value for key, value in raw.items() if value is not None and value != ""}
+    params = (
+        {key: value for key, value in raw.items() if value is not None and value != ""}
+        if isinstance(raw, dict)
+        else {}
+    )
+    ids = {
+        key: str(rows[key]).strip()
+        for key in _OWUI_TASK_MODEL_KEYS
+        if rows.get(key)
+    }
+    return ids, params
+
+
+async def read_task_model_params() -> dict[str, Any]:
+    return (await read_task_model_config())[1]
+
+
+def _deep_update(target: dict[str, Any], source: Mapping[str, Any]) -> dict[str, Any]:
+    for key, value in source.items():
+        current = target.get(key)
+        if isinstance(value, Mapping):
+            base = dict(current) if isinstance(current, Mapping) else {}
+            target[key] = _deep_update(base, value)
+        else:
+            target[key] = value
+    return target
 
 
 def merge_task_model_params(payload: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
@@ -82,43 +106,18 @@ def merge_task_model_params(payload: dict[str, Any], params: dict[str, Any]) -> 
                     decoded[key] = value
             else:
                 decoded[key] = value
-        for key, value in decoded.items():
-            if key not in payload and key not in _OWUI_REQUEST_SCOPED_PARAM_KEYS:
-                payload[key] = value
+        effective = _deep_update(dict(mergeable), decoded)
+    else:
+        effective = mergeable
 
-    for key, value in mergeable.items():
-        if value is not None:
+    for key, value in effective.items():
+        if value is not None and key not in payload and key not in _OWUI_REQUEST_SCOPED_PARAM_KEYS:
             payload[key] = value
     return payload
 
 
-async def _owui_task_model_ids() -> dict[str, str] | None:
-    try:
-        from open_webui.models.config import Config as _OwuiConfig
-    except Exception:
-        logger.debug(
-            "structured_task: Open WebUI's config table is not importable",
-            exc_info=True,
-        )
-        return None
-
-    try:
-        rows = await _OwuiConfig.get_many(*_OWUI_TASK_MODEL_KEYS)
-    except Exception:
-        logger.debug(
-            "structured_task: Open WebUI's Task Model settings could not be read",
-            exc_info=True,
-        )
-        return None
-
-    return {
-        key: str(rows[key]).strip()
-        for key in _OWUI_TASK_MODEL_KEYS
-        if rows.get(key)
-    }
-
-
-async def resolve_task_model_candidates(
+def select_task_model_candidates(
+    rows: dict[str, str] | None,
     *,
     request: Any,
     mode: TaskModelMode,
@@ -133,7 +132,6 @@ async def resolve_task_model_candidates(
         fallback: "none" returns only primary; "other_task_model" appends the
             other OWUI task model.
     """
-    rows = await _owui_task_model_ids()
     if rows is None:
         config = getattr(getattr(request, "app", None), "state", None)
         config = getattr(config, "config", None) if config is not None else None
@@ -154,3 +152,13 @@ async def resolve_task_model_candidates(
         candidates.append(other)
 
     return candidates
+
+
+async def resolve_task_model_candidates(
+    *,
+    request: Any,
+    mode: TaskModelMode,
+    fallback: TaskModelFallback,
+) -> list[str]:
+    rows, _params = await read_task_model_config()
+    return select_task_model_candidates(rows, request=request, mode=mode, fallback=fallback)

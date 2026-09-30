@@ -113,7 +113,10 @@ def collect_model_registry() -> dict[str, Any]:
         else:
             text_n += 1
     loaded = text_n + image_n + video_n
-    failures = getattr(Reg, "_consecutive_failures", 0) or 0
+    failures = max(
+        (getattr(Reg, "_failure_counts", None) or {}).values(),
+        default=0,
+    )
     last_fetch = getattr(Reg, "_last_fetch", 0.0) or 0.0
     last_error = getattr(Reg, "_last_error", None)
     zdr = getattr(Reg, "_zdr_model_ids", None)
@@ -329,7 +332,11 @@ def collect_slow_stats(pipe: Pipe) -> dict[str, Any]:
                 ensure_error = type(exc).__name__
             sf = getattr(store, "_session_factory", None)
             model = getattr(store, "_item_model", None)
-        db_connected = sf is not None and model is not None
+        db_connected = (
+            sf is not None
+            and model is not None
+            and getattr(store, "_db_executor", None) is not None
+        )
 
         enc_key_set = bool(getattr(store, "_encryption_key", "") or "")
         enc_all = getattr(store, "_encrypt_all", False)

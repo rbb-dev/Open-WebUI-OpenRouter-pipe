@@ -355,7 +355,7 @@ class TestReauthorizeLocalViewers:
             get_user_id_from_session_pool=lambda sid: "user-1",
         )
         monkeypatch.setattr(dashboard_socket,"resolve_user", AsyncMock(return_value=object()))
-        monkeypatch.setattr(dashboard_socket,"can_view", AsyncMock(return_value=False))
+        monkeypatch.setattr(dashboard_socket,"can_view_known", AsyncMock(return_value=False))
         dashboard_socket._get_pipe = _plugin_on_pipe
         await dashboard_socket.reauthorize_local_viewers()
         mock_sio.leave_room.assert_awaited_once_with("s1", VIEWERS_ROOM)
@@ -374,7 +374,7 @@ class TestReauthorizeLocalViewers:
         )
         fake_resolve_user = AsyncMock(return_value=object())
         monkeypatch.setattr(dashboard_socket, "resolve_user", fake_resolve_user)
-        monkeypatch.setattr(dashboard_socket,"can_view", AsyncMock(return_value=True))
+        monkeypatch.setattr(dashboard_socket,"can_view_known", AsyncMock(return_value=True))
         dashboard_socket._get_pipe = _plugin_on_pipe
         with caplog.at_level(logging.WARNING, logger=dashboard_socket.__name__):
             await dashboard_socket.reauthorize_local_viewers()
@@ -401,7 +401,7 @@ class TestReauthorizeLocalViewers:
             get_user_id_from_session_pool=lambda sid: "user-1",
         )
         monkeypatch.setattr(dashboard_socket, "resolve_user", AsyncMock(return_value=object()))
-        monkeypatch.setattr(dashboard_socket, "can_view", AsyncMock(return_value=False))
+        monkeypatch.setattr(dashboard_socket, "can_view_known", AsyncMock(return_value=False))
         dashboard_socket._get_pipe = _plugin_on_pipe
         with caplog.at_level(logging.WARNING, logger=dashboard_socket.__name__):
             await dashboard_socket.reauthorize_local_viewers()

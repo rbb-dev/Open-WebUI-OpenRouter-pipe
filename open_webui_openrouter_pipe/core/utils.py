@@ -790,14 +790,11 @@ def _select_best_effort_fallback(requested: str, supported: list[str]) -> str | 
         return min_value
     if requested_idx >= max_idx:
         return max_value
-    for idx, value in indexed:
-        if idx > requested_idx:
-            return value
     closest = None
     distance = float("inf")
     for idx, value in indexed:
         delta = abs(idx - requested_idx)
-        if delta < distance:
+        if delta < distance or (delta == distance and value != "none"):
             closest = value
             distance = delta
     return closest
@@ -1012,7 +1009,10 @@ def _unwrap_config_value(value: Any) -> Any:
 # Marker for redacted data URLs
 _REDACTED_DATA_URL_MARKER = "[REDACTED]"
 
-_BARE_BASE64_KEYS = frozenset({"b64_json", "b64", "image_base64", "base64"})
+_BARE_BASE64_KEYS = frozenset({
+    "b64_json", "b64", "image_base64", "base64", "data", "imageB64",
+    "input_audio", "audio",
+})
 
 _MEDIA_URL_KEYS = frozenset({"image_url", "file_url", "video_url", "url", "file_data", "content_url"})
 
@@ -1062,6 +1062,8 @@ def _redact_payload_blobs(value: Any, *, max_chars: int = 256) -> Any:
         if isinstance(obj, str):
             if _payload_key(key) in _MEDIA_KEY_STEMS:
                 return loggable_link(obj) or _REDACTED_DATA_URL_MARKER
+            if split_base64_data_url(obj.strip()) is not None:
+                return _redact_data_url(obj)
             if key in _BARE_BASE64_KEYS or key.endswith("_b64"):
                 return _redact_bare_blob(obj)
             if len(obj) > max_chars and _BARE_BASE64_SHAPE.fullmatch(obj):

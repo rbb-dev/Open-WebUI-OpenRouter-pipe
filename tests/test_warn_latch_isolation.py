@@ -66,6 +66,11 @@ EXPECTED_LATCHES = {
     # disarms every later assertion that the repeats exist.
     "_warned_queue_backlog_sample",
     "_warned_reference_sizes",
+    # A dict latch, not a set: the viewer sweep's authorization read failed, which is
+    # transient by hypothesis, and a permanent set latch would hide the recurrence that
+    # says the database never came back. Keyed on the exception type so a new one warns
+    # again, with a 300 s cooldown rather than the once-per-process the sets above use.
+    "_warned_undeterminable",
     "_warned_reference_scope",
     "_warned_reference_scope_entry",
     "_warned_responses_chunk_parse",
@@ -78,6 +83,7 @@ EXPECTED_LATCHES = {
     "_warned_task_candidate",
     "_warned_task_failure",
     "_warned_timing_file",
+    "_warned_unrenderable_params",
     "_warned_user_valves",
     "_warned_video_catalog",
     # An unreadable Functions table now reaches the video-gen ensure as an exception on

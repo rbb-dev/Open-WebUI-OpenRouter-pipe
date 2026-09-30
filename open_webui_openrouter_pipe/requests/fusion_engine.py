@@ -238,10 +238,8 @@ async def run_fusion_member(
             tool_breaker=invocation.tool_breaker,
             tool_call_budget=max_tool_calls,
             messages=outer_ctx.messages,
+            parallel_tools=invocation.valves.MAX_PARALLEL_TOOLS_PER_REQUEST,
         )
-        executor = pipe._ensure_tool_executor()
-        for _ in range(invocation.valves.MAX_PARALLEL_TOOLS_PER_REQUEST):
-            ctx.workers.append(asyncio.create_task(executor._tool_worker_loop(ctx)))
         token = pipe._TOOL_CONTEXT.set(ctx)
     collector = FusionCollector(model, live_queue)
     sink: dict[str, Any] = {}

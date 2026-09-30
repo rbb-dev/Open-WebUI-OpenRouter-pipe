@@ -3967,6 +3967,7 @@ class StreamingHandler:
                             status=segment_status,
                             reason=session_log_reason,
                             pipe_identifier=pipe_identifier,
+                            task=str(metadata.get("task") or ""),
                         )
                     )
                 except (asyncio.CancelledError, Exception):

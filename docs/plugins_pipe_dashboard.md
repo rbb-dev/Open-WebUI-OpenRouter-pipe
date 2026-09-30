@@ -64,7 +64,7 @@ The `dashboard` command opens a console organized into tabs. Each tab covers one
 
 ![Dashboard walkthrough](images/dashboard_video.gif)
 
-The Live tab shows one row per in-flight or recently-completed request, across every worker. Each row carries:
+The Live tab shows the in-flight and recently-completed requests across every worker, as a capped view: the **30 newest** in-flight rows per worker, then up to 300 completed rows per worker, and up to 300 rows across the cluster once the workers are merged (finished rows are the ones dropped first). The **Active** tile is *not* capped — it counts every tracked, not-yet-finished request across all workers — so above the cap the table header says how many of them the rows below represent. `Done`, `Cost` and `Tokens` are totals over the rows shown, so above the cap they cover the newest requests rather than all of them. Each row carries:
 
 - User and model. The model column shows display names and toggles to model slugs.
 - A status badge: `queued`, `streaming`, `tool:<name>`, `completed`, `failed`, or `cancelled`.
@@ -82,7 +82,7 @@ The Usage tab needs `PIPE_DASHBOARD_USAGE_COLLECT` on. Without it, the tab shows
 
 With collection on, the tab presents:
 
-- **Metric cards** — Sessions, Tokens, Cost, Tools, Errors, and Cached input, each with a change chip against the previous period of equal length and a per-bucket sparkline.
+- **Metric cards** — Sessions, Tokens, Cost, Tools, Errors, and Cached input, each with a change chip against the previous period of equal length and a per-bucket sparkline. On Errors and Cached input the sparkline plots the card's own rate — the bucket's error rate and the bucket's cached-input percentage — so the line and the headline are the same quantity; a bucket with no sessions in it plots 0%.
 - **Resource cards** — live CPU, Memory, and Disk.
 - **Usage trend** — a chart with two lines per bucket: tokens (left axis) and cost (right axis), with a hover tooltip and a timezone-aware range caption.
 - **By model** — cost share per model. Each task-model appears as its own `model (tasks)` row with its own cost.
@@ -103,7 +103,7 @@ The Health tab tracks the pipe's live load:
 - **Concurrency** — active requests and tools, in-flight calls, and active video generations when the video pool is configured.
 - **Queues** — the pending-request count, and the log and archive queue depths, each with its bound. The row's headline number is `waiters + queued`, where `waiters` counts coroutines blocked on a semaphore permit and `queued` counts requests still in the request queue, so the backlog itself is the `requests` / `requests_max` field rather than the headline: because a single dispatcher performs the waiting, the request waiters term reads 1 for any real backlog and stays 1 however deep the queue is. The tool pool parks one waiter per tool call instead, and its depth is in the Concurrency row's tool cell tooltip.
 - **User Circuit Breakers** — request, tool, and auth breaker counts. "Seen" counts the request-breaker records whose newest failure is inside the breaker window (the Tools row counts the same for user+tool pairs), and a record is created by a failure. The RECORD is a separate thing from the count: the Requests row's record is released when that user's next request succeeds, when a later check finds its window empty, or on the next breaker write once its newest failure is older than the breaker window, so a tripped user who stops sending requests keeps a record that is no longer counted until then. A Tools record is released the same way: when that user next invokes that tool and the call succeeds, when a later check finds the window empty, or on the next breaker write once its newest failure is older than the window — a tripped pair for a tool never invoked again lingers the same way. "Users w/ fail" counts records with recent failures, which after that change is the same set, so on each row the two numbers are equal.
-- **Models** — the model catalog with a per-type breakdown (text, image, video), the ZDR-capable count, and per-type fetch clocks. The status badge tracks the chat-catalog fetch loop.
+- **Models** — the model catalog with a per-type breakdown (text, image, video), the ZDR-capable count, and per-type fetch clocks. The status badge tracks the chat-catalog fetch loop and shows the **worst** OpenRouter account's consecutive-failure count, so it cannot read healthy while any one account is failing.
 
 ### System
 

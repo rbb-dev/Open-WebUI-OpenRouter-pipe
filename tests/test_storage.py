@@ -841,7 +841,8 @@ async def test_flush_redis_queue_db_failure_requeues(pipe_instance, caplog):
     store._db_persist_direct = _failing_persist
 
     caplog.set_level(logging.ERROR)
-    await store._flush_redis_queue()
+    with pytest.raises(RuntimeError):
+        await store._flush_redis_queue()
     assert requeued
     assert store._redis_client.lists[store._redis_pending_key] == requeued
 

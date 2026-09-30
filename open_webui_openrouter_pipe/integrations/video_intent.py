@@ -34,8 +34,8 @@ from ..structured_task import (
     build_response_format_for_model,
     call_with_candidates,
     merge_task_model_params,
-    read_task_model_params,
-    resolve_task_model_candidates,
+    read_task_model_config,
+    select_task_model_candidates,
 )
 from ..structured_task.logging import _fault_code
 from .image_types import system_prompt_text
@@ -306,7 +306,7 @@ def count_prior_clarifications(messages: list[dict[str, Any]]) -> int:
 _VIDEO_TAG_RE = re.compile(r"<video[^>]*>([\s\S]*?)</video>", re.IGNORECASE)
 
 
-_FILE_URL_SHAPE_RE = re.compile(r"^/api/v1/files/[A-Za-z0-9_-]{1,128}(/content)?$")
+_FILE_URL_SHAPE_RE = re.compile(r"^/api/v1/files/[A-Za-z0-9_-]{1,128}(/content)?/?$")
 
 
 def collect_prior_videos_from_messages(
@@ -480,6 +480,9 @@ _VALID_TARGETS = {"first_frame", "last_frame", "input_reference"}
 _VALID_CONFIDENCE = {"high", "medium", "low"}
 _PROMPT_MAX_LEN = 2000
 _FRAME_PLAN_MAX = 4
+_CLARIFICATION_MAX_OPTIONS = 5
+_CLARIFICATION_MAX_OPTION_LEN = 200
+_CLARIFICATION_QUESTION_MAX_LEN = 280
 
 
 def _strip_placeholders(text: str) -> str:
@@ -554,12 +557,21 @@ def validate_intent_params(
         needs = bool(clar_raw.get("needs"))
         question = str(clar_raw.get("question") or "").strip()
         options_raw = clar_raw.get("options")
-        options = (
-            [str(opt)[:200] for opt in options_raw[:5] if isinstance(opt, str)]
-            if isinstance(options_raw, list) else None
-        )
+        options: list[str] | None = None
+        if isinstance(options_raw, list):
+            options = [
+                str(opt)[:_CLARIFICATION_MAX_OPTION_LEN]
+                for opt in options_raw[:_CLARIFICATION_MAX_OPTIONS]
+                if isinstance(opt, str)
+            ]
+            if len(options) < len(options_raw):
+                downgrades.append("clarification_options_dropped")
         clar_reason = str(clar_raw.get("reason") or "").strip()
-        if needs and (not question or len(question) > 280):
+        if needs and len(question) > _CLARIFICATION_QUESTION_MAX_LEN:
+            question = question[:_CLARIFICATION_QUESTION_MAX_LEN].rstrip()
+            downgrades.append("clarification_question_truncated")
+        if needs and not question:
+            downgrades.append("clarification_question_empty")
             needs = False
         clarification = ClarificationPayload(
             needs=needs, question=question, options=options, reason=clar_reason,
@@ -577,10 +589,12 @@ def validate_intent_params(
     if isinstance(raw_plan, list):
         for entry_position, entry_raw in enumerate(raw_plan):
             if not isinstance(entry_raw, dict):
+                downgrades.append("dropped_malformed_frame_plan_entry")
                 continue
             source = entry_raw.get("source")
             target = entry_raw.get("target")
             if source not in _VALID_SOURCES or target not in _VALID_TARGETS:
+                downgrades.append("dropped_unknown_frame_plan_source_or_target")
                 continue
 
             source_index_raw = entry_raw.get("source_index")
@@ -590,6 +604,7 @@ def validate_intent_params(
 
             if source == "uploaded_attachment":
                 if not isinstance(source_index_raw, int):
+                    downgrades.append("dropped_non_integer_attachment_index")
                     continue
                 if not (0 <= source_index_raw < attachments_count):
                     downgrades.append(f"dropped_uploaded_attachment_index_{source_index_raw}")
@@ -882,7 +897,9 @@ async def resolve_intent(
             selected_model=video_model or {},
         )
 
-        candidates = await resolve_task_model_candidates(
+        _ids, task_model_params = await read_task_model_config()
+        candidates = select_task_model_candidates(
+            _ids,
             request=request,
             mode=getattr(valves, "VIDEO_INTENT_TASK_MODEL_MODE", "external"),
             fallback=getattr(valves, "VIDEO_INTENT_TASK_MODEL_FALLBACK", "other_task_model"),
@@ -895,8 +912,6 @@ async def resolve_intent(
                 "and this turn degrades open",
             )
             return fallback
-
-        task_model_params = await read_task_model_params()
 
         def _build_form_data(model_id: str) -> dict[str, Any]:
             return merge_task_model_params(
@@ -1076,6 +1091,14 @@ _DOWNGRADE_USER_MESSAGES: dict[str, str] = {
     "frame_damaged_used_first_frame": (
         "The previous video is damaged; used its first frame instead."
     ),
+    "frame_seek_missed_used_nearest_decodable_frame": (
+        "The previous video's final frame could not be read where it was expected; "
+        "the nearest frame the pipe could read was used instead."
+    ),
+    "frame_end_unreadable_used_first_frame": (
+        "The end of the previous video could not be read; its first frame was used "
+        "instead."
+    ),
     "timestamp_past_video_end_used_last_frame": (
         "The requested time was past the end of the previous video; used its last frame instead."
     ),
@@ -1093,6 +1116,14 @@ _DOWNGRADE_USER_MESSAGES: dict[str, str] = {
     "frame_pixel_cap_refused_no_frame": (
         "The previous video is too large for the pipe to read, so no frame was used "
         "from it."
+    ),
+    "frame_over_pixel_cap_used_first_frame": (
+        "The previous video was too large to read directly; used its first frame "
+        "instead."
+    ),
+    "frame_over_pixel_cap_used_last_frame": (
+        "The previous video was too large to read directly; used its last frame "
+        "instead."
     ),
     "prior_video_download_failed": "Previous video could not be loaded.",
     "prior_video_index_unresolvable": "Referenced previous video not found.",
@@ -1113,6 +1144,17 @@ _DOWNGRADE_USER_MESSAGES: dict[str, str] = {
     ),
     "dropped_invalid_prior_video_index": (
         "That previous video is not in this chat, so no frame was taken from it."
+    ),
+    "dropped_malformed_frame_plan_entry": (
+        "One of the frames planned for this video was malformed, so it was left out."
+    ),
+    "dropped_unknown_frame_plan_source_or_target": (
+        "One of the frames planned for this video named a source or a position the pipe "
+        "does not know, so it was left out."
+    ),
+    "dropped_non_integer_attachment_index": (
+        "One of the frames planned for this video did not say which attachment it came "
+        "from, so it was left out."
     ),
     "dropped_first_frame_no_frame_support_for_model": (
         "This model takes no frames at all, so the first frame you asked for was not used."
@@ -1161,6 +1203,13 @@ _DOWNGRADE_USER_MESSAGES: dict[str, str] = {
         "made from your words alone."
     ),
     "clarification_capped_max_reached": "Proceeding with best-effort interpretation.",
+    "clarification_options_dropped": (
+        "Some of the suggested answers to the question were left out."
+    ),
+    "clarification_question_truncated": "The question was too long and was shortened.",
+    "clarification_question_empty": (
+        "A clarifying question was planned but came back empty, so none was asked."
+    ),
     "frame_plan_dropped_temporary_chat": (
         "This chat cannot hold files, so the previous video's frame was not used."
     ),

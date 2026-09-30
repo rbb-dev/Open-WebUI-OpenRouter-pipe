@@ -21,8 +21,10 @@ from .orchestrator import (
     TaskModelFallback,
     TaskModelMode,
     merge_task_model_params,
+    read_task_model_config,
     read_task_model_params,
     resolve_task_model_candidates,
+    select_task_model_candidates,
 )
 from .retry import call_with_candidates
 from .schema import (
@@ -42,8 +44,10 @@ __all__ = [
     "merge_task_model_params",
     "normalise_model_content",
     "read_model_response_content",
+    "read_task_model_config",
     "read_task_model_params",
     "read_task_model_response_json",
     "resolve_task_model_candidates",
     "safe_log_payload",
+    "select_task_model_candidates",
 ]

@@ -8,6 +8,7 @@ from typing import Any, cast
 import pytest
 
 import open_webui_openrouter_pipe as ow
+from open_webui_openrouter_pipe.models.registry import _fingerprint
 
 
 class DummyResponse:
@@ -58,6 +59,7 @@ def reset_registry():
     reg._lock = asyncio.Lock()
     reg._next_refresh_after = 0
     reg._consecutive_failures = 0
+    reg._failure_counts = {}
     reg._last_error = None
     reg._last_error_time = 0.0
     ow.ModelFamily.set_dynamic_specs(None)
@@ -232,12 +234,14 @@ async def test_registry_refresh_error_no_cache():
 
 def test_registry_record_refresh_bookkeeping():
     reg = ow.OpenRouterModelRegistry
-    reg._record_refresh_success(cache_seconds=30)
-    assert reg._consecutive_failures == 0
+    key = _fingerprint("sk-bookkeeping")
+    reg._record_refresh_success(cache_seconds=30, api_key="sk-bookkeeping")
+    assert key not in reg._failure_counts
     assert reg._next_refresh_after >= reg._last_fetch
 
-    reg._record_refresh_failure(RuntimeError("boom"), cache_seconds=30)
-    assert reg._consecutive_failures == 1
+    reg._record_refresh_failure(
+        RuntimeError("boom"), cache_seconds=30, api_key="sk-bookkeeping")
+    assert reg._failure_counts[key] == 1
     assert reg._last_error == "boom"
 
 

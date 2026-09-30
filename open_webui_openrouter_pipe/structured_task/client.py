@@ -76,7 +76,12 @@ def consume_sse_line(raw_line: str, content_parts: list[str]) -> None:
         return
     if not isinstance(data, dict):
         return
-    for choice in data.get("choices", []):
+    choices = data.get("choices")
+    if not isinstance(choices, list):
+        return
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
         delta = choice.get("delta") or choice.get("message")
         if not delta:
             continue

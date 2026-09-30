@@ -394,7 +394,6 @@ class TestSelectBestEffortFallback:
         result = _select_best_effort_fallback("  medium  ", ["  low  ", "  high  "])
         assert result in ["low", "high"]
 
-
 # -----------------------------------------------------------------------------
 # Marker system tests
 # -----------------------------------------------------------------------------
@@ -1019,13 +1018,11 @@ class TestSelectBestEffortFallbackEdgeCases:
     """Additional tests for _select_best_effort_fallback edge cases."""
 
     def test_fallback_loop_coverage(self):
-        """Test the closest match loop path (lines 261-268).
+        """A request below the only supported level clamps to it.
 
-        This tests the scenario where we have to find the closest match
-        via iteration rather than direct comparison.
+        The named path is the `requested_idx <= min_idx` clamp, not the closest-match loop:
+        `minimal` is below `high`, so the clamp returns before any distance is measured.
         """
-        # Request "minimal" when only "high" is available (not in typical ordering path)
-        # This should still return "high" through the closest match logic
         result = _select_best_effort_fallback("minimal", ["high"])
         assert result == "high"
 
@@ -1037,27 +1034,12 @@ class TestSelectBestEffortFallbackEdgeCases:
         assert result == "medium"
 
     def test_closest_match_fallback_loop(self):
-        """Test the closest distance fallback loop (lines 261-268).
+        """A request above every supported level clamps to the highest of them.
 
-        This scenario exercises the final fallback loop when:
-        1. requested_idx is in the ordering
-        2. There's no exact match
-        3. The for-loop at lines 258-260 doesn't find a suitable match
-           (i.e., no idx > requested_idx)
-
-        The key is that all supported values have idx <= requested_idx,
-        so the 'for idx, value in indexed: if idx > requested_idx' loop
-        never returns, and we fall through to the closest-distance loop.
+        The named path is the `requested_idx >= max_idx` clamp, not the closest-distance
+        loop: `high` is above both `none` and `low`, so the clamp returns before any
+        distance is measured.
         """
-        # Request "medium" (idx=3 in ordering: none=0, minimal=1, low=2, medium=3, high=4, xhigh=5)
-        # When supported only has values with idx <= requested_idx (like "none" and "minimal")
-        # The for-loop at 258-260 will iterate but never return (no idx > 3)
-        # Then lines 261-268 compute the closest match
-
-        # Testing: request "high" when only "none" and "low" available
-        # high idx=4, none idx=0, low idx=2
-        # None satisfy idx > 4, so we fall through to closest distance loop
-        # low (idx=2) is closest to high (idx=4)
         result = _select_best_effort_fallback("high", ["none", "low"])
         assert result == "low"
 

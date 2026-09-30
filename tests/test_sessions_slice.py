@@ -39,7 +39,7 @@ def _row(started: float, done: float | None = None, pid: int = 1) -> dict:
 
 
 def test_worker_payload_includes_sessions_from_getter():
-    sp.set_snapshot_getter(lambda: ([_row(100.0)], {"c9": 0.003}))
+    sp.set_snapshot_getter(lambda: ([_row(100.0)], {"c9": 0.003}, 1))
     pipe = Mock()
     pipe._active_pipes_calls = 0
     pipe._global_semaphore = None
@@ -58,15 +58,16 @@ def test_worker_payload_includes_sessions_from_getter():
     payload = sp._collect_worker_payload(pipe)
     assert payload["sl"] == [_row(100.0)]
     assert payload["tc"] == {"c9": 0.003}
+    assert payload["sa"] == 1
 
 
 def test_snapshot_getter_failure_yields_empty_snapshot():
     sp.set_snapshot_getter(lambda: (_ for _ in ()).throw(RuntimeError("boom")))
-    assert sp._snapshot_safe() == ([], {})
+    assert sp._snapshot_safe() == ([], {}, 0)
     sp.set_snapshot_getter(lambda: "not-a-tuple")
-    assert sp._snapshot_safe() == ([], {})
+    assert sp._snapshot_safe() == ([], {}, 0)
     sp.set_snapshot_getter(None)
-    assert sp._snapshot_safe() == ([], {})
+    assert sp._snapshot_safe() == ([], {}, 0)
 
 
 def test_expand_passes_sessions_through():

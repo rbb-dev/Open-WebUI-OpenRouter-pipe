@@ -706,7 +706,22 @@ def _apply_provider_routing_default_filter_ids(
     return True
 
 
-def media_capability_defaults(valves: Any, pipe_capabilities: dict[str, bool]) -> dict[str, Any]:
+def _answers_in_text(spec: Any) -> bool:
+    if not isinstance(spec, dict):
+        return False
+    architecture = spec.get("architecture")
+    if not isinstance(architecture, dict):
+        return False
+    modalities = architecture.get("output_modalities")
+    return isinstance(modalities, list) and "text" in modalities
+
+
+def media_capability_defaults(
+    valves: Any,
+    pipe_capabilities: dict[str, bool],
+    answers_in_text: bool = False,
+    rules_out_tool_use: bool = False,
+) -> dict[str, Any]:
     """Capability defaults for a model, applied only where the model has no setting yet.
 
     A model that answers with an image or a clip cannot use a tool call, so Open WebUI's
@@ -719,8 +734,13 @@ def media_capability_defaults(valves: Any, pipe_capabilities: dict[str, bool]) -
         pipe_capabilities.get("video_generation") or pipe_capabilities.get("image_output")
     ):
         return {}
-    defaults: dict[str, Any] = {"file_context": False}
-    if getattr(valves, "DISABLE_BUILTIN_TOOLS_ON_MEDIA_MODELS", False):
+    exempt = answers_in_text and not pipe_capabilities.get("video_generation")
+    defaults: dict[str, Any] = {}
+    if not exempt:
+        defaults["file_context"] = False
+    if getattr(valves, "DISABLE_BUILTIN_TOOLS_ON_MEDIA_MODELS", False) and not (
+        exempt and not rules_out_tool_use
+    ):
         defaults["builtin_tools"] = False
     return defaults
 
@@ -788,9 +808,7 @@ def syncs_owui_models(valves: Any, provider_routing_enabled: bool) -> bool:
 
 
 def schedules_owui_model_sync(valves: Any, provider_routing_enabled: bool) -> bool:
-    return syncs_owui_models(valves, provider_routing_enabled) or bool(
-        valves.AUTO_ATTACH_IMAGE_GEN_FILTER
-    )
+    return syncs_owui_models(valves, provider_routing_enabled)
 
 
 WEB_TOOL_SWITCHES = (
@@ -1353,7 +1371,6 @@ class ModelCatalogManager:
             async with session.get(
                 url,
                 headers=openrouter_attribution_headers(self._pipe.valves),
-                timeout=aiohttp.ClientTimeout(total=15),
             ) as resp:
                 resp.raise_for_status()
                 payload = await resp.json()
@@ -2055,7 +2072,13 @@ class ModelCatalogManager:
                 }
 
                 capabilities = None
-                capability_defaults = media_capability_defaults(valves, pipe_capabilities)
+                media_spec = ModelFamily._lookup_spec(str(model.get("norm_id") or ""))
+                capability_defaults = media_capability_defaults(
+                    valves,
+                    pipe_capabilities,
+                    _answers_in_text(media_spec),
+                    ModelFamily.rules_out_tool_use(str(model.get("norm_id") or "")),
+                )
                 if valves.UPDATE_MODEL_CAPABILITIES:
                     raw_caps = model.get("capabilities")
                     if isinstance(raw_caps, dict):

@@ -296,7 +296,7 @@ def _build_dashboard_shell(dash_id: str) -> str:
         <div class="gc"><span class="gc-l">Tokens</span><span class="gc-v" id="{sid}-ls-tokens">-</span></div>
       </div>
       <div class="section-h" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
-        <span>Sessions</span>
+        <span>Sessions<span class="muted-cap" id="{sid}-ls-cap"></span></span>
         <span class="sess-controls">
           <span>Model: <span class="seg" id="{sid}-nameseg"><button type="button" class="active" data-mode="names">Names</button><button type="button" data-mode="slugs">Slugs</button></span></span>
           <span>Keep completed: <select class="keep-select" id="{sid}-keep"><option value="5">5 min</option><option value="10" selected>10 min</option><option value="15">15 min</option><option value="20">20 min</option><option value="25">25 min</option><option value="30">30 min</option><option value="60">1 hour</option><option value="120">2 hours</option><option value="180">3 hours</option></select></span>
@@ -658,8 +658,10 @@ def _build_dashboard_shell(dash_id: str) -> str:
       return badge(st, 'off');
     }}
 
-    function updateLiveSessions(rows) {{
+    function updateLiveSessions(rows, sessions) {{
       state.sessionsLive = Array.isArray(rows) ? rows : [];
+      state.liveActive = (sessions && sessions.live_active !== undefined)
+        ? sessions.live_active : null;
       renderLiveSessions();
     }}
 
@@ -864,10 +866,21 @@ def _build_dashboard_shell(dash_id: str) -> str:
         tcached += v0.tokens_cached || 0;
         tout += v0.tokens_out || 0;
       }}
+      // The server counts the tracked sessions before the row cap, and only ever sends
+      // the count when it has one: a slice from a worker on an older release has none,
+      // and reading its absence as zero would report a partial sum as a total.
+      var reported = (state.liveActive === null || state.liveActive === undefined)
+        ? null : Number(state.liveActive);
+      if (reported !== null && !isNaN(reported)) active = reported;
       $(ID + '-ls-active').textContent = String(active);
       $(ID + '-ls-done').textContent = String(done);
       $(ID + '-ls-cost').textContent = fmtCost(cost);
       $(ID + '-ls-tokens').textContent = fmtTok(tin) + ' in / ' + fmtTok(tcached) + ' cached / ' + fmtTok(tout) + ' out';
+      var capNote = $(ID + '-ls-cap');
+      if (capNote) {{
+        capNote.textContent = reported !== null && reported > rows.length
+          ? ' \\u00b7 showing ' + rows.length + ' of ' + reported : '';
+      }}
       liveTable.update(visible);
     }}
 
@@ -930,7 +943,7 @@ def _build_dashboard_shell(dash_id: str) -> str:
       var startB = Math.floor((meta.start + off) / b) * b - off;
       var out = [];
       for (var t = startB; t <= meta.now; t += b) {{
-        out.push(by[t] || {{ t: t, tokens: 0, cost: 0, sessions: 0, tools: 0 }});
+        out.push(by[t] || {{ t: t, tokens: 0, cost: 0, sessions: 0, tools: 0, err_rate: 0, cached_pct: 0 }});
       }}
       return out;
     }}
@@ -951,7 +964,7 @@ def _build_dashboard_shell(dash_id: str) -> str:
       h += usCard('Tokens', usDelta(cards.tokens.total, p.tokens && p.tokens.total),
         fmtTok(cards.tokens.total),
         fmtTok(cards.tokens.input) + ' in \\u00b7 ' + fmtTok(cards.tokens.cached) + ' cached \\u00b7 ' + fmtTok(cards.tokens.output) + ' out \\u00b7 ' + fmtTok(cards.tokens.reasoning) + ' reasoning',
-        '');
+        usSpark(buckets, 'tokens', '#14b8a6'));
       h += usCard('Cost', usDelta(cards.cost.total, p.cost && p.cost.total),
         fmtCost(cards.cost.total),
         'avg ' + fmtCost(cards.cost.avg_per_session) + ' / session' + (cards.cost.task_portion ? ' \\u00b7 incl. ' + fmtCost(cards.cost.task_portion) + ' task models' : ''),
@@ -1191,6 +1204,8 @@ def _build_dashboard_shell(dash_id: str) -> str:
       body.style.display = '';
       var off = -(new Date().getTimezoneOffset()) * 60;
       var buckets = usFill(res.meta, res.buckets || [], off);
+      state.usPrev = res.prev;
+      state.usBuckets = buckets;
       $(ID + '-us-cards').innerHTML = usCards(res.cards, res.prev, buckets);
       renderSystemCards();
       var stepr = buckets.length > 1 ? (buckets[1].t - buckets[0].t) : 3600;
@@ -1240,11 +1255,17 @@ def _build_dashboard_shell(dash_id: str) -> str:
       if (!el) return;
       var h = '';
       var cards = state.lastCards;
+      var p = state.usPrev || {{}};
+      var usBuckets = state.usBuckets || [];
       if (cards) {{
-        h += usCard('Errors', '', Math.round((cards.errors.rate || 0) * 100) + '%',
-          cards.sessions.failed + ' failed sessions', '');
-        h += usCard('Cached input', '', Math.round((cards.cached.pct || 0) * 100) + '%',
-          '\\u2248 ' + fmtCost(cards.cached.savings) + ' saved', '');
+        h += usCard('Errors', usDelta(cards.errors.rate, p.errors && p.errors.rate),
+          Math.round((cards.errors.rate || 0) * 100) + '%',
+          cards.sessions.failed + ' failed sessions',
+          usSpark(usBuckets, 'err_rate', '#ef4444'));
+        h += usCard('Cached input', usDelta(cards.cached.pct, p.cached && p.cached.pct),
+          Math.round((cards.cached.pct || 0) * 100) + '%',
+          '\\u2248 ' + fmtCost(cards.cached.savings) + ' saved',
+          usSpark(usBuckets, 'cached_pct', '#14b8a6'));
       }}
       var sys = state.system;
       if (sys) {{
@@ -1584,7 +1605,7 @@ def _build_dashboard_shell(dash_id: str) -> str:
       if (d.videos) updateVideos(d.videos);
       if (d.rate_limits) updateRateLimits(d.rate_limits);
       if (d.sessions) updateSessions(d.sessions);
-      if (d.sessions_live !== undefined) updateLiveSessions(d.sessions_live);
+      if (d.sessions_live !== undefined) updateLiveSessions(d.sessions_live, d.sessions);
       if (d.uptime_s !== undefined) {{
         var upTitle = (state.workerCount > 1) ? 'oldest worker' : '';
         var upEl = $(ID + '-up-val');

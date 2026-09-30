@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import OrderedDict
 
 
 def warn_level(
@@ -56,3 +57,13 @@ _shared_latches: dict[str, set[str]] = {}
 
 def shared_latch(name: str) -> set[str]:
     return _shared_latches.setdefault(name, set())
+
+
+def bounded_warn_level(latch: OrderedDict[str, None], cause: str, window: int) -> int:
+    if cause in latch:
+        latch.move_to_end(cause)
+        return logging.DEBUG
+    latch[cause] = None
+    while len(latch) > window:
+        latch.popitem(last=False)
+    return logging.WARNING

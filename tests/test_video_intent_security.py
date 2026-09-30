@@ -24,6 +24,7 @@ from open_webui_openrouter_pipe.integrations.video_intent import (
     neutralise_control_tokens,
     render_intent_disclosure_block,
 )
+from tests.ffmpeg_child_stubs import FfmpegChildStub
 
 
 # -----------------------------------------------------------------------------

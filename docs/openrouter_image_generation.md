@@ -115,15 +115,29 @@ DISABLE_BUILTIN_TOOLS_ON_MEDIA_MODELS = True   # see below
 
 #### Built-in tools on image and video models
 
-An image or video model answers with a picture or a clip, not a tool call.
-Offering it Open WebUI's built-in tools — web search, code execution and the
-rest — usually ends in a turn that fails or comes back empty, and the cause is
-hard to spot because the model's `Built-in tools` box still looks ticked.
+A model that answers with a picture or a clip and no text cannot make a tool
+call. Offering it Open WebUI's built-in tools — web search, code execution and
+the rest — usually ends in a turn that fails or comes back empty, and the cause
+is hard to spot because the model's `Built-in tools` box still looks ticked.
+
+A model that answers with text *as well as* pictures is a different case, and the
+distinction is the one that matters here: it is a chat model that can draw. It
+can read what it is given, hold it in context, and answer about it, so there is
+no reason to stop offering it tools. A router such as `openrouter/auto`, which
+publishes a picture among its possible outputs, and a fixed model such as
+`google/gemini-2.5-flash-image`, are both left alone.
+
+The one text-answering model the rule still reaches is one that cannot call tools
+at all. `Built-in tools` is a question about tool calling, and the catalog answers
+it per model: if the row's own `supported_parameters` name neither `tools` nor
+`tool_choice`, there is nothing on that model for the box to enable, and it is
+unticked even though the model emits text. Gemini's image row is the worked
+example.
 
 With `DISABLE_BUILTIN_TOOLS_ON_MEDIA_MODELS` on, which is the default, the pipe
-unticks that box on each image and video model at the moment it first adds the
-model. The box is unticked rather than the tools quietly withheld, so the state
-is visible on the model's page.
+unticks that box on each such model at the moment it first adds it. The box is
+unticked rather than the tools quietly withheld, so the state is visible on the
+model's page.
 
 If you want tools on one of these models, tick the box back on for it. Your
 choice is kept: the pipe fills this setting in only where a model has none yet,
@@ -140,9 +154,21 @@ image and video models, and it does so whatever
 `DISABLE_BUILTIN_TOOLS_ON_MEDIA_MODELS` is set to. Left on — which is Open
 WebUI's own default — an attachment makes Open WebUI run an extra billed
 round-trip that turns the conversation into search queries and pastes the
-retrieved text into what was meant to be a picture or clip prompt. As with the
-tools box, the pipe fills it in only where a model has no setting yet, so a box
-you tick yourself is left alone.
+retrieved text into what was meant to be a picture or clip prompt. That round
+trip buys nothing for a model that would never have read the document: it answers
+with a picture, not with words.
+
+A model that emits text does read the document, so it is exempt, and the exemption
+does not depend on the tools valve. A text+image model can be handed a file, hold
+it in context alongside the picture it is about to produce, and describe what it
+finds there; clearing the box on it trades a working feature for a billed RAG
+round trip whose text goes into a prompt the model reads. So the box is cleared
+only on models whose catalog row lists no `text` in `output_modalities` — the pure
+image models, the video models, and routers that publish a picture among their
+outputs while answering with words.
+
+As with the tools box, the pipe fills it in only where a model has no setting yet,
+so a box you tick yourself is left alone.
 
 There is one visible side effect on video models, and it is the desired one:
 once `File context` is off, attachments the model was sent stay in the chat as

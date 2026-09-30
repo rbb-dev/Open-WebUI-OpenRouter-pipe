@@ -210,6 +210,7 @@ class ReasoningConfigManager:
         )
         if brought and isinstance(requested_budget, int):
             budget = int(requested_budget)
+            cfg.pop("effort", None)
         else:
             effort = _normalised_effort(cfg) or valves.REASONING_EFFORT
             budget = _map_effort_to_gemini_budget(effort, valves.GEMINI_THINKING_BUDGET)

@@ -14,6 +14,8 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, NamedTuple
 
+from pydantic import ValidationError
+
 from .authz import can_act, can_view
 from .config_service import (
     _ClientMessage,
@@ -487,12 +489,18 @@ async def _persist_config_edit(
         refused["rev"] = current_rev
         refused["config_unreadable"] = True
         return refused, False
-    to_save, dropped, not_saved, cleared = merge_for_save_with_drops(
-        type(pipe.valves), current, edits
-    )
+    try:
+        to_save, dropped, not_saved, cleared = merge_for_save_with_drops(
+            type(pipe.valves), current, edits
+        )
+    except ValidationError as exc:
+        names = sorted({str(err["loc"][0]) for err in exc.errors() if err.get("loc")})
+        raise _ClientMessage(
+            f"the stored settings would not accept: {', '.join(names)}"
+        ) from exc
     result = await Functions.update_function_valves_by_id(getattr(pipe, "id", ""), to_save)
     if result is None:
-        raise RuntimeError("valve update rejected by store")
+        raise _ClientMessage("the database refused the write, so nothing was saved")
     rev = getattr(result, "updated_at", None)
     await emit_config_changed(rev)
     await publish_valves_changed(getattr(pipe, "id", ""), user, request)

@@ -16,7 +16,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal
 
 from ..core.config import OWUI_CHAT_ID
-from ..core.errors import _inline_span
+from ..core.errors import _inline_span, channel_safe_values
 from ..core.logging_system import SessionLogger
 from ..core.utils import (
     _render_error_template,
@@ -333,14 +333,16 @@ class EventEmitterHandler:
             f"[{error_id}] {log_message} (session={enriched_variables['session_id']}, user={enriched_variables['user_id']})"
         )
 
+        on_channel = is_channel_chat(OWUI_CHAT_ID.get())
+        render_variables = channel_safe_values(enriched_variables) if on_channel else enriched_variables
         try:
-            markdown = _render_error_template(template, enriched_variables)
+            markdown = _render_error_template(template, render_variables)
         except Exception:
             self.logger.exception("[%s] Template rendering failed", error_id)
             markdown = ""
             if fallback_template is not None:
                 with contextlib.suppress(Exception):
-                    markdown = _render_error_template(fallback_template, enriched_variables)
+                    markdown = _render_error_template(fallback_template, render_variables)
         if not markdown:
             markdown = (
                 f"### ⚠️ Error\n\n"
@@ -364,7 +366,7 @@ class EventEmitterHandler:
                 "data": {"content": shown}
             })
             completion: dict[str, Any] = {"done": True}
-            if is_channel_chat(OWUI_CHAT_ID.get()):
+            if on_channel:
                 await event_emitter({
                     "type": "chat:message:error",
                     "data": {"error": {"content": shown}, "done": True},

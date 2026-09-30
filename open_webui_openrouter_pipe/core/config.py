@@ -105,6 +105,16 @@ _BOOLEAN_PLACEHOLDER_RULE = (
     "value is false; the `{{#if}}` form of the same value behaves the same way."
 )
 
+_CHANNEL_CARD_RULE = (
+    "On a channel chat, which every member of the room reads, the values behind session_id, user_id, "
+    "detail, sanitized_detail, reason, openrouter_message, upstream_message, moderation_reasons, "
+    "flagged_excerpt, raw_body, metadata_json and provider_raw_json are withheld, and the card is rendered "
+    "as though each were empty. Wrap a line that uses one in {{#if name}} and it is left out; otherwise the "
+    "name is left in the text verbatim, exactly as for a value the pipe never supplies. error_id, the model, "
+    "the provider, openrouter_code and status_code still render on a channel, and error_id is the handle to "
+    "quote when following up there."
+)
+
 _DEFAULT_RESPONSES_AUDIO_FORMATS = frozenset({"mp3", "wav"})
 
 _UNMAPPABLE_AUDIO_FORMATS = frozenset({"webm"})
@@ -162,7 +172,7 @@ _EMPTY_TOOL_SCHEMA: dict[str, Any] = {"type": "object", "properties": {}}
 
 _REMOTE_FILE_MAX_SIZE_DEFAULT_MB = 50
 _REMOTE_FILE_MAX_SIZE_MAX_MB = 500
-_INTERNAL_FILE_ID_PATTERN = re.compile(r"/files/([A-Za-z0-9-]+)(?:/|\\?|$)")
+_INTERNAL_FILE_ID_PATTERN = re.compile(r"/files/([A-Za-z0-9-]+)(?:[/?#]|$)")
 _MARKDOWN_IMAGE_RE = re.compile(
     r"!\[[^\]]*+\]\(\s*(?:<(?P<angled>[^<>\n]*)>|(?P<bare>(?:(?!\n[\"'(])[^ \t()])*(?:\((?:(?!\n[\"'(])[^ \t()])*\)(?:(?!\n[\"'(])[^ \t()])*)*))"
     r"(?:\s+(?:\"[^\"]*\"|'[^']*'|\([^()]*\)))?\s*\)"
@@ -209,6 +219,7 @@ NO_CONTENT_AFTER_TOOLS_FALLBACK = (
 )
 
 OPENAI_EMPTY_USER_TURN_FALLBACK = "[The user sent an empty message.]"
+OPENAI_ATTACHMENT_NOT_SENT_PREFIX = "[An attached item was not sent: "
 
 DEFAULT_OPENROUTER_ERROR_TEMPLATE = (
     "{{#if heading}}\n"
@@ -1093,7 +1104,7 @@ class Valves(BaseModel):
         default=50,
         ge=1,
         le=500,
-        description="Maximum size in MB for inline files, images and audio. A base64 payload is measured as its decoded size; any other inline payload is measured as its own length. Larger payloads are dropped, to prevent memory issues and excessive HTTP request sizes: an uploaded payload is left out with a note, and a picture inside one generated-image reply is dropped from that reply and named in the chat, while the pictures in that reply that did fit are still delivered. It bounds a tool's file result too, which is then neither stored nor shown. A picture a tool returns as an inline `data:` URL is capped here too, where a file link a person attaches is not: the pipe forwards such a picture as it stands rather than downloading it, so the cap is what stands between it and the request.",
+        description="Maximum size in MB for inline files, images and audio. A base64 payload is measured as its decoded size; any other inline payload is measured as its own length. Larger payloads are dropped, to prevent memory issues and excessive HTTP request sizes: an uploaded payload is left out with a note, a file a tool returned that the pipe could not store is not shown, and a warning names the tool that returned it, and a picture inside one generated-image reply is dropped from that reply and named in the chat, while the pictures in that reply that did fit are still delivered. It bounds a tool's file result too, which is then neither stored nor shown. A picture a tool returns as an inline `data:` URL is capped here too, where a file link a person attaches is not: the pipe forwards such a picture as it stands rather than downloading it, so the cap is what stands between it and the request.",
     )
     IMAGE_UPLOAD_CHUNK_BYTES: int = Field(
         default=1 * 1024 * 1024,
@@ -1121,7 +1132,7 @@ class Valves(BaseModel):
     )
     ENABLE_SSRF_PROTECTION: bool = Field(
         default=True,
-description="Enable SSRF (Server-Side Request Forgery) protection for remote URL downloads. When enabled, a remote address is fetched only if it is provably globally routable, so loopback, 10.x/172.16.x/192.168.x, link-local, carrier-grade NAT (100.64.0.0/10 -- also Tailscale's default range) and IPv6 site-local are all refused, as is any range the registries do not mark as globally routable. IPv6 addresses that wrap an IPv4 one (::ffff:, 6to4, Teredo, NAT64) are judged on the address they carry. A refused address is not sent either: the person sees `Images: skipped N (could not be fetched, so it was not sent).` A picture a tool result carries as a link is covered by that too: the address the provider would reach is checked before the link is forwarded, and a refused one is neither forwarded nor counted towards the turn's pictures. A public `https://` link the pipe merely failed to download is still forwarded for the provider to fetch. It also gates every non-`data:` video link before it is passed on, whichever way it is written: the link is not downloaded, and the check is on the address the provider would reach, so a video link is refused when its host is not public and a link whose scheme is neither `http` nor `https` is refused outright. Every link in `file_data` or `file_url` that the provider would have to fetch is gated the same way, in both fields, and it is not downloaded either: a file link on a non-public host is refused, the person sees `Files: skipped N (...).`, and a block that also carries a `file_id` keeps that id and drops only the refused field. An inline `data:` URL, raw base64 in `file_data` and an Open WebUI file path are not links and are never checked. Those file checks are not on the request-wide budget, so N attached links cost up to N x `ADDRESS_CHECK_SECONDS` serially, before the first byte goes upstream. A deployment whose users attach documents by link to an internal host is refused with this valve on, exactly as pictures and videos are; set it to False to restore the old forwarding, which also restores the plaintext exposure this valve exists to close. A failed download costs one further address check, so an unreachable resolver can add up to two `ADDRESS_CHECK_SECONDS` per picture, sequentially. A turn's remote video links draw on the same request-wide `ADDRESS_CHECK_BUDGET_SECONDS` as its pictures, so a message with many links is bounded by that budget rather than by one check per link, and a video link that is left with no time is not sent. The address checks run on a dedicated bounded thread pool, so a stalled resolver is bounded there rather than queued behind everything else the process does; with this valve on, a check that cannot start inside its own budget reaches no verdict at all: on a download or generation path that still sends no bytes, while a stalled re-check of a picture the pipe already holds no longer drops the stored copy. The pool's width follows `MAX_CONCURRENT_REQUESTS` and is re-made when that valve changes, in both directions. HTTP is disabled by default; see ALLOW_INSECURE_HTTP_* for explicit opt-in.",
+description="Enable SSRF (Server-Side Request Forgery) protection for remote URL downloads. When enabled, a remote address is fetched only if it is provably globally routable, so loopback, 10.x/172.16.x/192.168.x, link-local, carrier-grade NAT (100.64.0.0/10 -- also Tailscale's default range) and IPv6 site-local are all refused, as is any range the registries do not mark as globally routable. IPv6 addresses that wrap an IPv4 one (::ffff:, 6to4, Teredo, NAT64) are judged on the address they carry. A refused address is not sent either: the person sees `Images: skipped N (could not be fetched, so it was not sent).` A picture a tool result carries as a link is covered by that too: the address the provider would reach is checked before the link is forwarded, and a refused one is neither forwarded nor counted towards the turn's pictures. A public `https://` link the pipe merely failed to download is still forwarded for the provider to fetch. It also gates every non-`data:` video link before it is passed on, whichever way it is written: the link is not downloaded, and the check is on the address the provider would reach, so a video link is refused when its host is not public and a link whose scheme is neither `http` nor `https` is refused outright. It walks a generation request's provider options too, including a value that is a JSON document containing an address, so an address written inside one is put to the same gate; a control too large or too deeply nested to certify is refused rather than sent, and the refusal names the path the address was found at. Every link in `file_data` or `file_url` that the provider would have to fetch is gated the same way, in both fields, and it is not downloaded either: a file link on a non-public host is refused, the person sees `Files: skipped N (...).`, and a block that also carries a `file_id` keeps that id and drops only the refused field. An inline `data:` URL, raw base64 in `file_data` and an Open WebUI file path are not links and are never checked. Those file checks are not on the request-wide budget, so N attached links cost up to N x `ADDRESS_CHECK_SECONDS` serially, before the first byte goes upstream. A deployment whose users attach documents by link to an internal host is refused with this valve on, exactly as pictures and videos are; set it to False to restore the old forwarding, which also restores the plaintext exposure this valve exists to close. A failed download costs one further address check, so an unreachable resolver can add up to two `ADDRESS_CHECK_SECONDS` per picture, sequentially. A turn's remote video links draw on the same request-wide `ADDRESS_CHECK_BUDGET_SECONDS` as its pictures, so a message with many links is bounded by that budget rather than by one check per link, and a video link that is left with no time is not sent. The address checks run on a dedicated bounded thread pool, so a stalled resolver is bounded there rather than queued behind everything else the process does; with this valve on, a check that cannot start inside its own budget reaches no verdict at all: on a download or generation path that still sends no bytes, while a stalled re-check of a picture the pipe already holds no longer drops the stored copy. The pool's width follows `MAX_CONCURRENT_REQUESTS` and is re-made when that valve changes, in both directions. HTTP is disabled by default; see ALLOW_INSECURE_HTTP_* for explicit opt-in.",
     )
     ALLOW_INSECURE_HTTP: bool = Field(
         default=False,
@@ -1537,7 +1548,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         description=(
             "When True, save the full log of each request to encrypted zip files on disk. "
             "Archives capture the full OpenRouter request/response (prompts, model output, tool calls, provider errors) plus request identifiers — treat as sensitive conversation data at rest. "
-            "One zip is written per message turn, plus one for each housekeeping task Open WebUI dispatches on that turn, named <message_id>.<task>.zip. Open WebUI defines nine task types in its TASKS enum plus three more named inline (context_compaction, memory_review, context_summary), so a turn that triggers all of them produces up to thirteen archives. An internal-Fusion turn writes its inner calls on top of that count, each in the request-keyed api/ tree rather than beside the turn's own archives. "
+            "One zip is written per message turn, plus one for each housekeeping task Open WebUI dispatches on that turn, named <message_id>.<task>.zip. Open WebUI defines nine task types in its TASKS enum plus three more named inline (context_compaction, memory_review, context_summary), and the pipe dispatches a thirteenth of its own, video_intent_v1, so a turn that triggers all of them produces up to fourteen archives. An internal-Fusion turn writes its inner calls on top of that count, each in the request-keyed api/ tree rather than beside the turn's own archives. "
             "Persistence needs a user_id and a request_id; with it on, a call that carries no usable chat_id or message_id is archived under "
             "`api/api-<request_id>.zip` (see SESSION_LOG_ARCHIVE_API_CALLS), and every temporary chat is still dropped; that drop is logged as a warning on each of the two archive paths (segment persist, bundle assembly) and again after a five-minute cooldown, once per person on the one path that runs and once per worker process on bundle assembly, which is called without a user. Only the segment-persist path runs for a request today, so that is the one that warns. "
             "A Fusion panel member is archived too. It carries no message id of its own, but `run_fusion_member` restores the outer turn's chat_id onto it, so it takes the request surrogate and is written as `api/api-<request_id>.zip` while SESSION_LOG_ARCHIVE_API_CALLS is on — one file per inner call, so an N-model panel turn writes N+2 of them (the members, the judge and the synthesis), or N+3 with the judge's second pass, on top of the turn's own archives. "
@@ -1556,6 +1567,8 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "segment already staged while this was on is still packed and written by the assembler, so a handful of "
             "archives can appear after you switch it off. A `parent_id: null` body is given a real chat id but no "
             "message id, so it takes this path too and is keyed on the request id, not on that chat. "
+            "This valve governs that plain API route and the `parent_id: null` shape only: a task invocation that "
+            "resolves to no message id is skipped whether it is on or off. "
             "This valve is never read again after staging: a row already written is finished under it, exactly as a "
             "terminal segment that lands after a turn has ended. The master SESSION_LOG_STORE_ENABLED is different - it is read "
             "at the write itself, so an assembly pass already under way when it is switched off publishes nothing and keeps its rows."
@@ -1567,6 +1580,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "Base directory for encrypted session log archives. "
             "Files are stored under <SESSION_LOG_DIR>/<user_id>/<chat_id>/<message_id>.zip, "
             "with a housekeeping task's own archive beside the answer's as <message_id>.<task>.zip. "
+            "Surrounding whitespace is ignored, and a value that is blank once trimmed counts as unset. "
             "A path component holding a character outside [0-9A-Za-z._-], or long enough to be cut, keeps its sanitized stem "
             "and gains a short digest of the exact id, so two ids that would otherwise land on the same name cannot; the exact ids stay in "
             "the archive's meta.json under ids, and a turn with no usable user id gets a directory of its own rather than a shared user/."
@@ -1673,7 +1687,8 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "turn complete instead; one that lands after that read is not folded into that archive by that pass and is "
             "picked up by a later one, unless the archive already records that turn as finished - "
             "a segment that lands after that read on a turn whose archive already records the turn as "
-            "finished is folded in by that same pass, which writes the turn complete rather than sealing it again. That "
+            "finished is folded in by that same pass, which writes the turn complete rather than sealing it "
+            "again and also preserves the outcome that archive already recorded. That "
             "exposure is why the default is long. Each pass takes the oldest stranded bundles first and seals a "
             "bundle only if the sealed write succeeds, keeping the segments for a retry otherwise."
             "The incomplete marker is written at most once per archive: a pass that finds the turn still stale re-stamps that one marker "
@@ -1792,6 +1807,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "Markdown template used when OpenRouter rejects a request with a status that has no template of its own (400, 403, 404, 422, and so on), and when a failure reported inside a started reply resolves to such a status, from the kind OpenRouter named or, when that kind is unknown, from the code it sent. Clear this box and save to restore this built-in text. Placeholders such as {heading}, {detail}, {sanitized_detail}, {provider}, {model_identifier}, {requested_model}, {api_model_id}, {normalized_model_id}, {openrouter_code}, {upstream_type}, {reason}, {request_id}, {request_id_reference}, {openrouter_message}, {upstream_message}, {moderation_reasons}, {flagged_excerpt}, {raw_body}, {context_limit_tokens}, {max_output_tokens}, {include_model_limits}, {metadata_json}, {provider_raw_json}, {error_id}, {timestamp}, {session_id}, {user_id}, {native_finish_reason}, {error_chunk_id}, {error_chunk_created}, {is_streaming_error}, {streaming_provider}, {streaming_model}, {retry_after_seconds}, {rate_limit_type}, {required_cost}, and {account_balance} are replaced when values are available. Lines whose **own** placeholder resolves to a missing or empty value are omitted automatically; a value that itself contains a placeholder in braces is shown verbatim, never re-read as a placeholder. `{streaming_provider}` and `{streaming_model}` are filled only for a failure reported inside a reply that has already started, on a rejected request they are empty however the provider is named, and they are also empty when such a failure names no provider at all. "
             + _BOOLEAN_PLACEHOLDER_RULE
             + " The pipe does the span and fence work on these values itself: a value placed inside a backtick span, on a `### ` heading, or on a bare `**…**` / `- ` line arrives as one logical line with its backticks removed, and a value placed in a fenced block arrives inside a fence long enough to contain it, so a custom template does not have to. The pipe's own numbers and labels (`status_code`, `retry_after_seconds`, `context_limit_tokens`, `max_output_tokens`, `diagnostics`) are already single-line. Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to show them only when that value is set. {metadata_json} and {provider_raw_json} are the provider's metadata and its raw error block, including any field the pipe itself adds, cut at 16,384 characters with a marker on a line of its own naming how many characters were removed, so a value that arrives cut is no longer parseable JSON and a template that read it as the whole payload would read it wrongly. {raw_body} and {flagged_excerpt} are never cut: they are the provider's own bytes and reach the card whole on purpose, so that what a person reads is what the provider sent. The complete values stay on the error object and in the session log, which is where an operator who needs the whole payload reads it."
+            + _CHANNEL_CARD_RULE
         ),
     )
     ENDPOINT_OVERRIDE_CONFLICT_TEMPLATE: str = Field(
@@ -1815,6 +1831,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         default=DEFAULT_AUTHENTICATION_ERROR_TEMPLATE,
         description=(
             "Markdown template for HTTP 401 errors, for an authentication failure OpenRouter reports, on either path, and for the pipe's own failure to read a usable API key. All three fill {error_id}, {timestamp}, {session_id}, {user_id}, {support_email}, {support_url}, {openrouter_code} and {openrouter_message}. A 401 returned by OpenRouter also fills the shared error-context fields — {request_id}, {provider}, {model_identifier}, {requested_model}, {reason}, {metadata_json} and the rest of the set the rejected-request template lists. A failure reported inside a started reply fills the same set, except for the fields OpenRouter has to send for them to exist: {request_id} only when the failure carries an id: the generation id on Chat Completions, the failed response's id on Responses, and {provider} only when the error itself names the provider. Nothing is sent when the key itself cannot be read, so on that path those extra fields have no value and any line using one prints the braces verbatim; wrap such a line in {{#if request_id}}...{{/if}} and it is left out instead. A name nothing supplies is never substituted, whichever path rendered the card."
+            + _CHANNEL_CARD_RULE
         ),
     )
 
@@ -1822,6 +1839,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         default=DEFAULT_INSUFFICIENT_CREDITS_TEMPLATE,
         description=(
             "Markdown template for HTTP 402 errors when the account is out of credits, and for a payment_required failure OpenRouter reports, on either path. Supports {error_id}, {timestamp}, {openrouter_code}, {openrouter_message}, {request_id}, {required_cost}, {account_balance}, {support_email}, and other shared context variables. {request_id} is OpenRouter's own reference for the rejected request, which its support can look up; the built-in text shows it on its own row whenever the rejection carried one."
+            + _CHANNEL_CARD_RULE
         ),
     )
 
@@ -1836,6 +1854,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         default=DEFAULT_SERVER_TIMEOUT_TEMPLATE,
         description=(
             "Markdown template for a 408 from OpenRouter (server-side timeout), whether that is the reply's own status or the code reported inside a reply already under way. A provider timeout reported inside a started reply is documented as 504 and renders SERVICE_ERROR_TEMPLATE instead. A `408` is not retried. A `408` that names the provider-timeout kind is retried, because the kind resolves it to a `504`. Supports the common context variables plus {openrouter_message}, {openrouter_code}, {request_id}, and support contact placeholders. {request_id} is OpenRouter's own reference for the timed-out request, which its support can look up; the built-in text shows it on its own row whenever the response carried one."
+            + _CHANNEL_CARD_RULE
         ),
     )
 
@@ -1843,6 +1862,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         default=DEFAULT_PAYLOAD_TOO_LARGE_TEMPLATE,
         description=(
             "Markdown template for HTTP 413 errors when the request payload exceeds size limits, and for a payload_too_large failure OpenRouter reports, on either path. Supports {error_id}, {timestamp}, {openrouter_code}, {openrouter_message}, {model_identifier}, {request_id}, {support_email}, and other shared context variables. {request_id} is OpenRouter's own reference for the rejected request, which its support can look up; the built-in text shows it on its own row whenever the rejection carried one."
+            + _CHANNEL_CARD_RULE
         ),
     )
 
@@ -1868,6 +1888,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         default=DEFAULT_NETWORK_TIMEOUT_TEMPLATE,
         description=(
             "Markdown template a chat reply shows, once the retries are spent, when its call to OpenRouter times out before any of the answer arrives. A timeout before the first byte is a temporary failure: the request is re-sent up to TRANSIENT_RETRY_MAX_ATTEMPTS extra times (three attempts in all by default) and is counted once against the breaker however many attempts it took. Picture-only image models, video models and the panel, judge and final-answer calls inside internal Fusion report failures in their own way. {timeout_seconds} is the limit that ran out: HTTP_CONNECT_TIMEOUT_SECONDS while connecting, HTTP_SOCK_READ_SECONDS while waiting for data, or HTTP_TOTAL_TIMEOUT_SECONDS for the whole request. Once part of the answer has arrived, STREAM_INTERRUPTED_TEMPLATE is used instead and nothing is retried; a tool call the model has already named closes that window on its own, with no answer text of its own. Available variables: {error_id}, {timeout_seconds}, {timestamp}, {session_id}, {user_id}, {support_email}, {support_url}. Supports Handlebars-style conditionals: wrap a section in {{#if variable}}...{{/if}} to show it only when that value is set."
+            + _CHANNEL_CARD_RULE
         )
     )
 
@@ -1875,6 +1896,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         default=DEFAULT_CONNECTION_ERROR_TEMPLATE,
         description=(
             "Markdown template a chat reply shows, once the retries are spent, when its connection to OpenRouter fails before any of the answer arrives: the connection cannot be opened or drops, or, on every attempt, OpenRouter closes the stream without sending anything or sends frames the pipe cannot read, or a non-streamed 200 answers on /responses with no `output` key at all, or with an `output` that is neither a list nor null, or on /chat/completions with no `choices`. A connection that fails before the first byte is a temporary failure: the request is re-sent up to TRANSIENT_RETRY_MAX_ATTEMPTS extra times (three attempts in all by default) and is counted once against the breaker however many attempts it took. Picture-only image models, video models and the panel, judge and final-answer calls inside internal Fusion report failures in their own way. A timeout uses NETWORK_TIMEOUT_TEMPLATE instead, and once part of the answer has arrived, or the model has named the tool it is calling, STREAM_INTERRUPTED_TEMPLATE is used and nothing is retried. A reply that arrives on an accepted status but whose body is not a JSON object is not a connection failure: the connection worked, and SERVICE_ERROR_TEMPLATE reports it; a well-formed object that carries no answer on either route because the key is absent is a different thing and is reported here. A non-streamed 200 on /responses whose `output` is present but empty or null is neither: the connection worked and the model returned nothing, so it is retried on the same TRANSIENT_RETRY_MAX_ATTEMPTS budget and then reported by OPENROUTER_ERROR_TEMPLATE, whose reason says the model returned an empty answer. Available variables: {error_id}, {error_type}, {timestamp}, {session_id}, {user_id}, {support_email}, {support_url}. Supports Handlebars-style conditionals: wrap a section in {{#if variable}}...{{/if}} to show it only when that value is set."
+            + _CHANNEL_CARD_RULE
         )
     )
 
@@ -1882,6 +1904,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         default=DEFAULT_SERVICE_ERROR_TEMPLATE,
         description=(
             "Markdown template for OpenRouter 5xx errors, for an accepted response whose body is not a JSON object (a proxy, CDN or WAF in front of this deployment rewrote the reply), and for a failure OpenRouter reports inside a reply it has already started under one of its own typed codes: provider_unavailable, provider_overloaded, timeout, server or unmapped, or under its native code server_error. Available variables: {error_id}, {status_code}, {reason}, {timestamp}, {session_id}, {user_id}, {support_email}. A 5xx that OpenRouter itself returned also fills {request_id}, its own reference for that request. A 5xx reported inside a started reply fills it whenever the failure carries an id: the failed response's id on Responses, the generation id on Chat Completions, also available as {error_chunk_id}; {provider} likewise appears only when the error names the provider. A 5xx raised by the connection to OpenRouter carries no such reference and a line using it prints the braces verbatim unless it is wrapped in a conditional. Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to show them only when that value is set."
+            + _CHANNEL_CARD_RULE
         )
     )
 
@@ -1893,6 +1916,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "Available variables: {error_id}, {error_type}, {timestamp}, "
             "{session_id}, {user_id}, {support_email}, {support_url}. "
             "Supports Handlebars-style conditionals: wrap sections in {{#if variable}}...{{/if}} to show them only when that value is set."
+            + _CHANNEL_CARD_RULE
         )
     )
 
@@ -1903,6 +1927,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "Available variables: {requested_model}, {normalized_model_id}, {restriction_reasons}, "
             "{model_id_filter}, {free_model_filter}, {tool_calling_filter}, plus standard context variables "
             "like {error_id}, {timestamp}, {session_id}, {user_id}, {support_email}, and {support_url}."
+            + _CHANNEL_CARD_RULE
         ),
     )
     STREAM_INTERRUPTED_TEMPLATE: str = Field(
@@ -1930,7 +1955,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         ge=1,
         le=50,
         description=(
-            "Per-request limit on simultaneously executing tool calls, and the number of tool workers each request starts. Each internal Fusion model starts the same number of workers and shares the request's slots; Open WebUI's ask_user takes no slot."
+            "Per-request limit on simultaneously executing tool calls, and the number of tool workers each request that runs tools starts. Each internal Fusion model that runs tools starts the same number of workers and shares the request's slots; Open WebUI's ask_user takes no slot."
         ),
     )
     BREAKER_MAX_FAILURES: int = Field(
@@ -1995,7 +2020,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     )
     ENABLE_REDIS_CACHE: bool = Field(
         default=True,
-        description="Buffer artifact writes through Redis when REDIS_URL and more than one worker are detected. It is re-read on each request, so flipping it applies to the next message with no restart. The valve is authoritative at the write in the very turn that turns it off, that turn's row goes straight to the database instead of Redis, and everything still buffered is drained to the database to completion before the Redis client is closed, and the same drain runs when the worker shuts down, before its Redis tasks are cancelled, so a row the drain cannot commit stays in the pending queue for another worker. While it is off no artifact data is written to Redis, but a delete is not data and still runs: a cleanup in that window still writes its delete marker and still deletes the cache entries of the rows it was told to forget, and the drain uses its pending queue and flush lock only to empty the queue. It stays off until you turn it on again, and turning it back on brings it up on the next request without a restart, once the worker reconnects to Redis.",
+        description="Buffer artifact writes through Redis when REDIS_URL and more than one worker are detected. It is re-read on each request, so flipping it applies to the next message with no restart. A connection attempt that fails is retried on an interval rather than on every request: 300 seconds, a fixed constant and not a valve. Turning this valve off and on again, and a changed REDIS_URL, both clear that wait. The valve is authoritative at the write in the very turn that turns it off, that turn's row goes straight to the database instead of Redis, and everything still buffered is drained to the database to completion before the Redis client is closed, and the same drain runs when the worker shuts down, before its Redis tasks are cancelled, so a row the drain cannot commit stays in the pending queue for another worker. While it is off no artifact data is written to Redis, but a delete is not data and still runs: a cleanup in that window still writes its delete marker and still deletes the cache entries of the rows it was told to forget, and the drain uses its pending queue and flush lock only to empty the queue. It stays off until you turn it on again, and turning it back on brings it up on the next request without a restart, once the worker reconnects to Redis.",
     )
     REDIS_CACHE_TTL_SECONDS: int = Field(
         default=600,
@@ -2013,7 +2038,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         default=5,
         ge=1,
         le=50,
-        description="Log a critical alert after this many consecutive failures writing the buffered artifacts to the database. Buffering is not disabled: the pipe waits longer between attempts and keeps retrying, resuming when writes succeed. New writes keep queueing meanwhile and only bypass Redis if the enqueue itself fails. A flush interrupted by a cancellation (worker shutdown, hot reload, valve flip) also puts its uncommitted batch back on the queue rather than dropping it.",
+        description="Log a critical alert after this many consecutive flush failures - a flush that fails, in the database or in Redis, because taking the lock, reading the queue depth, popping a batch and releasing the lock are all part of the same pass. Buffering is not disabled: the pipe waits longer between attempts and keeps retrying, resuming when writes succeed. New writes keep queueing meanwhile and only bypass Redis if the enqueue itself fails. A flush interrupted by a cancellation (worker shutdown, hot reload, valve flip) also puts its uncommitted batch back on the queue rather than dropping it.",
     )
     COSTS_REDIS_DUMP: bool = Field(
         default=False,
@@ -2029,7 +2054,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         default=90,
         ge=1,
         le=365,
-        description="Days an artifact is kept before cleanup. Its stored timestamp is refreshed on every read of the artifact that goes through the database store — whether that read is served from the database or from the cache — so retention runs from last access, not creation. Reads that never reach the database store do not refresh it, either because the database breaker is open or because the artifact store failed to initialise. The cache only serves reads on a deployment with the Redis artifact cache enabled. Rows a temporary chat left behind are deleted at the next cleanup, whatever their age. The sweep covers the pipe's own artifacts only, not files the pipe put in Open WebUI's storage.",
+        description="Days an artifact is kept before cleanup. Its stored timestamp is refreshed on every read of the artifact that goes through the database store — whether that read is served from the database or from the cache — so retention runs from last access, not creation. Reads that never reach the database store do not refresh it, either because the database breaker is open or because the artifact store failed to initialise. The cache only serves reads on a deployment with the Redis artifact cache enabled. The sweep also removes the Redis cache entries of the rows it deletes, so a purged artifact is not replayed from the cache either. Rows a temporary chat left behind are deleted at the next cleanup, whatever their age. The sweep covers the pipe's own artifacts only, not files the pipe put in Open WebUI's storage.",
     )
     ARTIFACT_CLEANUP_INTERVAL_HOURS: float = Field(
         default=1.0,
@@ -2124,15 +2149,21 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         default=True,
         description=(
             "Turn off Open WebUI's built-in tools for models that produce images or video. "
-            "These models answer with a picture or a clip rather than a tool call, and "
-            "offering them web search, code execution and the rest tends to make a turn "
-            "fail or come back empty. With this on, each image or video model arrives in "
+            "A model that answers with a picture or a clip and no text cannot make a tool "
+            "call, and offering it web search, code execution and the rest tends to make a "
+            "turn fail or come back empty. With this on, each such model arrives in "
             "your workspace with 'Built-in tools' already unticked, so you can see the "
             "setting rather than wonder why tools are quiet. Tick it back on for any single "
             "model and your choice stays put; the pipe only sets it the first time it adds "
-            "the model. A router such as openrouter/auto publishes a picture among its "
-            "possible outputs but is a chat model, so neither box is cleared on it going "
-            "forward: a model that synced before this change already has both boxes "
+            "the model. A model that also answers with text is a chat model that can draw, "
+            "and the box is left where you have it - a router such as openrouter/auto, which "
+            "publishes a picture among its possible outputs, or a fixed model such as "
+            "google/gemini-2.5-flash-image. The exception is the one model that cannot call "
+            "tools at all: if its own catalog row names neither 'tools' nor 'tool_choice', "
+            "as gemini's does, 'Built-in tools' is unticked on it anyway, because there is "
+            "nothing there to call. 'File context' follows the same split, and answers in "
+            "text alone is enough to keep it: neither box is cleared on such a model going "
+            "forward. A model that synced before this change already has both boxes "
             "cleared, and the sync only fills a box that is still empty, so tick them back "
             "by hand if you want attachments and built-in tools on it. "
             "Requires model capability syncing to be enabled."

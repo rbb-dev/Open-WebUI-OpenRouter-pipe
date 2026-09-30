@@ -72,6 +72,7 @@ INTENT_JSON_SCHEMA: dict[str, Any] = {
                 "question": {"type": "string"},
                 "options": {
                     "type": ["array", "null"],
+                    "maxItems": 5,
                     "items": {"type": "string"},
                 },
                 "reason": {"type": "string"},

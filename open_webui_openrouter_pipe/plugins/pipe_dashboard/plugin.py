@@ -543,7 +543,7 @@ class PipeDashboardPlugin(PluginBase):
         except (AttributeError, TypeError, ValueError):
             return 30
 
-    def _live_snapshot(self) -> tuple[list[dict[str, Any]], dict[str, float]]:
+    def _live_snapshot(self) -> tuple[list[dict[str, Any]], dict[str, float], int]:
         self._tracker.sweep()
         return self._tracker.live_snapshot()
 

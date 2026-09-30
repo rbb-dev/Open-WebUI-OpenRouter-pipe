@@ -247,7 +247,7 @@ def test_live_snapshot_returns_atomic_sessions_and_task_costs():
     _start(tracker, rid="task2", task="tags_generation",
            metadata={"chat_id": "c-other", "session_id": "s1", "user_id": "u1"})
     tracker.finalize("task2", _usage(cost=0.002), "ok")
-    rows, task_costs = tracker.live_snapshot()
+    rows, task_costs, _active_total = tracker.live_snapshot()
     assert isinstance(rows, list) and isinstance(task_costs, dict)
     assert [r["kind"] for r in rows] == ["chat"]
     assert rows[0]["chat_id"] == "c1"
@@ -318,8 +318,9 @@ def test_plugin_live_snapshot_sweeps_and_returns_tuple():
     plugin._tracker.start("chat1", body={"model": "m"}, user={"id": "u", "name": "sam"},
                           metadata={"chat_id": "c1"})
     plugin._tracker.finalize("chat1", _usage(cost=0.05), "ok")
-    rows, task_costs = plugin._live_snapshot()
+    rows, task_costs, active_total = plugin._live_snapshot()
     assert isinstance(rows, list) and isinstance(task_costs, dict)
+    assert active_total == 0
     assert rows[0]["chat_id"] == "c1"
     assert rows[0]["cost"] == pytest.approx(0.05)
     plugin._tracker = Mock()
@@ -341,7 +342,7 @@ def test_live_snapshot_failure_reaches_the_publisher_log(caplog):
     dp.set_snapshot_getter(plugin._live_snapshot)
     try:
         with caplog.at_level(_logging.DEBUG, logger=dp.__name__):
-            assert dp._snapshot_safe() == ([], {})
+            assert dp._snapshot_safe() == ([], {}, 0)
     finally:
         dp.set_snapshot_getter(previous)
     assert any(r.exc_info for r in caplog.records)

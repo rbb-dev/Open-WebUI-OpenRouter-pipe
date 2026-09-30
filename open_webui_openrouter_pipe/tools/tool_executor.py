@@ -218,6 +218,7 @@ class _ToolExecutionContext:
     carded_calls: set[str] = field(default_factory=set)
     terminal_files_inline: bool = False
     messages: list[dict[str, Any]] = field(default_factory=list)
+    parallel_tools: int = 0
 
 
 async def _read_user_row(context: _ToolExecutionContext) -> Any:
@@ -617,7 +618,7 @@ class ToolExecutor:
                 try:
                     args = _owui_normalize_ask_user_request(args)
                 except ValueError as exc:
-                    await _refuse(index, call, f"Invalid arguments: {exc}")
+                    await _refuse(index, call, f"Error: {exc}")
                     continue
             tool_type = (tool_cfg.get("type") or "function").lower()
             breaker = self._tool_breaker(context)
@@ -683,6 +684,7 @@ class ToolExecutor:
                 self.logger.debug("Enqueued tool %s (batch=%s)", call.get("name"), allow_batch)
             pending.append((index, call, future, self._ask_user_window(tool_cfg, args)))
 
+        self._ensure_tool_workers(context)
         pre_enqueue_at = loop.time()
         enqueue_allowance = context.batch_timeout
         for _index, _call, _future, window in pending:
@@ -1070,6 +1072,17 @@ class ToolExecutor:
 
     def _cancelled_tool_output(self, call: dict[str, Any]) -> dict[str, Any]:
         return self._build_tool_output(call, "Tool execution cancelled", status="cancelled")
+
+    def _ensure_tool_workers(self, context: _ToolExecutionContext) -> None:
+        if context.workers or context.parallel_tools <= 0:
+            return
+        for worker_idx in range(context.parallel_tools):
+            context.workers.append(
+                asyncio.create_task(
+                    self._tool_worker_loop(context),
+                    name=f"openrouter-tool-worker-{context.request_id}-{worker_idx}",
+                )
+            )
 
     @timed
     async def _tool_worker_loop(self, context: _ToolExecutionContext) -> None:

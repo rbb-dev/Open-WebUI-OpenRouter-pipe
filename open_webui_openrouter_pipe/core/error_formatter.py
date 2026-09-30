@@ -423,6 +423,7 @@ class ErrorFormatter:
             normalized_model_id=normalized_model_id,
             api_model_id=api_model_id,
         )
+        on_channel = is_channel_chat(OWUI_CHAT_ID.get()) if event_emitter else False
         content = exc.to_markdown(
             model_label=model_display,
             diagnostics=diagnostics or None,
@@ -432,6 +433,7 @@ class ErrorFormatter:
             normalized_model_id=normalized_model_id,
             api_model_id=api_model_id,
             context=context_defaults,
+            shared=on_channel,
         )
         shown = join_answer_and_card(partial_answer, content)
         if not event_emitter:
@@ -447,7 +449,6 @@ class ErrorFormatter:
                 }
             )
             await event_emitter({"type": "chat:message", "data": {"content": shown}})
-            on_channel = is_channel_chat(OWUI_CHAT_ID.get())
             if on_channel:
                 await event_emitter({
                     "type": "chat:message:error",

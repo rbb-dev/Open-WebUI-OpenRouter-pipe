@@ -171,9 +171,22 @@ def test_replacement_predecessor_enters_drain_when_busy(fresh_registry):
 
 @pytest.mark.asyncio
 async def test_old_close_does_not_clobber_new_generation_log_queue(fresh_registry):
+    """A retired generation drains its own queue and leaves the live one's alone.
+
+    Two halves of one property, and either alone is a false pass. Draining g1's queue
+    through `SessionLogger.log_queue` instead of the local reference it captured would
+    take g2's records and write them into g1's request, and the queue-identity assert
+    below is what catches it -- but a close that drained nothing at all would satisfy
+    that assert on its own, so g1's own records are read back out of the session log as
+    well. g1 has no worker task, which is the ordinary close: a generation retired before
+    its log worker ever started.
+    """
     pipe_mod = _import_pipe_module()
+    import logging
+
     from open_webui_openrouter_pipe.core.logging_system import SessionLogger
 
+    rid = "req-b440-retired-generation"
     g1 = pipe_mod.Pipe()
     g1.id = "test_id_static"
     g1_queue: asyncio.Queue = asyncio.Queue()
@@ -187,8 +200,40 @@ async def test_old_close_does_not_clobber_new_generation_log_queue(fresh_registr
     SessionLogger.set_log_queue(g2_queue)
     SessionLogger.set_main_loop(asyncio.get_running_loop())
 
-    await g1._stop_log_worker()
-    assert SessionLogger.log_queue is g2_queue
+    for index in range(3):
+        record = logging.LogRecord(
+            name="open_webui_openrouter_pipe",
+            level=logging.WARNING,
+            pathname="pipe.py",
+            lineno=1,
+            msg="retired-generation-marker-%d",
+            args=(index,),
+            exc_info=None,
+        )
+        record.request_id = rid
+        record.max_lines = 500
+        g1_queue.put_nowait(record)
+
+    try:
+        await g1._stop_log_worker()
+        delivered = [
+            str(event.get("message", ""))
+            for event in (SessionLogger.logs.get(rid) or [])
+            if "retired-generation-marker" in str(event.get("message", ""))
+        ]
+        assert SessionLogger.log_queue is g2_queue, (
+            f"g1's close released the global queue, which now holds {SessionLogger.log_queue!r} "
+            f"rather than g2's; a hot reload is the shape where this fires on the same event"
+        )
+    finally:
+        SessionLogger.logs.pop(rid, None)
+        SessionLogger.set_log_queue(None)
+        SessionLogger.set_main_loop(None)
+
+    assert len(delivered) == 3, (
+        f"g1 held 3 queued log records when its close ran and {len(delivered)} reached the "
+        "session log; the retired generation's records are the tail of the archive"
+    )
 
 
 def test_cleanup_loop_stop_latency_under_500ms():

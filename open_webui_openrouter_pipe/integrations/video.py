@@ -1658,12 +1658,16 @@ class VideoGenerationAdapter:
                 self._pipe._video_user_locks[user_id] = lock
             self._pipe._video_user_lock_refs[user_id] = self._pipe._video_user_lock_refs.get(user_id, 0) + 1
         refused = False
-        async with lock:
-            current = int(self._pipe._video_user_active_counts.get(user_id, 0))
-            if current >= limit:
-                refused = True
-            else:
-                self._pipe._video_user_active_counts[user_id] = current + 1
+        try:
+            async with lock:
+                current = int(self._pipe._video_user_active_counts.get(user_id, 0))
+                if current >= limit:
+                    refused = True
+                else:
+                    self._pipe._video_user_active_counts[user_id] = current + 1
+        except BaseException:
+            await asyncio.shield(self._release_user_lock(user_id, lock))
+            raise
         if refused:
             await asyncio.shield(self._release_user_lock(user_id, lock))
             return False, lock
@@ -2966,6 +2970,7 @@ class VideoGenerationAdapter:
                         thumb_urls.append("")
                         continue
 
+                    substitutable = entry.target != "last_frame"
                     try:
                         if entry.source == "prior_video_first_frame":
                             target = "first_frame"
@@ -3006,7 +3011,7 @@ class VideoGenerationAdapter:
                             intent.downgrades.append("frame_source_mismatch_used_first_frame")
                     except FrameExtractionError as exc:
                         if (
-                            entry.source == "prior_video_first_frame"
+                            substitutable
                             and getattr(exc, "pixel_cap", False)
                         ):
                             try:
@@ -3028,6 +3033,9 @@ class VideoGenerationAdapter:
                                 raise exc
                             intent.downgrades.append(
                                 f"frame_pixel_cap_used_scaled_frame_idx_{entry.source_index}_at_{position}"
+                            )
+                            intent.downgrades.append(
+                                f"frame_over_pixel_cap_used_{reused_frame_index}_frame"
                             )
                             if frame.downgrade_note:
                                 intent.downgrades.append(frame.downgrade_note)

@@ -206,6 +206,14 @@ def resolve_level(name: str | None, fallback: int) -> int:
 
 
 
+class _SessionCaptureHandler(logging.Handler):
+    pass
+
+
+class _PipeConsoleHandler(logging.StreamHandler):
+    pass
+
+
 class SessionLogger:
     """Per-request logger that captures console output and an in-memory log buffer.
 
@@ -363,6 +371,14 @@ class SessionLogger:
             the current `SessionLogger.request_id`.
         """
         logger = logging.getLogger(name)
+        if any(isinstance(handler, _SessionCaptureHandler) for handler in logger.handlers):
+            logger.setLevel(logging.DEBUG)
+            root_logger = logging.getLogger()
+            if not any(isinstance(handler, logging.NullHandler) for handler in root_logger.handlers):
+                root_logger.addHandler(logging.NullHandler())
+            logger.propagate = False
+            cls._ensure_console_owner(logger)
+            return logger
         logger.handlers.clear()
         logger.filters.clear()
         logger.setLevel(logging.DEBUG)
@@ -434,7 +450,7 @@ class SessionLogger:
                                 record.exc_info = shaped
             return True
 
-        async_handler = logging.Handler()
+        async_handler = _SessionCaptureHandler()
         async_handler.addFilter(filter)
 
         def _emit(record: logging.LogRecord) -> None:
@@ -522,13 +538,25 @@ class SessionLogger:
         the pipe silent on exactly the hosts that need it to print.
         """
         node: logging.Logger | None = logger.parent
+        host_has_sink = False
         while node is not None:
             for handler in node.handlers:
                 if not isinstance(handler, logging.NullHandler):
-                    return
-            node = node.parent if node.propagate else None
+                    host_has_sink = True
+                    break
+            if host_has_sink or not node.propagate:
+                break
+            node = node.parent
 
-        console = logging.StreamHandler(sys.stdout)
+        owned = [h for h in logger.handlers if isinstance(h, _PipeConsoleHandler)]
+        if host_has_sink:
+            for handler in owned:
+                logger.removeHandler(handler)
+            return
+        if owned:
+            return
+
+        console = _PipeConsoleHandler(sys.stdout)
         console.setFormatter(cls._console_formatter)
         console.addFilter(cls._passes_threshold)
         logger.addHandler(console)

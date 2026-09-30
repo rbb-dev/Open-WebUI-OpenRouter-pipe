@@ -57,6 +57,7 @@ UPDATE_TAB_JS = """
       digest_mismatch: 'The downloaded file did not match the release checksum, so nothing was changed. Try again in a moment.',
       validation_failed: 'The downloaded bundle failed validation, so nothing was changed.',
       storage_unavailable: 'The pipe\\'s snapshot storage could not be reached, so nothing was changed. The server log names the storage error; restore the database or the upload directory and try again.',
+      row_unreadable: 'Open WebUI could not read the pipe\\'s stored row from the database, so nothing was changed. This is a database fault, not a bad release; check the database and try again.',
       write_failed: 'The database refused the write, so the freshly loaded code was rolled back and the previous version remains active.',
       incompatible_owui: 'This release needs a newer Open WebUI than this server runs. Upgrade Open WebUI first.',
       update_in_progress: 'Another update is already running. Wait for it to finish, then press Check now.',

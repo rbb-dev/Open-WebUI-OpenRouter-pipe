@@ -361,6 +361,13 @@ class TestToolSemaphore:
             f"{peak} tools ran concurrently under MAX_PARALLEL_TOOLS_PER_REQUEST={limit}; "
             "the per-request semaphore is not bounding execution"
         )
+        assert peak == limit, (
+            f"the peak was {peak} under MAX_PARALLEL_TOOLS_PER_REQUEST={limit}. The "
+            "ceiling above is satisfied by a pool of ONE worker, which runs every call "
+            "one at a time and honours the semaphore by never contending for it: the "
+            "limit is a cap and the valve also sizes the pool, so the peak has to reach "
+            "it for the check to have observed the pool at all."
+        )
 
     @pytest.mark.asyncio
     async def test_semaphore_limit_increase_at_runtime(self, pipe_instance_async) -> None:

@@ -17,6 +17,8 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
+from tests.ffmpeg_child_stubs import FfmpegChildStub
+
 from open_webui_openrouter_pipe.media import (
     FrameExtractionError,
     Thumbnail,
@@ -436,7 +438,8 @@ class TestExtractFrame:
     async def test_at_timestamp_nonzero_exit_falls_back_to_last_frame(self, synthetic_mp4, monkeypatch):
         """A past-EOF seek can also fail with a NON-ZERO ffmpeg exit code (not
         just exit-0 empty output); that failure mode must equally fall back to
-        the end-seek last frame, report the true last-frame timestamp, and emit
+        the end-seek last frame, report no timestamp at all for a frame the
+        ladder found by searching backwards from the end of the file, and emit
         a coded downgrade note instead of prose.
 
         The scripted failure below raises the EMPTY-OUTPUT marker, not a non-zero
@@ -454,7 +457,7 @@ class TestExtractFrame:
         calls: list[bool] = []
 
         async def _scripted_ffmpeg(path, *, timestamp_seconds, logger, from_end=False,
-                                   saw_damage=None):
+                                   saw_damage=None, max_frame_bytes=0):
             calls.append(from_end)
             if not from_end:
                 raise FrameExtractionError(
@@ -462,6 +465,7 @@ class TestExtractFrame:
                 )
             return await real_ffmpeg(
                 path, timestamp_seconds=timestamp_seconds, logger=logger, from_end=True,
+                max_frame_bytes=max_frame_bytes,
             )
 
         monkeypatch.setattr(fe, "_extract_frame_ffmpeg", _scripted_ffmpeg)
@@ -472,8 +476,11 @@ class TestExtractFrame:
         assert calls == [False, True], "must retry exactly once with from_end=True"
         assert len(frame.image_bytes) > 0
         assert frame.downgrade_note == "frame_seek_failed_used_last_frame"
-        expected_last = max(0.0, meta.duration_seconds - max(1.0 / meta.fps, 0.04))
-        assert frame.actual_timestamp_seconds == pytest.approx(expected_last, abs=0.05)
+        assert math.isnan(frame.actual_timestamp_seconds), (
+            f"reported {frame.actual_timestamp_seconds!r} for a frame the end-seek "
+            f"ladder supplied; the ladder searched backwards from the end of the "
+            f"file, so there is no moment in the video it can honestly be reported at"
+        )
         assert frame.requested_timestamp_seconds == pytest.approx(ts, abs=1e-6)
 
     @pytest.mark.asyncio

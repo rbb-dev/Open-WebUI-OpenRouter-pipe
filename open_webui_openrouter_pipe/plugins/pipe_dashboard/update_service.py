@@ -67,6 +67,7 @@ _TRANSIENT_CODES = frozenset(
         "stale_rev",
         "update_in_progress",
         "storage_unavailable",
+        "row_unreadable",
     }
 )
 
@@ -288,7 +289,7 @@ class UpdateService:
     async def _row(self) -> Any:
         row = await self._functions().get_function_by_id(self._pipe().id)
         if row is None:
-            raise UpdateError("validation_failed", "function row not found")
+            raise UpdateError("row_unreadable", "the function row is absent or the store could not read it")
         return row
 
     def _repo(self, value: Any = None) -> str:

@@ -146,6 +146,8 @@ _CANCEL_REQUEUE_POLL_ATTEMPTS = 40
 _UNREADABLE_ARTIFACT_TABLE_KEY = "\x00artifact-key-unreadable"
 _STORED_VALVE_UNREADABLE_MEMO_MAX = 32
 
+_RETENTION_CACHE_PURGE_BATCH = 500
+
 REPLY_MEMORY_IDLE_SECONDS = 900.0
 REPLY_MEMORY_MAX_BYTES = 64 * 1024 * 1024
 
@@ -1918,10 +1920,7 @@ class ArtifactStore:
                     "Earlier tool results could not be loaded, so the model did not receive them.",
                     level="warning",
                 )
-        cache_hits = set(cache_hit_ids)
-        await self._touch_cached(
-            chat_id, message_id, [item_id for item_id in cached if item_id in cache_hits]
-        )
+        await self._touch_cached(chat_id, message_id, cache_hit_ids)
         return cached
 
     @timed
@@ -2333,6 +2332,8 @@ class ArtifactStore:
                         )
                 elif not failure:
                     self.logger.debug("✅ Successfully flushed %d artifacts to DB", len(rows))
+                if failure:
+                    raise RuntimeError(failure) from None
             except asyncio.CancelledError:
                 await self._return_popped_entries_on_cancel(entries_by_row, committed)
                 raise
@@ -2598,9 +2599,25 @@ class ArtifactStore:
         except Exception as exc:
             self.logger.warning("Redis read failed, falling back to DB: %s", exc, exc_info=True)
             return {}
+        cached, encrypted_rows = await asyncio.to_thread(
+            self._cached_rows_from_values, id_lookup, values, message_id
+        )
+        decrypted: dict[str, dict[str, Any]] = {}
+        if encrypted_rows:
+            decrypted = await asyncio.to_thread(self._decrypt_many, encrypted_rows)
+        for item_id, payload in decrypted.items():
+            if isinstance(payload, dict):
+                cached[item_id] = payload
+        return cached
+
+    def _cached_rows_from_values(
+        self,
+        id_lookup: list[str],
+        values: Any,
+        message_id: str | None,
+    ) -> tuple[dict[str, dict[str, Any]], list[tuple[str, Any]]]:
         cached: dict[str, dict[str, Any]] = {}
         encrypted_rows: list[tuple[str, Any]] = []
-        decrypted: dict[str, dict[str, Any]] = {}
         for item_id, raw in zip(id_lookup, values):
             if not raw:
                 continue
@@ -2628,12 +2645,7 @@ class ArtifactStore:
                 payload = None
             if isinstance(payload, dict):
                 cached[item_id] = payload
-        if encrypted_rows:
-            decrypted = await asyncio.to_thread(self._decrypt_many, encrypted_rows)
-        for item_id, payload in decrypted.items():
-            if isinstance(payload, dict):
-                cached[item_id] = payload
-        return cached
+        return cached, encrypted_rows
 
     def _decrypt_many(
         self,
@@ -2668,11 +2680,55 @@ class ArtifactStore:
             return
         cutoff_days = self.valves.ARTIFACT_CLEANUP_DAYS
         cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=cutoff_days)
+        await self._purge_expired_cache_entries(cutoff)
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             self._db_executor,
             functools.partial(self._cleanup_sync, cutoff),
         )
+
+    def _expired_cache_key_batch(
+        self, cutoff: datetime.datetime, after_id: str | None, limit: int
+    ) -> list[tuple[str, str]]:
+        if not (self._session_factory and self._item_model):
+            return []
+        model = self._item_model
+        with _db_session(self._session_factory) as session:
+            query = session.query(model.id, model.chat_id).filter(model.created_at < cutoff)
+            if after_id is not None:
+                query = query.filter(model.id > after_id)
+            return [(row[1], row[0]) for row in query.order_by(model.id).limit(limit)]
+
+    async def _purge_expired_cache_entries(self, cutoff: datetime.datetime) -> int:
+        if not (self._redis_enabled and self._redis_client):
+            return 0
+        loop = asyncio.get_running_loop()
+        after_id: str | None = None
+        purged = 0
+        while True:
+            batch = await loop.run_in_executor(
+                self._db_executor,
+                functools.partial(
+                    self._expired_cache_key_batch,
+                    cutoff,
+                    after_id,
+                    _RETENTION_CACHE_PURGE_BATCH,
+                ),
+            )
+            if not batch:
+                return purged
+            keys = [key for key in (self._redis_cache_key(chat_id, row_id) for chat_id, row_id in batch) if key]
+            if keys:
+                try:
+                    await _await_if_needed(self._redis_client.delete(*keys))
+                except Exception as exc:
+                    self.logger.warning(
+                        "Redis cache invalidation of expired artifacts failed (best-effort): %s",
+                        exc, exc_info=True,
+                    )
+                    return purged
+            purged += len(batch)
+            after_id = batch[-1][1]
 
     def _expired_row_id_bounds(
         self, session: Session, model: Any, cutoff: datetime.datetime

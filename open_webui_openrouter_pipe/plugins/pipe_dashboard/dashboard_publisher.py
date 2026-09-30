@@ -69,19 +69,24 @@ def clear_snapshot_getter(instance: Any, name: str) -> None:
         _pd_snapshot_getter = None
 
 
-def _snapshot_safe() -> tuple[list[dict[str, Any]], dict[str, float]]:
+def _snapshot_safe() -> tuple[list[dict[str, Any]], dict[str, float], int]:
     getter = _pd_snapshot_getter
     if getter is None:
-        return [], {}
+        return [], {}, 0
     try:
-        rows, tc = getter()
-        return (rows if isinstance(rows, list) else []), (tc if isinstance(tc, dict) else {})
+        rows, tc, active = getter()
+        return (
+            (rows if isinstance(rows, list) else []),
+            (tc if isinstance(tc, dict) else {}),
+            int(active or 0),
+        )
     except Exception:
         logger.debug("live snapshot failed", exc_info=True)
-        return [], {}
+        return [], {}, 0
 
 
 def _fold_task_costs(rows: list[dict[str, Any]], task_costs: dict[str, float]) -> list[dict[str, Any]]:
+    rows = [dict(r) for r in rows if isinstance(r, dict)]
     if task_costs:
         by_chat: dict[str, dict[str, Any]] = {}
         for r in rows:
@@ -152,7 +157,7 @@ def _collect_worker_payload(pipe: Any) -> dict[str, Any]:
     rl = collect_rate_limits(pipe)
     s = collect_sessions(pipe)
     v = collect_video_pool(pipe)
-    rows, costs = _snapshot_safe()
+    rows, costs, active_total = _snapshot_safe()
     task_costs: dict[str, float] = {}
     for cid, cost in costs.items():
         key = _slice_chat_key(cid) if is_temporary_chat(cid) else cid
@@ -192,6 +197,7 @@ def _collect_worker_payload(pipe: Any) -> dict[str, Any]:
         },
         "v": {"a": v["active"], "m": v["max"]},
         "s": s["in_flight"],
+        "sa": active_total,
         "h": _worker_health(pipe),
         "sl": [
             {**row, "chat_id": _slice_chat_key(row["chat_id"])}
@@ -242,6 +248,9 @@ _PD_VIDEO_MAP = {
 def expand_worker_payload(compact: dict[str, Any]) -> dict[str, Any]:
     """Expand a compact Redis payload into the full dashboard field names."""
     health = compact.get("h")
+    sessions: dict[str, Any] = {"in_flight": compact.get("s", 0)}
+    if "sa" in compact:
+        sessions["live_active"] = compact["sa"]
     return {
         "pid": compact.get("pid", 0),
         "uptime_s": compact.get("up", 0),
@@ -250,7 +259,7 @@ def expand_worker_payload(compact: dict[str, Any]) -> dict[str, Any]:
         "queues": {_PD_QUEUE_MAP[k]: v for k, v in compact.get("q", {}).items() if k in _PD_QUEUE_MAP},
         "videos": {_PD_VIDEO_MAP[k]: v for k, v in compact.get("v", {}).items() if k in _PD_VIDEO_MAP},
         "rate_limits": {_PD_RATE_LIMIT_MAP[k]: v for k, v in compact.get("rl", {}).items() if k in _PD_RATE_LIMIT_MAP},
-        "sessions": {"in_flight": compact.get("s", 0)},
+        "sessions": sessions,
         "sessions_live": compact.get("sl") if isinstance(compact.get("sl"), list) else [],
         "task_costs": compact.get("tc") if isinstance(compact.get("tc"), dict) else {},
         "worker_health": health if isinstance(health, dict) else {},
@@ -311,6 +320,13 @@ def aggregate_worker_payloads(payloads: list[dict[str, Any]]) -> dict[str, Any]:
     agg_sessions = {
         "in_flight": sum(p.get("sessions", {}).get("in_flight", 0) for p in payloads),
     }
+    live_actives = [
+        p.get("sessions", {}).get("live_active")
+        for p in payloads
+        if isinstance(p.get("sessions"), dict) and "live_active" in p["sessions"]
+    ]
+    if live_actives:
+        agg_sessions["live_active"] = sum(int(v or 0) for v in live_actives)
 
     sessions_live: list[dict[str, Any]] = []
     for p in payloads:
@@ -498,6 +514,7 @@ async def _build_emit_payload(
         payload.update(_collect_fast_safe(pipe))
         _snap = _snapshot_safe()
         payload["sessions_live"] = _fold_task_costs(_snap[0], _snap[1])
+        payload["sessions"] = {"in_flight": collect_sessions(pipe)["in_flight"], "live_active": _snap[2]}
         payload["workers_rss"] = _worker_health(pipe).get("rss", 0)
         payload["workers"] = [{
             "pid": pid,
@@ -557,8 +574,15 @@ async def _build_emit_payload(
                     slow_state["cache"] = await asyncio.get_running_loop().run_in_executor(
                         executor, collect_slow_stats, pipe
                     )
-                else:
+                elif store is None:
                     slow_state["cache"] = collect_slow_stats(pipe)
+                else:
+                    with concurrent.futures.ThreadPoolExecutor(
+                        max_workers=1, thread_name_prefix="responses-slowstats"
+                    ) as pool:
+                        slow_state["cache"] = await asyncio.get_running_loop().run_in_executor(
+                            pool, collect_slow_stats, pipe
+                        )
                 slow_state["at"] = now
             except Exception:
                 logger.debug("Slow stats collect error", exc_info=True)

@@ -169,7 +169,6 @@ async def _refresh_image_catalog(
     abandoned: frozenset[str] = frozenset()
     if wants_filters:
         owed = OpenRouterModelRegistry.image_contract_owed()
-        OpenRouterModelRegistry.record_image_contract_attempt()
         endpoint_records, abandoned = await _fetch_endpoint_records(
             client, models, logger, only=owed or None
         )
@@ -181,6 +180,7 @@ async def _refresh_image_catalog(
                 if isinstance(model, dict) and str(model.get("id") or "").strip()
             },
         )
+        OpenRouterModelRegistry.record_image_contract_attempt()
         if abandoned:
             OpenRouterModelRegistry.clear_image_contract_attempt()
             OpenRouterModelRegistry.mark_image_contract_retry(cache_seconds)
