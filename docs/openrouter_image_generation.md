@@ -197,8 +197,8 @@ until an admin explicitly grants access via Admin → Models →
 image variants) follow the standard chat-catalog access policy.
 
 **Auto-default re-assert.** All applicable image filters are
-re-defaulted to enabled on every catalog metadata sync (typically
-every pipe `pipes()` call). If you manually disable an image filter
+re-defaulted to enabled on every catalog metadata sync, which runs on a
+catalog or settings change rather than on every model-list build. If you manually disable an image filter
 for a chat, the next sync will re-default it. Set
 `AUTO_DEFAULT_IMAGE_FILTERS=False` to opt out of the re-assert.
 
@@ -1682,13 +1682,18 @@ pipes()
           │  nothing consumes a contract and none is read.
           ├─ a sweep the 45s budget cut off leaves the contract clock
           │  unsatisfied and records the models it abandoned, so the next
-          │  refresh inside the window re-reads only those — once per
-          │  successful repair, not on every build; a repair that is itself
-          │  cut off re-arms, because the models it abandoned have still
-          │  never been read, and a sweep that finishes its work clears
-          │  what was owed. An endpoint that stays slow therefore costs a
-          │  sweep of the models still missing, not of the whole catalogue.
-          │  An empty settings panel means "not read yet", not "no options"
+          │  refresh inside the window re-reads only those. A repair that
+          │  is itself cut off is the second consecutive cut-off, and it
+          │  is NOT paid for on the next build: the debt is state, not a
+          │  deadline, so the latch is spent, the clock stays stamped, and
+          │  the rest of the window is quiet. Those models are paid at the
+          │  next TTL, where the sweep runs anyway. A sweep that finishes
+          │  its work clears what was owed. An endpoint that stays slow
+          │  therefore costs one repair, not one sweep per model-list
+          │  build for the rest of the hour; what the person sees instead
+          │  is that the models the second sweep gave up on have an empty
+          │  settings panel until the next TTL. An empty settings panel
+          │  means "not read yet", not "no options"
           └─ register_image_models()
                 ├─ skip multimodal (text in output_modalities)
                 ├─ a sweep that completes with 0 models calls this with

@@ -3803,18 +3803,30 @@ async def test_chat_refresh_chat_wins_on_norm_id_collision_with_video():
 
 
 def test_catalog_manager_uses_direct_attr_for_last_fetch(pipe_instance):
-    """catalog_manager.maybe_schedule_model_metadata_sync reads _last_fetch via
-    direct attr access (not getattr-with-default), so any future rename fails loudly."""
+    """catalog_manager.maybe_schedule_model_metadata_sync reads the registry's catalogue
+    state via direct attr access (not getattr-with-default), so a future rename fails loudly.
+
+    The attribute named is `content_stamp`, which replaced `_last_fetch` as the sync key's
+    one registry term: a fetch clock answers "was the catalogue read", which a pass cannot
+    act on, so keying on it re-ran the whole pass every hour for a catalogue nobody
+    changed. The property this test guards is the same one it always guarded -- the term
+    is read directly, so renaming it fails here rather than silently reading a default.
+    """
     import inspect
     from open_webui_openrouter_pipe.models import catalog_manager
 
     source = inspect.getsource(catalog_manager.ModelCatalogManager.maybe_schedule_model_metadata_sync)
-    assert 'getattr(OpenRouterModelRegistry, "_last_fetch"' not in source, (
-        "catalog_manager must NOT use getattr-with-default for _last_fetch; "
-        "use direct attribute access so renames fail loudly."
+    assert 'getattr(OpenRouterModelRegistry, "content_stamp"' not in source, (
+        "catalog_manager must NOT use getattr-with-default for the registry's catalogue "
+        "state; use direct attribute access so renames fail loudly."
     )
-    assert "OpenRouterModelRegistry._last_fetch" in source, (
-        "catalog_manager must read _last_fetch via direct attribute access."
+    assert "OpenRouterModelRegistry.content_stamp()" in source, (
+        "catalog_manager must read the registry's catalogue state via direct attribute "
+        "access, and that state is the content stamp rather than a fetch timestamp."
+    )
+    assert "OpenRouterModelRegistry._last_fetch" not in source, (
+        "catalog_manager keys the sync on a fetch timestamp again, so an hourly read of a "
+        "catalogue nobody changed schedules a full metadata sync over every model"
     )
 
 

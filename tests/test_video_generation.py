@@ -3207,12 +3207,17 @@ async def test_passthrough_validation_uses_async_safe_url(monkeypatch):
 async def test_cancellation_during_cleanup_still_releases_every_resource(monkeypatch):
     """A generation cancelled while finalising must not strand its locks or slots.
 
-    The cleanup tail awaits `_video_active_tasks_dict_lock`, which every video request
+    The cleanup tail awaits `_video_user_locks_dict_lock`, which every video request
     touches, so suspending there is routine rather than exotic. Cancellation delivered
-    at that point used to abandon the two releases below it: the per-user slot stayed
-    spent (that user locked out until restart) and the per-message lock stayed held,
-    which deadlocks every later request for the same message because
-    `_acquire_message_lock` has no timeout.
+    at that point used to abandon the releases below it: the per-user slot stayed spent,
+    locking that user out until restart, and the global permit was lost with it.
+
+    The per-message lock is no longer asserted here because the lifecycle no longer
+    releases it: the dedupe handles now belong to the request, which drops them after
+    its emit so a second request on the key waits for the answer instead of billing a
+    second job. `test_a_cancel_while_the_dedupe_release_is_blocked_still_releases_the_
+    handles` is the test that covers them under cancellation, including the case where
+    the release is itself blocked on the registry lock.
     """
     pipe = Pipe()
     pipe.valves.API_KEY = EncryptedStr("test")
@@ -3262,31 +3267,27 @@ async def test_cancellation_during_cleanup_still_releases_every_resource(monkeyp
         for _ in range(50):
             await asyncio.sleep(0)
 
-        await pipe._video_active_tasks_dict_lock.acquire()
+        await pipe._video_user_locks_dict_lock.acquire()
         task.cancel()
         for _ in range(50):
             await asyncio.sleep(0)
-            if pipe._video_active_tasks_dict_lock._waiters:
+            if pipe._video_user_locks_dict_lock._waiters:
                 break
-        assert pipe._video_active_tasks_dict_lock._waiters, (
+        assert pipe._video_user_locks_dict_lock._waiters, (
             "cleanup never reached the dict-lock await; the test is not exercising "
             "the cancellation point it exists for"
         )
         task.cancel()
         for _ in range(50):
             await asyncio.sleep(0)
-        pipe._video_active_tasks_dict_lock.release()
+        pipe._video_user_locks_dict_lock.release()
         with contextlib.suppress(asyncio.CancelledError):
             await task
         for _ in range(200):
             await asyncio.sleep(0)
-            if not message_lock.locked():
+            if pipe._video_user_active_counts.get(user_id, 0) == 0:
                 break
 
-        assert not message_lock.locked(), (
-            "per-message lock stranded: the next video request for this message "
-            "would hang forever"
-        )
         assert pipe._video_user_active_counts.get(user_id, 0) == 0, (
             "per-user slot stranded: this user is locked out of video generation"
         )
@@ -3383,34 +3384,61 @@ async def test_a_failing_cleanup_step_does_not_skip_the_others():
 
 @pytest.mark.asyncio
 async def test_lifecycle_cleanup_step_failure_does_not_skip_the_others():
-    """Same guarantee as the pre-submit twin, on the long-lived generation path.
+    """Same guarantee as the pre-submit twin, on the request-handle release.
 
-    _finalize_generation has three steps rather than two, and only the twin was
-    covered -- so its isolation could be removed with the whole suite green.
+    `_release_request_handles` drops the active-task entry and then releases the
+    message lock, and only the twin was covered -- so its isolation could be
+    removed with the whole suite green. The active-task drop is stubbed to fail
+    here, so the assertion is about the step BELOW it: a lock left held is
+    stranded for the lifetime of the process, and every later request for that
+    `(chat_id, message_id)` waits on it.
     """
     pipe = Pipe()
     pipe.valves.API_KEY = EncryptedStr("test")
     try:
         adapter = VideoGenerationAdapter(pipe=pipe, logger=_test_logger())
         key = ("chat-l", "msg-l")
-        user_id = "user-l"
 
         message_lock = await adapter._acquire_message_lock(key)
         assert message_lock.locked()
 
-        async def _boom(*_args, **_kwargs):
-            raise RuntimeError("user-slot release exploded")
+        real_dict_lock = pipe._video_active_tasks_dict_lock
 
-        adapter._release_user_slot = _boom
+        class _StuckLock:
+            async def __aenter__(self: Any) -> None:
+                await real_dict_lock.__aenter__()
+                raise RuntimeError("active-task drop exploded")
 
-        await adapter._finalize_generation(key, user_id, "job-l", message_lock)
+            async def __aexit__(self: Any, *exc: Any) -> Any:
+                return await real_dict_lock.__aexit__(*exc)
+
+        setattr(pipe, "_video_active_tasks_dict_lock", _StuckLock())
+        try:
+            await adapter._release_request_handles(key, message_lock, None)
+        finally:
+            setattr(pipe, "_video_active_tasks_dict_lock", real_dict_lock)
 
         assert not message_lock.locked(), (
-            "a failure in the user-slot release skipped the message-lock release, "
+            "a failure in the active-task drop skipped the message-lock release, "
             "stranding it for the lifetime of the process"
         )
     finally:
         await pipe.close()
+
+
+class _Row:
+    """Open WebUI's row for one assistant message."""
+
+    def __init__(self) -> None:
+        self.content = ""
+
+    async def load(self, *, chat_id: str, message_id: str) -> str:
+        if chat_id.startswith(("temporary:", "local:", "channel:")):
+            return ""
+        return self.content
+
+    def append(self, delta: str) -> None:
+        self.content += delta
 
 
 @pytest.mark.asyncio
@@ -5093,7 +5121,7 @@ async def test_a_clip_that_cannot_be_downloaded_is_declared_to_the_user(
             f"the download loop is bounded by a 16-clip cap, so exactly those were "
             f"attempted: {attempted}"
         )
-        assert "None of the 16 clips this job delivered could not be fetched" in result, result
+        assert "None of the 16 clips this job delivered could be fetched" in result, result
         assert "### Video generation failed" in result, result
         assert result.count("<video>") == 0, (
             f"a total loss must not fabricate a video block: {result!r}"
@@ -5104,7 +5132,7 @@ async def test_a_clip_that_cannot_be_downloaded_is_declared_to_the_user(
         assert attempted == [0, 1, 2], (
             f"every clip was billed for and every one was attempted anyway: {attempted}"
         )
-        assert "None of the 3 clips this job delivered could not be fetched" in result, result
+        assert "None of the 3 clips this job delivered could be fetched" in result, result
         assert "### Video generation failed" in result, result
         assert result.count("<video>") == 0, (
             f"a total loss must not fabricate a video block: {result!r}"

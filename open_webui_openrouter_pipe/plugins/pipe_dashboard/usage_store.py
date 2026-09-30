@@ -22,10 +22,13 @@ from collections.abc import Callable
 from typing import Any
 
 from ...core.utils import _stable_crockford_id
+from ...core.warn_latch import warn_level
 from ...storage.owui_files import is_temporary_chat, temporary_chat_prefixes
 from ...storage.persistence import ArtifactStore, _db_session, generate_item_id
 
 logger = logging.getLogger(__name__)
+
+_warned_usage_table_create: dict[str, float] = {}
 
 _US_BATCH_MAX = 50
 _US_QUEUE_MAX = 1000
@@ -259,6 +262,14 @@ class UsageStore:
                 return True
         return False
 
+    def _clear_reconcile_backoff(self) -> None:
+        self._reconcile_failed = None
+        self._reconcile_failed_at = 0.0
+
+    def _arm_reconcile_backoff(self, signature: tuple[Any, ...]) -> None:
+        self._reconcile_failed = signature
+        self._reconcile_failed_at = time.monotonic()
+
     def ensure(self, store: Any) -> bool:
         """Build the usage model and create its table; idempotent, fail-safe."""
         try:
@@ -277,8 +288,7 @@ class UsageStore:
                 ):
                     return False
             else:
-                self._reconcile_failed = None
-                self._reconcile_failed_at = 0.0
+                self._clear_reconcile_backoff()
 
             from sqlalchemy import Column, String
             from sqlalchemy.orm import declarative_base
@@ -301,14 +311,26 @@ class UsageStore:
             self._declared_lengths = _declared_lengths()
             self._effective_widths = dict(self._declared_lengths)
             if not store._create_table_with_race_guard(model.__table__, engine, table_name):
+                self._model = None
+                self._table_name = None
+                self._signature = signature
+                self._arm_reconcile_backoff(signature)
+                _level = warn_level(
+                    _warned_usage_table_create, table_name, cooldown_s=_US_RECONCILE_RETRY_S
+                )
+                logger.log(
+                    _level,
+                    "usage table %s could not be created; usage rows are not being "
+                    "written until the retry interval elapses",
+                    table_name,
+                )
                 return False
             if not self._reconcile_schema(model.__table__, engine, table_name, schema_name, store):
                 self._store = None
                 self._model = None
                 self._table_name = None
                 self._signature = signature
-                self._reconcile_failed = signature
-                self._reconcile_failed_at = time.monotonic()
+                self._arm_reconcile_backoff(signature)
                 return False
             self._store = store
             self._model = model
@@ -475,6 +497,7 @@ class UsageStore:
         held, self._held = self._held, []
         if not held:
             return
+        self._clear_reconcile_backoff()
         if self._write_now(held):
             return
         self._dropped += len(held)

@@ -1504,8 +1504,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "(with its own batching, failure limits, and special tool handling). 'Open-WebUI' hands a streamed reply's "
             "tool calls back rather than running them here, so Open WebUI executes them and renders the native tool UI, "
             "until the reply's hand-back budget of `MAX_FUNCTION_CALL_LOOPS` turns is spent; after that the pipe runs the "
-            "remaining round itself with the tools it advertised, save for Open WebUI's own builtins and browser-run "
-            "tools, which stay Open WebUI's. "
+            "remaining round itself with the tools it advertised. A round of browser-run tools and Open WebUI's own "
+            "builtins is handed back whatever that budget says, because Open WebUI is what runs those, and its own "
+            "iteration bound ends such a reply. "
             "the pipe runs a non-streamed reply's calls and a Fusion panel model's calls in either mode. A tool the "
             "request itself declared with nothing behind it goes back to its sender instead. With 'ask' tool approval, "
             "a streamed saved chat hands every call to Open WebUI in both modes. With legacy function calling, no "
@@ -1599,7 +1600,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "The model always gets at least one generation turn, so 0 and below are stored as 1. "
             "A reply Open WebUI re-asks carries a hand-back budget of this many turns, and once it is spent the pipe "
             "runs the remaining round itself with the tools it advertised. "
-            "Has no effect on the calls Open WebUI runs, where the round limit is managed by Open WebUI."
+            "Has no effect on the calls Open WebUI runs, where the round limit is managed by Open WebUI: a round of "
+            "browser-run tools and Open WebUI's own builtins is handed back whatever this budget says, and Open WebUI's "
+            "own iteration bound is what ends that reply."
         )
     )
 
@@ -1720,8 +1723,9 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         ge=1,
         description=(
             "How often (in seconds) to check the database for log pieces waiting to be packed and build one zip per message. "
-            "The same number is the wall-clock budget one pass gets: it takes no new turn once this much time has elapsed since the pass began, "
-            "and leaves the rest of its window to the next pass. Read on every pass, so a change applies with no restart."
+            "The same number is the wall-clock budget one pass gets, counted from when the pass starts assembling: it takes no new turn once this much time has elapsed, "
+            "and leaves the rest of its window to the next pass. The pass spends its stale-lock sweep and its two candidate listings before that window opens, "
+            "so on a slow host a pass can run longer than this number. Read on every pass, so a change applies with no restart."
         ),
     )
     SESSION_LOG_ASSEMBLER_JITTER_SECONDS: int = Field(
@@ -2068,7 +2072,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         default=600,
         ge=1,
         description=(
-            "Maximum seconds a batch of calls to one tool may take once a worker has picked it up, and never less than TOOL_TIMEOUT_SECONDS. When the limit is reached, finished calls keep their results and calls still running or waiting are cancelled. It is also the ceiling on the time one response may take putting its calls on the queue: a round whose calls outnumber the free workers stops waiting and reports the calls it never started."
+            "Maximum seconds a batch of calls to one tool may take once a worker has picked it up, and never less than TOOL_TIMEOUT_SECONDS. When the limit is reached, finished calls keep their results and calls still running or waiting are cancelled; the round ends as soon as the cancelled calls have had five seconds to acknowledge, and one that does not is dropped from the round, keeps running, and its result never reaches the model. It is also the ceiling on the time one response may take putting its calls on the queue: a round whose calls outnumber the free workers stops waiting and reports the calls it never started."
         ),
     )
     TOOL_IDLE_TIMEOUT_SECONDS: int | None = Field(
@@ -2377,7 +2381,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         default=True,
         description=(
             "Keep the attached image filters enabled by default on "
-            "image-output models. Reapplied at every catalog refresh; turning it off "
+            "image-output models. Reapplied on every catalogue or settings change; turning it off "
             "clears the default the pipe seeded, leaving the filter attached. A pass that "
             "cannot find the panel it was told to attach leaves the existing one in place "
             "and tries again at the next catalog fetch."
@@ -2390,7 +2394,8 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "Automatically install/update the OpenRouter Video Generation companion filter "
             "function in Open WebUI. A model whose catalogue entry publishes no video "
             "contract is left as it is: any filter it already has is kept, and none is "
-            "installed for it. With this valve off the pipe logs an installed row whose "
+            "installed for it, and the same holds for a model whose install this pass could "
+            "not write. With this valve off the pipe logs an installed row whose "
             "stored source is out of date but will not rewrite it, so fixes to that filter "
             "stay undelivered until this is on."
             + _PIPE_OFF_COMES_BACK
@@ -2399,11 +2404,11 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     )
     AUTO_ATTACH_VIDEO_FILTERS: bool = Field(
         default=True,
-        description="Automatically attach the OpenRouter Video Generation filter to OpenRouter video-generation models. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone.",
+        description="Automatically attach the OpenRouter Video Generation filter to OpenRouter video-generation models. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. A pass that cannot find the panel it was told to attach leaves the existing one in place and tries again at the next catalog fetch.",
     )
     AUTO_DEFAULT_VIDEO_FILTERS: bool = Field(
         default=True,
-        description="Keep the per-model video filter enabled by default on its video model. Reapplied at every catalog refresh; turning it off clears the default the pipe seeded, leaving the filter attached. Models that require a per-model parameter (e.g. Veo's personGeneration) cannot be driven without it; parameter-free models still generate.",
+        description="Keep the per-model video filter enabled by default on its video model. Reapplied on every catalogue or settings change; turning it off clears the default the pipe seeded, leaving the filter attached. A pass that cannot find the panel it was told to attach leaves the existing one in place and tries again at the next catalog fetch. Models that require a per-model parameter (e.g. Veo's personGeneration) cannot be driven without it; parameter-free models still generate.",
     )
     ENABLE_OPENROUTER_FUSION: bool = Field(
         default=True,
@@ -2429,7 +2434,7 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
     )
     AUTO_DEFAULT_FUSION_FILTER: bool = Field(
         default=True,
-        description="Mark the OpenRouter Fusion filter as a Default Filter on the fusion models (pre-enabled per chat) — including their `:tag` variant and `@preset/…` rows. Does NOT force Fusion to run — the per-user 'Always run Fusion' toggle is off by default. Reapplied at every catalog refresh; turning it off clears the default the pipe seeded, leaving the filter attached. A pass that cannot find the filter it was told to attach leaves the existing one in place and tries again at the next catalog fetch.",
+        description="Mark the OpenRouter Fusion filter as a Default Filter on the fusion models (pre-enabled per chat) — including their `:tag` variant and `@preset/…` rows. Does NOT force Fusion to run — the per-user 'Always run Fusion' toggle is off by default. Reapplied on every catalogue or settings change; turning it off clears the default the pipe seeded, leaving the filter attached. A pass that cannot find the filter it was told to attach leaves the existing one in place and tries again at the next catalog fetch.",
     )
     FUSION_BACKEND: Literal["openrouter", "internal"] = Field(
         default="internal",
@@ -2637,13 +2642,13 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
         default=2,
         ge=1,
         le=100,
-        description="Maximum number of video generation jobs running per pipe process. Takes effect without a restart, at the next generation: a lower value binds from that moment and the jobs already running finish first.",
+        description="Maximum number of video generation jobs running per pipe process. A permit is taken before the turn does any media work, so frame extraction, frame encoding and the file-host relay all run inside the held window, not only submission and polling. Takes effect without a restart, at the next generation: a lower value binds from that moment and the jobs already running finish first.",
     )
     MAX_CONCURRENT_VIDEO_GENS_PER_USER: int = Field(
         default=2,
         ge=1,
         le=25,
-        description="Maximum number of video generation jobs running per user per pipe process.",
+        description="Maximum number of video generation jobs running per user per pipe process. The check happens before any frame is extracted or reference relayed, so a turn over the cap costs no media work.",
     )
     VIDEO_FRAME_IMAGE_MAX_BYTES: int = Field(
         default=12 * 1024 * 1024,
@@ -2725,8 +2730,10 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "end-seek hop reads a frame at all and the file's first frame is "
             "substituted for the one asked for, which the disclosure footer says. "
             "'last' matches 'continue this scene' intent. On a model that accepts only a "
-            "first frame the pipe has no choice and uses the first one, whatever moment "
-            "was asked for, and says so in the disclosure footer."
+            "first frame, a moment the earlier video has is sent as asked and nothing is "
+            "substituted, so the disclosure footer stays silent; a request for the final "
+            "frame of the earlier video, or for a moment it does not have, is answered "
+            "with its opening frame, and the footer says so."
         ),
     )
     VIDEO_INTENT_TIMEOUT_S: int = Field(
@@ -2863,8 +2870,8 @@ description="Enable SSRF (Server-Side Request Forgery) protection for remote URL
             "nothing until preferences are actually configured, so defaulting it on is free. "
             "Disable to make users opt in per chat; on the next sync this also clears the default "
             "the pipe seeded, leaving the filters attached. A pass that could not read the filter "
-            "table leaves the filters it already found in place and tries again at the next "
-            "catalog fetch."
+            "table, or could not write a new routing filter, leaves the filters it already found "
+            "in place and tries again at the next catalog fetch."
         ),
     )
 
@@ -2945,7 +2952,9 @@ class UserValves(BaseModel):
             "Where to execute tools. 'Pipeline' executes tool calls inside this pipe. "
             "'Open-WebUI' hands a streamed reply's tool calls to Open WebUI to run instead, until the reply's hand-back "
             "budget of `MAX_FUNCTION_CALL_LOOPS` turns is spent; after that the pipe runs the remaining round itself "
-            "with the tools it advertised, save for Open WebUI's own builtins and browser-run tools."
+            "with the tools it advertised. A round of browser-run tools and Open WebUI's own builtins is handed back "
+            "whatever that budget says, because Open WebUI is what runs those, and its own iteration bound ends such a "
+            "reply."
         ),
     )
     SHOW_TOOL_CARDS: bool = Field(

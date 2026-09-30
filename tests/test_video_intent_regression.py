@@ -415,10 +415,6 @@ class TestConfirmMode:
         )])
         assert should_emit_confirmation_footer(intent, confirm_mode="always") is True
 
-    def test_always_returns_false_when_frame_plan_empty(self):
-        intent = _result(frame_plan=[])
-        assert should_emit_confirmation_footer(intent, confirm_mode="always") is False
-
     def test_on_reference_true_for_prior_video_source(self):
         intent = _result(frame_plan=[FramePlanEntry(
             source="prior_video_first_frame", source_index=0,

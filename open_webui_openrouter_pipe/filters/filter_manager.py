@@ -530,6 +530,7 @@ class FilterManager:
         return str(getattr(self._pipe, "id", "") or "")
 
     _unresolved_image_filter_ids: frozenset[str] = frozenset()
+    _unresolved_video_filter_ids: frozenset[str] = frozenset()
     _unresolved_fusion_filter_id: bool = False
     _installed_image_gen_model: str | None = None
 
@@ -552,6 +553,7 @@ class FilterManager:
         self._provider_routing_ids_known = True
         self.logger = logger
         self._unresolved_image_filter_ids = frozenset()
+        self._unresolved_video_filter_ids = frozenset()
         self._unresolved_fusion_filter_id = False
         self._installed_image_gen_model = None
 
@@ -563,6 +565,10 @@ class FilterManager:
     @property
     def unresolved_image_filter_ids(self) -> frozenset[str]:
         return self._unresolved_image_filter_ids
+
+    @property
+    def unresolved_video_filter_ids(self) -> frozenset[str]:
+        return self._unresolved_video_filter_ids
 
     @property
     def unresolved_fusion_filter_id(self) -> bool:
@@ -889,7 +895,12 @@ class FilterManager:
                 return None, False
 
             self._validate_before_write(desired_source, log_label)
-            desired_meta = {**desired_meta, _PIPE_INSTALLED_META_KEY: owner}
+            desired_meta = {
+                **desired_meta,
+                _PIPE_INSTALLED_META_KEY: owner,
+                _PIPE_OFF_META_KEY: True,
+                _PIPE_OFF_STAMP_META_KEY: int(time.time()),
+            }
 
             candidate_id = preferred_id
             suffix = 0
@@ -956,7 +967,7 @@ class FilterManager:
             if not await _write_function(
                 Functions,
                 candidate_id,
-                {"is_active": True, "is_global": False, "name": desired_name, "meta": _merged_meta(created, desired_meta)},
+                {"is_active": True, "is_global": False, "name": desired_name, "meta": _merged_meta(created, desired_meta, off_by_pipe=False)},
                 f"activating the newly installed {log_label}",
                 self.logger,
             ):
@@ -970,8 +981,8 @@ class FilterManager:
                 if not removed:
                     self.logger.warning(
                         "Open WebUI refused to remove the inert %s %r this pass created; it stays "
-                        "switched off and the pipe leaves it off, so switch it on in "
-                        "Workspace > Functions to get it back.",
+                        "switched off, and the pipe switches it back on at the next pass "
+                        "that can write.",
                         log_label, candidate_id,
                     )
                 return None, True
@@ -2002,6 +2013,7 @@ class FilterManager:
         )
 
         installed: dict[str, str] = {}
+        unresolved: set[str] = set()
         for model in models:
             model_id = model.get("id")
             if not isinstance(model_id, str) or not model_id.strip():
@@ -2020,7 +2032,7 @@ class FilterManager:
             canonical_id = original_id if isinstance(original_id, str) and original_id.strip() else model_id
             video_spec_id = _clean_str(video_model.get("id")) or _clean_str(canonical_id)
             try:
-                function_id = await self._ensure_single_video_gen_filter_function_id(
+                function_id, refused = await self._install_single_video_gen_filter(
                     model_id=canonical_id,
                     video_model=video_model,
                     rows=rows,
@@ -2032,12 +2044,21 @@ class FilterManager:
                 self.logger.warning(
                     "Video filter install failed for %r: %s", canonical_id, exc, exc_info=True
                 )
+                unresolved.add(model_id)
+                if isinstance(original_id, str) and original_id.strip() and original_id != model_id:
+                    unresolved.add(original_id)
                 continue
 
             if function_id:
                 installed[model_id] = function_id
                 if isinstance(original_id, str) and original_id.strip():
                     installed[original_id.strip()] = function_id
+            elif refused:
+                unresolved.add(model_id)
+                if isinstance(original_id, str) and original_id.strip() and original_id != model_id:
+                    unresolved.add(original_id)
+
+        self._unresolved_video_filter_ids = frozenset(unresolved)
         return installed
 
     async def _ensure_single_video_gen_filter_function_id(
@@ -2048,6 +2069,19 @@ class FilterManager:
         rows: _FilterRows | None = None,
         candidates: list[Any] | None = None,
     ) -> str | None:
+        function_id, _refused = await self._install_single_video_gen_filter(
+            model_id=model_id, video_model=video_model, rows=rows, candidates=candidates,
+        )
+        return function_id
+
+    async def _install_single_video_gen_filter(
+        self,
+        *,
+        model_id: str,
+        video_model: dict[str, Any] | None,
+        rows: _FilterRows | None = None,
+        candidates: list[Any] | None = None,
+    ) -> tuple[str | None, bool]:
         from .video_filter_renderer import build_video_filter_spec
 
         spec = build_video_filter_spec(model_id, video_model)
@@ -2056,7 +2090,7 @@ class FilterManager:
                 "Catalogue entry for %s publishes no video contract, so no OpenRouter Video "
                 "Generation filter is installed or refreshed for it", spec.model_id,
             )
-            return None
+            return None, False
 
         model_id_token = f"VIDEO_MODEL_ID = {spec.model_id!r}"
 
@@ -2094,8 +2128,7 @@ class FilterManager:
             rows=rows,
             candidates=candidates,
         )
-        return function_id
-
+        return function_id, _write_not_installed
 
 
     @staticmethod
@@ -3919,6 +3952,11 @@ class Filter:
                 if suffix <= 50:
                     if not _validate_or_skip(slug, desired_source):
                         continue
+                    desired_meta = {
+                        **desired_meta,
+                        _PIPE_OFF_META_KEY: True,
+                        _PIPE_OFF_STAMP_META_KEY: int(time.time()),
+                    }
                     meta_obj = FunctionMeta(**desired_meta)
                     form = FunctionForm(
                         id=candidate_id,
@@ -3933,7 +3971,7 @@ class Filter:
                         if await _write_function(
                             Functions,
                             candidate_id,
-                            {"is_active": True, "is_global": False, "meta": _merged_meta(created_func, desired_meta)},
+                            {"is_active": True, "is_global": False, "meta": _merged_meta(created_func, desired_meta, off_by_pipe=False)},
                             "activating the new provider routing filter",
                             self.logger,
                         ):
@@ -3947,11 +3985,19 @@ class Filter:
                             if not removed:
                                 self.logger.warning(
                                     "Open WebUI refused to remove the inert provider routing "
-                                    "filter %r; it stays switched off and the pipe leaves it "
-                                    "off, so switch it on in Workspace > Functions to get it "
-                                    "back.",
+                                    "filter %r; it stays switched off, and the pipe switches "
+                                    "it back on at the next pass that can write.",
                                     candidate_id,
                                 )
+                    else:
+                        writes_ok = False
+                        self._provider_routing_ids_known = False
+                        self.logger.warning(
+                            "Open WebUI refused to create the provider routing filter for %r; "
+                            "the models it covers keep the filter they already have, and the "
+                            "create is retried on the next catalog refresh.",
+                            slug,
+                        )
 
         disabled = 0
         for orphan in orphan_filters:

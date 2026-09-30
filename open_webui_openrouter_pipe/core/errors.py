@@ -508,7 +508,7 @@ def _resolved_error_status(
 
     if from_wire and _is_content_decision(metadata):
         return http_status
-    kind = error_type.strip() if isinstance(error_type, str) else ""
+    kind = error_type.strip().lower() if isinstance(error_type, str) else ""
     if from_wire and kind not in _IN_BAND_STATUS_BY_ERROR_TYPE:
         return http_status
     return _in_band_status(code, kind, default=http_status)

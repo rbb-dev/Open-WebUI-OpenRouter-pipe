@@ -162,8 +162,8 @@ required. This is intentional policy — video generation is heavyweight
 enough that operators usually want admin-curated access.
 
 **Auto-default re-assert.** The per-model filter is re-defaulted to
-enabled on every catalog metadata sync (typically every pipe `pipes()`
-call). If you manually disable a video filter for a chat, the next sync
+enabled on every catalog metadata sync, which runs on a catalog or settings
+change rather than on every model-list build. If you manually disable a video filter for a chat, the next sync
 will re-default it. Set `AUTO_DEFAULT_VIDEO_FILTERS=False` to opt out
 of the re-assert.
 
@@ -1177,7 +1177,7 @@ default applies; the second gets no control.
 | `VIDEO_ASPECT_RATIO` | `Literal["", …]` | `""` | top-level `aspect_ratio` | `supported_aspect_ratios` non-empty | 27 (all except FLUX Video Edit, FLUX Video Upscale) |
 | `VIDEO_RESOLUTION` | `Literal["", …]` | `""` | top-level `resolution` | `supported_resolutions` non-empty | 26 (all except FLUX Video Edit, FLUX Video Upscale, Aleph 2.0) |
 | `VIDEO_SIZE` | `Literal["", …]` | `""` | top-level `size` | `supported_sizes` non-empty | 19 of 29 |
-| `VIDEO_FRAME_MODE` | `Literal["auto", "none", "first_only"(, "first_last")]` | `"auto"` | controls which chat-attached images become `frame_images[]` keyframes and which are sent as references instead (the keyframes go first and the references after them, in the order you attached them, however many there are); under `"none"` nothing is sent as a reference either and the picture is left in the request | `supported_frame_images` non-empty | 24 of 29 |
+| `VIDEO_FRAME_MODE` | `Literal["auto", "none", "first_only"(, "first_last")]` | `"auto"` | controls which chat-attached images become `frame_images[]` keyframes and which are sent as references instead (the keyframes go first and the references after them, in the order you attached them, however many there are); under `"none"` no picture is sent as a reference either and every picture is left in the request; a clip or a sound file attached alongside is not a picture and is still sent as a reference | `supported_frame_images` non-empty | 24 of 29 |
 | `VIDEO_NEGATIVE_PROMPT` | `str` | `""` | passthrough `negative_prompt` (or `negativePrompt` on Veo) | `"negative_prompt"` or `"negativePrompt"` in `allowed_passthrough_parameters` | 8 of 29 |
 | `VIDEO_GENERATE_AUDIO` | `Literal["model_default", "on", "off"]` | `"model_default"` | top-level `generate_audio` (boolean) | `generate_audio` present and not published as `false` | 22 of 29 |
 | `VIDEO_SEED` | `int` (`ge=0`) | `0` | top-level `seed` | `seed` present and not published as `false` | 19 of 29 |
@@ -1405,8 +1405,8 @@ anchored on them: one that breaks a limit fails the whole request. The
 same three limits are applied again to anything sent only as a reference
 (below), and there a file that breaks one is left out with a warning
 notice in the chat naming it and the reason, while the video still
-renders. References count against their own combined budget, separate
-from the frames'. A **picture** is held to the per-picture byte cap,
+renders. Frames and reference pictures share the one combined budget,
+the frames first. A **picture** is held to the per-picture byte cap,
 whichever way it takes: one over `VIDEO_FRAME_IMAGE_MAX_BYTES` is left out
 of the request with a notice naming it, and the video still renders. What
 is never measured about a reference picture is its **pixel** dimensions,
@@ -1446,10 +1446,13 @@ only attachment was a clip was downgraded to `text_to_video` and paid for
 a render that carried the clip along unreferenced. A clip-only turn now
 keeps the intent the user's own attachment implies.
 
-Frames set to `none` is the one case that sends nothing: you asked for
-no picture, so the images are not sent and are not referenced. They are
+Frames set to `none` is the one case that sends no picture: you asked for
+none, so no image is sent as a frame or as a reference. Every picture is
 left in the request, so they stay in the conversation and are still there
-if you change the knob and send again.
+if you change the knob and send again. A clip or a sound file attached
+alongside is not a picture and is not covered by that: it is still sent as
+a reference, and, like any reference the request cannot carry, it is left
+out with a note in the chat.
 
 A left-over image goes as an image reference. Clips and sound files go
 as video and audio references, on the models that declare they read
@@ -1478,7 +1481,11 @@ A turn with attachments and **no typed words** is refused rather than
 submitted: the intent classifier is off for a textless turn, so nothing would
 stand in for the words, and the reply names what is missing — *Video generation
 needs a prompt in your message. Add words describing the video you want — an
-attachment alone is not enough.*
+attachment alone is not enough.* That card also keeps the **Not sent with this
+video** list, exactly as the submitted and failed paths do: the encoder has
+already decided which attachments will not travel by the time the turn is
+refused, and the message Open WebUI stores for it is the only place that
+decision survives a reload.
 
 Whether an attachment also stays visible in the chat as a normal
 attachment depends on Open WebUI's **File context** capability for that
@@ -2009,7 +2016,10 @@ What does NOT survive:
   restarts. What is lost is the chat's own message history, and nothing
   else: a generated image or video in a `channel:` conversation **is**
   attached to that channel, as a `channel_file` row, so the channel's
-  members can open it.
+  members can open it. The second consequence is that on those three
+  shapes the in-process handles — the active-task entry and the message
+  lock — are the *only* duplicate-bill protection there is, which is why
+  they are held until the owner's answer has been emitted.
 - **OpenRouter job expiry**: OpenRouter videos expire after a
   provider-specific window (typically days). Resuming a too-old job
   returns an `expired` terminal status which the adapter renders as a
@@ -2037,17 +2047,27 @@ Two valves cap simultaneous generations:
   at once; a lower one binds from the moment it is saved, counting the
   jobs already running — those finish first, and no new job starts
   until the pool is back under the new number. When exhausted, new
-  requests wait silently in the semaphore queue.
+  requests wait silently in the semaphore queue. The permit is taken
+  before the turn does any media work, so the ffmpeg frame-extraction
+  ladder, the frame encoding and the file-host relay all run inside the
+  held window as well as submission and polling.
 - **`MAX_CONCURRENT_VIDEO_GENS_PER_USER`** (default 2): per-user cap.
-  Implemented as a counter + per-user lock. Exceeding the cap returns
-  an immediate visible error in chat — the user must wait for one of
-  their existing jobs to complete.
+  Implemented as a counter + per-user lock. The check runs before any
+  frame is extracted or any reference relayed, so a turn over the cap
+  costs no media work. Exceeding the cap returns an immediate visible
+  error in chat — the user must wait for one of their existing jobs to
+  complete.
 
 If two requests target the same `(chat_id, message_id)` (e.g. a user
 hits send twice on the same message slot), the active-task registry
 deduplicates: one is the **owner** (does the work), the other is a
 **waiter** (awaits the owner's bg task and emits the result on its own
-chat connection). This holds even across browser tabs.
+chat connection). This holds even across browser tabs. The claim is held
+until the owner's answer has been **emitted**, not merely computed: the
+active-task entry and the message lock are both released from the owner's
+own `finally`, after its `chat:completion`, so a second request arriving
+in the window between "the job is done" and "the answer is out" waits and
+is served the same result rather than starting a second job.
 
 A request that arrives with no usable `chat_id`/`message_id` metadata —
 the plain API route — is keyed on `(f"api:{request_id}", "")` instead,
@@ -2072,9 +2092,9 @@ Functions → OpenRouter pipe → Valves; the per-model filter ones live on each
 | Valve | Default | Range | Purpose |
 |-------|---------|-------|---------|
 | `ENABLE_VIDEO_GENERATION` | `True` | bool | Master kill switch. False removes all video models from `pipes()` output and deactivates all installed per-model video filter rows at the next model-list refresh; the rows are identified by their source, so a hand-made copy of one of these filters' source is switched off too. Turning it back on re-activates the ones the pipe itself switched off, whether or not `AUTO_INSTALL_VIDEO_FILTERS` is on. |
-| `AUTO_INSTALL_VIDEO_FILTERS` | `True` | bool | Install per-model filter rows in OWUI Functions table on `pipes()`. A model whose catalogue entry publishes no video contract is left as it is: any filter it already has is kept, and none is installed for it. With this off, an installed row whose stored source is out of date is logged but never rewritten, so every fix to that filter stays undelivered until it is on. Turning this off retires the rows the pipe installed for it - switched off, not deleted, so their settings survive - and turning it back on brings them back; a copy an admin installed by hand carries no such record and is left alone. |
-| `AUTO_ATTACH_VIDEO_FILTERS` | `True` | bool | Attach each filter to its corresponding video model row. |
-| `AUTO_DEFAULT_VIDEO_FILTERS` | `True` | bool | Keep per-model filter enabled by default per chat (**re-asserted on every catalog metadata sync** — admins who manually disable a filter will see it re-defaulted on the next sync; set to `False` to opt out). |
+| `AUTO_INSTALL_VIDEO_FILTERS` | `True` | bool | Install per-model filter rows in OWUI Functions table on `pipes()`. A model whose catalogue entry publishes no video contract is left as it is: any filter it already has is kept, and none is installed for it, and the same holds for a model whose install this pass could not write. With this off, an installed row whose stored source is out of date is logged but never rewritten, so every fix to that filter stays undelivered until it is on. Turning this off retires the rows the pipe installed for it - switched off, not deleted, so their settings survive - and turning it back on brings them back; a copy an admin installed by hand carries no such record and is left alone. |
+| `AUTO_ATTACH_VIDEO_FILTERS` | `True` | bool | Attach each filter to its corresponding video model row. Turning this off detaches the filters the pipe attached; a filter id an admin attached by hand is left alone. A pass that cannot find the panel it was told to attach leaves the existing one in place and tries again at the next catalog fetch. |
+| `AUTO_DEFAULT_VIDEO_FILTERS` | `True` | bool | Keep per-model filter enabled by default per chat (**re-asserted on every catalog metadata sync** — admins who manually disable a filter will see it re-defaulted on the next sync; set to `False` to opt out). A pass that cannot find the panel it was told to attach leaves the existing one in place and tries again at the next catalog fetch. |
 | `VIDEO_INITIAL_POLL_DELAY_SECONDS` | `5.0` | 0.0–60.0 | Wait before the first poll on a freshly submitted job. |
 | `VIDEO_POLL_INTERVAL_SECONDS` | `5.0` | 1.0–60.0 | Base polling interval. |
 | `VIDEO_POLL_BACKOFF_FACTOR` | `1.2` | 1.0–4.0 | Multiplier applied to the interval after each non-terminal poll. |
@@ -2134,7 +2154,9 @@ The catalog manager couldn't ensure per-model filter installs. Causes:
 - `AUTO_INSTALL_VIDEO_FILTERS` is False — turn it on.
 - The pipe's API key is invalid — `pipes()` exited early before installing.
 - Open WebUI's `Functions` table is read-only or has a permission issue
-  for the pipe's user context.
+  for the pipe's user context. Each affected model keeps the panel it already
+  carries, and the pipe retries on the next catalog fetch; once the write lands
+  the panel is installed and attached as usual.
 
 ### Filter is in Filters list but not toggled on
 
@@ -2142,6 +2164,12 @@ The per-model filter row exists but isn't auto-attached to the model.
 Either `AUTO_ATTACH_VIDEO_FILTERS` is `False`, or the catalog metadata
 sync hasn't run since the last filter install. Toggle the auto-attach
 valve off → save → on → save to force a resync, or restart the pipe.
+If the toggle above is already on and the model is still not attached,
+the model is one whose catalogue entry publishes no video contract: it
+has no filter to attach, and `AUTO_ATTACH_VIDEO_FILTERS` does not
+detach a panel it left alone earlier either. Switching the valve off
+does release the panels the pipe attached — including a model in exactly
+that state — so an off/on cycle is the way to clear one.
 
 ### "Generated video is empty" / "Generated video temp file is missing"
 
@@ -2256,6 +2284,9 @@ pipe()
         │        the message content
         ├─ outer awaits bg task with asyncio.shield (survives client disconnect)
         ├─ outer emits status line + chat:completion (the SOLE emit)
+        ├─ outer finally releases the active-task entry + message lock
+        │  (AFTER the emit, so a second request in the emit window is served
+        │   the same job rather than starting one)
         └─ outer returns content string
               └─ functions.py wraps as SSE chunk, OWUI middleware accumulates,
                  stream finalizer upserts to message DB (one write).
@@ -2264,7 +2295,8 @@ pipe()
         ensure_openrouter_video_gen_filter_function_ids(available_models)
           ├─ one settings row per video model, built from its own contract
           ├─ a model with no published contract gets none
-          └─ each install in own try/except — partial failures isolated
+          └─ each install in own try/except — a model whose install could not be
+             written keeps the panel it already carries, and only for that model
 
   └─ if not ENABLE_VIDEO_GENERATION:
         (from _deactivate_switched_off_filters, before any install)
@@ -2278,7 +2310,10 @@ Key invariant: **exactly one `_emit_completion` per dedupe key** — the
 `(f"api:{request_id}", "")` pair for a request that carries neither.
 The bg task does the work and returns the result;
 the outer (or waiter for de-duped re-entries) is the sole emitter. This
-prevents the duplicate-content / leaked-marker bug class.
+prevents the duplicate-content / leaked-marker bug class. The dedupe
+handles are released immediately after that emit, so the interval the job
+is running is covered and the residual window is only Open WebUI's own
+write of the final row — the pipe has no write path for it.
 
 Second invariant, on the way in: **a clip or a sound file is only ever
 sent as a link**. OpenRouter takes those references as https URLs, so

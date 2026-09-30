@@ -371,12 +371,20 @@ def collect_slow_stats(pipe: Pipe) -> dict[str, Any]:
                 name_map = build_model_name_map()
 
                 with _db_session(sf) as session:
-                    total_count = 0
+                    total_count: int | None = None
+                    query_error: str | None = None
+
+                    def _record(exc: Exception) -> None:
+                        nonlocal query_error
+                        if query_error is None:
+                            query_error = type(exc).__name__
+
                     try:
-                        total_count = session.query(func.count(model.id)).scalar() or 0
-                        storage["total_items"] = format_number(total_count)
-                    except SQLAlchemyError:
-                        pass
+                        counted: int = session.query(func.count(model.id)).scalar() or 0
+                        total_count = counted
+                        storage["total_items"] = format_number(counted)
+                    except SQLAlchemyError as exc:
+                        _record(exc)
 
                     payload_col = getattr(model, "payload", None)
                     if payload_col is not None:
@@ -385,17 +393,19 @@ def collect_slow_stats(pipe: Pipe) -> dict[str, Any]:
                                 func.sum(func.length(cast(payload_col, String)))
                             ).scalar() or 0
                             storage["total_size"] = format_bytes(total_size)
-                        except SQLAlchemyError:
-                            pass
+                        except SQLAlchemyError as exc:
+                            _record(exc)
 
                     enc_col = getattr(model, "is_encrypted", None)
                     if enc_col is not None:
                         try:
                             enc_count = session.query(func.count()).filter(enc_col.is_(True)).scalar() or 0
-                            pct = enc_count / total_count * 100 if total_count > 0 else 0
-                            storage["encrypted_count"] = f"{format_number(enc_count)} ({pct:.0f}%)"
-                        except SQLAlchemyError:
-                            pass
+                            if total_count:
+                                storage["encrypted_count"] = f"{format_number(enc_count)} ({enc_count / total_count * 100:.0f}%)"
+                            else:
+                                storage["encrypted_count"] = format_number(enc_count)
+                        except SQLAlchemyError as exc:
+                            _record(exc)
 
                     type_col = getattr(model, "item_type", None)
                     created_col = getattr(model, "created_at", None)
@@ -423,8 +433,8 @@ def collect_slow_stats(pipe: Pipe) -> dict[str, Any]:
                                 }
                                 for r in type_rows
                             ]
-                        except SQLAlchemyError:
-                            pass
+                        except SQLAlchemyError as exc:
+                            _record(exc)
 
                     model_col = getattr(model, "model_id", None)
                     chat_col = getattr(model, "chat_id", None)
@@ -456,8 +466,12 @@ def collect_slow_stats(pipe: Pipe) -> dict[str, Any]:
                                 }
                                 for r in model_rows
                             ]
-                        except SQLAlchemyError:
-                            pass
+                        except SQLAlchemyError as exc:
+                            _record(exc)
+
+                if query_error:
+                    storage["state"] = "degraded"
+                    storage["error"] = storage["error"] or query_error
 
             except Exception as exc:
                 logger.warning("Dashboard storage stats degraded", exc_info=True)

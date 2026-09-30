@@ -933,8 +933,10 @@ _INTENT_KNOB_DESCRIPTIONS: dict[str, str] = {
     "Which frame to use from previous video": (
         "Which still is taken from the earlier clip when it is reused as a starting "
         "point: last continues from where it ended, first restarts from how it began. "
-        "On a model that accepts only a first frame the pipe has no choice and uses the "
-        "first one, whatever moment was asked for, and says so in the disclosure footer."
+        "On a model that accepts only a first frame, a moment the earlier video has is "
+        "sent as asked and nothing is substituted, so the disclosure footer stays "
+        "silent; a request for the final frame of the earlier video, or for a moment it "
+        "does not have, is answered with its opening frame, and the footer says so."
     ),
     "Show what was reused": (
         "When to show the thumbnail naming what was reused. It appears while the clip "

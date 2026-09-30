@@ -204,7 +204,15 @@ _EXPECTED: dict[str, int] = {
     # 33rd above already uses for the connector; the write is guarded by `valves is not
     # None` and the new test asserts the value actually changed, so a suppression that hid
     # a no-op would fail there rather than pass silently.
-    "pipe.py": 39,
+    # 40th (B407 H1685-1): the done-callback's `suppress(Exception)` around
+    # `task.exception()` in `_forget_abandoned_tool_task`, which retires a tool call that
+    # outlived the batch ceiling's cancel grace. The callback exists only to drop the
+    # reference and retrieve the exception so a tool that ignored its cancellation and
+    # then raised does not log "Task exception was never retrieved"; it runs after the
+    # round has already reported the call to the model, so a retrieval failure has nothing
+    # left to affect and must not raise out of a done callback, where asyncio would only
+    # log it.
+    "pipe.py": 40,
     "storage/persistence.py": 3,
     # 1st: the caller-supplied fallback in `_emit_templated_error_event`. It is reached only because the
     # admin's own template already failed to render, and the generic card below it is the answer if the

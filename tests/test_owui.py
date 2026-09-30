@@ -385,7 +385,7 @@ def test_discover_schema_prefers_base_metadata_schema() -> None:
     assert details["schema_source"] == "owui_db.Base.metadata.schema"
 
 
-def test_discover_schema_falls_back_to_open_webui_env() -> None:
+def test_discover_schema_falls_back_to_open_webui_env(monkeypatch: pytest.MonkeyPatch) -> None:
     import open_webui_openrouter_pipe.pipe as pipe_mod
 
     engine = object()
@@ -401,7 +401,7 @@ def test_discover_schema_falls_back_to_open_webui_env() -> None:
 
     env_mod: Any = types.ModuleType("open_webui.env")
     env_mod.DATABASE_SCHEMA = "fallback_schema"
-    sys.modules["open_webui.env"] = env_mod
+    monkeypatch.setitem(sys.modules, "open_webui.env", env_mod)
 
     try:
         discovered_engine, discovered_schema, details = pipe_mod.ArtifactStore._discover_owui_engine_and_schema(owui_db)
@@ -413,4 +413,3 @@ def test_discover_schema_falls_back_to_open_webui_env() -> None:
             delattr(open_webui_pkg, "__path__")
         else:
             setattr(open_webui_pkg, "__path__", original_path)
-        sys.modules.pop("open_webui.env", None)

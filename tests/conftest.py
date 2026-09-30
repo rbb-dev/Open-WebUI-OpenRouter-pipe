@@ -604,6 +604,9 @@ def _reset_model_registry():
     reg._image_catalog_norms = frozenset()
     reg._video_catalog_norms = frozenset()
     reg._chat_catalog_norms = frozenset()
+    reg._chat_content_digest = ""
+    reg._video_content_digest = ""
+    reg._image_content_digest = ""
     reg._name_map = None
     reg._lock = asyncio.Lock()
     reg._next_refresh_after = 0.0

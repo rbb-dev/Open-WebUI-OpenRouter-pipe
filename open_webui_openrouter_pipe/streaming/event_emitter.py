@@ -700,6 +700,13 @@ class EventEmitterHandler:
             return True
 
         try:
+            stream_queue.put_nowait(item)
+        except asyncio.QueueFull:
+            pass
+        else:
+            return True
+
+        try:
             await asyncio.wait_for(stream_queue.put(item), timeout=timeout)
         except TimeoutError:
             self.logger.warning(

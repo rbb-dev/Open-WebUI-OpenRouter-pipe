@@ -293,7 +293,9 @@ class ChatCompletionsAdapter:
         reasoning_item_id: str | None = None
         reasoning_text_parts: list[str] = []
         reasoning_text_seen = False
-        reasoning_details_seen = False
+        delta_reasoning_keys: set[tuple[str, str]] = set()
+        delta_reasoning_anon: dict[str, int] = {}
+        message_reasoning_anon: dict[str, int] = {}
         reasoning_summary_parts: dict[tuple[str, str], str] = {}
         reasoning_summary_order: list[tuple[str, str]] = []
         reasoning_details_by_key: dict[tuple[str, str], dict[str, Any]] = {}
@@ -443,6 +445,17 @@ class ChatCompletionsAdapter:
             reasoning_details_by_key[key] = merged
             return False
 
+        def _reasoning_identity(
+            detail: dict[str, Any], anon_counts: dict[str, int]
+        ) -> tuple[str, str] | None:
+            dtype = detail.get("type")
+            if not isinstance(dtype, str) or not dtype:
+                return None
+            key = _reasoning_detail_key(detail, anon_counts.get(dtype, 0))
+            if key is not None and key[1].startswith(_DISC_PREFIX):
+                anon_counts[dtype] = anon_counts.get(dtype, 0) + 1
+            return key
+
         @timed
         def _final_reasoning_details() -> list[dict[str, Any]]:
             out: list[dict[str, Any]] = []
@@ -459,7 +472,6 @@ class ChatCompletionsAdapter:
 
         def _consume_blob(data_blob: bytes):
             nonlocal received_any, latest_usage, reasoning_item_id, reasoning_text_seen, \
-                reasoning_details_seen, \
                 latest_message_annotations, image_item_id, \
                 image_output_item, images_emitted, refusal_text_seen, provider_refusal_full, \
                 tool_calls_completed, \
@@ -503,7 +515,9 @@ class ChatCompletionsAdapter:
                 for entry in delta_reasoning_details:
                     if not isinstance(entry, dict):
                         continue
-                    reasoning_details_seen = True
+                    streamed_identity = _reasoning_identity(entry, delta_reasoning_anon)
+                    if streamed_identity is not None:
+                        delta_reasoning_keys.add(streamed_identity)
                     detail_key = _reasoning_detail_key(entry, len(reasoning_details_order))
                     _record_reasoning_detail(entry)
                     rtype = entry.get("type")
@@ -590,12 +604,13 @@ class ChatCompletionsAdapter:
                     _record_message_annotations(message_annotations)
                 message_reasoning_details = message_obj.get("reasoning_details")
                 if (
-                    not reasoning_details_seen
-                    and isinstance(message_reasoning_details, list)
+                    isinstance(message_reasoning_details, list)
                     and message_reasoning_details
                 ):
                     for entry in message_reasoning_details:
                         if not isinstance(entry, dict):
+                            continue
+                        if _reasoning_identity(entry, message_reasoning_anon) in delta_reasoning_keys:
                             continue
                         detail_key = _reasoning_detail_key(entry, len(reasoning_details_order))
                         if not _record_reasoning_detail(entry):
@@ -814,7 +829,9 @@ class ChatCompletionsAdapter:
                         reasoning_summary_order.clear()
                         reasoning_details_by_key.clear()
                         reasoning_details_order.clear()
-                        reasoning_details_seen = False
+                        delta_reasoning_keys.clear()
+                        delta_reasoning_anon.clear()
+                        message_reasoning_anon.clear()
                         seen_citation_urls.clear()
                         latest_message_annotations = []
                         recorded_annotation_urls.clear()

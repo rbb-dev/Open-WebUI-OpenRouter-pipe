@@ -149,6 +149,8 @@ _FUSION_PANEL_FAILURE_REASON = (
     "Every Fusion panel member failed; this run has no deliberated answer."
 )
 
+_STREAM_INTERRUPTED_REASON = "Stream ended without completion event."
+
 
 def _segment_status(
     was_cancelled: bool,
@@ -1840,6 +1842,7 @@ class StreamingHandler:
                 outcome_sink["reason"] = session_log_reason or None
 
             final_response: dict[str, Any] | None = None
+            _finalise_cancelled: BaseException | None = None
             round_annotations: list[Any] = []
             round_reasoning_details: list[Any] = []
             dispatched_metered_chars: int | None = None
@@ -2129,6 +2132,8 @@ class StreamingHandler:
                         if reasoning_display:
                             _close_open_reasoning_windows()
                             for reasoning_key in list(reasoning_display):
+                                if reasoning_key in deferred_reasoning_keys:
+                                    continue
                                 await _emit_reasoning_item(reasoning_key, assistant_message)
                         delta = event.get("delta") or ""
                         normalized_delta = _normalize_surrogate_chunk(delta, "assistant") if delta else ""
@@ -2925,6 +2930,8 @@ class StreamingHandler:
 
                 if final_response is None:
                     error_occurred = not fusion_inner_call
+                    if not fusion_inner_call:
+                        session_log_reason = _STREAM_INTERRUPTED_REASON
                     if fusion_inner_call:
                         self.logger.warning("Stream ended without completion event for model=%s", body.model)
                         if event_emitter:
@@ -3119,6 +3126,11 @@ class StreamingHandler:
                             }
                         )
                         if normalized_output:
+                            self.logger.warning(
+                                "Refused a function_call with no usable name (call_id=%s, name=%r); "
+                                "it was not run and no answer for it can reach the model",
+                                call_id, item.get("name"),
+                            )
                             invalid_call_outputs.append(normalized_output)
                         else:
                             self.logger.warning(
@@ -3196,6 +3208,23 @@ class StreamingHandler:
                     o for o in (_origin_tool_name(nm) for nm in offered_function_names)
                     if isinstance(o, str) and o
                 )
+
+                def _pipe_runs(name: str) -> bool:
+                    return name in tool_registry or _origin_tool_name(name) in tool_registry
+
+                def _open_webui_runs(name: str) -> bool:
+                    owui_tools = metadata.get("tools") if isinstance(metadata, dict) else None
+                    if not isinstance(owui_tools, dict):
+                        return False
+                    return name in owui_tools or _origin_tool_name(name) in owui_tools
+
+                def _open_webui_owns_the_round(items: list[dict[str, Any]]) -> bool:
+                    return bool(items) and all(
+                        _open_webui_runs(str(c.get("name") or ""))
+                        and not _pipe_runs(str(c.get("name") or ""))
+                        for c in items
+                    )
+
                 hand_back = bool(call_items) and (
                     owui_tool_passthrough
                     or any(
@@ -3244,7 +3273,7 @@ class StreamingHandler:
                     spent = counts[reply_key] = min(
                         counts.get(reply_key, 0) + 1, valves.MAX_FUNCTION_CALL_LOOPS + 1
                     )
-                    if spent > valves.MAX_FUNCTION_CALL_LOOPS:
+                    if spent > valves.MAX_FUNCTION_CALL_LOOPS and not _open_webui_owns_the_round(call_items):
                         hand_back = False
                         self.logger.debug(
                             "Hand-back cap reached for this reply (%d); answering in the loop instead",
@@ -3792,12 +3821,6 @@ class StreamingHandler:
                             if thinking_tasks:
                                 cancel_thinking()
                             self.logger.debug("Received tool result\n%s", _tool_result_for_log(output))
-                        body.input.extend(all_function_outputs)
-                        input_is_sanitized = False
-                        shipped_budget = _sanitize_request_input(self._pipe, body)
-                        await _warn_if_futile(shipped_budget)
-                        await _report_omissions(shipped_budget, _REPLAY_DROPPED_OPENING)
-                        input_is_sanitized = True
                     else:
                         break
                 else:
@@ -4212,9 +4235,9 @@ class StreamingHandler:
                         "type": "response.completed",
                         "response": {"output": terminal_output},
                     })
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
+                except (asyncio.CancelledError, Exception) as _exc:
+                    if isinstance(_exc, asyncio.CancelledError):
+                        _finalise_cancelled = _exc
                     self.logger.warning(
                         "Could not publish the terminal output array; tool calls and "
                         "reasoning may be missing from this turn's stored history",
@@ -4223,33 +4246,42 @@ class StreamingHandler:
 
             if (not error_occurred) and (not was_cancelled):
                 self._audit_orphan_tool_cards(emitted_tool_call_items, emitted_tool_output_items)
-                if terminal:
-                    final_content = (
-                        None
-                        if (body.stream and (emitted_response_output_items or open_webui_keeps_stored_output))
-                        else assistant_message
-                    )
-                    final_output = None
-                    if (
-                        final_content is None
-                        and terminal_output
-                        and isinstance(chat_id, str)
-                        and is_channel_chat(chat_id)
-                    ):
-                        final_output = terminal_output
-                    await self._pipe._event_emitter_handler._emit_completion(
-                        event_emitter,
-                        content=final_content,
-                        output=final_output,
-                        usage=total_usage,
-                        done=True,
-                    )
-                else:
-                    await self._pipe._event_emitter_handler._emit_completion(
-                        event_emitter,
-                        content=None,
-                        usage=total_usage,
-                        done=False,
+                try:
+                    if terminal:
+                        final_content = (
+                            None
+                            if (body.stream and (emitted_response_output_items or open_webui_keeps_stored_output))
+                            else assistant_message
+                        )
+                        final_output = None
+                        if (
+                            final_content is None
+                            and terminal_output
+                            and isinstance(chat_id, str)
+                            and is_channel_chat(chat_id)
+                        ):
+                            final_output = terminal_output
+                        await self._pipe._event_emitter_handler._emit_completion(
+                            event_emitter,
+                            content=final_content,
+                            output=final_output,
+                            usage=total_usage,
+                            done=True,
+                        )
+                    else:
+                        await self._pipe._event_emitter_handler._emit_completion(
+                            event_emitter,
+                            content=None,
+                            usage=total_usage,
+                            done=False,
+                        )
+                except (asyncio.CancelledError, Exception) as _exc:
+                    if isinstance(_exc, asyncio.CancelledError):
+                        _finalise_cancelled = _exc
+                    self.logger.warning(
+                        "Could not publish the terminal chat:completion frame; this turn's "
+                        "stored record is still written",
+                        exc_info=True,
                     )
 
             # Clear logs
@@ -4318,6 +4350,8 @@ class StreamingHandler:
                     )
 
         _record_outcome()
+        if _finalise_cancelled is not None:
+            raise _finalise_cancelled
         return assistant_message
 
 

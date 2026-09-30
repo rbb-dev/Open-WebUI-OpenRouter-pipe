@@ -921,7 +921,6 @@ class SessionLogManager:
         lock_stale_seconds = self.valves.SESSION_LOG_LOCK_STALE_SECONDS
         stale_finalize_seconds = float(self.valves.SESSION_LOG_STALE_FINALIZE_SECONDS)
         budget = float(self.valves.SESSION_LOG_ASSEMBLER_INTERVAL_SECONDS)
-        deadline = time.monotonic() + budget
 
         with self._lock:
             for _latch_name in self._FAULT_LATCHES:
@@ -950,6 +949,7 @@ class SessionLogManager:
         candidates = self._candidate_turns(
             model, session_factory, batch_size, stale_finalize_seconds, backed_off
         )
+        deadline = time.monotonic() + budget
         for index, (terminal, turns) in enumerate(candidates):
             if time.monotonic() >= deadline:
                 self.logger.debug(

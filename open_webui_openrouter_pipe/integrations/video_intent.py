@@ -1153,6 +1153,9 @@ _DOWNGRADE_USER_MESSAGES: dict[str, str] = {
     "retarget_skipped_non_image_frame": (
         "That attachment is not a picture, so no frame could be taken from it."
     ),
+    "retarget_skipped_no_frame_images": (
+        "A frame the chat asked for could not be applied."
+    ),
     "dropped_invalid_prior_video_index": (
         "That previous video is not in this chat, so no frame was taken from it."
     ),
@@ -1284,7 +1287,6 @@ def should_emit_confirmation_footer(
     """Decide whether to render the Intent Disclosure block based on the
     `VIDEO_INTENT_CONFIRM_MODE` valve.
 
-    - `always`: render whenever the classifier produced a frame_plan.
     - `on_reference` (default): render when the plan reuses prior video
       content OR there are multiple frames (i.e. anything beyond a simple
       single-attachment image-to-video).
@@ -1296,6 +1298,8 @@ def should_emit_confirmation_footer(
     """
     if confirm_mode == "never":
         return False
+    if confirm_mode == "always":
+        return True
     if _prompt_text_was_rewritten(intent.prompt, person_prompt_text):
         return True
     if _clarification_was_capped(intent):
@@ -1304,8 +1308,6 @@ def should_emit_confirmation_footer(
         return True
     if not intent.frame_plan:
         return False
-    if confirm_mode == "always":
-        return True
     if confirm_mode == "low_confidence":
         return intent.confidence == "low"
     has_prior = any(e.source != "uploaded_attachment" for e in intent.frame_plan)

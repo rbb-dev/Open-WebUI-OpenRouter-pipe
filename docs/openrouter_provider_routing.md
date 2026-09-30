@@ -322,7 +322,9 @@ model's Integrations list until the next model-list refresh repairs it.
 
 A row the pipe could not switch on is named in the log with its id, is not attached while it
 is off, and is retried on the next catalog refresh. The retry stops once it succeeds, so a
-row you switch off by hand afterwards stays off.
+row you switch off by hand afterwards stays off. A row the database would not create at
+all is named in the log by model slug, and the models it covers keep the routing filter
+they already have until the create lands.
 
 Removal is a decision, so a pass that never obtained the answer does not make one. If the
 filter installation raises, returns something that is not a map, or is skipped because the

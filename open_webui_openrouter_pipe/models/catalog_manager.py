@@ -18,7 +18,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from typing import TYPE_CHECKING, Any, TypeGuard
 from urllib.parse import quote
 
@@ -99,6 +99,7 @@ def _normalize_id_list(meta_dict: dict, key: str) -> list[str]:
 
 _MAKER_SOURCE_KIND = "maker"
 _FRONTEND_SOURCE_KIND = "frontend"
+_APPLY_YIELD_EVERY = 64
 
 
 def _frontend_catalog_answered(frontend_data: Any) -> TypeGuard[dict[str, Any]]:
@@ -218,6 +219,23 @@ async def _read_model_rows(ids: list[str], logger: Any) -> dict[str, Any] | None
                 continue
             stored[model_id] = row
     return stored if ids else None
+
+
+async def _gather_in_chunks(
+    apply_one: Callable[[Any], Awaitable[None]],
+    items: list[Any],
+    chunk: int,
+) -> list[Any]:
+    size = max(1, chunk)
+    results: list[Any] = []
+    for start in range(0, len(items), size):
+        results.extend(
+            await asyncio.gather(
+                *(apply_one(item) for item in items[start : start + size]),
+                return_exceptions=True,
+            )
+        )
+    return results
 
 
 def _stored_profile_images(
@@ -440,7 +458,7 @@ def _apply_single_id_filter_ids(
     blank_id_release = bool(
         blank_is_a_decision
         and not filter_function_id
-        and (not supported or family_off)
+        and (not supported or family_off or not auto_attach)
     )
     blank_id_is_transient = not filter_function_id and not blank_id_release
     if blank_id_is_transient:
@@ -1045,14 +1063,9 @@ class ModelCatalogManager:
             return
         if not selected_models:
             return
-        last_fetch = OpenRouterModelRegistry._last_fetch
-        last_video_fetch = OpenRouterModelRegistry.last_video_fetch()
-        last_image_fetch = OpenRouterModelRegistry.last_image_fetch()
         sync_key = (
             pipe_identifier,
-            float(last_fetch or 0.0),
-            float(last_video_fetch or 0.0),
-            float(last_image_fetch or 0.0),
+            OpenRouterModelRegistry.content_stamp(),
             valves.MODEL_ID,
             valves.FREE_MODEL_FILTER,
             valves.TOOL_CALLING_FILTER,
@@ -1826,13 +1839,15 @@ class ModelCatalogManager:
                 (valves.AUTO_INSTALL_VIDEO_FILTERS or valves.AUTO_ATTACH_VIDEO_FILTERS)
                 and valves.ENABLE_VIDEO_GENERATION
             )
+            video_filter_ids_unresolved: frozenset[str] = frozenset()
             if (
                 (valves.AUTO_INSTALL_VIDEO_FILTERS or valves.AUTO_ATTACH_VIDEO_FILTERS)
                 and valves.ENABLE_VIDEO_GENERATION
             ):
+                _video_filter_manager = self._pipe._ensure_filter_manager()
                 try:
                     video_gen_filter_function_ids = (
-                        await self._pipe._ensure_filter_manager().ensure_openrouter_video_gen_filter_function_ids(models)
+                        await _video_filter_manager.ensure_openrouter_video_gen_filter_function_ids(models)
                     )
                 except Exception as exc:
                     self.logger.log(
@@ -1841,6 +1856,7 @@ class ModelCatalogManager:
                     )
                     video_gen_filter_function_ids = {}
                     video_family_off = False
+                video_filter_ids_unresolved = _video_filter_manager.unresolved_video_filter_ids
             elif not valves.ENABLE_VIDEO_GENERATION:
                 try:
                     await self._pipe._ensure_filter_manager()._retire_variant_video_filters()
@@ -2214,8 +2230,7 @@ class ModelCatalogManager:
                         or ""
                     )
                 auto_attach_video_gen = bool(
-                    video_gen_filter_function_id
-                    and valves.AUTO_ATTACH_VIDEO_FILTERS
+                    valves.AUTO_ATTACH_VIDEO_FILTERS
                     and valves.ENABLE_VIDEO_GENERATION
                     and pipe_capabilities.get("video_generation")
                 )
@@ -2224,6 +2239,10 @@ class ModelCatalogManager:
                 image_ids_unresolved = (
                     openrouter_id in image_filter_ids_unresolved
                     or str(original_id or "") in image_filter_ids_unresolved
+                )
+                video_ids_unresolved = (
+                    openrouter_id in video_filter_ids_unresolved
+                    or str(original_id or "") in video_filter_ids_unresolved
                 )
                 if pipe_capabilities.get("image_output"):
                     image_filter_ids_for_model = list(
@@ -2290,6 +2309,7 @@ class ModelCatalogManager:
                             video_gen_filter_function_id=video_gen_filter_function_id,
                             video_gen_filter_supported=bool(pipe_capabilities.get("video_generation")),
                             auto_attach_video_gen_filter=auto_attach_video_gen,
+                            video_ids_unresolved=video_ids_unresolved,
                             auto_default_video_gen_filter=bool(
                                 auto_attach_video_gen
                                 and valves.AUTO_DEFAULT_VIDEO_FILTERS
@@ -2338,8 +2358,8 @@ class ModelCatalogManager:
                             exc_info=True,
                         )
 
-            apply_results = await asyncio.gather(
-                *(_apply(model) for model in models), return_exceptions=True
+            apply_results = await _gather_in_chunks(
+                _apply, models, _APPLY_YIELD_EVERY
             )
             for model, outcome in zip(models, apply_results):
                 if isinstance(outcome, BaseException):
@@ -2475,6 +2495,7 @@ class ModelCatalogManager:
         auto_attach_video_gen_filter: bool = False,
         auto_default_video_gen_filter: bool = False,
         video_family_off: bool = False,
+        video_ids_unresolved: bool = False,
         image_filter_function_ids: list[str] | None = None,
         image_filter_supported: bool = False,
         auto_attach_image_filter: bool = False,
@@ -2606,7 +2627,9 @@ class ModelCatalogManager:
                 deduped.append(entry)
             return deduped
 
-        def _prune_stale_openrouter_filter_ids(meta_dict: dict) -> bool:
+        def _prune_stale_openrouter_filter_ids(
+            meta_dict: dict, keep_ids: frozenset[str] = frozenset()
+        ) -> bool:
             """Remove openrouter_* filter IDs that no longer exist in the function table.
 
             Only prunes IDs with the ``openrouter_`` prefix — filter IDs belonging
@@ -2621,7 +2644,9 @@ class ModelCatalogManager:
                 return False
             pruned = [
                 fid for fid in normalized
-                if not fid.startswith("openrouter_") or fid in valid_openrouter_filter_ids
+                if not fid.startswith("openrouter_")
+                or fid in valid_openrouter_filter_ids
+                or fid in keep_ids
             ]
             if len(pruned) == len(normalized):
                 return False
@@ -2938,7 +2963,12 @@ class ModelCatalogManager:
                 meta_dict["description"] = description
                 meta_updated = True
 
-            if _prune_stale_openrouter_filter_ids(meta_dict):
+            _video_keep = frozenset(
+                fid
+                for fid in _normalize_id_list(meta_dict, "filterIds")
+                if video_ids_unresolved and fid == _recorded_filter_id(meta_dict, "video_gen_filter_id")
+            )
+            if _prune_stale_openrouter_filter_ids(meta_dict, _video_keep):
                 meta_updated = True
 
             web_tools_hands_off = "web_tools_attached_id" in hands_off
@@ -2976,7 +3006,7 @@ class ModelCatalogManager:
                 meta_dict, prune_key="direct_uploads_filter_id",
                 filter_function_ids=direct_uploads_ids_now,
             )
-            if direct_uploads_filter_supported and not direct_uploads_filter_function_id and not direct_uploads_family_off:
+            if direct_uploads_filter_supported and not direct_uploads_filter_function_id and not direct_uploads_family_off and auto_attach_direct_uploads_filter:
                 direct_uploads_detached = set()
             if _apply_direct_uploads_filter_ids(meta_dict):
                 meta_updated = True
@@ -2996,7 +3026,7 @@ class ModelCatalogManager:
                 meta_dict, prune_key="image_gen_filter_id",
                 filter_function_ids=image_gen_ids_now,
             )
-            if image_gen_filter_supported and not image_gen_filter_function_id and not image_gen_family_off:
+            if image_gen_filter_supported and not image_gen_filter_function_id and not image_gen_family_off and auto_attach_image_gen_filter:
                 image_gen_detached = set()
             if _apply_image_gen_filter_ids(meta_dict):
                 meta_updated = True
@@ -3017,7 +3047,7 @@ class ModelCatalogManager:
                 filter_function_ids=video_ids_now,
                 auto_default=auto_default_video_gen_filter,
             )
-            if not video_gen_filter_function_id and video_gen_filter_supported and not video_family_off:
+            if not video_gen_filter_function_id and video_gen_filter_supported and not video_family_off and auto_attach_video_gen_filter:
                 video_detached = set()
             if _apply_video_gen_filter_ids(
                 meta_dict,

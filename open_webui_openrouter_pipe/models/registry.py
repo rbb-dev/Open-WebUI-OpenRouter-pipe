@@ -322,6 +322,40 @@ def _fingerprint(api_key: str) -> str:
     return hashlib.sha256(api_key.encode()).hexdigest()[:32]
 
 
+_ZDR_CREDENTIAL_HISTORY = 4
+
+
+def _trim_credential_history(mapping: dict[str, Any], live: str, aliased: Any) -> bool:
+    if live in mapping:
+        mapping[live] = mapping.pop(live)
+    dropped_alias = False
+    while len(mapping) > _ZDR_CREDENTIAL_HISTORY:
+        if mapping.pop(next(iter(mapping))) is aliased:
+            dropped_alias = True
+    return dropped_alias
+
+
+def _content_digest(
+    norms: frozenset[str] | set[str],
+    specs: dict[str, Any],
+) -> str:
+    parts: list[str] = []
+    for norm_id in sorted(norms):
+        spec = specs.get(norm_id)
+        if not isinstance(spec, dict):
+            parts.append(norm_id)
+            continue
+        features = ",".join(sorted(str(f) for f in (spec.get("features") or ())))
+        capabilities = ",".join(
+            f"{key}={value!r}"
+            for key, value in sorted((spec.get("capabilities") or {}).items())
+        )
+        parts.append(
+            f"{norm_id}\x1f{spec.get('description') or ''}\x1f{features}\x1f{capabilities}"
+        )
+    return hashlib.sha256("\x1e".join(parts).encode("utf-8", "surrogatepass")).hexdigest()
+
+
 def _catalog_timeout(valves: Any) -> aiohttp.ClientTimeout:
     from ..core.utils import _DEFAULT_VALVES, http_timeout
 
@@ -379,6 +413,16 @@ class OpenRouterModelRegistry:
     _last_error: str | None = None
     _last_error_time: float = 0.0
     _name_map: ClassVar[dict[str, str] | None] = None
+    _chat_content_digest: str = ""
+    _video_content_digest: str = ""
+    _image_content_digest: str = ""
+
+    @classmethod
+    def content_stamp(cls) -> str:
+        return (
+            f"{cls._chat_content_digest}|{cls._video_content_digest}"
+            f"|{cls._image_content_digest}"
+        )
 
     @classmethod
     def _invalidate_name_map(cls) -> None:
@@ -416,8 +460,9 @@ class OpenRouterModelRegistry:
     @classmethod
     def _record_settle(cls, api_key: str, until: float) -> None:
         prior = cls._credential_settle(api_key)
-        cls._zdr_settle[_fingerprint(api_key)] = (
-            (prior[0] if prior else 0) + 1, until)
+        fp = _fingerprint(api_key)
+        cls._zdr_settle[fp] = ((prior[0] if prior else 0) + 1, until)
+        _trim_credential_history(cls._zdr_settle, fp, cls._zdr_model_ids)
 
     @classmethod
     def _clear_settle(cls, api_key: str) -> None:
@@ -715,9 +760,13 @@ class OpenRouterModelRegistry:
         cls._id_map = id_map
         cls._invalidate_name_map()
         if zdr_read_ok:
-            cls._zdr_rosters[_fingerprint(api_key)] = set(zdr_model_ids or ())
+            fp = _fingerprint(api_key)
+            cls._zdr_rosters[fp] = set(zdr_model_ids or ())
+            if _trim_credential_history(cls._zdr_rosters, fp, cls._zdr_model_ids):
+                cls._zdr_model_ids = None
         cls._zdr_model_ids = cls._zdr_roster_for(api_key)
         cls._chat_catalog_norms = chat_catalog_norms
+        cls._chat_content_digest = _content_digest(chat_catalog_norms, specs)
         ModelFamily.set_dynamic_specs(specs)
 
     @classmethod
@@ -1087,6 +1136,11 @@ class OpenRouterModelRegistry:
         ModelFamily.set_dynamic_specs(cls._specs)
         if video_models:
             cls._last_video_fetch = time.time()
+            cls._video_content_digest = _content_digest(
+                cls._video_catalog_norms, cls._specs
+            )
+        else:
+            cls._video_content_digest = ""
 
     @classmethod
     def _image_endpoint_aliases(cls) -> dict[str, list[dict[str, Any]]]:
@@ -1366,6 +1420,11 @@ class OpenRouterModelRegistry:
         ModelFamily.set_dynamic_specs(cls._specs)
         if image_models:
             cls._last_image_fetch = time.time()
+            cls._image_content_digest = _content_digest(
+                cls._image_catalog_norms, cls._specs
+            )
+        else:
+            cls._image_content_digest = ""
 
     @classmethod
     def _exact_norm(cls, model_id: str) -> str:

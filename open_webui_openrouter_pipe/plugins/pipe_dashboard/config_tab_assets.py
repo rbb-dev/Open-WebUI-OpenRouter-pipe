@@ -401,6 +401,7 @@ function heldProblem(v,val){
   if(raw===""){ if(v.default!=null) bad="Required"; }
   else { const x=Number(raw);
     if(Number.isNaN(x))bad="Must be a number";
+    else if(v.widget==="number (int)"&&!Number.isInteger(x))bad="Must be a whole number";
     else if(b.ge!=null&&x<b.ge)bad="Must be ≥ "+b.ge;
     else if(b.le!=null&&x>b.le)bad="Must be ≤ "+b.le; }
   return bad;

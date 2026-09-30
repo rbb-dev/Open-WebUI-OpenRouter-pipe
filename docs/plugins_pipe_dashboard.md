@@ -103,7 +103,7 @@ The Health tab tracks the pipe's live load:
 - **Concurrency** — active requests and tools, in-flight calls, and active video generations when the video pool is configured.
 - **Queues** — the pending-request count, and the log and archive queue depths, each with its bound. The row's headline number is `waiters + queued`, where `waiters` counts coroutines blocked on a semaphore permit and `queued` counts requests still in the request queue, so the backlog itself is the `requests` / `requests_max` field rather than the headline: because a single dispatcher performs the waiting, the request waiters term reads 1 for any real backlog and stays 1 however deep the queue is. The tool pool parks one waiter per tool call instead, and its depth is in the Concurrency row's tool cell tooltip.
 - **User Circuit Breakers** — request, tool, and auth breaker counts. "Seen" counts the request-breaker records whose newest failure is inside the breaker window (the Tools row counts the same for user+tool pairs), and a record is created by a failure. The RECORD is a separate thing from the count: the Requests row's record is released when that user's next request succeeds, when a later check finds its window empty, or on the next breaker write once its newest failure is older than the breaker window, so a tripped user who stops sending requests keeps a record that is no longer counted until then. A Tools record is released the same way: when that user next invokes that tool and the call succeeds, when a later check finds the window empty, or on the next breaker write once its newest failure is older than the window — a tripped pair for a tool never invoked again lingers the same way. "Users w/ fail" counts records with recent failures, which after that change is the same set, so on each row the two numbers are equal.
-- **Models** — the model catalog with a per-type breakdown (text, image, video), the ZDR-capable count, and per-type fetch clocks. The status badge tracks the chat-catalog fetch loop and shows the **worst** OpenRouter account's consecutive-failure count, so it cannot read healthy while any one account is failing.
+- **Models** — the model catalog with a per-type breakdown (text, image, video), the ZDR-capable count, and per-type fetch clocks. A fetch clock moves whenever that catalogue was read, so an extra "Last attempt" row appears for a type whose last read found nothing; a metadata sync, by contrast, runs on a catalogue or settings change and stays quiet on a read that changed nothing. The status badge tracks the chat-catalog fetch loop and shows the **worst** OpenRouter account's consecutive-failure count, so it cannot read healthy while any one account is failing.
 
 ### System
 
@@ -120,6 +120,12 @@ The Storage tab summarizes the artifact store:
 - **Storage Overview** — total items, total size, and the encryption and compression modes.
 - **By Type** — item counts and sizes grouped by artifact type.
 - **By Model** — a scrollable table of per-model storage usage.
+
+A field reads `-` when the pipe could not read it, and the tab then shows a *Storage queries degraded*
+banner naming the exception's class. A query that failed is isolated: the fields the other queries did
+read stay filled in, and only the encrypted-items count drops its percentage, because a share of a
+total that was never read is not a measurement — the count itself is still shown. An empty store reads
+`0` with no percentage rather than `0 (0%)`.
 
 ### Config
 

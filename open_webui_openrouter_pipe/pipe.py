@@ -275,6 +275,8 @@ _VALVE_DRAIN_MAX_FLUSHES = 64
 
 _TOOL_THREAD_CAP: int = 8
 
+_TOOL_CANCEL_GRACE_SECONDS: float = 5.0
+
 
 def _tool_thread_workers(handler: Any) -> int:
     limit: Any = getattr(
@@ -677,6 +679,7 @@ class Pipe:
         self._video_user_active_counts: dict[str, int] = {}
         self._video_user_active_jobs: dict[str, set[str]] = {}
         self._active_jobs: dict[asyncio.Task[None], _PipeJob] = {}
+        self._abandoned_tool_tasks: set[asyncio.Task[Any]] = set()
         self._video_message_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._video_message_lock_refs: dict[tuple[str, str], int] = {}
 
@@ -2541,6 +2544,10 @@ class Pipe:
 
     @timed
     async def _stop_active_jobs(self) -> None:
+        if self._abandoned_tool_tasks:
+            await self._settle_cancelled_tool_tasks(
+                [task for task in self._abandoned_tool_tasks if task.get_loop() is asyncio.get_running_loop()]
+            )
         tasks = list(self._active_jobs)
         running = asyncio.get_running_loop()
         for task in tasks:
@@ -4069,6 +4076,20 @@ class Pipe:
 
     # Tool Execution Methods
 
+    async def _settle_cancelled_tool_tasks(self, tasks: list[asyncio.Task[Any]]) -> None:
+        for task in tasks:
+            task.cancel()
+        _done, still_running = await asyncio.wait(tasks, timeout=_TOOL_CANCEL_GRACE_SECONDS)
+        for task in still_running:
+            self._abandoned_tool_tasks.add(task)
+            task.add_done_callback(self._forget_abandoned_tool_task)
+
+    def _forget_abandoned_tool_task(self, task: asyncio.Task[Any]) -> None:
+        self._abandoned_tool_tasks.discard(task)
+        if not task.cancelled():
+            with contextlib.suppress(Exception):
+                task.exception()
+
     @timed
     async def _execute_tool_batch(
         self,
@@ -4106,9 +4127,7 @@ class Pipe:
         pending = [task for task in tasks if not task.done()]
         message = ""
         if pending:
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
+            await self._settle_cancelled_tool_tasks(pending)
             message = (
                 f"Tool batch '{batch[0].call.get('name')}' exceeded {batch_timeout:.0f}s and was cancelled."
                 if batch_timeout

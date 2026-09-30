@@ -378,7 +378,7 @@ _OVER_URL_BUDGET = (
 )
 
 _OVER_REFERENCE_BUDGET = (
-    "the request's combined reference budget was already spent"
+    "the request's combined frame budget was already spent"
 )
 
 _A_COPY_MAY_ALREADY_BE_THERE = (
@@ -641,12 +641,14 @@ class VideoGenerationAdapter:
         user_slot_acquired = False
         user_slot_lock: asyncio.Lock | None = None
         lifecycle_transferred = False
+        handoff_registered = False
         submitted = False
         job_id = ""
         disclosure_block = ""
         withheld_record_written = False
         withheld: list[tuple[str, str]] = []
         relayed_families: set[tuple[str, str]] = set()
+        bg_task: asyncio.Task[VideoLifecycleResult] | None = None
 
         try:
             existing = await self._get_active_task(key)
@@ -707,6 +709,7 @@ class VideoGenerationAdapter:
                 lifecycle_transferred = True
                 async with self._pipe._video_active_tasks_dict_lock:
                     self._pipe._video_active_tasks[key] = bg_task
+                    handoff_registered = True
                 result = await asyncio.shield(bg_task)
                 self._settle_request(result, outcome_sink)
                 await self._emit_completion(event_emitter, result.content, usage=result.usage)
@@ -714,6 +717,23 @@ class VideoGenerationAdapter:
 
             video_meta_pre = self._extract_video_metadata(metadata)
             intent_result: VideoIntentResult | None = None
+            provider_block = requested_provider_block(
+                SimpleNamespace(provider=getattr(responses_body, "provider", None)), metadata
+            )
+            provider_options = self._extract_provider_options(
+                getattr(responses_body, "provider", None), metadata
+            )
+            vetted_addresses: dict[str, bool] = {}
+            await self._vet_passthrough_addresses_before_admission(
+                api_model_id=api_model_id,
+                prompt=prompt,
+                video_meta=video_meta_pre,
+                video_model=video_model,
+                provider_block=provider_block,
+                provider_options=provider_options,
+                valves=valves,
+                vetted=vetted_addresses,
+            )
 
             if self._intent_classifier_should_run(
                 valves=valves,
@@ -805,6 +825,20 @@ class VideoGenerationAdapter:
                     reused_frame_pref: Literal["first", "last"] = (
                         "first" if reused_frame_pref_raw == "first" else "last"
                     )
+                    if not user_slot_acquired:
+                        (
+                            user_slot_acquired,
+                            user_slot_lock,
+                            global_semaphore,
+                            global_slot_acquired,
+                        ) = await self._admit_video_request(user_id, valves)
+                    if not user_slot_acquired:
+                        self._emit_intent_telemetry(
+                            intent_result, valves=valves, chat_id=chat_id
+                        )
+                        return await self._refuse_for_user_limit(
+                            event_emitter, api_model_id, valves
+                        )
                     self._apply_uploaded_attachment_retargeting(
                         intent_result, video_meta_pre, valves,
                     )
@@ -874,31 +908,28 @@ class VideoGenerationAdapter:
                     intent_result = None
                     disclosure_block = ""
 
-            user_slot_acquired, user_slot_lock = await self._try_acquire_user_slot(user_id, valves)
             if not user_slot_acquired:
-                content = self._build_failure_content(
-                    job_id="",
-                    model_id=api_model_id,
-                    reason=(
-                        "Video generation limit reached for this user "
-                        f"({valves.MAX_CONCURRENT_VIDEO_GENS_PER_USER} active job(s))."
-                    ),
-                )
-                await self._emit_status(event_emitter, "Video generation limit reached.", done=True)
-                await self._emit_completion(event_emitter, content)
-                return content
+                (
+                    user_slot_acquired,
+                    user_slot_lock,
+                    global_semaphore,
+                    global_slot_acquired,
+                ) = await self._admit_video_request(user_id, valves)
+            if not user_slot_acquired:
+                return await self._refuse_for_user_limit(event_emitter, api_model_id, valves)
 
             video_meta = self._extract_video_metadata(metadata)
+            image_bytes: dict[str, int] = {"total": 0}
             frame_images = await self._encode_frame_images(
                 video_meta, video_model, valves, user_obj=user_obj or user,
+                spent=image_bytes,
             )
-            vetted_addresses: dict[str, bool] = {}
             try:
                 input_references = await self._encode_input_references(
                     video_meta, valves, withheld=withheld, user_obj=user_obj or user,
                     video_model=video_model, relayed=relayed_families,
                     companions=bool(frame_images), event_emitter=event_emitter,
-                    vetted=vetted_addresses,
+                    vetted=vetted_addresses, spent=image_bytes,
                 )
             finally:
                 disclosure_block = self._with_the_file_host_record(
@@ -913,15 +944,13 @@ class VideoGenerationAdapter:
                         "the video you want \u2014 an attachment alone is not enough."
                     ),
                 )
+                disclosure_block = self._with_the_withheld_record(disclosure_block, withheld)
+                withheld_record_written = True
                 if disclosure_block:
                     content = disclosure_block + "\n" + content
                 await self._emit_status(event_emitter, "Video generation could not start.", done=True)
                 await self._emit_completion(event_emitter, content)
                 return content
-            provider_block = requested_provider_block(
-                SimpleNamespace(provider=getattr(responses_body, "provider", None)), metadata
-            )
-            provider_options = self._extract_provider_options(getattr(responses_body, "provider", None), metadata)
             payload = await self._build_payload(
                 api_model_id=api_model_id,
                 prompt=prompt,
@@ -937,9 +966,6 @@ class VideoGenerationAdapter:
                     valves, "VIDEO_REFERENCE_ALLOWED_DOMAINS", ""
                 ),
             )
-            global_semaphore = self._ensure_global_semaphore(valves)
-            await global_semaphore.acquire()
-            global_slot_acquired = True
 
             disclosure_block = self._with_the_withheld_record(disclosure_block, withheld)
             withheld_record_written = True
@@ -990,7 +1016,7 @@ class VideoGenerationAdapter:
                 message_id=message_id,
                 request=request,
                 user_id=user_id,
-                global_semaphore=global_semaphore,
+                global_semaphore=cast(asyncio.Semaphore, global_semaphore),
                 message_lock=message_lock,
                 started_at=time.monotonic(),
                 disclosure_block=disclosure_block,
@@ -999,6 +1025,7 @@ class VideoGenerationAdapter:
             lifecycle_transferred = True
             async with self._pipe._video_active_tasks_dict_lock:
                 self._pipe._video_active_tasks[key] = bg_task
+                handoff_registered = True
 
             result = await asyncio.shield(bg_task)
             self._settle_request(result, outcome_sink)
@@ -1029,8 +1056,21 @@ class VideoGenerationAdapter:
             await self._emit_completion(event_emitter, content)
             return content
         finally:
-            if not lifecycle_transferred:
-                if global_slot_acquired and global_semaphore is not None:
+            if handoff_registered:
+                release = asyncio.ensure_future(
+                    self._release_request_handles(key, message_lock, bg_task)
+                )
+                cancelled: asyncio.CancelledError | None = None
+                while not release.done():
+                    try:
+                        await asyncio.shield(release)
+                    except asyncio.CancelledError as exc:
+                        cancelled = exc
+                if cancelled is not None:
+                    raise cancelled
+                release.result()
+            else:
+                if not lifecycle_transferred and global_slot_acquired and global_semaphore is not None:
                     global_semaphore.release()
                 await asyncio.shield(
                     self._release_presubmit_slots(
@@ -1038,7 +1078,7 @@ class VideoGenerationAdapter:
                         user_id,
                         job_id,
                         message_lock,
-                        release_user_slot=user_slot_acquired,
+                        release_user_slot=user_slot_acquired and not lifecycle_transferred,
                     )
                 )
 
@@ -1290,7 +1330,7 @@ class VideoGenerationAdapter:
             elapsed = max(0.0, time.monotonic() - started_at)
             if not downloads:
                 raise VideoGenerationError(
-                    f"None of the {outputs} clips this job delivered could not be fetched from "
+                    f"None of the {outputs} clips this job delivered could be fetched from "
                     "OpenRouter."
                     if reported > 1 else
                     "Generated video could not be downloaded from OpenRouter."
@@ -1482,7 +1522,17 @@ class VideoGenerationAdapter:
         message_lock: asyncio.Lock,
         owner: asyncio.Task | None = None,
     ) -> None:
-        _step = functools.partial(self._cleanup_step, "lifecycle", key)
+        await self._cleanup_step(
+            "lifecycle", key, "user slot", self._release_user_slot(user_id, job_id)
+        )
+
+    async def _release_request_handles(
+        self,
+        key: tuple[str, str],
+        message_lock: asyncio.Lock | None,
+        owner: asyncio.Task | None = None,
+    ) -> None:
+        _step = functools.partial(self._cleanup_step, "request", key)
 
         async def _drop_active_task() -> None:
             async with self._pipe._video_active_tasks_dict_lock:
@@ -1491,8 +1541,8 @@ class VideoGenerationAdapter:
                     self._pipe._video_active_tasks.pop(key, None)
 
         await _step("active-task entry", _drop_active_task())
-        await _step("user slot", self._release_user_slot(user_id, job_id))
-        await _step("message lock", self._release_message_lock(key, message_lock))
+        if message_lock is not None:
+            await _step("message lock", self._release_message_lock(key, message_lock))
 
     async def _poll_until_terminal(
         self,
@@ -1569,11 +1619,7 @@ class VideoGenerationAdapter:
 
     async def _get_active_task(self, key: tuple[str, str]) -> asyncio.Task[VideoLifecycleResult] | None:
         async with self._pipe._video_active_tasks_dict_lock:
-            task = self._pipe._video_active_tasks.get(key)
-            if task is not None and task.done():
-                self._pipe._video_active_tasks.pop(key, None)
-                return None
-            return task
+            return self._pipe._video_active_tasks.get(key)
 
     async def _acquire_message_lock(self, key: tuple[str, str]) -> asyncio.Lock:
         async with self._pipe._video_message_locks_dict_lock:
@@ -1673,6 +1719,66 @@ class VideoGenerationAdapter:
             return False, lock
         return True, lock
 
+    async def _admit_video_request(
+        self, user_id: str, valves: Any
+    ) -> tuple[bool, asyncio.Lock, asyncio.Semaphore | None, bool]:
+        user_slot_acquired, user_slot_lock = await self._try_acquire_user_slot(user_id, valves)
+        if not user_slot_acquired:
+            return False, user_slot_lock, None, False
+        global_semaphore = self._ensure_global_semaphore(valves)
+        await global_semaphore.acquire()
+        return True, user_slot_lock, global_semaphore, True
+
+    async def _refuse_for_user_limit(
+        self, event_emitter: Any, model_id: str, valves: Any
+    ) -> str:
+        content = self._build_failure_content(
+            job_id="",
+            model_id=model_id,
+            reason=(
+                "Video generation limit reached for this user "
+                f"({valves.MAX_CONCURRENT_VIDEO_GENS_PER_USER} active job(s))."
+            ),
+        )
+        await self._emit_status(event_emitter, "Video generation limit reached.", done=True)
+        await self._emit_completion(event_emitter, content)
+        return content
+
+    async def _vet_passthrough_addresses_before_admission(
+        self,
+        *,
+        api_model_id: str,
+        prompt: str,
+        video_meta: dict[str, Any],
+        video_model: Any,
+        provider_block: dict[str, Any] | None,
+        provider_options: dict[str, Any],
+        valves: Any,
+        vetted: dict[str, bool],
+    ) -> None:
+        skeleton = self._build_passthrough_payload(
+            api_model_id=api_model_id,
+            prompt=prompt,
+            video_meta=video_meta,
+            video_model=video_model,
+            provider_options=provider_options,
+            provider_block=provider_block,
+            withheld=None,
+        )
+        try:
+            await self._validate_passthrough_urls(
+                skeleton, None, vetted=vetted,
+                relayed=frozenset(),
+                video_reference_allowed_domains=getattr(
+                    valves, "VIDEO_REFERENCE_ALLOWED_DOMAINS", ""
+                ),
+            )
+        except (VideoGenerationError, UnvettableRequest):
+            self.logger.debug(
+                "passthrough addresses refused before admission; the payload build "
+                "refuses the request there"
+            )
+
     async def _add_user_active_job(
         self, user_id: str, job_id: str, lock: asyncio.Lock | None = None
     ) -> None:
@@ -1708,20 +1814,16 @@ class VideoGenerationAdapter:
         finally:
             await asyncio.shield(self._release_user_lock(user_id, lock))
 
-    async def _build_payload(
+    def _build_passthrough_payload(
         self,
         *,
         api_model_id: str,
         prompt: str,
         video_meta: dict[str, Any],
         video_model: Any,
-        frame_images: list[dict[str, Any]],
         provider_options: dict[str, Any],
         provider_block: dict[str, Any] | None = None,
-        input_references: list[dict[str, Any]] | None = None,
         withheld: list[tuple[str, str]] | None = None,
-        vetted: dict[str, bool] | None = None,
-        video_reference_allowed_domains: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": api_model_id,
@@ -1754,10 +1856,6 @@ class VideoGenerationAdapter:
                     else "the catalog entry does not list it as an allowed passthrough parameter",
                 )
         self._apply_size_consistency(payload, video_model, withheld)
-        if frame_images:
-            payload["frame_images"] = frame_images
-        if input_references:
-            payload["input_references"] = input_references
         merged_options = dict(provider_options) if isinstance(provider_options, dict) else {}
         if provider_params:
             bulky = {
@@ -1812,10 +1910,40 @@ class VideoGenerationAdapter:
                 "Provider preferences not accepted by the video API were not sent for %r: %s. "
                 "Sending them would read as a control in force while nothing enforces it.",
                 payload.get("model"),
-                ", ".join(unsupported),
+                ", ".join(sorted(unsupported)),
             )
         if block:
             payload["provider"] = block
+        return payload
+
+    async def _build_payload(
+        self,
+        *,
+        api_model_id: str,
+        prompt: str,
+        video_meta: dict[str, Any],
+        video_model: Any,
+        frame_images: list[dict[str, Any]],
+        provider_options: dict[str, Any],
+        provider_block: dict[str, Any] | None = None,
+        input_references: list[dict[str, Any]] | None = None,
+        withheld: list[tuple[str, str]] | None = None,
+        vetted: dict[str, bool] | None = None,
+        video_reference_allowed_domains: str | None = None,
+    ) -> dict[str, Any]:
+        payload = self._build_passthrough_payload(
+            api_model_id=api_model_id,
+            prompt=prompt,
+            video_meta=video_meta,
+            video_model=video_model,
+            provider_options=provider_options,
+            provider_block=provider_block,
+            withheld=withheld,
+        )
+        if frame_images:
+            payload["frame_images"] = frame_images
+        if input_references:
+            payload["input_references"] = input_references
         own = payload.get("input_references")
         relayed = frozenset(
             entry[kind]["url"]
@@ -2077,6 +2205,7 @@ class VideoGenerationAdapter:
         valves: Any,
         *,
         user_obj: Any = None,
+        spent: dict[str, int] | None = None,
     ) -> list[dict[str, Any]]:
         raw_frames = video_meta.get("frame_images")
         if not isinstance(raw_frames, list) or not raw_frames:
@@ -2088,7 +2217,7 @@ class VideoGenerationAdapter:
         total_max = int(valves.VIDEO_FRAME_TOTAL_MAX_BYTES)
         chunk_size = int(getattr(valves, "IMAGE_UPLOAD_CHUNK_BYTES", 1024 * 1024))
         encoded: list[dict[str, Any]] = []
-        total_bytes = 0
+        total_bytes = int(spent["total"]) if spent else 0
         seen_frame_types: set[str] = set()
         seen_file_ids: set[str] = set()
 
@@ -2150,6 +2279,8 @@ class VideoGenerationAdapter:
             )
             seen_frame_types.add(frame_type)
             seen_file_ids.add(file_id)
+        if spent is not None:
+            spent["total"] = total_bytes
         return encoded
 
     async def _encode_input_references(
@@ -2164,6 +2295,7 @@ class VideoGenerationAdapter:
         companions: bool = False,
         event_emitter: Any = None,
         vetted: dict[str, bool] | None = None,
+        spent: dict[str, int] | None = None,
     ) -> list[dict[str, Any]]:
         raw = resolve_reference_items(video_meta)
         if not raw:
@@ -2178,7 +2310,7 @@ class VideoGenerationAdapter:
         model_takes = _declared_input_kinds(video_model)
         blob_floor = _INPUT_PIXEL_FLOORS.get(_clean_str(video_meta.get("model_id")))
         encoded: list[dict[str, Any]] = []
-        total_bytes = 0
+        total_bytes = int(spent["total"]) if spent else 0
         relay_bytes = 0
         past_the_count = 0
 
@@ -2289,6 +2421,8 @@ class VideoGenerationAdapter:
                     _skip(file_id, "over-budget", _OVER_REFERENCE_BUDGET)
                     continue
                 total_bytes += decoded_len
+                if spent is not None:
+                    spent["total"] = total_bytes
             if via_file_host:
                 self._refuse_over_the_relay_cap(decoded_len, relay_bytes, relay_max)
                 if family == "video":
@@ -2806,6 +2940,11 @@ class VideoGenerationAdapter:
             return
         frame_images = video_meta.get("frame_images")
         if not isinstance(frame_images, list):
+            for entry in intent.frame_plan:
+                if entry.source == "uploaded_attachment" and entry.target != "input_reference":
+                    intent.downgrades.append(
+                        f"retarget_skipped_no_frame_images_idx_{entry.source_index}"
+                    )
             return
         reference_list = resolve_reference_items(video_meta)
         ordered_attachments: list[dict[str, Any]] = [

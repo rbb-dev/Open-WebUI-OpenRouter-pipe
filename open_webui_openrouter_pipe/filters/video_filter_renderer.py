@@ -5,6 +5,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 from ..core.config import _OPENROUTER_VIDEO_GEN_FILTER_MARKER, _PIPE_METADATA_KEY
@@ -1033,7 +1034,7 @@ def _unhandled_params(spec: VideoFilterSpec) -> tuple[str, ...]:
     return tuple(accepted)
 
 
-def _render_purpose_built_fields(spec: VideoFilterSpec) -> list[str]:
+def _render_purpose_built_fields_uncached(spec: VideoFilterSpec) -> list[str]:
     fields = [
         _field_block(
             'VIDEO_PROVIDER_OPTIONS_JSON: str = Field(\n'
@@ -1261,8 +1262,11 @@ def _render_purpose_built_fields(spec: VideoFilterSpec) -> list[str]:
                 'continue the action from where it ended (the usual pick). first = the opening '
                 'frame, used to restart the scene from how it began. A request that names a '
                 'first or last frame outright gets that frame. On a model that accepts only '
-                'a first frame the pipe has no choice and uses the first one, whatever '
-                'moment was asked for, and says so in the disclosure footer."\n'
+                'a first frame, a moment the earlier video has is sent as asked and '
+                'nothing is substituted, so the disclosure footer stays silent; a '
+                'request for the final frame of the earlier video, or for a moment it '
+                'does not have, is answered with its opening frame, and the footer says '
+                'so."\n'
                 '            ),\n'
                 '        )'
             )
@@ -1289,6 +1293,15 @@ def _render_purpose_built_fields(spec: VideoFilterSpec) -> list[str]:
             )
         )
     return fields
+
+
+@lru_cache(maxsize=256)
+def _render_purpose_built_fields_cached(spec: VideoFilterSpec) -> tuple[str, ...]:
+    return tuple(_render_purpose_built_fields_uncached(spec))
+
+
+def _render_purpose_built_fields(spec: VideoFilterSpec) -> list[str]:
+    return list(_render_purpose_built_fields_cached(spec))
 
 
 _VIDEO_FIELD_DEF_RE = re.compile(r"^\s*(VIDEO_[A-Z0-9_]+)\s*:", re.MULTILINE)

@@ -571,6 +571,11 @@ def _render_error_template(template: str, values: dict[str, Any]) -> str:
             return candidate
         return ""
 
+    def _body_fence(run: str, body: str) -> str:
+        char = run[0]
+        longest = max((len(m.group(0)) for m in re.finditer(re.escape(char) + "+", body)), default=0)
+        return char * max(3, len(run), longest + 1)
+
     def _wrapped_fence_block(line: str) -> list[str]:
         match = _TEMPLATE_PLACEHOLDER_RE.search(line)
         if match is None or match.group(1) not in _FENCE_OWNED_KEYS:
@@ -586,9 +591,13 @@ def _render_error_template(template: str, values: dict[str, Any]) -> str:
         body = _strip_fence(str(values.get(match.group(1), "")))
         if not body:
             return [label] if label else []
-        block = [label, opener.group(0) + _fence_language(opener.group(0), line[match.end() : closer.start() + match.end()])]
+        language = _fence_language(opener.group(0), line[opener.end() : match.start()]) or _fence_language(
+            opener.group(0), label
+        )
+        fence = _body_fence(opener.group(0), body)
+        block = ([label] if label else []) + [fence + language]
         block.extend(body.splitlines())
-        block.append(closer.group(0))
+        block.append(fence)
         if tail:
             block.append(tail)
         return block

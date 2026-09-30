@@ -568,6 +568,109 @@ class TestCollectSlowStats:
         s = collect_slow_stats(pipe)["storage"]
         assert s["encryption_mode"] == "Disabled"
 
+    # ── H2294-1: the Storage tab said "connected" over a query that failed ──────────────────────────────
+    #
+    # Each of the five queries swallows its own `SQLAlchemyError`, so a store whose queries are
+    # failing rendered the header "connected" and the fields it could still read, with nothing
+    # anywhere saying a number on the page is missing. The state has to be keyed on a query that
+    # raised -- not on a field that reads `-`, because a model that simply lacks an optional column
+    # also leaves a `-` and is not a failure (`test_storage_partial_columns_isolate_failures`).
+
+    def _storage_fixture(self, rows, *, columns="full"):
+        """The real-SQLite shape the two rows above use, with the number of rows under test."""
+        import datetime
+
+        from sqlalchemy import JSON, Boolean, Column, DateTime, String, create_engine
+        from sqlalchemy.orm import declarative_base, sessionmaker
+
+        base = declarative_base()
+        table = "artifacts_degraded"
+
+        class Item(base):
+            __tablename__ = table
+            id = Column(String(26), primary_key=True)
+            chat_id = Column(String(64))
+            model_id = Column(String(128))
+            item_type = Column(String(64))
+            created_at = Column(DateTime)
+            if columns == "full":
+                payload = Column(JSON)
+                is_encrypted = Column(Boolean, default=False)
+
+        engine = create_engine("sqlite:///:memory:")
+        base.metadata.create_all(engine)
+        sf = sessionmaker(bind=engine)
+        now = datetime.datetime.now()
+        with sf() as session:
+            for index in range(rows):
+                extra = {"payload": {"x": "y" * (index + 1)}, "is_encrypted": index == 0} if columns == "full" else {}
+                session.add(
+                    Item(
+                        id=f"i{index}",
+                        chat_id="c1",
+                        model_id="m1",
+                        item_type="response",
+                        created_at=now,
+                        **extra,
+                    )
+                )
+            session.commit()
+
+        store = Mock()
+        store._session_factory = sf
+        store._item_model = Item
+        store._artifact_table_name = table
+        store._encryption_key = "k"
+        store._encrypt_all = False
+        store._compression_enabled = False
+        store._compression_min_bytes = 0
+        store._redis_enabled = False
+        store._engine = engine
+        pipe = _make_mock_pipe()
+        pipe._artifact_store = store
+        return pipe, sf
+
+    def _with_failing_query(self, pipe, sf, failing):
+        """`collect_slow_stats` with `nth` of its five `query()` calls raising `SQLAlchemyError`.
+
+        `failing` is 1-based and names the query by what the tab shows it as: 1 count, 2 size,
+        3 encrypted count, 4 by-type, 5 by-model. Every other call reaches the real session, so
+        this stubs one call and not the store.
+        """
+        import contextlib
+
+        from sqlalchemy.exc import SQLAlchemyError
+
+        real = sf()
+        calls = {"n": 0}
+
+        class _Session:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return real.__exit__(*exc)
+
+            def query(self, *a, **kw):
+                calls["n"] += 1
+                if calls["n"] == failing:
+                    raise SQLAlchemyError(f"query {failing} refused")
+                return real.query(*a, **kw)
+
+        @contextlib.contextmanager
+        def _db_session(_sf):
+            with contextlib.suppress(Exception):
+                yield _Session()
+            with contextlib.suppress(Exception):
+                real.close()
+
+        pipe._artifact_store._session_factory = lambda: _Session()
+        with patch(
+            "open_webui_openrouter_pipe.storage.persistence._db_session",
+            _db_session,
+        ):
+            return collect_slow_stats(pipe)["storage"], calls["n"]
+
     def test_storage_connected_no_db(self):
         pipe = _make_mock_pipe()
         store = Mock()

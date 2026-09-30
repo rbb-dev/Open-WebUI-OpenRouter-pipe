@@ -142,6 +142,7 @@ async def _refresh_image_catalog(
         logger=logger,
     )
 
+    repair = OpenRouterModelRegistry.image_contract_retry_pending()
     OpenRouterModelRegistry.clear_image_contract_retry()
 
     try:
@@ -182,9 +183,10 @@ async def _refresh_image_catalog(
         )
         OpenRouterModelRegistry.record_image_contract_attempt()
         if abandoned:
-            OpenRouterModelRegistry.clear_image_contract_attempt()
-            OpenRouterModelRegistry.mark_image_contract_retry(cache_seconds)
             OpenRouterModelRegistry.set_image_contract_owed(abandoned)
+            if not repair:
+                OpenRouterModelRegistry.clear_image_contract_attempt()
+                OpenRouterModelRegistry.mark_image_contract_retry(cache_seconds)
         else:
             OpenRouterModelRegistry.clear_image_contract_owed()
     OpenRouterModelRegistry.register_image_models(models)

@@ -204,6 +204,12 @@ def test_the_permanent_host_warning_also_reads_correctly_in_both_numbers(
         assert fragment in record, f"{fragment!r} is missing from {record!r}"
 
 
+NEEDS_A_PROMPT_REASON = (
+    "Video generation needs a prompt in your message. Add words describing the video you want "
+    "\u2014 an attachment alone is not enough."
+)
+
+
 def test_nothing_is_recorded_when_nothing_was_published():
     """An inline attachment never leaves this server, and must not be reported as if it had.
 

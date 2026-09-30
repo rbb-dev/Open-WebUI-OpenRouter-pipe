@@ -82,6 +82,12 @@ EXPECTED_LATCHES = {
     "_warned_system_resources",
     "_warned_task_candidate",
     "_warned_task_failure",
+    # A usage table the pipe's database role cannot create is retried on an interval,
+    # and a permanently refused CREATE is otherwise silent: the Usage tab says only
+    # `storage unavailable`. A dict latch, not a set, because the DDL is throttled by an
+    # interval and the log line has to be throttled with it or the operator gets one
+    # WARNING per completed request -- the very cost the interval exists to avoid.
+    "_warned_usage_table_create",
     "_warned_timing_file",
     "_warned_unrenderable_params",
     "_warned_user_valves",

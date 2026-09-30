@@ -17,6 +17,7 @@ import asyncio
 import inspect
 from typing import Any
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 

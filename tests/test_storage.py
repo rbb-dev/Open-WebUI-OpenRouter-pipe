@@ -1637,18 +1637,15 @@ def test_discover_engine_from_env_module(pipe_instance, monkeypatch):
     # Create mock open_webui.env module
     env_mod = types.ModuleType("open_webui.env")
     env_mod.DATABASE_SCHEMA = "env_schema"
-    sys.modules["open_webui.env"] = env_mod
+    monkeypatch.setitem(sys.modules, "open_webui.env", env_mod)
 
     class _DB:
         Base = None
         metadata_obj = None
         engine = object()
 
-    try:
-        engine, schema, details = store._discover_owui_engine_and_schema(_DB)
-        assert schema == "env_schema"
-    finally:
-        sys.modules.pop("open_webui.env", None)
+    engine, schema, details = store._discover_owui_engine_and_schema(_DB)
+    assert schema == "env_schema"
 
 
 def test_discover_engine_from_attr(pipe_instance):
